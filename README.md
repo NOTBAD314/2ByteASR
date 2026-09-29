@@ -60,7 +60,7 @@
 
 **本次应下载：`2ByteASR-Setup-0.2.6-test.2.exe`**，约 **947.1 MiB**。不要下载旧版 Lite，也不要把 GitHub 的 **Source code** 压缩包当成 Windows 安装程序。
 
-[打开本次审核草稿](docs/releases/0.2.6-test.2.zh-CN.md)（需仓库权限，不能直接分享给无权限的 Discord 用户）。
+[打开本次审核草稿](https://github.com/NOTBAD314/2ByteASR/releases/tag/untagged-8ce24471ad555b803ab4)（需仓库权限，不能直接分享给无权限的 Discord 用户）。
 
 1. 下载安装程序与同页 `SHA256SUMS.txt`，核对文件后运行安装。
 2. 启动 2ByteASR，在模型工坊选择要使用的方案。安装包**不含模型权重**；本地识别需准备对应模型与运行库，首次准备需要联网和额外磁盘空间。
@@ -88,4 +88,3 @@
 反馈请附 **版本号、Windows 版本、所选模型／方案、复现步骤、预期与实际结果**，必要时提供可公开的最短素材。截图与日志先移除 Key、账号和个人路径。[提交 Issue](https://github.com/NOTBAD314/2ByteASR/issues) 需要当前私有仓库的访问权限。
 
 仓库源码许可证沿用 [Apache-2.0](LICENSE)；安装包第三方组件按各自许可证使用，见随包许可文件及[本版第三方说明](docs/releases/0.2.6-test.2-start.zh-CN.md#第三方组件)。本审核分支只更新展示材料，不包含候选包完整构建源码；既有外语文档尚未同步到本版。
-
