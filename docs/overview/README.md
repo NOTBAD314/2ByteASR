@@ -1,23 +1,28 @@
-# 2ByteASR · 图文介绍
+# 2ByteASR 图文介绍
 
-[HTML 产品介绍页](index.html)可在下载仓库后直接打开；[返回 README](../../README.md)。
+[返回完整 README](../../README.md) · [HTML 介绍页](index.html) · [单文件离线审阅版](../overview-review.html)
+
+GitHub 显示 HTML 源码。下载 `docs/overview-review.html` 后可离线打开；完整网页目录为 `docs/overview/`，请连同 CSS、JS、assets 一起保留。单文件中的外部文档链接仍需网络和仓库访问权限。
 
 ## 识别方案
 
-![主力转写、字幕时间轴、文字复核、AI断句、术语库与Studio入口](assets/recognition-annotated.png)
+![识别方案配置示例](assets/recognition.webp)
 
-## Studio 精修
+转写、时间定位和复核各有分工，模型组合与 AI 辅助步骤按需选择。
 
-![字幕列表、视频、多轨时间轴、样式、AI设计入口与输出](assets/studio-annotated.png)
+## Studio 字幕与视频编辑
 
-## 运行进度
+![真实工程中的字幕、视频、时间轴与样式编辑](assets/studio.webp)
 
-![总进度、分步状态、当前步骤、任务动态与运行日志](assets/progress-annotated.png)
+对照画面校对文字与起止，组织视频片段并输出。图中呈现编辑总览，字级操作需要工程具有相应时间信息。
 
-## 工程库
+<details>
+<summary>辅助界面：工程库与任务进度</summary>
 
-![最近工程、封面、继续编辑、导入新建与管理](assets/library-annotated.png)
+![工程库：封面与最近工程](assets/originals/library.png)
 
-四张图片来自用户提供的真实界面。标注只说明可见区域，未改变原有控件与运行状态；运行日志中的本机路径已隐藏。
+![识别任务进度；日志中的本机路径已隐藏](assets/originals/progress.png)
 
-[无标注识别图](assets/originals/recognition.png) · [无标注Studio图](assets/originals/studio.png) · [无标注进度图（路径已隐藏）](assets/originals/progress.png) · [无标注工程库图](assets/originals/library.png)
+</details>
+
+截图来自用户提供的真实界面，未重绘控件或修改运行状态。保留[识别原图](assets/originals/recognition.png)和[Studio 原图](assets/originals/studio.png)。
