@@ -7,7 +7,7 @@
 语音识别、字级时间轴、AI 断句、字幕特效与视频剪辑，放在一个桌面工作台里完成。
 
 Windows x64 · 0.2.6-test.2 测试版<br>
-[下载](https://github.com/NOTBAD314/2ByteASR/releases/tag/untagged-8ce24471ad555b803ab4) · [快速开始](#快速开始) · [反馈](https://github.com/NOTBAD314/2ByteASR/issues)
+[下载](https://github.com/NOTBAD314/2ByteASR/releases) · [快速开始](#快速开始) · [反馈](https://github.com/NOTBAD314/2ByteASR/issues)
 
 <!-- 主图待用户提供：test.2 主页识别方案，清晰显示主力转写、字幕时间轴和文字复核。 -->
 
