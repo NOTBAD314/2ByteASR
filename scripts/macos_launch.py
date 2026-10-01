@@ -27,10 +27,18 @@ def finish_startup_event_loops(app, windows, exit_code: int) -> None:
     from PySide6.QtWidgets import QDialog
     # A first-run QDialog.exec() precedes QApplication.exec(). Calling exit
     # inside the first loop alone lets the later application loop start anew.
-    for window in windows:
-        if isinstance(window, QDialog):
-            window.reject()
-    QTimer.singleShot(0, lambda: app.exit(exit_code))
+    pending={window for window in windows if isinstance(window,QDialog)}
+    def completed(window):
+        pending.discard(window)
+        if not pending:
+            QTimer.singleShot(0,lambda:app.exit(exit_code))
+    if not pending:
+        QTimer.singleShot(0,lambda:app.exit(exit_code))
+    for window in list(pending):
+        # SpringDialog.done() animates before emitting finished. Queue the
+        # outer-loop exit only after that actual completion, not after reject.
+        window.finished.connect(lambda _result,window=window:completed(window))
+        window.reject()
 
 
 def dismiss_first_wizard_for_desktop_audit(app, output: Path) -> None:
@@ -42,12 +50,16 @@ def dismiss_first_wizard_for_desktop_audit(app, output: Path) -> None:
         for window in app.topLevelWidgets():
             if type(window).__name__=='GuidedSetupDialog' and window.isVisible():
                 window.grab().save(str(output/'00-first-run-wizard.png'))
-                QTest.keyClick(window, Qt.Key.Key_Escape)
-                (output/'first-run-wizard.json').write_text(json.dumps({
+                receipt={
                     'shown':True,'action':'Escape / cancel without download',
-                    'dismissed':not window.isVisible(),'injected_model_or_transcript':False,
-                },ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+                    'dismissed':False,'injected_model_or_transcript':False,
+                }
+                def completed(result):
+                    receipt.update(dismissed=not window.isVisible(),dialog_result=int(result))
+                    (output/'first-run-wizard.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+                window.finished.connect(completed)
                 timer.stop()
+                QTest.keyClick(window, Qt.Key.Key_Escape)
                 return
     timer.timeout.connect(inspect)
     timer.start(250)

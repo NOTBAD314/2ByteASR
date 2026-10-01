@@ -101,16 +101,20 @@ def test_launch_services_psn_argument_does_not_disable_startup_smoke(tmp_path):
 
 def test_startup_probe_unwinds_first_run_modal_before_application_loop():
     from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication,QDialog
+    from PySide6.QtWidgets import QApplication,QDialog,QWidget
+    from twobyteasr.main_ui_dialogs import SpringDialog
     from scripts.macos_launch import finish_startup_event_loops
     app=QApplication.instance() or QApplication([])
-    dialog=QDialog()
+    parent=QWidget();parent.show()
+    dialog=SpringDialog(parent)
     QTimer.singleShot(0,lambda:finish_startup_event_loops(app,[dialog],0))
     assert dialog.exec()==QDialog.DialogCode.Rejected
     guard=QTimer();guard.setSingleShot(True)
     guard.timeout.connect(lambda:app.exit(42));guard.start(200)
-    assert app.exec()==0
+    status=app.exec()
     guard.stop()
+    parent.close()
+    assert status==0
 
 
 def test_timeout_preserves_visible_application_receipt_without_passing(tmp_path,monkeypatch):
@@ -126,3 +130,21 @@ def test_timeout_preserves_visible_application_receipt_without_passing(tmp_path,
                  environment={'PATH':'/usr/bin:/bin'},cwd=tmp_path)
     assert record['passed'] is False and 'timed out' in record['error']
     assert record['application_receipt']['normal_entry_main_window_visible'] is True
+
+
+def test_desktop_audit_escape_waits_for_real_guided_setup_completion(tmp_path):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication,QDialog,QWidget
+    from twobyteasr.ui import GuidedSetupDialog
+    from scripts.macos_launch import dismiss_first_wizard_for_desktop_audit
+    app=QApplication.instance() or QApplication([])
+    parent=QWidget();parent.show()
+    dialog=GuidedSetupDialog(parent)
+    dismiss_first_wizard_for_desktop_audit(app,tmp_path)
+    guard=QTimer();guard.setSingleShot(True);guard.timeout.connect(dialog.reject);guard.start(3000)
+    result=dialog.exec()
+    guard.stop();app._macos_wizard_audit_timer.stop();parent.close()
+    receipt=json.loads((tmp_path/'first-run-wizard.json').read_text('utf8'))
+    assert result==QDialog.DialogCode.Rejected and receipt['dismissed'] is True
+    assert receipt['dialog_result']==int(QDialog.DialogCode.Rejected)
+    assert receipt['injected_model_or_transcript'] is False
