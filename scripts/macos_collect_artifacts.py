@@ -10,7 +10,7 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
-    for folder in ("media","build","native-media-smoke","embedded-preview","hardware-probe","desktop-flow","relocated-startup-profile/startup-smoke"):
+    for folder in ("media","build","native-media-smoke","embedded-preview","hardware-probe","desktop-flow","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke"):
         directory=root/folder
         if not directory.is_dir():continue
         # Build/source, node_modules, PyInstaller output, runtime and model

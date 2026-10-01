@@ -72,3 +72,28 @@ def test_large_app_does_not_discard_receipts(tmp_path):
     selected=json.loads((receipt/'artifact-selection.json').read_text('utf8'))
     assert selected['withheld'][0]['path']=='build/real.app.zip'
     assert not (root/'artifacts/application').exists()
+
+
+def test_real_startup_rejects_zero_exit_without_application_receipt_and_retains_error(tmp_path,monkeypatch):
+    from scripts.macos_startup_contract import probe
+    profile=tmp_path/'tmp/profile';out=tmp_path/'build';out.mkdir()
+    def child(command,**kwargs):
+        diagnostic=profile/'local/2ByteASR/logs';diagnostic.mkdir(parents=True)
+        (diagnostic/'2byteasr-startup.log').write_text('STARTUP CRASH: missing dependency')
+        class Result:returncode=0
+        return Result()
+    monkeypatch.setattr('scripts.macos_startup_contract.subprocess.run',child)
+    record=probe(tmp_path/'relocated/App.app',profile,out/'startup-direct.log',finder=False,
+                 environment={'PATH':'/usr/bin:/bin'},cwd=tmp_path)
+    assert record['passed'] is False and record['launcher_exit_code']==0
+    assert 'no startup result' in record['error']
+    assert 'missing dependency' in (out/'startup-direct-2byteasr-startup.log').read_text()
+
+
+def test_launch_services_psn_argument_does_not_disable_startup_smoke(tmp_path):
+    from scripts.macos_launch import startup_smoke_argument
+    for argv in (['App','--macos-startup-smoke',str(tmp_path)],
+                 ['App','-psn_0_12345','--macos-startup-smoke',str(tmp_path)]):
+        assert startup_smoke_argument(argv)==tmp_path.resolve()
+    with pytest.raises(ValueError):startup_smoke_argument(['App','--macos-startup-smoke'])
+    assert startup_smoke_argument(['App','movie.mp4']) is None

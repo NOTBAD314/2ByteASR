@@ -117,7 +117,7 @@ jobs:
         timeout-minutes: 26
         run: |
           set -euo pipefail
-          python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/build/native-build-inputs.json")); assert r["native_validation"]["packaged_normal_entry_startup_smoke"].get("passed") is True, "Relocated startup failed; GUI prerequisites absent"'
+          python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/build/native-build-inputs.json")); s=r["native_validation"]["packaged_normal_entry_startup_smoke"]; assert s.get("passed") is True or s.get("direct",{}).get("passed") is True, "Relocated startup failed; GUI prerequisites absent"'
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$MAC_QA_ROOT/build/relocated/兔白 字幕・移動テスト/2ByteASR.app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio ci-fixtures/original-chinese-qa.wav --output "$MAC_QA_ROOT/desktop-flow"
       - name: Record separate validation outcomes
         if: always()

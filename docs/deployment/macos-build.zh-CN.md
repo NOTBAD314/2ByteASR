@@ -2,6 +2,8 @@
 
 此页与[普通用户实验版说明](macos-experimental.zh-CN.md)分开。在 macOS 15 Apple Silicon arm64 使用完整可信源码，构建 Python 3.10.11；不是 Windows 交叉构建，不复制宿主 node_modules/EXE/DLL/wheel。
 
+2026-10-01追加run36886410053固定e132fda9已实际生成arm64 `.app.zip`，媒体/架构/动态库/签名/Unicode解压搬移校验通过；正常入口未产生应用回执，启动失败与模型/Studio未执行保持分开。下一次构建分别从搬移后的可执行文件和LaunchServices启动，使用独立最小PATH与profile；无结果/非零退出仍判失败并保留内部启动日志，真实ZIP仍先归档。
+
 固定输入见 `packaging/macos/native-dependencies.lock.json`、GUI/CPU requirements 和 `bootstrap.lock.json`。关键 wheel 对实际 pip install report 校验版本/SHA；FFmpeg 9.0.2、mpv 0.41.0/revision 10、Node 22.16.0 及 Remotion lock 绑定准确原生输入，漂移即失败。实际 Qt、PyAV、模型运行库和 Chromium 的架构/动态库关系在回执中记录。
 
 ```bash

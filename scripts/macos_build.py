@@ -259,18 +259,9 @@ def main(argv=None):
     boundary=output.parent
     if "tmp" not in {part.casefold() for part in boundary.parts}:
         raise RuntimeError("Packaged QA requires an explicit disposable tmp boundary")
-    smoke_env=finder_environment(boundary/"relocated-startup-profile")
-    startup_output=boundary/"relocated-startup-profile/startup-smoke"
-    try:
-        # LaunchServices, with a minimal Finder-like environment and a cwd
-        # unrelated to the bundle/source, is the actual second startup path.
-        run(["/usr/bin/open","-n","-W","--env","PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-             "--env","TWOBYTEASR_TEST_ROOT="+str(boundary/"relocated-startup-profile"),
-             relocated,"--args","--macos-startup-smoke",startup_output],
-            env=smoke_env,cwd=output/"relocated",log=output/"startup-smoke.log",timeout=70)
-        receipt["native_validation"]["packaged_normal_entry_startup_smoke"]=json.loads((startup_output/"result.json").read_text(encoding="utf8"))
-    except Exception as exc:
-        receipt["native_validation"]["packaged_normal_entry_startup_smoke"]={"passed":False,"error":str(exc),"artifact_preserved":True}
+    from scripts.macos_startup_contract import verify_relocated_startup
+    receipt["native_validation"]["packaged_normal_entry_startup_smoke"]=verify_relocated_startup(
+        relocated,boundary,output,finder_environment(boundary/"relocated-startup-profile"))
     receipt["native_validation"].update(model_inference=False,embedded_video=False,studio_full_flow=False,physical_ime=False,human_listening=False,mps_model=False)
     receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     (output/"SHA256SUMS.txt").write_text(sha256(zipped)+"  "+zipped.name+"\n",encoding="utf8")

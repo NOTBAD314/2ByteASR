@@ -11,6 +11,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def startup_smoke_argument(argv: list[str]) -> Path | None:
+    """Allow LaunchServices' process serial argument without losing our audit."""
+    args=[value for value in argv[1:] if not value.startswith('-psn_')]
+    if not args or args[0] != '--macos-startup-smoke':
+        return None
+    if len(args) != 2:
+        raise ValueError('Startup smoke requires exactly one output directory')
+    return Path(args[1]).resolve()
+
+
 def main() -> int:
     # PyInstaller's hook diverts spawn/resource-tracker children before any
     # QApplication, single-instance guard, defaults or normal GUI is created.
@@ -19,8 +29,9 @@ def main() -> int:
     if sys.platform != "darwin":
         raise SystemExit("The macOS launcher must run on a native macOS host.")
     smoke_output = None
-    if len(sys.argv) == 3 and sys.argv[1] == "--macos-startup-smoke":
-        output = Path(sys.argv[2]).resolve()
+    requested_output = startup_smoke_argument(sys.argv)
+    if requested_output is not None:
+        output = requested_output
         if output.exists():
             raise SystemExit("Smoke output must be a new directory.")
         output.mkdir(parents=True)
@@ -29,6 +40,14 @@ def main() -> int:
         if "tmp" not in {part.casefold() for part in boundary.parts} or not output.is_relative_to(boundary):
             raise SystemExit("Startup smoke requires an owned absolute tmp boundary containing its output.")
         smoke_output = output
+        (output/'entry.json').write_text(json.dumps({'argv':sys.argv,'platform':sys.platform,
+            'packaged':bool(getattr(sys,'frozen',False)),'resource_root':str(ROOT),
+            'cwd_at_entry':os.getcwd()},ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+        # Windowed bootloaders have no streams. Keep failures from the real
+        # entry visible in this isolated audit; model child pipes stay intact.
+        for name in ('stdout','stderr'):
+            if getattr(sys,name) is None:
+                setattr(sys,name,(output/(name+'.log')).open('a',encoding='utf8',buffering=1))
         # The caller supplies an isolated native runtime for this profile.
         sys.argv = [sys.argv[0]]
     from twobyteasr.platform_macos import configure_macos_paths, cpu_factory_settings
