@@ -21,6 +21,39 @@ def startup_smoke_argument(argv: list[str]) -> Path | None:
     return Path(args[1]).resolve()
 
 
+def finish_startup_event_loops(app, windows, exit_code: int) -> None:
+    """Cancel the fresh wizard before quitting the outer application loop."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QDialog
+    # A first-run QDialog.exec() precedes QApplication.exec(). Calling exit
+    # inside the first loop alone lets the later application loop start anew.
+    for window in windows:
+        if isinstance(window, QDialog):
+            window.reject()
+    QTimer.singleShot(0, lambda: app.exit(exit_code))
+
+
+def dismiss_first_wizard_for_desktop_audit(app, output: Path) -> None:
+    """Use the real Escape action so the normal workshop audit can start."""
+    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtTest import QTest
+    timer=QTimer(app)
+    def inspect():
+        for window in app.topLevelWidgets():
+            if type(window).__name__=='GuidedSetupDialog' and window.isVisible():
+                window.grab().save(str(output/'00-first-run-wizard.png'))
+                QTest.keyClick(window, Qt.Key.Key_Escape)
+                (output/'first-run-wizard.json').write_text(json.dumps({
+                    'shown':True,'action':'Escape / cancel without download',
+                    'dismissed':not window.isVisible(),'injected_model_or_transcript':False,
+                },ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+                timer.stop()
+                return
+    timer.timeout.connect(inspect)
+    timer.start(250)
+    app._macos_wizard_audit_timer=timer
+
+
 def main() -> int:
     # PyInstaller's hook diverts spawn/resource-tracker children before any
     # QApplication, single-instance guard, defaults or normal GUI is created.
@@ -90,8 +123,18 @@ def main() -> int:
             (output/"result.json").write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
             for index,window in enumerate(windows):
                 window.grab().save(str(output/f"window-{index}.png"))
-            app.exit(0 if receipt["passed"] else 1)
+            finish_startup_event_loops(app, windows, 0 if receipt["passed"] else 1)
         QTimer.singleShot(10000, finish)
+    elif os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')=='macos-desktop':
+        from twobyteasr.studio_acceptance_audit import audit_directory
+        # Validate the existing owned tmp/profile/project guard before any
+        # opt-in UI action. Ordinary user launches never enter this route.
+        audit_output=audit_directory()
+        if audit_output is None:
+            raise RuntimeError('Desktop audit requires its isolated output')
+        from PySide6.QtWidgets import QApplication
+        app=QApplication.instance() or QApplication(sys.argv)
+        dismiss_first_wizard_for_desktop_audit(app,audit_output)
     # Install only fresh defaults; existing projects/configuration are never
     # rewritten or copied from a Windows user's AppData.
     from twobyteasr.settings import DEFAULT_SETTINGS, project_settings_path

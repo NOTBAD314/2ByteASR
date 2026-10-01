@@ -29,6 +29,11 @@ def probe(app: Path, profile: Path, log: Path, *, finder: bool, environment: dic
     except Exception as exc:
         record['error']=str(exc)
     finally:
+        saved=output/'result.json'
+        if saved.is_file() and 'application_receipt' not in record:
+            # Keep evidence of a visible app even when its probe timed out;
+            # this does not turn a timeout into successful process completion.
+            record['application_receipt']=json.loads(saved.read_text('utf8'))
         # Retain only this probe's application diagnostics, never its settings
         # or model/cache trees. A hard-exit inside quick_start still leaves logs.
         for path in (profile/'local/2ByteASR/logs').glob('*'):

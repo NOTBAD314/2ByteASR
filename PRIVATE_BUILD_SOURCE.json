@@ -4442,8 +4442,8 @@
     },
     {
       "path": "scripts/macos_launch.py",
-      "bytes": 5971,
-      "sha256": "b289a6976fc7daceadef7495314fcc6491d671a85d147a5cd95e948f1799f8e8"
+      "bytes": 8150,
+      "sha256": "642834b8346ec5ae1b84cd8ff7dcc600df8d2e72eb0191d7cbb4bd85f8b5bd5b"
     },
     {
       "path": "scripts/macos_media_contract.py",
@@ -4467,8 +4467,8 @@
     },
     {
       "path": "scripts/macos_startup_contract.py",
-      "bytes": 2441,
-      "sha256": "372e8bce17ca66cd1e1cade68fcd57457d8b872304ab6024f5c92aa285537775"
+      "bytes": 2777,
+      "sha256": "5f06f00b170e358d51e0a6563d16cefbf8365fd327746308c8bc296644e22ffb"
     },
     {
       "path": "scripts/make_web_theme_test_project.py",
@@ -5957,8 +5957,8 @@
     },
     {
       "path": "tests/test_macos_delivery_boundary.py",
-      "bytes": 5961,
-      "sha256": "5cd5e83c07d9a66dd63391e385f259410f35d7649c832dfafb12a00355392742"
+      "bytes": 7435,
+      "sha256": "d8bc88ba12b24e0768b28bbfd3a6295f4f0e49f636ed62d933cdf5030b1f68a8"
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
@@ -9136,6 +9136,6 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "e0a4994cae658d657705921a90a510837e741c17",
+  "prior_private_source": "5a499d6e75a4c2251bd610dfc7046e1661a7d78e",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871"
 }

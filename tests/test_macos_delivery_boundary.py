@@ -97,3 +97,32 @@ def test_launch_services_psn_argument_does_not_disable_startup_smoke(tmp_path):
         assert startup_smoke_argument(argv)==tmp_path.resolve()
     with pytest.raises(ValueError):startup_smoke_argument(['App','--macos-startup-smoke'])
     assert startup_smoke_argument(['App','movie.mp4']) is None
+
+
+def test_startup_probe_unwinds_first_run_modal_before_application_loop():
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication,QDialog
+    from scripts.macos_launch import finish_startup_event_loops
+    app=QApplication.instance() or QApplication([])
+    dialog=QDialog()
+    QTimer.singleShot(0,lambda:finish_startup_event_loops(app,[dialog],0))
+    assert dialog.exec()==QDialog.DialogCode.Rejected
+    guard=QTimer();guard.setSingleShot(True)
+    guard.timeout.connect(lambda:app.exit(42));guard.start(200)
+    assert app.exec()==0
+    guard.stop()
+
+
+def test_timeout_preserves_visible_application_receipt_without_passing(tmp_path,monkeypatch):
+    import subprocess
+    from scripts.macos_startup_contract import probe
+    profile=tmp_path/'tmp/profile';out=tmp_path/'build';out.mkdir()
+    def child(command,**kwargs):
+        saved=profile/'startup-smoke/result.json';saved.parent.mkdir(parents=True)
+        saved.write_text('{"passed":true,"normal_entry_main_window_visible":true}')
+        raise subprocess.TimeoutExpired(command,75)
+    monkeypatch.setattr('scripts.macos_startup_contract.subprocess.run',child)
+    record=probe(tmp_path/'relocated/App.app',profile,out/'startup-direct.log',finder=False,
+                 environment={'PATH':'/usr/bin:/bin'},cwd=tmp_path)
+    assert record['passed'] is False and 'timed out' in record['error']
+    assert record['application_receipt']['normal_entry_main_window_visible'] is True
