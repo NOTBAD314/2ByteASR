@@ -472,8 +472,8 @@
     },
     {
       "path": "docs/deployment/macos-build.zh-CN.md",
-      "bytes": 4474,
-      "sha256": "6d2e7ce597d50fcdaf017c24471d63d832100f32ed68f213fd1dcbc23cec8920"
+      "bytes": 5072,
+      "sha256": "aebb8f01e182103b5834c77d0c2431390318adc9fa687fd5d7a4b5c71c5b5bf9"
     },
     {
       "path": "docs/deployment/macos-device-checklist.zh-CN.md",
@@ -482,13 +482,13 @@
     },
     {
       "path": "docs/deployment/macos-experimental.zh-CN.md",
-      "bytes": 2748,
-      "sha256": "f009e56bc7e21cda97f374af6b4d5035737f0e56204c1806945f8865df86ab42"
+      "bytes": 2871,
+      "sha256": "b0b4c6a466c2c89a62e03988395c36499cee48201bbdbb0fa0697cec9b56b09b"
     },
     {
       "path": "docs/deployment/macos-validation.zh-CN.md",
-      "bytes": 2114,
-      "sha256": "97b8237fff9066fc48388fb042904136d6eaedee448505a999785dd2707ab282"
+      "bytes": 3729,
+      "sha256": "a2d733b507eda7d0877f8bdc780ef4682c5e541d604e3b097bec6789757db38b"
     },
     {
       "path": "docs/design/2026-09-ui-polish-guidelines.md",
@@ -4437,8 +4437,8 @@
     },
     {
       "path": "scripts/macos_install_media.py",
-      "bytes": 8401,
-      "sha256": "5722148f4f18a81a130b466f92c2a1cc8c95a39a5f77af9673320d63619f51db"
+      "bytes": 9603,
+      "sha256": "afeeb1f476020cc49a1c7fc13d6a6c9659f1948955317b0e7d2a24447b6ee7a3"
     },
     {
       "path": "scripts/macos_launch.py",
@@ -5962,8 +5962,8 @@
     },
     {
       "path": "tests/test_macos_media_installation.py",
-      "bytes": 5351,
-      "sha256": "88026673de910b669abf9c3e1211118b2f8a824753b6fd8f1344ffa1868362ce"
+      "bytes": 7058,
+      "sha256": "a22f468452a194efe3e8e3d61d61c81c8d4463c0bdc6f15392f78d0456d2db81"
     },
     {
       "path": "tests/test_macos_platform.py",
@@ -9131,6 +9131,6 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "596bc062d1e7c0f72508c8edcb60c0fbbe965eb2",
+  "prior_private_source": "d41b3359985d6bc5e82f55b96dbf316b30a30a08",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871"
 }

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from scripts.macos_media_contract import (digest,keg_version,verify_media_formula,
     verify_keg_receipt,verify_binary_evidence,load_verified_tools)
-from scripts.macos_install_media import install_action
+from scripts.macos_install_media import install_action,isolated_core_checkout
 
 LOCK=json.loads((Path(__file__).resolve().parents[1]/'packaging/macos/native-dependencies.lock.json').read_text('utf8'))
 
@@ -89,3 +89,30 @@ def test_receipt_revision_and_bottle_architecture_are_required(tmp_path):
     tab['source']['revision']=10;verify_keg_receipt(tab,keg,'mpv',e)
     tab['poured_from_bottle']=False
     with pytest.raises(RuntimeError,match='poured bottle'):verify_keg_receipt(tab,keg,'mpv',e)
+
+
+@pytest.mark.parametrize('fail',[False,True])
+def test_runner_dirty_core_and_unrelated_kegs_are_preserved_after_installation(tmp_path,fail):
+    runner=tmp_path/'homebrew/Library/Taps/homebrew/homebrew-core'
+    runner.mkdir(parents=True)
+    (runner/'rustup.rb').write_bytes(b'image-specific modified formula')
+    (runner/'openssl@1.1.rb').write_bytes(b'image-specific untracked formula')
+    unrelated=tmp_path/'homebrew/Cellar/rustup/1/bin/rustup'
+    unrelated.parent.mkdir(parents=True);unrelated.write_bytes(b'preinstalled unrelated tool')
+    boundary=tmp_path/'tmp/media';selected=boundary/'selected-core';selected.mkdir(parents=True)
+    (selected/'ffmpeg.rb').write_bytes(b'fixed reviewed media definition')
+    def install():
+        with isolated_core_checkout(runner,selected,boundary):
+            assert (runner/'ffmpeg.rb').read_bytes()==b'fixed reviewed media definition'
+            assert (boundary/'runner-core-original/rustup.rb').read_bytes()==b'image-specific modified formula'
+            assert unrelated.read_bytes()==b'preinstalled unrelated tool'
+            if fail:raise RuntimeError('Simulated download digest rejection')
+    if fail:
+        with pytest.raises(RuntimeError,match='digest rejection'):install()
+    else:install()
+    assert (runner/'rustup.rb').read_bytes()==b'image-specific modified formula'
+    assert (runner/'openssl@1.1.rb').read_bytes()==b'image-specific untracked formula'
+    assert (selected/'ffmpeg.rb').read_bytes()==b'fixed reviewed media definition'
+    assert not (runner/'ffmpeg.rb').exists()
+    assert not (boundary/'runner-core-original').exists()
+    assert unrelated.read_bytes()==b'preinstalled unrelated tool'

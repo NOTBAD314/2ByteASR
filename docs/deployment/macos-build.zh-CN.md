@@ -28,4 +28,6 @@ MPS 可用性、小 tensor、具体模型、VideoToolbox实际硬件编码和预
 
 Mac 材料按真实载荷增量记录。Windows 材料不自动证明 Mac 完整对应源码，内部构建不自动放行公开发行。官方参考：[PyInstaller macOS架构/签名](https://pyinstaller.org/en/stable/feature-notes.html)、[PyTorch MPS](https://docs.pytorch.org/docs/stable/notes/mps.html)、[Actions额度与存储](https://docs.github.com/en/billing/concepts/product-billing/github-actions)。
 
+本轮真实run36882470527固定d41b3359在media阶段失败：runner core的rustup.rb/openssl@1.1.rb原有改动被过严的干净检查拒绝，未取得媒体或构建.app。后修订先在QA目录准备官方固定core，安装期间仅临时切换该配方目录；原目录完整保留，成功/失败均恢复，不改写它的Git状态、不删除无关预装工具。此后builder不查询已恢复的旧公式元数据，仅重验安装receipt、SHA及准确路径。24本机定向测试包含文件级恢复；这一修订尚未原生运行，不能宣称原生安装或app已修复。
+
 首次CI36875057224实际倒入ffmpeg9.0.1_1/mpv0.41.0_9，旧流程未消费媒体锁，PyInstaller前失败。旧日志没有保存API缓存/完整Homebrew环境，缓存原因仅推测。第二轮仍保留原版本与归档SHA，新增官方[core固定快照](https://github.com/Homebrew/homebrew-core/tree/0211e9c2eeea26bc0f1b382446dc076321e9a871)和两份配方定义SHA；原bottle仍已实际下载验证可用。安装使用该core checkout，禁止滚动API与自动更新，由Homebrew处理依赖和重定位，只安装/重装这两个选定媒体公式，不全局升级。归档SHA、keg pkg_version（含revision）、INSTALL_RECEIPT的arm64/poured_from_bottle/core身份、PATH与真实工具路径、可执行文件SHA、lipo和运行输出分别校验。预装正确版本也重新取得安装证据。builder重查receipt与准确路径，不重新查PATH或最新仓库声明；归档摘要不等于解压/重定位后的工具摘要。新运行结果另行登记，不能移植首次CI结论。
