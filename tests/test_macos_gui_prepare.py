@@ -165,3 +165,31 @@ def test_frozen_gui_cpu_preparation_uses_dedicated_app_child_and_writable_cwd(mo
     assert not dialog._finished_ok
     dialog.close()
     app.processEvents()
+
+
+def test_macos_unsupported_model_detail_constructs_without_startup_keyerror(monkeypatch,tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from twobyteasr import model_workshop as workshop
+    app=QApplication.instance() or QApplication([])
+    monkeypatch.setattr(workshop,'sys',SimpleNamespace(platform='darwin'))
+    page=workshop.ModelWorkshopPage(tmp_path,{'models':{'primary_asr_backend':'sensevoice','qwen_asr_backend':'off'}})
+    unavailable=next(m for m in workshop.MODELS if m.download_key and m.download_key!='sensevoice')
+    page._view_model(unavailable.key)
+    assert page._model_state(unavailable)=='platform_unavailable'
+    assert page.detail_badge.text()
+    assert page._action_text(unavailable,'platform_unavailable')[1] is False
+    page.close();app.processEvents()
+
+
+def test_mac_replace_without_qt_binding_avoids_command_hide(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtGui import QKeySequence
+    from twobyteasr import studio_shortcuts
+    app=QApplication.instance() or QApplication([])
+    import sys
+    monkeypatch.setattr(sys,'platform','darwin')
+    original=QKeySequence.keyBindings
+    monkeypatch.setattr(QKeySequence,'keyBindings',lambda key:[] if key==QKeySequence.Replace else original(key))
+    defaults=studio_shortcuts.studio_default_shortcuts()
+    assert defaults['find_replace']=='Ctrl+Alt+F'
+    assert defaults['save']==original(QKeySequence.Save)[0].toString(QKeySequence.PortableText)

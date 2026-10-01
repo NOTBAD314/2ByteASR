@@ -5474,7 +5474,10 @@ class ModelWorkshopPage(QWidget):
             "runtime_missing": "权重已安装 · 环境未就绪",
             "inference_pending": "模型已加载 · 人声推理待验证",
             "load_failed": "文件与运行库已准备 · 加载或设备验证未通过",
+            "platform_unavailable": "尚未适配 macOS",
         }[state]
+        if state == 'platform_unavailable':
+            badge = self._action_text(model,state)[0]
         self.detail_badge.setText(translate(badge, language))
         if model.key=='nemotron':
             from .speaker_strategy import resolve

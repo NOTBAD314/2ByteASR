@@ -91,6 +91,10 @@ def studio_default_shortcuts() -> dict[str, str]:
         bindings = QKeySequence.keyBindings(standard)
         if bindings:
             defaults[command] = bindings[0].toString(QKeySequence.PortableText)
+        elif command == 'find_replace':
+            # Cocoa has no Qt Replace StandardKey binding. Command-H hides
+            # the application; retain a distinct Option-Command-F fallback.
+            defaults[command] = 'Ctrl+Alt+F'
     # A second native Redo binding can be absent or equal the first. Keep the
     # alternate empty in that case instead of creating a default conflict.
     redo = QKeySequence.keyBindings(QKeySequence.Redo)

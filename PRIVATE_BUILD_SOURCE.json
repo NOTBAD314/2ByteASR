@@ -5962,8 +5962,8 @@
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
-      "bytes": 9063,
-      "sha256": "9370299f3eb325d018459ceceb0eabb4552c4b3526b26c986b52c687f78ea5cc"
+      "bytes": 10546,
+      "sha256": "bac7d4904ecae226d9cd64a8f55003554cfec4d1f2bd1cdf0b0294406bb3a670"
     },
     {
       "path": "tests/test_macos_media_installation.py",
@@ -7572,8 +7572,8 @@
     },
     {
       "path": "twobyteasr/macos_media_smoke.py",
-      "bytes": 14664,
-      "sha256": "407468da7deddce3b6e6036dca3d8bd642f7a4439f297322b8e7da3f3d69af93"
+      "bytes": 14944,
+      "sha256": "8b869ee940f8210c6dcf4d56f122fc301f4d90281964f9244ccc206bff584b20"
     },
     {
       "path": "twobyteasr/macos_model_prepare.py",
@@ -7692,8 +7692,8 @@
     },
     {
       "path": "twobyteasr/model_workshop.py",
-      "bytes": 270947,
-      "sha256": "1c71bcf3af4b4198983f2f8872b0f6b8798704f276bbb0666de73801d7585542"
+      "bytes": 271106,
+      "sha256": "4e0946706bf5f8d3c3fde99a5ec6964006f7895c8517406b23e42476f66e9106"
     },
     {
       "path": "twobyteasr/models.py",
@@ -8607,8 +8607,8 @@
     },
     {
       "path": "twobyteasr/studio_shortcuts.py",
-      "bytes": 12783,
-      "sha256": "7c20494f2afa5c645bbcd49010caef9bc0a0643c537990c74029ff26015afe67"
+      "bytes": 13023,
+      "sha256": "4ea522e0f8e5993a9a85024ea3d2483289686f5cd9dcf6f2341fb9a8ffba9440"
     },
     {
       "path": "twobyteasr/studio_speaker_manager.py",
@@ -9136,6 +9136,6 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "e132fda98f284928771e8a7c2e3bf6f77773d275",
+  "prior_private_source": "e0a4994cae658d657705921a90a510837e741c17",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871"
 }
