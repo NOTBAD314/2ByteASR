@@ -1,0 +1,1190 @@
+{
+  "schema_version": 1,
+  "python": {
+    "main": "3.10",
+    "moss": "3.12",
+    "nemotron": "3.12"
+  },
+  "runtime": {
+    "torch": "2.11.0",
+    "torchaudio": "2.11.0",
+    "cuda_wheel": "cu126",
+    "cuda_wheel_modern": "cu128",
+    "setuptools": "80.9.0",
+    "wheel": "0.45.1"
+  },
+  "tools": {
+    "mpv": {
+      "version": "20260814-git-7b8915bc1d",
+      "source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260814/mpv-x86_64-20260814-git-7b8915bc1d.7z",
+      "sha256": "1bf3b029da2c98e605e00e85f21ee3142f22a1dcc4ceb5c827b5c51e36e390f9",
+      "binary_source": "https://github.com/shinchiro/mpv-winbuild-cmake",
+      "upstream": "https://github.com/mpv-player/mpv",
+      "mpv_revision": "7b8915bc1d",
+      "license": "GPL-2.0-or-later (build); bundled libraries retain their own licenses",
+      "purpose": "Subtitle Studio Win32 HWND video and libass preview"
+    }
+  },
+  "sources": {
+    "moss": {
+      "repository": "https://github.com/OpenMOSS/MOSS-Transcribe-Diarize.git",
+      "revision": "eda4b9f13f1574765a80438c9797780a9bd48112",
+      "path": "third_party/MOSS-Transcribe-Diarize",
+      "license": "Apache-2.0"
+    },
+    "firered": {
+      "repository": "https://github.com/FireRedTeam/FireRedASR2S.git",
+      "revision": "4e7d9aaf4482a47cec1724807026b9b151926eb5",
+      "path": "third_party/FireRedASR2S",
+      "license": "Apache-2.0"
+    }
+  },
+  "models": {
+    "moss": {
+      "repository": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+      "revision": "e6d68cdfcddbdad1a7e8454f0cb859cad76e2502",
+      "modelscope_repository": "openmoss/MOSS-Transcribe-Diarize",
+      "modelscope_revision": "master",
+      "path": "models/MOSS-Transcribe-Diarize",
+      "required_files": [
+        "added_tokens.json",
+        "chat_template.jinja",
+        "config.json",
+        "configuration_moss_transcribe_diarize.py",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors.index.json",
+        "Model_Architecture.png",
+        "modeling_moss_transcribe_diarize.py",
+        "preprocessor_config.json",
+        "processing_moss_transcribe_diarize.py",
+        "processor_config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "model-00000-of-00001.safetensors"
+      ],
+      "sha256": {
+        "added_tokens.json": "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680",
+        "chat_template.jinja": "8641466a16b184ebaf7c4903391e607cfd532ab937e81a64120628ab79d827f4",
+        "config.json": "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234",
+        "configuration_moss_transcribe_diarize.py": "b4d12b0f4609af69b61c2fe3aa5fbaf476af22278369e4540745bc47d1d37892",
+        "generation_config.json": "e53a4b3ce4f944230cf1ca8fed0c42f4ff0d8c1443eaf98b5315d987334dd9e4",
+        "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "model.safetensors.index.json": "0345ac5d8f360abe4e9adadb5fecd38e7730052b75f64bb58182818b1544cc36",
+        "Model_Architecture.png": "41d733ca1f4d7cc0dd11e59ffc1c4fb54559572ca920fa536f33c4650d729579",
+        "modeling_moss_transcribe_diarize.py": "1a6f1ea11e187f04ab20d94f44c261dbfa65a17d670dcbb8b552e4a20c52877b",
+        "preprocessor_config.json": "ba2e601484abc80f4cded977f9a4fd4a53175b7d35c2f2511f0cfc3a32ad2499",
+        "processing_moss_transcribe_diarize.py": "6f228d22d9379e2f6a6830b18ce7336b22da8267547e96e65545d871d7f48766",
+        "processor_config.json": "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7",
+        "special_tokens_map.json": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
+        "tokenizer.json": "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb",
+        "tokenizer_config.json": "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5",
+        "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+        "model-00000-of-00001.safetensors": "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/OpenMOSS-Team/MOSS-Transcribe-Diarize/tree/e6d68cdfcddbdad1a7e8454f0cb859cad76e2502?recursive=true",
+        "files": {
+          "added_tokens.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "b54f9135e44c1e81047e8d05cb027af8bc039eed"
+          },
+          "chat_template.jinja": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "9211db1411b2480fd0698b12fb1b34d08449e9f6"
+          },
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "87f0b37e0048e8b10b914cfa0dbfe887f96fab01"
+          },
+          "configuration_moss_transcribe_diarize.py": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "d82c5c6fdfdd408a408c8ad06b8d7149312e32c8"
+          },
+          "generation_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "70fb308092f1563e0d716b7e1933e44ca3ff438c"
+          },
+          "merges.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "model.safetensors.index.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "97047f804b673b7f4192d72823262ea790f32208"
+          },
+          "Model_Architecture.png": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "890411661b2084acfb585407e8630383fd6538a2"
+          },
+          "modeling_moss_transcribe_diarize.py": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "da4670b845bba33415f83973b8f017549f5476ff"
+          },
+          "preprocessor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "c876ba478425fdf8bc1d36b35fa165a151284602"
+          },
+          "processing_moss_transcribe_diarize.py": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "783d899c56b405960b87b9323f09c82ce67acfa5"
+          },
+          "processor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "5a3d630b8cb8387a082a36897413f49011180ba6"
+          },
+          "special_tokens_map.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "ac23c0aaa2434523c494330aeb79c58395378103"
+          },
+          "tokenizer.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb"
+          },
+          "tokenizer_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "f8ef6420f8887c88dc6e100c77f580c462e3b37e"
+          },
+          "vocab.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          },
+          "model-00000-of-00001.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4"
+          }
+        }
+      },
+      "download_bytes": 1833149086
+    },
+    "firered_vad": {
+      "repository": "FireRedTeam/FireRedVAD",
+      "revision": "7990aaccc6b7aec1e527743bd30201f2c4a03b8c",
+      "modelscope_repository": "FireRedTeam/FireRedVAD",
+      "modelscope_revision": "master",
+      "path": "models/FireRedVAD",
+      "required_files": [
+        "VAD/model.pth.tar",
+        "VAD/cmvn.ark"
+      ],
+      "sha256": {
+        "VAD/model.pth.tar": "63f4fb1b00a6b8607c118dd48efc18d5e40d67d99b7bf9aa7a8d61540cf23d71",
+        "VAD/cmvn.ark": "c87f6f13edf0f0ec7535ddfc9cc3387d9268cb234b70182d566c5e2edf3ca473"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/FireRedTeam/FireRedVAD/tree/7990aaccc6b7aec1e527743bd30201f2c4a03b8c?recursive=true",
+        "files": {
+          "VAD/model.pth.tar": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "63f4fb1b00a6b8607c118dd48efc18d5e40d67d99b7bf9aa7a8d61540cf23d71"
+          },
+          "VAD/cmvn.ark": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "5b21592ae056b8b11ae23074542a175cdf8160a4"
+          }
+        }
+      },
+      "download_bytes": 2369360
+    },
+    "firered_aed": {
+      "repository": "FireRedTeam/FireRedASR2-AED",
+      "revision": "2304afed56eacfee6256dee5937ed22ffa0b64ec",
+      "modelscope_repository": "FireRedTeam/FireRedASR2-AED",
+      "modelscope_revision": "master",
+      "path": "models/FireRedASR2-AED",
+      "required_files": [
+        "model.pth.tar",
+        "cmvn.ark",
+        "dict.txt",
+        "train_bpe1000.model"
+      ],
+      "sha256": {
+        "model.pth.tar": "4677cbd30988d63ed3e777f6a42a1e5260a3865317f6e15e488bef40954f7054",
+        "cmvn.ark": "6efba6105429d1630c05d818d956bfe4edfad37a04b3b27bb5a029b9adb37945",
+        "dict.txt": "1bc613de2112d257e61a349c3e72d1b1a9cf19c33d3ca954197ad2171e5ea07b",
+        "train_bpe1000.model": "473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/FireRedTeam/FireRedASR2-AED/tree/2304afed56eacfee6256dee5937ed22ffa0b64ec?recursive=true",
+        "files": {
+          "model.pth.tar": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "4677cbd30988d63ed3e777f6a42a1e5260a3865317f6e15e488bef40954f7054"
+          },
+          "cmvn.ark": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "e26b4a310132492d05bfdd506ab3f6bbf89d9059"
+          },
+          "dict.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "50ac9cbd43d638b58f875e90b118ad8c9be51718"
+          },
+          "train_bpe1000.model": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07"
+          }
+        }
+      },
+      "download_bytes": 4731890696
+    },
+    "qwen_asr": {
+      "repository": "Qwen/Qwen3-ASR-1.7B",
+      "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+      "modelscope_repository": "Qwen/Qwen3-ASR-1.7B",
+      "modelscope_revision": "master",
+      "path": "models/Qwen3-ASR-1.7B",
+      "required_files": [
+        "config.json",
+        "model.safetensors.index.json",
+        "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors",
+        "chat_template.json",
+        "generation_config.json",
+        "merges.txt",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "sha256": {
+        "config.json": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f",
+        "model.safetensors.index.json": "f994739fe38e5210b9e3e8ce6c6307315e2ceac3cb630e7b7414d69dce520f60",
+        "model-00001-of-00002.safetensors": "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6",
+        "model-00002-of-00002.safetensors": "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc",
+        "chat_template.json": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff",
+        "generation_config.json": "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c",
+        "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "preprocessor_config.json": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d",
+        "tokenizer_config.json": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c",
+        "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/Qwen/Qwen3-ASR-1.7B/tree/7278e1e70fe206f11671096ffdd38061171dd6e5?recursive=true",
+        "files": {
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "2bc16c9d4ca08963715cfb94d879799b9adbd0e9"
+          },
+          "model.safetensors.index.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "1048a4eb4f21fef9aea06d8568a784b2b5595689"
+          },
+          "model-00001-of-00002.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6"
+          },
+          "model-00002-of-00002.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc"
+          },
+          "chat_template.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "c44736493efd71ec96218cc626904698cdb13235"
+          },
+          "generation_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "7382a4d347c0a865b76bb1b8277f66a5ac312854"
+          },
+          "merges.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "preprocessor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "8f7f07346466d5d494ec0d4969d1c3d0190eed72"
+          },
+          "tokenizer_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "b93109843922a40c6654c5449d3bf95372267c66"
+          },
+          "vocab.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          }
+        }
+      },
+      "download_bytes": 4703055333
+    },
+    "qwen_aligner": {
+      "repository": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "revision": "c7cbfc2048c462b0d63a45797104fc9db3ad62b7",
+      "modelscope_repository": "Qwen/Qwen3-ForcedAligner-0.6B",
+      "modelscope_revision": "master",
+      "path": "models/Qwen3-ForcedAligner-0.6B",
+      "required_files": [
+        "chat_template.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "sha256": {
+        "model.safetensors": "47831d0e82f96b20e9034dba01a075ee06436654719f6a68289e49f1b65ce0e7",
+        "chat_template.json": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff",
+        "config.json": "d616c65d46c4b90bdc651b0a0963ea932732241140f337f9bb6b0335a9c8ef09",
+        "generation_config.json": "948d089b23bca1d214e768d59c4438365665f52ec6d33678f4062206b3fbbb8c",
+        "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "preprocessor_config.json": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d",
+        "tokenizer_config.json": "3ab80063f8511deb9566e6ad438d17b7a6277fcffd52d92854112f19d36bd81c",
+        "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/Qwen/Qwen3-ForcedAligner-0.6B/tree/c7cbfc2048c462b0d63a45797104fc9db3ad62b7?recursive=true",
+        "files": {
+          "chat_template.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "c44736493efd71ec96218cc626904698cdb13235"
+          },
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "7b9883fe52d0ba896773687a7fdad38eacab062d"
+          },
+          "generation_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "b0a540032cf7b6b5ba1438d04ab69b7e787d9b8e"
+          },
+          "merges.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "model.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "47831d0e82f96b20e9034dba01a075ee06436654719f6a68289e49f1b65ce0e7"
+          },
+          "preprocessor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "8f7f07346466d5d494ec0d4969d1c3d0190eed72"
+          },
+          "tokenizer_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "3df92df83b22342e36a7b11cf9a70de2a2996bec"
+          },
+          "vocab.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          }
+        }
+      },
+      "download_bytes": 1840013484
+    },
+    "whisper_turbo": {
+      "repository": "openai/whisper-large-v3-turbo",
+      "revision": "41f01f3fe87f28c78e2fbf8b568835947dd65ed9",
+      "modelscope_repository": "openai-mirror/whisper-large-v3-turbo",
+      "modelscope_revision": "master",
+      "path": "models/Whisper-large-v3-turbo",
+      "required_files": [
+        "added_tokens.json",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "normalizer.json",
+        "preprocessor_config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "sha256": {
+        "model.safetensors": "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1",
+        "added_tokens.json": "3c51f66c4c21f9e126970078f11ae77a78c74aee8df606ee9daba86e467108e0",
+        "config.json": "c5b526b3e3cd64cd8940dabb45e8ba726629e22d8ed389c29b552f9140daf04a",
+        "generation_config.json": "cce11bfe3aaa6ae9e072ea2637caaec8795e68d9b67e655a5af16ee509681a4c",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "normalizer.json": "bf1c507dc8724ca9cf9903640dacfb69dae2f00edee4f21ceba106a7392f26dd",
+        "preprocessor_config.json": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+        "special_tokens_map.json": "baea4ea09372eb4fca86b4e4346139fd73cb807d5087e9de0948e971739c3e74",
+        "tokenizer.json": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+        "tokenizer_config.json": "844b642c73a91359722f47b35705f7174686df33d252695d8572cf9ac03a6389",
+        "vocab.json": "e2aa043ef015641d363d8288e7c241c85e36a5c761fb303598e0710233344387"
+      },
+      "license": "MIT",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/openai/whisper-large-v3-turbo/tree/41f01f3fe87f28c78e2fbf8b568835947dd65ed9?recursive=true",
+        "files": {
+          "added_tokens.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "1b33526d33aaa60d79f78ae8651dae50b730185a"
+          },
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "ad2f44ff1ed66e12765b2392dc041469db91a462"
+          },
+          "generation_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "cbe752958dc3e4671b0e0220aa1c545423a6d5f5"
+          },
+          "merges.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "6038932a2a1f09a66991b1c2adae0d14066fa29e"
+          },
+          "model.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1"
+          },
+          "normalizer.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "dd6ae819ad738ac1a546e9f9282ef325c33b9ea0"
+          },
+          "preprocessor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "931c77a740890c46365c7ae0c9d350ba3cca908f"
+          },
+          "special_tokens_map.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "312bc106291bb51bf2cc1648df070bef963a0639"
+          },
+          "tokenizer.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "17456db595adc78a973f97d69d8cb50bc87c0b1c"
+          },
+          "tokenizer_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "06ffdc8308eae6bb7bd1fdd81e94b0a881a539ab"
+          },
+          "vocab.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "0f3456460629e21d559c6daa23ab6ce3644e8271"
+          }
+        }
+      },
+      "download_bytes": 1622443339
+    },
+    "sensevoice": {
+      "repository": "FunAudioLLM/SenseVoiceSmall",
+      "revision": "3847d57b6bdf2dd8875cb1508d2af43d80a16bf7",
+      "modelscope_repository": "iic/SenseVoiceSmall",
+      "modelscope_revision": "master",
+      "path": "models/SenseVoiceSmall",
+      "required_files": [
+        "am.mvn",
+        "chn_jpn_yue_eng_ko_spectok.bpe.model",
+        "config.yaml",
+        "configuration.json",
+        "model.pt"
+      ],
+      "sha256": {
+        "chn_jpn_yue_eng_ko_spectok.bpe.model": "aa87f86064c3730d799ddf7af3c04659151102cba548bce325cf06ba4da4e6a8",
+        "model.pt": "833ca2dcfdf8ec91bd4f31cfac36d6124e0c459074d5e909aec9cabe6204a3ea",
+        "am.mvn": "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5",
+        "config.yaml": "f71e239ba36705564b5bf2d2ffd07eece07b8e3f2bbf6d2c99d8df856339ac19",
+        "configuration.json": "02810a7f8e9e8aee10370a265f7e799728ce25b4c00cdbf4602b303ee395a38e"
+      },
+      "license": "FunAudioLLM Research License",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/FunAudioLLM/SenseVoiceSmall/tree/3847d57b6bdf2dd8875cb1508d2af43d80a16bf7?recursive=true",
+        "files": {
+          "am.mvn": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "681910cd1ab6458b61474cdbf0d1ac5e810f7b0d"
+          },
+          "chn_jpn_yue_eng_ko_spectok.bpe.model": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "aa87f86064c3730d799ddf7af3c04659151102cba548bce325cf06ba4da4e6a8"
+          },
+          "config.yaml": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "26bb9d3d20a09ff389c1ddb24865771d2312fc0f"
+          },
+          "configuration.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "264d8171d2d6bfebf3c48d04bd325b34d9be1d9a"
+          },
+          "model.pt": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "833ca2dcfdf8ec91bd4f31cfac36d6124e0c459074d5e909aec9cabe6204a3ea"
+          }
+        }
+      },
+      "download_bytes": 936682164
+    },
+    "paraformer": {
+      "repository": "funasr/paraformer-zh",
+      "revision": "d7811ee3ac581fbcfdeb37c98c6ba674028433dc",
+      "modelscope_repository": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+      "modelscope_revision": "master",
+      "path": "models/Paraformer-zh",
+      "required_files": [
+        "am.mvn",
+        "config.yaml",
+        "configuration.json",
+        "model.pt",
+        "seg_dict",
+        "tokens.json"
+      ],
+      "sha256": {
+        "model.pt": "5bba782a5e9196166233b9ab12ba04cadff9ef9212b4ff6153ed9290ff679025",
+        "am.mvn": "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5",
+        "config.yaml": "bfd424b9f61846aac63591e96fe24d66b35f4643bddcb4b9bb759db8f987ab79",
+        "configuration.json": "b7d2917954fc547e43ad61486a5248596738cf5909907eade11e71c56f446f34",
+        "seg_dict": "59a2ef803a3f1648ad03a2e1480db1c1ee0c0d7dc4ef4dbd16cea33944329022",
+        "tokens.json": "2b20c2b12572d682afff84ce1c8d560f67b8b32a4c1f21567411d141ed352127"
+      },
+      "license": "MIT",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/funasr/paraformer-zh/tree/d7811ee3ac581fbcfdeb37c98c6ba674028433dc?recursive=true",
+        "files": {
+          "am.mvn": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "681910cd1ab6458b61474cdbf0d1ac5e810f7b0d"
+          },
+          "config.yaml": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "c0a9f403c8e62017afcd765e13006617f3e43471"
+          },
+          "configuration.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "6f77310bef84268f6c82ca0adf36a43d695a50ea"
+          },
+          "model.pt": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "5bba782a5e9196166233b9ab12ba04cadff9ef9212b4ff6153ed9290ff679025"
+          },
+          "seg_dict": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "fb19e07f2870b09b08226a42d7d5d6d26a3f3a16"
+          },
+          "tokens.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "f8bc9c31ab1ba458aee5423fa24164958153f923"
+          }
+        }
+      },
+      "download_bytes": 888897706
+    },
+    "funasr_nano": {
+      "repository": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "revision": "272c57b82523ada6fd87095e955f8e29100979ab",
+      "source_manifests": {
+        "modelscope": {
+          "compatible": false,
+          "reason": "ModelScope master 的 model.pt 与锁定的 HF revision 不同，且未提供对应发布标签；跳过以避免下载错误版本。"
+        }
+      },
+      "modelscope_repository": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "modelscope_revision": "master",
+      "path": "models/Fun-ASR-Nano-2512",
+      "required_files": [
+        "Qwen3-0.6B/config.json",
+        "Qwen3-0.6B/generation_config.json",
+        "Qwen3-0.6B/merges.txt",
+        "Qwen3-0.6B/tokenizer.json",
+        "Qwen3-0.6B/tokenizer_config.json",
+        "Qwen3-0.6B/vocab.json",
+        "config.yaml",
+        "configuration.json",
+        "model.pt",
+        "multilingual.tiktoken"
+      ],
+      "sha256": {
+        "Qwen3-0.6B/config.json": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+        "Qwen3-0.6B/generation_config.json": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2",
+        "Qwen3-0.6B/tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+        "Qwen3-0.6B/tokenizer_config.json": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+        "Qwen3-0.6B/vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+        "configuration.json": "b64a3a55d35bcbe2cf4d31f2d3ef25a423d3ba2ebff203298c27fa055f3c7612",
+        "model.pt": "55ae0d2fee369f0f11cce0795f6927934ad17cf11b278a7e56a51272074160bb",
+        "Qwen3-0.6B/merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "config.yaml": "daed38ea6484f5650fb32cbd9069b9aa13880acaf2bcb1f0bf4be2712837917c",
+        "multilingual.tiktoken": "747979631e813193436aabcff7c1c235d37de8097b71c563ec8b63b7a515c718"
+      },
+      "license": "FunAudioLLM Research License",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/FunAudioLLM/Fun-ASR-Nano-2512/tree/272c57b82523ada6fd87095e955f8e29100979ab?recursive=true",
+        "files": {
+          "Qwen3-0.6B/config.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd"
+          },
+          "Qwen3-0.6B/generation_config.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2"
+          },
+          "Qwen3-0.6B/merges.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "Qwen3-0.6B/tokenizer.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+          },
+          "Qwen3-0.6B/tokenizer_config.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+          },
+          "Qwen3-0.6B/vocab.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+          },
+          "config.yaml": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "1fb7aa3cff4496048cc80d1906c82e0ca5572ac1"
+          },
+          "configuration.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "b64a3a55d35bcbe2cf4d31f2d3ef25a423d3ba2ebff203298c27fa055f3c7612"
+          },
+          "model.pt": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "55ae0d2fee369f0f11cce0795f6927934ad17cf11b278a7e56a51272074160bb"
+          },
+          "multilingual.tiktoken": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "ac47fe685d24565030965a94c0d98e00e0331eaa"
+          }
+        }
+      },
+      "download_bytes": 1987942401
+    },
+    "firered_llm": {
+      "repository": "FireRedTeam/FireRedASR2-LLM",
+      "revision": "2c5e0f415b9afb8f67cb8b00ea4c54959f70e824",
+      "modelscope_repository": "xukaituo/FireRedASR2-LLM",
+      "modelscope_revision": "master",
+      "path": "models/FireRedASR2-LLM",
+      "required_files": [
+        "Qwen2-7B-Instruct/config.json",
+        "Qwen2-7B-Instruct/generation_config.json",
+        "Qwen2-7B-Instruct/merges.txt",
+        "Qwen2-7B-Instruct/model-00001-of-00004.safetensors",
+        "Qwen2-7B-Instruct/model-00002-of-00004.safetensors",
+        "Qwen2-7B-Instruct/model-00003-of-00004.safetensors",
+        "Qwen2-7B-Instruct/model-00004-of-00004.safetensors",
+        "Qwen2-7B-Instruct/model.safetensors.index.json",
+        "Qwen2-7B-Instruct/tokenizer.json",
+        "Qwen2-7B-Instruct/tokenizer_config.json",
+        "Qwen2-7B-Instruct/vocab.json",
+        "asr_encoder.pth.tar",
+        "cmvn.ark",
+        "dict.txt",
+        "model.pth.tar",
+        "train_bpe1000.model"
+      ],
+      "download_bytes": 18870832417,
+      "runtime_environment": ".venv-firered-llm",
+      "source_manifests": {
+        "hf": {
+          "repository": "FireRedTeam/FireRedASR2-LLM",
+          "revision": "2c5e0f415b9afb8f67cb8b00ea4c54959f70e824",
+          "files": [
+            "Qwen2-7B-Instruct/config.json",
+            "Qwen2-7B-Instruct/generation_config.json",
+            "Qwen2-7B-Instruct/merges.txt",
+            "Qwen2-7B-Instruct/model-00001-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model-00002-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model-00003-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model-00004-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model.safetensors.index.json",
+            "Qwen2-7B-Instruct/tokenizer.json",
+            "Qwen2-7B-Instruct/tokenizer_config.json",
+            "Qwen2-7B-Instruct/vocab.json",
+            "asr_encoder.pth.tar",
+            "cmvn.ark",
+            "dict.txt",
+            "model.pth.tar",
+            "train_bpe1000.model"
+          ],
+          "sha256": {
+            "Qwen2-7B-Instruct/config.json": "8b9a4f6c0acf4854a2d301616d4203039c3d7972cb0a557dae98686b6c3ae4b2",
+            "Qwen2-7B-Instruct/generation_config.json": "3a8f9087e486054c8a4a08dae2e5a3ba62e23da212b5b8c08bc42cb983c3459f",
+            "Qwen2-7B-Instruct/tokenizer_config.json": "be21acaf90e7f449b7282fdef7b06516a0102476e86cbc2108e18ac071f9cc9c",
+            "asr_encoder.pth.tar": "6cfa83b4d692c0ac8b61a767fc4253a6350c11e1edcdf6418d040b41240b900e",
+            "cmvn.ark": "6efba6105429d1630c05d818d956bfe4edfad37a04b3b27bb5a029b9adb37945",
+            "dict.txt": "1bc613de2112d257e61a349c3e72d1b1a9cf19c33d3ca954197ad2171e5ea07b",
+            "train_bpe1000.model": "473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07"
+          }
+        },
+        "modelscope": {
+          "repository": "xukaituo/FireRedASR2-LLM",
+          "revision": "master",
+          "files": [
+            "Qwen2-7B-Instruct/config.json",
+            "Qwen2-7B-Instruct/generation_config.json",
+            "Qwen2-7B-Instruct/merges.txt",
+            "Qwen2-7B-Instruct/model-00001-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model-00002-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model-00003-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model-00004-of-00004.safetensors",
+            "Qwen2-7B-Instruct/model.safetensors.index.json",
+            "Qwen2-7B-Instruct/tokenizer.json",
+            "Qwen2-7B-Instruct/tokenizer_config.json",
+            "Qwen2-7B-Instruct/vocab.json",
+            "asr_encoder.pth.tar",
+            "cmvn.ark",
+            "dict.txt",
+            "model.pth.tar",
+            "train_bpe1000.model"
+          ],
+          "sha256": {
+            "Qwen2-7B-Instruct/config.json": "8b9a4f6c0acf4854a2d301616d4203039c3d7972cb0a557dae98686b6c3ae4b2",
+            "asr_encoder.pth.tar": "6cfa83b4d692c0ac8b61a767fc4253a6350c11e1edcdf6418d040b41240b900e"
+          }
+        }
+      },
+      "license": "Apache-2.0",
+      "sha256": {
+        "Qwen2-7B-Instruct/config.json": "8b9a4f6c0acf4854a2d301616d4203039c3d7972cb0a557dae98686b6c3ae4b2",
+        "Qwen2-7B-Instruct/generation_config.json": "3a8f9087e486054c8a4a08dae2e5a3ba62e23da212b5b8c08bc42cb983c3459f",
+        "Qwen2-7B-Instruct/merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+        "Qwen2-7B-Instruct/model-00001-of-00004.safetensors": "26d9919262ccd063fcdfd926763fe9025ef1e3073767aaa8c83a375d7c5140c4",
+        "Qwen2-7B-Instruct/model-00002-of-00004.safetensors": "f5bb99fdadcac55c2c176497ec99f088a1764e78ed986fa4a0d45d12426ef0fa",
+        "Qwen2-7B-Instruct/model-00003-of-00004.safetensors": "0b749a4446d7cda007d5e7bd9f908849d08d89867192d4c039dc167e9ab5a02e",
+        "Qwen2-7B-Instruct/model-00004-of-00004.safetensors": "da724bb7d3c3512eb371aa6caa5bcc08d78bda84f94e00ae9a9b2124e3e9c62f",
+        "Qwen2-7B-Instruct/model.safetensors.index.json": "f00d17cbf433746c391ad43948613e373aa51222dbee3b0db61ffff59a74bb1a",
+        "Qwen2-7B-Instruct/tokenizer.json": "f7c9b2dba4a296b1aa76c16a34b8225c0c118978400d4bb66bff0902d702f5b8",
+        "Qwen2-7B-Instruct/tokenizer_config.json": "be21acaf90e7f449b7282fdef7b06516a0102476e86cbc2108e18ac071f9cc9c",
+        "Qwen2-7B-Instruct/vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+        "asr_encoder.pth.tar": "6cfa83b4d692c0ac8b61a767fc4253a6350c11e1edcdf6418d040b41240b900e",
+        "cmvn.ark": "6efba6105429d1630c05d818d956bfe4edfad37a04b3b27bb5a029b9adb37945",
+        "dict.txt": "1bc613de2112d257e61a349c3e72d1b1a9cf19c33d3ca954197ad2171e5ea07b",
+        "model.pth.tar": "6ebd76ce1799e72c3180cf73eca036fee338630a95c0069361ea91c894544bcd",
+        "train_bpe1000.model": "473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07"
+      },
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/FireRedTeam/FireRedASR2-LLM/tree/2c5e0f415b9afb8f67cb8b00ea4c54959f70e824?recursive=true",
+        "files": {
+          "Qwen2-7B-Instruct/config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "ae681edbd9486961e27d023f91d97b15562da7a9"
+          },
+          "Qwen2-7B-Instruct/generation_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "0eb3c536657dcd12626e09eca4b6198c0cbcde1e"
+          },
+          "Qwen2-7B-Instruct/merges.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "20024bfe7c83998e9aeaf98a0cd6a2ce6306c2f0"
+          },
+          "Qwen2-7B-Instruct/model-00001-of-00004.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "26d9919262ccd063fcdfd926763fe9025ef1e3073767aaa8c83a375d7c5140c4"
+          },
+          "Qwen2-7B-Instruct/model-00002-of-00004.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "f5bb99fdadcac55c2c176497ec99f088a1764e78ed986fa4a0d45d12426ef0fa"
+          },
+          "Qwen2-7B-Instruct/model-00003-of-00004.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "0b749a4446d7cda007d5e7bd9f908849d08d89867192d4c039dc167e9ab5a02e"
+          },
+          "Qwen2-7B-Instruct/model-00004-of-00004.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "da724bb7d3c3512eb371aa6caa5bcc08d78bda84f94e00ae9a9b2124e3e9c62f"
+          },
+          "Qwen2-7B-Instruct/model.safetensors.index.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "4bf699d11c6478a4b70fc2adfb405429de22525f"
+          },
+          "Qwen2-7B-Instruct/tokenizer.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "33ea6c72ebb92a237fa2bdf26c5ff16592efcdae"
+          },
+          "Qwen2-7B-Instruct/tokenizer_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "428f5926b8d79604d999b20b3bea98f5d4225a21"
+          },
+          "Qwen2-7B-Instruct/vocab.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          },
+          "asr_encoder.pth.tar": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "6cfa83b4d692c0ac8b61a767fc4253a6350c11e1edcdf6418d040b41240b900e"
+          },
+          "cmvn.ark": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "e26b4a310132492d05bfdd506ab3f6bbf89d9059"
+          },
+          "dict.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "50ac9cbd43d638b58f875e90b118ad8c9be51718"
+          },
+          "model.pth.tar": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "6ebd76ce1799e72c3180cf73eca036fee338630a95c0069361ea91c894544bcd"
+          },
+          "train_bpe1000.model": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07"
+          }
+        }
+      }
+    },
+    "glm_asr_nano": {
+      "repository": "zai-org/GLM-ASR-Nano-2512",
+      "revision": "61ba4e0b3309b6656edea3e93e419f7bd5c61957",
+      "modelscope_repository": "ZhipuAI/GLM-ASR-Nano-2512",
+      "modelscope_revision": "master",
+      "path": "models/GLM-ASR-Nano-2512",
+      "required_files": [
+        "chat_template.jinja",
+        "config.json",
+        "generation_config.json",
+        "model.safetensors",
+        "processor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ],
+      "download_bytes": 4522615511,
+      "runtime_environment": ".venv-glm-asr",
+      "license": "MIT",
+      "sha256": {
+        "chat_template.jinja": "47effbd6fb4c9dc4b0e813ed19254a3440b744f838e60cfdc47491be83a56301",
+        "config.json": "5e410db9ee1000a87e0b0e7bf6c5d91b313887c28f769ace68a07da66613c4c9",
+        "generation_config.json": "b703d7ad51784a4b8b7a4ab95f54c166f12e18d88ceb7a8cd307591d7694af17",
+        "model.safetensors": "b8af83ccf6b34dfc7921cedcc46d4a6dc6aaffa661b8f71b44e3a2ff60a90a91",
+        "processor_config.json": "418d55d2f3025f9428c4e23465f1fdef7ad1734f0b595602b395e76c38dadb9b",
+        "tokenizer.json": "6a3ea16b7964ccb586b8ef90b3044470c79a4a7b41968546347de3c04ed3b6eb",
+        "tokenizer_config.json": "85b10ec24534c28dbf66e9e03a991f780d6e990aa94f352ab28b8ea8ca5831b7"
+      },
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/zai-org/GLM-ASR-Nano-2512/tree/61ba4e0b3309b6656edea3e93e419f7bd5c61957?recursive=true",
+        "files": {
+          "chat_template.jinja": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "bdfbaeaa3367f3f9286e98f8d10e4d1ad3999f27"
+          },
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "80b26f1e3b74d791167a22f2906b919851a14a33"
+          },
+          "generation_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "6699bc9590215aa4b2e5376b9ffe131a3cee0fa8"
+          },
+          "model.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "b8af83ccf6b34dfc7921cedcc46d4a6dc6aaffa661b8f71b44e3a2ff60a90a91"
+          },
+          "processor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "4c1ae714967f9a01e4752d4348e8c1af8d87a0b2"
+          },
+          "tokenizer.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "b72f393a35edc2aef432b9e2cb0e543464858ff5"
+          },
+          "tokenizer_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "2c3931cfc0a95873865841031c48129f684251f2"
+          }
+        }
+      }
+    },
+    "canary_qwen": {
+      "repository": "nvidia/canary-qwen-2.5b",
+      "revision": "b1469e1bba1cfe140205529c79c434ca47180960",
+      "modelscope_repository": "nv-community/canary-qwen-2.5b",
+      "modelscope_revision": "master",
+      "path": "models/canary-qwen-2.5b",
+      "required_files": [
+        "config.json",
+        "model.safetensors"
+      ],
+      "download_bytes": 5119123006,
+      "runtime_environment": ".venv-canary-qwen",
+      "license": "CC-BY-4.0",
+      "sha256": {
+        "config.json": "37d15b0445fade873944c9b0cda7221953ec2207169cb6488a3a57d90e629d52",
+        "model.safetensors": "800cb0d099cf655a8887d8b741c3a4afa9891e2b2949870251c4d58c72b59175"
+      },
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/nvidia/canary-qwen-2.5b/tree/b1469e1bba1cfe140205529c79c434ca47180960?recursive=true",
+        "files": {
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "af60039c3d20c4314762dc636bc7abfc61372edc"
+          },
+          "model.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "800cb0d099cf655a8887d8b741c3a4afa9891e2b2949870251c4d58c72b59175"
+          }
+        }
+      },
+      "required_models": [
+        "canary_qwen_tokenizer"
+      ]
+    },
+    "omni_asr_llm_7b": {
+      "repository": "facebook/omniASR-LLM-7B",
+      "revision": "4b0bada258b398cb7e6c5b3a6ed5448fb914385b",
+      "modelscope_repository": "facebook/omniASR-LLM-7B",
+      "modelscope_revision": "master",
+      "path": "models/omniASR-LLM-7B",
+      "required_files": [
+        "omniASR-LLM-7B.pt",
+        "omniASR_tokenizer_v7.model"
+      ],
+      "download_bytes": 31205174710,
+      "runtime_environment": ".venv-omni-asr",
+      "license": "Apache-2.0",
+      "sha256": {
+        "omniASR-LLM-7B.pt": "2dd335727bf1cdb8910e824b456d77a6c2cad4d8994d48bef5ce5193cf846d72",
+        "omniASR_tokenizer_v7.model": "52f25c7e63b4cb0b27e7fedac9ac79b913a19a815656e5cafa99310ce911e165"
+      },
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/facebook/omniASR-LLM-7B/tree/4b0bada258b398cb7e6c5b3a6ed5448fb914385b?recursive=true",
+        "files": {
+          "omniASR-LLM-7B.pt": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "2dd335727bf1cdb8910e824b456d77a6c2cad4d8994d48bef5ce5193cf846d72"
+          },
+          "omniASR_tokenizer_v7.model": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "52f25c7e63b4cb0b27e7fedac9ac79b913a19a815656e5cafa99310ce911e165"
+          }
+        }
+      }
+    },
+    "speaker_embedding": {
+      "repository": "speechbrain/spkrec-ecapa-voxceleb",
+      "revision": "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286",
+      "modelscope_repository": "speechbrain/spkrec-ecapa-voxceleb",
+      "modelscope_revision": "master",
+      "path": "models/spkrec-ecapa-voxceleb",
+      "required_files": [
+        "hyperparams.yaml",
+        "embedding_model.ckpt",
+        "mean_var_norm_emb.ckpt",
+        "classifier.ckpt",
+        "label_encoder.txt"
+      ],
+      "sha256": {
+        "hyperparams.yaml": "6f78854fa04ba59e761437b76a2575d3aba5e5016de3e9b69f0c9a5077fb1a41",
+        "embedding_model.ckpt": "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2",
+        "mean_var_norm_emb.ckpt": "cd70225b05b37be64fc5a95e24395d804231d43f74b2e1e5a513db7b69b34c33",
+        "classifier.ckpt": "fd9e3634fe68bd0a427c95e354c0c677374f62b3f434e45b78599950d860d535",
+        "label_encoder.txt": "e13c3a167bb4112685670ee896d20e2b565af16b3a4ceeaa8689fa4d22adb8b9"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/speechbrain/spkrec-ecapa-voxceleb/tree/0f99f2d0ebe89ac095bcc5903c4dd8f72b367286?recursive=true",
+        "files": {
+          "hyperparams.yaml": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "70e4cd0beb74ca08a2df9de6bd79d938670a4d15"
+          },
+          "embedding_model.ckpt": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2"
+          },
+          "mean_var_norm_emb.ckpt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "1978c5e7f20d5ffd14c8a932a7e85a09816f3da9"
+          },
+          "classifier.ckpt": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "fd9e3634fe68bd0a427c95e354c0c677374f62b3f434e45b78599950d860d535"
+          },
+          "label_encoder.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "72c6fa7b170cbfd169df5e09326cd97febdf086a"
+          }
+        }
+      },
+      "download_bytes": 88983473
+    },
+    "nemotron": {
+      "repository": "nvidia/Nemotron-3-Diarization",
+      "revision": "f667ed73aee57d40cc39428eb768b4fd87a0a29e",
+      "path": "models/Nemotron-3-Diarization",
+      "runtime_environment": ".venv-nemotron",
+      "required_files": [
+        "config.json",
+        "processor_config.json",
+        "model.safetensors"
+      ],
+      "size_bytes": 396956673,
+      "sha256": {
+        "config.json": "dd795ec07ffa09acf18d231aa3fa8642aa5c521760953754e02559a7413b6873",
+        "processor_config.json": "91726746788a024a2f0f2f699a6c3667f0d74e6a0e9288fc44fe3018e23af68e",
+        "model.safetensors": "c074d86335b3b794f8fa5edc25594558f128bdb3914d27806a3a5a2e44963cb6"
+      },
+      "license": "OpenMDW-1.1",
+      "download_bytes": 396956673,
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/nvidia/Nemotron-3-Diarization/tree/f667ed73aee57d40cc39428eb768b4fd87a0a29e?recursive=true",
+        "files": {
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "d09665951c8d48abe9c74626cd39fbfd615297fe"
+          },
+          "processor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "5779fbbbb8401983be84e0b4f09a236ad8227dfe"
+          },
+          "model.safetensors": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "c074d86335b3b794f8fa5edc25594558f128bdb3914d27806a3a5a2e44963cb6"
+          }
+        }
+      }
+    },
+    "canary_qwen_tokenizer": {
+      "repository": "Qwen/Qwen3-1.7B",
+      "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+      "path": "models/Canary-Qwen3-Tokenizer",
+      "required_files": [
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ],
+      "sha256": {
+        "config.json": "1ddb5b89ebc90dcb417a45c213d818577e65976454d29385c8f6140771d95197",
+        "generation_config.json": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2",
+        "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+        "tokenizer_config.json": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101",
+        "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      "download_bytes": 15882037,
+      "runtime_environment": ".venv-canary",
+      "resource_only": true,
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/Qwen/Qwen3-1.7B/tree/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e?recursive=true",
+        "files": {
+          "config.json": {
+            "method": "SHA256 of content verified against upstream Git blob SHA1",
+            "upstream_oid": "044a86ecf7cb32238f3fae4184e55d354787edec"
+          },
+          "generation_config.json": {
+            "method": "SHA256 of content verified against upstream Git blob SHA1",
+            "upstream_oid": "20a8a9156fc8c3f25295ca067f61fdf120d517c5"
+          },
+          "merges.txt": {
+            "method": "SHA256 of content verified against upstream Git blob SHA1",
+            "upstream_oid": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "tokenizer.json": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+          },
+          "tokenizer_config.json": {
+            "method": "SHA256 of content verified against upstream Git blob SHA1",
+            "upstream_oid": "417d038a63fa3de29cfde265caedae14d1a58d92"
+          },
+          "vocab.json": {
+            "method": "SHA256 of content verified against upstream Git blob SHA1",
+            "upstream_oid": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          }
+        }
+      }
+    }
+  },
+  "environments": {
+    "canary": {
+      "python": "3.12",
+      "torch": "2.11.0",
+      "torchaudio": "2.11.0",
+      "packages": {
+        "nemo_toolkit[asr]": "3.0.0",
+        "peft": "0.18.0",
+        "sacrebleu": "2.5.1",
+        "seaborn": "0.13.2",
+        "transformers": "4.57.1",
+        "huggingface_hub": "0.36.2",
+        "tokenizers": "0.22.2",
+        "safetensors": "0.8.0",
+        "librosa": "0.11.0",
+        "soundfile": "0.14.0"
+      }
+    },
+    "glm_asr": {
+      "python": "3.12",
+      "torch": "2.11.0",
+      "torchaudio": "2.11.0",
+      "packages": {
+        "transformers": "5.14.1",
+        "huggingface_hub": "1.24.0",
+        "tokenizers": "0.22.2",
+        "safetensors": "0.8.0",
+        "librosa": "0.11.0",
+        "soundfile": "0.14.0"
+      }
+    },
+    "main": {
+      "python": "3.10",
+      "torch": "2.11.0",
+      "torchaudio": "2.11.0",
+      "packages": {
+        "psutil": "7.2.2",
+        "transformers": "4.57.6",
+        "huggingface_hub": "0.36.2",
+        "tokenizers": "0.22.2",
+        "safetensors": "0.8.0",
+        "soundfile": "0.14.0",
+        "kaldiio": "2.18.1",
+        "kaldi_native_fbank": "1.22.3",
+        "textgrid": "1.6.1"
+      }
+    },
+    "moss": {
+      "python": "3.12",
+      "torch": "2.11.0",
+      "torchaudio": "2.11.0",
+      "packages": {
+        "transformers": "5.14.1",
+        "huggingface_hub": "1.24.0",
+        "tokenizers": "0.22.2",
+        "safetensors": "0.8.0"
+      }
+    },
+    "firered_llm": {
+      "python": "3.10",
+      "torch": "2.11.0",
+      "torchaudio": "2.11.0",
+      "packages": {
+        "transformers": "4.57.6",
+        "huggingface_hub": "0.36.2",
+        "tokenizers": "0.22.2",
+        "safetensors": "0.8.0",
+        "accelerate": "1.12.0",
+        "peft": "0.18.0",
+        "kaldiio": "2.18.1",
+        "kaldi_native_fbank": "1.22.3",
+        "numpy": "2.2.6",
+        "sentencepiece": "0.2.2",
+        "soundfile": "0.14.0"
+      }
+    },
+    "nemotron": {
+      "python": "3.12",
+      "torch": "2.11.0",
+      "torchaudio": "2.11.0",
+      "packages": {
+        "transformers": "5.18.0.dev0",
+        "huggingface_hub": "1.32.0",
+        "tokenizers": "0.23.1",
+        "safetensors": "0.8.0",
+        "librosa": "0.11.0",
+        "numpy": "2.2.6",
+        "soundfile": "0.13.1",
+        "requests": "2.32.5"
+      },
+      "package_sources": {
+        "transformers": "https://github.com/huggingface/transformers/archive/4b28d51d0d5f17ec20c23a187d0475a8e68810c8.zip"
+      },
+      "bootstrap": {
+        "uv_version": "0.11.7",
+        "uv_url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip",
+        "uv_sha256": "fe0c7815acf4fc45f8a5eff58ed3cf7ae2e15c3cf1dceadbd10c816ec1690cc1",
+        "python_version": "3.12.13",
+        "runtime_id": "py31213-torch211-cu128-tf4b28d51-v6",
+        "torch_tag": "cu128"
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "file": "C:\\Users\\<user>\\Desktop\\2ByteASR\\dist\\brand-review-20260930\\2ByteASR\\av.libs\\avutil-60-21bd72d722406bd9f4b24262cf4b35f3.dll",
+  "sha256": "2150d5b9b0ad85e2256fa1c2273c69d3c4563214a7a78995b1b3473ce7e041bc",
+  "av_version_info": "8.1.1",
+  "avutil_configuration": "--disable-static --enable-shared --libdir=/c/cibw/vendor/lib --prefix=/c/cibw/vendor --disable-programs --disable-doc --disable-libxml2 --disable-lzma --disable-libtheora --disable-libfreetype --disable-libfontconfig --disable-libbluray --disable-libopenjpeg --enable-mediafoundation --enable-version3 --disable-alsa --disable-gnutls --enable-libdav1d --enable-libmp3lame --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopus --enable-libsvtav1 --enable-libvpx --enable-libwebp --disable-libxcb --enable-zlib --enable-libx264 --enable-libx265 --enable-nvenc --enable-nvdec --enable-amf --enable-libvpl --disable-encoder='avui,dca,mlp,opus,s302m,sonic,sonic_ls,truehd' --disable-decoder=sonic --disable-libjack --disable-indev=jack --disable-filter=gfxcapture",
+  "avutil_license": "LGPL version 3 or later"
+}

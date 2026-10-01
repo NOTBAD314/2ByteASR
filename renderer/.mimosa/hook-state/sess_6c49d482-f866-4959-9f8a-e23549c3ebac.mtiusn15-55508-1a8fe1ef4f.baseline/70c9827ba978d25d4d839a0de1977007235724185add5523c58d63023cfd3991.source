@@ -1,0 +1,184 @@
+import React, {useEffect, useMemo, useRef} from 'react';
+import {AbsoluteFill} from 'remotion';
+
+/**
+ * Web visual theme runtime (2byte.web-visual-theme v1).
+ *
+ * Themes are declarative HTML+CSS documents authored by the AI and sanitized
+ * on the Python side (tag/attribute whitelist, no external CSS references,
+ * no scripts). This runtime is the ONLY executable involved:
+ *
+ *  - substitutes {{text}} / {{words}} / {{speaker}} placeholders,
+ *  - injects the project's text-appearance tokens as CSS variables,
+ *  - pauses every CSS animation in the theme subtree and drives it through
+ *    Web Animations `currentTime`, mapping stage animations to absolute
+ *    composition time and cue animations to cue-relative time. That makes
+ *    plain CSS keyframes — including infinite loops and negative delays —
+ *    deterministic for still previews and ProRes export alike.
+ */
+
+export type WebThemeAppearance = {
+  fontFamily?: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  stroke2Color?: string;
+  stroke2Width?: number;
+  letterSpacing?: number;
+};
+
+export type WebTheme = {
+  name?: string;
+  stageHtml?: string;
+  stageCss?: string;
+  cueHtml?: string;
+  cueCss?: string;
+  appearance?: WebThemeAppearance;
+};
+
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const substitutePlaceholders = (
+  html: string,
+  text: string,
+  speaker: string,
+): string => {
+  const escapedText = escapeHtml(text).replace(/\n/g, '<br>');
+  const words = Array.from(text)
+    .map((char) => (/\s/.test(char) ? ' ' : `<span class="wt-w">${escapeHtml(char)}</span>`))
+    .join('');
+  const escapedSpeaker = escapeHtml(speaker);
+  return html
+    .replace(/\{\{\s*text\s*\}\}/g, escapedText)
+    .replace(/\{\{\s*words\s*\}\}/g, words)
+    .replace(/\{\{\s*speaker\s*\}\}/g, escapedSpeaker);
+};
+
+const driveAnimations = (root: HTMLElement | null, timeMs: number): void => {
+  if (!root || typeof root.getAnimations !== 'function') return;
+  const animations = root.getAnimations({subtree: true});
+  for (const animation of animations) {
+    try {
+      if (animation.playState !== 'paused') animation.pause();
+      animation.currentTime = Math.max(0, timeMs);
+    } catch {
+      // Unsupported animation types must never break the frame.
+    }
+  }
+};
+
+const useAnimationClock = (ref: React.RefObject<HTMLDivElement | null>, timeMs: number) => {
+  useEffect(() => {
+    driveAnimations(ref.current, timeMs);
+  }, [ref, timeMs]);
+};
+
+const nestCss = (css: string, scope: string): string => `${scope}{${css}}`;
+
+const tokenStyle = (
+  appearance: WebThemeAppearance,
+  width: number,
+  height: number,
+  durationSeconds: number,
+  cueSeconds: number,
+): React.CSSProperties => ({
+  '--wt-font': `"${String(appearance.fontFamily || 'Microsoft YaHei UI').replace(/"/g, '')}", sans-serif`,
+  '--wt-size': `${Number(appearance.fontSize || 58).toFixed(2)}px`,
+  '--wt-weight': appearance.bold === false ? '400' : '700',
+  '--wt-slant': appearance.italic ? 'italic' : 'normal',
+  '--wt-color': String(appearance.color || '#FFFFFF'),
+  '--wt-stroke': String(appearance.strokeColor || '#000000'),
+  '--wt-stroke-w': `${Number(appearance.strokeWidth || 3).toFixed(2)}px`,
+  '--wt-stroke2': String(appearance.stroke2Color || appearance.strokeColor || '#000000'),
+  '--wt-stroke2-w': `${Number(appearance.stroke2Width || 0).toFixed(2)}px`,
+  '--wt-spacing': `${Number(appearance.letterSpacing || 0).toFixed(2)}px`,
+  '--wt-w': `${Math.round(width)}px`,
+  '--wt-h': `${Math.round(height)}px`,
+  '--wt-u': `${(height / 1080).toFixed(4)}px`,
+  '--wt-dur': `${Math.max(0.05, durationSeconds).toFixed(3)}s`,
+  '--wt-t': `${cueSeconds.toFixed(3)}s`,
+  '--wt-at': `${Math.max(0, durationSeconds).toFixed(0)}`,
+  '--wt-p': durationSeconds > 0 ? Math.min(1, cueSeconds / durationSeconds).toFixed(4) : '0',
+}) as React.CSSProperties;
+
+export type WebThemeStageProps = {
+  theme: WebTheme;
+  nowMs: number;
+  width: number;
+  height: number;
+};
+
+/** Ambient layer — persists across the whole composition. */
+export const WebThemeStage: React.FC<WebThemeStageProps> = ({theme, nowMs, width, height}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useAnimationClock(ref, nowMs);
+  const css = useMemo(() => nestCss(String(theme.stageCss || ''), '.wt-scope'), [theme.stageCss]);
+  const tokens = useMemo(
+    () =>
+      tokenStyle(theme.appearance || {}, width, height, nowMs / 1000, nowMs / 1000),
+    [theme.appearance, width, height, nowMs],
+  );
+  return (
+    <div className="wt-scope" style={{position: 'absolute', inset: 0, ...tokens}}>
+      <style>{css}</style>
+      <div ref={ref} className="wt-stage" style={{position: 'absolute', inset: 0}}>
+        <div dangerouslySetInnerHTML={{__html: String(theme.stageHtml || '')}} />
+      </div>
+    </div>
+  );
+};
+
+export type WebThemeCueProps = {
+  theme: WebTheme;
+  text: string;
+  speaker?: string;
+  localMs: number;
+  durationMs: number;
+  width: number;
+  height: number;
+};
+
+/** Per-cue layer — animations scrub with cue-relative time. */
+export const WebThemeCue: React.FC<WebThemeCueProps> = ({
+  theme,
+  text,
+  speaker = '',
+  localMs,
+  durationMs,
+  width,
+  height,
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useAnimationClock(ref, Math.max(0, localMs));
+  const css = useMemo(() => nestCss(String(theme.cueCss || ''), '.wt-scope'), [theme.cueCss]);
+  const tokens = useMemo(
+    () =>
+      tokenStyle(
+        theme.appearance || {},
+        width,
+        height,
+        Math.max(0.05, durationMs / 1000),
+        Math.max(0, localMs) / 1000,
+      ),
+    [theme.appearance, width, height, durationMs, localMs],
+  );
+  const html = useMemo(
+    () => substitutePlaceholders(String(theme.cueHtml || ''), text, speaker),
+    [theme.cueHtml, text, speaker],
+  );
+  return (
+    <AbsoluteFill style={tokens}>
+      <style>{css}</style>
+      <div ref={ref} className="wt-cue">
+        <div dangerouslySetInnerHTML={{__html: html}} />
+      </div>
+    </AbsoluteFill>
+  );
+};

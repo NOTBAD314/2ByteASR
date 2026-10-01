@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "target": "darwin-arm64",
+  "uv": {
+    "version": "0.11.7",
+    "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-aarch64-apple-darwin.tar.gz",
+    "sha256": "66e37d91f839e12481d7b932a1eccbfe732560f42c1cfb89faddfa2454534ba8",
+    "member": "uv-aarch64-apple-darwin/uv",
+    "source": "https://api.github.com/repos/astral-sh/uv/releases/tags/0.11.7"
+  },
+  "python": {
+    "version": "3.10.19",
+    "build": "20260211",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260211/cpython-3.10.19%2B20260211-aarch64-apple-darwin-install_only_stripped.tar.gz",
+    "sha256": "e6634b06afa2ae79e664cf34174dad5d31b30117f90a01d533de3f4e9db6974e",
+    "source": "https://raw.githubusercontent.com/astral-sh/uv/0.11.7/crates/uv-python/download-metadata.json"
+  },
+  "pip": {
+    "version": "26.1.2",
+    "filename": "pip-26.1.2-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/5d/95/6b5cb3461ea5673ba0995989746db58eb18b91b54dbf331e72f569540946/pip-26.1.2-py3-none-any.whl",
+    "sha256": "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab",
+    "source": "https://pypi.org/pypi/pip/26.1.2/json"
+  },
+  "verified_official_metadata": "2026-10-01",
+  "native_runtime_executed": false
+}

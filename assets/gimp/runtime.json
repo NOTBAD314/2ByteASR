@@ -1,0 +1,21 @@
+{
+  "version": "3.2.6",
+  "platform": "windows-x86_64",
+  "released": "2026-09-10",
+  "installer_url": "https://download.gimp.org/gimp/v3.2/windows/gimp-3.2.6-setup.exe",
+  "installer_sha256": "9337cccbc01d4098ee7a3dab215b3afbe6ece99c5287c92441d6f12cf541ebca",
+  "authenticode": "Valid: Jernej Simončič",
+  "source_url": "https://download.gimp.org/gimp/v3.2/gimp-3.2.6.tar.xz",
+  "source_sha256": "40b15e90ad0c0c631b76da3c467ea9847fa5c24f37413ac5b492804860a28cd8",
+  "license": "GIMP GPL-3.0-or-later; bundled dependencies retain their respective licenses",
+  "deployment": "Unmodified official x64 runtime components extracted into tools/gimp-3.2.6; private configuration and plugin in cover-workspace",
+  "modified_runtime_binaries": false,
+  "plugin_license": "GPL-3.0-or-later",
+  "font": "SourceHanSansSC-Heavy.otf, SIL Open Font License 1.1; application profile only",
+  "unpacker": {
+    "version": "2.71.1",
+    "source": "https://github.com/jrathlev/InnoUnpacker-Windows-GUI",
+    "archive_sha256": "f2f037fdbc63de31248efae9ccb294398d160dc0cbad5f36d14c2f159e17bbf5",
+    "use": "build-time only; not launched by the application"
+  }
+}

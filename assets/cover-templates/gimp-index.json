@@ -1,0 +1,36 @@
+[
+  {
+    "id": "5e2bb85758535e239344f1f2fd0c0dba",
+    "name": "实况战报 · 横版",
+    "xcf": "sample-1.xcf",
+    "thumbnail": "sample-1-gimp.png",
+    "source_psd_sha256": "4f5ee542e737e6bd9374f54e808c674ff94c98706f3752c98f304864171cebfc",
+    "slots": {
+      "background": "sample-0-background",
+      "title": "sample-0-title",
+      "subtitle": "sample-0-subtitle"
+    },
+    "width": 1920,
+    "height": 1080,
+    "warnings": [
+      "文字、描边和阴影已重建为 GIMP 原生可编辑内容；行距及边缘与旧渲染器存在细微差异。旧 PSD 保留。"
+    ]
+  },
+  {
+    "id": "753e7adee2e25c08b18b967a9cdeaf2a",
+    "name": "挑战档案 · 方形",
+    "xcf": "sample-2.xcf",
+    "thumbnail": "sample-2-gimp.png",
+    "source_psd_sha256": "00e9b4117022da344c9fba1082b4e235d37e08cdabfbfdd8ce3efacf2c9c9273",
+    "slots": {
+      "background": "sample-1-background",
+      "title": "sample-1-title",
+      "subtitle": "sample-1-subtitle"
+    },
+    "width": 1080,
+    "height": 1080,
+    "warnings": [
+      "文字、描边和阴影已重建为 GIMP 原生可编辑内容；行距及边缘与旧渲染器存在细微差异。旧 PSD 保留。"
+    ]
+  }
+]

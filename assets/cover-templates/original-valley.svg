@@ -1,0 +1,21 @@
+<!-- Original geometric illustration created for 2ByteASR, 2026-10-01.
+     SPDX-License-Identifier: GPL-3.0-only. No external image inputs. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+ <defs>
+  <linearGradient id="sky" x2="0" y2="1"><stop stop-color="#172c4e"/><stop offset="1" stop-color="#95b6bb"/></linearGradient>
+  <linearGradient id="river" x2="0" y2="1"><stop stop-color="#b9e0cf"/><stop offset="1" stop-color="#4c989b"/></linearGradient>
+  <linearGradient id="shade"><stop stop-color="#142e34"/><stop offset="1" stop-color="#547d7d"/></linearGradient>
+ </defs>
+ <rect width="1920" height="1080" fill="url(#sky)"/>
+ <circle cx="1440" cy="228" r="96" fill="#f0d2a0"/>
+ <path d="M0 635 228 386 413 581 651 339 868 571 1080 435 1279 604 1544 344 1752 587 1920 468V1080H0Z" fill="#506c83"/>
+ <path d="m651 339 84 243-118-89-105 47Z m893 5 74 239-144-123-94 59Z" fill="#b5c8c5"/>
+ <path d="M0 654 207 592 406 742 651 618 853 759 1092 642 1250 713 1450 603 1660 737 1920 565V1080H0Z" fill="#304e61"/>
+ <path d="M0 793 186 725 419 830 599 727 754 797 1020 742 1258 791 1476 726 1747 803 1920 735V1080H0Z" fill="#26494d"/>
+ <path d="M1287 733c-94 41-238 27-272 88-39 69 214 72 187 135-22 52-201 80-293 124h619c-115-117-356-123-349-180 7-57 165-69 108-167Z" fill="url(#river)"/>
+ <path d="m1185 830 91 15m-111 26 166 20m-154 69 179 32m-234 38 153 10" fill="none" stroke="#d4ead5" stroke-width="7" opacity=".55"/>
+ <path d="M0 1080V898l182-126 127 114 126-84 108 117 163-80 207 241Z" fill="url(#shade)"/>
+ <path d="m1561 1080 91-253 111-55 83 112 74-18v214Z" fill="#213e42"/>
+ <path d="m1652 827 111-55-51 276-151 32Z" fill="#476664"/>
+ <g fill="#203e43"><path d="m463 873 33-132 34 132h-26v92h-17v-92Z"/><path d="m582 932 28-113 28 113h-21v78h-16v-78Z"/><path d="m1489 787 20-81 23 81h-16v60h-13v-60Z"/></g>
+</svg>

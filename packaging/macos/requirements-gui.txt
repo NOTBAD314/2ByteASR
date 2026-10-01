@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Native macOS GUI/build dependencies; no Windows pycaw/comtypes.
+numpy==2.2.6
+pypinyin==0.55.0
+requests==2.33.0
+websockets==16.1.1
+jieba==0.42.1
+PySide6==6.9.2
+QtAwesome==1.4.0
+oss2==2.19.1
+pytest==9.1.1
+psutil==7.2.2
+av==17.1.0
+jsonschema==4.26.0
+Pillow==12.3.0
+PyInstaller==6.22.2
+PyYAML==6.0.3

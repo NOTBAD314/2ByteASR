@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-01T05:27:21.014Z",
+  "sessionId": "sess_b8ab4ad8-3984-41e1-863d-0f58a1083f5a",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "C:\\Users\\12\\Desktop\\2ByteASR\\twobyteasr\\llm_config.py",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 8,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

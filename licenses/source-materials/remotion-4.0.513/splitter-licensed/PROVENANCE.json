@@ -1,0 +1,213 @@
+{
+  "build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+  "licensed_source_revision": "50b6a0c0e7e3076e33044254b560f466b67cd245",
+  "old_revision_license_found": false,
+  "files": [
+    {
+      "path": ".circleci/config.yml",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/.circleci/config.yml",
+      "git_blob": "dace53b3c3436430ad886b07d20ed0dfb5a89db7",
+      "sha256": "7794da6924ec53cfea6d193f1523993686adadfb84492032a59b28204a5cf0b9",
+      "bytes": 5103,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": ".github/workflows/build.yml",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/.github/workflows/build.yml",
+      "git_blob": "f1b79b5c3beadca5e4a8b2352c4e1b295855b489",
+      "sha256": "d9664ccdcacb94f13953b9738d69fba5375ce4b19e2caa92e156ce866e96b023",
+      "bytes": 1641,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "aac.patch",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/aac.patch",
+      "git_blob": "fe1fef7681b37cfe454c42980fa4c65c747e6d2b",
+      "sha256": "b4d769b2bfef905b981aefb6d0aa42b7630e7ae02f750cecc2e0ef950bbc664a",
+      "bytes": 599,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "build.rs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/build.rs",
+      "git_blob": "1108daec7c4bfa35deb5d11bae44241a04703f22",
+      "sha256": "95d50fbb6bd34afcf3c70b8695517fe12d12cbbd6a9b8088d9be90509febd8ee",
+      "bytes": 110,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "Cargo.lock",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/Cargo.lock",
+      "git_blob": "f88874416d0292bcb5477be84c562691dacb0db0",
+      "sha256": "82a5daadcf51dc07ee53c9a53c152cd0c6fa74cd250df40f31d1e714d8dc4d08",
+      "bytes": 6979,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "compile-fdkaac.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/compile-fdkaac.mjs",
+      "git_blob": "2a6b5b5cac96162643ab0a25442db19bb9821bf9",
+      "sha256": "81bd3eef10a7e913de3afa82e5b769ff3e6b9c4ef99a7199e6a25dbd7e92bca0",
+      "bytes": 1593,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "compile-libmp3lame.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/compile-libmp3lame.mjs",
+      "git_blob": "4d41f1d38012cac39cbcc2c89303f8ea45be4dd0",
+      "sha256": "888558ab67a5fbeee6879134462fb5504a9754e8c9f4b44f3fa00b5a5b74f8d4",
+      "bytes": 1352,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "compile-nvenc.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/compile-nvenc.mjs",
+      "git_blob": "c48db3723ff5402d82b591b3534c4b07e3cc286e",
+      "sha256": "80c74510912c386cee31732116b397d64e6fffbd60f557ee73865189a9ee6380",
+      "bytes": 819,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "compile-opus.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/compile-opus.mjs",
+      "git_blob": "da0d277a61b943464ad9623a031142fd2cfe5999",
+      "sha256": "1012aef9c08fd2a172fb4e8c98b9cc5b55a2637a2769607a473b0a612c214921",
+      "bytes": 2053,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "compile-vpx.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/compile-vpx.mjs",
+      "git_blob": "48ce38d199b7a33b76cf333051f4bda499839000",
+      "sha256": "8363d5b1c8bfc92b81e711dfd8f091107e8b31f0729abfebb22a5fe014833250",
+      "bytes": 2523,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "compile-x264.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/compile-x264.mjs",
+      "git_blob": "39ada8ccccff8f7934af23b2630fab127b69ce05",
+      "sha256": "d96b232265e71ce6c6d3686499d93c4313b241a987e3e13de56527d9d66c18a9",
+      "bytes": 1479,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "compile-zimg.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/compile-zimg.mjs",
+      "git_blob": "890ccdff97298c47cb08ae6b5954976b7177ecbe",
+      "sha256": "07dd97f8282cf5a7aa1312f763bb6fc3b8e23725f916aaab5f6536a3df45a4d2",
+      "bytes": 2206,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "fdk-aac-free.patch",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/fdk-aac-free.patch",
+      "git_blob": "ae051c5f945b0d27dcf865dc9a1f680030ecc2a4",
+      "sha256": "9b5b9ff79930df7ffc2ff551dbfade6e3fd5bd4aadc8766409b1fe639a236b01",
+      "bytes": 290,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "fix-links.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/fix-links.mjs",
+      "git_blob": "5640a83c99c0d157e961bc9301d29a81014b4254",
+      "sha256": "f238734c7fc09bf3605c880d1ab5bab817520baeeb05ac628b1f01580b886672",
+      "bytes": 1594,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "fix-linux-links.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/fix-linux-links.mjs",
+      "git_blob": "0ce93de7caf8f34828328ce99de7930c3bdd8eb9",
+      "sha256": "7e02b1d3bfc2913d8699dcbcd7da7ee96ce2c64bc9a35a623091d3f8fb640a03",
+      "bytes": 394,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "get-from-docker.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/get-from-docker.mjs",
+      "git_blob": "3e32015744f456069d24fcfc316adcecd10f940d",
+      "sha256": "588919d88f69c382ab36a6ad8dead34caa87ea98a73039c7415919262b05c239",
+      "bytes": 298,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "hevc_ps.patch",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/hevc_ps.patch",
+      "git_blob": "76649b0436c8f3a7ca9f96076ff89fbb8b5522f2",
+      "sha256": "798d960260a2b07ca30847fa41618156f210bb8b2d284a507a2d6680f13cd58a",
+      "bytes": 2585,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "main.rs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/main.rs",
+      "git_blob": "f490b1334a98c788323deedc8e851f68ed424274",
+      "sha256": "e92c9d9b67813a1578de89c82b66e21d84c6eb14b429ce1888c5976ab854cd87",
+      "bytes": 134,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "x265-api.patch",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/x265-api.patch",
+      "git_blob": "9de8484cfd2c6cbe9fae5246677006c0b8657652",
+      "sha256": "577a98d4441c5fd77bf7690cd9fb6fe13dee7679808e766c156c607e607875ca",
+      "bytes": 1088,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "zip.mjs",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/zip.mjs",
+      "git_blob": "b1c5c23c4c400ab10a996c70673a2171633ccbe1",
+      "sha256": "7e5d0c419fbf7654375c6e7a5667c40aac06f1a0206b0d25e6afc35d21b3fb4a",
+      "bytes": 4337,
+      "same_bytes_as_build_revision": "39ddfbb2283857327c5f31635059c399eaab7b4c",
+      "license": "GPL-2.0-or-later (declared source copy at 50b6a0c0e7e3076e33044254b560f466b67cd245)"
+    },
+    {
+      "path": "LICENSE",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/LICENSE",
+      "git_blob": "78f1d996c6d75b18915a1dd6fb52f09858bc2e22",
+      "sha256": "27372c7f95e030772c8f1d3a1125e738826fcd62220f9d2b0d4bd6d74ecaf92b",
+      "bytes": 692
+    },
+    {
+      "path": "README.md",
+      "source": "https://raw.githubusercontent.com/remotion-dev/rust-ffmpeg-splitter/50b6a0c0e7e3076e33044254b560f466b67cd245/README.md",
+      "git_blob": "a7443ee8c34edb825e1ec46d372792378488adf2",
+      "sha256": "9111eb59361b0f08fe85282e09a1c5f52c11df6af8bb52db02e7eb40d368a329",
+      "bytes": 1921
+    }
+  ],
+  "not_approved_as_complete_media_source": true,
+  "old_revision_files_not_reprovided": [
+    "Cargo.toml",
+    "clean.mjs",
+    "compile-av1.mjs",
+    "compile-ffmpeg.mjs",
+    "compile-x265.mjs",
+    "const.mjs",
+    "Dockerfile",
+    "Dockerfile-aws",
+    "README.md"
+  ]
+}

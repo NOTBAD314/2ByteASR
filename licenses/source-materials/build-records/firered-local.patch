@@ -1,0 +1,166 @@
+--- upstream/fireredasr2s/fireredasr2/asr.py
++++ distributed/fireredasr2s/fireredasr2/asr.py
+@@ -1,5 +1,6 @@
+ # Copyright 2026 Xiaohongshu. (Author: Kaituo Xu)
+ 
++import argparse
+ import logging
+ import os
+ import re
+@@ -18,6 +19,17 @@
+ from .tokenizer.llm_tokenizer import LlmTokenizerWrapper
+ 
+ logger = logging.getLogger(__name__)
++
++
++def _load_checkpoint(model_path):
++    # The pinned FireRed checkpoints contain tensors and argparse.Namespace only.
++    # Restricting the unpickler prevents arbitrary globals from executing.
++    with torch.serialization.safe_globals([argparse.Namespace]):
++        return torch.load(
++            model_path,
++            map_location=lambda storage, loc: storage,
++            weights_only=True,
++        )
+ 
+ 
+ @dataclass
+@@ -225,14 +237,14 @@
+ 
+ 
+ def load_fireredasr_aed_model(model_path):
+-    package = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
++    package = _load_checkpoint(model_path)
+     model = FireRedAsrAed.from_args(package["args"])
+     model.load_state_dict(package["model_state_dict"], strict=False)
+     return model
+ 
+ 
+ def load_firered_llm_model_and_tokenizer(model_path, encoder_path, llm_dir):
+-    package = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
++    package = _load_checkpoint(model_path)
+     package["args"].encoder_path = encoder_path
+     package["args"].llm_dir = llm_dir
+     model = FireRedAsrLlm.from_args(package["args"])
+@@ -241,7 +253,7 @@
+     return model, tokenizer
+ 
+ def load_lstm_lm(model_path):
+-    package = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
++    package = _load_checkpoint(model_path)
+     model = LstmLm.from_args(package["args"])
+     model.load_state_dict(package["model_state_dict"], strict=False)
+     return model
+--- upstream/fireredasr2s/fireredlid/lid.py
++++ distributed/fireredasr2s/fireredlid/lid.py
+@@ -1,5 +1,6 @@
+ # Copyright 2026 Xiaohongshu. (Author: Kaituo Xu, Yan Jia)
+ 
++import argparse
+ import os
+ import re
+ import time
+@@ -103,7 +104,12 @@
+ 
+ 
+ def load_fireredlid_model(model_path):
+-    package = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
++    with torch.serialization.safe_globals([argparse.Namespace]):
++        package = torch.load(
++            model_path,
++            map_location=lambda storage, loc: storage,
++            weights_only=True,
++        )
+     #print(package["args"])
+     model = FireRedLidAed.from_args(package["args"])
+     model.load_state_dict(package["model_state_dict"], strict=False)
+--- upstream/fireredasr2s/fireredpunc/punc.py
++++ distributed/fireredasr2s/fireredpunc/punc.py
+@@ -1,5 +1,6 @@
+ # Copyright 2026 Xiaohongshu. (Author: Kaituo Xu, Junjie Chen)
+ 
++import argparse
+ import logging
+ import os
+ import re
+@@ -196,7 +197,12 @@
+ 
+ def load_punc_bert_model(model_dir):
+     model_path = os.path.join(model_dir, "model.pth.tar")
+-    package = torch.load(model_path, map_location=lambda storage, loc: storage, weights_only=False)
++    with torch.serialization.safe_globals([argparse.Namespace]):
++        package = torch.load(
++            model_path,
++            map_location=lambda storage, loc: storage,
++            weights_only=True,
++        )
+     package["args"].bert = None
+     package["args"].pretrained_bert = os.path.join(model_dir, "chinese-lert-base")
+     model = FireRedPuncBert.from_args(package["args"])
+--- upstream/fireredasr2s/fireredasr2/models/fireredasr_aed.py
++++ distributed/fireredasr2s/fireredasr2/models/fireredasr_aed.py
+@@ -1,5 +1,6 @@
+ # Copyright 2026 Xiaohongshu. (Author: Kaituo Xu)
+ 
++import json
+ import traceback
+ 
+ import torch
+@@ -62,8 +63,32 @@
+                     nbest_hyps[n][0]["timestamp"] = None
+                     continue
+ 
++                # torchaudio accepts float16/32/64 log-probabilities only.  The
++                # half/bfloat16 model path can produce an unsupported bfloat16
++                # CTC tensor, so cast only this input at the alignment boundary.
++                log_probs = n_ctc_logits.unsqueeze(0)
++                original_dtype = str(log_probs.dtype)
++                original_device = str(log_probs.device)
++                targets = y.unsqueeze(0)
++                if log_probs.dtype not in (torch.float16, torch.float32, torch.float64):
++                    log_probs = log_probs.to(dtype=torch.float32)
++                print(
++                    "[2BYTEASR_FIRERED_ALIGN_DTYPE] "
++                    + json.dumps(
++                        {
++                            "log_probs_dtype": str(log_probs.dtype),
++                            "log_probs_device": str(log_probs.device),
++                            "targets_dtype": str(targets.dtype),
++                            "targets_device": str(targets.device),
++                            "original_log_probs_dtype": original_dtype,
++                            "original_log_probs_device": original_device,
++                        },
++                        ensure_ascii=False,
++                    ),
++                    flush=True,
++                )
+                 alignment, _ = torchaudio.functional.forced_align(
+-                    n_ctc_logits.unsqueeze(0), y.unsqueeze(0), blank=0)
++                    log_probs, targets, blank=0)
+                 alignment = alignment[0].cpu().tolist()
+                 start_times, end_times = self.ctc.ctc_alignment_to_timestamp(alignment,
+                     self.encoder.input_preprocessor.subsampling, blank_id=0)
+--- upstream/fireredasr2s/fireredvad/core/detect_model.py
++++ distributed/fireredasr2s/fireredvad/core/detect_model.py
+@@ -1,5 +1,6 @@
+ # Copyright 2026 Xiaohongshu. (Author: Kaituo Xu, Kai Huang)
+ 
++import argparse
+ import os
+ 
+ import torch
+@@ -11,8 +12,12 @@
+     @classmethod
+     def from_pretrained(cls, model_dir):
+         model_path = os.path.join(model_dir, "model.pth.tar")
+-        package = torch.load(model_path,
+-            map_location=lambda storage, loc: storage, weights_only=False)
++        with torch.serialization.safe_globals([argparse.Namespace]):
++            package = torch.load(
++                model_path,
++                map_location=lambda storage, loc: storage,
++                weights_only=True,
++            )
+         model = cls(package["args"])
+         model.load_state_dict(package["model_state_dict"], strict=True)
+         model.eval()

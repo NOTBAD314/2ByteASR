@@ -1,0 +1,72 @@
+
+  configuration:
+    --enable-gpl
+    --enable-version3
+    --enable-static
+    --disable-w32threads
+    --disable-autodetect
+    --enable-cairo
+    --enable-fontconfig
+    --enable-iconv
+    --enable-gnutls
+    --enable-libxml2
+    --enable-gmp
+    --enable-bzlib
+    --enable-lzma
+    --enable-zlib
+    --enable-libsrt
+    --enable-libssh
+    --enable-libzmq
+    --enable-avisynth
+    --enable-sdl2
+    --enable-libwebp
+    --enable-libx264
+    --enable-libx265
+    --enable-libxvid
+    --enable-libaom
+    --enable-libopenjpeg
+    --enable-libvpx
+    --enable-mediafoundation
+    --enable-libass
+    --enable-libfreetype
+    --enable-libfribidi
+    --enable-libharfbuzz
+    --enable-libvidstab
+    --enable-libvmaf
+    --enable-libzimg
+    --enable-amf
+    --enable-cuda-llvm
+    --enable-cuvid
+    --enable-dxva2
+    --enable-d3d11va
+    --enable-d3d12va
+    --enable-ffnvcodec
+    --enable-libvpl
+    --enable-nvdec
+    --enable-nvenc
+    --enable-vaapi
+    --enable-openal
+    --enable-libgme
+    --enable-libopenmpt
+    --enable-libopencore-amrwb
+    --enable-libmp3lame
+    --enable-libtheora
+    --enable-libvo-amrwbenc
+    --enable-libgsm
+    --enable-libopencore-amrnb
+    --enable-libopus
+    --enable-libspeex
+    --enable-libvorbis
+    --enable-librubberband
+
+Exiting with exit code 0
+ffmpeg version 9.0-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers
+  built with gcc 16.1.0 (Rev2, Built by MSYS2 project)
+  configuration: --enable-gpl --enable-version3 --enable-static --disable-w32threads --disable-autodetect --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma --enable-zlib --enable-libsrt --enable-libssh --enable-libzmq --enable-avisynth --enable-sdl2 --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxvid --enable-libaom --enable-libopenjpeg --enable-libvpx --enable-mediafoundation --enable-libass --enable-libfreetype --enable-libfribidi --enable-libharfbuzz --enable-libvidstab --enable-libvmaf --enable-libzimg --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2 --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl --enable-nvdec --enable-nvenc --enable-vaapi --enable-openal --enable-libgme --enable-libopenmpt --enable-libopencore-amrwb --enable-libmp3lame --enable-libtheora --enable-libvo-amrwbenc --enable-libgsm --enable-libopencore-amrnb --enable-libopus --enable-libspeex --enable-libvorbis --enable-librubberband
+  libavutil      61.  1.100 / 61.  1.100
+  libavcodec     63.  1.100 / 63.  1.100
+  libavformat    63.  1.100 / 63.  1.100
+  libavdevice    63.  1.100 / 63.  1.100
+  libavfilter    12.  1.100 / 12.  1.100
+  libswscale     10.  1.100 / 10.  1.100
+  libswresample   7.  1.100 /  7.  1.100

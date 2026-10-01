@@ -1,0 +1,153 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@5.1.0
+  rust: circleci/rust@1.6.0
+  win: circleci/windows@2.4.1
+
+jobs:
+  windows-ssh:
+    executor: win/default
+    steps:
+      - checkout
+  build-linux-x64-gnu:
+    docker:
+      - image: cimg/base:current-20.04
+    steps:
+      - checkout
+      - node/install:
+          node-version: "16.20"
+      - restore_cache:
+          keys:
+            - ffmpeg_source-linux-x64
+      - run: sudo apt-get update
+      - run: curl https://sh.rustup.rs -sSf | sh -s -- -y
+      - run: sudo apt-get install -y yasm nasm clang make zlib1g-dev meson ninja-build autoconf automake libtool patchelf
+      - run: node clean.mjs
+      - run: node compile-ffmpeg.mjs
+      - run: source "$HOME/.cargo/env" && node generate-bindings.mjs
+      - run: node zip.mjs
+      - run: node test-ffmpeg.mjs
+      - store_artifacts:
+          path: ffmpeg/ffbuild/config.log
+          destination: ffbuild.log
+      - store_artifacts:
+          path: ffmpeg.tar.gz
+          destination: x86_64-unknown-linux-gnu.gz
+      - save_cache:
+          key: ffmpeg_source-linux-x64
+          paths:
+            - ffmpeg
+  build-linux-x64-musl:
+    docker:
+      - image: node:lts-alpine@sha256:b64ced2e7cd0a4816699fe308ce6e8a08ccba463c757c00c14cd372e3d2c763e
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - ffmpeg_source-linux-x64-musl
+      - run: apk add yasm nasm curl git cargo make ca-certificates pkgconfig bash cmake make cmake build-base llvm-static llvm-dev clang-static clang-dev perl zlib meson ninja-build autoconf automake libtool patchelf
+      - run: node clean.mjs
+      - run: CFLAGS="$CFLAGS -static-libgcc" CXXFLAGS="$CXXFLAGS -static-libgcc -static-libstdc++" LDFLAGS="$LDFLAGS -static-libgcc -static-libstdc++" node compile-ffmpeg.mjs musl
+      - run: node generate-bindings.mjs musl
+      - run: node zip.mjs
+      - run: node test-ffmpeg.mjs
+      - store_artifacts:
+          path: ffmpeg/ffbuild/config.log
+          destination: ffbuild.log
+      - store_artifacts:
+          path: ffmpeg.tar.gz
+          destination: x86_64-unknown-linux-musl.gz
+      - save_cache:
+          key: ffmpeg_source-linux-x64-musl
+          paths:
+            - ffmpeg
+  build-linux-arm-gnu:
+    machine:
+      image: ubuntu-2004:2024.05.1
+    resource_class: arm.medium
+    steps:
+      - checkout
+      - node/install:
+          node-version: "16.20"
+      - restore_cache:
+          keys:
+            - ffmpeg_source-linux-arm
+      - run: sudo apt-get install -y docker
+      - run: docker build . -f Dockerfile-aws -t aarch-gnu
+      - run: node get-from-docker.mjs aarch-gnu /var/task/app/ffmpeg.tar.gz
+      - store_artifacts:
+          path: ffmpeg/ffbuild/config.log
+          destination: ffbuild.log
+      - store_artifacts:
+          path: ffmpeg.tar.gz
+          destination: aarch64-unknown-linux-gnu.gz
+      - save_cache:
+          key: ffmpeg_source-linux-arm
+          paths:
+            - ffmpeg
+  build-linux-arm-musl:
+    machine:
+      image: ubuntu-2004:2024.05.1
+    resource_class: arm.medium
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - ffmpeg_source-linux-arm-musl
+      - node/install:
+          node-version: "18.12"
+      - run: sudo apt-get install -y docker
+      - run: docker build . -t aarch-musl
+      - run: node get-from-docker.mjs aarch-musl /app/ffmpeg.tar.gz
+      - store_artifacts:
+          path: ffmpeg/ffbuild/config.log
+          destination: ffbuild.log
+      - store_artifacts:
+          path: ffmpeg.tar.gz
+          destination: aarch64-unknown-linux-musl.gz
+      - save_cache:
+          key: ffmpeg_source-linux-arm-musl
+          paths:
+            - ffmpeg
+  build-windows:
+    docker:
+      # Newer ubuntu is needed because mingw64-tools were not supported by previous one
+      - image: cimg/base:current-22.04
+    steps:
+      - checkout
+      - node/install:
+          node-version: "18.12"
+      - restore_cache:
+          keys:
+            - ffmpeg_source-windows
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y yasm nasm mingw-w64 mingw-w64-tools libz-mingw-w64-dev clang build-essential zlib1g zlib1g-dev meson ninja-build autoconf automake libtool
+      - run: curl https://sh.rustup.rs -sSf | sh -s -- -y
+      - run: source "$HOME/.cargo/env" && rustup target add x86_64-pc-windows-gnu
+      - run: node clean.mjs
+      - run: node compile-ffmpeg.mjs windows
+      - run: source "$HOME/.cargo/env" && node generate-bindings.mjs windows
+      - run: node zip.mjs windows
+      - store_artifacts:
+          path: ffmpeg/ffbuild/config.log
+          destination: ffbuild.log
+      - store_artifacts:
+          path: ffmpeg.tar.gz
+          destination: x86_64-pc-windows-gnu.gz
+      - store_artifacts:
+          path: ffmpeg/ffbuild/config.log
+      - save_cache:
+          key: ffmpeg_source-windows
+          paths:
+            - ffmpeg
+
+workflows:
+  build_ffmpeg:
+    jobs:
+      - build-linux-x64-gnu
+      - build-linux-arm-gnu
+      - build-linux-x64-musl
+      - build-linux-arm-musl
+      - build-windows
+      - windows-ssh

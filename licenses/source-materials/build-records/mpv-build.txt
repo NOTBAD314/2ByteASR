@@ -1,0 +1,54 @@
+[cplayer] Command line options: '--no-config' '--vo=null' '--ao=null' '--idle=no' '--msg-level=all=v'
+[cplayer] mpv v0.41.0-923-g7b8915bc1 Copyright © 2000-2026 mpv/MPlayer/mplayer2 projects
+[cplayer]  built on Aug 14 2026 00:27:31
+[cplayer] libplacebo version: v7.371.0 (v7.360.0-111-g22ee762-dirty)
+[cplayer] FFmpeg version: N-126125-g1d7b14f61
+[cplayer] FFmpeg library versions:
+[cplayer]    libavcodec      63.8.100
+[cplayer]    libavdevice     63.2.100
+[cplayer]    libavfilter     12.3.101
+[cplayer]    libavformat     63.6.100
+[cplayer]    libavutil       61.5.100
+[cplayer]    libswresample   7.2.100
+[cplayer]    libswscale      10.2.100
+[cplayer] Configuration: -Dprefix=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/x86_64-w64-mingw32 -Dlibdir=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/x86_64-w64-mingw32/lib -Ddefault_library=shared -Dprefer_static=true -Ddebug=true -Db_ndebug=true -Doptimization=3 -Db_lto=true -Db_lto_mode=thin -Dlibmpv=true -Dpdf-build=enabled -Dlua=enabled -Djavascript=enabled -Dsdl2-gamepad=enabled -Dlibarchive=enabled -Dlibbluray=enabled -Ddvdnav=enabled -Duchardet=enabled -Drubberband=enabled -Dlcms2=enabled -Dopenal=enabled -Dspirv-cross=enabled -Dvulkan=enabled -Dvapoursynth=enabled -Dsubrandr=enabled -Dsixel=enabled -Dgl=enabled -Degl-angle=enabled -Dlibcurl=enabled -Dc_args=-Wno-error=int-conversion --cross-file=/__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/meson_cross.txt
+[cplayer] List of enabled features: amf build-date cplugins cuda-hwaccel cuda-interop d3d-hwaccel d3d11 d3d9-hwaccel debug direct3d dos-paths dvdnav dxgi-debug-d3d11 egl-angle egl-angle-win32 ffmpeg ffnvcodec gl gl-dxinterop gl-dxinterop-d3d9 gl-win32 glob glob-win32 gpl iconv javascript jpeg lcms2 libarchive libass libavdevice libbluray libcurl libplacebo luajit openal rubberband rubberband-3 sdl2-gamepad shaderc sixel spirv-cross subrandr uchardet vaapi vaapi-win32 vapoursynth vector vk-khr-display vulkan wasapi win32 win32-desktop win32-executable win32-smtc win32-threads zimg zimg-st428 zlib
+[cplayer] Built with NDEBUG.
+[cplayer] Setting option 'config' = 'no' (flags = 8)
+[cplayer] Setting option 'vo' = 'null' (flags = 8)
+[cplayer] Setting option 'ao' = 'null' (flags = 8)
+[cplayer] Setting option 'idle' = 'no' (flags = 8)
+[cplayer] Setting option 'msg-level' = 'all=v' (flags = 8)
+[clipboard] Initialized win32 clipboard backend.
+mpv v0.41.0-923-g7b8915bc1 Copyright © 2000-2026 mpv/MPlayer/mplayer2 projects
+ built on Aug 14 2026 00:27:31
+libplacebo version: v7.371.0 (v7.360.0-111-g22ee762-dirty)
+FFmpeg version: N-126125-g1d7b14f61
+FFmpeg library versions:
+   libavcodec      63.8.100
+   libavdevice     63.2.100
+   libavfilter     12.3.101
+   libavformat     63.6.100
+   libavutil       61.5.100
+   libswresample   7.2.100
+   libswscale      10.2.100
+Usage:   mpv [options] [url|path/]filename
+
+Basic options:
+ --start=<time>    seek to given (percent, seconds, or hh:mm:ss) position
+ --no-audio        do not play sound
+ --no-video        do not play video
+ --fs              fullscreen playback
+ --sub-file=<file> specify subtitle file to use
+ --playlist=<file> specify playlist file
+
+ --list-options    list all mpv options
+ --h=<string>      print options which contain the given string in their name
+[cplayer] Set property: user-data/osc/visibility="auto" -> 1
+[cplayer] Set property: sub-margin-y-offset=0 -> 1
+[cplayer] Set property: osd-margin-y-offset=0 -> 1
+[cplayer] Set property: sub-margin-y-offset=0 -> 1
+[cplayer] Set property: osd-margin-y-offset=0 -> 1
+[cplayer] Set property: user-data/osc/margins={"b":0,"r":0,"l":0,"t":0} -> 1
+[cplayer] Set property: sub-margin-y-offset=0 -> 1
+[cplayer] Set property: osd-margin-y-offset=0 -> 1

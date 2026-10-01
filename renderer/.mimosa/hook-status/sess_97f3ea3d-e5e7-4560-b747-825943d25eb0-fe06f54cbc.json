@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-01T11:17:48.705Z",
+  "sessionId": "sess_97f3ea3d-e5e7-4560-b747-825943d25eb0",
+  "event": "PostToolUse",
+  "toolName": "Edit",
+  "file": "C:\\Users\\12\\Desktop\\2ByteASR\\twobyteasr\\studio_playback_flow.py",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 5,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

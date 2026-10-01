@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Balatro CRT Mult · 2ByteASR 字幕特效档案</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  .wt-frame { position: relative; width: 100%; height: 100%; overflow: hidden; }
+  .wt-scope { position: absolute; inset: 0;
+    --wt-font: "Cubic 11", "Cascadia Mono", "Microsoft YaHei UI", monospace;
+    --wt-size: 58px; --wt-weight: 700; --wt-slant: normal; --wt-color: #ffffff;
+    --wt-stroke: #080d12; --wt-stroke-w: 3.6px; --wt-stroke2: #000000; --wt-stroke2-w: 0.0px;
+    --wt-spacing: 1.5px; --wt-u: 12px; --wt-dur: 2.400s; --wt-t: 0s; --wt-at: 3; --wt-p: 0;
+    display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: 10vh; box-sizing: border-box;
+  }
+  .wt-stage { position: absolute; inset: 0; }
+  .wt-cue { position: relative; }
+.stage-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+.stage-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, transparent 62%, rgba(5, 8, 12, 0.45) 100%);
+}
+.stage-scanline {
+  position: absolute;
+  inset: 0;
+  opacity: 0.18;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 3px,
+    rgba(0, 0, 0, 0.4) 3px,
+    rgba(0, 0, 0, 0.4) 6px
+  );
+  animation: wt-crt-flicker 0.12s infinite steps(2);
+}
+.crt-aberration {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 90%, rgba(0, 225, 217, 0.04), transparent 50%);
+  animation: wt-ambient-pulse 4s ease-in-out infinite alternate;
+}
+@keyframes wt-crt-flicker {
+  0% { opacity: 0.16; transform: translateY(0); }
+  50% { opacity: 0.22; transform: translateY(1px); }
+  100% { opacity: 0.16; transform: translateY(0); }
+}
+@keyframes wt-ambient-pulse {
+  0% { opacity: 0.4; }
+  100% { opacity: 0.9; }
+}
+.cue-container {
+  position: absolute;
+  left: 5%;
+  right: 5%;
+  bottom: calc(6 * var(--wt-u));
+  height: calc(15 * var(--wt-u));
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.card-slider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center bottom;
+  animation:
+    wt-card-slam 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards,
+    wt-card-retrieve 0.38s cubic-bezier(0.6, -0.28, 0.735, 0.045) calc(var(--wt-dur) - 0.38s) forwards;
+}
+
+.balatro-plate {
+  position: relative;
+  min-width: calc(48 * var(--wt-u));
+  max-width: calc(110 * var(--wt-u));
+  padding: calc(1.8 * var(--wt-u)) calc(5.5 * var(--wt-u));
+  border-radius: calc(1.5 * var(--wt-u));
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.3) 0px,
+      rgba(0, 0, 0, 0.3) 2px,
+      transparent 2px,
+      transparent 4px
+    ),
+    radial-gradient(
+      ellipse at 50% 0%,
+      #2f3c4c 0%,
+      #1b232e 55%,
+      #0e141c 100%
+    );
+  border: calc(0.35 * var(--wt-u)) solid #3d4f66;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.9),
+    inset 0 0 calc(2.5 * var(--wt-u)) rgba(0, 0, 0, 0.65),
+    0 calc(1 * var(--wt-u)) calc(3.5 * var(--wt-u)) rgba(0, 0, 0, 0.85),
+    0 0 calc(1.8 * var(--wt-u)) rgba(0, 225, 217, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.plate-bezel {
+  position: absolute;
+  inset: calc(0.3 * var(--wt-u));
+  border-radius: calc(1.2 * var(--wt-u));
+  border: 1px dashed rgba(255, 215, 0, 0.35);
+  pointer-events: none;
+}
+
+.foil-shimmer {
+  position: absolute;
+  inset: -100%;
+  background: linear-gradient(
+    115deg,
+    transparent 40%,
+    rgba(0, 225, 217, 0.18) 46%,
+    rgba(254, 95, 85, 0.18) 50%,
+    rgba(255, 215, 0, 0.25) 54%,
+    transparent 60%
+  );
+  transform: translateX(-100%);
+  animation: wt-foil-sweep 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+
+.chips-stack {
+  position: absolute;
+  left: calc(-3.8 * var(--wt-u));
+  bottom: calc(0.8 * var(--wt-u));
+  display: flex;
+  flex-direction: column-reverse;
+  gap: calc(0.3 * var(--wt-u));
+  z-index: 4;
+  animation: wt-chips-float 2.8s ease-in-out infinite alternate;
+}
+
+.chip {
+  width: calc(4.8 * var(--wt-u));
+  height: calc(1.3 * var(--wt-u));
+  border-radius: calc(0.65 * var(--wt-u));
+  border: calc(0.2 * var(--wt-u)) dashed #ffffff;
+  box-shadow: 0 calc(0.4 * var(--wt-u)) calc(0.8 * var(--wt-u)) rgba(0, 0, 0, 0.7);
+}
+
+.chip-blue {
+  background: linear-gradient(180deg, #33f0e8 0%, #00a8a0 100%);
+  border-color: rgba(255, 255, 255, 0.85);
+}
+
+.chip-red {
+  background: linear-gradient(180deg, #ff857d 0%, #d83126 100%);
+  border-color: rgba(255, 255, 255, 0.85);
+  transform: rotate(-3deg);
+}
+
+.chip-gold {
+  background: linear-gradient(180deg, #ffe066 0%, #d49f00 100%);
+  border-color: rgba(255, 255, 255, 0.95);
+  transform: rotate(2deg);
+}
+
+.joker-bell {
+  position: absolute;
+  top: calc(-0.4 * var(--wt-u));
+  right: calc(1.2 * var(--wt-u));
+  width: calc(3.4 * var(--wt-u));
+  height: calc(3.4 * var(--wt-u));
+  transform-origin: top center;
+  animation: wt-bell-tinkling 1.6s ease-in-out infinite alternate;
+  z-index: 5;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7));
+}
+
+.bell-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.mult-flame {
+  position: absolute;
+  left: calc(1.2 * var(--wt-u));
+  top: 50%;
+  transform: translateY(-50%);
+  width: calc(7 * var(--wt-u));
+  height: calc(4 * var(--wt-u));
+  border-radius: calc(0.8 * var(--wt-u));
+  background: linear-gradient(180deg, #2b1114 0%, #150608 100%);
+  border: calc(0.2 * var(--wt-u)) solid #fe5f55;
+  box-shadow: 0 0 calc(1.2 * var(--wt-u)) rgba(254, 95, 85, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  z-index: 4;
+}
+
+.mult-tag {
+  font-family: var(--wt-font);
+  font-size: calc(1.5 * var(--wt-u));
+  font-weight: 900;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 5px #fe5f55, 0 1px 2px #000;
+  z-index: 2;
+}
+
+.flame-core {
+  position: absolute;
+  bottom: calc(-1 * var(--wt-u));
+  width: 140%;
+  height: 130%;
+  background: radial-gradient(circle at 50% 90%, #ffe066 10%, #fe5f55 50%, transparent 80%);
+  opacity: 0.75;
+  animation: wt-flame-flicker 0.4s steps(3) infinite alternate;
+}
+
+.flame-spark {
+  position: absolute;
+  top: 10%;
+  right: 20%;
+  width: calc(0.6 * var(--wt-u));
+  height: calc(0.6 * var(--wt-u));
+  background: #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 0 calc(0.8 * var(--wt-u)) #ffd700;
+  animation: wt-spark-pop 0.8s ease-in-out infinite alternate;
+}
+
+.line {
+  position: relative;
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+  margin-left: calc(6.5 * var(--wt-u));
+  margin-right: calc(1.5 * var(--wt-u));
+  z-index: 3;
+}
+
+.line .wt-w {
+  display: inline-block;
+  font-family: var(--wt-font);
+  font-size: var(--wt-size);
+  font-weight: 900;
+  color: #ffffff;
+  letter-spacing: 2px;
+  line-height: 1.1;
+  text-shadow:
+    -2.5px -2.5px 0 #090e14,
+     2.5px -2.5px 0 #090e14,
+    -2.5px  2.5px 0 #090e14,
+     2.5px  2.5px 0 #090e14,
+     0px 4px 6px rgba(0, 0, 0, 0.9),
+     0px 0px 8px rgba(0, 225, 217, 0.35);
+  opacity: 0;
+  transform: translateY(calc(3 * var(--wt-u))) scale(0.65) rotate(-6deg);
+  animation: wt-word-pop 0.32s cubic-bezier(0.175, 0.885, 0.32, 1.35) forwards;
+}
+
+.line .wt-w:nth-child(1) { animation-delay: 0.08s; }
+.line .wt-w:nth-child(2) { animation-delay: 0.12s; }
+.line .wt-w:nth-child(3) { animation-delay: 0.16s; }
+.line .wt-w:nth-child(4) { animation-delay: 0.20s; }
+.line .wt-w:nth-child(5) { animation-delay: 0.24s; }
+.line .wt-w:nth-child(6) { animation-delay: 0.28s; }
+.line .wt-w:nth-child(7) { animation-delay: 0.32s; }
+.line .wt-w:nth-child(8) { animation-delay: 0.36s; }
+.line .wt-w:nth-child(9) { animation-delay: 0.40s; }
+.line .wt-w:nth-child(10) { animation-delay: 0.44s; }
+.line .wt-w:nth-child(n+11) { animation-delay: 0.48s; }
+
+@keyframes wt-card-slam {
+  0% {
+    opacity: 0;
+    transform: translateY(calc(16 * var(--wt-u))) scale(0.7) rotate(7deg);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(calc(-0.8 * var(--wt-u))) scale(1.03) rotate(-1deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes wt-card-retrieve {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotate(0deg);
+  }
+  30% {
+    transform: translateY(calc(-1.2 * var(--wt-u))) scale(1.04);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(calc(18 * var(--wt-u))) scale(0.65) rotate(-9deg);
+  }
+}
+
+@keyframes wt-word-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(calc(3 * var(--wt-u))) scale(0.65) rotate(-6deg);
+  }
+  75% {
+    opacity: 1;
+    transform: translateY(calc(-0.4 * var(--wt-u))) scale(1.15) rotate(1.5deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes wt-foil-sweep {
+  0% {
+    transform: translateX(-120%) rotate(25deg);
+  }
+  35%, 100% {
+    transform: translateX(180%) rotate(25deg);
+  }
+}
+
+@keyframes wt-chips-float {
+  0% {
+    transform: translateY(0) rotate(0deg);
+  }
+  100% {
+    transform: translateY(calc(-0.6 * var(--wt-u))) rotate(-2deg);
+  }
+}
+
+@keyframes wt-bell-tinkling {
+  0% {
+    transform: rotate(-14deg);
+  }
+  100% {
+    transform: rotate(14deg);
+  }
+}
+
+@keyframes wt-flame-flicker {
+  0% {
+    transform: scale(0.92) skewX(-2deg);
+    opacity: 0.65;
+  }
+  100% {
+    transform: scale(1.08) skewX(2deg);
+    opacity: 0.95;
+  }
+}
+
+@keyframes wt-spark-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.3;
+  }
+  100% {
+    transform: scale(1.3);
+    opacity: 1;
+  }
+}
+</style>
+</head>
+<body>
+<div class="wt-frame" id="wt-frame">
+  <div class="wt-scope">
+    <div class="wt-stage"><div class="stage-overlay">
+  <div class="stage-vignette"></div>
+  <div class="stage-scanline"></div>
+  <div class="crt-aberration"></div>
+</div></div>
+    <div class="wt-cue" id="wt-cue"><div class="cue-container">
+  <div class="chips-stack">
+    <div class="chip chip-blue"></div>
+    <div class="chip chip-red"></div>
+    <div class="chip chip-gold"></div>
+  </div>
+  <div class="card-slider">
+    <div class="plate balatro-plate">
+      <div class="plate-bezel"></div>
+      <div class="foil-shimmer"></div>
+      <div class="joker-bell">
+        <svg class="bell-svg">
+          <path d="M16 3 C10 3 6 8 6 14 C6 20 4 23 3 24 L29 24 C28 23 26 20 26 14 C26 8 22 3 16 3 Z" fill="#ffd700" stroke="#7a5500" stroke-width="2"/>
+          <circle cx="16" cy="27" r="3.5" fill="#fe5f55" stroke="#420d09" stroke-width="1.5"/>
+        </svg>
+      </div>
+      <div class="mult-flame">
+        <div class="flame-core"></div>
+        <div class="flame-spark"></div>
+        <span class="mult-tag">+MULT</span>
+      </div>
+      <div class="line">
+        <span class="wt-w">跳</span><span class="wt-w">过</span><span class="wt-w">几</span><span class="wt-w">个</span><span class="wt-w">条</span><span class="wt-w">件</span>
+      </div>
+    </div>
+  </div>
+</div></div>
+  </div>
+</div>
+<script type="application/json" id="wt-theme-data">{"schema": "2byte.web-visual-theme", "version": 1, "name": "Balatro CRT Mult", "concept": "以《Balatro（小丑牌）》经典红蓝计分 HUD、复古 CRT 显像管网点与卡牌压铸台为核心语汇。字幕如同一张刚从牌组抽出的高阶小丑牌，伴随洗牌抽卡滑轨重重砸入并锁死在桌面，出场时被筹码收纳爪倒卷吸回。\n实现承诺清单：\n红蓝点数筹码堆 .chips-stack；多倍率燃烧火焰 .mult-flame；摇摆小丑铃铛角标 .joker-bell；全息炫彩光扫 .foil-shimmer；卡牌机械滑轨压板 .card-slider。", "palette": {"primary": "#00e1d9", "secondary": "#fe5f55", "background": "#0d131a", "accent": "#ffd700", "text": "#ffffff"}, "stageHtml": "<div class=\"stage-overlay\">\n  <div class=\"stage-vignette\"><\/div>\n  <div class=\"stage-scanline\"><\/div>\n  <div class=\"crt-aberration\"><\/div>\n<\/div>", "stageCss": ".stage-overlay {\n  position: absolute;\n  inset: 0;\n  pointer-events: none;\n  overflow: hidden;\n  z-index: 1;\n}\n.stage-vignette {\n  position: absolute;\n  inset: 0;\n  background: radial-gradient(circle at 50% 50%, transparent 62%, rgba(5, 8, 12, 0.45) 100%);\n}\n.stage-scanline {\n  position: absolute;\n  inset: 0;\n  opacity: 0.18;\n  background: repeating-linear-gradient(\n    to bottom,\n    transparent 0px,\n    transparent 3px,\n    rgba(0, 0, 0, 0.4) 3px,\n    rgba(0, 0, 0, 0.4) 6px\n  );\n  animation: wt-crt-flicker 0.12s infinite steps(2);\n}\n.crt-aberration {\n  position: absolute;\n  inset: 0;\n  background: radial-gradient(circle at 50% 90%, rgba(0, 225, 217, 0.04), transparent 50%);\n  animation: wt-ambient-pulse 4s ease-in-out infinite alternate;\n}\n@keyframes wt-crt-flicker {\n  0% { opacity: 0.16; transform: translateY(0); }\n  50% { opacity: 0.22; transform: translateY(1px); }\n  100% { opacity: 0.16; transform: translateY(0); }\n}\n@keyframes wt-ambient-pulse {\n  0% { opacity: 0.4; }\n  100% { opacity: 0.9; }\n}", "cueHtml": "<div class=\"cue-container\">\n  <div class=\"chips-stack\">\n    <div class=\"chip chip-blue\"><\/div>\n    <div class=\"chip chip-red\"><\/div>\n    <div class=\"chip chip-gold\"><\/div>\n  <\/div>\n  <div class=\"card-slider\">\n    <div class=\"plate balatro-plate\">\n      <div class=\"plate-bezel\"><\/div>\n      <div class=\"foil-shimmer\"><\/div>\n      <div class=\"joker-bell\">\n        <svg class=\"bell-svg\">\n          <path d=\"M16 3 C10 3 6 8 6 14 C6 20 4 23 3 24 L29 24 C28 23 26 20 26 14 C26 8 22 3 16 3 Z\" fill=\"#ffd700\" stroke=\"#7a5500\" stroke-width=\"2\"/>\n          <circle cx=\"16\" cy=\"27\" r=\"3.5\" fill=\"#fe5f55\" stroke=\"#420d09\" stroke-width=\"1.5\"/>\n        <\/svg>\n      <\/div>\n      <div class=\"mult-flame\">\n        <div class=\"flame-core\"><\/div>\n        <div class=\"flame-spark\"><\/div>\n        <span class=\"mult-tag\">+MULT<\/span>\n      <\/div>\n      <div class=\"line\">\n        {{words}}\n      <\/div>\n    <\/div>\n  <\/div>\n<\/div>", "cueCss": ".cue-container {\n  position: absolute;\n  left: 5%;\n  right: 5%;\n  bottom: calc(6 * var(--wt-u));\n  height: calc(15 * var(--wt-u));\n  display: flex;\n  justify-content: center;\n  align-items: flex-end;\n  pointer-events: none;\n}\n\n.card-slider {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  transform-origin: center bottom;\n  animation:\n    wt-card-slam 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards,\n    wt-card-retrieve 0.38s cubic-bezier(0.6, -0.28, 0.735, 0.045) calc(var(--wt-dur) - 0.38s) forwards;\n}\n\n.balatro-plate {\n  position: relative;\n  min-width: calc(48 * var(--wt-u));\n  max-width: calc(110 * var(--wt-u));\n  padding: calc(1.8 * var(--wt-u)) calc(5.5 * var(--wt-u));\n  border-radius: calc(1.5 * var(--wt-u));\n  background:\n    repeating-linear-gradient(\n      0deg,\n      rgba(0, 0, 0, 0.3) 0px,\n      rgba(0, 0, 0, 0.3) 2px,\n      transparent 2px,\n      transparent 4px\n    ),\n    radial-gradient(\n      ellipse at 50% 0%,\n      #2f3c4c 0%,\n      #1b232e 55%,\n      #0e141c 100%\n    );\n  border: calc(0.35 * var(--wt-u)) solid #3d4f66;\n  box-shadow:\n    inset 0 1px 0 rgba(255, 255, 255, 0.25),\n    inset 0 -2px 0 rgba(0, 0, 0, 0.9),\n    inset 0 0 calc(2.5 * var(--wt-u)) rgba(0, 0, 0, 0.65),\n    0 calc(1 * var(--wt-u)) calc(3.5 * var(--wt-u)) rgba(0, 0, 0, 0.85),\n    0 0 calc(1.8 * var(--wt-u)) rgba(0, 225, 217, 0.12);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  overflow: hidden;\n}\n\n.plate-bezel {\n  position: absolute;\n  inset: calc(0.3 * var(--wt-u));\n  border-radius: calc(1.2 * var(--wt-u));\n  border: 1px dashed rgba(255, 215, 0, 0.35);\n  pointer-events: none;\n}\n\n.foil-shimmer {\n  position: absolute;\n  inset: -100%;\n  background: linear-gradient(\n    115deg,\n    transparent 40%,\n    rgba(0, 225, 217, 0.18) 46%,\n    rgba(254, 95, 85, 0.18) 50%,\n    rgba(255, 215, 0, 0.25) 54%,\n    transparent 60%\n  );\n  transform: translateX(-100%);\n  animation: wt-foil-sweep 3.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;\n  mix-blend-mode: screen;\n  pointer-events: none;\n}\n\n.chips-stack {\n  position: absolute;\n  left: calc(-3.8 * var(--wt-u));\n  bottom: calc(0.8 * var(--wt-u));\n  display: flex;\n  flex-direction: column-reverse;\n  gap: calc(0.3 * var(--wt-u));\n  z-index: 4;\n  animation: wt-chips-float 2.8s ease-in-out infinite alternate;\n}\n\n.chip {\n  width: calc(4.8 * var(--wt-u));\n  height: calc(1.3 * var(--wt-u));\n  border-radius: calc(0.65 * var(--wt-u));\n  border: calc(0.2 * var(--wt-u)) dashed #ffffff;\n  box-shadow: 0 calc(0.4 * var(--wt-u)) calc(0.8 * var(--wt-u)) rgba(0, 0, 0, 0.7);\n}\n\n.chip-blue {\n  background: linear-gradient(180deg, #33f0e8 0%, #00a8a0 100%);\n  border-color: rgba(255, 255, 255, 0.85);\n}\n\n.chip-red {\n  background: linear-gradient(180deg, #ff857d 0%, #d83126 100%);\n  border-color: rgba(255, 255, 255, 0.85);\n  transform: rotate(-3deg);\n}\n\n.chip-gold {\n  background: linear-gradient(180deg, #ffe066 0%, #d49f00 100%);\n  border-color: rgba(255, 255, 255, 0.95);\n  transform: rotate(2deg);\n}\n\n.joker-bell {\n  position: absolute;\n  top: calc(-0.4 * var(--wt-u));\n  right: calc(1.2 * var(--wt-u));\n  width: calc(3.4 * var(--wt-u));\n  height: calc(3.4 * var(--wt-u));\n  transform-origin: top center;\n  animation: wt-bell-tinkling 1.6s ease-in-out infinite alternate;\n  z-index: 5;\n  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.7));\n}\n\n.bell-svg {\n  width: 100%;\n  height: 100%;\n}\n\n.mult-flame {\n  position: absolute;\n  left: calc(1.2 * var(--wt-u));\n  top: 50%;\n  transform: translateY(-50%);\n  width: calc(7 * var(--wt-u));\n  height: calc(4 * var(--wt-u));\n  border-radius: calc(0.8 * var(--wt-u));\n  background: linear-gradient(180deg, #2b1114 0%, #150608 100%);\n  border: calc(0.2 * var(--wt-u)) solid #fe5f55;\n  box-shadow: 0 0 calc(1.2 * var(--wt-u)) rgba(254, 95, 85, 0.45);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  overflow: hidden;\n  z-index: 4;\n}\n\n.mult-tag {\n  font-family: var(--wt-font);\n  font-size: calc(1.5 * var(--wt-u));\n  font-weight: 900;\n  color: #ffffff;\n  letter-spacing: 0.5px;\n  text-shadow: 0 0 5px #fe5f55, 0 1px 2px #000;\n  z-index: 2;\n}\n\n.flame-core {\n  position: absolute;\n  bottom: calc(-1 * var(--wt-u));\n  width: 140%;\n  height: 130%;\n  background: radial-gradient(circle at 50% 90%, #ffe066 10%, #fe5f55 50%, transparent 80%);\n  opacity: 0.75;\n  animation: wt-flame-flicker 0.4s steps(3) infinite alternate;\n}\n\n.flame-spark {\n  position: absolute;\n  top: 10%;\n  right: 20%;\n  width: calc(0.6 * var(--wt-u));\n  height: calc(0.6 * var(--wt-u));\n  background: #ffffff;\n  border-radius: 50%;\n  box-shadow: 0 0 calc(0.8 * var(--wt-u)) #ffd700;\n  animation: wt-spark-pop 0.8s ease-in-out infinite alternate;\n}\n\n.line {\n  position: relative;\n  display: inline-flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  white-space: nowrap;\n  margin-left: calc(6.5 * var(--wt-u));\n  margin-right: calc(1.5 * var(--wt-u));\n  z-index: 3;\n}\n\n.line .wt-w {\n  display: inline-block;\n  font-family: var(--wt-font);\n  font-size: var(--wt-size);\n  font-weight: 900;\n  color: #ffffff;\n  letter-spacing: 2px;\n  line-height: 1.1;\n  text-shadow:\n    -2.5px -2.5px 0 #090e14,\n     2.5px -2.5px 0 #090e14,\n    -2.5px  2.5px 0 #090e14,\n     2.5px  2.5px 0 #090e14,\n     0px 4px 6px rgba(0, 0, 0, 0.9),\n     0px 0px 8px rgba(0, 225, 217, 0.35);\n  opacity: 0;\n  transform: translateY(calc(3 * var(--wt-u))) scale(0.65) rotate(-6deg);\n  animation: wt-word-pop 0.32s cubic-bezier(0.175, 0.885, 0.32, 1.35) forwards;\n}\n\n.line .wt-w:nth-child(1) { animation-delay: 0.08s; }\n.line .wt-w:nth-child(2) { animation-delay: 0.12s; }\n.line .wt-w:nth-child(3) { animation-delay: 0.16s; }\n.line .wt-w:nth-child(4) { animation-delay: 0.20s; }\n.line .wt-w:nth-child(5) { animation-delay: 0.24s; }\n.line .wt-w:nth-child(6) { animation-delay: 0.28s; }\n.line .wt-w:nth-child(7) { animation-delay: 0.32s; }\n.line .wt-w:nth-child(8) { animation-delay: 0.36s; }\n.line .wt-w:nth-child(9) { animation-delay: 0.40s; }\n.line .wt-w:nth-child(10) { animation-delay: 0.44s; }\n.line .wt-w:nth-child(n+11) { animation-delay: 0.48s; }\n\n@keyframes wt-card-slam {\n  0% {\n    opacity: 0;\n    transform: translateY(calc(16 * var(--wt-u))) scale(0.7) rotate(7deg);\n  }\n  70% {\n    opacity: 1;\n    transform: translateY(calc(-0.8 * var(--wt-u))) scale(1.03) rotate(-1deg);\n  }\n  100% {\n    opacity: 1;\n    transform: translateY(0) scale(1) rotate(0deg);\n  }\n}\n\n@keyframes wt-card-retrieve {\n  0% {\n    opacity: 1;\n    transform: translateY(0) scale(1) rotate(0deg);\n  }\n  30% {\n    transform: translateY(calc(-1.2 * var(--wt-u))) scale(1.04);\n  }\n  100% {\n    opacity: 0;\n    transform: translateY(calc(18 * var(--wt-u))) scale(0.65) rotate(-9deg);\n  }\n}\n\n@keyframes wt-word-pop {\n  0% {\n    opacity: 0;\n    transform: translateY(calc(3 * var(--wt-u))) scale(0.65) rotate(-6deg);\n  }\n  75% {\n    opacity: 1;\n    transform: translateY(calc(-0.4 * var(--wt-u))) scale(1.15) rotate(1.5deg);\n  }\n  100% {\n    opacity: 1;\n    transform: translateY(0) scale(1) rotate(0deg);\n  }\n}\n\n@keyframes wt-foil-sweep {\n  0% {\n    transform: translateX(-120%) rotate(25deg);\n  }\n  35%, 100% {\n    transform: translateX(180%) rotate(25deg);\n  }\n}\n\n@keyframes wt-chips-float {\n  0% {\n    transform: translateY(0) rotate(0deg);\n  }\n  100% {\n    transform: translateY(calc(-0.6 * var(--wt-u))) rotate(-2deg);\n  }\n}\n\n@keyframes wt-bell-tinkling {\n  0% {\n    transform: rotate(-14deg);\n  }\n  100% {\n    transform: rotate(14deg);\n  }\n}\n\n@keyframes wt-flame-flicker {\n  0% {\n    transform: scale(0.92) skewX(-2deg);\n    opacity: 0.65;\n  }\n  100% {\n    transform: scale(1.08) skewX(2deg);\n    opacity: 0.95;\n  }\n}\n\n@keyframes wt-spark-pop {\n  0% {\n    transform: scale(0.6);\n    opacity: 0.3;\n  }\n  100% {\n    transform: scale(1.3);\n    opacity: 1;\n  }\n}", "notes": "已修复字幕底板材质：.balatro-plate 现采用多停顿深浅径向渐变叠合周期性 CRT 扫描线微纹理与高反差内阴影，彻底消除平涂单调感，并完整保留抽卡砸牌联动入场、摇摆小丑铃铛、火焰多倍率及全息炫彩光扫。", "appearance": {"fontFamily": "\"Cubic 11\", \"Cascadia Mono\", \"Microsoft YaHei UI\", monospace", "fontSize": 58.0, "strokeWidth": 3.6, "letterSpacing": 1.5, "color": "#ffffff", "strokeColor": "#080d12"}}</script>
+<script>window.__2byteCueTemplate = "<div class=\"cue-container\">\n  <div class=\"chips-stack\">\n    <div class=\"chip chip-blue\"><\/div>\n    <div class=\"chip chip-red\"><\/div>\n    <div class=\"chip chip-gold\"><\/div>\n  <\/div>\n  <div class=\"card-slider\">\n    <div class=\"plate balatro-plate\">\n      <div class=\"plate-bezel\"><\/div>\n      <div class=\"foil-shimmer\"><\/div>\n      <div class=\"joker-bell\">\n        <svg class=\"bell-svg\">\n          <path d=\"M16 3 C10 3 6 8 6 14 C6 20 4 23 3 24 L29 24 C28 23 26 20 26 14 C26 8 22 3 16 3 Z\" fill=\"#ffd700\" stroke=\"#7a5500\" stroke-width=\"2\"/>\n          <circle cx=\"16\" cy=\"27\" r=\"3.5\" fill=\"#fe5f55\" stroke=\"#420d09\" stroke-width=\"1.5\"/>\n        <\/svg>\n      <\/div>\n      <div class=\"mult-flame\">\n        <div class=\"flame-core\"><\/div>\n        <div class=\"flame-spark\"><\/div>\n        <span class=\"mult-tag\">+MULT<\/span>\n      <\/div>\n      <div class=\"line\">\n        {{words}}\n      <\/div>\n    <\/div>\n  <\/div>\n<\/div>";</script>
+<script>
+
+window.__2byteSeek = async function (cueMs, stageMs) {
+  // 二十一轮：ready 等待 60ms 封顶——Animation.ready 在动画被取消/替换时
+  // 可能永不结算，整页 evaluate 挂死=播放冻成静止帧（用户实测重播十几次
+  // 后卡死）。scrub 精度损失可忽略（后续帧会覆盖）。
+  var capped = function (p) {
+    return Promise.race([p, new Promise(function (res) { setTimeout(res, 60); })]);
+  };
+  var stage = document.querySelector('.wt-stage');
+  var cue = document.getElementById('wt-cue');
+  async function scrub(root, tMs) {
+    if (!root) return;
+    var anims = root.getAnimations({subtree: true});
+    for (var i = 0; i < anims.length; i++) { try { anims[i].pause(); } catch (e) {} }
+    for (var j = 0; j < anims.length; j++) {
+      try { await capped(anims[j].ready); } catch (e) {}
+      try { anims[j].currentTime = tMs; } catch (e) {}
+    }
+  }
+  await scrub(stage, stageMs);
+  await scrub(cue, cueMs);
+  // 二十四轮：与 TSX 运行时同款 token——部分主题用 var(--wt-t) 参与计算。
+  try {
+    var scope = document.querySelector('.wt-scope');
+    if (scope) {
+      var dRaw = getComputedStyle(scope).getPropertyValue('--wt-dur') || '0s';
+      var durMs = (parseFloat(dRaw) || 0) * 1000;
+      var progress = durMs > 0 ? Math.max(0, Math.min(1, cueMs / durMs)) : 0;
+      var s = scope.style;
+      s.setProperty('--wt-t', Math.max(0, cueMs) + 'ms');
+      s.setProperty('--wt-at', Math.max(0, stageMs) + 'ms');
+      s.setProperty('--wt-p', String(Math.round(progress * 1000) / 1000));
+    }
+  } catch (e) {}
+};
+// 二十轮引入自由播放；二十四轮修正 play() 语义：已完成的有限动画（入场/
+// 出场这类一次性 keyframes）钉在末态，只有未完成/无限动画继续走。
+window.__2bytePlay = async function (cueMs, stageMs, rate) {
+  await window.__2byteSeek(cueMs, stageMs);
+  var stage = document.querySelector('.wt-stage');
+  var cue = document.getElementById('wt-cue');
+  function play(root, r) {
+    if (!root) return;
+    var anims = root.getAnimations({subtree: true});
+    for (var i = 0; i < anims.length; i++) {
+      var a = anims[i];
+      try {
+        a.playbackRate = r;
+        var end = Infinity;
+        try {
+          var timing = a.effect && a.effect.getComputedTiming();
+          if (timing && Number.isFinite(timing.endTime)) end = timing.endTime;
+        } catch (e) {}
+        if (Number.isFinite(end) && end > 0 && (a.currentTime == null || a.currentTime >= end)) {
+          a.currentTime = end;  // 钉末态：play() 会回卷 finished 动画重播
+          a.pause();
+        } else {
+          a.play();
+        }
+      } catch (e) {}
+    }
+  }
+  play(stage, rate);
+  play(cue, rate);
+};
+// 二十二轮（换字快速路径）：同主题换文案不重载页面——用内嵌模板重建 cue 层
+// DOM（Python 侧 substitute_placeholders 的 JS 镜像）；重建后由调用方重新
+// __2bytePlay/__2byteSeek 同步动画（新 DOM = 新动画实例）。换页 1-2s vs 换字
+// ~50ms——cue 切换不再丢入场首帧。
+window.__2byteSetCue = function (text, speaker) {
+  var cue = document.getElementById('wt-cue');
+  var template = window.__2byteCueTemplate;
+  if (!cue || typeof template !== 'string') return false;
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  var s = String(text == null ? '' : text);
+  var escaped = esc(s).replace(/\n/g, '<br>');
+  var words = '';
+  for (var i = 0; i < s.length; i++) {
+    var ch = s[i];
+    words += /\s/.test(ch) ? ' ' : '<span class="wt-w">' + esc(ch) + '</span>';
+  }
+  var html = template
+    .replace(/\{\{\s*text\s*\}\}/g, escaped)
+    .replace(/\{\{\s*words\s*\}\}/g, words)
+    .replace(/\{\{\s*speaker\s*\}\}/g, esc(String(speaker || '')))
+    .replace(/\{\{\s*translation\s*\}\}/g, '');
+  cue.innerHTML = html;
+  return true;
+};
+
+</script>
+<!-- AUDIT ONLY: autonomous archive replay disabled -->
+</body>
+</html>

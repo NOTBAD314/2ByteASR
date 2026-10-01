@@ -1,0 +1,7 @@
+# rust-ffmpeg-splitter 原样源材料
+
+此副本来自明确带有GPL-2.0-or-later声明的固定提交50b6a0c0e7e3076e33044254b560f466b67cd245。原LICENSE保留Jonny Burger的版权及无担保声明，完整GPLv2另附COPYING.GPLv2.txt。没有修改这些上游文件；NOTICE/PROVENANCE是2ByteASR整理说明，不是上游文件或额外许可限制。
+
+20个构建/补丁文件的Git blob和字节与实际媒体来源39ddfbb2283857327c5f31635059c399eaab7b4c一致，可从该明确授权的源码版本原样提供；许可来源标记50b6a0c0，不声称整个39ddfbb提交历史上已经采用GPL，也不把Remotion主仓库许可覆盖于此副本。README为50b6a0c0原文，不是39ddfbb旧README。
+
+旧版本其余9个不同文件没有据此获得整个旧版的授权证明，未放入本副本。补丁涉及的FFmpeg/x265等代码仍保留其各自许可与版权；原构建输入许可材料和版本关系另外记录。fdk-aac-free.patch改变nonfree检查不授予FDK权利；脚本GPL可提供与其产出含FDK的混合媒体库能否分发是两个判断。此副本不是完整媒体程序的对应源码。

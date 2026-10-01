@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "game": "绝区零",
+  "source_updated": "2026-08-09",
+  "data_version": "社区词库扩充",
+  "license": "词条仅为名称清单，供字幕校对候选使用",
+  "category": "term",
+  "source_url": "绝区零官网/Wiki",
+  "entry_count": 21,
+  "unique_name_count": 21,
+  "entries": [
+    {
+      "name": "菲林"
+    },
+    {
+      "name": "邦布"
+    },
+    {
+      "name": "空洞"
+    },
+    {
+      "name": "绳匠"
+    },
+    {
+      "name": "代理人"
+    },
+    {
+      "name": "蓄电池"
+    },
+    {
+      "name": "丁尼"
+    },
+    {
+      "name": "调律"
+    },
+    {
+      "name": "调频"
+    },
+    {
+      "name": "刮痧"
+    },
+    {
+      "name": "深渊"
+    },
+    {
+      "name": "式舆防卫战"
+    },
+    {
+      "name": "式舆"
+    },
+    {
+      "name": "零号空洞"
+    },
+    {
+      "name": "卡池"
+    },
+    {
+      "name": "电量"
+    },
+    {
+      "name": "以太电池"
+    },
+    {
+      "name": "音擎"
+    },
+    {
+      "name": "驱动盘"
+    },
+    {
+      "name": "保底"
+    },
+    {
+      "name": "绳网"
+    }
+  ]
+}

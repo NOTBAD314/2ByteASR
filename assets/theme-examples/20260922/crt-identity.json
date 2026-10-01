@@ -1,0 +1,87 @@
+{
+  "source": "ai-theme-event-delivery-20260921/crt/improved/theme.json",
+  "original_sha256": "8508a156b97f5a1560214254e89d6b48e676588d601163fa414e7ca84cffd1f8",
+  "revised_sha256": "e4fb23e9b8b4b19f4c6248b9a3d464a4dd4d7c8a6ae379a729aa6be0f076a564",
+  "authorship": "manual_motion_revision",
+  "protected_screen_exit": [
+    {
+      "selector": ".crt-screen-text",
+      "phase": "resolve",
+      "start": 0.0,
+      "end": 0.33,
+      "ease": "power2.in",
+      "from": {
+        "opacity": 1.0,
+        "clipPath": "inset(0% 0% 0% 0%)"
+      },
+      "to": {
+        "opacity": 0.3,
+        "clipPath": "inset(50% 0% 50% 0%)"
+      }
+    },
+    {
+      "selector": ".crt-line",
+      "phase": "resolve",
+      "start": 0.16,
+      "end": 0.32,
+      "ease": "power1.in",
+      "from": {
+        "opacity": 0.0,
+        "scaleX": 1.0
+      },
+      "to": {
+        "opacity": 1.0,
+        "scaleX": 0.8
+      }
+    },
+    {
+      "selector": ".crt-line",
+      "phase": "resolve",
+      "start": 0.32,
+      "end": 0.57,
+      "ease": "power2.in",
+      "from": {
+        "opacity": 1.0,
+        "scaleX": 0.8
+      },
+      "to": {
+        "opacity": 0.0,
+        "scaleX": 0.003
+      }
+    },
+    {
+      "selector": ".crt-afterglow",
+      "phase": "resolve",
+      "start": 0.47,
+      "end": 0.6,
+      "ease": "sine.out",
+      "from": {
+        "opacity": 0.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0
+      },
+      "to": {
+        "opacity": 1.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0
+      }
+    },
+    {
+      "selector": ".crt-afterglow",
+      "phase": "resolve",
+      "start": 0.6,
+      "end": 0.8,
+      "ease": "power1.out",
+      "from": {
+        "opacity": 1.0,
+        "scaleX": 1.0,
+        "scaleY": 1.0
+      },
+      "to": {
+        "opacity": 0.0,
+        "scaleX": 0.2,
+        "scaleY": 0.2
+      }
+    }
+  ]
+}

@@ -1,0 +1,651 @@
+Metadata-Version: 2.4
+Name: moss-transcribe-diarize
+Version: 0.1.0
+Summary: MOSS-Transcribe-Diarize inference code and Transformers remote-code model implementation
+Author: OpenMOSS Team
+License:                                  Apache License
+                                   Version 2.0, January 2004
+                                http://www.apache.org/licenses/
+        
+           TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+        
+           1. Definitions.
+        
+              "License" shall mean the terms and conditions for use, reproduction,
+              and distribution as defined by Sections 1 through 9 of this document.
+        
+              "Licensor" shall mean the copyright owner or entity authorized by
+              the copyright owner that is granting the License.
+        
+              "Legal Entity" shall mean the union of the acting entity and all
+              other entities that control, are controlled by, or are under common
+              control with that entity. For the purposes of this definition,
+              "control" means (i) the power, direct or indirect, to cause the
+              direction or management of such entity, whether by contract or
+              otherwise, or (ii) ownership of fifty percent (50%) or more of the
+              outstanding shares, or (iii) beneficial ownership of such entity.
+        
+              "You" (or "Your") shall mean an individual or Legal Entity
+              exercising permissions granted by this License.
+        
+              "Source" form shall mean the preferred form for making modifications,
+              including but not limited to software source code, documentation
+              source, and configuration files.
+        
+              "Object" form shall mean any form resulting from mechanical
+              transformation or translation of a Source form, including but
+              not limited to compiled object code, generated documentation,
+              and conversions to other media types.
+        
+              "Work" shall mean the work of authorship, whether in Source or
+              Object form, made available under the License, as indicated by a
+              copyright notice that is included in or attached to the work
+              (an example is provided in the Appendix below).
+        
+              "Derivative Works" shall mean any work, whether in Source or Object
+              form, that is based on (or derived from) the Work and for which the
+              editorial revisions, annotations, elaborations, or other modifications
+              represent, as a whole, an original work of authorship. For the purposes
+              of this License, Derivative Works shall not include works that remain
+              separable from, or merely link (or bind by name) to the interfaces of,
+              the Work and Derivative Works thereof.
+        
+              "Contribution" shall mean any work of authorship, including
+              the original version of the Work and any modifications or additions
+              to that Work or Derivative Works thereof, that is intentionally
+              submitted to Licensor for inclusion in the Work by the copyright owner
+              or by an individual or Legal Entity authorized to submit on behalf of
+              the copyright owner. For the purposes of this definition, "submitted"
+              means any form of electronic, verbal, or written communication sent
+              to the Licensor or its representatives, including but not limited to
+              communication on electronic mailing lists, source code control systems,
+              and issue tracking systems that are managed by, or on behalf of, the
+              Licensor for the purpose of discussing and improving the Work, but
+              excluding communication that is conspicuously marked or otherwise
+              designated in writing by the copyright owner as "Not a Contribution."
+        
+              "Contributor" shall mean Licensor and any individual or Legal Entity
+              on behalf of whom a Contribution has been received by Licensor and
+              subsequently incorporated within the Work.
+        
+           2. Grant of Copyright License. Subject to the terms and conditions of
+              this License, each Contributor hereby grants to You a perpetual,
+              worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+              copyright license to reproduce, prepare Derivative Works of,
+              publicly display, publicly perform, sublicense, and distribute the
+              Work and such Derivative Works in Source or Object form.
+        
+           3. Grant of Patent License. Subject to the terms and conditions of
+              this License, each Contributor hereby grants to You a perpetual,
+              worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+              (except as stated in this section) patent license to make, have made,
+              use, offer to sell, sell, import, and otherwise transfer the Work,
+              where such license applies only to those patent claims licensable
+              by such Contributor that are necessarily infringed by their
+              Contribution(s) alone or by combination of their Contribution(s)
+              with the Work to which such Contribution(s) was submitted. If You
+              institute patent litigation against any entity (including a
+              cross-claim or counterclaim in a lawsuit) alleging that the Work
+              or a Contribution incorporated within the Work constitutes direct
+              or contributory patent infringement, then any patent licenses
+              granted to You under this License for that Work shall terminate
+              as of the date such litigation is filed.
+        
+           4. Redistribution. You may reproduce and distribute copies of the
+              Work or Derivative Works thereof in any medium, with or without
+              modifications, and in Source or Object form, provided that You
+              meet the following conditions:
+        
+              (a) You must give any other recipients of the Work or
+                  Derivative Works a copy of this License; and
+        
+              (b) You must cause any modified files to carry prominent notices
+                  stating that You changed the files; and
+        
+              (c) You must retain, in the Source form of any Derivative Works
+                  that You distribute, all copyright, patent, trademark, and
+                  attribution notices from the Source form of the Work,
+                  excluding those notices that do not pertain to any part of
+                  the Derivative Works; and
+        
+              (d) If the Work includes a "NOTICE" text file as part of its
+                  distribution, then any Derivative Works that You distribute must
+                  include a readable copy of the attribution notices contained
+                  within such NOTICE file, excluding those notices that do not
+                  pertain to any part of the Derivative Works, in at least one
+                  of the following places: within a NOTICE text file distributed
+                  as part of the Derivative Works; within the Source form or
+                  documentation, if provided along with the Derivative Works; or,
+                  within a display generated by the Derivative Works, if and
+                  wherever such third-party notices normally appear. The contents
+                  of the NOTICE file are for informational purposes only and
+                  do not modify the License. You may add Your own attribution
+                  notices within Derivative Works that You distribute, alongside
+                  or as an addendum to the NOTICE text from the Work, provided
+                  that such additional attribution notices cannot be construed
+                  as modifying the License.
+        
+              You may add Your own copyright statement to Your modifications and
+              may provide additional or different license terms and conditions
+              for use, reproduction, or distribution of Your modifications, or
+              for any such Derivative Works as a whole, provided Your use,
+              reproduction, and distribution of the Work otherwise complies with
+              the conditions stated in this License.
+        
+           5. Submission of Contributions. Unless You explicitly state otherwise,
+              any Contribution intentionally submitted for inclusion in the Work
+              by You to the Licensor shall be under the terms and conditions of
+              this License, without any additional terms or conditions.
+              Notwithstanding the above, nothing herein shall supersede or modify
+              the terms of any separate license agreement you may have executed
+              with Licensor regarding such Contributions.
+        
+           6. Trademarks. This License does not grant permission to use the trade
+              names, trademarks, service marks, or product names of the Licensor,
+              except as required for reasonable and customary use in describing the
+              origin of the Work and reproducing the content of the NOTICE file.
+        
+           7. Disclaimer of Warranty. Unless required by applicable law or
+              agreed to in writing, Licensor provides the Work (and each
+              Contributor provides its Contributions) on an "AS IS" BASIS,
+              WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+              implied, including, without limitation, any warranties or conditions
+              of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+              PARTICULAR PURPOSE. You are solely responsible for determining the
+              appropriateness of using or redistributing the Work and assume any
+              risks associated with Your exercise of permissions under this License.
+        
+           8. Limitation of Liability. In no event and under no legal theory,
+              whether in tort (including negligence), contract, or otherwise,
+              unless required by applicable law (such as deliberate and grossly
+              negligent acts) or agreed to in writing, shall any Contributor be
+              liable to You for damages, including any direct, indirect, special,
+              incidental, or consequential damages of any character arising as a
+              result of this License or out of the use or inability to use the
+              Work (including but not limited to damages for loss of goodwill,
+              work stoppage, computer failure or malfunction, or any and all
+              other commercial damages or losses), even if such Contributor
+              has been advised of the possibility of such damages.
+        
+           9. Accepting Warranty or Additional Liability. While redistributing
+              the Work or Derivative Works thereof, You may choose to offer,
+              and charge a fee for, acceptance of support, warranty, indemnity,
+              or other liability obligations and/or rights consistent with this
+              License. However, in accepting such obligations, You may act only
+              on Your own behalf and on Your sole responsibility, not on behalf
+              of any other Contributor, and only if You agree to indemnify,
+              defend, and hold each Contributor harmless for any liability
+              incurred by, or claims asserted against, such Contributor by reason
+              of your accepting any such warranty or additional liability.
+        
+           END OF TERMS AND CONDITIONS
+        
+           APPENDIX: How to apply the Apache License to your work.
+        
+              To apply the Apache License to your work, attach the following
+              boilerplate notice, with the fields enclosed by brackets "[]"
+              replaced with your own identifying information. (Don't include
+              the brackets!)  The text should be enclosed in the appropriate
+              comment syntax for the file format. We also recommend that a
+              file or class name and description of purpose be included on the
+              same "printed page" as the copyright notice for easier
+              identification within third-party archives.
+        
+           Copyright [yyyy] [name of copyright owner]
+        
+           Licensed under the Apache License, Version 2.0 (the "License");
+           you may not use this file except in compliance with the License.
+           You may obtain a copy of the License at
+        
+               http://www.apache.org/licenses/LICENSE-2.0
+        
+           Unless required by applicable law or agreed to in writing, software
+           distributed under the License is distributed on an "AS IS" BASIS,
+           WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+           See the License for the specific language governing permissions and
+           limitations under the License.
+        
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: transformers<6.0.0,>=5.0.0
+Requires-Dist: safetensors>=0.6.2
+Requires-Dist: numpy<3,>=1.26
+Requires-Dist: av>=14.0
+Requires-Dist: librosa>=0.11.0
+Requires-Dist: numba>=0.61.0
+Requires-Dist: soundfile>=0.12
+Requires-Dist: soxr>=0.5
+Requires-Dist: packaging
+Requires-Dist: fastapi>=0.115
+Requires-Dist: uvicorn>=0.30
+Requires-Dist: python-multipart>=0.0.9
+Provides-Extra: torch-runtime
+Requires-Dist: torch>=2.8; extra == "torch-runtime"
+Requires-Dist: torchaudio>=2.8; extra == "torch-runtime"
+Provides-Extra: flash-attn
+Requires-Dist: flash-attn; extra == "flash-attn"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Dynamic: license-file
+
+# MOSS-Transcribe-Diarize
+
+<br>
+
+<p align="center">
+  <img src="./assets/OpenMOSS_Logo.png" height="70" align="middle" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="./assets/mosi-logo.png" height="50" align="middle" />
+</p>
+
+<div align="center">
+<a href="https://trendshift.io/repositories/78061?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-78061" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/78061/daily?language=Python" alt="OpenMOSS%2FMOSS-Transcribe-Diarize | Trendshift" width="250" height="55"/></a>
+</div>
+<div align="center">
+  <a href="https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize"><img src="https://img.shields.io/badge/HuggingFace-Model-orange?logo=huggingface"></a>
+  <a href="https://arxiv.org/abs/2601.01554"><img src="https://img.shields.io/badge/arXiv-2601.01554-b31b1b?logo=arxiv"></a>
+  <a href="https://x.com/MosiAI_Official"><img src="https://img.shields.io/badge/Twitter-Follow-black?logo=x&amp"></a>
+</div>
+
+<p align="center">
+  <b>English</b> | <a href="./README_zh.md">中文</a>
+</p>
+
+MOSS-Transcribe-Diarize 0.9B is an open-source SOTA end-to-end audio understanding model for long-form multi-speaker transcription, diarization, timestamps, and acoustic event awareness. MOSS-Transcribe-Diarize Pro is a stronger model with higher overall performance and will be available through API access soon.
+
+## News
+
+* 2026-07-14: 🏆 MOSS-Transcribe-Diarize won first place in the 2nd MLC-SLM Challenge at INTERSPEECH 2026, covering 14 languages.
+* 2026-07-09: Open-sourced MOSS-Transcribe-Diarize 0.9B.
+
+## Contents
+
+- [Introduction](#introduction)
+- [Model Architecture](#model-architecture)
+- [Evaluation](#evaluation)
+  - [Objective Evaluation](#objective-evaluation)
+- [Quickstart](#quickstart)
+  - [Environment Setup](#environment-setup)
+  - [Python Usage](#python-usage)
+  - [Serve with SGLang Omni](#serve-with-sglang-omni)
+  - [Serve with vLLM](#serve-with-vllm)
+  - [Custom Prompt and Hotwords](#custom-prompt-and-hotwords)
+  - [Subtitle Web App](#subtitle-web-app)
+- [Citation](#citation)
+- [Star History](#star-history)
+
+## Introduction
+
+MOSS-Transcribe-Diarize is our flagship SOTA model family for turning real-world long-form audio into structured, speaker-aware transcripts in one pass. Instead of stitching together separate ASR and diarization systems, these models jointly perform speech transcription and speaker diarization, producing time-aligned text with precise timestamps and consistent speaker labels such as `[S01]`, `[S02]`, and beyond.
+
+Built for meetings, calls, podcasts, interviews, lectures, and video content, MOSS-Transcribe-Diarize is designed to handle long, messy, multi-speaker recordings where reliability matters. It can also emit optional acoustic event annotations, giving downstream systems a richer understanding of what happened, who spoke, and when.
+
+MOSS-Transcribe-Diarize supports 50+ languages.
+
+The model accepts raw audio and emits a compact timestamped transcript. The canonical output format is:
+
+```text
+[start_time][Sxx]transcribed speech[end_time]
+```
+
+Timestamps are expressed in seconds, and adjacent segments are concatenated into a single stream, for example:
+
+```text
+[0.48][S01]Welcome everyone[1.66][12.26][S02]The new transcription pipeline is ready for evaluation[13.81][14.36][S01]Great, include the diarization results in the report[18.76]
+```
+
+## Model Architecture
+
+<p align="center">
+  <img src="./assets/Model_Architecture.png" alt="MOSS-Transcribe-Diarize model architecture" width="90%" />
+</p>
+
+| Component | Specification |
+|---|---|
+| Text backbone | Qwen3-0.6B style causal decoder |
+| Audio encoder | Whisper-Medium encoder configuration |
+| Audio frontend | `WhisperFeatureExtractor`, 16 kHz, 80 mel bins, 30 s chunks |
+| Audio-text bridge | 4x temporal merge + MLP adaptor |
+| Fusion | Audio features replace <code>&lt;&#124;audio_pad&#124;&gt;</code> embeddings via `masked_scatter` |
+| Output format | Compact `[start][Sxx]text[end]` transcript with speaker tags such as `[S01]` |
+
+## Evaluation
+
+### Objective Evaluation
+
+We evaluate MOSS-Transcribe-Diarize using three objective metrics: Character Error Rate (CER), concatenated minimum-permutation Character Error Rate (cpCER), and Δcp. Lower is better for all metrics. Best results are bolded, second-best results are underlined. A dash (`-`) indicates that the result is unavailable.
+
+<div style="overflow-x: auto;">
+<table style="white-space: nowrap;">
+  <thead>
+    <tr>
+      <th rowspan="2" style="min-width: 220px;">Model</th>
+      <th colspan="3" style="text-align:center;">AISHELL&#8209;4</th>
+      <th colspan="3" style="text-align:center;">Alimeeting</th>
+      <th colspan="3" style="text-align:center;">Podcast</th>
+      <th colspan="3" style="text-align:center;">Movies</th>
+    </tr>
+    <tr>
+      <th>CER↓</th><th>cpCER↓</th><th>Δcp↓</th>
+      <th>CER↓</th><th>cpCER↓</th><th>Δcp↓</th>
+      <th>CER↓</th><th>cpCER↓</th><th>Δcp↓</th>
+      <th>CER↓</th><th>cpCER↓</th><th>Δcp↓</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="white-space: nowrap;">Doubao</td>
+      <td>18.18</td><td>27.86</td><td>9.68</td>
+      <td>25.25</td><td>37.57</td><td>12.31</td>
+      <td>7.93</td><td>10.54</td><td>2.61</td>
+      <td>9.94</td><td>30.88</td><td>20.94</td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;">ElevenLabs</td>
+      <td>19.58</td><td>37.95</td><td>18.36</td>
+      <td>25.70</td><td>36.69</td><td>10.99</td>
+      <td>8.50</td><td>11.34</td><td>2.85</td>
+      <td>11.49</td><td>17.85</td><td>6.37</td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;">GPT-4o</td>
+      <td>-</td><td>-</td><td>-</td>
+      <td>-</td><td>-</td><td>-</td>
+      <td>-</td><td>-</td><td>-</td>
+      <td>14.37</td><td>23.67</td><td>9.31</td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;">Gemini 2.5 Pro</td>
+      <td>42.70</td><td>53.42</td><td>10.72</td>
+      <td>27.43</td><td>41.64</td><td>14.21</td>
+      <td>7.38</td><td>10.23</td><td>2.85</td>
+      <td>15.46</td><td>24.15</td><td>8.69</td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;">Gemini 3 Pro</td>
+      <td>22.75</td><td>27.43</td><td>4.68</td>
+      <td>26.75</td><td>32.84</td><td>6.09</td>
+      <td>-</td><td>-</td><td>-</td>
+      <td>8.62</td><td>14.73</td><td><ins>6.11</ins></td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;">VIBEVOICE ASR</td>
+      <td>21.40</td><td>24.99</td><td>3.59</td>
+      <td>27.40</td><td>29.33</td><td>1.93</td>
+      <td>27.94</td><td>48.30</td><td>20.36</td>
+      <td>14.59</td><td>42.54</td><td>27.94</td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;"><b>MOSS Transcribe Diarize 0.9B</b></td>
+      <td><ins>14.84</ins></td><td><ins>15.83</ins></td><td><ins>0.99</ins></td>
+      <td><ins>24.86</ins></td><td><ins>22.17</ins></td><td><ins>-2.69</ins></td>
+      <td><ins>5.97</ins></td><td><ins>7.37</ins></td><td><b>1.40</b></td>
+      <td><ins>6.36</ins></td><td><ins>12.76</ins></td><td>6.40</td>
+    </tr>
+    <tr>
+      <td style="white-space: nowrap;"><b>MOSS Transcribe Diarize Pro</b></td>
+      <td><b>13.78</b></td><td><b>14.02</b></td><td><b>0.24</b></td>
+      <td><b>18.22</b></td><td><b>13.94</b></td><td><b>-4.27</b></td>
+      <td><b>4.46</b></td><td><b>6.97</b></td><td><ins>2.51</ins></td>
+      <td><b>5.86</b></td><td><b>11.78</b></td><td><b>5.92</b></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+## Quickstart
+
+### Environment Setup
+
+Use a clean Python environment. The project is tested with Python 3.12 and Transformers 5.x.
+
+```bash
+git clone https://github.com/OpenMOSS/MOSS-Transcribe-Diarize.git
+cd MOSS-Transcribe-Diarize
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install -e ".[torch-runtime]" --torch-backend=auto
+```
+
+For fine-tuning, see [FINETUNING.md](FINETUNING.md).
+
+### Python Usage
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoProcessor
+
+from moss_transcribe_diarize import parse_transcript
+from moss_transcribe_diarize.inference_utils import (
+    build_transcription_messages,
+    generate_transcription,
+    resolve_device,
+)
+
+model_id = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+audio_path = "audio.wav"
+
+device = resolve_device("auto")
+dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    trust_remote_code=True,
+    dtype="auto",
+).to(dtype=dtype).to(device).eval()
+processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+
+messages = build_transcription_messages(audio_path)
+result = generate_transcription(
+    model,
+    processor,
+    messages,
+    max_new_tokens=2048,
+    do_sample=False,
+    device=device,
+    dtype=dtype,
+)
+
+print(result["text"])
+
+for segment in parse_transcript(result["text"]):
+    print(segment.start, segment.end, segment.speaker, segment.text)
+```
+
+The message flow follows the common Qwen multimodal pattern. The chat template is loaded from the model by `AutoProcessor`:
+
+1. `processor.apply_chat_template(messages, tokenize=False)` renders text with audio placeholders.
+2. `process_audio_info(messages, sampling_rate)` loads audio waveforms from the same messages.
+3. `processor(text=text, audio=audios)` computes Whisper input features and expands audio placeholders.
+4. `model.generate(...)` produces timestamped transcription and diarization text.
+
+### Serve with SGLang Omni
+
+[SGLang Omni](https://github.com/sgl-project/sglang-omni) is the recommended serving backend for MOSS-Transcribe-Diarize, providing optimized long-form audio inference through the OpenAI-compatible `/v1/audio/transcriptions` endpoint.
+
+SGLang Omni currently targets CUDA 13 environments. Please follow the official [installation guide](https://github.com/sgl-project/sglang-omni/blob/main/docs/get_started/installation.md) for the supported setup. For CUDA 12 environments, the vLLM workflow is also available below.
+
+Download the model:
+
+```bash
+hf download OpenMOSS-Team/MOSS-Transcribe-Diarize
+```
+
+Serve the model:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000 \
+  --max-running-requests 16 \
+  --cuda-graph-max-bs 16 \
+  --mem-fraction-static 0.80
+```
+
+Use `response_format=verbose_json` when you need parsed speaker segments. `json` returns the raw transcript text only.
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  -F file=@audio.wav \
+  -F response_format=verbose_json
+```
+
+```python
+import requests
+
+with open("audio.wav", "rb") as f:
+    resp = requests.post(
+        "http://localhost:8000/v1/audio/transcriptions",
+        data={
+            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "response_format": "verbose_json",
+        },
+        files={"file": ("audio.wav", f, "audio/wav")},
+        timeout=300,
+    )
+
+resp.raise_for_status()
+payload = resp.json()
+print(payload["text"])
+for segment in payload.get("segments", []):
+    print(f"[{segment['start']:.2f}-{segment['end']:.2f}] {segment['text']}")
+```
+
+For longer multi-speaker audio, raise `max_new_tokens` so the decoder can finish the full diarized transcript:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  -F file=@audio.wav \
+  -F response_format=verbose_json \
+  -F max_new_tokens=65536
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `file` | file | required | Audio file uploaded as multipart form data |
+| `model` | string | server default | Model identifier |
+| `language` | string | unset | Optional language hint |
+| `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
+| `temperature` | float | model default (`0.0`) | Sampling temperature |
+| `max_new_tokens` | int | `5120` | Max generated tokens; raise for long audio, for example `65536` |
+| `prompt` | string | unset | Optional instruction override; omit to use the built-in transcribe+diarize prompt |
+
+For benchmarking, performance numbers, and implementation details, see the [SGLang Omni cookbook](https://github.com/sgl-project/sglang-omni/blob/main/docs/cookbook/moss_transcribe_diarize.md). The following single-H100 results are reported for short- and long-sequence multi-speaker ASR tasks.
+
+`movies` short-sequence ASR:
+
+| Concurrency | Throughput (req/s) | Mean latency (s) | RTF mean | audio_s/s |
+|---:|---:|---:|---:|---:|
+| 1 | 2.57 | 0.388 | 0.0612 | 29.76 |
+| 2 | 4.89 | 0.409 | 0.0659 | 56.55 |
+| 4 | 6.62 | 0.513 | 0.0790 | 76.64 |
+| 8 | 6.80 | 0.533 | 0.0810 | 78.70 |
+| 16 | 7.08 | 0.659 | 0.0922 | 81.98 |
+
+`aishell4_long` long-sequence ASR:
+
+| Concurrency | Throughput (req/s) | Mean latency (s) | RTF mean | audio_s/s |
+|---:|---:|---:|---:|---:|
+| 1 | 0.022 | 45.2 | 0.0197 | 50.64 |
+| 2 | 0.032 | 60.7 | 0.0265 | 74.25 |
+| 4 | 0.036 | 105.6 | 0.0461 | 81.64 |
+| 8 | 0.040 | 172.6 | 0.0754 | 90.62 |
+| 16 | 0.043 | 282.8 | 0.1237 | 98.83 |
+
+### Serve with vLLM
+
+MOSS-Transcribe-Diarize supports vLLM serving through the OpenAI-compatible transcription API. Use a pinned vLLM nightly build that includes the MOSS-Transcribe-Diarize model registration. Choose one of the following commands: for CUDA 12 environments, use `cu129`; for CUDA 13 environments, use `cu130`.
+
+```bash
+uv pip install -U vllm \
+  --torch-backend=auto \
+  --extra-index-url https://wheels.vllm.ai/68b4a1d582818e67adc903bf1b8fc5a5447da2fa/cu129
+```
+
+or:
+
+```bash
+uv pip install -U vllm \
+  --torch-backend=auto \
+  --extra-index-url https://wheels.vllm.ai/68b4a1d582818e67adc903bf1b8fc5a5447da2fa/cu130
+```
+
+```bash
+vllm serve OpenMOSS-Team/MOSS-Transcribe-Diarize --trust-remote-code
+```
+
+```bash
+curl http://localhost:8000/v1/audio/transcriptions \
+  -F model="OpenMOSS-Team/MOSS-Transcribe-Diarize" \
+  -F file=@"audio.wav" \
+  -F response_format="json" \
+  -F temperature="0"
+```
+
+### Custom Prompt and Hotwords
+
+The default prompt is optimized for timestamped transcription and speaker diarization:
+
+```text
+请将音频转写为文本，每一段需以起始时间戳和说话人编号（[S01]、[S02]、[S03]…）开头，正文为对应的语音内容，并在段末标注结束时间戳，以清晰标明该段语音范围。
+```
+
+To add hotwords, append a short hint to the default prompt:
+
+```text
+请将音频转写为文本，每一段需以起始时间戳和说话人编号（[S01]、[S02]、[S03]…）开头，正文为对应的语音内容，并在段末标注结束时间戳，以清晰标明该段语音范围。热词提示：热词1, 热词2, 热词3
+```
+
+More prompt recipes are available in [examples/prompts.md](examples/prompts.md). The same prompt can be passed to `build_transcription_messages`, `mtd-subtitle`, and `mtd-subtitle-web`.
+
+### Subtitle Web App
+
+The package also includes a local subtitle workflow for upload, review, subtitle export, and optional FFmpeg burn-in:
+
+```bash
+mtd-subtitle-web \
+  --model OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --host 127.0.0.1 \
+  --port 7860
+```
+
+Open `http://127.0.0.1:7860`, upload an audio/video file, review the parsed subtitle segments, then download JSON/SRT/ASS or burn an MP4 if `ffmpeg` and `ffprobe` are available on `PATH`.
+
+For batch processing:
+
+```bash
+mtd-subtitle /path/to/input.mp4 \
+  --model OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --out-dir runs/example \
+  --render
+```
+
+## Citation
+
+If you use MOSS-Transcribe-Diarize, please cite the technical report:
+
+```bibtex
+@misc{moss_transcribe_diarize_2026,
+  title={MOSS Transcribe Diarize Technical Report},
+  author={{MOSI.AI}},
+  year={2026},
+  eprint={2601.01554},
+  archivePrefix={arXiv},
+  primaryClass={cs.SD},
+  url={https://arxiv.org/abs/2601.01554}
+}
+```
+
+
+## Star History
+
+<a href="https://www.star-history.com/?type=date&repos=OpenMOSS%2FMOSS-Transcribe-Diarize">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=OpenMOSS/MOSS-Transcribe-Diarize&type=date&theme=dark&legend=top-left&sealed_token=Il8QLPD_5o0tps1zgTe1M-lkjb5mdSSINKxV0Dyp1nSc4afmHK0WBqJ02wxe0gXWTBhOwjvUwCn37qbCf1qexm0U1nGmYuY8PDb7XXBJBuynMc_I1QB71w-4QzwfsFgFojRyStdroH1Agu4ISBD5ct1_X5ISNNk5dCu-0NM3OTZ41mqMPjq5Hn0kB6zY" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=OpenMOSS/MOSS-Transcribe-Diarize&type=date&legend=top-left&sealed_token=Il8QLPD_5o0tps1zgTe1M-lkjb5mdSSINKxV0Dyp1nSc4afmHK0WBqJ02wxe0gXWTBhOwjvUwCn37qbCf1qexm0U1nGmYuY8PDb7XXBJBuynMc_I1QB71w-4QzwfsFgFojRyStdroH1Agu4ISBD5ct1_X5ISNNk5dCu-0NM3OTZ41mqMPjq5Hn0kB6zY" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=OpenMOSS/MOSS-Transcribe-Diarize&type=date&legend=top-left&sealed_token=Il8QLPD_5o0tps1zgTe1M-lkjb5mdSSINKxV0Dyp1nSc4afmHK0WBqJ02wxe0gXWTBhOwjvUwCn37qbCf1qexm0U1nGmYuY8PDb7XXBJBuynMc_I1QB71w-4QzwfsFgFojRyStdroH1Agu4ISBD5ct1_X5ISNNk5dCu-0NM3OTZ41mqMPjq5Hn0kB6zY" />
+ </picture>
+</a>

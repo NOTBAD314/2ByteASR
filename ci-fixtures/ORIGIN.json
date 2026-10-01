@@ -1,0 +1,10 @@
+{
+  "kind": "original synthetic QA speech",
+  "human_speech": false,
+  "text": "今天测试兔白字幕。我们使用本地模型识别中文。字幕可以编辑，剪切后保存工程，最后导出视频。",
+  "origin": "Previously authorized local Windows SAPI Chinese diagnostic sample used by repair; no new synthesis/cloud request",
+  "sha256": "2415e97acdf48b41d86f1f3fc9d747138b0e1d87ea5722da0c175d038c27cfef",
+  "use": "Single authorized private native macOS CI recognition/media test",
+  "public_source_C": false,
+  "public_installer_payload": false
+}

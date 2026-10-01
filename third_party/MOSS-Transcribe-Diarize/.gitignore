@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Local model artifacts.
+pretrained/
+outputs/
+examples/*
+!examples/*.md
+runs/
+
+# Large or transient runtime files.
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.log

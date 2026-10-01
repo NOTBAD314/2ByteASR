@@ -1,0 +1,1329 @@
+{
+  "schema": 1,
+  "profiles": {
+    "洛克王国：世界": {
+      "identity": "洛克王国世界",
+      "updated": "2026-07-20",
+      "lexicons": [
+        "lexicons/rocom_skills.json",
+        "lexicons/rocom_spirits.json"
+      ],
+      "blocked_mappings": [
+        [
+          "暖气",
+          "暖机"
+        ],
+        [
+          "力争",
+          "钧势"
+        ],
+        [
+          "力针",
+          "钧势"
+        ],
+        [
+          "立针",
+          "钧势"
+        ]
+      ],
+      "terms": [
+        {
+          "canonical": "洛克王国",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "炮米花",
+          "aliases": [
+            "爆米花",
+            "泡米花"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "愿力",
+          "aliases": [
+            "怨力"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "愿力冲击",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "马头",
+          "aliases": [
+            "码头"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "彩虹独角兽",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "首领化",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "速冻",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "挂速冻",
+          "aliases": [
+            "挂树洞"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "闪燃",
+          "aliases": [
+            "闪人"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "抽枝",
+          "aliases": [
+            "抽支",
+            "抽职",
+            "抽脂",
+            "抽之",
+            "抽汁"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "钧势",
+          "aliases": [],
+          "category": "game_term",
+          "source": "rocom_bwiki",
+          "confirmed": true
+        },
+        {
+          "canonical": "力增",
+          "aliases": [
+            "力争",
+            "力针",
+            "立针"
+          ],
+          "category": "spoken_skill_abbreviation",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "倾泻",
+          "aliases": [
+            "清线",
+            "倾斜"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "迪莫",
+          "aliases": [
+            "迪毛",
+            "底墨",
+            "敌毛"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "画间沉铁兽",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "吓退",
+          "aliases": [
+            "下退",
+            "下推"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "折射",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "高温回火",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "持续高温",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "淬火",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "润泽",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "水炮",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "水泡盾",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "洗礼",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "食蚁兽",
+          "aliases": [
+            "十蚁兽",
+            "石乙兽"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "深渊蛙",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "针叶巡林",
+          "aliases": [
+            "针叶寻灵",
+            "针叶巡灵",
+            "正夜巡林",
+            "正夜巡灵",
+            "真夜巡灵"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "食尘短绒",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "叠势",
+          "aliases": [
+            "蝶式",
+            "叠式"
+          ],
+          "category": "game_term",
+          "source": "user_verified_rework_2026_09_20",
+          "confirmed": true
+        },
+        {
+          "canonical": "冰点",
+          "aliases": [
+            "兵点"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "听桥",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "影袭",
+          "aliases": [
+            "隐袭"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "藤绞",
+          "aliases": [
+            "藤角"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "力量增效",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "卡瓦重",
+          "aliases": [
+            "他二重"
+          ],
+          "category": "spirit",
+          "source": "user_verified+rocom_bwiki",
+          "confirmed": true
+        },
+        {
+          "canonical": "跺地",
+          "aliases": [
+            "落地"
+          ],
+          "category": "skill",
+          "source": "user_verified+rocom_bwiki",
+          "confirmed": true
+        },
+        {
+          "canonical": "光合治愈",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "光合",
+          "aliases": [
+            "光盒"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "飞飞钥",
+          "aliases": [
+            "菲菲药",
+            "菲菲要",
+            "飞飞药",
+            "飞飞要",
+            "飞飞曜",
+            "狒狒药"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "草鹿",
+          "aliases": [
+            "草庐",
+            "草卢",
+            "草路"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "风隐",
+          "aliases": [
+            "封印",
+            "风影"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "地武队",
+          "aliases": [
+            "帝武队",
+            "帝五队",
+            "地五队",
+            "弟五队",
+            "第五队",
+            "第五对",
+            "第五堆"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "嗜波螺",
+          "aliases": [
+            "四波罗",
+            "四波螺",
+            "嗜波罗",
+            "嗜菠萝",
+            "吃菠萝"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "夜枭",
+          "aliases": [
+            "夜宵"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "颅主",
+          "aliases": [
+            "炉主",
+            "卤煮"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "暗夜颅主",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "棋绮后",
+          "aliases": [
+            "七七陛下",
+            "琪琪陛下",
+            "奇迹陛下"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "锁芯",
+          "aliases": [],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "短绒",
+          "aliases": [
+            "短荣"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "没费",
+          "aliases": [
+            "没废"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        },
+        {
+          "canonical": "愿不到",
+          "aliases": [
+            "怨不到"
+          ],
+          "category": "game_term",
+          "source": "user_verified",
+          "confirmed": true
+        }
+      ]
+    },
+    "绝区零": {
+      "identity": "绝区零",
+      "updated": "2026-07-26",
+      "terms": [
+        {
+          "canonical": "绝区零",
+          "aliases": [],
+          "category": "game_term",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "绳匠",
+          "aliases": [
+            "法厄同"
+          ],
+          "category": "game_term",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "哲",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "铃",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "伊埃斯",
+          "aliases": [
+            "Eous"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "安比",
+          "aliases": [
+            "安比·德玛拉",
+            "安比德玛拉"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "零号·安比",
+          "aliases": [
+            "零号安比"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "妮可",
+          "aliases": [
+            "妮可·德玛拉",
+            "妮可德玛拉"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "比利",
+          "aliases": [
+            "比利·奇德",
+            "星徽·比利",
+            "星徽比利"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "猫又",
+          "aliases": [
+            "猫宫又奈"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "珂蕾妲",
+          "aliases": [
+            "珂蕾妲·贝洛伯格"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "安东",
+          "aliases": [
+            "安东·伊万诺夫"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "本",
+          "aliases": [
+            "本·比格"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "格莉丝",
+          "aliases": [
+            "格莉丝·霍华德"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "可琳",
+          "aliases": [
+            "可琳·威克斯"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "莱卡恩",
+          "aliases": [
+            "冯·莱卡恩",
+            "冯莱卡恩"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "丽娜",
+          "aliases": [
+            "亚历山德丽娜",
+            "亚历山德丽娜·莎芭丝缇安"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "艾莲",
+          "aliases": [
+            "艾莲·乔"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "苍角",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "柳",
+          "aliases": [
+            "月城柳"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "悠真",
+          "aliases": [
+            "浅羽悠真"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "雅",
+          "aliases": [
+            "星见雅"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "「11号」",
+          "aliases": [
+            "11号",
+            "夏潾"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "「扳机」",
+          "aliases": [
+            "扳机"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "「席德」",
+          "aliases": [
+            "席德"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "奥菲丝&「鬼火」",
+          "aliases": [
+            "奥菲丝",
+            "鬼火"
+          ],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "朱鸢",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "青衣",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "简",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "赛斯",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "莱特",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "柏妮思",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "凯撒",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "波可娜",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "雨果",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "薇薇安",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "耀嘉音",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "伊芙琳",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "仪玄",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "橘福福",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "柚叶",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "爱丽丝",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "卢西娅",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "伊德海莉",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "琉音",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "般岳",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "叶瞬光",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "照",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "千夏",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "爱芮",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "南宫羽",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "希希芙",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "普罗米娅",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "维琳娜",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "诺姆",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "真斗",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "潘引壶",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "枪枪",
+          "aliases": [],
+          "category": "character",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "新艾利都",
+          "aliases": [],
+          "category": "game_term",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "空洞",
+          "aliases": [],
+          "category": "game_term",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "代理人",
+          "aliases": [],
+          "category": "game_term",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "狡兔屋",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "白祇重工",
+          "aliases": [
+            "白只重工"
+          ],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "维多利亚家政",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "对空六课",
+          "aliases": [
+            "对空洞事务特别行动部第六课"
+          ],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "奥波勒斯小队",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "卡吕冬之子",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "云岿山",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "怪啖屋",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "反舌鸟",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "天琴座",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "治安局",
+          "aliases": [],
+          "category": "faction",
+          "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        }
+      ],
+      "blocked_mappings": [
+        [
+          "白只重工",
+          "白祇重工"
+        ]
+      ],
+      "lexicons": [
+        "lexicons/zenless_characters.json",
+        "lexicons/zenless_terms.json"
+      ]
+    },
+    "原神": {
+      "identity": "原神",
+      "updated": "2026-07-31",
+      "terms": [
+        {
+          "canonical": "原神",
+          "aliases": [],
+          "category": "game_term",
+          "source": "official",
+          "confirmed": true
+        },
+        {
+          "canonical": "派蒙",
+          "aliases": [],
+          "category": "character",
+          "source": "official",
+          "confirmed": true
+        },
+        {
+          "canonical": "若娜瓦",
+          "aliases": [
+            "若纳瓦"
+          ],
+          "category": "character",
+          "source": "genshin_7.0_public_sources_2026-07-31",
+          "confirmed": true
+        },
+        {
+          "canonical": "菲林斯",
+          "aliases": [],
+          "category": "character",
+          "source": "official_character_trailer",
+          "confirmed": true
+        },
+        {
+          "canonical": "伊涅芙",
+          "aliases": [
+            "伊涅福",
+            "伊涅弗"
+          ],
+          "category": "character",
+          "source": "genshin_7.0_public_sources_2026-07-31",
+          "confirmed": true
+        },
+        {
+          "canonical": "薇斯纳",
+          "aliases": [
+            "薇丝娜"
+          ],
+          "category": "character",
+          "source": "genshin_7.0_public_sources_2026-07-31",
+          "confirmed": true
+        },
+        {
+          "canonical": "达妮卡",
+          "aliases": [
+            "达尼卡"
+          ],
+          "category": "character",
+          "source": "genshin_7.0_public_sources_2026-07-31",
+          "confirmed": true
+        },
+        {
+          "canonical": "奥黛塔",
+          "aliases": [],
+          "category": "character",
+          "source": "genshin_7.0_public_sources_2026-07-31",
+          "confirmed": true
+        },
+        {
+          "canonical": "阿蕾奇诺",
+          "aliases": [
+            "阿雷奇诺"
+          ],
+          "category": "character",
+          "source": "official",
+          "confirmed": true
+        },
+        {
+          "canonical": "至冬",
+          "aliases": [
+            "至东",
+            "志东",
+            "智东"
+          ],
+          "replacement_mode": "global",
+          "category": "region",
+          "source": "official",
+          "confirmed": true
+        },
+        {
+          "canonical": "纪行",
+          "aliases": [
+            "骑行"
+          ],
+          "replacement_mode": "global",
+          "category": "game_system",
+          "source": "official",
+          "confirmed": true
+        },
+        {
+          "canonical": "坎瑞亚",
+          "aliases": [
+            "凯瑞亚"
+          ],
+          "category": "region",
+          "source": "official",
+          "confirmed": true
+        },
+        {
+          "canonical": "星扩散",
+          "aliases": [],
+          "category": "game_mechanic",
+          "source": "genshin_7.0_public_sources_2026-07-31",
+          "confirmed": true
+        }
+      ]
+    },
+    "鹰角嘉年华": {
+      "identity": "鹰角嘉年华",
+      "updated": "2026-08-03",
+      "title_triggers": [
+        "鹰角嘉年华"
+      ],
+      "terms": [
+        {
+          "canonical": "鹰角嘉年华",
+          "aliases": [
+            "英角嘉年华"
+          ],
+          "replacement_mode": "global",
+          "category": "event",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "终末地",
+          "aliases": [
+            "周末地",
+            "周末帝",
+            "周末的"
+          ],
+          "replacement_mode": "global",
+          "category": "game_term",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "舟的洞洞鞋",
+          "aliases": [
+            "周的洞洞鞋"
+          ],
+          "replacement_mode": "global",
+          "category": "spoken_game_abbreviation",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "舟的博士款",
+          "aliases": [
+            "周的博士款"
+          ],
+          "replacement_mode": "global",
+          "category": "spoken_game_abbreviation",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "舟的斗篷毯",
+          "aliases": [
+            "周的斗篷毯"
+          ],
+          "replacement_mode": "global",
+          "category": "spoken_game_abbreviation",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "柄图",
+          "aliases": [
+            "饼图"
+          ],
+          "replacement_mode": "global",
+          "category": "merchandise_term",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "同柄图",
+          "aliases": [
+            "红饼图"
+          ],
+          "replacement_mode": "global",
+          "category": "merchandise_term",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "不织布",
+          "aliases": [
+            "布织布"
+          ],
+          "replacement_mode": "global",
+          "category": "material",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "捶背",
+          "aliases": [
+            "锤背"
+          ],
+          "replacement_mode": "global",
+          "category": "common_collocation",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "不戴抑制器",
+          "aliases": [
+            "不带抑制器",
+            "不带移植器",
+            "不带一只气"
+          ],
+          "replacement_mode": "global",
+          "category": "game_collocation",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "正比",
+          "aliases": [
+            "真笔"
+          ],
+          "replacement_mode": "global",
+          "category": "art_term",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        },
+        {
+          "canonical": "文武双全气球小套组",
+          "aliases": [
+            "文武双全气球小透足",
+            "文武双全气球小偷族"
+          ],
+          "replacement_mode": "global",
+          "category": "merchandise_name",
+          "source": "user_verified_manual_srt_2026-08-03",
+          "confirmed": true
+        }
+      ]
+    },
+    "明日方舟": {
+      "lexicons": [
+        "lexicons/arknights_operators.json",
+        "lexicons/arknights_terms.json"
+      ]
+    }
+  }
+}

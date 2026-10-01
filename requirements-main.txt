@@ -1,0 +1,25 @@
+# Small workbench runtime.  ASR engines are deliberately not installed here:
+# clicking Download in the model workshop installs that model's Python runtime
+# together with its weights.  This keeps first setup usable without MOSS,
+# FireRed, Qwen, FunASR or an NVIDIA GPU.
+numpy==2.2.6
+pypinyin==0.55.0
+requests==2.33.0
+websockets==16.1.1
+jieba==0.42.1
+PySide6==6.9.2
+QtAwesome==1.4.0
+# 四十轮：OSS 临时音频中转（Qwen filetrans provider 需要；已随主 venv 安装）。
+oss2==2.19.1
+
+# huggingface_hub / transformers versions are controlled exclusively by
+# dependencies.lock.json (environments.main / environments.moss).  Never pin
+# an incompatible hub here; the deployment contract must satisfy >=1.5.0,<2.0.
+
+# Test/runtime tooling used by run_tests.bat and CI.
+pytest==9.1.1
+psutil==7.2.2
+av==17.1.0
+pycaw==20251023
+comtypes==1.4.16
+jsonschema==4.26.0

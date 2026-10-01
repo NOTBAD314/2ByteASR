@@ -1,0 +1,356 @@
+{
+  "version": 1,
+  "negative_rules": [
+    "字芯在稳定阅读阶段保持实体；根据主题选择印刷、金属或磷光，描边层数与渐变不再强制统一。",
+    "禁止冰蓝框加白字作为所有方向的共同模板；结构、字形、材质必须有差异",
+    "禁止emoji、随机星星、无语义粒子、整屏闪光、廉价弹跳、clearProps all",
+    "行数和构图适配真实文字与当前主题；阅读清晰，允许主题动作、有限repeat/yoyo、steps及字内纹理，短cue减少事件，退出在cue内完成，结束硬清场。",
+    "真实Joker插画与角色须有辨识度，图像或原创SVG按质量选择；不把某次失败变成全局造型禁令。用户当前要求高于house style。"
+  ],
+  "choices": [],
+  "status": "previous_candidates_rejected",
+  "trial_runs": [
+    {
+      "candidate_id": "grok-open-keel",
+      "provider": "grok_account",
+      "model": "grok-4.6",
+      "spec_version": "caption-design-spec-1",
+      "design_spec": {
+        "version": "caption-design-spec-1",
+        "name": "琥珀舷刃",
+        "concept": "沿木筏舷缘的开放折面托底，暖琥珀字芯配松墨内描。入场规划为一次折射扫描锁定，保持只留局部边缘高光。",
+        "typography": {
+          "family": "Smiley Sans",
+          "weight": 800,
+          "size": 140,
+          "tracking": 0.8,
+          "tilt": -1
+        },
+        "fill_gradient": {
+          "angle": 176,
+          "colors": [
+            "#FFF0CB",
+            "#E9B362",
+            "#C08442"
+          ]
+        },
+        "inner_dark_stroke": {
+          "color": "#183B33",
+          "width": 3.6
+        },
+        "outer_light_stroke": {
+          "color": "#F8E0B1",
+          "width": 5.6
+        },
+        "shadow": {
+          "color": "#0C1916",
+          "opacity": 0.24,
+          "blur": 16,
+          "y": 5
+        },
+        "backplate": {
+          "structure": "signal_fin",
+          "color": "#263C35",
+          "edge": "#C79B5D",
+          "height": 132,
+          "width_percent": 70
+        },
+        "material": {
+          "kind": "brushed",
+          "intensity": 0.08
+        },
+        "accent_elements": [
+          {
+            "kind": "facet",
+            "color": "#E6BD79"
+          }
+        ],
+        "entrance": {
+          "semantic": "refraction_scan",
+          "duration_ms": 280
+        },
+        "hold": {
+          "semantic": "local_highlight",
+          "intensity": 0.08
+        },
+        "exit": {
+          "semantic": "hard_hide",
+          "duration_ms": 0
+        },
+        "performance_level": "low",
+        "forbidden_patterns": [
+          "冰蓝矩形框配浅色或白色字芯",
+          "浅色作为第一圈描边导致字缘发虚",
+          "emoji、随机星星、无语义粒子、整屏闪光",
+          "廉价弹跳与clearProps all",
+          "全屏暗板压住游戏原画面",
+          "结束残留上一句字幕"
+        ],
+        "asset_requirements": []
+      },
+      "screenshots": [
+        "examples/web-themes/provider-static-20260911/grok-open-keel/game.png",
+        "examples/web-themes/provider-static-20260911/grok-open-keel/detail-1to1.png"
+      ],
+      "user_selected": false,
+      "user_rating": 3,
+      "accepted": false,
+      "verification": {
+        "inner_is_theme_dark": true,
+        "outer_is_wider": true,
+        "stroke_contrast": true,
+        "brightest_fill_visible": true,
+        "gradient_low_stop_luminance": 0.2810234343888147,
+        "font_loaded": true,
+        "single_line": true,
+        "unique_semantic_text": true,
+        "no_script_errors": true,
+        "text_in_safe_zone": true,
+        "transparent_outside_caption": true,
+        "visible_pixels": true
+      },
+      "formal_theme_applied": false,
+      "animation_export": "not requested before selection",
+      "rating_source": "用户2026-09-11原始要求；三稿全部负面"
+    },
+    {
+      "candidate_id": "codex-jade-ticket",
+      "provider": "codex_cli",
+      "model": "CLI default (runtime name unavailable)",
+      "spec_version": "caption-design-spec-1",
+      "design_spec": {
+        "version": "caption-design-spec-1",
+        "name": "潮汐压印舷签",
+        "concept": "以游戏场景的水绿色为环境基底，用暖玉字芯与深青压印票根建立冷暖分层；短促压力锁定构成签名效果。",
+        "typography": {
+          "family": "ZCOOL QingKe HuangYou",
+          "weight": 700,
+          "size": 132,
+          "tracking": 1,
+          "tilt": -1
+        },
+        "fill_gradient": {
+          "angle": 90,
+          "colors": [
+            "#FFF1B8",
+            "#E8C878",
+            "#B87935"
+          ]
+        },
+        "inner_dark_stroke": {
+          "color": "#163C3B",
+          "width": 4
+        },
+        "outer_light_stroke": {
+          "color": "#BDE8D2",
+          "width": 7
+        },
+        "shadow": {
+          "color": "#102D2C",
+          "opacity": 0.28,
+          "blur": 16,
+          "y": 5
+        },
+        "backplate": {
+          "structure": "pressed_ticket",
+          "color": "#173F3A",
+          "edge": "#79BBA2",
+          "height": 126,
+          "width_percent": 74
+        },
+        "material": {
+          "kind": "woven",
+          "intensity": 0.11
+        },
+        "accent_elements": [
+          {
+            "kind": "seal",
+            "color": "#D89B45"
+          },
+          {
+            "kind": "notch",
+            "color": "#9BD1B9"
+          }
+        ],
+        "entrance": {
+          "semantic": "pressure_stamp",
+          "duration_ms": 280
+        },
+        "hold": {
+          "semantic": "local_highlight",
+          "intensity": 0.07
+        },
+        "exit": {
+          "semantic": "hard_hide",
+          "duration_ms": 0
+        },
+        "performance_level": "low",
+        "forbidden_patterns": [
+          "浅色描边直接接触字芯",
+          "冰蓝框与白字的通用模板组合",
+          "随机星星、emoji或无语义粒子",
+          "整屏闪光与全屏暗板",
+          "弹跳、持续抖动或大幅缩放",
+          "多行字幕或超出底部安全区",
+          "结束后残留上一句字幕",
+          "依赖多重text-shadow伪造全部描边"
+        ],
+        "asset_requirements": []
+      },
+      "screenshots": [
+        "examples/web-themes/provider-static-20260911/codex-jade-ticket/game.png",
+        "examples/web-themes/provider-static-20260911/codex-jade-ticket/detail-1to1.png"
+      ],
+      "user_selected": false,
+      "user_rating": 3,
+      "accepted": false,
+      "verification": {
+        "inner_is_theme_dark": true,
+        "outer_is_wider": true,
+        "stroke_contrast": true,
+        "brightest_fill_visible": true,
+        "gradient_low_stop_luminance": 0.24122132935742624,
+        "font_loaded": true,
+        "single_line": true,
+        "unique_semantic_text": true,
+        "no_script_errors": true,
+        "text_in_safe_zone": true,
+        "transparent_outside_caption": true,
+        "visible_pixels": true
+      },
+      "formal_theme_applied": false,
+      "animation_export": "not requested before selection",
+      "rating_source": "用户2026-09-11原始要求；三稿全部负面"
+    },
+    {
+      "candidate_id": "agy-warm-amber",
+      "provider": "antigravity",
+      "model": "gemini-3.8-flash-high",
+      "spec_version": "caption-design-spec-1",
+      "design_spec": {
+        "version": "caption-design-spec-1",
+        "name": "压印票根-温玉琥珀",
+        "concept": "无工具看图模式：适配水绿场景，以温润玉瓷与金石印信为意象，暖琥珀字芯反衬深绿底板并经压印稳定锁定",
+        "typography": {
+          "family": "Smiley Sans",
+          "weight": 800,
+          "size": 124,
+          "tracking": 0.5,
+          "tilt": 0
+        },
+        "fill_gradient": {
+          "angle": 180,
+          "colors": [
+            "#FFFFFF",
+            "#FFF1D0",
+            "#F5CB84"
+          ]
+        },
+        "inner_dark_stroke": {
+          "color": "#122B23",
+          "width": 3.5
+        },
+        "outer_light_stroke": {
+          "color": "#FFF8E7",
+          "width": 6
+        },
+        "shadow": {
+          "color": "#071713",
+          "opacity": 0.25,
+          "blur": 14,
+          "y": 4
+        },
+        "backplate": {
+          "structure": "pressed_ticket",
+          "color": "#10231F",
+          "edge": "#3B695B",
+          "height": 118,
+          "width_percent": 75
+        },
+        "material": {
+          "kind": "ceramic",
+          "intensity": 0.12
+        },
+        "accent_elements": [
+          {
+            "kind": "notch",
+            "color": "#DDAA55"
+          },
+          {
+            "kind": "seal",
+            "color": "#F3CA7E"
+          }
+        ],
+        "entrance": {
+          "semantic": "pressure_stamp",
+          "duration_ms": 260
+        },
+        "hold": {
+          "semantic": "local_highlight",
+          "intensity": 0.06
+        },
+        "exit": {
+          "semantic": "hard_hide",
+          "duration_ms": 0
+        },
+        "performance_level": "low",
+        "forbidden_patterns": [
+          "浅色第一圈描边导致字芯边缘发虚",
+          "冰蓝框加白字通用套路模板",
+          "无语义星星、粒子与全屏闪烁",
+          "结束残留或非硬隐藏退出动画"
+        ],
+        "asset_requirements": []
+      },
+      "screenshots": [
+        "examples/web-themes/provider-static-20260911/agy-warm-amber/game.png",
+        "examples/web-themes/provider-static-20260911/agy-warm-amber/detail-1to1.png"
+      ],
+      "user_selected": false,
+      "user_rating": 3,
+      "accepted": false,
+      "verification": {
+        "inner_is_theme_dark": true,
+        "outer_is_wider": true,
+        "stroke_contrast": true,
+        "brightest_fill_visible": true,
+        "gradient_low_stop_luminance": 0.6379029239125025,
+        "font_loaded": true,
+        "single_line": true,
+        "unique_semantic_text": true,
+        "no_script_errors": true,
+        "text_in_safe_zone": true,
+        "transparent_outside_caption": true,
+        "visible_pixels": true
+      },
+      "formal_theme_applied": false,
+      "animation_export": "not requested before selection",
+      "rating_source": "用户2026-09-11原始要求；三稿全部负面"
+    }
+  ],
+  "accepted_history": [
+    {
+      "name": "旧版 Balatro CRT Mult",
+      "acceptance": "用户在本轮明确列作较满意的历史参考",
+      "path": "assets/theme-references/balatro-crt-mult.html",
+      "sha256": "6e6351212035df9cf26a8dab21d469a224a10e07fe617b456ff32577cc0397e9"
+    }
+  ],
+  "revision_feedback": [
+    {
+      "date": "2026-09-11",
+      "samples": "balatro-material-20260911/A,B,C",
+      "accepted": false,
+      "user_rating_approx": 7.5,
+      "source": "用户物件动作重制全文；不是对本轮新稿的评分",
+      "feedback": "先无字HTML装置。A抽牌翻面后油墨落版450–580ms、套色归位、安静纸纹、翻回收牌；禁止横擦文字和纸面金属光扫。B实测美元字面居中、金币落槽后冲压浮雕、慢速分层不等间隔反光、松模旋币弹出；禁止CRT纹与周期相同高光。C保留实体橄榄CRT，亮线开机、局部不对称切片锁定、玻璃内低强度扫描噪声、压线收点余辉。三稿不统一clipPath/repeat/yoyo/bounce，不增加运行时网络。"
+    },
+    {
+      "date": "2026-09-11",
+      "samples": "balatro-20260911/A,B,C",
+      "accepted": false,
+      "source": "用户本轮三张截图与直接反馈",
+      "feedback": "入退场单一难看；配色字体不搭；使用本地Cubic字；纸牌/金币/16bit入场；持续电视杂色扫描与字面互动；C常态主体不能整体透明；先设计好无字HTML装置。"
+    }
+  ]
+}

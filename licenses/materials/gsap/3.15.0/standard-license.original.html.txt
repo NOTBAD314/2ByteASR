@@ -1,0 +1,2053 @@
+<!DOCTYPE html>
+<html lang="en-US" dir="ltr">
+	<head>
+		<meta charset="utf-8">
+        
+		<title>Standard License - GSAP</title>
+		
+			<!-- Google Analytics -->
+<script>
+(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+})(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+
+ga('create', 'UA-43392009-1', 'auto');
+ga('send', 'pageview');
+</script>
+<!-- End Google Analytics -->
+		
+		
+		
+		
+
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+
+
+	
+	
+		<meta property="og:image" content="/GSAP-share-image.png">
+	
+
+
+	<meta name="twitter:card" content="summary_large_image" />
+
+
+	
+		<meta name="twitter:site" content="@greensock" />
+	
+
+
+	
+		
+			
+				<meta property="og:url" content="https://gsap.com/community/standard-license/">
+			
+		
+	
+
+	
+		
+			
+				<meta property="og:title" content="Standard License">
+			
+		
+	
+
+	
+		
+			
+				<meta property="og:type" content="website">
+			
+		
+	
+
+	
+		
+			
+				<meta property="og:site_name" content="GSAP">
+			
+		
+	
+
+	
+		
+			
+				<meta property="og:locale" content="en_US">
+			
+		
+	
+
+
+	
+		<link rel="canonical" href="https://gsap.com/community/standard-license/" />
+	
+
+<link rel="alternate" type="application/rss+xml" title="Blogs" href="https://gsap.com/community/rss/1-blogs.xml/" />
+
+
+<link rel="manifest" href="https://gsap.com/community/manifest.webmanifest/">
+<meta name="msapplication-config" content="https://gsap.com/community/browserconfig.xml/">
+<meta name="msapplication-starturl" content="/">
+<meta name="application-name" content="GSAP">
+<meta name="apple-mobile-web-app-title" content="GSAP">
+
+	<meta name="theme-color" content="#ffffff">
+
+
+
+
+
+
+
+
+
+
+<link rel="preload" href="//gsap.com/community/applications/core/interface/font/fontawesome-webfont.woff2?v=4.7.0" as="font" crossorigin="anonymous">
+		
+
+
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	
+		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+	
+
+
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/341e4a57816af3ba440d891ca87450ff_framework.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/05e81b71abe4f22d6eb8d1a929494829_responsive.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/99d25b2e3d759a6fbef3087d11051781_icons.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/c98a8e7b30dcbf4077904543204178d6_cjmg.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/a821475d56b9f82917999ca84ec35d67_mega.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/a206739b3fcb7c9d52544d613dfea8a9_traditional.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/9a34a7844b6c935e0366f94793967f9e_block.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/3a439334f014898867836841a318ce09_cjmg_custom.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/90eb5adf50a8c640f633d47fd7eb1778_core.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/5a0da001ccc2200dc5625c3f3934497d_core_responsive.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/set_resources_8/bc70e77d2d6fd7375fb008b9956da226_prism.css?v=d2eb6874221790552598' media='all'>
+
+	<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/97c0a48072ce601c9764cb6b00a6588a_page.css?v=d2eb6874221790552598' media='all'>
+
+
+
+
+
+<link rel='stylesheet' href='https://gsap.com/community/uploads/css_built_8/258adbb6e4f3e83cd3b355f84e3fa002_custom.css?v=d2eb6874221790552598' media='all'>
+
+
+
+
+
+
+
+
+
+<link rel='stylesheet' href='https://gsap.com/community/uploads/page_objects/greensockpages.css.c552805c984f0561c11972ca32ae508b.css?v=d2eb687422' media='all'>
+
+
+		
+		
+
+	
+	<link rel='shortcut icon' href='https://gsap.com/community/uploads/monthly_2023_10/favicon.ico' type="image/x-icon">
+
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="mask-icon" href="/safari-pinned-tab.svg" color="#5bbad5">
+<meta name="msapplication-TileColor" content="#000000">
+<meta name="theme-color" content="#000000">
+
+        <!-- START OF GSAP HEAD CODE -->
+        
+
+
+        <!-- END OF GSAP HEAD CODE -->
+
+        <!-- Google tag (gtag.js) -->
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-XWSY51WBF0"></script>
+        <script>
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+
+          gtag('config', 'G-XWSY51WBF0');
+        </script>
+
+        <script type="text/javascript" src='/../js/v3/gsap.min.js'></script>
+        <script type="text/javascript" src='/../js/v3/ScrollTrigger.min.js'></script>
+        <script type="text/javascript" src='/../js/header.js'></script>
+        <script type="text/javascript" src='/../js/v3/Draggable.min.js'></script>
+        <script type="text/javascript" src='/../js/v3/InertiaPlugin.min.js'></script>
+        <script type="text/javascript" src='/../js/v3/CustomEase.min.js'></script>
+        <script type="text/javascript" src='/../js/v3/MotionPathPlugin.min.js'></script>
+        <script type="text/javascript" src='/../js/v3/DrawSVGPlugin.min.js'></script>
+      
+	</head>
+	<body class="ipsApp ipsApp_front ipsJS_none ipsClearfix" data-controller="core.front.core.app"  data-message=""  data-pageapp="cms" data-pagelocation="front" data-pagemodule="pages" data-pagecontroller="page"   data-pagename="standard-license" >
+       
+        <!-- START OF GSAP HEAD CODE -->
+        
+<header id="header" class="header">
+	<section class="banner" id="webflow-banner">
+    	<div class="inner">
+        <p class="body-s">GSAP is now <a href='/pricing'>free for everyone</a>, thanks to Webflow's support!</p>
+    	</div>
+  	</section>
+	<div class="container container--wide">
+		<div class="header__inner">
+			<a href="/" class="header__logo"
+				><span class="header__logo-text"
+					>
+					<svg
+						xmlns="http://www.w3.org/2000/svg"
+						fill="none"
+						viewBox="0 0 82 30"
+					>
+						<title>GSAP</title>
+						<path
+							fill="#FFFCE1"
+							d="M23.81 14.012v.013l-1.075 4.666c-.058.264-.322.457-.626.457H20.81a.218.218 0 0 0-.208.156c-1.198 4.064-2.82 6.857-4.962 8.534-1.822 1.428-4.068 2.094-7.069 2.094-2.696 0-4.514-.867-6.056-2.579-2.038-2.262-2.88-5.966-2.37-10.428C1.065 8.548 5.41.095 13.776.095c2.545-.022 4.543.763 5.933 2.33 1.47 1.658 2.216 4.154 2.22 7.422a.55.55 0 0 1-.549.536h-6.13a.42.42 0 0 1-.407-.41c-.05-2.26-.72-3.36-2.052-3.36-2.35 0-3.736 3.19-4.471 4.958-1.027 2.47-1.55 5.153-1.447 7.825.049 1.244.249 2.993 1.43 3.718 1.047.642 2.541.216 3.446-.495.904-.712 1.632-1.943 1.938-3.066.043-.156.046-.277.005-.331-.043-.056-.162-.069-.253-.069h-1.574a.572.572 0 0 1-.438-.202.42.42 0 0 1-.087-.362l1.076-4.674c.053-.239.27-.42.537-.452v-.012h10.33c.024 0 .049 0 .072.005.268.035.457.284.452.556h.002Z"
+						></path>
+						</svg
+					><svg
+						xmlns="http://www.w3.org/2000/svg"
+						fill="none"
+						viewBox="0 0 82 30"
+					>
+						<title>GSAP</title>
+						<path
+							fill="#FFFCE1"
+							d="M41.595 8.65a.548.548 0 0 1-.548.53h-5.646c-.37 0-.679-.3-.679-.665 0-1.647-.57-2.449-1.736-2.449s-1.918.716-1.94 1.967c-.025 1.395.764 2.663 3.01 4.841 2.957 2.774 4.142 5.231 4.085 8.479C38.048 26.605 34.477 30 29.043 30c-2.775 0-4.895-.742-6.305-2.206-1.431-1.487-2.087-3.669-1.95-6.485a.548.548 0 0 1 .549-.53h5.84a.55.55 0 0 1 .422.208.48.48 0 0 1 .106.384c-.065 1.016.112 1.775.512 2.195.256.272.613.41 1.058.41 1.079 0 1.711-.762 1.735-2.09.02-1.148-.343-2.154-2.321-4.189-2.555-2.496-4.846-5.075-4.775-9.13.042-2.352.976-4.503 2.631-6.057C28.295.868 30.688 0 33.466 0c2.783.02 4.892.814 6.269 2.36 1.304 1.465 1.931 3.581 1.862 6.29h-.002Z"
+						></path>
+						<path
+							fill="#FFFCE1"
+							d="m59.095 29.012.037-27.933a.525.525 0 0 0-.529-.533h-8.738c-.294 0-.423.253-.507.42L36.706 28.841v.005l-.005.007c-.14.343.126.71.497.71h6.108c.33 0 .549-.1.656-.308l1.213-2.915c.149-.389.177-.425.601-.425h5.836c.406 0 .414.008.408.405l-.131 2.71a.525.525 0 0 0 .528.533h6.171a.523.523 0 0 0 .403-.182.458.458 0 0 0 .104-.369Zm-10.81-9.326a1.67 1.67 0 0 1-.138-.005.147.147 0 0 1-.13-.184c.012-.04.029-.095.054-.162l4.376-10.828a2.99 2.99 0 0 1 .136-.313c.071-.146.157-.156.184-.048.023.09-.502 11.118-.502 11.118-.041.413-.06.43-.467.464l-3.509-.04h-.008l.003-.002Z"
+						></path>
+						<path
+							fill="#FFFCE1"
+							d="M71.543.546h-4.639c-.245 0-.52.13-.584.422l-6.456 28.03a.423.423 0 0 0 .088.363.573.573 0 0 0 .437.202h5.798c.312 0 .525-.153.583-.418l.704-3.177c.05-.248-.036-.44-.258-.556a52.313 52.313 0 0 1-.312-.162l-1.005-.523-1-.522-.387-.201a.186.186 0 0 1-.103-.17.199.199 0 0 1 .2-.194l3.177.014c.95.005 1.901-.062 2.836-.234 6.58-1.215 10.95-6.485 11.076-13.656.108-6.12-3.308-9.221-10.15-9.221l-.005.003Zm-1.579 16.68h-.124c-.279 0-.328-.03-.336-.04-.005-.007 1.832-8.073 1.833-8.084.047-.233.045-.367-.099-.446-.184-.102-2.866-1.516-2.866-1.516a.189.189 0 0 1-.101-.172.197.197 0 0 1 .197-.192h4.241c1.32.04 2.056 1.221 2.021 3.238-.061 3.491-1.721 7.09-4.766 7.213Z"
+						></path>
+						</svg
+					><span class="header__logo-text-line"></span></span
+				><svg
+					xmlns="http://www.w3.org/2000/svg"
+					xmlns:xlink="http://www.w3.org/1999/xlink"
+					fill="none"
+					viewBox="0 0 27 27"
+				>
+					<path
+						fill="url(#paint0_linear_2163_47664)"
+						fill-rule="evenodd"
+						d="M14.06 13.15a.5.5 0 0 0 0 .7l12.103 12.3a.5.5 0 0 1-.357.85H1.194a.5.5 0 0 1-.357-.85l12.104-12.3a.5.5 0 0 0 0-.7L.837.85A.5.5 0 0 1 1.194 0h24.612a.5.5 0 0 1 .357.85l-12.104 12.3Z"
+						clip-rule="evenodd"
+					></path>
+					<path
+						fill="url(#pattern-header-logo-g-0)"
+						fill-rule="evenodd"
+						d="M14.06 13.15a.5.5 0 0 0 0 .7l12.103 12.3a.5.5 0 0 1-.357.85H1.194a.5.5 0 0 1-.357-.85l12.104-12.3a.5.5 0 0 0 0-.7L.837.85A.5.5 0 0 1 1.194 0h24.612a.5.5 0 0 1 .357.85l-12.104 12.3Z"
+						clip-rule="evenodd"
+						style="mix-blend-mode: multiply"
+					></path>
+					<defs>
+						<linearGradient
+							id="paint0_linear_2163_47664"
+							x1="-.894"
+							x2="26.442"
+							y1="-.85"
+							y2="33.433"
+							gradientUnits="userSpaceOnUse"
+						>
+							<stop offset=".27" stop-color="#FEC5FB"></stop>
+							<stop offset=".838" stop-color="#00BAE2"></stop>
+						</linearGradient>
+						<pattern
+							id="pattern-header-logo-g-0"
+							width="3.704"
+							height="3.704"
+							patternContentUnits="objectBoundingBox"
+						>
+							<use xlink:href="#svg-noise" transform="scale(.0074)"></use>
+						</pattern>
+					</defs></svg
+				><svg
+					xmlns="http://www.w3.org/2000/svg"
+					xmlns:xlink="http://www.w3.org/1999/xlink"
+					fill="none"
+					viewBox="0 0 15 31"
+				>
+					<path
+						fill="url(#paint0_radial_2163_47256)"
+						fill-rule="evenodd"
+						d="m13.727 0-3.613 11.475H15L.726 31l4.16-14.904H0L5.5 0h8.227Z"
+						clip-rule="evenodd"
+					></path>
+					<path
+						fill="url(#pattern-header-logo-s-0)"
+						fill-rule="evenodd"
+						d="m13.727 0-3.613 11.475H15L.726 31l4.16-14.904H0L5.5 0h8.227Z"
+						clip-rule="evenodd"
+						style="mix-blend-mode: multiply"
+					></path>
+					<defs>
+						<radialGradient
+							id="paint0_radial_2163_47256"
+							cx="0"
+							cy="0"
+							r="1"
+							gradientTransform="matrix(-5.4677 -24.41905 14.9584 -3.34936 4.9 22.232)"
+							gradientUnits="userSpaceOnUse"
+						>
+							<stop stop-color="#FFEBE7"></stop>
+							<stop offset=".672" stop-color="#FF9C7C"></stop>
+							<stop offset=".816" stop-color="#FF9983"></stop>
+							<stop offset=".901" stop-color="#FF774B"></stop>
+							<stop offset="1" stop-color="#E76F00"></stop>
+						</radialGradient>
+						<pattern
+							id="pattern-header-logo-s-0"
+							width="6.667"
+							height="3.226"
+							patternContentUnits="objectBoundingBox"
+						>
+							<use
+								xlink:href="#svg-noise"
+								transform="scale(.01333 .00645)"
+							></use>
+						</pattern>
+					</defs></svg
+				><svg
+					xmlns="http://www.w3.org/2000/svg"
+					xmlns:xlink="http://www.w3.org/1999/xlink"
+					fill="none"
+					viewBox="0 0 29 29"
+				>
+					<path
+						fill="url(#gradient-header-logo-a-0)"
+						d="M.018 28.751 6.72 15.453a9.58 9.58 0 0 1-1.94-5.921C4.848 4.327 9.12.075 14.356.001c5.237-.074 9.864 4.276 9.864 9.66a9.58 9.58 0 0 1-1.94 5.793l6.701 13.298a.171.171 0 0 1-.153.248H.172a.171.171 0 0 1-.154-.248Z"
+					></path>
+					<path
+						fill="url(#pattern-header-logo-a-2)"
+						fill-opacity=".6"
+						d="M.018 28.751 6.72 15.453a9.58 9.58 0 0 1-1.94-5.921C4.848 4.327 9.12.075 14.356.001c5.237-.074 9.864 4.276 9.864 9.66a9.58 9.58 0 0 1-1.94 5.793l6.701 13.298a.171.171 0 0 1-.153.248H.172a.171.171 0 0 1-.154-.248Z"
+						style="mix-blend-mode: multiply"
+					></path>
+					<defs>
+						<linearGradient
+							id="gradient-header-logo-a-0"
+							x1="40.584"
+							x2="44.885"
+							y1="9.571"
+							y2="28.052"
+							gradientUnits="userSpaceOnUse"
+						>
+							<stop stop-color="#0AE448"></stop>
+							<stop offset="1" stop-color="#0085D0"></stop>
+						</linearGradient>
+						<pattern
+							id="pattern-header-logo-a-2"
+							width="6.897"
+							height="6.897"
+							patternContentUnits="objectBoundingBox"
+						>
+							<use xlink:href="#svg-noise" transform="scale(.0138)"></use>
+						</pattern>
+					</defs></svg
+				><svg
+					xmlns="http://www.w3.org/2000/svg"
+					xmlns:xlink="http://www.w3.org/1999/xlink"
+					fill="none"
+					viewBox="0 0 29 29"
+				>
+					<path
+						fill="url(#paint0_radial_2937_56158)"
+						fill-rule="evenodd"
+						d="M8.54 14.187c-.469.099-.954.15-1.451.15C3.174 14.337 0 11.127 0 7.17 0 3.209 3.174 0 7.089 0c3.915 0 7.09 3.21 7.09 7.169 0 .33-.023.657-.066.976h.774a7.318 7.318 0 0 1-.065-.976C14.822 3.209 17.996 0 21.91 0 25.826 0 29 3.21 29 7.169c0 3.959-3.174 7.168-7.089 7.168-.44 0-.87-.04-1.288-.118v.562a7.048 7.048 0 0 1 1.288-.118c3.915 0 7.089 3.21 7.089 7.168C29 25.791 25.826 29 21.911 29c-3.915 0-7.09-3.21-7.09-7.169 0-.502.052-.993.15-1.466h-.91c.077.423.117.858.117 1.304 0 3.959-3.174 7.168-7.089 7.168C3.174 28.837 0 25.627 0 21.67c0-3.96 3.174-7.169 7.089-7.169.497 0 .982.052 1.45.15v-.463Z"
+						clip-rule="evenodd"
+					></path>
+					<path
+						fill="url(#pattern-header-logo-p-0)"
+						fill-rule="evenodd"
+						d="M8.54 14.187c-.469.099-.954.15-1.451.15C3.174 14.337 0 11.127 0 7.17 0 3.209 3.174 0 7.089 0c3.915 0 7.09 3.21 7.09 7.169 0 .33-.023.657-.066.976h.774a7.318 7.318 0 0 1-.065-.976C14.822 3.209 17.996 0 21.91 0 25.826 0 29 3.21 29 7.169c0 3.959-3.174 7.168-7.089 7.168-.44 0-.87-.04-1.288-.118v.562a7.048 7.048 0 0 1 1.288-.118c3.915 0 7.089 3.21 7.089 7.168C29 25.791 25.826 29 21.911 29c-3.915 0-7.09-3.21-7.09-7.169 0-.502.052-.993.15-1.466h-.91c.077.423.117.858.117 1.304 0 3.959-3.174 7.168-7.089 7.168C3.174 28.837 0 25.627 0 21.67c0-3.96 3.174-7.169 7.089-7.169.497 0 .982.052 1.45.15v-.463Z"
+						clip-rule="evenodd"
+						style="mix-blend-mode: multiply"
+					></path>
+					<defs>
+						<radialGradient
+							id="paint0_radial_2937_56158"
+							cx="0"
+							cy="0"
+							r="1"
+							gradientTransform="rotate(-90 14.86 5.937) scale(22.8436)"
+							gradientUnits="userSpaceOnUse"
+						>
+							<stop stop-color="#E193FF"></stop>
+							<stop offset=".672" stop-color="#8E78DA"></stop>
+							<stop offset=".738" stop-color="#937DDB"></stop>
+							<stop offset=".816" stop-color="#A28BDD"></stop>
+							<stop offset=".901" stop-color="#BAA3E2"></stop>
+							<stop offset=".991" stop-color="#DBC3E7"></stop>
+							<stop offset="1" stop-color="#DFC7E8"></stop>
+						</radialGradient>
+						<pattern
+							id="pattern-header-logo-p-0"
+							width="3.448"
+							height="3.448"
+							patternContentUnits="objectBoundingBox"
+						>
+							<use xlink:href="#svg-noise" transform="scale(.0069)"></use>
+						</pattern>
+					</defs></svg>
+				</a
+			><button id="menu-toggle" class="header__menu-toggle" tabindex="0">
+				Menu<svg
+					xmlns="http://www.w3.org/2000/svg"
+					width="33"
+					height="15"
+					fill="none"
+					viewBox="0 0 33 15"
+				>
+					<path
+						fill="#FFFCE1"
+						fill-rule="evenodd"
+						d="M.834 1.646a1 1 0 0 1 1-1h30a1 1 0 1 1 0 2h-30a1 1 0 0 1-1-1Z"
+						clip-rule="evenodd"
+					></path>
+					<path
+						fill="#FFFCE1"
+						fill-rule="evenodd"
+						d="M.834 7.646a1 1 0 0 1 1-1h30a1 1 0 1 1 0 2h-30a1 1 0 0 1-1-1Z"
+						clip-rule="evenodd"
+					></path>
+					<path
+						fill="#FFFCE1"
+						fill-rule="evenodd"
+						d="M.834 13.646a1 1 0 0 1 1-1h30a1 1 0 1 1 0 2h-30a1 1 0 0 1-1-1Z"
+						clip-rule="evenodd"
+					></path>
+				</svg>
+			</button>
+			<div class="header__nav">
+				<nav>
+					<ul class="header__menu">
+						<li class="header__menu-item header__menu-item--has-submenu">
+							<button
+								class="header__menu-link header__submenu-toggle"
+								aria-expanded="false"
+							>
+								Tools
+							</button>
+							<div class="header__dropdown header__dropdown--tools">
+								<div class="header__dropdown-wrapper">
+									<svg
+										class="header__dropdown-notch"
+										xmlns="http://www.w3.org/2000/svg"
+										width="45"
+										height="17"
+										fill="none"
+									>
+										<path
+											fill="#161614"
+											d="M37.214 12.85a7 7 0 0 0 4.95 2.05H45V17H0v-2.1h2.564a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9Z"
+										></path>
+										<path
+											fill="#FFFCE1"
+											d="M42.164 16a9 9 0 0 1-6.364-2.636l-9.9-9.9a5 5 0 0 0-7.071 0l-9.9 9.9A9 9 0 0 1 2.565 16H0v-2h2.565a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9a7 7 0 0 0 4.95 2.05H45v2h-2.836Z"
+										></path>
+									</svg>
+									<ul class="header__dropdown-menu header__dropdown-menu--1">
+										<li class="header__menu-item">
+											<a href="/core/" class="header__dropdown-link">Core</a>
+										</li>
+										<li class="header__menu-item">
+											<a href="/scroll/" class="header__dropdown-link"
+												>Scroll</a
+											>
+										</li>
+										<li class="header__menu-item">
+											<a href="/svg/" class="header__dropdown-link">SVG</a>
+										</li>
+										<li class="header__menu-item">
+											<a href="/ui/" class="header__dropdown-link">UI</a>
+										</li>
+										<li class="header__menu-item">
+											<a href="/text/" class="header__dropdown-link">Text</a>
+										</li>
+									</ul>
+									<ul class="header__dropdown-menu header__dropdown-menu--2">
+										<li class="header__menu-item">
+											<a
+												href="/docs/v3/Installation"
+												class="header__dropdown-link"
+												>Installation</a
+											>
+										</li>
+										<li class="header__menu-item">
+											<a href="/resources/React" class="header__dropdown-link"
+												>GSAP &amp; React</a
+											>
+										</li>
+										<li class="header__menu-item">
+											<a
+												href="https://www.youtube.com/@GreenSockLearning"
+												class="header__dropdown-link"
+												>Video Lessons</a
+											>
+										</li>
+									</ul>
+									<div class="header__dropdown-footer">
+										<p>
+											Professional-grade JavaScript animation for the modern web
+										</p>
+										<div class="header__dropdown-footer-asset">
+											<picture>
+												<img
+													alt=""
+													loading="lazy"
+													decoding="async"
+													src="/img/header-shapes.png"
+													width="450"
+													height="322"
+												/>
+                                          </picture>
+										</div>
+									</div>
+								</div>
+							</div>
+						</li>
+						<li class="header__menu-item">
+							<a href="/showcase/" class="header__menu-link">Showcase</a>
+						</li>
+						<li class="header__menu-item">
+							<a href="/community/" class="header__menu-link">Community</a>
+						</li>
+						<li class="header__menu-item">
+							<a href="/resources/" class="header__menu-link">Learn GSAP</a>
+						</li>
+						<li class="header__menu-item">
+							<a class="header__menu-link" href="/docs/v3">Docs</a>
+						</li>
+                      	<li class="header__menu-item">
+							<a class="header__menu-link" href="https://demos.gsap.com/">Demos</a>
+						</li>
+					</ul>
+				</nav>
+				<nav>
+					<ul class="header__menu header__menu--secondary">
+						<li
+							class="header__menu-item header__menu-item--moderator header__menu-item--has-submenu js-member-ui"
+						>
+							<button
+								class="header__menu-link header__submenu-toggle js-notifications-button js-repopulate"
+								aria-expanded="false"
+							>
+								<svg
+									xmlns="http://www.w3.org/2000/svg"
+									width="21"
+									height="21"
+									fill="none"
+								>
+									<title>Notifications</title>
+									<path
+										fill="currentColor"
+										fill-rule="evenodd"
+										d="M16.183 8v3.196a3 3 0 0 0 .396 1.489l1.209 2.115H2.725l1.216-2.126a3 3 0 0 0 .395-1.489v-3.6c.014-.067.024-.135.031-.204C4.673 4.344 7.21 2 10.26 2c3.049 0 5.586 2.344 5.892 5.381.007.07.017.137.03.204V8Zm2.132 3.692a1 1 0 0 1-.132-.496V7.22a.02.02 0 0 0-.02-.02.02.02 0 0 1-.021-.019C17.736 3.148 14.362 0 10.26 0S2.784 3.148 2.377 7.181a.02.02 0 0 1-.02.019.02.02 0 0 0-.02.02v3.965a1 1 0 0 1-.133.496l-2.07 3.622A1 1 0 0 0 1 16.8h18.511a1 1 0 0 0 .868-1.497l-2.065-3.61ZM10.259 19c-1.189 0-2.17-.976-2.17-2.2h-2c0 2.31 1.858 4.2 4.17 4.2s4.17-1.89 4.17-4.2h-2c0 1.224-.98 2.2-2.17 2.2Z"
+										clip-rule="evenodd"
+									></path>
+								</svg>
+							</button>
+							<div class="header__dropdown header__dropdown--moderator">
+								<div class="header__dropdown-wrapper">
+									<svg
+										class="header__dropdown-notch"
+										xmlns="http://www.w3.org/2000/svg"
+										width="45"
+										height="17"
+										fill="none"
+									>
+										<path
+											fill="#161614"
+											d="M37.214 12.85a7 7 0 0 0 4.95 2.05H45V17H0v-2.1h2.564a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9Z"
+										></path>
+										<path
+											fill="#FFFCE1"
+											d="M42.164 16a9 9 0 0 1-6.364-2.636l-9.9-9.9a5 5 0 0 0-7.071 0l-9.9 9.9A9 9 0 0 1 2.565 16H0v-2h2.565a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9a7 7 0 0 0 4.95 2.05H45v2h-2.836Z"
+										></path>
+									</svg>
+									<section class="feed feed--notifications">
+										<div class="feed__header">
+											<h4 class="feed__title">Notifications</h4>
+											<div class="feed__links">
+												<a
+													href="/community/notifications/options"
+													class="button button--stroke button--small"
+													style="
+														--button-stroke: var(--color-surface-white);
+														--button-hoverColor: var(--color-just-black);
+													"
+													data-block="button"
+												>
+													<span class="button__flair"></span>
+
+													<span class="button__label"
+														>Notification Settings</span
+													>
+												</a>
+
+												<a
+													href="/community/notifications/"
+													class="button button--fill button--small"
+													style="--button-fill: var(--color-surface-white)"
+													data-block="button"
+												>
+													<span class="button__flair"></span>
+
+													<span class="button__label">View All</span>
+
+													<span
+														class="button__icon button__icon--arrow-right"
+													></span>
+												</a>
+											</div>
+										</div>
+										<div class="feed__main">
+											<div class="feed__scroll"></div>
+										</div>
+									</section>
+								</div>
+							</div>
+						</li>
+						<li
+							class="header__menu-item header__menu-item--moderator header__menu-item--has-submenu js-member-ui"
+						>
+							<button
+								class="header__menu-link header__submenu-toggle js-messages-button js-repopulate"
+								aria-expanded="false"
+							>
+								<svg
+									xmlns="http://www.w3.org/2000/svg"
+									width="20"
+									height="17"
+									fill="none"
+								>
+									<title>Messages</title>
+									<path
+										fill="currentColor"
+										fill-rule="evenodd"
+										d="M2 3.463v11.204h16V3.465l-6.572 6.694a2 2 0 0 1-2.854 0L2 3.463ZM16.636 2H3.366l6.635 6.758L16.636 2ZM0 1a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1v14.667a1 1 0 0 1-1 1H1a1 1 0 0 1-1-1V1Z"
+										clip-rule="evenodd"
+									></path>
+								</svg>
+							</button>
+							<div class="header__dropdown header__dropdown--moderator">
+								<div class="header__dropdown-wrapper">
+									<svg
+										class="header__dropdown-notch"
+										xmlns="http://www.w3.org/2000/svg"
+										width="45"
+										height="17"
+										fill="none"
+									>
+										<path
+											fill="#161614"
+											d="M37.214 12.85a7 7 0 0 0 4.95 2.05H45V17H0v-2.1h2.564a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9Z"
+										></path>
+										<path
+											fill="#FFFCE1"
+											d="M42.164 16a9 9 0 0 1-6.364-2.636l-9.9-9.9a5 5 0 0 0-7.071 0l-9.9 9.9A9 9 0 0 1 2.565 16H0v-2h2.565a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9a7 7 0 0 0 4.95 2.05H45v2h-2.836Z"
+										></path>
+									</svg>
+									<section class="feed feed--messages">
+										<div class="feed__header">
+											<h4 class="feed__title">Messages</h4>
+
+											<div class="feed__links">
+												<a
+													href="/community/messenger/compose"
+													class="button button--stroke button--small"
+													style="
+														--button-stroke: var(--color-surface-white);
+														--button-hoverColor: var(--color-just-black);
+													"
+													data-block="button"
+												>
+													<span class="button__flair"></span>
+
+													<span class="button__label">Compose new</span>
+												</a>
+
+												<a
+													href="/community/messenger"
+													class="button button--fill button--small"
+													style="--button-fill: var(--color-surface-white)"
+													data-block="button"
+												>
+													<span class="button__flair"></span>
+
+													<span class="button__label">Go to Inbox</span>
+
+													<span
+														class="button__icon button__icon--arrow-right"
+													></span>
+												</a>
+											</div>
+										</div>
+										<div class="feed__main">
+											<div class="feed__scroll"></div>
+										</div>
+									</section>
+								</div>
+							</div>
+						</li>
+						<li
+							class="header__menu-item header__menu-item--has-submenu js-guest-ui"
+						>
+							<button
+								class="header__menu-link header__submenu-toggle"
+								aria-expanded="false"
+							>
+								Login/Create Account
+							</button>
+							<div class="header__dropdown header__dropdown--login">
+								<div class="header__dropdown-wrapper">
+									<svg
+										class="header__dropdown-notch"
+										xmlns="http://www.w3.org/2000/svg"
+										width="45"
+										height="17"
+										fill="none"
+									>
+										<path
+											fill="#161614"
+											d="M37.214 12.85a7 7 0 0 0 4.95 2.05H45V17H0v-2.1h2.564a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9Z"
+										></path>
+										<path
+											fill="#FFFCE1"
+											d="M42.164 16a9 9 0 0 1-6.364-2.636l-9.9-9.9a5 5 0 0 0-7.071 0l-9.9 9.9A9 9 0 0 1 2.565 16H0v-2h2.565a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9a7 7 0 0 0 4.95 2.05H45v2h-2.836Z"
+										></path>
+									</svg>
+									<form
+										class="header-form"
+										action="/community/login/"
+										method="post"
+									>
+										<h4 class="header__dropdown-title">Sign In</h4>
+										<div class="header-form-group">
+											<input
+												type="hidden"
+												name="_processLogin"
+												value="usernamepassword"
+											/><input type="hidden" name="csrfKey" /><input
+												type="hidden"
+												name="remember_me"
+												value="0"
+											/><input
+												type="hidden"
+												name="remember_me_checkbox"
+												value="1"
+											/><input
+												class="header-input heading-s"
+												name="auth"
+												placeholder="Email Address"
+												type="email"
+											/><input
+												type="password"
+												class="header-input heading-s"
+												name="password"
+												placeholder="Password"
+											/>
+										</div>
+										<div class="header-form-footer">
+											<button class="button button--small button--stroke"
+											data-block="button"
+											style="
+									--button-stroke: var(--color-surface-white);
+									--button-hoverColor: var(--color-just-black);
+								"><span class="button__flair"></span>
+												<span class="button__label">Login</span
+												>
+												<span
+													class="button__icon button__icon--arrow-right"
+												></span></button
+											><a href="/community/lostpassword"
+												>Forgot your password?</a
+											>
+										</div>
+									</form>
+									<div class="header__dropdown-register">
+										<h4 class="header__dropdown-title">
+											Why create an account?
+										</h4>
+										<ul class="benefits">
+											<li class="benefits__item">
+												<p class="heading-s">It's free</p>
+											</li>
+											<li class="benefits__item">
+												<p class="heading-s">Access the private Discord</p>
+											</li>
+											<li class="benefits__item">
+												<p class="heading-s">Learn & share in the forums</p>
+											</li>
+											<li class="benefits__item">
+												<p class="heading-s">Hear about new features first</p>
+											</li>
+										</ul>
+										<a
+											href="/community/register"
+											class="button button--small button--stroke"
+											data-block="button"
+											style="
+									--button-stroke: var(--color-surface-white);
+									--button-hoverColor: var(--color-just-black);
+								"
+											>
+											<span class="button__flair"></span><span class="button__label">Create an Account</span
+											><span
+												class="button__icon button__icon--arrow-right"
+											></span
+										></a>
+									</div>
+								</div>
+							</div>
+						</li>
+						<li
+							class="header__menu-item header__menu-item--has-submenu js-member-ui"
+						>
+							<a href="/community/account-dashboard"
+								class="header__menu-link header__submenu-toggle"
+								aria-expanded="false"
+							>
+								My Account
+							</a>
+							<div class="header__dropdown header__dropdown--account">
+								<div class="header__dropdown-wrapper">
+									<svg
+										class="header__dropdown-notch"
+										xmlns="http://www.w3.org/2000/svg"
+										width="45"
+										height="17"
+										fill="none"
+									>
+										<path
+											fill="#161614"
+											d="M37.214 12.85a7 7 0 0 0 4.95 2.05H45V17H0v-2.1h2.564a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9Z"
+										></path>
+										<path
+											fill="#FFFCE1"
+											d="M42.164 16a9 9 0 0 1-6.364-2.636l-9.9-9.9a5 5 0 0 0-7.071 0l-9.9 9.9A9 9 0 0 1 2.565 16H0v-2h2.565a7 7 0 0 0 4.95-2.05l9.9-9.9a7 7 0 0 1 9.9 0l9.899 9.9a7 7 0 0 0 4.95 2.05H45v2h-2.836Z"
+										></path>
+									</svg>
+									<div class="header-account">
+										<div class="user user--dark js-account-dropdown"></div>
+										<ul class="header-account__list">
+											<li>
+												<a href="/community/account-dashboard" class="label"
+													>Dashboard</a
+												>
+											</li>
+											<li>
+												<a href="/community/settings" class="label"
+													>Account Settings</a
+												>
+											</li>
+											<li><a href="#" class="label js-logout">Logout</a></li>
+										</ul>
+									</div>
+								</div>
+							</div>
+						</li>
+						<li class="header__menu-item header__menu-item--button">
+							<a
+								href="/docs/v3/Installation"
+								class="button button--stroke"
+								style="
+									--button-stroke: var(--color-surface-white);
+									--button-hoverColor: var(--color-just-black);
+								"
+								data-block="button"
+							>
+								<span class="button__flair"></span>
+
+								<span class="button__label">Get GSAP</span>
+							</a>
+						</li>
+					</ul>
+				</nav>
+			</div>
+			<div id="mobile-nav" class="mobile-nav">
+				<div id="mobile-nav-background" class="mobile-nav__background"></div>
+				<div
+					id="mobile-nav-panel-1"
+					class="mobile-nav__panel mobile-nav__panel--primary"
+				>
+					<div class="mobile-nav__menu-wrapper">
+						<nav class="mobile-nav__menu">
+							<ul class="mobile-nav__list">
+								<li class="mobile-nav__item">
+									<button id="mobile-nav-toggle" class="mobile-nav__link">
+										Tools</button
+									><svg
+										id="accordion-icon"
+										xmlns="http://www.w3.org/2000/svg"
+										width="10"
+										height="10"
+										fill="none"
+										viewBox="0 0 10 10"
+									>
+										<path
+											fill="#000"
+											fill-rule="evenodd"
+											d="M4 10V0h2v10H4Z"
+											clip-rule="evenodd"
+										></path>
+										<path
+											fill="#000"
+											fill-rule="evenodd"
+											d="M0 4h10v2H0V4Z"
+											clip-rule="evenodd"
+										></path>
+									</svg>
+									<ul
+										id="mobile-nav-accordion"
+										class="mobile-nav__list mobile-nav__list--secondary"
+									>
+										<li class="mobile-nav__item">
+											<a
+												href="/core/"
+												class="mobile-nav__link mobile-nav__link--medium"
+												>Core</a
+											>
+										</li>
+										<li class="mobile-nav__item">
+											<a
+												href="/scroll/"
+												class="mobile-nav__link mobile-nav__link--medium"
+												>Scroll</a
+											>
+										</li>
+										<li class="mobile-nav__item">
+											<a
+												href="/svg/"
+												class="mobile-nav__link mobile-nav__link--medium"
+												>SVG</a
+											>
+										</li>
+										<li class="mobile-nav__item">
+											<a
+												href="/ui/"
+												class="mobile-nav__link mobile-nav__link--medium"
+												>UI</a
+											>
+										</li>
+										<li class="mobile-nav__item">
+											<a
+												href="/text/"
+												class="mobile-nav__link mobile-nav__link--medium"
+												>Text</a
+											>
+										</li>
+									</ul>
+								</li>
+								<li class="mobile-nav__item">
+									<a
+										class="mobile-nav__link"
+										href="/pricing/"
+										aria-current="page"
+										>About</a
+									>
+								</li>
+								<li class="mobile-nav__item">
+									<a class="mobile-nav__link" href="/showcase/">Showcase</a>
+								</li>
+								<li class="mobile-nav__item">
+									<a class="mobile-nav__link" href="/community/">Community</a>
+								</li>
+								<li class="mobile-nav__item">
+									<a class="mobile-nav__link" href="/resources/">Learn GSAP</a>
+								</li>
+								<li class="mobile-nav__item">
+									<a class="mobile-nav__link" href="/docs/v3/">Docs</a>
+								</li>
+							</ul>
+							<ul class="mobile-nav__list">
+								<li class="mobile-nav__item">
+									<button
+										id="mobile-login-open"
+										class="mobile-nav__link mobile-nav__link--small js-guest-ui"
+									>
+										Login/Create Account
+									</button>
+								</li>
+								<li class="mobile-nav__item js-member-ui">
+									<button
+										id="mobile-account-open"
+										class="js-account-mobile"
+									></button>
+								</li>
+							</ul>
+						</nav>
+					</div>
+					<nav
+						id="mobile-account-panel"
+						class="mobile-nav__hidden mobile-account"
+					>
+						<button id="mobile-account-close" class="mobile-account__close">
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="24"
+								height="24"
+								fill="none"
+							>
+								<path
+									fill="#0E100F"
+									d="M9.96 5.086 3.587 11.46 3.07 12l.516.54 6.375 6.374 1.078-1.078-5.086-5.086H21v-1.5H5.953l5.086-5.086-1.078-1.078Z"
+								></path>
+							</svg>
+						</button>
+						<div class="user user--light js-account-submenu"></div>
+						<ul class="mobile-account__list">
+							<li class="mobile-account__link">
+								<a href="/community/account-dashboard">Dashboard</a>
+							</li>
+							<li class="mobile-account__link">
+								<a href="/community/settings">Account Settings</a>
+							</li>
+							<li class="mobile-account__link">
+								<a class="js-logout" href="#">Logout</a>
+							</li>
+							<li
+								class="mobile-account__link mobile-account__link--small mobile-account__link--messages js-messages-button"
+							>
+								<a href="/community/messenger/">Messages</a>
+							</li>
+							<li
+								class="mobile-account__link mobile-account__link--small js-notifications-button"
+							>
+								<a href="/community/notifications/">Notifications</a>
+							</li>
+						</ul>
+					</nav>
+					<nav id="mobile-login-panel" class="mobile-nav__hidden mobile-login">
+						<button id="mobile-login-close" class="mobile-login__close">
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								width="24"
+								height="24"
+								fill="none"
+							>
+								<path
+									fill="#0E100F"
+									d="M9.96 5.086 3.587 11.46 3.07 12l.516.54 6.375 6.374 1.078-1.078-5.086-5.086H21v-1.5H5.953l5.086-5.086-1.078-1.078Z"
+								></path>
+							</svg>
+						</button>
+						<h4 class="mobile-login__title">Sign In</h4>
+						<form class="mobile-form" action="/community/login/" method="post">
+							<div class="mobile-form-group">
+								<input
+									type="hidden"
+									name="_processLogin"
+									value="usernamepassword"
+								/><input type="hidden" name="csrfKey" /><input
+									type="hidden"
+									name="remember_me"
+									value="0"
+								/><input
+									type="hidden"
+									name="remember_me_checkbox"
+									value="1"
+								/><input
+									type="email"
+									class="mobile-input heading-s"
+									name="auth"
+									placeholder="Email Address"
+								/><input
+									type="password"
+									class="mobile-input heading-s"
+									name="password"
+									placeholder="Password"
+								/>
+							</div>
+
+							<button
+								type="submit"
+								class="button button--fill"
+								style="--button-fill: var(--gradient-macha)"
+								data-block="button"
+							>
+								<span class="button__flair"></span>
+
+								<span class="button__label">Login</span>
+							</button>
+							<a class="mobile-form__link" href="/community/lostpassword/"
+								>Forgot your password?</a
+							>
+						</form>
+						<h4 class="mobile-login__subtitle">Not got an account?</h4>
+						<a
+							href="/community/register"
+							class="button button--stroke"
+							style="
+								--button-stroke: var(--color-just-black);
+								--button-hoverColor: var(--color-surface-white);
+							"
+							data-block="button"
+						>
+							<span class="button__flair"></span>
+
+							<span class="button__label">Create an Account</span>
+						</a>
+					</nav>
+				</div>
+				<div
+					id="mobile-nav-panel-2"
+					class="mobile-nav__panel mobile-nav__panel--secondary"
+				>
+					<nav class="mobile-nav__menu">
+						<ul class="mobile-nav__list">
+							<li class="mobile-nav__item">
+								<a
+									class="mobile-nav__link mobile-nav__link--small"
+									href="https://codepen.io/GreenSock"
+									>CodePen</a
+								>
+							</li>
+							<li class="mobile-nav__item">
+								<a
+									class="mobile-nav__link mobile-nav__link--small"
+									href="https://github.com/greensock/GreenSock-JS/"
+									>GitHub</a
+								>
+							</li>
+							<li class="mobile-nav__item">
+								<a
+									class="mobile-nav__link mobile-nav__link--small"
+									href="https://www.facebook.com/greensock/"
+									>Facebook</a
+								>
+							</li>
+							<li class="mobile-nav__item">
+								<a
+									class="mobile-nav__link mobile-nav__link--small"
+									href="https://www.linkedin.com/company/greensock"
+									>LinkedIn</a
+								>
+							</li>
+							<li class="mobile-nav__item">
+								<a
+									class="mobile-nav__link mobile-nav__link--small"
+									href="https://www.twitter.com/greensock/"
+									>x</a
+								>
+							</li>
+						</ul>
+					</nav>
+					<div class="mobile-nav__asset">
+						<img
+							alt=""
+							loading="lazy"
+							decoding="async"
+							src="/img/header-shapes.png"
+							width="450"
+							height="322"
+						/>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</header>
+        <!-- END OF GSAP HEAD CODE -->
+      
+        
+
+        
+
+		<div class="cjmg_container cjmg_container_header"> </div><a href="#ipsLayout_mainArea" class="ipsHide" title="Go to main content on this page" accesskey="m">Jump to content</a>
+		
+
+
+
+
+
+
+		<main id="ipsLayout_body" class="ipsLayout_container">    
+          
+          
+
+	<nav data-controller="core.front.core.navBar" class="ipsNavBar_noSubBars ipsResponsive_showDesktop ">
+		<div class="ipsNavBar_primary ipsNavBar_noSubBars ">
+			<ul data-role="primaryNavBar" class="ipsClearfix">
+				
+
+
+	
+		
+		
+		<li  id='elNavSecondary_31' data-role="navBarItem" data-navApp="core" data-navExt="Leaderboard">
+			
+			
+				<a href="https://gsap.com/community/leaderboard/"  data-navItem-id="31" >
+					Leaderboard<span class='ipsNavBar_active__identifier'></span>
+				</a>
+			
+			
+		</li>
+	
+	
+
+	
+	
+
+	
+	
+
+				<li class="ipsHide" id="elNavigationMore" data-role="navMore">
+					<a href="#" data-ipsmenu data-ipsmenu-appendto="#elNavigationMore" id="elNavigationMore_dropdown">More</a>
+					<ul class="ipsNavBar_secondary ipsHide" data-role="secondaryNavBar">
+						<li class="ipsHide" id="elNavigationMore_more" data-role="navMore">
+							<a href="#" data-ipsmenu data-ipsmenu-appendto="#elNavigationMore_more" id="elNavigationMore_more_dropdown">More <i class="fa fa-caret-down"></i></a>
+							<ul class="ipsHide ipsMenu ipsMenu_auto" id="elNavigationMore_more_dropdown_menu" data-role="moreDropdown"></ul>
+						</li>
+					</ul>
+				</li>
+			</ul>
+			
+		</div>
+	</nav><div class="cjmg_container cjmg_container_primary"> </div>
+
+          
+			<div id="ipsLayout_contentArea">
+                <div class="gs-breadcrumb">
+                        
+<nav class='ipsBreadcrumb ipsBreadcrumb_top ipsFaded_withHover'>
+	
+
+	<ul class='ipsList_inline ipsPos_right'>
+		
+		<li >
+			<a data-action="defaultStream" class='ipsType_light '  href='https://gsap.com/community/discover/'><i class="fa fa-newspaper-o" aria-hidden="true"></i> <span>All Activity</span></a>
+		</li>
+		
+	</ul>
+
+	<ul data-role="breadcrumbList">
+		<li>
+			<a title="Home" href='https://gsap.com/community/'>
+				<span>Home <i class='fa fa-angle-right'></i></span>
+			</a>
+		</li> 
+		
+		
+			<li>
+			   
+					<a href='https://gsap.com/community/standard-license/'>
+						<span>Standard License </span>
+					</a>
+				
+			</li>
+		
+	</ul>
+</nav>
+                        
+
+	<div id="elSearchWrapper">
+		<div id='elSearch' data-controller="core.front.core.quickSearch">
+			<form accept-charset='utf-8' action='//gsap.com/community/search/?do=quicksearch' method='post'>
+                <input type='search' id='elSearchField' placeholder='Search...' name='q' autocomplete='off' aria-label='Search'>
+              	<input type='hidden' name='type' value='forums_topic'>
+                <details class='cSearchFilter'>
+                    <summary class='cSearchFilter__text'>Search Community</summary>
+                    <ul class='cSearchFilter__menu'>
+                        
+                        <li><label><input type="radio" name="type" value="forums_topic"  checked><span class='cSearchFilter__menuText'>Everywhere</span></label></li>
+                        
+                        
+                            <li><label><input type="radio" name="type" value="forums_topic"><span class='cSearchFilter__menuText'>Topics</span></label></li>
+                        
+                    </ul>
+                </details>
+				<button class='cSearchSubmit' type="submit" aria-label='Search'>
+                   <svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path fill-rule="evenodd" clip-rule="evenodd" d="M5.5542 16.5417C5.5542 10.6754 10.4447 5.875 16.5335 5.875C22.6223 5.875 27.5129 10.6754 27.5129 16.5417C27.5129 19.4175 26.3376 22.0371 24.4219 23.9607C24.3709 23.9963 24.3225 24.0373 24.2774 24.0835C24.245 24.1168 24.2154 24.1518 24.1885 24.1881C22.2146 26.055 19.518 27.2083 16.5335 27.2083C10.4447 27.2083 5.5542 22.4079 5.5542 16.5417ZM24.9775 26.1613C22.7042 28.0625 19.7515 29.2083 16.5335 29.2083C9.39034 29.2083 3.5542 23.562 3.5542 16.5417C3.5542 9.52129 9.39034 3.875 16.5335 3.875C23.6767 3.875 29.5129 9.52129 29.5129 16.5417C29.5129 19.6856 28.3424 22.5539 26.4083 24.763L32.2053 30.4086C32.6009 30.7939 32.6093 31.427 32.224 31.8227C31.8386 32.2183 31.2055 32.2267 30.8099 31.8414L24.9775 26.1613Z" fill="#FFFCE1"/>
+                   </svg>
+                </button>
+			</form>
+		</div>
+	</div>
+
+                </div>   
+              
+				<div id="ipsLayout_contentWrapper">
+					
+					<div id="ipsLayout_mainArea"><div class="cjmg_container cjmg_container_bodyTop"> </div>
+						
+						
+						
+						
+
+	
+
+
+
+
+						
+<div id="elCmsPageWrap" data-pageid="39">
+
+<style>
+	#summary {
+		margin: 2em 0;
+		padding: 1em 1.5em;
+		border-radius: 1em;
+		border: 2px solid #7c7c6f;
+	}
+	#license h3 {
+		margin: 1.5em 0 0.5em 0;
+	}
+	#license ol {
+		list-style-type: upper-alpha;
+	}
+	#license .faq-q {
+		display: block;
+		font-weight: bold;
+		color: var(--color-surface-white);
+	}
+	#license .faq-a {
+		margin-bottom: 1em;
+		display: block;
+	}
+	#license .fine-print p {
+		font-size: 0.8em;
+	}
+</style>
+
+<div id="license">
+	<div class='cPageHeader ipsType_center ipsSpacer_bottom'>
+		<h2 class='ipsType_pageTitle'>Standard "No Charge" GSAP License</h2>
+	</div>
+
+	<div class='cInnerContent gsap-article'>
+		<!--		<div id="summary">-->
+		<!--			<h2>Plain English Summary:</h2>-->
+		<!--			<ol class="compact">-->
+		<!--				<li>You may use the code at no charge in commercial or non-commercial apps, web sites, games, components, and other software as long as end users are not charged a fee of any kind to use your product or gain access to any part of it. If your client pays you a one-time fee to create the site/product, that's perfectly fine and qualifies under the "no charge" license. If end users are charged a usage/access/license fee, please sign up for a <a href="https://gsap.com/pricing/">"Business" Club GSAP</a> membership which comes with a comprehensive commercial license. See <a href="https://gsap.com/pricing/">https://gsap.com/pricing/</a> for details.</li>-->
+		<!--				<li>Use at your own risk. No warranties are offered.</li>-->
+		<!--				<li>Please respect the copyright.</li>-->
+		<!--				<li><a href="https://gsap.com/blog/why-license">Learn more about the "why" behind our license &gt;&gt;</a></li>-->
+		<!--			</ol>-->
+		<!--		</div>-->
+
+
+		<h3 id="definitions">I. DEFINITIONS</h3>
+		<ul>
+			<li><strong>“GSAP License”</strong> means the terms and conditions of this GSAP Software License Agreement.</li>
+			<li><strong>"GSAP Products"</strong> means any Software made available at <a href="https://gsap.com">gsap.com</a> or any successor sites, including but not limited to the GSAP animation library and related plugins, tools, or extensions.</li>
+			<li><strong>"Permitted Uses"</strong> means the implementation and/or use of GSAP Products on any website, web application, or digital interface by any person or entity (which may include, for clarity, those of companies that compete with Webflow in other areas of business).</li>
+			<li><strong>"Prohibited Uses"</strong> means any implementation and/or use of GSAP Products in tools that allow users to build visual animations without code that encourages, induces, or materially assists in creating a solution that competes with Webflow’s visual animation building capabilities.</li>
+			<li><strong>"Competitive Products"</strong> means any software, tool, or service that enables users to create, edit, or manage animations through a visual interface or builder similar to <a href="https://webflow.com">Webflow</a>.</li>
+		</ul>
+
+		<h3 id="grant-of-license">II. GRANT OF LICENSE</h3>
+		<p>Subject to the terms and conditions of this GSAP License, Webflow grants you a non-exclusive, worldwide license to use, reproduce, display, and implement GSAP Products solely for Permitted Uses.</p>
+
+		<h3 id="restrictions">III. RESTRICTIONS</h3>
+
+		<p>You may not:</p>
+		<ol type="a">
+			<li>Use any GSAP Products for any Prohibited Uses without prior written consent;</li>
+
+			<li>Reverse engineer any GSAP Products for the purpose of creating Competitive Products;</li>
+
+			<li>Remove or alter any proprietary notices or branding from GSAP Products.</li>
+		</ol>
+
+		<h3 id="ownership">IV. OWNERSHIP AND INTELLECTUAL PROPERTY</h3>
+		<p>All intellectual property rights in GSAP Products, including but not limited to copyright, patents, trademarks, and trade secrets, remain the exclusive property of Webflow. This GSAP License does not transfer any ownership rights in GSAP Products to you.</p>
+
+		<h3 id="termination">V. TERMINATION</h3>
+		<p>Webflow may terminate this GSAP License and revoke your access in its discretion if you fail to comply with any of these terms and conditions. Upon termination, you must cease all use of GSAP Products and destroy all copies in your possession.</p>
+
+		<h3 id="misc">VI. MISCELLANEOUS PROVISIONS</h3>
+		<ol type="a">
+			<li><strong>General</strong>: This GSAP License is incorporated into and subject to Webflow’s Terms of Service available <a href="https://webflow.com/legal/terms">here</a> (<strong>"Terms of Service"</strong>). In the event of any conflict or inconsistency between this GSAP License and the Terms of Service, the terms of this GSAP License shall govern in relation to your use of any GSAP Products.</li>
+
+			<li><strong>Amendments</strong>: Webflow reserves the right to update or modify this GSAP License at any time by posting the revised terms on this website, provided that any such updates or modifications shall not result in any material degradation to the security, integrity, or functionality of any GSAP Products. You understand and agree that your continued use of any GSAP Products after such revisions to this GSAP License constitutes your acceptance of this GSAP License as revised. If you do not accept the revised GSAP License, you are prohibited from using versions of the GSAP Products released after the effective date of the revised GSAP License (as well as any updates made to previous versions). Notwithstanding, you may continue using previous versions of GSAP Products under the applicable terms licensed to you prior to the effective date of the revised GSAP License (for clarity, excluding any updates made thereto).</li>
+
+			<li><strong>No Waiver</strong>: Failure of Webflow to enforce any provision of this GSAP License shall not constitute a waiver of future enforcement of that or any other provision.</li>
+		</ol>
+	</div>
+	<div id="faq">
+		<h1>FAQ</h1>
+		<ul>
+			<li><strong class="faq-q">Is it acceptable for AI tools like ChatGPT, Cursor, Lovable, Webstudio, etc. to generate GSAP code?</strong>
+				<span class="faq-a">Absolutely! AI-generated code is not a "Prohibited Use".</span></li>
+
+			<li><strong class="faq-q">What if a WordPress plugin or theme or other niche tool allows users to create GSAP-driven effects through a visual interface? Is that prohibited?</strong>
+				<span class="faq-a">We want to encourage developers to build on top of GSAP, including visual tools that don't directly compete with Webflow's rich animation-building capabilities. If you are not sure if your product might be considered a "Prohibited Use", feel free to <a href="https://gsap.com/contact">contact us</a> so we can talk through it!</span></li>
+
+			<li><strong class="faq-q">Can I really use GSAP in commercial projects without paying anything?</strong>
+				<span class="faq-a">Yes, really! Commercial usage is covered under the standard license. All of GSAP including the plugins that were formerly "members-only" like <a href="https://gsap.com/docs/v3/Plugins/SplitText/">SplitText</a> and <a href="https://gsap.com/docs/v3/Plugins/MorphSVGPlugin">MorphSVG</a> can be used in commercial projects at no charge. Enjoy! 💚</span></li>
+		</ul>
+	</div>
+
+	<div class='ipsType_light ipsSpacer_top fine-print'>
+		<p>Effective date: April 30, 2025</p>
+		<p>Last modified date: May 30, 2025</p>
+		<p>Copyright (&copy;) 2025, Webflow</p>
+	</div>
+
+</div>
+</div>
+						
+
+
+					<div class="cjmg_container cjmg_container_bodyBottom"> </div></div>
+					
+
+
+					
+<nav class='ipsBreadcrumb ipsBreadcrumb_bottom ipsFaded_withHover'>
+	
+		
+
+
+	<a href='#' id='elRSS' class='ipsPos_right ipsType_large' title='Available RSS feeds' data-ipsTooltip data-ipsMenu data-ipsMenu-above><i class='fa fa-rss-square'></i></a>
+	<ul id='elRSS_menu' class='ipsMenu ipsMenu_auto ipsHide'>
+		
+			<li class='ipsMenu_item'><a title="Blogs" href="https://gsap.com/community/rss/1-blogs.xml/">Blogs</a></li>
+		
+	</ul>
+
+	
+
+	<ul class='ipsList_inline ipsPos_right'>
+		
+		<li >
+			<a data-action="defaultStream" class='ipsType_light '  href='https://gsap.com/community/discover/'><i class="fa fa-newspaper-o" aria-hidden="true"></i> <span>All Activity</span></a>
+		</li>
+		
+	</ul>
+
+	<ul data-role="breadcrumbList">
+		<li>
+			<a title="Home" href='https://gsap.com/community/'>
+				<span>Home <i class='fa fa-angle-right'></i></span>
+			</a>
+		</li> 
+		
+		
+			<li>
+			   
+					<a href='https://gsap.com/community/standard-license/'>
+						<span>Standard License </span>
+					</a>
+				
+			</li>
+		
+	</ul>
+</nav>
+				</div>
+			</div>
+			
+      
+      
+      </main>
+		<footer id="ipsLayout_footer" class="ipsClearfix">
+			<div class="ipsLayout_container">
+				
+			</div>
+		</footer> <div class="cjmg_spacer_footer"></div><div class="cjmg_container cjmg_container_footer"> </div>
+		
+
+<div id="elMobileDrawer" class="ipsDrawer ipsHide ">
+	<div class="ipsDrawer_menu">
+		<a href="#" class="ipsDrawer_close" data-action="close"><span>×</span></a>
+		<div class="ipsDrawer_content ipsFlex ipsFlex-fd:column">
+			
+				<div class="ipsPadding ipsBorder_bottom">
+					<ul class="ipsToolList ipsToolList_vertical">
+						<li>
+							<a href="https://gsap.com/community/login/" id="elSigninButton_mobile" class="ipsButton ipsButton_light ipsButton_small ipsButton_fullWidth">Existing user? Sign In</a>
+						</li>
+						
+							<li>
+								
+									<a href="https://gsap.com/community/register/" data-ipsdialog data-ipsdialog-size="narrow" data-ipsdialog-title="Sign Up" data-ipsdialog-fixed="true"  id="elRegisterButton_mobile" class="ipsButton ipsButton_small ipsButton_fullWidth ipsButton_important">Sign Up</a>
+								
+							</li>
+						
+					</ul>
+				</div>
+			
+
+			
+
+			<ul class="ipsDrawer_list ipsFlex-flex:11">
+				
+
+				
+				
+				
+				
+					
+						
+						
+							<li><a href="https://gsap.com/community/leaderboard/" >Leaderboard</a></li>
+						
+					
+				
+					
+				
+					
+				
+				
+			</ul>
+
+			
+		</div>
+	</div>
+</div>
+
+<div id="elMobileCreateMenuDrawer" class="ipsDrawer ipsHide">
+	<div class="ipsDrawer_menu">
+		<a href="#" class="ipsDrawer_close" data-action="close"><span>×</span></a>
+		<div class="ipsDrawer_content ipsSpacer_bottom ipsPad">
+			<ul class="ipsDrawer_list">
+				<li class="ipsDrawer_listTitle ipsType_reset">Create New...</li>
+				
+			</ul>
+		</div>
+	</div>
+</div>
+
+		
+		
+
+
+
+<script type='text/javascript' src='https://cdnjs.cloudflare.com/ajax/libs/prettify/r224/prettify.js?v=d2eb687422' defer data-ips></script>
+
+<script type='text/javascript' src='https://gsap.com/js/v3/ScrollToPlugin.min.js?v=d2eb687422'  data-ips></script>
+
+<script type='text/javascript' src='https://gsap.com/js/src/download.js?v=d2eb687422' defer data-ips></script>
+
+<script type='text/javascript' src='https://gsap.com/js/popup.js?ver=2.0&amp;v=d2eb687422'  data-ips></script>
+
+
+
+	
+	<script type='text/javascript'>
+		var ipsDebug = false;		
+	
+		var CKEDITOR_BASEPATH = '//gsap.com/community/applications/core/interface/ckeditor/ckeditor/';
+	
+		var ipsSettings = {
+			
+			
+			cookie_domain: ".gsap.com",
+			
+			cookie_path: "/",
+			
+			cookie_prefix: "ips4_",
+			
+			
+			cookie_ssl: true,
+			
+            essential_cookies: ["oauth_authorize","member_id","login_key","clearAutosave","lastSearch","device_key","IPSSessionFront","loggedIn","noCache","hasJS","cookie_consent","cookie_consent_optional","referred_by","forumpass_*","cm_reg","location","currency","guestTransactionKey"],
+			upload_imgURL: "",
+			message_imgURL: "",
+			notification_imgURL: "",
+			baseURL: "//gsap.com/community/",
+			jsURL: "//gsap.com/community/applications/core/interface/js/js.php",
+			csrfKey: "84de8fc8dbb5562a1beb5f3dceea737b",
+			antiCache: "d2eb6874221790552598",
+			jsAntiCache: "d2eb6874221790717922",
+			disableNotificationSounds: true,
+			useCompiledFiles: true,
+			links_external: true,
+			memberID: 0,
+			lazyLoadEnabled: false,
+			blankImg: "//gsap.com/community/applications/core/interface/js/spacer.png",
+			googleAnalyticsEnabled: true,
+			matomoEnabled: false,
+			viewProfiles: false,
+			mapProvider: 'none',
+			mapApiKey: '',
+			pushPublicKey: "BBLZSaDx_1_m7od3-Mo9OBJqCB-Gw1IXAXvXIXa3OVirfKgG8DdRPNHE0Ip7FxnU1VbShaOfXrfVI1QuVDkgVVc",
+			relativeDates: true
+		};
+		
+		
+		
+		
+			ipsSettings['maxImageDimensions'] = {
+				width: 1000,
+				height: 750
+			};
+		
+		
+	</script>
+
+
+
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_global/root_library.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_global/root_js_lang_1.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_global/root_framework.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_core/global_global_core.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_core/plugins_plugins.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='//gsap.com/community/applications/core/interface/jquery/jquery-ui.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_cjmg/front_front_menus.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_cjmg/front_front_select.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_global/root_front.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_core/front_front_core.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_sendinblue/front_front_global.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/set_resources_8/bc70e77d2d6fd7375fb008b9956da226_prism.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_gspages/front_front_global.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_gspages/front_app.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_cms/front_app.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type='text/javascript' src='https://gsap.com/community/uploads/javascript_global/root_map.js?v=d2eb6874221790717922' data-ips></script>
+
+
+<script type="text/javascript" src="https://public.codepenassets.com/embed/index.js?v=d2eb6874221790717922" async></script>
+
+
+	<script type='text/javascript'>
+		
+			ips.setSetting( 'date_format', jQuery.parseJSON('"mm\/dd\/yy"') );
+		
+			ips.setSetting( 'date_first_day', jQuery.parseJSON('0') );
+		
+			ips.setSetting( 'ipb_url_filter_option', jQuery.parseJSON('"none"') );
+		
+			ips.setSetting( 'url_filter_any_action', jQuery.parseJSON('"allow"') );
+		
+			ips.setSetting( 'bypass_profanity', jQuery.parseJSON('0') );
+		
+			ips.setSetting( 'emoji_style', jQuery.parseJSON('"native"') );
+		
+			ips.setSetting( 'emoji_shortcodes', jQuery.parseJSON('true') );
+		
+			ips.setSetting( 'emoji_ascii', jQuery.parseJSON('true') );
+		
+			ips.setSetting( 'emoji_cache', jQuery.parseJSON('1687813245') );
+		
+			ips.setSetting( 'image_jpg_quality', jQuery.parseJSON('85') );
+		
+			ips.setSetting( 'cloud2', jQuery.parseJSON('false') );
+		
+			ips.setSetting( 'cjmobile', jQuery.parseJSON('false') );
+		
+			ips.setSetting( 'desktopNotifications', jQuery.parseJSON('0') );
+		
+			ips.setSetting( 'isAnonymous', jQuery.parseJSON('false') );
+		
+		
+        
+    </script>
+
+
+
+<script type='application/ld+json'>
+{
+    "@context": "http://www.schema.org",
+    "publisher": "https://gsap.com/community/#organization",
+    "@type": "WebSite",
+    "@id": "https://gsap.com/community/#website",
+    "mainEntityOfPage": "https://gsap.com/community/",
+    "name": "GSAP",
+    "url": "https://gsap.com/community/",
+    "potentialAction": {
+        "type": "SearchAction",
+        "query-input": "required name=query",
+        "target": "https://gsap.com/community/search/?q={query}"
+    },
+    "inLanguage": [
+        {
+            "@type": "Language",
+            "name": "English (USA)",
+            "alternateName": "en-US"
+        }
+    ]
+}	
+</script>
+
+<script type='application/ld+json'>
+{
+    "@context": "http://www.schema.org",
+    "@type": "Organization",
+    "@id": "https://gsap.com/community/#organization",
+    "mainEntityOfPage": "https://gsap.com/community/",
+    "name": "GSAP",
+    "url": "https://gsap.com/community/"
+}	
+</script>
+
+<script type='application/ld+json'>
+{
+    "@context": "http://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+        {
+            "@type": "ListItem",
+            "position": 1,
+            "item": {
+                "name": "Standard License",
+                "@id": "https://gsap.com/community/standard-license/"
+            }
+        }
+    ]
+}	
+</script>
+
+<script type='application/ld+json'>
+{
+    "@context": "http://schema.org",
+    "@type": "ContactPage",
+    "url": "https://gsap.com/community/contact/"
+}	
+</script>
+
+
+
+<script type='text/javascript'>
+    (() => {
+        let gqlKeys = [];
+        for (let [k, v] of Object.entries(gqlKeys)) {
+            ips.setGraphQlData(k, v);
+        }
+    })();
+</script>
+		
+		<!--ipsQueryLog-->
+		<!--ipsCachingLog-->
+		
+		
+		
+        
+      
+        <!-- START OF GSAP FOOTER CODE -->
+        
+<footer class="footer">
+  
+  <div class="footer-products">
+    <div class="container">
+      <nav class="grid" aria-label="Products Navigation">
+        <div class="col-6 col-tablet-4 col-desktop-2 footer__nav-container footer__nav-container--gsap">
+          <h2 class="footer__label footer__label"><a href="/">GSAP</a></h2>
+          <div class="footer__nav">
+            <ul class="footer__menu">
+                <li class="footer__menu-item">
+                  <a href="/core/" class="footer__menu-link" target="_blank" rel="noopener">
+                    Core
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/" class="footer__menu-link" target="_blank" rel="noopener">
+                    Docs
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins" class="footer__menu-link" target="_blank" rel="noopener">
+                    All Plugins
+                  </a>
+                </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="col-6 col-tablet-4 col-desktop-2 footer__nav-container footer__nav-container--scroll">
+          <h2 class="footer__label footer__label"><a href="/scroll/">Scroll</a></h2>
+          <div class="footer__nav">
+            <ul class="footer__menu">
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/ScrollTrigger" class="footer__menu-link" target="_blank" rel="noopener">
+                    ScrollTrigger
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/ScrollSmoother/" class="footer__menu-link" target="_blank" rel="noopener">
+                    ScrollSmoother
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/ScrollToPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    ScrollTo
+                  </a>
+                </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="col-6 col-tablet-4 col-desktop-2 footer__nav-container footer__nav-container--svg">
+          <h2 class="footer__label footer__label"><a href="/svg/">SVG</a></h2>
+          <div class="footer__nav">
+            <ul class="footer__menu">
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/DrawSVGPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    DrawSVG
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/MorphSVGPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    MorphSVG
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/MotionPathPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    MotionPath
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/MotionPathHelper/" class="footer__menu-link" target="_blank" rel="noopener">
+                    MotionPathHelper
+                  </a>
+                </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="col-6 col-tablet-4 col-desktop-2 footer__nav-container footer__nav-container--ui">
+          <h2 class="footer__label footer__label"><a href="/ui/">UI</a></h2>
+          <div class="footer__nav">
+            <ul class="footer__menu">
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/Flip" class="footer__menu-link" target="_blank" rel="noopener">
+                    Flip
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/Draggable" class="footer__menu-link" target="_blank" rel="noopener">
+                    Draggable
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/InertiaPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    Inertia
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/Observer" class="footer__menu-link" target="_blank" rel="noopener">
+                    Observer
+                  </a>
+                </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="col-6 col-tablet-4 col-desktop-2 footer__nav-container footer__nav-container--text">
+          <h2 class="footer__label footer__label"><a href="/text/">Text</a></h2>
+          <div class="footer__nav">
+            <ul class="footer__menu">
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/SplitText" class="footer__menu-link" target="_blank" rel="noopener">
+                    SplitText
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/ScrambleTextPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    ScrambleText
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/TextPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    Text Replace
+                  </a>
+                </li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="col-6 col-tablet-4 col-desktop-2 footer__nav-container footer__nav-container--other">
+          <h2 class="footer__label footer__label"><a href="/">Other</a></h2>
+          <div class="footer__nav">
+            <ul class="footer__menu">
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/Physics2DPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    Physics2D
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="docs/v3/Plugins/PhysicsPropsPlugin" class="footer__menu-link" target="_blank" rel="noopener">
+                    PhysicsProps
+                  </a>
+                </li>
+                <li class="footer__menu-item">
+                  <a href="/docs/v3/Plugins/GSDevTools" class="footer__menu-link" target="_blank" rel="noopener">
+                    GSDevTools
+                  </a>
+                </li>
+            </ul>
+          </div>
+        </div>
+      </nav>
+    </div>
+  </div>
+
+  
+  <div class="footer-global">
+    <div class="container">
+      <nav class="grid" aria-label="Footer Navigation">
+        <div class="col-12 col-tablet-5">
+          <form class="footer-global__form">
+            <fieldset>
+              <legend class="body-m">Keep in the loop with the GSAP&reg; newsletter.</legend>
+
+              <div class="field footer-global__email">
+                <label class="label visually-hidden" for="email">Email <span class="req">*</span></label>
+                <input type="email" id="email" name="email" placeholder="Email Address" required/>
+                <button class="footer-global__button" type="submit" aria-label="Submit">
+                  <svg width="41" height="22" viewBox="0 0 41 22" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<path d="M40.002 11.001H0.501953M40.002 11.001L30.002 1.00098M40.002 11.001L30.002 21.001" stroke="#0E100F"/>
+</svg>
+
+                </button>
+              </div>
+            </fieldset>
+            <br/>
+            <p class="js-email-feedback"></p>
+          </form>
+        </div>
+
+        <div class="col-12 col-tablet-6 col-desktop-5 col-tablet-start-7 col-desktop-start-8">
+          <div class="grid">
+            <div class="col-12 col-mobileLarge-6 col-tablet-6 footer__nav-container">
+              <h2 class="footer__label">GSAP</h2>
+              <div class="footer__nav">
+                <ul class="footer__menu">
+                  <li class="footer__menu-item"><a href="/blog/" class="footer__menu-link">Blog</a></li>
+                  <li class="footer__menu-item"><a href="/showcase/" class="footer__menu-link">Showcase</a></li>
+                  <li class="footer__menu-item"><a href="/resources/" class="footer__menu-link">Learn GSAP</a></li>
+                  <li class="footer__menu-item"><a href="/pricing" class="footer__menu-link">GSAP & Webflow</a></li>
+                  <li class="footer__menu-item"><a href="/community/contact" class="footer__menu-link">Contact Us</a></li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="col-12 col-mobileLarge-6 col-tablet-6 footer__nav-container">
+              <h2 class="footer__label">Connect</h2>
+              <div class="footer__nav">
+                <ul class="footer__menu">
+                    <li class="footer__menu-item">
+                      <a href="/community" class="footer__menu-link" target="_blank" rel="noopener">
+                        Forums
+                      </a>
+                    </li>
+                   	<li class="footer__menu-item">
+                      <a href="/discord/" class="footer__menu-link" target="_blank" rel="noopener">
+                        Discord
+                      </a>
+                    </li>
+                    <li class="footer__menu-item">
+                      <a href="https://codepen.io/GreenSock" class="footer__menu-link" target="_blank" rel="noopener">
+                        Codepen
+                      </a>
+                    </li>
+                    <li class="footer__menu-item">
+                      <a href="https://www.linkedin.com/company/greensock" class="footer__menu-link" target="_blank" rel="noopener">
+                        LinkedIn
+                      </a>
+                    </li>
+                    <li class="footer__menu-item">
+                      <a href="https://bsky.app/profile/gsap-greensock.bsky.social" class="footer__menu-link" target="_blank" rel="noopener">
+                        Bluesky
+                      </a>
+                    </li>
+                    <li class="footer__menu-item">
+                      <a href="https://github.com/greensock/GreenSock-JS" class="footer__menu-link" target="_blank" rel="noopener">
+                        GitHub
+                      </a>
+                    </li>
+                    <li class="footer__menu-item">
+                      <a href="https://www.x.com/greensock" class="footer__menu-link" target="_blank" rel="noopener">
+                        X
+                      </a>
+                    </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </nav>
+    </div>
+  </div>
+
+  
+  <div class="footer-copy">
+    <div class="container body-s">
+      <div class="footer-copy__layout">
+        <p class="footer-copy__text">&copy;2025 GSAP - A Webflow Product.  All rights reserved.</p>
+
+        <a class="footer-copy__webflow" href="https://webflow.com/">
+          <svg width="39" height="24" viewBox="0 0 39 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path fill-rule="evenodd" clip-rule="evenodd" d="M38.7475 0L26.4707 24H14.9392L20.077 14.0534H19.8465C15.6078 19.5558 9.28359 23.178 0.272522 24V14.191C0.272522 14.191 6.03712 13.8505 9.42596 10.2877H0.272522V0.000189575H10.56V8.46149L10.7909 8.46054L14.9947 0.000189575H22.7749V8.40784L23.0058 8.40746L27.3673 0H38.7475Z" fill="#146EF5"></path>
+          </svg>
+        </a>
+
+        <nav class="footer-copy__nav" aria-label="Copyright Navigation">
+        <ul class="footer-copy__menu">
+            <li class="footer-copy__menu-item">
+              <a href="/community/privacy-policy/" class="footer-copy__menu-link">
+               &nbsp;Privacy Policy.
+              </a>
+            </li>
+            <li class="footer-copy__menu-item">
+              <a href="/community/terms-of-use/" class="footer-copy__menu-link">
+               &nbsp;Terms of Use.
+              </a>
+            </li>
+        </ul>
+        </nav>
+      </div>
+    </div>
+  </div>
+</footer>
+        <!-- END OF GSAP FOOTER CODE -->
+      
+
+	
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495" integrity="sha512-iIg7k2xntmwu6/uSb5tpc/hySgZc4eoL31yB29W6tJFo2akwjPWcEqnCEdJvGexCL0KEQwVYv5BlowfhVz26hg==" data-cf-beacon='{"version":"2024.11.0","token":"d9ae9e856c56428d9901e3a93b0b68c3","spa":2}' crossorigin="anonymous"></script>
+</body>
+</html>

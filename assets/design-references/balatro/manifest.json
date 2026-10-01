@@ -1,0 +1,65 @@
+{
+  "version": "balatro-reference-1",
+  "sampled_at": "2026-10-01",
+  "reviewer": "2ByteASR original vector study; no game image sampling",
+  "primary_source": "original-material-study.svg",
+  "categories": [
+    "joker",
+    "legendary",
+    "card_detail",
+    "chips_mult",
+    "rarity_sticker",
+    "foil",
+    "panels_buttons"
+  ],
+  "sources": [
+    {
+      "file": "original-material-study.svg",
+      "sha256": "53779b9b4dedd3cd22bb021d0ba373669b23cf2d4499c642e00161b7618d2b2d",
+      "license": "GPL-3.0-only"
+    }
+  ],
+  "atlas": {
+    "file": "reference-atlas.jpg",
+    "sha256": "44e747e9c0c3c3bcafe07cdea5d4edcaf262fa9f169fed0a5838a342b781ee37",
+    "source": "original-material-study.svg",
+    "tiles": [
+      {
+        "label": "LAYERED LABEL",
+        "source": "original-material-study.svg"
+      },
+      {
+        "label": "TWO VALUE CHANNELS",
+        "source": "original-material-study.svg"
+      },
+      {
+        "label": "BOUNDED FOIL",
+        "source": "original-material-study.svg"
+      },
+      {
+        "label": "PAPER EDGES",
+        "source": "original-material-study.svg"
+      },
+      {
+        "label": "TACTILE CONTROLS",
+        "source": "original-material-study.svg"
+      },
+      {
+        "label": "TEXT HIERARCHY",
+        "source": "original-material-study.svg"
+      }
+    ]
+  },
+  "observations": [
+    "原创层级标签：外壳、浅色阅读窗与下缘封签分层，文字为主体。",
+    "原创双通道数值：蓝色与暖红色分别表达计数与倍数，粗短阴影与凹槽分隔信息。",
+    "原创局部箔面：同心椭圆与柔和色带约束于卡面边界，贴签压在表面。",
+    "原创纸边：错位纸层与简单山形/圆形几何，不使用游戏角色、卡面或截图。",
+    "原创实体控件：两种色块与深色底边表达按压；外面板保持清楚层级。",
+    "原创文字层级：短行、长行及标记在浅色条目上分配权重，用于正文和关键词。"
+  ],
+  "transfer": "概念化UI字幕：卡牌效果框/筹码边纹/封签/字面加工为主角；有意避开角色插图、抽象画和孤立像素小卡。",
+  "rights": "Original SVG geometry created for this project; GPL-3.0-only. No Balatro, Playstack, LocalThunk or CBR image files are distributed in this reference pack. The legacy folder/key identifies a style route, not official game artwork.",
+  "content_revision": "original-geometric-study-20261001",
+  "origin_kind": "original-vector-study"
+}

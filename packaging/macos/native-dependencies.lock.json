@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "verified_date": "2026-10-01",
+  "target": "darwin-arm64",
+  "minimum_macos": "15.0",
+  "python_minor": "3.10",
+  "node": {
+    "version": "22.16.0",
+    "url": "https://nodejs.org/dist/v22.16.0/node-v22.16.0-darwin-arm64.tar.gz",
+    "sha256": "1d7f34ec4c03e12d8b33481e5c4560432d7dc31a0ef3ff5a4d9a8ada7cf6ecc9"
+  },
+  "media": {
+    "ffmpeg": {
+      "version": "9.0.2",
+      "revision": 0,
+      "official_url": "https://formulae.brew.sh/api/formula/ffmpeg.json",
+      "arm64_sequoia_bottle": {
+        "cellar": "/opt/homebrew/Cellar",
+        "url": "https://ghcr.io/v2/homebrew/core/ffmpeg/blobs/sha256:c8006779a2919e921e66bbdbf2aa5c989acc5f3626884ec725e58e161f5e843f",
+        "sha256": "c8006779a2919e921e66bbdbf2aa5c989acc5f3626884ec725e58e161f5e843f"
+      }
+    },
+    "mpv": {
+      "version": "0.41.0",
+      "revision": 10,
+      "official_url": "https://formulae.brew.sh/api/formula/mpv.json",
+      "arm64_sequoia_bottle": {
+        "cellar": "/opt/homebrew/Cellar",
+        "url": "https://ghcr.io/v2/homebrew/core/mpv/blobs/sha256:a0313cae157832a61b4cd2428f5907cba22f43d2a7d133982c4ec11406a5b89d",
+        "sha256": "a0313cae157832a61b4cd2428f5907cba22f43d2a7d133982c4ec11406a5b89d"
+      }
+    }
+  },
+  "critical_wheel_availability": {
+    "torch": {
+      "version": "2.11.0",
+      "official_url": "https://pypi.org/pypi/torch/2.11.0/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "torch-2.11.0-cp310-cp310-macosx_11_0_arm64.whl",
+          "sha256": "2c0d7fcfbc0c4e8bb5ebc3907cbc0c6a0da1b8f82b1fc6e14e914fa0b9baf74e",
+          "requires_python": ">=3.10"
+        }
+      ]
+    },
+    "torchaudio": {
+      "version": "2.11.0",
+      "official_url": "https://pypi.org/pypi/torchaudio/2.11.0/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "torchaudio-2.11.0-cp310-cp310-macosx_11_0_arm64.whl",
+          "sha256": "6ebb59c694909eccb5d61b7cc199d297692012c43286e36d92983aa7bad7586d",
+          "requires_python": null
+        }
+      ]
+    },
+    "PyInstaller": {
+      "version": "6.22.2",
+      "official_url": "https://pypi.org/pypi/PyInstaller/6.22.2/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "pyinstaller-6.22.2-py3-none-macosx_10_13_universal2.whl",
+          "sha256": "ebd1b1ca932d7cf25d7366ce691aaf79a5ff9425811ed7328b5116e4471b6d6d",
+          "requires_python": "<3.16,>=3.8"
+        }
+      ]
+    },
+    "PySide6": {
+      "version": "6.9.2",
+      "official_url": "https://pypi.org/pypi/PySide6/6.9.2/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "pyside6-6.9.2-cp39-abi3-macosx_12_0_universal2.whl",
+          "sha256": "71245c76bfbe5c41794ffd8546730ec7cc869d4bbe68535639e026e4ef8a7714",
+          "requires_python": "<3.14,>=3.9"
+        }
+      ]
+    },
+    "av": {
+      "version": "17.1.0",
+      "official_url": "https://pypi.org/pypi/av/17.1.0/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "av-17.1.0-cp310-cp310-macosx_14_0_arm64.whl",
+          "sha256": "19264c9bb4bee404accc7ce9ec461f2044b7f577a70234d29aafde31ed17de46",
+          "requires_python": ">=3.10"
+        }
+      ]
+    },
+    "Pillow": {
+      "version": "12.3.0",
+      "official_url": "https://pypi.org/pypi/Pillow/12.3.0/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "pillow-12.3.0-cp310-cp310-macosx_11_0_arm64.whl",
+          "sha256": "bcc33feacfaefce60c12fd500a277533bdc02b10a19f7f6d348763d8140bbba7",
+          "requires_python": ">=3.10"
+        }
+      ]
+    },
+    "kaldi_native_fbank": {
+      "version": "1.22.3",
+      "official_url": "https://pypi.org/pypi/kaldi_native_fbank/1.22.3/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "kaldi_native_fbank-1.22.3-cp310-cp310-macosx_11_0_arm64.whl",
+          "sha256": "947cb8fae3611244b15006bd42263fe56afe583077e7006aac4bdb0e10dc5a4f",
+          "requires_python": ">=3.8.0"
+        }
+      ]
+    },
+    "funasr": {
+      "version": "1.4.1",
+      "official_url": "https://pypi.org/pypi/funasr/1.4.1/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "funasr-1.4.1-py3-none-any.whl",
+          "sha256": "8511879cc3672fa66e77a3cc2f01954ba002ded52208d4a897a4b56749de96c8",
+          "requires_python": ">=3.7.0"
+        }
+      ]
+    },
+    "psutil": {
+      "version": "7.2.2",
+      "official_url": "https://pypi.org/pypi/psutil/7.2.2/json",
+      "arm64_cp310_or_universal": [
+        {
+          "filename": "psutil-7.2.2-cp36-abi3-macosx_11_0_arm64.whl",
+          "sha256": "1a7b04c10f32cc88ab39cbf606e117fd74721c831c98a27dc04578deb0c16979",
+          "requires_python": ">=3.6"
+        }
+      ]
+    }
+  },
+  "platform_materials_complete": false,
+  "native_validation_executed": false
+}

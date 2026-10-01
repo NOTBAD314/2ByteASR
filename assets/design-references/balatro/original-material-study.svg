@@ -1,0 +1,40 @@
+<!-- Original abstract material diagrams, 2ByteASR 2026-10-01.
+     SPDX-License-Identifier: GPL-3.0-only. No sampled game/press/CBR pixels. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="960" viewBox="0 0 1440 960">
+ <defs><linearGradient id="foil" x2="1" y2="1"><stop stop-color="#8cbcc0"/><stop offset=".3" stop-color="#a08bb4"/><stop offset=".58" stop-color="#e1c794"/><stop offset="1" stop-color="#79b29f"/></linearGradient></defs>
+ <rect width="1440" height="960" fill="#1d2630"/>
+ <g font-family="sans-serif" fill="#e9e4d5" font-size="22" letter-spacing="2">
+  <text x="40" y="45">ORIGINAL MATERIAL STUDIES / 2BYTEASR</text>
+  <text x="40" y="98">01 / LAYERED LABEL</text><text x="510" y="98">02 / TWO VALUE CHANNELS</text><text x="980" y="98">03 / BOUNDED FOIL</text>
+  <text x="40" y="540">04 / PAPER EDGES</text><text x="510" y="540">05 / TACTILE CONTROLS</text><text x="980" y="540">06 / TEXT HIERARCHY</text>
+ </g>
+ <g>
+  <rect x="47" y="137" width="396" height="322" rx="16" fill="#101a22"/>
+  <rect x="40" y="130" width="396" height="316" rx="16" fill="#6b8582"/>
+  <rect x="58" y="179" width="360" height="184" rx="5" fill="#e9e4d5"/>
+  <path d="M82 219h296m-296 29h216m-216 30h265m-265 29h162" stroke="#748582" stroke-width="11"/>
+  <rect x="205" y="382" width="190" height="42" rx="7" fill="#9f737c"/>
+  <rect x="510" y="160" width="400" height="240" rx="25" fill="#405964"/>
+  <rect x="532" y="183" width="164" height="166" rx="15" fill="#4d90b1"/>
+  <rect x="719" y="183" width="168" height="166" rx="15" fill="#b86669"/>
+  <g fill="#f3eada" font-family="sans-serif" font-size="66" font-weight="bold"><text x="555" y="288">240</text><text x="751" y="288">×3</text></g>
+  <path d="M538 371h350" stroke="#172b32" stroke-width="10"/>
+  <rect x="1001" y="141" width="353" height="296" rx="28" fill="url(#foil)"/>
+  <g fill="none" stroke="#f2e6d4" stroke-width="3" opacity=".7"><ellipse cx="1178" cy="288" rx="132" ry="110"/><ellipse cx="1178" cy="288" rx="105" ry="88"/><ellipse cx="1178" cy="288" rx="78" ry="65"/><ellipse cx="1178" cy="288" rx="51" ry="43"/></g>
+  <path d="m1296 371 35-12 21 31-15 33-36-2-14-28Z" fill="#946771"/>
+  <rect x="102" y="626" width="273" height="253" rx="16" fill="#556d79" transform="rotate(7 230 750)"/>
+  <rect x="86" y="608" width="273" height="253" rx="16" fill="#e0cba9" transform="rotate(-5 220 745)"/>
+  <rect x="76" y="594" width="273" height="253" rx="16" fill="#efe9d6"/>
+  <path d="m110 768 93-126 111 141Z" fill="#7fa49b"/><circle cx="269" cy="657" r="26" fill="#d4a46e"/>
+  <rect x="521" y="603" width="380" height="255" rx="21" fill="#607976"/>
+  <rect x="541" y="625" width="340" height="210" rx="12" fill="#273a3f"/>
+  <rect x="568" y="655" width="121" height="143" rx="12" fill="#203039"/><rect x="565" y="643" width="121" height="143" rx="12" fill="#b97671"/>
+  <rect x="720" y="655" width="132" height="143" rx="12" fill="#203039"/><rect x="717" y="643" width="132" height="143" rx="12" fill="#88a482"/>
+  <path d="M603 714h44m-22-22v44m130-19 17 17 36-44" stroke="#f7ecdb" stroke-width="9" fill="none"/>
+  <rect x="983" y="590" width="402" height="288" rx="13" fill="#32434a"/>
+  <g fill="#ccd6cc"><rect x="1003" y="614" width="362" height="65" rx="7"/><rect x="1003" y="696" width="362" height="65" rx="7"/><rect x="1003" y="778" width="362" height="65" rx="7"/></g>
+  <path d="M1026 644h163m-163 83h220m-220 82h177" stroke="#526863" stroke-width="11"/>
+  <g fill="#ad746c"><circle cx="1321" cy="647" r="18"/><circle cx="1321" cy="729" r="18"/><circle cx="1321" cy="811" r="18"/></g>
+ </g>
+ <text x="40" y="931" font-family="sans-serif" font-size="18" fill="#aab7b6">STRUCTURE / VALUE / SURFACE / EDGES / CONTROLS / HIERARCHY — NO GAME ARTWORK</text>
+</svg>

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-08-28T16:19:05.387Z",
+  "sessionId": "sess_306a799e-84d3-42fd-a802-6d45ad133a56",
+  "event": "PostToolUse",
+  "toolName": "Write",
+  "file": "C:\\Users\\12\\Desktop\\2ByteASR\\tests\\test_p8c_r31_human_path.py",
+  "outcome": "static_verified",
+  "coverage": "complete",
+  "findingCount": 1,
+  "durationMs": 692,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}
