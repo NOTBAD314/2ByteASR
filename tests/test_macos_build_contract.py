@@ -30,6 +30,21 @@ def test_manual_workflow_is_bounded_read_only_and_pinned_to_trusted_source():
     text=(ROOT/".github/workflows/macos-experimental.yml").read_text(encoding="utf8")
     assert "secrets." not in text
     assert "gh release" not in text and "docker push" not in text
+    names=[step.get('name','') for step in job['steps']]
+    assert names.index('Acquire, pour and verify pinned official native media')<names.index('Prepare isolated native CPU runtime and build dependencies')
+    assert names.index('Fresh native .app, archive, relocate and normal-entry startup')<names.index('Actual native video hardware probe with no software fallback')
+
+
+def test_app_build_exit_success_does_not_hide_captured_startup_failure(tmp_path,monkeypatch):
+    from scripts.macos_ci_status import main,summarize
+    root=tmp_path/'tmp/qa';(root/'build').mkdir(parents=True)
+    (root/'media').mkdir();(root/'media/media-install.json').write_text('{"passed":true}')
+    (root/'build/native-build-inputs.json').write_text(json.dumps(dict(native_validation=dict(app_built=True,
+        relocation=dict(bytes_permissions_symlinks_match=True),packaged_normal_entry_startup_smoke=dict(passed=False,error='Captured native crash',artifact_preserved=True)))))
+    monkeypatch.setenv('TEST_OUTCOME','success')
+    assert summarize(root)['app']=='passed' and summarize(root)['startup']=='failed'
+    assert summarize(root)['home_studio']=='not_executed'
+    assert main(['--qa-root',str(root),'--enforce'])==1
 
 
 def test_mac_dependencies_are_target_specific_and_have_official_arm64_evidence():

@@ -1,6 +1,6 @@
 # macOS Apple Silicon 桌面实验版（0.5.0）
 
-当前没有公开 Mac 下载入口。此说明面向取得真实内部实验包的用户，源码脚本不是安装包。[实际验证状态](macos-validation.zh-CN.md)分别记录构建、移动启动、模型准备、Studio 与人工验证。
+当前没有真实 Mac 安装包，也没有公开下载入口。首次原生 CI 因媒体版本与锁定输入不一致，在 PyInstaller 前停止。此页保留真实实验包可用后的使用流程；这些入口已实现，但冻结 Mac 程序尚未验证。[实际验证状态](macos-validation.zh-CN.md)分别记录构建、移动启动、模型准备、Studio 与人工验证。
 
 首轮环境为 macOS 15、Apple Silicon arm64。Intel、universal2、App Store 和更早系统均未验证。保留现有深葡萄紫界面、中文/English/日本語和工程库。
 

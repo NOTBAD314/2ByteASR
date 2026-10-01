@@ -4,6 +4,12 @@
   "target": "darwin-arm64",
   "minimum_macos": "15.0",
   "python_minor": "3.10",
+  "homebrew_core": {
+    "repository": "https://github.com/Homebrew/homebrew-core.git",
+    "commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
+    "bottle_tag": "arm64_sequoia",
+    "installation": "Homebrew official core checkout at this commit, API disabled, forced bottles; no global upgrade"
+  },
   "node": {
     "version": "22.16.0",
     "url": "https://nodejs.org/dist/v22.16.0/node-v22.16.0-darwin-arm64.tar.gz",
@@ -13,6 +19,8 @@
     "ffmpeg": {
       "version": "9.0.2",
       "revision": 0,
+      "formula_path": "Formula/f/ffmpeg.rb",
+      "formula_sha256": "d276ecab3d5e109fadcb93a671a7175569ca7ac942be46008a41f4fa678509f0",
       "official_url": "https://formulae.brew.sh/api/formula/ffmpeg.json",
       "arm64_sequoia_bottle": {
         "cellar": "/opt/homebrew/Cellar",
@@ -23,6 +31,8 @@
     "mpv": {
       "version": "0.41.0",
       "revision": 10,
+      "formula_path": "Formula/m/mpv.rb",
+      "formula_sha256": "bcf37e4202e262c0e907ed643dc7cbff6cb60a9249178fd538c02f63b58b10aa",
       "official_url": "https://formulae.brew.sh/api/formula/mpv.json",
       "arm64_sequoia_bottle": {
         "cellar": "/opt/homebrew/Cellar",

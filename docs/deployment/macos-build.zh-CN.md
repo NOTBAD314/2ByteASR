@@ -6,14 +6,14 @@
 
 ```bash
 QA_ROOT="$PWD/tmp/macos-native-0.5.0"
+python3.10 scripts/macos_install_media.py --output "$QA_ROOT/media"
 python3.10 scripts/macos_prepare_runtime.py \
   --runtime "$QA_ROOT/runtime" --receipt "$QA_ROOT/runtime.json"
-brew install ffmpeg mpv
 "$QA_ROOT/runtime/bin/python" scripts/macos_doctor.py \
   --require-host --probe-torch --output "$QA_ROOT/doctor.json"
 "$QA_ROOT/runtime/bin/python" scripts/macos_build.py \
   --source-sha "$(git rev-parse HEAD)" --runtime "$QA_ROOT/runtime" \
-  --output "$QA_ROOT/build"
+  --output "$QA_ROOT/build" --media-receipt "$QA_ROOT/media/media-install.json"
 ```
 
 CI 要求干净40位源码 SHA；`--allow-dirty` 仅显式本地实验并保留固定输入。每次使用新输出目录，不覆盖旧包。PyInstaller 只生成 arm64 `.app`，记录 source identity、build_id、原文件、实际 Python/原生工具清单。
@@ -22,8 +22,10 @@ CI 要求干净40位源码 SHA；`--allow-dirty` 仅显式本地实验并保留�
 
 `macos_desktop_smoke.py` 从普通 GUI 工坊准备单一 SenseVoice，再由首页真实 Start 识别中文，进入 Studio 编辑/剪切/撤销重做/保存重开/四格式及短视频验收。它需要有权使用的短中文输入，不注入识别结果。内部 CI 样本只进入专用私有构建分支，不自动纳入有限公开源码 C。
 
-手动工作流只有 `workflow_dispatch`：一个标准 `macos-15` arm64 job、60分钟、完整 Action revision、`contents: read`、不留 Git 凭据，无生产 Secrets、云端LLM、Release 或缓存发布。只选安装 ZIP 和浅层回执上传，不上传模型/runtime/用户缓存；上限4GiB、保留1天。运行前实际核对现有免费额度和零付费预算，不调整预算、不购买 runner。新增提交、分支与运行登记在私有 HANDOFF，不能扩大公开范围。
+手动工作流只有 `workflow_dispatch`：一个标准 `macos-15` arm64 job、60分钟、完整 Action revision、`contents: read`、不留 Git 凭据，无生产 Secrets、云端LLM、Release 或缓存发布。只选真实应用 ZIP 和必要浅层回执，不上传模型/runtime/用户缓存；诊断先单独上传，应用超出本次额度仍保留诊断、记录大小和SHA。`maximum_artifact_bytes` 必须来自当次免费计算/存储和零付费预算观察，脚本2GiB防护上限不代表账户额度；保留1天，不调整预算或购买runner。新增提交、分支与运行登记在私有 HANDOFF，不能扩大公开范围。
 
 MPS 可用性、小 tensor、具体模型、VideoToolbox实际硬件编码和预览后端分别记录。`macos_hardware_probe.py` 真正尝试25帧编码且禁用软件 fallback；失败表明当次 runner 未通过硬件检查，CPU与模型正确性另验。
 
 Mac 材料按真实载荷增量记录。Windows 材料不自动证明 Mac 完整对应源码，内部构建不自动放行公开发行。官方参考：[PyInstaller macOS架构/签名](https://pyinstaller.org/en/stable/feature-notes.html)、[PyTorch MPS](https://docs.pytorch.org/docs/stable/notes/mps.html)、[Actions额度与存储](https://docs.github.com/en/billing/concepts/product-billing/github-actions)。
+
+首次CI36875057224实际倒入ffmpeg9.0.1_1/mpv0.41.0_9，旧流程未消费媒体锁，PyInstaller前失败。旧日志没有保存API缓存/完整Homebrew环境，缓存原因仅推测。第二轮仍保留原版本与归档SHA，新增官方[core固定快照](https://github.com/Homebrew/homebrew-core/tree/0211e9c2eeea26bc0f1b382446dc076321e9a871)和两份配方定义SHA；原bottle仍已实际下载验证可用。安装使用该core checkout，禁止滚动API与自动更新，由Homebrew处理依赖和重定位，只安装/重装这两个选定媒体公式，不全局升级。归档SHA、keg pkg_version（含revision）、INSTALL_RECEIPT的arm64/poured_from_bottle/core身份、PATH与真实工具路径、可执行文件SHA、lipo和运行输出分别校验。预装正确版本也重新取得安装证据。builder重查receipt与准确路径，不重新查PATH或最新仓库声明；归档摘要不等于解压/重定位后的工具摘要。新运行结果另行登记，不能移植首次CI结论。

@@ -160,6 +160,7 @@ def main(argv=None):
     parser.add_argument("--source-sha",required=True)
     parser.add_argument("--output",type=Path,required=True)
     parser.add_argument("--runtime",type=Path,help="Existing isolated native CPU venv for packaged-startup QA")
+    parser.add_argument("--media-receipt",type=Path,help="Sealed receipt from macos_install_media.py")
     parser.add_argument("--allow-dirty",action="store_true")
     parser.add_argument("--plan",action="store_true")
     args=parser.parse_args(argv)
@@ -192,20 +193,16 @@ def main(argv=None):
     receipt={"source_identity":identity,"build_id":build_id,"target":"darwin-arm64","macos":platform.mac_ver()[0],
              "python":platform.python_version(),"source_files":inputs,"lock_sha256":sha256(LOCK),
              "developer_id_signed":False,"notarized":False,"native_validation":{}}
-    tools={}
-    for name in ("ffmpeg","mpv"):
-        executable=shutil.which(name)
-        if not executable: raise RuntimeError("Install native media first: brew install ffmpeg mpv")
-        arch=subprocess.check_output(["/usr/bin/lipo","-archs",executable],text=True).strip()
-        if "arm64" not in arch.split(): raise RuntimeError("Wrong media architecture: "+str(executable))
-        version_output=subprocess.check_output([executable,"-version" if name=="ffmpeg" else "--version"],text=True)
-        actual=version_output.splitlines()[0]
-        if lock["media"][name]["version"] not in actual: raise RuntimeError("Media version differs from experimental lock: "+actual)
-        formula=json.loads(subprocess.check_output(["brew","info","--json=v2",name],text=True))["formulae"][0]
-        if formula["revision"]!=lock["media"][name]["revision"]: raise RuntimeError("Homebrew formula revision drift: "+name)
-        tools[name]={"path":executable,"sha256":sha256(Path(executable)),"architecture":arch,"version":actual,"version_build_configuration":version_output,"formula":formula}
-    tools["ffprobe"]={"path":str(Path(tools["ffmpeg"]["path"]).with_name("ffprobe"))}
-    if not Path(tools["ffprobe"]["path"]).is_file(): raise RuntimeError("Native ffprobe is missing")
+    receipt_path=output/"native-build-inputs.json"
+    receipt["native_validation"]["app_built"]=False
+    receipt["stage"]="source_snapshot_sealed"
+    receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
+    if not args.media_receipt:raise RuntimeError("A verified media installation receipt is required")
+    from scripts.macos_media_contract import load_verified_tools
+    tools=load_verified_tools(args.media_receipt,LOCK)
+    receipt.update(stage="native_media_verified",native_tools=tools,
+                   media_install_receipt_sha256=sha256(args.media_receipt))
+    receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     archive=output/Path(lock["node"]["url"]).name
     with urllib.request.urlopen(lock["node"]["url"],timeout=60) as response,archive.open("wb") as stream:
         shutil.copyfileobj(response,stream)

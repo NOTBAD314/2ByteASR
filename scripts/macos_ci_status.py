@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: GPL-3.0-only
+"""Distinguish a real app from relocation/startup and desktop acceptance."""
+from __future__ import annotations
+import argparse
+import json
+import os
+from pathlib import Path
+
+
+def summarize(root: Path) -> dict:
+    def read(name):
+        path=root/name
+        return json.loads(path.read_text('utf8')) if path.is_file() else {}
+    build=read('build/native-build-inputs.json');validation=build.get('native_validation',{})
+    def status(record,key='passed'):
+        return 'not_executed' if not record else ('passed' if record.get(key) is True else 'failed')
+    app='passed' if validation.get('app_built') else ('failed' if build else 'not_executed')
+    relocation=validation.get('relocation',{})
+    archive=read('build/release-artifacts.mac.json').get('artifact')
+    return dict(media=status(read('media/media-install.json')),app=app,
+        archive=archive,relocation=('passed' if relocation.get('bytes_permissions_symlinks_match') else ('failed' if app=='passed' else 'not_executed')),
+        startup=status(validation.get('packaged_normal_entry_startup_smoke',{})),
+        model_preparation=status(read('desktop-flow/workshop-result.json')),
+        home_studio=status(read('desktop-flow/result.json')),
+        embedded_preview=status(read('native-media-smoke/result.json')),
+        hardware=status(read('hardware-probe/result.json'),'hardware_encode_passed'),
+        test_step=os.environ.get('TEST_OUTCOME','unknown'),
+        model_requested=os.environ.get('MODEL_REQUESTED','false')=='true',
+        source_sha=os.environ.get('SOURCE_SHA'),workflow_identity=read('workflow-identity.json'))
+
+
+def main(argv=None):
+    parser=argparse.ArgumentParser();parser.add_argument('--qa-root',required=True,type=Path);parser.add_argument('--enforce',action='store_true')
+    args=parser.parse_args(argv)
+    if not args.qa_root.is_dir():return 1 if args.enforce else 0
+    saved=args.qa_root/'ci-status.json'
+    record=json.loads(saved.read_text('utf8')) if args.enforce and saved.is_file() else summarize(args.qa_root)
+    if not args.enforce:(args.qa_root/'ci-status.json').write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
+    print(json.dumps(record,ensure_ascii=False))
+    if args.enforce:
+        required=['media','app','relocation','startup']+(['model_preparation','home_studio'] if record['model_requested'] else [])
+        return 0 if all(record[k]=='passed' for k in required) and record['test_step']=='success' else 1
+    return 0
+
+
+if __name__=='__main__':raise SystemExit(main())

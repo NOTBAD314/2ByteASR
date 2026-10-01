@@ -10,7 +10,7 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
-    for folder in ("build","native-media-smoke","embedded-preview","hardware-probe","desktop-flow","relocated-startup-profile/startup-smoke"):
+    for folder in ("media","build","native-media-smoke","embedded-preview","hardware-probe","desktop-flow","relocated-startup-profile/startup-smoke"):
         directory=root/folder
         if not directory.is_dir():continue
         # Build/source, node_modules, PyInstaller output, runtime and model
@@ -21,7 +21,7 @@ def selected_files(root: Path) -> list[Path]:
         if folder=="desktop-flow":
             for path in (directory/"exports").glob("*"):
                 if path.is_file() and path.suffix.lower() in {".srt",".ass",".txt",".json",".mp4"}:selected.append(path)
-    for name in ("doctor.json","runtime.json","runtime.pip-install.json","brew-installed.txt","tests.xml"):
+    for name in ("doctor.json","runtime.json","runtime.pip-install.json","brew-installed.txt","tests.xml","ci-status.json","workflow-identity.json"):
         if (root/name).is_file():selected.append(root/name)
     return sorted(set(selected))
 
@@ -34,25 +34,31 @@ def main(argv=None):
     root=args.qa_root.resolve()
     if "tmp" not in {p.lower() for p in root.parts}:raise SystemExit("An isolated tmp QA boundary is required")
     files=selected_files(root)
-    total=sum(path.stat().st_size for path in files)
-    # Leave a small allowance for upload packaging/receipt metadata.
-    if total+8*1024*1024>args.maximum_bytes:
-        raise SystemExit(f"Artifact storage cap exceeded: {total} bytes; no upload directory was created")
+    if args.maximum_bytes<16*1024*1024:raise SystemExit("Artifact allowance must reserve at least 16 MiB for diagnostic receipts")
+    total=0
     destination=root/"artifacts"
     if destination.exists():raise SystemExit("Artifact staging already exists; no retry/overwrite")
     rows=[]
-    for path in files:
-        name=path.relative_to(root).as_posix();target=destination/name
-        target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,target)
+    withheld=[]
+    # Receipts are uploaded separately before the large app. No app size
+    # failure can suppress already captured diagnostics.
+    for path in sorted(files,key=lambda p:(p.name.endswith('.app.zip'),str(p))):
+        name=path.relative_to(root).as_posix()
+        app=path.name.endswith('.app.zip')
+        target=destination/('application' if app else 'receipts')/name
         hasher=hashlib.sha256()
-        with target.open("rb") as stream:
+        with path.open("rb") as stream:
             for chunk in iter(lambda:stream.read(4*1024*1024),b""):hasher.update(chunk)
         digest=hasher.hexdigest()
-        rows.append({"path":name,"bytes":target.stat().st_size,"sha256":digest})
-    destination.mkdir(exist_ok=True)
-    (destination/"artifact-selection.json").write_text(json.dumps({"selected_bytes":total,"maximum_bytes":args.maximum_bytes,
-        "retention_days":1,"model_runtime_cache_uploaded":False,"files":rows},ensure_ascii=False,indent=2)+"\n",encoding="utf8")
-    (destination/"SHA256SUMS.txt").write_text("".join(row["sha256"]+"  "+row["path"]+"\n" for row in rows),encoding="utf8")
+        row={"path":name,"bytes":path.stat().st_size,"sha256":digest}
+        if total+row['bytes']+8*1024*1024>args.maximum_bytes:
+            withheld.append(dict(row,reason='Exceeds this run verified storage allowance'));continue
+        target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,target)
+        total+=row['bytes'];rows.append(row)
+    receipts=destination/'receipts';receipts.mkdir(parents=True,exist_ok=True)
+    (receipts/"artifact-selection.json").write_text(json.dumps({"selected_bytes":total,"maximum_bytes":args.maximum_bytes,
+        "retention_days":1,"model_runtime_cache_uploaded":False,"files":rows,"withheld":withheld},ensure_ascii=False,indent=2)+"\n",encoding="utf8")
+    (receipts/"SHA256SUMS.txt").write_text("".join(row["sha256"]+"  "+row["path"]+"\n" for row in rows),encoding="utf8")
     print(json.dumps({"files":len(rows),"bytes":total,"app_archive_exists":any(p.name.endswith(".app.zip") for p in files)}))
     return 0
 

@@ -5,6 +5,7 @@ import pytest
 from scripts.macos_build import bundle_inventory, finder_environment
 from scripts.macos_collect_artifacts import main, selected_files
 from scripts.macos_dependency_contract import verify_native_wheels
+from scripts.macos_media_contract import verify_media_formula
 
 
 def test_artifact_selection_does_not_expose_runtime_models_or_nested_build_source(tmp_path):
@@ -15,7 +16,7 @@ def test_artifact_selection_does_not_expose_runtime_models_or_nested_build_sourc
         path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text("owned test")
     assert {p.relative_to(root).as_posix() for p in selected_files(root)}=={
         "build/app.app.zip","build/native-build-inputs.json","desktop-flow/exports/中文.srt"}
-    with pytest.raises(SystemExit,match="storage cap exceeded"):
+    with pytest.raises(SystemExit,match="reserve at least"):
         main(["--qa-root",str(root),"--maximum-bytes","16"])
     assert not (root/"artifacts").exists()
 
@@ -43,3 +44,31 @@ def test_native_installer_receipt_rejects_version_and_hash_drift():
     with pytest.raises(RuntimeError,match="digest differs"):verify_native_wheels({"install":[row]},lock)
     row["metadata"]["version"]="2.12.0"
     with pytest.raises(RuntimeError,match="version drift"):verify_native_wheels({"install":[row]},lock)
+
+
+def test_media_contract_rejects_the_actual_first_ci_version_and_revision_drift():
+    lock=json.loads((Path(__file__).resolve().parents[1]/"packaging/macos/native-dependencies.lock.json").read_text("utf8"))
+    for name,version,revision in (("ffmpeg","9.0.1",1),("mpv","0.41.0",9)):
+        expected=lock["media"][name]
+        formula={"name":name,"versions":{"stable":version},"revision":revision,
+                 "bottle":{"stable":{"files":{"arm64_sequoia":{"sha256":expected["arm64_sequoia_bottle"]["sha256"]}}}}}
+        with pytest.raises(RuntimeError,match="formula drift"):
+            verify_media_formula(formula,name,expected)
+        formula["versions"]["stable"]=expected["version"];formula["revision"]=expected["revision"]
+        formula['installed']=[{'version':expected['version']+('_'+str(expected['revision']) if expected['revision'] else '')}]
+        assert verify_media_formula(formula,name,expected)["bottle_tag"]=="arm64_sequoia"
+        formula["bottle"]["stable"]["files"]["arm64_sequoia"]["sha256"]="0"*64
+        with pytest.raises(RuntimeError,match="checksum drift"):
+            verify_media_formula(formula,name,expected)
+
+
+def test_large_app_does_not_discard_receipts(tmp_path):
+    root=tmp_path/'tmp/qa';(root/'build').mkdir(parents=True)
+    (root/'build/native-build-inputs.json').write_text('{"app_built":true}')
+    (root/'build/real.app.zip').write_bytes(b'X'*(21*1024*1024))
+    assert main(['--qa-root',str(root),'--maximum-bytes',str(20*1024*1024)])==0
+    receipt=root/'artifacts/receipts'
+    assert (receipt/'build/native-build-inputs.json').is_file()
+    selected=json.loads((receipt/'artifact-selection.json').read_text('utf8'))
+    assert selected['withheld'][0]['path']=='build/real.app.zip'
+    assert not (root/'artifacts/application').exists()
