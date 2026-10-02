@@ -140,15 +140,6 @@ def check_runtime(python: Path, root: Path, *, exact_python: str | None = None) 
 def _child_environment() -> dict:
     from twobyteasr.processes import external_python_environment
     environment = external_python_environment()
-    for key in tuple(environment):
-        if key.startswith('_PYI') or key in {'QT_PLUGIN_PATH', 'QML2_IMPORT_PATH'}:
-            environment.pop(key, None)
-    for key in ('DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH', 'LD_LIBRARY_PATH'):
-        original = environment.pop(key + '_ORIG', None)
-        if original is None:
-            environment.pop(key, None)
-        else:
-            environment[key] = original
     environment.update(PYTHONUTF8='1', PYTHONIOENCODING='utf-8', **{'2BYTEASR_CPU_ONLY': '1'})
     return environment
 

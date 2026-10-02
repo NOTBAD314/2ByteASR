@@ -7612,8 +7612,8 @@
     },
     {
       "path": "twobyteasr/macos_model_prepare.py",
-      "bytes": 17415,
-      "sha256": "d187fd0a5fcf4b3c29dd51cb7a53381ae9ee86982a9468d9f4df8b2ea4fd72fa"
+      "bytes": 16990,
+      "sha256": "ce14d51389c5ce0f81291a24ee47d9134d200a6fef8babcfb8d57d84bea172fe"
     },
     {
       "path": "twobyteasr/main_ui_branding.py",
