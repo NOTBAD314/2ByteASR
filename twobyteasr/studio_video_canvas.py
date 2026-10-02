@@ -227,7 +227,11 @@ class MpvCanvas(QFrame):
         self.controller = create_preview_controller(self)
         log_path = studio_data_root() / "logs" / "mpv.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        self.controller.start(int(self.winId()), log_path=str(log_path))
+        # Qt's Mac child surface needs no native handle. winId() itself
+        # promotes the canvas (and ancestors) to native windows, changing
+        # the widget stack that owns decoded video and caption overlays.
+        window_id = 0 if getattr(self.controller, 'backend', '') == 'qt-video-sink' else int(self.winId())
+        self.controller.start(window_id, log_path=str(log_path))
         self._native_subtitle_visibility_controller = None
         self._playback_source_dead = False
 

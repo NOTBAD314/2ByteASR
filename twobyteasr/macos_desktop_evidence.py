@@ -26,6 +26,9 @@ def studio_snapshot(page) -> dict:
     # Keep raster data out of a diagnostic JSON; availability is sufficient.
     result['video']['_web_last_decoded'] = result['video']['_web_last_decoded'] is not None
     for name, callback in (
+        ('video_actor', lambda: page.video.controller.actor_status()),
+        ('video_visual', lambda: page.video.controller.applied_visual_state()),
+        ('video_composition', lambda: page.video_compositor.performance_snapshot()),
         ('audio', lambda: page.audio_engine.telemetry_snapshot()),
         ('audio_ready', lambda: page.audio_engine.ready_for_playback()),
         ('audio_request', lambda: dict(page.audio_engine._last_payload)),
@@ -42,6 +45,58 @@ def studio_snapshot(page) -> dict:
     return json.loads(json.dumps(result, ensure_ascii=False,
                                 default=lambda value: sorted(value) if isinstance(value, set)
                                 else str(value) if isinstance(value, Path) else type(value).__name__))
+
+
+def image_colour_observation(image) -> dict:
+    """Measure the owned colourful QA video, without treating handles as video."""
+    from PySide6.QtCore import Qt
+    if image.isNull():
+        return {'width': 0, 'height': 0, 'colour_fraction': 0.0}
+    # The upper two thirds avoid caption/edit handles near the bottom.
+    sample = image.copy(0, 0, image.width(), max(1, image.height()*2//3)).scaled(
+        64, 64, Qt.IgnoreAspectRatio, Qt.FastTransformation)
+    colour = 0
+    for y in range(sample.height()):
+        for x in range(sample.width()):
+            pixel = sample.pixelColor(x, y)
+            rgb = (pixel.red(), pixel.green(), pixel.blue())
+            colour += max(rgb) > 64 and max(rgb)-min(rgb) > 40
+    return {'width': image.width(), 'height': image.height(),
+            'colour_fraction': round(colour/(sample.width()*sample.height()), 6)}
+
+
+def preserve_studio_preview(page, output: Path, label: str) -> dict:
+    """Actual decoded raster AND visible composed canvas at owned QA milestones."""
+    from PySide6.QtCore import Qt
+    if label not in {'ready', 'cut-before', 'cut-after', 'reopened'}:
+        raise ValueError('Unknown owned preview milestone')
+    canvas = page.video
+    controller = canvas.controller
+    surface = controller.surface
+    decoded = surface.frame
+    composed = canvas.grab().toImage()
+    record = dict(backend=controller.backend, actor=controller.actor_status(),
+                  decoded=image_colour_observation(decoded),
+                  composed=image_colour_observation(composed),
+                  surface_visible=surface.isVisible(), canvas_visible=canvas.isVisible(),
+                  canvas_native=canvas.testAttribute(Qt.WA_NativeWindow),
+                  surface_native=surface.testAttribute(Qt.WA_NativeWindow),
+                  surface_geometry=list(surface.geometry().getRect()),
+                  canvas_geometry=list(canvas.rect().getRect()),
+                  overlays=controller.applied_visual_state(),
+                  studio=studio_snapshot(page))
+    record['passed'] = bool(record['surface_visible'] and record['canvas_visible']
+                            and record['decoded']['colour_fraction'] > .10
+                            and record['composed']['colour_fraction'] > .10)
+    for kind, raster in [('decoded', decoded), ('composed', composed)]:
+        filename = f'preview-{label}-{kind}.png'
+        if not raster.isNull():
+            if not raster.save(str(output/filename)):
+                raise OSError('Cannot preserve owned preview raster')
+            record[kind]['file'] = filename
+    (output/f'preview-{label}.json').write_text(
+        json.dumps(record, ensure_ascii=False, indent=2)+'\n', 'utf8')
+    return record
 
 
 def preserve_owned_project(path: Path, output: Path, label: str) -> dict:

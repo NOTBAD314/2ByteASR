@@ -39,6 +39,43 @@ def test_factory_keeps_windows_process_owner_and_mac_owned_child(app, monkeypatc
     canvas.close()
 
 
+def test_canvas_qt_start_never_promotes_native_window(app, monkeypatch, tmp_path):
+    from PySide6.QtCore import Qt
+    from twobyteasr import studio_video_canvas
+    canvas = studio_video_canvas.MpvCanvas()
+    canvas.setAttribute(Qt.WA_NativeWindow, False)
+    monkeypatch.setattr(studio_video_canvas, 'studio_data_root', lambda: tmp_path)
+    monkeypatch.setattr(studio_video_canvas, 'create_preview_controller', QtEmbeddedVideoController)
+    def forbidden_handle():
+        raise AssertionError('Qt child video must not call winId()')
+    monkeypatch.setattr(canvas, 'winId', forbidden_handle)
+    try:
+        canvas._ensure_controller_started()
+        assert canvas.controller.running
+        assert not canvas.testAttribute(Qt.WA_NativeWindow)
+        assert not canvas.controller.surface.testAttribute(Qt.WA_NativeWindow)
+    finally:
+        if canvas.controller:
+            canvas.controller.close(); canvas.controller = None
+        canvas.close(); app.processEvents()
+
+
+def test_canvas_mpv_start_keeps_owned_native_handle(app, monkeypatch, tmp_path):
+    from twobyteasr import studio_video_canvas
+    seen = []
+    controller = SimpleNamespace(running=False, start=lambda handle, **kw: seen.append(handle))
+    canvas = studio_video_canvas.MpvCanvas()
+    monkeypatch.setattr(studio_video_canvas, 'studio_data_root', lambda: tmp_path)
+    monkeypatch.setattr(studio_video_canvas, 'create_preview_controller', lambda owner: controller)
+    monkeypatch.setattr(canvas, 'winId', lambda: 1234)
+    try:
+        canvas._ensure_controller_started()
+        assert seen == [1234]
+    finally:
+        canvas.controller = None
+        canvas.close(); app.processEvents()
+
+
 def test_qobject_creation_rejects_worker_thread(app):
     errors = []
     def worker():

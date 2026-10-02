@@ -5,7 +5,48 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.macos_desktop_evidence import preserve_owned_project, studio_snapshot
+from twobyteasr.macos_desktop_evidence import (preserve_owned_project, studio_snapshot,
+                                            image_colour_observation)
+
+
+def test_preview_measure_rejects_black_canvas_despite_coloured_bottom_handles():
+    from PySide6.QtGui import QImage, QColor, QPainter
+    raster = QImage(180, 120, QImage.Format_ARGB32_Premultiplied)
+    raster.fill(QColor('black'))
+    painter = QPainter(raster)
+    painter.fillRect(0, 90, 180, 30, QColor('magenta')); painter.end()
+    assert image_colour_observation(raster)['colour_fraction'] == 0
+    raster.fill(QColor('green'))
+    assert image_colour_observation(raster)['colour_fraction'] == 1
+
+
+def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
+    from PySide6.QtGui import QImage, QColor
+    from PySide6.QtWidgets import QApplication, QWidget, QLabel
+    from twobyteasr.studio_qt_preview import QtEmbeddedVideoController
+    from twobyteasr.macos_desktop_evidence import preserve_studio_preview
+    app = QApplication.instance() or QApplication([])
+    canvas = QWidget(); canvas.resize(180, 120)
+    controller = QtEmbeddedVideoController(canvas); controller.start()
+    canvas.controller = controller
+    controller.surface.frame = QImage(180, 120, QImage.Format_ARGB32_Premultiplied)
+    controller.surface.frame.fill(QColor('green'))
+    cover = QLabel(canvas); cover.setGeometry(canvas.rect())
+    cover.setStyleSheet('background: black'); cover.show(); cover.raise_()
+    canvas.show(); app.processEvents()
+    page = SimpleNamespace(video=canvas)
+    try:
+        blocked = preserve_studio_preview(page, tmp_path, 'ready')
+        assert blocked['decoded']['colour_fraction'] == 1
+        assert blocked['composed']['colour_fraction'] == 0
+        assert not blocked['passed']
+        cover.hide(); app.processEvents()
+        visible = preserve_studio_preview(page, tmp_path, 'reopened')
+        assert visible['passed']
+        assert (tmp_path/'preview-ready.json').is_file()
+        assert (tmp_path/'preview-reopened-composed.png').is_file()
+    finally:
+        controller.close(); canvas.close(); app.processEvents()
 from scripts.macos_collect_artifacts import selected_files
 
 

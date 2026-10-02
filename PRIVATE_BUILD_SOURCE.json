@@ -5982,8 +5982,8 @@
     },
     {
       "path": "tests/test_macos_desktop_evidence.py",
-      "bytes": 8693,
-      "sha256": "658fc102e1c4f708cbc7067ccba24efa72278012c92201ec6a42b3da86bd3e19"
+      "bytes": 10745,
+      "sha256": "800d9a87d9173abe63acf2cff7681908824543193c8867b1e3e2d1f56cbd279c"
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
@@ -6017,8 +6017,8 @@
     },
     {
       "path": "tests/test_studio_qt_preview.py",
-      "bytes": 5348,
-      "sha256": "086d28465acc4f96e42424fa91d802de993a28a02798db1b99425dc4c9b7f87d"
+      "bytes": 7030,
+      "sha256": "6a2cad447fb0873dea3188ec755d60441147c84fa421ddc268c296651ecb329e"
     },
     {
       "path": "tests/test_updater.py",
@@ -7497,8 +7497,8 @@
     },
     {
       "path": "twobyteasr/home_release_flow_audit.py",
-      "bytes": 14021,
-      "sha256": "f74054bc907d5ca41a4c211123c1425db9a9b1ac951ac562c12666dfb8c4df4b"
+      "bytes": 14993,
+      "sha256": "2dee9be437add63d3bb011fbef4378b43260217483c8fe29059f672565490346"
     },
     {
       "path": "twobyteasr/home_studio_entry.py",
@@ -7617,8 +7617,8 @@
     },
     {
       "path": "twobyteasr/macos_desktop_evidence.py",
-      "bytes": 3052,
-      "sha256": "a1fff27f9362ea1915f8bf758805dc3e496942409c405861453f19580602e0ae"
+      "bytes": 6019,
+      "sha256": "45f2259755f069e580e3100d189dda32e902f22c19e5fa0af224d26455fa61d6"
     },
     {
       "path": "twobyteasr/macos_media_smoke.py",
@@ -8752,8 +8752,8 @@
     },
     {
       "path": "twobyteasr/studio_video_canvas.py",
-      "bytes": 127363,
-      "sha256": "3b8f161a3c605eff023320a7bb0727d6c0aa91ad53184c510be40eea6aab7dea"
+      "bytes": 127685,
+      "sha256": "cccf3b9af8763716c085754ed89819aab8b81eae8ee448356a4f20164db8f428"
     },
     {
       "path": "twobyteasr/studio_video_flow.py",
@@ -9191,7 +9191,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "6bab5e71cffc2496137f518eb484d35ebb2ada89",
+  "prior_private_source": "61ee011849f235c55e316a72d8a9ed4b8c40132f",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-  "build_id": "macos-studio-20261002-post-run5"
+  "build_id": "macos-continuation-20261002-run2"
 }

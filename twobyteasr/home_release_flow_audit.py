@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Guarded installed-build check of actual Home ASR; no injected transcripts."""
 import json
+import sys
 import time
 import traceback
 from dataclasses import asdict
@@ -14,7 +15,8 @@ def start(window, out):
     from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     from .build_identity import load_build_identity
     from .studio_project import load_project
-    from .macos_desktop_evidence import studio_snapshot, preserve_owned_project
+    from .macos_desktop_evidence import (studio_snapshot, preserve_owned_project,
+                                         preserve_studio_preview, image_colour_observation)
     config = json.loads((out/'home-flow.json').read_text('utf8'))
     result = dict(passed=False, identity=load_build_identity().to_dict(), checks={},
                   events=[], actual_model=True, injected_transcript=False, paid_calls=0)
@@ -37,6 +39,20 @@ def start(window, out):
         while not predicate() and not errors and time.monotonic() < end: pump()
         check(label, predicate())
         if errors: raise RuntimeError(str(errors))
+
+    def preview(page, label):
+        if sys.platform != 'darwin':
+            return
+        controller = page.video.controller
+        def visible_pixels():
+            return (image_colour_observation(controller.surface.frame)['colour_fraction'] > .10
+                    and image_colour_observation(page.video.grab().toImage())['colour_fraction'] > .10)
+        deadline = time.monotonic()+3
+        while not visible_pixels() and time.monotonic() < deadline:
+            pump()
+        record = preserve_studio_preview(page, out, label)
+        result.setdefault('studio_preview', {})[label] = record
+        check('actual Studio coloured decoded and composed video '+label, record['passed'])
 
     def run():
         guard = QTimer(window)
@@ -98,6 +114,7 @@ def start(window, out):
             window.open_studio_project(target, mode='edit', source='home_release_validation')
             wait(lambda: page.project is not None and page.project.project_id == project.project_id and page._readiness.ready, 90, 'recognized result enters Studio')
             result['studio_ready_snapshot'] = studio_snapshot(page); save()
+            preview(page, 'ready')
             cue = page.project.cues[0]; page.select_cue(cue.id)
             page._seek(cue.start_ms/1000+.1); pump(.3)
             page._begin_canvas_inline_edit(); pump(.2)
@@ -139,6 +156,7 @@ def start(window, out):
                 position=(cut_ms+offset*1000/30)/1000
                 page._seek(position);pump(.4)
                 window.grab().save(str(out/f'cut-frame-{offset}.png'))
+                preview(page, 'cut-before' if offset < 0 else 'cut-after')
             QTest.mouseClick(page.save_button, Qt.LeftButton)
             wait(lambda: page.undo_stack.isClean(), 30, 'normal Save completes')
             page.show_project_hub(skip_dirty_guard=True)
@@ -147,6 +165,7 @@ def start(window, out):
             check('Chinese edit survives save and reopen', page._cue_lookup[cue.id].text == expected)
             check('cut captions survive save and reopen', signature()==before and len(sequence_of(page.project).segments)==3)
             window.grab().save(str(out/'02-recognized-edited-reopened.png'))
+            preview(page, 'reopened')
             QTest.mouseClick(page.studio_render_button,Qt.LeftButton)
             wait(lambda:page.export_workspace is not None and hasattr(page.export_workspace,'subtitle_format_checks'),30,'normal export workspace opens')
             ui=page.export_workspace
