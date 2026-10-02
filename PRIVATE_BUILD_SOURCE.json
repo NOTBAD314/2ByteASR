@@ -487,8 +487,8 @@
     },
     {
       "path": "docs/deployment/macos-validation.zh-CN.md",
-      "bytes": 12906,
-      "sha256": "f32f1b0d0424d2901ca709fd88251c6255f5ed1223ff915e80bba28d23cdea1d"
+      "bytes": 14863,
+      "sha256": "7d3fb3b84c4badee340dd9785aa8c8936dd92d51fde412a6da7d410a9a3a0b21"
     },
     {
       "path": "docs/design/2026-09-ui-polish-guidelines.md",
@@ -3787,8 +3787,8 @@
     },
     {
       "path": "packaging/macos/MEDIA_INPUTS.md",
-      "bytes": 2661,
-      "sha256": "17915ee3498ed4fd977baba7016d1d26d84db0d448de8ed7039dbd58337eb415"
+      "bytes": 3189,
+      "sha256": "29acbce2a8ce097de623f7e75b02e076675c917f44f163ee39e4bf5846f44c57"
     },
     {
       "path": "packaging/macos/native-dependencies.lock.json",
@@ -5982,8 +5982,8 @@
     },
     {
       "path": "tests/test_macos_desktop_evidence.py",
-      "bytes": 10745,
-      "sha256": "800d9a87d9173abe63acf2cff7681908824543193c8867b1e3e2d1f56cbd279c"
+      "bytes": 12721,
+      "sha256": "f986f79587c564f4acf792aeaedb7f0fec2121d575e1424017930c1b1ca670e9"
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
@@ -8572,8 +8572,8 @@
     },
     {
       "path": "twobyteasr/studio_position_overlay.py",
-      "bytes": 25556,
-      "sha256": "dbf2cd2bbcfbcbb2c5a6fffaca0099c51788a2e5e50472c2cccd7954212abb20"
+      "bytes": 26017,
+      "sha256": "e84a43ba84b6b2fd6b293fbfc716eaf2be9084412ca8f34fabb46aa5a1efb814"
     },
     {
       "path": "twobyteasr/studio_project.py",
@@ -9191,7 +9191,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "61ee011849f235c55e316a72d8a9ed4b8c40132f",
+  "prior_private_source": "e0e8c5ceb360bc0d53f400709b7cb654179100e8",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-  "build_id": "macos-continuation-20261002-run2"
+  "build_id": "macos-continuation-20261002-run3"
 }

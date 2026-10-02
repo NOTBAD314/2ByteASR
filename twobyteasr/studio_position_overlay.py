@@ -274,8 +274,15 @@ class SubtitlePositionOverlay(QWidget):
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+        owner = self.parentWidget()
+        controller = getattr(owner, 'controller', None)
+        if getattr(controller, 'backend', '') != 'qt-video-sink':
+            # Windows mpv draws outside Qt's backing store. Its overlay
+            # keeps the existing transparent replacement contract.
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+        # Mac video is a lower Qt child in the SAME backing store. Source
+        # transparency here erases its real pixels; draw only the handles.
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         self._draw_transform_visual(painter)
         painter.end()

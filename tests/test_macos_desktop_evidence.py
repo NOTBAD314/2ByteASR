@@ -47,6 +47,39 @@ def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
         assert (tmp_path/'preview-reopened-composed.png').is_file()
     finally:
         controller.close(); canvas.close(); app.processEvents()
+
+
+def test_actual_transform_child_preserves_qt_video_under_show_update_and_hide():
+    from PySide6.QtGui import QImage, QColor
+    from PySide6.QtWidgets import QApplication, QWidget
+    from twobyteasr.studio_qt_preview import QtEmbeddedVideoController
+    from twobyteasr.studio_position_overlay import SubtitlePositionOverlay
+    app = QApplication.instance() or QApplication([])
+    canvas = QWidget(); canvas.resize(320, 240); canvas.setStyleSheet('background: black')
+    controller = QtEmbeddedVideoController(canvas); controller.start()
+    canvas.controller = controller
+    controller.surface.frame = QImage(320, 180, QImage.Format_ARGB32_Premultiplied)
+    controller.surface.frame.fill(QColor('green'))
+    canvas.show(); app.processEvents()
+    baseline = image_colour_observation(canvas.grab().toImage())['colour_fraction']
+    overlay = SubtitlePositionOverlay(canvas); overlay.sync_to_video(canvas)
+    try:
+        overlay.show(); app.processEvents()
+        assert image_colour_observation(canvas.grab().toImage())['colour_fraction'] > baseline-.02
+        overlay.set_video_position(600, 700, 1920, 1080); overlay.update(); app.processEvents()
+        assert image_colour_observation(canvas.grab().toImage())['colour_fraction'] > baseline-.02
+        overlay.hide(); app.processEvents()
+        assert image_colour_observation(canvas.grab().toImage())['colour_fraction'] == baseline
+        # The Windows native-mpv clearing branch remains unchanged.
+        controller.backend = 'native-mpv-fixture'
+        overlay.show(); app.processEvents()
+        native_overlay = canvas.grab().toImage()
+        assert native_overlay.pixelColor(5, 40).red() == 0
+        assert native_overlay.pixelColor(5, 40).green() == 0
+        assert native_overlay.pixelColor(5, 40).blue() == 0
+        assert image_colour_observation(native_overlay)['colour_fraction'] < .05  # visible handles only
+    finally:
+        controller.close(); canvas.close(); app.processEvents()
 from scripts.macos_collect_artifacts import selected_files
 
 
