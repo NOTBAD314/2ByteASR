@@ -118,3 +118,26 @@ def test_posix_socket_duplex_stream_is_not_opening_socket_as_regular_file(tmp_pa
     finally:
         stream.close();server.close();thread.join(timeout=2);cleanup_unix_ipc(str(path))
     assert received==[command]
+
+@pytest.mark.parametrize("system,frozen,expected", [
+    ("darwin", True, "resources"), ("win32", True, "executable"), ("darwin", False, "source")])
+def test_pipeline_worker_root_obeys_real_bundle_layout(tmp_path, monkeypatch, system, frozen, expected):
+    import subprocess, sys
+    from types import SimpleNamespace
+    from twobyteasr import runtime_paths
+    contents = tmp_path / "兔白 移動.app/Contents"
+    source = tmp_path / "source/subtitle_core.py"
+    executable = contents / "MacOS/2ByteASR"
+    resources = contents / "Frameworks"
+    for folder in (source.parent, executable.parent, resources): folder.mkdir(parents=True)
+    roots = dict(resources=resources, executable=executable.parent, source=source.parent)
+    for kind, folder in roots.items():
+        (folder / "sensevoice_worker.py").write_text("print(" + repr(kind) + ")", encoding="utf8")
+    monkeypatch.setenv(runtime_paths.INSTALL_ROOT_ENV, str(resources))
+    monkeypatch.setattr(runtime_paths, "sys", SimpleNamespace(platform=system, frozen=frozen, executable=str(executable)))
+    selected = runtime_paths.pipeline_script_root(source)
+    assert selected == roots[expected].resolve()
+    # Execute the selected real script; finding the basename alone cannot pass.
+    probe = subprocess.run([sys.executable, "-I", "-X", "utf8", str(selected / "sensevoice_worker.py")],
+                           capture_output=True, text=True, check=True)
+    assert probe.stdout.strip() == expected

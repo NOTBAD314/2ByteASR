@@ -45,7 +45,8 @@ def start(window, out):
                 errors.append(modal.text()+' '+modal.informativeText()); modal.reject()
         try:
             guard.timeout.connect(modal_guard); guard.start(200)
-            window._switch_page(0)
+            # Use the ordinary return action: it refreshes newly prepared models.
+            window._return_to_settings()
             # Select a supported local-only combination through existing controls.
             for name, value in [('primary_asr_backend', 'sensevoice'),
                                 ('firered_asr_backend', 'off'), ('qwen_asr_backend', 'off')]:
@@ -74,7 +75,7 @@ def start(window, out):
             wait(lambda: bool(received), int(config.get('timeout', 600)), 'real supported-model recognition completes')
             wait(lambda: not worker.isRunning(), 30, 'actual worker exits')
             result['recognition'] = asdict(received[0]); save()
-            check('offline task is normal success', received[0].successes[0].status == 'success')
+            check('offline task is normal success', bool(received[0].successes) and received[0].successes[0].status == 'success')
             events_path = Path(worker.options.event_log_path) if getattr(worker.options, 'event_log_path', '') else None
             check('actual recognition delivers project', bool(received[0].successes and received[0].successes[0].project_path))
             target = Path(received[0].successes[0].project_path)
@@ -173,5 +174,14 @@ def start(window, out):
             guard.stop(); save()
             if getattr(window, 'worker', None) and window.worker.isRunning():
                 window.token.cancel(); window.worker.wait(10000)
-            window.studio_page.undo_stack.setClean(); window.close()
+            window.studio_page.undo_stack.setClean()
+            for dialog in QApplication.topLevelWidgets():
+                if isinstance(dialog, QDialog) and dialog.isVisible(): dialog.reject()
+            window.close()
+            # A failed native task can leave an animated modal event loop alive.
+            # The receipt above still fails; end this guarded audit process after
+            # the real task is stopped, so subsequent independent checks can run.
+            import sys
+            if sys.platform == 'darwin':
+                QTimer.singleShot(250, QApplication.instance().quit)
     QTimer.singleShot(500, run)

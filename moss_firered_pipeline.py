@@ -3718,7 +3718,8 @@ def process_media(
             cancelled = lambda: bool(token is not None and token.is_cancelled)
             model_settings = dict(getattr(legacy, "RUNTIME_SETTINGS", {}).get("models", {}) or {})
             model_revision = str(model_settings.get(primary_backend) or "configured")
-            ffmpeg_path = Path(__file__).resolve().parent / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+            from twobyteasr.platform_media import executable_name
+            ffmpeg_path = Path(__file__).resolve().parent / "tools" / "ffmpeg" / "bin" / executable_name("ffmpeg")
 
             def recognize_incremental(chunk_path, spec):
                 duration = max(0.02, (spec.end_ms - spec.start_ms) / 1000.0)

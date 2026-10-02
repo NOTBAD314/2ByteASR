@@ -90,9 +90,9 @@ AUDIO_SAMPLE_RATE = 16000
 SHOW_SPEAKER_LABELS_IN_SRT = RUNTIME_SETTINGS["switches"]["show_speaker_labels_in_srt"]
 
 
-SCRIPT_DIR = os.path.dirname(
-    os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__)
-)
+from twobyteasr.runtime_paths import pipeline_script_root
+
+SCRIPT_DIR = str(pipeline_script_root(__file__))
 
 
 def _load_secret_value(*names):

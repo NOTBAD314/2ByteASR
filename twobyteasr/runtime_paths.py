@@ -50,6 +50,15 @@ def detect_install_root(explicit: str | os.PathLike[str] | None = None) -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def pipeline_script_root(module_file: str | os.PathLike[str]) -> Path:
+    """Locate pipeline workers without treating the macOS executable as resources."""
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        # The native launcher establishes this trusted resource root before
+        # importing pipeline modules. Windows keeps its existing exe-dir layout.
+        return detect_install_root()
+    return Path(os.path.abspath(sys.executable if getattr(sys, "frozen", False) else module_file)).parent
+
+
 def user_data_root() -> Path:
     return _local_app_data() / APP_NAME
 

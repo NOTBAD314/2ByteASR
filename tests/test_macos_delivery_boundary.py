@@ -148,3 +148,37 @@ def test_desktop_audit_escape_waits_for_real_guided_setup_completion(tmp_path):
     assert result==QDialog.DialogCode.Rejected and receipt['dismissed'] is True
     assert receipt['dialog_result']==int(QDialog.DialogCode.Rejected)
     assert receipt['injected_model_or_transcript'] is False
+
+def test_home_audit_uses_normal_return_refresh_and_keeps_failure_receipt(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QApplication, QComboBox, QWidget
+    from twobyteasr import home_release_flow_audit as audit
+    app = QApplication.instance() or QApplication([])
+    window = QWidget()
+    returned = []
+    window._return_to_settings = lambda: returned.append("ordinary model refresh")
+    window.primary_asr_backend = QComboBox(window)
+    window.studio_page = SimpleNamespace(undo_stack=SimpleNamespace(setClean=lambda: None))
+    window.worker = None
+    (tmp_path / "home-flow.json").write_text("{}")
+    # Dispatch the actual audit callback now; missing selector fails before ASR.
+    original = QTimer.singleShot
+    monkeypatch.setattr(QTimer, "singleShot", lambda delay, callback: original(0, callback))
+    loop = QEventLoop()
+    def finished():
+        if (tmp_path / "result.json").is_file(): loop.quit()
+    timer = QTimer(); timer.timeout.connect(finished); timer.start(10)
+    guard = QTimer(); guard.setSingleShot(True); guard.timeout.connect(loop.quit); guard.start(3000)
+    audit.start(window, tmp_path); loop.exec(); timer.stop(); guard.stop()
+    result = json.loads((tmp_path / "result.json").read_text("utf8"))
+    assert returned == ["ordinary model refresh"]
+    assert not result["passed"] and not result["checks"]["available primary_asr_backend"]
+    assert "AssertionError: available primary_asr_backend" in result["error"]
+
+
+def test_ci_status_preserves_not_executed_export_instead_of_claiming_execution_failure(tmp_path):
+    from scripts.macos_ci_status import summarize
+    (tmp_path / "desktop-flow").mkdir()
+    (tmp_path / "desktop-flow/export-validation.json").write_text('{"passed":false,"status":"not_executed"}')
+    assert summarize(tmp_path)["export_decode"] == "not_executed"

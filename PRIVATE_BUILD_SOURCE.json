@@ -3757,8 +3757,8 @@
     },
     {
       "path": "moss_firered_pipeline.py",
-      "bytes": 214888,
-      "sha256": "bb742bec11a54c982433a2e2e11ba45e6aa9e8ebda97f37f1106464cb48f1517"
+      "bytes": 215112,
+      "sha256": "b3c11d54f3ba35c62f694fd9654de63258e6681cecfb4a4255ae9d4809c006d3"
     },
     {
       "path": "moss_worker.py",
@@ -4407,8 +4407,8 @@
     },
     {
       "path": "scripts/macos_ci_status.py",
-      "bytes": 2880,
-      "sha256": "826c67cb8018d1b6827fb643124a57b8981c2e3bfe4ea73b15a223ffce50af51"
+      "bytes": 2922,
+      "sha256": "343bb667b46689853a4ecda69f5d9d17878c53d1b7e057fbdfe196bac2c4f5b3"
     },
     {
       "path": "scripts/macos_collect_artifacts.py",
@@ -5952,8 +5952,8 @@
     },
     {
       "path": "subtitle_core.py",
-      "bytes": 97606,
-      "sha256": "14d0af4f6107a89e7aecba7f099fe6d26bc79bc98c9d7964d013ce93e49fa6e6"
+      "bytes": 97645,
+      "sha256": "2022698cc0582bfa9c60e18acbe1e19aa2f8641cfba27dd6054af2e18b7842cf"
     },
     {
       "path": "tests/test_environment_repair.py",
@@ -5972,8 +5972,8 @@
     },
     {
       "path": "tests/test_macos_delivery_boundary.py",
-      "bytes": 8551,
-      "sha256": "7f5aeac03584934d2317b1b63e3433c858848d6edadada365f900ea09f369cd2"
+      "bytes": 10658,
+      "sha256": "716e0cf2e34cd744b8916cee63da992ff9a6130f14958759bfe950cb2309f15a"
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
@@ -5987,8 +5987,8 @@
     },
     {
       "path": "tests/test_macos_platform.py",
-      "bytes": 5380,
-      "sha256": "294549e711c630ee93b8381d2d6cb459b65d1481b776448f24b99ee21819c8ac"
+      "bytes": 6995,
+      "sha256": "f5cc6724dca2c639d8af531cec866a1128d4eb7733a513ad2d2c8fc5869c780a"
     },
     {
       "path": "tests/test_native_asr_backends.py",
@@ -7487,8 +7487,8 @@
     },
     {
       "path": "twobyteasr/home_release_flow_audit.py",
-      "bytes": 11860,
-      "sha256": "1b834414229e11350cadf309cc79e3c4f8979b2f139afb4258eeea036fc7fe3b"
+      "bytes": 12524,
+      "sha256": "965939e9ffa046c9bdecb8455f1f981df4005e6c9b0c3c954dbdbb90f047ecbb"
     },
     {
       "path": "twobyteasr/home_studio_entry.py",
@@ -8147,8 +8147,8 @@
     },
     {
       "path": "twobyteasr/runtime_paths.py",
-      "bytes": 14164,
-      "sha256": "32702ed672accc3ff2d60dd798819a969f9ac22c184a9f27b0ba4ddd08592fd6"
+      "bytes": 15118,
+      "sha256": "4789bb69bb5bde8a35ecc8082fd9a75d055a35997b648eacf0ec2d446cc45d8e"
     },
     {
       "path": "twobyteasr/runtime_registry.py",
@@ -9176,7 +9176,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "61ccea07e22ba8434030a2561779da801b4ad7c4",
+  "prior_private_source": "6252d6c59d85bdda494a3a848de15ce7d1718fe9",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-  "build_id": "macos-worker-runtime-20261002-run1"
+  "build_id": "macos-worker-runtime-20261002-run2"
 }

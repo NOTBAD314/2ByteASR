@@ -13,7 +13,7 @@ def summarize(root: Path) -> dict:
         return json.loads(path.read_text('utf8')) if path.is_file() else {}
     build=read('build/native-build-inputs.json');validation=build.get('native_validation',{})
     def status(record,key='passed'):
-        return 'not_executed' if not record else ('passed' if record.get(key) is True else 'failed')
+        return 'not_executed' if not record or record.get('status') == 'not_executed' else ('passed' if record.get(key) is True else 'failed')
     app='passed' if validation.get('app_built') else ('failed' if build else 'not_executed')
     relocation=validation.get('relocation',{})
     archive=read('build/release-artifacts.mac.json').get('artifact')
