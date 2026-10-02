@@ -9,6 +9,69 @@ from twobyteasr.macos_desktop_evidence import preserve_owned_project, studio_sna
 from scripts.macos_collect_artifacts import selected_files
 
 
+def test_paused_native_frame_survives_stdout_backpressure_and_heartbeats(tmp_path):
+    import os, queue, shutil, struct, subprocess, sys, threading, time
+    from twobyteasr.platform_media import ffmpeg_tool
+    from twobyteasr.video_decode_pipe import _read_exact
+    ffmpeg = ffmpeg_tool()
+    if not ffmpeg.is_file():
+        available = shutil.which('ffmpeg')
+        if not available:
+            pytest.skip('native FFmpeg required for owned video fixture')
+        ffmpeg = Path(available)
+    media = tmp_path/'帧队列.mp4'
+    subprocess.run([str(ffmpeg), '-v', 'error', '-f', 'lavfi', '-i',
+                    'testsrc2=s=640x360:r=30:d=2', '-c:v', 'libx264', str(media)],
+                   check=True, capture_output=True, timeout=20)
+    child = subprocess.Popen([sys.executable, '-c',
+                              'from twobyteasr.video_decode_worker import main; main()'],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             env=dict(os.environ, TWOBYTEASR_VIDEO_DECODE_BACKEND='cpu'))
+    first_header, release, frames = threading.Event(), threading.Event(), queue.Queue()
+    def receive():
+        try:
+            first = True
+            while True:
+                size = struct.unpack('!I', _read_exact(child.stdout, 4))[0]
+                header = json.loads(_read_exact(child.stdout, size))
+                if first and header.get('pixel_bytes'):
+                    first = False
+                    first_header.set()
+                    release.wait(5)  # Hold the old raster in the writer's real pipe.
+                _read_exact(child.stdout, header.get('pixel_bytes', 0))
+                frames.put(header)
+        except (EOFError, OSError):
+            pass
+    def demand(epoch, milliseconds):
+        payload = dict(epoch=epoch, path=str(media), source_ms=milliseconds,
+                       generation=epoch, paused=True, rate=1, max_size=[640, 360])
+        child.stdin.write((json.dumps(payload)+'\n').encode('utf8')); child.stdin.flush()
+    receiver = threading.Thread(target=receive, daemon=True)
+    receiver.start()
+    try:
+        demand(1, 0)
+        assert first_header.wait(5), 'production worker did not decode first frame'
+        demand(2, 466)
+        time.sleep(1.2)  # At least two heartbeat opportunities before pipe draining.
+        release.set()
+        deadline = time.monotonic()+3
+        current = None
+        while time.monotonic() < deadline:
+            try:
+                header = frames.get(timeout=.1)
+            except queue.Empty:
+                continue
+            if header.get('pixel_bytes') and header['epoch'] == 2:
+                current = header; break
+        assert current is not None, 'heartbeat replaced the final paused raster'
+        assert abs(current['pts_ms']-466) <= 50
+        assert current['generation'] == 2
+    finally:
+        release.set(); child.kill(); child.wait(timeout=3); receiver.join(timeout=2)
+        for stream in (child.stdin, child.stdout, child.stderr):
+            stream.close()
+
+
 @pytest.mark.parametrize('windows', [False, True])
 def test_export_workspace_probes_tool_from_relocated_install_root(tmp_path, monkeypatch, windows):
     from PySide6.QtCore import QSettings

@@ -27,6 +27,10 @@ def studio_snapshot(page) -> dict:
     result['video']['_web_last_decoded'] = result['video']['_web_last_decoded'] is not None
     for name, callback in (
         ('audio', lambda: page.audio_engine.telemetry_snapshot()),
+        ('audio_ready', lambda: page.audio_engine.ready_for_playback()),
+        ('audio_request', lambda: dict(page.audio_engine._last_payload)),
+        ('video_followers', lambda: {key: source.performance_snapshot()
+                                   for key, source in page.video_compositor._players.items()}),
         ('playback_buffers_ready', lambda: page._playback_buffers_ready()),
         ('caption_scene', lambda: page._caption_scene.trace()),
     ):

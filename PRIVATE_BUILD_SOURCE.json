@@ -5977,8 +5977,8 @@
     },
     {
       "path": "tests/test_macos_desktop_evidence.py",
-      "bytes": 5611,
-      "sha256": "eefc909d6b722473bac06fd9968379e5c048ebe4e6060fb7c445e17f80390e64"
+      "bytes": 8693,
+      "sha256": "658fc102e1c4f708cbc7067ccba24efa72278012c92201ec6a42b3da86bd3e19"
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
@@ -7612,8 +7612,8 @@
     },
     {
       "path": "twobyteasr/macos_desktop_evidence.py",
-      "bytes": 2737,
-      "sha256": "c0daaff65f727c95809cbc9ce2c11ecfe15d58f8c75bf566852037b3fc58836b"
+      "bytes": 3052,
+      "sha256": "a1fff27f9362ea1915f8bf758805dc3e496942409c405861453f19580602e0ae"
     },
     {
       "path": "twobyteasr/macos_media_smoke.py",
@@ -9067,8 +9067,8 @@
     },
     {
       "path": "twobyteasr/video_decode_worker.py",
-      "bytes": 15491,
-      "sha256": "c3828048c54709d29359c2cc4fd856fb9c8797feffee71e5ab1ea41748dd54c3"
+      "bytes": 15808,
+      "sha256": "a30ee198ef8e102eaf0b45011c16850010d80ecded61ee15ee15283bfd8ea775"
     },
     {
       "path": "twobyteasr/video_export.py",
@@ -9186,7 +9186,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "227d457083cec999ca480298f825c8e9a8815bbe",
+  "prior_private_source": "84a840663e1a067fb07558360aa92537dc2b840b",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-  "build_id": "macos-studio-20261002-run3"
+  "build_id": "macos-studio-20261002-run4"
 }

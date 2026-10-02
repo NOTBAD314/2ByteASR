@@ -142,7 +142,13 @@ def main():
 
     def publish(header, pixels=b''):
         with output_condition:
-            if outgoing[0] is not None: stats['replaced'] += 1
+            if outgoing[0] is not None:
+                # A blocked pipe can keep the last paused raster pending.
+                # Heartbeats must not discard it: unchanged PTS is never
+                # converted again until another demand arrives.
+                if header.get('heartbeat') and outgoing[0][1]:
+                    return
+                stats['replaced'] += 1
             outgoing[0] = ({**header, 'stats':dict(stats), 'pixel_bytes':len(pixels)}, pixels)
             output_condition.notify()
 
