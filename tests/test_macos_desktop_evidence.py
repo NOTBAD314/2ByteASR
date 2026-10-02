@@ -9,6 +9,32 @@ from twobyteasr.macos_desktop_evidence import preserve_owned_project, studio_sna
 from scripts.macos_collect_artifacts import selected_files
 
 
+@pytest.mark.parametrize('role', ['audio', 'video'])
+def test_frozen_native_worker_dispatch_precedes_inherited_gui_audit(monkeypatch, tmp_path, role):
+    import sys
+    from PySide6 import QtWidgets
+    from scripts import macos_launch as launch
+    from twobyteasr import platform_macos, runtime_paths, settings, studio_acceptance_audit
+    seen = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    monkeypatch.setattr(sys, 'argv', ['App', '--studio-'+role+'-worker', 'owned-argument'])
+    monkeypatch.setenv('TWOBYTEASR_ACCEPTANCE_SCENARIO', 'macos-desktop')
+    monkeypatch.setattr(platform_macos, 'configure_macos_paths', lambda root: seen.append('resources'))
+    monkeypatch.setattr(runtime_paths, 'user_data_root', lambda: tmp_path/'tmp/profile')
+    monkeypatch.setattr(studio_acceptance_audit, 'audit_directory', lambda: tmp_path/'tmp/profile')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('A native worker must not enter GUI audit/default setup')
+    monkeypatch.setattr(QtWidgets, 'QApplication', forbidden)
+    monkeypatch.setattr(settings, 'project_settings_path', forbidden)
+    def worker(*args):
+        seen.append(('worker', args)); return 17
+    module = 'twobyteasr.audio_process' if role == 'audio' else 'twobyteasr.video_decode_worker'
+    monkeypatch.setitem(sys.modules, module, SimpleNamespace(main=worker))
+    assert launch.main() == 17
+    assert seen == ['resources', ('worker', (['owned-argument'],) if role == 'audio' else ())]
+
+
 def test_failure_snapshot_retains_real_substage_and_endpoint_error():
     page = SimpleNamespace(
         _readiness=SimpleNamespace(active=False, ready=False, completed={'读取工程'},

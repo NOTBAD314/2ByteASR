@@ -4422,8 +4422,8 @@
     },
     {
       "path": "scripts/macos_desktop_smoke.py",
-      "bytes": 11535,
-      "sha256": "c84be6cfad76f780be02c8af03f31dbeac46c333b68cd55dc82674af88833821"
+      "bytes": 11812,
+      "sha256": "2dc63615c38b13c6d0912ec983aad6a2647768611fc6b7a0559c04c9f316c054"
     },
     {
       "path": "scripts/macos_doctor.py",
@@ -4442,8 +4442,8 @@
     },
     {
       "path": "scripts/macos_launch.py",
-      "bytes": 8788,
-      "sha256": "9ef3828a8945243101f8f330ddcd36fc43a39d864b1b1ffd0f3b431d58050798"
+      "bytes": 9365,
+      "sha256": "45273648a6e18ecb492ad3a86da23d483a7434594b3086e81fd8840869f90bca"
     },
     {
       "path": "scripts/macos_media_contract.py",
@@ -5977,8 +5977,8 @@
     },
     {
       "path": "tests/test_macos_desktop_evidence.py",
-      "bytes": 2046,
-      "sha256": "cf601acf90b2cb5bcee23f6d57d11fca5c8bb07e882aa91a5ce17b3f1c59ae34"
+      "bytes": 3568,
+      "sha256": "307d2cf8eb89ed417f245da78d9170b7628d9d56d6c287ea49b523b49640d9a9"
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
@@ -7492,8 +7492,8 @@
     },
     {
       "path": "twobyteasr/home_release_flow_audit.py",
-      "bytes": 13519,
-      "sha256": "531bf2c8d7f246ad4ba0243045531e0deae73f45653cb72d0b8a92a4b2a23783"
+      "bytes": 14021,
+      "sha256": "f74054bc907d5ca41a4c211123c1425db9a9b1ac951ac562c12666dfb8c4df4b"
     },
     {
       "path": "twobyteasr/home_studio_entry.py",
@@ -9186,7 +9186,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "ce3f9ff58da7f9c6353e7ebd61ff3e6d6fe46952",
+  "prior_private_source": "4f00e5cd8bafca7ae580228e5e1f17ebf08ee567",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-  "build_id": "macos-studio-20261002-run1"
+  "build_id": "macos-studio-20261002-run2"
 }

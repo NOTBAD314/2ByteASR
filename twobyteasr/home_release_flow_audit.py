@@ -160,6 +160,12 @@ def start(window, out):
             result['subtitle_artifacts']=[str(a.path) for a in artifacts]
             check('actual GUI subtitle button exports four formats',len(artifacts)==4 and {a.path.suffix.lower() for a in artifacts}=={'.srt','.ass','.txt','.json'} and all(a.path.is_file() for a in artifacts))
             check('GUI subtitle output retains edited Chinese',all('实际识别后中文编辑' in a.path.read_text('utf-8-sig') for a in artifacts))
+            from .studio_subtitle_export import verify_subtitle_artifact
+            expected_project=copy.copy(page.project)
+            expected_project.cues=projected_cues(page.project, domain='timeline')
+            verification=[verify_subtitle_artifact(a,expected_project) for a in artifacts]
+            result['subtitle_verification']=[asdict(row) for row in verification]
+            check('GUI subtitle files parse with expected text and timing',all(row.valid for row in verification))
             ui.directory.setText(str(export_root));ui.resolution.setCurrentIndex(ui.resolution.findData((640,360)))
             ui.export_range.setCurrentIndex(ui.export_range.findData('full'))
             destination=ui.export_target().full_path

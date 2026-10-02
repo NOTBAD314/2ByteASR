@@ -103,6 +103,15 @@ def main() -> int:
     data_root = user_data_root()
     data_root.mkdir(parents=True, exist_ok=True)
     os.chdir(data_root)
+    # Frozen media children inherit the parent's guarded audit environment.
+    # Dispatch them before creating QApplication, first-run dialogs or settings;
+    # they own their native decoder/audio event loop and never enter GUI audit.
+    if len(sys.argv) > 1 and sys.argv[1] == '--studio-audio-worker':
+        from twobyteasr.audio_process import main as audio_main
+        return audio_main(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == '--studio-video-worker':
+        from twobyteasr.video_decode_worker import main as video_main
+        return video_main()
     if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-cpu':
         # A windowed .app may replace Python streams with None even though
         # the workshop owns real pipes. This child never opens a GUI.

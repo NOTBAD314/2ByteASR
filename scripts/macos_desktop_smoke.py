@@ -127,11 +127,15 @@ def main(argv=None):
             expected_duration=float(project["media"]["duration_ms"])/1000
             duration=float(metadata["format"]["duration"])
             duration_matches=abs(duration-expected_duration)<.2
+            subtitle_paths=home.get('subtitle_artifacts',[])
+            subtitle_text_verified=(len(subtitle_paths)==4 and
+                {Path(p).suffix.lower() for p in subtitle_paths}=={'.srt','.ass','.txt','.json'} and
+                all('实际识别后中文编辑' in Path(p).read_text('utf-8-sig') for p in subtitle_paths))
             video=dict(passed=any(s["codec_type"]=="video" for s in streams) and any(s["codec_type"]=="audio" for s in streams)
-                       and duration_matches and audio_rms>1e-5,status="executed",metadata=metadata,
+                       and duration_matches and audio_rms>1e-5 and subtitle_text_verified,status="executed",metadata=metadata,
                        expected_duration=expected_duration,duration_matches=duration_matches,audio_rms=audio_rms,
                        chinese_frame_time=frame_time,chinese_frame=str(output/"export-chinese-frame.png"),
-                       subtitle_text_verified=all("实际识别后中文编辑" in Path(p).read_text("utf-8-sig") for p in home.get("subtitle_artifacts",[])))
+                       subtitle_text_verified=subtitle_text_verified)
         except Exception as exc:video=dict(passed=False,status="failed",error=str(exc))
     (output/"export-validation.json").write_text(json.dumps(video,ensure_ascii=False,indent=2),encoding="utf8")
     if result.returncode==0 and workshop.get("passed") is True:
