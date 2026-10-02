@@ -5982,8 +5982,8 @@
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
-      "bytes": 10546,
-      "sha256": "bac7d4904ecae226d9cd64a8f55003554cfec4d1f2bd1cdf0b0294406bb3a670"
+      "bytes": 10745,
+      "sha256": "6e2eb477e0f2941d1226861621073d34f86bc028a9848f8c97f74049b3feac38"
     },
     {
       "path": "tests/test_macos_media_installation.py",

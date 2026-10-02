@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import os
 import sys
 import tarfile
 from pathlib import Path
@@ -15,6 +16,10 @@ from twobyteasr import macos_model_prepare as prepare
 
 @pytest.fixture
 def session_store(monkeypatch, tmp_path):
+    # The session-only tests must not inherit the developer's authorized keys.
+    for name in tuple(os.environ):
+        if name.endswith('_API_KEY'):
+            monkeypatch.delenv(name)
     monkeypatch.setattr(llm_config, 'session_credentials_enabled', lambda: True)
     monkeypatch.setattr(llm_config, 'secrets_path', lambda: tmp_path / 'profile/secrets.dat')
     llm_config.clear_session_secrets()
