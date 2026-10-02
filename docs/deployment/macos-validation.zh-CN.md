@@ -1,6 +1,39 @@
 # macOS 实验验证状态（0.5.0）
 
-## 2026-10-02 当前worker修复原生结果
+## 2026-10-02 当前五次追加测试结束状态
+
+用户追加五次、最多10美元测试授权已全部实际执行，均attempt1/严格failure，没有第六次。最接近完整验收的是第四场；第五场在新的媒体取得前门停止，不覆盖或借用第四场结果。
+
+| 次序 / run | source = workflow SHA | 实际停止位置 |
+|---|---|---|
+| 1 / 36965034989 | 4f00e5cd8bafca7ae580228e5e1f17ebf08ee567 | 音频worker继承GUI audit，QApplication/QCoreApplication单例冲突 |
+| 2 / 36966259582 | 227d457083cec999ca480298f825c8e9a8815bbe | Studio编辑保存通过；导出面板误用Windows ffmpeg.exe路径 |
+| 3 / 36967650706 | 84a840663e1a067fb07558360aa92537dc2b840b | 音频正常，暂停视频最新栅格被背压下的心跳覆盖；就绪超时 |
+| 4 / 36969434185 | b407cae9f6919a2227dfa1d2d64e8c2f3119a639 | Studio/四字幕导出通过；短视频实际报No such filter: ass |
+| 5 / 36971433917 | 6bab5e71cffc2496137f518eb484d35ebb2ada89 | 官方full bottle安装和真实FFmpeg运行完成；新滤镜解析器误拒绝两列标志输出，无.app |
+
+第四场真实应用472759515bytes，SHA25620a97ca290ad4cb5ccd3af756d3e589c619624508a8dbfa05d59b75c8a503e39，已下载官方Actions归档、逐文件摘要/大小与.app ZIP18620成员CRC核验。第五场仅有258253bytes诊断归档（SHAff0637f32435f2cbb110954b844ae4a45cbc2a92000a29b8ae62d9407bb914ff），没有应用。
+
+| 范围 | 第四场实际状态 | 第五场实际状态 |
+|---|---|---|
+| 媒体身份、arm64.app、动态库/ad hoc签名 | 通过（标准FFmpeg锁） | 媒体前门失败；应用未执行 |
+| Unicode解压搬移、脱离构建环境两路正常启动 | 通过 | 未执行 |
+| 冷GUI工坊SenseVoice CPU、正式worker导入 | 通过 | 未执行 |
+| 无密钥Home实际Start、中文非缓存识别/保存 | 通过 | 未执行 |
+| Studio准备、编辑/两剪切/撤销重做/保存重开 | 通过（ready5612.806ms，真实CoreAudio缓冲/NoError与暂停帧就绪） | 未执行 |
+| 实际ASS/JSON/SRT/TXT字幕按钮和内容/时间轴回读 | 通过（四种各四cue，中文编辑与时间轴/说话人校验） | 未执行 |
+| 短视频按钮压制 | 实际执行并失败：缺ass滤镜；后续解码未执行 | 未执行 |
+| 正常退出/重启，另一10秒媒体真实新推理 | 通过；同profile，runtime/model文件和登记不变，无重下载/override | 未执行 |
+| 独立QVideoSink真帧/中文栅格与VideoToolbox探针 | 通过，不能代替实际Studio完整音画验收 | 未执行 |
+| 整模型MPS/人工听感/物理IME/长任务 | 未验；保留先前MPS可用与tensor证据 | 未验 |
+
+真实Studio截图02-recognized-edited-reopened.png及cut-frame截图中主预览区是黑色；现有readiness与独立真帧探针不能证明这条产品流程可见画面正确。保存这一观察，尚未分解绘制/截图机制原因，不把Studio完整音画显示声明为通过。
+
+媒体功能修订只切换到同一固定官方core的ffmpeg-full9.0.2_0 arm64_sequoia bottle，mpv0.41.0_10不变，详见[准确媒体输入](../../packaging/macos/MEDIA_INPUTS.md)。第五场归档/bottle、keg/receipt/core、FFmpeg执行路径/SHA/arm64/版本输出已取证，但滤镜检查错误要求三列标志，真实FFmpeg9为两列，七种所需滤镜实际均在原始输出中。本地已修正解析并用本场完整输出回放和回归验证：85通过1跳过；初次复测另有Windows临时venv清理锁失败，随后独立6项与完整85项复测通过，原失败XML保留。修正未推送、未新原生运行；full库打包/搬移/视频仍未验，不将旧应用标为已含full媒体。
+
+原生定向测试前四场依次74/76/78/79通过，各2平台跳过；第五场只有早期真实双venv身份6项通过，昂贵运行库与完整套件未执行。本轮零云端LLM调用。结束账单新观察1322.7/2000included分钟，gross7.95USD全部折扣、应付0，Actions存储取整0/0.5GB（8%），25live产物5306815812bytes；仓库10USD/账号0USD StopYes原样保留，未改预算或将预算当充值余额。四份新应用、五份诊断和五份可信私有源码bundle全部保留，线上1天留存、本地完整归档。未公开安装包、未发布Release/改可见性/main/旧refs、未恢复Docker/VM或重打Windows Setup。有限C只补允许提供的自有修复代码，私有完整输入/品牌/QA样本/运行产物不进入其范围。
+
+## 2026-10-02 前两次worker修复原生结果（历史快照）
 
 最新run36960889684 / attempt1，source与workflow commit均ce3f9ff58da7f9c6353e7ebd61ff3e6d6fe46952。首场36958646030 / 6252d6c59d85bdda494a3a848de15ce7d1718fe9给出新失败后，定点修正再使用第二场。两次新授权全部使用，均严格failure；没有第三次或自动重跑。
 

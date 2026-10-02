@@ -32,6 +32,25 @@ def test_version_and_archive_identity_do_not_substitute_for_real_ass_filter_capa
     verify_required_filters(ordinary+' ... ass V->V Render ASS\n',['ass','overlay','scale'])
 
 
+def test_native_ffmpeg9_two_flag_table_is_not_misreported_as_missing_filters():
+    # Exact nonprivate CLI rows captured in run36971433917's install.log.
+    actual='''
+ .. amix              N->A       Audio mixing.
+ .. ass               V->V       Render ASS subtitles onto input video using the libass library.
+ .. concat            N->N       Concatenate audio and video streams.
+ TS overlay           VV->V      Overlay a video source on top of the input.
+ .. scale             V->V       Scale the input video size and/or convert the image format.
+ .. subtitles         V->V       Render text subtitles onto input video using the libass library.
+ .. trim              V->V       Pick one continuous section from the input, drop the rest.
+'''
+    required=['amix','ass','concat','overlay','scale','subtitles','trim']
+    verify_required_filters(actual,required)
+    with pytest.raises(RuntimeError,match='ass'):
+        verify_required_filters(actual.replace(' .. ass ', ' .. missing_ass '),required)
+    with pytest.raises(RuntimeError,match='ass'):
+        verify_required_filters('Filters: ass\n  .. ass available by declaration\n', ['ass'])
+
+
 def test_explicit_full_keg_libraries_survive_pyinstaller_same_basename_deduplication(tmp_path):
     from scripts.macos_build import selected_media_libraries
     from PyInstaller.building.datastruct import normalize_toc
@@ -110,7 +129,7 @@ def test_builder_consumes_sealed_paths_without_path_or_rolling_metadata(tmp_path
     def output(cmd,**kwargs):
         invoked.append(cmd)
         if cmd[0]=='/usr/bin/lipo':return 'arm64\n'
-        if '-filters' in cmd:return '\n'.join(' ... '+name+' V->V' for name in LOCK['media']['ffmpeg']['required_filters'])
+        if '-filters' in cmd:return '\n'.join(' ... '+name+' V->V Present' for name in LOCK['media']['ffmpeg']['required_filters'])
         return next(t['version'] for e in record['media'].values() for t in e['tools'].values() if t['path']==cmd[0])+'\n'
     monkeypatch.setattr('scripts.macos_media_contract.subprocess.check_output',output)
     monkeypatch.setenv('PATH','another-untrusted-tool-directory')
@@ -132,7 +151,7 @@ def test_acquisition_installation_and_execution_are_separate_checks(tmp_path,cas
     rp.write_text(json.dumps(record),'utf8')
     def output(cmd,**kwargs):
         if cmd[0]=='/usr/bin/lipo':return 'arm64\n'
-        if '-filters' in cmd:return '\n'.join(' ... '+name+' V->V' for name in LOCK['media']['ffmpeg']['required_filters'])
+        if '-filters' in cmd:return '\n'.join(' ... '+name+' V->V Present' for name in LOCK['media']['ffmpeg']['required_filters'])
         return next(t['version'] for entry in record['media'].values() for t in entry['tools'].values() if t['path']==cmd[0])+'\n'
     monkeypatch.setattr('scripts.macos_media_contract.subprocess.check_output',output)
     with pytest.raises((RuntimeError,FileNotFoundError)):load_verified_tools(rp,lp)

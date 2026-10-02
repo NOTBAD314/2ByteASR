@@ -8,6 +8,9 @@
 - 目标bottle归档SHA256 ef9633f1fee8a0039c6b8ac241f6303c2d4768892f2e84a4934564e91e9fff90，原标准bottle为 c8006779a2919e921e66bbdbf2aa5c989acc5f3626884ec725e58e161f5e843f。
 - full配方明确 --enable-libass，依赖libass/fontconfig/freetype等；上游配方声明FFmpeg组合为GPL-3.0-or-later，保持该第三方范围，项目自身GPL-3.0-only不变。这份输入声明不表示内部实验二进制已取得公开发行的全部对应源码。
 - Homebrew从固定core处理bottle依赖、安装receipt和重定位。保留标准ffmpeg及其他runner工具；不给keg-only工具全局force-link。取得脚本的私有PATH先选准确full keg，封存实际路径/摘要；打包脚本随后只使用该回执。
+- PyInstaller 6.22.2 会排序显式输入并对同目的名保留首条库；mpv 的标准FFmpeg依赖与full库同名。spec显式收集已选full keg dylib，让它们先于自动发现的标准依赖；仍须在真实ZIP解压后、最小PATH环境枚举包内滤镜，不能只靠执行文件排序声明成功。
 - 必需滤镜ass/subtitles/overlay/scale/trim/concat/amix在昂贵模型准备前由准确可执行文件真实枚举，打包入口再核对；缺失、错误摘要/版本/架构均失败。归档SHA与可执行SHA分别取证，不互相冒充。
 
 真实本轮状态见[macOS验证说明](../../docs/deployment/macos-validation.zh-CN.md)；full锁的原生验收结果在最终CI回执中单列，不继承前版结果。
+
+第五场36971433917已取得上述准确full bottle并记录arm64 FFmpeg9.0.2真实执行；自有滤镜解析器错误要求三列标志，误拒绝实际两列，未生成full应用。解析兼容修正已在本地用完整原生输出回放验证，未新原生运行。包内full库/滤镜/视频效果仍未验，不能把第四场标准媒体app的通过项移植到这份锁上。

@@ -24,7 +24,7 @@ def formula_name(name: str, expected: dict) -> str:
 
 def verify_required_filters(output: str, required: list[str]) -> None:
     names={match.group(1) for line in output.splitlines()
-           if (match:=re.match(r'^\s*[TSC.]{3}\s+(\S+)\s',line))}
+           if (match:=re.match(r'^\s*[TSC.]{2,3}\s+([a-z0-9_]+)\s+[AVN|]+->[AVN|]+\s',line))}
     missing=set(required)-names
     if missing:raise RuntimeError('Required media filters absent: '+', '.join(sorted(missing)))
 

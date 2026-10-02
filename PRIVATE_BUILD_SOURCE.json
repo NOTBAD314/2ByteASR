@@ -487,8 +487,8 @@
     },
     {
       "path": "docs/deployment/macos-validation.zh-CN.md",
-      "bytes": 8403,
-      "sha256": "2331c9d27768c1d97f4ff031edf281a83993f1da18174cb6c7c5621e4b1d8e7b"
+      "bytes": 12906,
+      "sha256": "f32f1b0d0424d2901ca709fd88251c6255f5ed1223ff915e80bba28d23cdea1d"
     },
     {
       "path": "docs/design/2026-09-ui-polish-guidelines.md",
@@ -3787,8 +3787,8 @@
     },
     {
       "path": "packaging/macos/MEDIA_INPUTS.md",
-      "bytes": 1949,
-      "sha256": "d3e051a8a386df05582397bc742531c48ae250f5032d289e450b246fa3bd3de0"
+      "bytes": 2661,
+      "sha256": "17915ee3498ed4fd977baba7016d1d26d84db0d448de8ed7039dbd58337eb415"
     },
     {
       "path": "packaging/macos/native-dependencies.lock.json",
@@ -4452,8 +4452,8 @@
     },
     {
       "path": "scripts/macos_media_contract.py",
-      "bytes": 6197,
-      "sha256": "6d19ee3cef209930e8b4911c11441a38cea23b35e2896055a2df77479e8cb45a"
+      "bytes": 6225,
+      "sha256": "44a8dfc9cdb9d434984613bb7757dca9bf8f66cbd4c6d6ddcf574bb756c061fc"
     },
     {
       "path": "scripts/macos_model_smoke.py",
@@ -5992,8 +5992,8 @@
     },
     {
       "path": "tests/test_macos_media_installation.py",
-      "bytes": 10769,
-      "sha256": "a31d6980fc82891a74f08f975c3266571deb518d7d4a52f9d7e85e5eb846892a"
+      "bytes": 11955,
+      "sha256": "5aa45253c512a654b52774957593193b9e42c8d8037f012dc540db24bb11c2f2"
     },
     {
       "path": "tests/test_macos_platform.py",
@@ -9191,7 +9191,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "b407cae9f6919a2227dfa1d2d64e8c2f3119a639",
+  "prior_private_source": "6bab5e71cffc2496137f518eb484d35ebb2ada89",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-  "build_id": "macos-studio-20261002-run5"
+  "build_id": "macos-studio-20261002-post-run5"
 }
