@@ -2,6 +2,9 @@
 """Bounded packaged native Home/Studio test; no injected ASR results or keys."""
 from __future__ import annotations
 import argparse
+import hashlib
+import shutil
+import time
 import json
 import os
 import platform
@@ -9,6 +12,44 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def cache_snapshot(profile: Path) -> dict:
+    data=profile/"local/2ByteASR"
+    registration=json.loads((data/"runtimes/registry.json").read_text("utf8"))["runtimes"]["main"]
+    runtime=Path(registration["root"])
+    models=json.loads((data/"runtime_paths.json").read_text("utf8"))["model_root"]
+    files=[runtime/"pyvenv.cfg",runtime/"pip-install.json",runtime/"managed-runtime.json"]
+    folder=Path(models)/"SenseVoiceSmall"
+    files.extend(path for path in folder.iterdir() if path.is_file() and not path.name.startswith("."))
+    rows=[]
+    for path in sorted(files):
+        digest=hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda:stream.read(4*1024*1024),b""):digest.update(block)
+        rows.append(dict(path=str(path),sha256=digest.hexdigest(),bytes=path.stat().st_size,
+                         mtime_ns=path.stat().st_mtime_ns))
+    return dict(registration=registration,files=rows)
+
+def preserve_diagnostics(profile: Path) -> None:
+    data=profile/"local/2ByteASR"
+    target=profile/"runtime-evidence";target.mkdir(exist_ok=True)
+    for path in (data/"logs/python-runtime").glob("*.json"):
+        shutil.copy2(path,target/path.name)
+    for path in (data/"model-readiness").glob("*.json"):
+        shutil.copy2(path,target/("readiness-"+path.name))
+    saved=data/"runtimes/registry.json"
+    if saved.is_file():
+        shutil.copy2(saved,target/"registry.json")
+        registration=json.loads(saved.read_text("utf8")).get("runtimes",{}).get("main",{})
+        for name in ("pyvenv.cfg","pip-install.json","managed-runtime.json","mac-native-wheels.json"):
+            path=Path(registration.get("root",""))/name
+            if path.is_file():shutil.copy2(path,target/name)
+    # Failed attempts can precede registration. Select only small named
+    # installer receipts from the known versioned main directory, never caches.
+    for folder in (data/"runtimes/main").glob("macos-cpu-*"):
+        for name in ("pyvenv.cfg","pip-install.json","managed-runtime.json","mac-native-wheels.json"):
+            path=folder/name
+            if path.is_file():shutil.copy2(path,target/(folder.name+"-"+name))
 
 def main(argv=None):
     parser=argparse.ArgumentParser()
@@ -48,12 +89,70 @@ def main(argv=None):
     for folder in ("local","roaming","temp"):(output/folder).mkdir()
     env.update(TEMP=str(output/"temp"),TMP=str(output/"temp"))
     with (output/"desktop.log").open("wb") as log:
-        result=subprocess.run([str(app/"Contents/MacOS/2ByteASR")],env=env,cwd=invoker,
-                              stdout=log,stderr=subprocess.STDOUT,timeout=1500)
+        try:
+            result=subprocess.run([str(app/"Contents/MacOS/2ByteASR")],env=env,cwd=invoker,
+                                  stdout=log,stderr=subprocess.STDOUT,timeout=1500)
+        finally:
+            preserve_diagnostics(output)
     workshop=json.loads((output/"workshop-result.json").read_text(encoding="utf8")) if (output/"workshop-result.json").is_file() else {}
     home=json.loads((output/"result.json").read_text(encoding="utf8")) if (output/"result.json").is_file() else {}
-    passed=result.returncode==0 and workshop.get("passed") is True and home.get("passed") is True
+    restart={"passed":False,"status":"not_executed"}
+    video={"passed":False,"status":"not_executed"}
+    if home.get("video_output"):
+        destination=Path(home["video_output"])
+        ffprobe=ffmpeg.with_name("ffprobe")
+        try:
+            details=subprocess.run([str(ffprobe),"-v","error","-show_streams","-show_format","-of","json",str(destination)],
+                capture_output=True,text=True,check=True,timeout=60)
+            metadata=json.loads(details.stdout)
+            with (output/"export-decode.log").open("wb") as log:
+                subprocess.run([str(ffmpeg),"-v","error","-i",str(destination),"-f","null","-"],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=90)
+            streams=metadata["streams"]
+            project=json.loads(Path(home["saved_project"]).read_text("utf8"))
+            cue=project["cues"][0]
+            frame_time=(float(cue["start_ms"])+min(300,(float(cue["end_ms"])-float(cue["start_ms"]))/2))/1000
+            subprocess.run([str(ffmpeg),"-v","error","-ss",str(frame_time),"-i",str(destination),
+                "-frames:v","1",str(output/"export-chinese-frame.png")],check=True,timeout=30)
+            audio=subprocess.run([str(ffmpeg),"-v","error","-i",str(destination),"-vn","-f","f32le","-ac","1","-ar","16000","-"],
+                capture_output=True,check=True,timeout=60).stdout
+            import array
+            samples=array.array("f");samples.frombytes(audio)
+            audio_rms=(sum(float(value)**2 for value in samples)/max(1,len(samples)))**.5
+            expected_duration=float(project["media"]["duration_ms"])/1000
+            duration=float(metadata["format"]["duration"])
+            duration_matches=abs(duration-expected_duration)<.2
+            video=dict(passed=any(s["codec_type"]=="video" for s in streams) and any(s["codec_type"]=="audio" for s in streams)
+                       and duration_matches and audio_rms>1e-5,status="executed",metadata=metadata,
+                       expected_duration=expected_duration,duration_matches=duration_matches,audio_rms=audio_rms,
+                       chinese_frame_time=frame_time,chinese_frame=str(output/"export-chinese-frame.png"),
+                       subtitle_text_verified=all("实际识别后中文编辑" in Path(p).read_text("utf-8-sig") for p in home.get("subtitle_artifacts",[])))
+        except Exception as exc:video=dict(passed=False,status="failed",error=str(exc))
+    (output/"export-validation.json").write_text(json.dumps(video,ensure_ascii=False,indent=2),encoding="utf8")
+    if result.returncode==0 and workshop.get("passed") is True:
+        # Reopen the normal app with the same profile and no runtime override.
+        # The second audit only clicks Home Start for another real short task.
+        restart_dir=output/"restart";restart_dir.mkdir()
+        (restart_dir/"home-flow.json").write_text(json.dumps(dict(media=str(media),timeout=360,recognition_only=True)),encoding="utf8")
+        before=cache_snapshot(output)
+        reuse_env=dict(env,TWOBYTEASR_MACOS_REUSE="1")
+        reuse_env.pop("TWOBYTEASR_MAIN_PYTHON",None)
+        try:
+            with (restart_dir/"desktop.log").open("wb") as log:
+                second=subprocess.run([str(app/"Contents/MacOS/2ByteASR")],env=reuse_env,cwd=invoker,
+                    stdout=log,stderr=subprocess.STDOUT,timeout=600)
+            second_home=json.loads((restart_dir/"result.json").read_text("utf8")) if (restart_dir/"result.json").is_file() else {}
+            after=cache_snapshot(output)
+            unchanged=before==after
+            restart=dict(passed=second.returncode==0 and second_home.get("passed") is True and unchanged,
+                         status="executed",exit_code=second.returncode,second_task=second_home,
+                         runtime_and_model_files_unchanged=unchanged,before=before,after=after,
+                         environment_runtime_override=False)
+        except Exception as exc:restart=dict(passed=False,status="failed",error=str(exc),before=before)
+    (output/"restart-summary.json").write_text(json.dumps(restart,ensure_ascii=False,indent=2),encoding="utf8")
+    preserve_diagnostics(output)
+    passed=result.returncode==0 and workshop.get("passed") is True and home.get("passed") is True and restart["passed"] and video["passed"]
     (output/"desktop-summary.json").write_text(json.dumps({"passed":passed,"exit_code":result.returncode,
+        "restart_reuse":restart,"export_validation":video,
         "C_gui_model_preparation":workshop.get("passed",False),"D_real_home_studio_flow":home.get("passed",False),
         "E_embedded_audio_effects":False,"F_human_and_hardware":False,
         "fixture":"Original synthetic Chinese diagnostic speech; no private speech or injected transcript",

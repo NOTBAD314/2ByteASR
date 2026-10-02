@@ -14,9 +14,14 @@ from .service import (
 )
 
 
-from .updater import current_version as _current_product_version
+def __getattr__(name):
+    # Runtime selection and pre-import diagnostics must work with stdlib
+    # alone; update discovery's requests dependency is loaded on demand.
+    if name == "__version__":
+        from .updater import current_version
+        return current_version()
+    raise AttributeError(name)
 
-__version__ = _current_product_version()
 __all__ = [
     "CancellationToken",
     "CancelledError",

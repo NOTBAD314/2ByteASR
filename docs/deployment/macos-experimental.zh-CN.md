@@ -1,6 +1,6 @@
 # macOS Apple Silicon 桌面实验版（0.5.0）
 
-已生成真实内部 Mac `.app.zip`，尚无公开下载入口。追加CI已通过严格媒体身份、arm64构建、签名和解压搬移校验；正常启动缺回执，仍判失败，模型与Studio未执行。内部包暂不作为可正常使用的下载版本；后续真实结果见[实际验证状态](macos-validation.zh-CN.md)，分别记录构建、移动启动、模型准备、Studio 与人工验证。
+已生成真实内部 Mac `.app.zip`，尚无公开下载入口。最新原生CI已通过严格媒体身份、arm64构建、签名、解压搬移和两路正常启动；SenseVoice工坊完成依赖安装/权重校验后加载失败，中文识别与Studio未执行，内部包仍为实验产物。分层结果见[实际验证状态](macos-validation.zh-CN.md)。
 
 首轮环境为 macOS 15、Apple Silicon arm64。Intel、universal2、App Store 和更早系统均未验证。保留现有深葡萄紫界面、中文/English/日本語和工程库。
 

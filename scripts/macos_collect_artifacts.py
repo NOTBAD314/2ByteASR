@@ -10,7 +10,7 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
-    for folder in ("media","build","native-media-smoke","embedded-preview","hardware-probe","desktop-flow","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke"):
+    for folder in ("media","build","native-media-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke"):
         directory=root/folder
         if not directory.is_dir():continue
         # Build/source, node_modules, PyInstaller output, runtime and model
@@ -21,7 +21,7 @@ def selected_files(root: Path) -> list[Path]:
         if folder=="desktop-flow":
             for path in (directory/"exports").glob("*"):
                 if path.is_file() and path.suffix.lower() in {".srt",".ass",".txt",".json",".mp4"}:selected.append(path)
-    for name in ("doctor.json","runtime.json","runtime.pip-install.json","brew-installed.txt","tests.xml","ci-status.json","workflow-identity.json"):
+    for name in ("doctor.json","runtime.json","runtime.pip-install.json","brew-installed.txt","tests.xml","ci-status.json","workflow-identity.json","runtime-identity.json"):
         if (root/name).is_file():selected.append(root/name)
     return sorted(set(selected))
 

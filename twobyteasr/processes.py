@@ -109,10 +109,12 @@ def main_python_executable(project_root: str | os.PathLike[str] | None = None) -
         pass
     override = str(os.environ.get("TWOBYTEASR_MAIN_PYTHON") or "").strip()
     if override and Path(override).is_file():
-        return str(Path(override).resolve())
+        from .python_runtime_identity import python_entry_path
+        return python_entry_path(override)
     root = Path(project_root) if project_root else Path(sys.executable).resolve().parent
     candidate = root / ".venv-main" / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
-    return str(candidate.resolve()) if candidate.is_file() else ""
+    from .python_runtime_identity import python_entry_path
+    return python_entry_path(candidate) if candidate.is_file() else ""
 
 
 def hidden_subprocess_kwargs() -> dict:
@@ -154,6 +156,23 @@ def sanitized_child_environment(env: dict[str, str] | None = None) -> dict[str, 
     return child
 
 
+def external_python_environment(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Clean only an external Python child; keep intentional app-child routes."""
+    child = sanitized_child_environment(env)
+    for key in tuple(child):
+        if key.startswith("_PYI") or key in {"__PYVENV_LAUNCHER__", "VIRTUAL_ENV",
+                                            "QT_PLUGIN_PATH", "QML2_IMPORT_PATH"}:
+            child.pop(key, None)
+    for key in ("DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH", "LD_LIBRARY_PATH"):
+        original = child.pop(key + "_ORIG", None)
+        if original is None:
+            child.pop(key, None)
+        else:
+            child[key] = original
+    child.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    return child
+
+
 def utf8_worker_environment(env: dict[str, str] | None = None) -> dict[str, str]:
     """Child env that makes a NON-isolated Python child speak UTF-8.
 
@@ -162,7 +181,7 @@ def utf8_worker_environment(env: dict[str, str] | None = None) -> dict[str, str]
     environment (a clean Windows install has neither, and ACP=936 machines
     then emit GBK into a pipe the parent decodes as UTF-8).
     """
-    child = sanitized_child_environment(env)
+    child = external_python_environment(env)
     child["PYTHONIOENCODING"] = "utf-8"
     child["PYTHONUTF8"] = "1"
     return child
@@ -207,7 +226,7 @@ def run_speaker_embed_worker(
     output_path = (work_dir / "embeddings.json").resolve()
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     command = python_utf8_command([
-        str(Path(main_python).resolve()),
+        os.path.abspath(os.fspath(main_python)),
         "-I",
         str(Path(worker_path).resolve()),
         "--manifest",
@@ -223,7 +242,7 @@ def run_speaker_embed_worker(
         encoding="utf-8",
         errors="replace",
         timeout=900,
-        cwd=str(Path(main_python).resolve().parent),
+        cwd=str(Path(os.path.abspath(os.fspath(main_python))).parent),
         env=utf8_worker_environment(),
         shell=False,
     )

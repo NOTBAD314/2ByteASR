@@ -53,14 +53,40 @@ def _enable_unicode_sentencepiece_paths() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--model-key", required=True)
-    parser.add_argument("--model-dir", required=True)
+    parser.add_argument("--manifest")
+    parser.add_argument("--output")
+    parser.add_argument("--model-key")
+    parser.add_argument("--model-dir")
+    parser.add_argument("--probe-import", action="store_true")
+    parser.add_argument("--expected-prefix")
+    parser.add_argument("--expected-funasr-version")
+    parser.add_argument("--diagnostics-dir")
     args = parser.parse_args()
+    from twobyteasr.python_runtime_identity import interpreter_identity, save_identity
+    import traceback
+    identity = interpreter_identity()
+    save_identity("worker-before-import", identity, args.diagnostics_dir)
+    try:
+        if args.expected_prefix and (Path(sys.prefix).resolve() != Path(args.expected_prefix).resolve()
+                                     or sys.prefix == sys.base_prefix):
+            raise RuntimeError("Worker did not start in the selected virtual environment")
+        from funasr import AutoModel
+        import funasr
+        identity.update(import_passed=True, funasr_file=funasr.__file__)
+        if args.expected_funasr_version and identity["distribution"]["version"] != args.expected_funasr_version:
+            raise RuntimeError("Worker FunASR distribution differs from the selected runtime")
+    except Exception:
+        identity.update(import_passed=False, import_traceback=traceback.format_exc())
+        save_identity("worker-import-failed", identity, args.diagnostics_dir)
+        traceback.print_exc(file=sys.stderr)
+        raise
+    save_identity("worker-import-passed", identity, args.diagnostics_dir)
+    if args.probe_import:
+        return
+    if not all((args.manifest, args.output, args.model_key, args.model_dir)):
+        parser.error("manifest, output, model-key and model-dir are required for recognition")
     if args.model_key not in {"sensevoice", "funasr_nano", "paraformer"}:
         raise RuntimeError(f"Unsupported FunASR model key: {args.model_key}")
-    from funasr import AutoModel
     from twobyteasr.model_integrity import verify_model_files
     _enable_unicode_sentencepiece_paths()
 
@@ -121,5 +147,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         _emit("failed", error_type=type(exc).__name__, detail=str(exc))
         raise SystemExit(1)

@@ -7,8 +7,8 @@
   "source_files": [
     {
       "path": ".github/workflows/macos-experimental.yml",
-      "bytes": 7986,
-      "sha256": "9f6879b5ba3ba7de453cbb339c375f0a0e4e78b065c2c2b9973bb41763169244"
+      "bytes": 8456,
+      "sha256": "63868fdff3a4bf130c4cd94711e7f882ad734c7fdcb755eca151baa2484cd018"
     },
     {
       "path": ".gitignore",
@@ -472,8 +472,8 @@
     },
     {
       "path": "docs/deployment/macos-build.zh-CN.md",
-      "bytes": 5505,
-      "sha256": "e5ac1f283f3e8f3e792323cd576737aea88a75120e9529da192c873516217b1e"
+      "bytes": 5638,
+      "sha256": "4fc08363211b6a68c4a22e4ba31a08ad3413c2aeab66b9f977e6347af0a2df99"
     },
     {
       "path": "docs/deployment/macos-device-checklist.zh-CN.md",
@@ -482,13 +482,13 @@
     },
     {
       "path": "docs/deployment/macos-experimental.zh-CN.md",
-      "bytes": 2776,
-      "sha256": "8433e1aa425fd3f1ed4af18581105095adcf456b77b302540036efb48cab2e16"
+      "bytes": 2746,
+      "sha256": "e38b1ca7a38ac1a24306284870912608a122867b61d4b53469bd4aa1c3667efe"
     },
     {
       "path": "docs/deployment/macos-validation.zh-CN.md",
-      "bytes": 4974,
-      "sha256": "68a7de06f58c844158429f431027c0766bfe29d3810b374640cf20b324f9490f"
+      "bytes": 5305,
+      "sha256": "a01bd910dc720f3f30666e399cd3bc79fc78554e8b275c26b5528533eaa48c3f"
     },
     {
       "path": "docs/design/2026-09-ui-polish-guidelines.md",
@@ -4407,13 +4407,13 @@
     },
     {
       "path": "scripts/macos_ci_status.py",
-      "bytes": 2568,
-      "sha256": "fd612fbb1a49cbf255908e592148d6e90be88898fa1044789bdfbfb2d2e8dcc4"
+      "bytes": 2880,
+      "sha256": "826c67cb8018d1b6827fb643124a57b8981c2e3bfe4ea73b15a223ffce50af51"
     },
     {
       "path": "scripts/macos_collect_artifacts.py",
-      "bytes": 3671,
-      "sha256": "b9a33c478f0d58f591895b8bea72e25b56d63a9e9c8d38ca506593909a406ad0"
+      "bytes": 3816,
+      "sha256": "38077a2bc48186a3988750e43fa0393fbd13cde22c981d45b258cac1f24417f3"
     },
     {
       "path": "scripts/macos_dependency_contract.py",
@@ -4422,8 +4422,8 @@
     },
     {
       "path": "scripts/macos_desktop_smoke.py",
-      "bytes": 4011,
-      "sha256": "a419af52f0d5c2a50f6128cbf11830fff4fbcd89f1d38a32f5f617bbffac584b"
+      "bytes": 10725,
+      "sha256": "c997dc9dfc9d5d7e11b62dfaed07fc31ebecc6db4b82157aacdf2c2a90a0c551"
     },
     {
       "path": "scripts/macos_doctor.py",
@@ -4464,6 +4464,11 @@
       "path": "scripts/macos_prepare_runtime.py",
       "bytes": 3083,
       "sha256": "6ef1582eb975fdb642dc071dbfde656f483d3badb79ff461e1479b952d452efb"
+    },
+    {
+      "path": "scripts/macos_runtime_identity.py",
+      "bytes": 1245,
+      "sha256": "2286f4be0e60b3f0044296868a9abfd19dd8d29cb8f2647151f61870df0374b5"
     },
     {
       "path": "scripts/macos_startup_contract.py",
@@ -5927,8 +5932,8 @@
     },
     {
       "path": "sensevoice_worker.py",
-      "bytes": 4896,
-      "sha256": "baecb1ec9ef84e478a0e59f5ec8321f8737ae91bea012a97522595ac66cad96e"
+      "bytes": 6601,
+      "sha256": "cc0a2d1b5460c46b92e9d863586d87533c6d9d733f2520c7c1d0e6a62908a5bb"
     },
     {
       "path": "SOURCE_DELIVERY.md",
@@ -5949,6 +5954,16 @@
       "path": "subtitle_core.py",
       "bytes": 97606,
       "sha256": "14d0af4f6107a89e7aecba7f099fe6d26bc79bc98c9d7964d013ce93e49fa6e6"
+    },
+    {
+      "path": "tests/test_environment_repair.py",
+      "bytes": 27451,
+      "sha256": "fde99fe5b6ac2463ad68df97b6423fa37150eea4ff5c090a4e2f6b49c4c88586"
+    },
+    {
+      "path": "tests/test_hidden_subprocesses.py",
+      "bytes": 332,
+      "sha256": "61b35a8f255bdee7b4dbb59402d57d793491d48a431b833957b526f9fae4d9d5"
     },
     {
       "path": "tests/test_macos_build_contract.py",
@@ -5976,9 +5991,29 @@
       "sha256": "294549e711c630ee93b8381d2d6cb459b65d1481b776448f24b99ee21819c8ac"
     },
     {
+      "path": "tests/test_native_asr_backends.py",
+      "bytes": 11468,
+      "sha256": "9ccdf5d8cf02c7395970943a8f8b984c5ff6114cd6edc27c849be8c1eeeb2e66"
+    },
+    {
+      "path": "tests/test_python_runtime_identity.py",
+      "bytes": 9171,
+      "sha256": "ad73c62a9bf36c668f3cbfc27eb28bfa9d3c9cd1ceee6b9e9df2f3479e56a8df"
+    },
+    {
+      "path": "tests/test_sentencepiece_unicode.py",
+      "bytes": 1570,
+      "sha256": "74bb0819a9c0e1abebd6011a32e8e27793556b2fc0ec87910dbdb52819e58a15"
+    },
+    {
       "path": "tests/test_studio_qt_preview.py",
       "bytes": 5348,
       "sha256": "086d28465acc4f96e42424fa91d802de993a28a02798db1b99425dc4c9b7f87d"
+    },
+    {
+      "path": "tests/test_updater.py",
+      "bytes": 4896,
+      "sha256": "f99b5c599a68d0a6afe0c7c905cce2dec3f8baf7d0f83ad0346dee3a135ae9ca"
     },
     {
       "path": "third_party/cover-psd-base64-LICENSE.txt",
@@ -6527,8 +6562,8 @@
     },
     {
       "path": "twobyteasr/__init__.py",
-      "bytes": 593,
-      "sha256": "6bcdbe7353f8aad14499e033cc194e9bed1a9fb6201a17ec004c1f4c7e0226ae"
+      "bytes": 828,
+      "sha256": "8902bbe4ad68f1c3cee30c39fa9604a311c7f0735fe9a908e47212566c84fa4e"
     },
     {
       "path": "twobyteasr/__main__.py",
@@ -6592,8 +6627,8 @@
     },
     {
       "path": "twobyteasr/asr.py",
-      "bytes": 138314,
-      "sha256": "88112e52a2fe0c4701fb1d93d9d87d94118fb5085eecec43194db9e965b2420a"
+      "bytes": 138871,
+      "sha256": "2e7f8f5c1b672152a7dac977dbf3bd56bc7d52257899bf66060705e02cab28f1"
     },
     {
       "path": "twobyteasr/asr_api_process.py",
@@ -7452,8 +7487,8 @@
     },
     {
       "path": "twobyteasr/home_release_flow_audit.py",
-      "bytes": 11473,
-      "sha256": "36a29f9e2faec078df86054700473927741fe52150686b0ebe0e0ca5900ac733"
+      "bytes": 11860,
+      "sha256": "1b834414229e11350cadf309cc79e3c4f8979b2f139afb4258eeea036fc7fe3b"
     },
     {
       "path": "twobyteasr/home_studio_entry.py",
@@ -7567,8 +7602,8 @@
     },
     {
       "path": "twobyteasr/macos_desktop_audit.py",
-      "bytes": 3388,
-      "sha256": "054e096cce229ae8ae5274ca166c18d3f9bb80d7ea681603c95397d4e60a8d16"
+      "bytes": 5054,
+      "sha256": "ed7355fb721635352e39658fd633634b1b0630102f296a4892bca7ff6a1c1dcb"
     },
     {
       "path": "twobyteasr/macos_media_smoke.py",
@@ -7577,8 +7612,8 @@
     },
     {
       "path": "twobyteasr/macos_model_prepare.py",
-      "bytes": 14500,
-      "sha256": "efc0825ca1b1185c4a89c7f1da480b633cb5e4895057a6924aab9d4b99b8054b"
+      "bytes": 17415,
+      "sha256": "d187fd0a5fcf4b3c29dd51cb7a53381ae9ee86982a9468d9f4df8b2ea4fd72fa"
     },
     {
       "path": "twobyteasr/main_ui_branding.py",
@@ -7912,8 +7947,8 @@
     },
     {
       "path": "twobyteasr/processes.py",
-      "bytes": 24707,
-      "sha256": "9b79c8e1153baede39ab0edd986c903e20e4a425e838d877bee69ed023df6896"
+      "bytes": 26305,
+      "sha256": "9cb0ad2395759b02b77729e577ab2859d5a4232adad401a0a024627e19cf9763"
     },
     {
       "path": "twobyteasr/product_brand_audit.py",
@@ -7979,6 +8014,11 @@
       "path": "twobyteasr/provider_stream.py",
       "bytes": 22721,
       "sha256": "772184a251f11436a2524ed9ab410ba2511f194931d8acb3152945da308adc3f"
+    },
+    {
+      "path": "twobyteasr/python_runtime_identity.py",
+      "bytes": 3594,
+      "sha256": "0bdc2b59188a8571106db6a7f67f115f0a790e40b4f9595a93161c77b55cb9ee"
     },
     {
       "path": "twobyteasr/qss_retheme.py",
@@ -8112,8 +8152,8 @@
     },
     {
       "path": "twobyteasr/runtime_registry.py",
-      "bytes": 10338,
-      "sha256": "714434eb81cf1354b63d325a203cfbda3329a010cf2f00b3a7b44938c0bc235a"
+      "bytes": 11248,
+      "sha256": "7e63d1fc5e72614ddbce8a4f1980f735219aed2a6f5263d63121c4276ef7569a"
     },
     {
       "path": "twobyteasr/runtime_trace.py",
@@ -9136,6 +9176,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "ce9874df73954de8c05ff9f7c71a026fd9137ca2",
-  "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871"
+  "prior_private_source": "61ccea07e22ba8434030a2561779da801b4ad7c4",
+  "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
+  "build_id": "macos-worker-runtime-20261002-run1"
 }

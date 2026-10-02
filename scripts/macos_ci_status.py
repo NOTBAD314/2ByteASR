@@ -22,6 +22,9 @@ def summarize(root: Path) -> dict:
         startup=status(validation.get('packaged_normal_entry_startup_smoke',{})),
         model_preparation=status(read('desktop-flow/workshop-result.json')),
         home_studio=status(read('desktop-flow/result.json')),
+        restart_reuse=status(read('desktop-flow/restart-summary.json')),
+        export_decode=status(read('desktop-flow/export-validation.json')),
+        runtime_identity=status(read('runtime-identity.json')),
         embedded_preview=status(read('native-media-smoke/result.json')),
         hardware=status(read('hardware-probe/result.json'),'hardware_encode_passed'),
         test_step=os.environ.get('TEST_OUTCOME','unknown'),
@@ -38,7 +41,7 @@ def main(argv=None):
     if not args.enforce:(args.qa_root/'ci-status.json').write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
     print(json.dumps(record,ensure_ascii=False))
     if args.enforce:
-        required=['media','app','relocation','startup']+(['model_preparation','home_studio'] if record['model_requested'] else [])
+        required=['runtime_identity','media','app','relocation','startup']+(['model_preparation','home_studio','restart_reuse','export_decode'] if record['model_requested'] else [])
         return 0 if all(record[k]=='passed' for k in required) and record['test_step']=='success' else 1
     return 0
 

@@ -85,6 +85,11 @@ def start(window, out):
             result['recognized_text'] = [cue.text for cue in project.cues]
             result['project_path'] = str(target)
             check('actual ASR text is nonempty', bool(project.cues and any(c.text.strip() for c in project.cues)))
+            if config.get('recognition_only'):
+                result['restart_short_task']=True
+                result['saved_project']=str(target)
+                result['passed']=True
+                return
             page = window.studio_page
             window.open_studio_project(target, mode='edit', source='home_release_validation')
             wait(lambda: page.project is not None and page.project.project_id == project.project_id and page._readiness.ready, 90, 'recognized result enters Studio')

@@ -104,6 +104,13 @@ def _candidate_pythons(role: str) -> list[tuple[Path, str]]:
 
     registered = load_registry().get(role)
     if isinstance(registered, dict):
+        # Recover only the explicitly recorded venv root/config; identical
+        # base binaries are not evidence of identical environments.
+        saved_root = str(registered.get("root") or "").strip()
+        if saved_root and (Path(saved_root) / "pyvenv.cfg").is_file():
+            entry = runtime_python_path(Path(saved_root))
+            if entry.is_file():
+                add(entry, "registry:venv-root")
         python_value = str(registered.get("python_executable") or "").strip()
         if python_value:
             add(Path(python_value), "registry")
@@ -162,7 +169,8 @@ def register_runtime(role: str, python_executable: str, *, source: str = "manual
     """Persist one interpreter in place (never copied)."""
     if role not in RUNTIME_ROLES:
         raise ValueError('Unknown runtime role: '+str(role))
-    python_path = Path(python_executable)
+    from .python_runtime_identity import python_entry_path
+    python_path = Path(python_entry_path(python_executable))
     root = python_path.parent.parent
     registration = RuntimeRegistration(
         runtime_id=f"{role}-runtime",
@@ -175,7 +183,8 @@ def register_runtime(role: str, python_executable: str, *, source: str = "manual
     with _LOCK:
         entries = load_registry()
         existing = entries.get(role, {})
-        if str(existing.get('python_executable', '')).casefold() == str(python_path).casefold():
+        if (os.path.normcase(str(existing.get("python_executable", ""))) == os.path.normcase(str(python_path))
+                and existing.get("root") == str(root)):
             return RuntimeRegistration(runtime_id=existing.get('runtime_id', registration.runtime_id),
                 role=role, python_executable=str(python_path), root=str(root),
                 source=existing.get('source', source), registered_at=existing.get('registered_at', registration.registered_at))
@@ -183,6 +192,8 @@ def register_runtime(role: str, python_executable: str, *, source: str = "manual
             "runtime_id": registration.runtime_id,
             "python_executable": registration.python_executable,
             "root": registration.root,
+            "entry_python": registration.python_executable,
+            "resolved_binary": str(python_path.resolve()),
             "source": registration.source,
             "registered_at": registration.registered_at,
         }
@@ -200,14 +211,15 @@ def resolve_runtime_python(role: str, *, register: bool = True) -> str:
     """
     if role not in RUNTIME_ROLES:
         raise ValueError('Unknown runtime role: '+str(role))
+    register = register and os.environ.get("TWOBYTEASR_RUNTIME_REGISTRY_READ_ONLY") != "1"
     with _LOCK:
-        cached = _CACHE.get(role)
-        if cached and Path(cached).is_file():
-            return cached
+        # Re-evaluate overrides and persisted identity; an old cache cannot
+        # override a newly selected venv or a repaired registration.
         for candidate, source in _candidate_pythons(role):
             try:
                 if candidate.is_file():
-                    resolved = str(candidate.resolve())
+                    from .python_runtime_identity import python_entry_path
+                    resolved = python_entry_path(candidate)
                     if register:
                         register_runtime(role, resolved, source=source)
                     _CACHE[role] = resolved

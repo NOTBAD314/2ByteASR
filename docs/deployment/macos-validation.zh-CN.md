@@ -1,30 +1,39 @@
 # macOS 实验验证状态（0.5.0）
 
-最新追加run `36886410053` / attempt 1，workflow/source同为 `e132fda98f284928771e8a7c2e3bf6f77773d275`。严格媒体取得、实际keg/receipt/执行路径、CPU运行库、真实arm64 app、动态库、ad hoc签名和Unicode解压搬移校验通过。ZIP `472737139` bytes / SHA `1db0f5ebfcde6194a57e09d1c2a9f9be6888d21d61d0ce6cc81c318fe2e8f7fe`；为内部实验产物，尚无公开安装包。正常入口open返回0但缺应用回执，启动判失败；GUI模型/中文Home/Studio此前置不满足未执行。QVideoSink真帧、seek与普通中文字幕实际栅格/合成通过，文本框焦点检查失败后后续未执行；真实VideoToolbox探针通过，人工听感/物理IME/整模型MPS未验。最终验收门失败，不能把continue-on-error步骤的API success当全通过。
+最新私有原生run `36893768101` / attempt1，workflow ref为 `codex/macos-desktop-0.5.0-20261001`，source与workflow commit均 `61ccea07e22ba8434030a2561779da801b4ad7c4`。标准macos-15 Apple Silicon单job、60分钟上限；main保持。本轮先追加两次、再追加三次，五槽均实际使用，没有自动重跑。
 
-用户随后明确授权两次中的第二次；本地57定向通过1跳过，仅为修订回归。健壮处理LaunchServices可能附加的-psn参数并补两路真实入口回执/内部日志；-psn尚非已确证根因。焦点检查改为等待激活并实际点击文本框，独立键盘失败仍记录failed且后续播放检查继续。新输入未原生执行之前不宣称启动已修复。
-
-## 前两次运行的封存记录
-
-本轮新授权的一次私有原生 CI 已执行并失败：run `36882470527` / attempt `1`，工作流与源码同为 `d41b3359985d6bc5e82f55b96dbf316b30a30a08`，workflow ref 为专用私有分支；main 未改。macOS `15.7.9` / arm64 / Python `3.10.11`。失败发生在固定 Homebrew core 前：runner 预置 core 带 `rustup.rb` 修改与额外 `openssl@1.1.rb`，脚本过严要求干净目录，尚未下载/倒入媒体。当前没有 `.app`、安装 ZIP 或 DMG；本轮运行和以下本地后修订不能互相移植结论。
-
-本轮媒体准备失败；Python CPU运行库、Node/Chromium、PyInstaller、搬移启动、模型、Studio、内嵌预览与硬件均未执行。四件诊断载荷9135bytes、原始Actions ZIP11056bytes已逐SHA保全，artifact `11171454141`，SHA `398b709ccce6f83143dfe93e4046dad3984cd9a8f9b5cb374c5a9b783cf76cd8`；应用上传步骤无文件不代表存在应用。
-
-之后本地修订：在独立目录取得准确官方core快照，临时切换媒体配方目录，完整保留并在成功/失败后恢复runner原目录，包含上述改动；不删除任何无关keg或工具。builder继续只消费已验证receipt和准确工具路径。24项定向测试通过（含真实文件移动/失败恢复/旧keg/摘要/架构）；本轮执行前准确私有快照在清除继承凭据的本机环境中53通过1跳过。该目录切换修订未经过原生CI，不能宣称媒体安装已通过。原始失败本机回执已脱敏，零AI请求。
-
-以下是首次 run `36875057224` / 源码 `596bc062d1e7c0f72508c8edcb60c0fbbe965eb2` 的历史有效结果；不充当新源码验收。已关闭 Windows repair 保留。
-
-| 层级 | 当前状态 | 边界 |
+| 层级 | 最新真实状态 | 证据边界 |
 |---|---|---|
-| A 原生依赖和 .app | CPU运行库与导入通过；38回归通过、2跳过；构建失败 | 媒体版本锁在PyInstaller启动前阻止构建 |
-| B 解压移动启动 | 未执行 | 没有真实.app；不生成占位安装包 |
-| C GUI模型准备和中文识别 | 未执行 | 原生CLI依赖准备通过，不代替GUI/模型；未下载模型 |
-| D Home→Studio编辑/导出 | 未执行 | 后续步骤skipped；没有注入字幕或云端请求 |
-| E 内嵌预览/同步/特效 | Windows真帧28项与56回归通过；Mac headed未执行 | 原生offscreen控制器测试不等于Studio音画/特效验收 |
-| F 真人/硬件/长任务 | MPS可用与tensor探测通过；其余未验 | 没有整模型CPU/MPS比较、实际硬件编码、IME、听感或长任务 |
+| A 媒体、运行库和.app | 通过 | 固定公式/bottle/keg/receipt/路径/执行SHA、arm64、外部动态库与ad hoc签名 |
+| B 解压搬移启动 | 通过 | ZIP在新中文/日文路径解压；两路最小PATH正常入口，实际MainWindow和资源回执、正常退出0 |
+| C GUI SenseVoice准备 | 失败 | 工坊冷安装依赖、五模型文件校验完成，加载worker报No module named funasr；ready未取得 |
+| D 中文Home→Studio | 未执行 | 模型未ready；识别、编辑/剪切/撤销重做/保存重开/实际字幕按钮及短视频不伪造通过 |
+| E 独立内嵌预览 | 通过 | Mac Qt QVideoSink真帧、暂停seek、中文栅格/合成、焦点/QWE、保存/撤销重做/Replace、倍速/EOF/EOF后seek；不代表完整Studio音画/特效 |
+| F 硬件/MPS/人工 | 分列 | VideoToolbox实际25帧且禁软件fallback通过；MPS可用/tensor通过；整模型MPS、听感、物理IME、长任务未验 |
 
-准确失败是 runner 的 FFmpeg `9.0.1_1` / mpv `0.41.0_9` 与已锁定 `9.0.2_0` / `0.41.0_10` 不同。版本校验保持有效，未改用latest、未下调锁、未关闭校验。Node/Chromium准备、PyInstaller、Mach-O、签名和搬移均未执行。6件原生产物回执共1,193,755字节已下载并逐件对照上传SHA，Actions artifact `11168791260` 仅含回执，没有应用；线上保留1天，本地交接持久保留。
+最新真实应用ZIP `472740506` bytes，SHA256 `860d351369eec2583d7b89387d50a4304310176fe5dd7c4185d736f1f7914cd6`。应用先归档，后续失败保留；内部包没有公开下载按钮、Release或DMG。原生定向回归61通过/2平台跳过；冻结准确源码本机62通过/1跳过独立记录，不移植平台结果。整job严格failure，continue-on-error步骤的API success不代表全流程通过。
 
-首次后本地9项公式检查仍不足；本轮改为锁定官方core0211e9c2及两份配方SHA，原目标版本/bottle摘要保持，两个原官方归档已经实际下载校验可取得。新同版本runner镜像明确预置2026-09-07 core a7496e08、HOMEBREW_NO_AUTO_UPDATE=1；官方该core定义为9.0.1_1/0.41.0_9，匹配首次实际倒入。首次未保存API缓存/完整环境，不能排他断言缓存导致。确定问题是旧brew install未消费锁；安装后公式版本不是已装revision证据。后续原生运行必须有新的单次授权及新额度复核，本轮不重跑。
+工坊日志证明funasr1.4.1安装完成、pip check通过、SenseVoice固定五文件校验完成；随后正式worker报ModuleNotFoundError。worker完整解释器/前缀未保留，当前代码候选Path.resolve可能追随venv符号链接成为基础Python是待验证推断。保留失败前有效结果；没有把100%文件进度改成模型ready，没有注入识别文本或云端AI请求。
 
-产品0.5.0，Mac独立build_id；原Windows Setup和旧C封存。没有公开Mac下载链接，内部实验与有限源码C的范围分开。
+## 本轮其余准确源码
+
+| run（均attempt1） | source = workflow commit | 真实结果 |
+|---|---|---|
+| 36886410053 | e132fda98f284928771e8a7c2e3bf6f77773d275 | app/媒体/签名/搬移通过；正常启动缺回执，焦点探针失败；模型/Studio未执行 |
+| 36888709835 | e0a4994cae658d657705921a90a510837e741c17 | app/媒体/签名/搬移通过；启动工坊badge缺platform_unavailable而KeyError；预览仅Replace失败；模型/Studio未执行 |
+| 36890647270 | 5a499d6e75a4c2251bd610dfc7046e1661a7d78e | app和全部独立预览通过；两路实际窗口/资源可见但75秒超时，startup仍失败 |
+| 36892355738 | ce9874df73954de8c05ff9f7c71a026fd9137ca2 | app和全部独立预览通过；SpringDialog动画finished前退出后重进事件循环，两路超时仍失败 |
+
+工坊徽标、Qt无Mac Replace标准绑定时Command-Option-F回退、真实SpringDialog结束后的探针退出分别定点修订；槽5原生通过。先前标准QDialog测试没有覆盖关闭动画，换真实SpringDialog确实复现失败后才修订；旧失败回执不改写。新分支四个普通追加提交，旧push CI暂时暂停后每次恢复active；所有旧运行、附件、refs保持。
+
+## 首次媒体失配的历史证据
+
+首次 `36875057224` / source `596bc062d1e7c0f72508c8edcb60c0fbbe965eb2` 在PyInstaller前失败：未消费锁的brew install倒入FFmpeg9.0.1_1/mpv0.41.0_9，目标是9.0.2 revision0/0.41.0 revision10。当次CPU导入、38回归/2跳过与MPS tensor有效，但无.app/GUI模型/Studio。首次API缓存、完整环境、installed-before、实际receipt/路径/摘要未保存，不能断言缓存是排他根因。
+
+后续同镜像原生观察有Sept7 core a7496e08与NO_AUTO_UPDATE=1，该官方快照定义匹配旧版本；这是后次观察，不倒填成首次证据。原目标版本/bottle摘要仍可取得，保持不变，新增准确官方core0211e9c2及两公式SHA。安装消费固定官方输入，由Homebrew处理依赖/重定位，隔离并恢复runner原tap；归档SHA与解压后执行SHA分别验证，builder仅消费已验证准确路径。
+
+第二次旧run `36882470527` / source `d41b3359985d6bc5e82f55b96dbf316b30a30a08` 在媒体前因runner原core的rustup/额外openssl配方被干净检查拒绝，无.app；该次诊断保留，随后独立core隔离修订已在本轮实际原生通过。
+
+五份应用和诊断长期留本地，线上仅1天；仅应用ZIP与必要浅层回执，不上传模型、构建runtime或私人缓存。每次新读取当次免费额度和0美元Stop预算；结束显示310/2000分钟、Actions应付0、预算0StopYes，存储0/0.5GB有取整与延迟。2GiB脚本防护上限不是账户容量，实际大小/留存按当次核算。
+
+产品0.5.0、Mac独立build_id，Windows repair/Setup封存，Docker和VM不恢复。完整私有输入、品牌、CI样本、refs/运行/应用不属于有限公开C。有限C仅沿用允许范围增量提供自有修复源/测试/说明与必要GPL/第三方声明，不证明全部远端历史可公开。

@@ -89,8 +89,8 @@ def extract_archive(archive: Path, destination: Path) -> None:
 def run(command, *, cwd: Path, environment: dict) -> None:
     # The workshop creates one POSIX process group. Every child inherits it,
     # so explicit cancellation also retires uv/download/model descendants.
-    from twobyteasr.processes import sanitized_child_environment
-    env = sanitized_child_environment(environment)
+    from twobyteasr.processes import external_python_environment
+    env = external_python_environment(environment)
     process = subprocess.Popen([str(value) for value in command], cwd=cwd, env=env,
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, encoding='utf8', errors='replace')
@@ -138,8 +138,8 @@ def check_runtime(python: Path, root: Path, *, exact_python: str | None = None) 
 
 
 def _child_environment() -> dict:
-    from twobyteasr.processes import sanitized_child_environment
-    environment = sanitized_child_environment()
+    from twobyteasr.processes import external_python_environment
+    environment = external_python_environment()
     for key in tuple(environment):
         if key.startswith('_PYI') or key in {'QT_PLUGIN_PATH', 'QML2_IMPORT_PATH'}:
             environment.pop(key, None)
@@ -179,6 +179,10 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
             phase = 'runtime_installing'
             emit(phase, device='cpu', model='sensevoice')
             previous = resolve_runtime_python('main', register=False)
+            # The deterministic locked runtime is an explicit recovery input
+            # for legacy registry entries that stored only a base interpreter.
+            if not (previous and check_runtime(Path(previous), root)) and check_runtime(runtime_python, root):
+                previous = str(runtime_python)
             if previous and check_runtime(Path(previous), root):
                 runtime_python = Path(previous)
                 print('[运行库] 复用已核对的原生 CPU 环境', flush=True)
@@ -227,9 +231,30 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
                 pending = receipt.with_suffix('.pending')
                 pending.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf8')
                 os.replace(pending, receipt)
-            if register:
-                register_runtime('main', str(runtime_python), source='macos-gui-cpu-bootstrap')
             environment['TWOBYTEASR_MAIN_PYTHON'] = str(runtime_python)
+            environment['TWOBYTEASR_RUNTIME_REGISTRY_READ_ONLY'] = '1'
+            from .python_runtime_identity import file_identity, save_identity
+            from .runtime_paths import user_data_root
+            diagnostics = user_data_root() / 'logs/python-runtime'
+            save_identity('installation-selected', dict(python=file_identity(runtime_python),
+                install_report=str(runtime_python.parent.parent/'pip-install.json'),
+                install_report_sha256=sha256(runtime_python.parent.parent/'pip-install.json')), diagnostics)
+            run([runtime_python, '-I', '-m', 'pip', '-V'], cwd=managed, environment=environment)
+            # Reproduce the old resolver's entry->base transformation against
+            # this actual installation, without importing/loading a model.
+            base_probe = subprocess.run([str(runtime_python.resolve()), '-I', '-c',
+                'import sys,json,importlib.util; s=importlib.util.find_spec("funasr"); '
+                'print(json.dumps(dict(executable=sys.executable,prefix=sys.prefix,base_prefix=sys.base_prefix,'
+                'funasr_spec=s.origin if s else None)))'], cwd=managed, env=environment,
+                capture_output=True, text=True, encoding='utf8', timeout=30)
+            save_identity('old-resolver-counterfactual', dict(entry=str(runtime_python),
+                resolved_target=str(runtime_python.resolve()),exit_code=base_probe.returncode,
+                stdout=base_probe.stdout,stderr=base_probe.stderr), diagnostics)
+            # The actual production entrypoint imports FunASR before weights
+            # are downloaded. Success here is import readiness, not inference.
+            run([runtime_python, '-I', root/'sensevoice_worker.py', '--probe-import',
+                 '--expected-prefix', runtime_python.parent.parent, '--expected-funasr-version', '1.4.1',
+                 '--diagnostics-dir', diagnostics], cwd=managed, environment=environment)
             phase = 'weights_downloading'
             emit(phase, model='sensevoice')
             run([runtime_python, '-I', root / 'scripts/macos_prepare_model.py', '--models', models,
@@ -238,6 +263,12 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
             emit(phase, model='sensevoice', device='cpu')
             run([runtime_python, '-I', root / 'scripts/validate_prepared_model.py', '--root', root,
                  '--model', 'sensevoice'], cwd=managed, environment=environment)
+            # Commit registration only after real model readiness succeeds;
+            # failure preserves both valid weights and any older healthy role.
+            if register:
+                register_runtime('main', str(runtime_python), source='macos-gui-cpu-bootstrap')
+            save_identity('registration-ready', dict(returned_python=str(runtime_python),
+                registered_python=resolve_runtime_python('main') if register else None), diagnostics)
             emit('ready', model='sensevoice', device='cpu', model_inference_verified=True)
             return runtime_python
     except Exception as exc:

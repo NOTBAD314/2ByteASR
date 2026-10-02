@@ -2506,8 +2506,14 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
 
     started_wall = time.time()
     started_perf = time.perf_counter()
-    environment = os.environ.copy()
-    environment.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    from twobyteasr.processes import external_python_environment
+    from twobyteasr.python_runtime_identity import file_identity, environment_difference, save_identity
+    environment = external_python_environment()
+    if entrypoint == "sensevoice_worker.py":
+        from twobyteasr.runtime_registry import load_registry
+        save_identity("production-launch", dict(command=list(map(str, command)), cwd=os.getcwd(),
+            selected=file_identity(command[0]), registration=load_registry().get("main"),
+            environment_difference=environment_difference(os.environ, environment)))
     process = popen_hidden_subprocess(
         command, purpose=f"{model_id} ASR worker", process_factory=subprocess.Popen,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -2808,7 +2814,7 @@ def _transcribe_funasr_worker(model_key, chunks):
         )
         payload = _run_isolated_asr_worker(
             [
-                runtime, worker,
+                runtime, "-I", "-X", "utf8", worker,
                 "--manifest", manifest, "--output", output,
                 "--model-key", model_key, "--model-dir", source,
             ],

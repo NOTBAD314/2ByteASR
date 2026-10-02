@@ -7,9 +7,15 @@ import platform
 import sys
 import time
 import traceback
+from pathlib import Path
 
 
 def start(window, output):
+    reuse = os.environ.get("TWOBYTEASR_MACOS_REUSE") == "1"
+    original_output = output
+    if reuse:
+        output = output / "restart"
+        output.mkdir(exist_ok=True)
     from PySide6.QtCore import QTimer, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
@@ -27,6 +33,26 @@ def start(window, output):
             if os.environ.get("QT_QPA_PLATFORM")=="offscreen":
                 raise RuntimeError("Offscreen widgets cannot validate the native desktop")
             window.show(); window.raise_()
+            if reuse:
+                from .runtime_registry import resolve_runtime_python, load_registry
+                from .python_runtime_identity import file_identity
+                from .runtime_paths import bootstrap_runtime_paths
+                from .model_integrity import verify_model_files
+                previous = json.loads((original_output/"workshop-result.json").read_text("utf8"))
+                if previous.get("passed") is not True:
+                    raise RuntimeError("Restart requires a previously verified prepared runtime")
+                selected = resolve_runtime_python("main")
+                if not selected or not (Path(selected).parent.parent/"pyvenv.cfg").is_file():
+                    raise RuntimeError("Restart did not recover the registered virtual environment")
+                roots = bootstrap_runtime_paths(persist=False)
+                verify_model_files("sensevoice", roots.model_root/"SenseVoiceSmall")
+                receipt.update(passed=True, gui_preparation=True, restart_reuse=True,
+                    runtime=file_identity(selected), registration=load_registry().get("main"),
+                    model_files_verified=True, preparation_repeated=False)
+                save()
+                from .home_release_flow_audit import start as start_home
+                start_home(window, output)
+                return
             dialog=window.workshop_page.download_combination(["sensevoice"],"SenseVoice CPU",auto_start=False)
             if dialog is None or not dialog.start_button.isEnabled():
                 raise RuntimeError("The normal SenseVoice preparation button is unavailable")
