@@ -16,9 +16,14 @@ def selected_files(root: Path) -> list[Path]:
         # Build/source, node_modules, PyInstaller output, runtime and model
         # trees are deliberately outside this shallow receipt selection.
         for path in directory.iterdir():
-            if path.is_file() and (path.name.endswith(".app.zip") or path.suffix.lower() in {".json",".log",".txt",".png",".xml"}):
+            if path.is_file() and (path.name.endswith(".app.zip") or path.suffix.lower() in {".json",".log",".txt",".png",".xml"}
+                                  or (folder=='desktop-flow/runtime-evidence' and (path.name.endswith('pyvenv.cfg') or path.name=='subtitle-render-diagnostics.jsonl'))
+                                  or (folder=='desktop-flow' and path.name in {'中文 字幕・日本語.mp4','再起動・第二任务.mp4'})):
                 selected.append(path)
         if folder=="desktop-flow":
+            for name in ('recognized', 'final', 'restart'):
+                path=directory/'owned-projects'/(name+'.2byteproj')
+                if path.is_file() and path.stat().st_size<=8*1024*1024:selected.append(path)
             for path in (directory/"exports").glob("*"):
                 if path.is_file() and path.suffix.lower() in {".srt",".ass",".txt",".json",".mp4"}:selected.append(path)
     for name in ("doctor.json","runtime.json","runtime.pip-install.json","brew-installed.txt","tests.xml","ci-status.json","workflow-identity.json","runtime-identity.json"):

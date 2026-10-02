@@ -33,6 +33,12 @@ def cache_snapshot(profile: Path) -> dict:
 def preserve_diagnostics(profile: Path) -> None:
     data=profile/"local/2ByteASR"
     target=profile/"runtime-evidence";target.mkdir(exist_ok=True)
+    # Only logs produced inside this disposable owned profile; no global logs.
+    for pattern in ('studio-open.log', 'audio-endpoint-*.log', 'subtitle-render-diagnostics.jsonl'):
+        for path in (data/'logs').glob(pattern):
+            with path.open('rb') as stream:
+                stream.seek(max(0, path.stat().st_size - 4*1024*1024))
+                (target/path.name).write_bytes(stream.read())
     for path in (data/"logs/python-runtime").glob("*.json"):
         shutil.copy2(path,target/path.name)
     for path in (data/"model-readiness").glob("*.json"):
@@ -132,7 +138,12 @@ def main(argv=None):
         # Reopen the normal app with the same profile and no runtime override.
         # The second audit only clicks Home Start for another real short task.
         restart_dir=output/"restart";restart_dir.mkdir()
-        (restart_dir/"home-flow.json").write_text(json.dumps(dict(media=str(media),timeout=360,recognition_only=True)),encoding="utf8")
+        # Distinct media bytes/path require a fresh ASR worker, while models and
+        # runtime remain registered and unchanged across the normal restart.
+        second_media=output/'再起動・第二任务.mp4'
+        subprocess.run([str(ffmpeg),'-v','error','-i',str(media),'-t','10',
+                        '-c:v','copy','-c:a','aac',str(second_media)],check=True,timeout=60)
+        (restart_dir/"home-flow.json").write_text(json.dumps(dict(media=str(second_media),timeout=360,recognition_only=True)),encoding="utf8")
         before=cache_snapshot(output)
         reuse_env=dict(env,TWOBYTEASR_MACOS_REUSE="1")
         reuse_env.pop("TWOBYTEASR_MAIN_PYTHON",None)

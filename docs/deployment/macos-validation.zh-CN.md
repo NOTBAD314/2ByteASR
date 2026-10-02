@@ -1,5 +1,30 @@
 # macOS 实验验证状态（0.5.0）
 
+## 2026-10-02 当前worker修复原生结果
+
+最新run36960889684 / attempt1，source与workflow commit均ce3f9ff58da7f9c6353e7ebd61ff3e6d6fe46952。首场36958646030 / 6252d6c59d85bdda494a3a848de15ce7d1718fe9给出新失败后，定点修正再使用第二场。两次新授权全部使用，均严格failure；没有第三次或自动重跑。
+
+| 范围 | 真实状态 | 边界 |
+|---|---|---|
+| 固定媒体、arm64.app、外链/签名 | 通过 | 保持既有媒体输入，ad hoc签名，不是Developer ID/公证 |
+| Unicode解压搬移、正常入口启动 | 通过 | 新目录；最小PATH；二进制和LaunchServices两路可见窗口/资源并正常退出 |
+| GUI工坊冷准备SenseVoice CPU | 通过 | 固定五文件、生产worker真实加载/推理ready；安装/返回/登记同一venv |
+| 首页无密钥中文识别、工程保存 | 通过 | 实际Start、独立生产worker非缓存推理，四条中文cue；原始“兔白→to白”偏差保留 |
+| 识别工程进入Studio | 失败 | 等待匹配工程且readiness.ready超时；缺准备子阶段证据，尚不能断言具体根因 |
+| 中文编辑、剪切、撤销/重做、保存重开 | 未执行 | Studio未就绪 |
+| 四格式字幕GUI导出、短带字幕视频/解码 | 未执行 | 无对应输出，不使用独立栅格探针代替 |
+| 正常退出重启、同profile第二短任务 | 通过（缓存复用） | 登记/runtime/model大小SHA/mtime不变，无override/重下载；相同媒体ASR缓存命中，非第二次新推理 |
+| QVideoSink真帧/中文栅格、VideoToolbox短探针 | 通过 | 独立机制检查，不是完整Studio或整模型MPS |
+| 整模型MPS、物理IME、人工听感、长任务 | 未验 | 既有MPS可用/tensor结果保留，未扩矩阵 |
+
+真实应用ZIP472754080bytes，SHA-2568a88b57947bc132b3dbd0b51fb7c27b18f9e6a4d9422f833bfe79ccb4df979b8；先归档后验收，失败仍保留。产品版本0.5.0，私有实验候选，无公开安装包/Release/失效下载按钮。最新原生72通过2跳过，早期真实POSIX6通过；Windows130通过1跳过，准确私有输入本机128通过1跳过/2明确Windows夹具排除。
+
+在该次真实安装，venv入口与其resolve后的基础Python二进制相同，但环境不同：保留入口时sys.prefix与site-packages为venv、FunASR1.4.1实际导入；resolve反事实prefix为base且find_spec为空。这证明入口解析故障机制，旧baseline未留argv/prefix，不能断言为旧失败唯一原因。共享安全边界与冻结子进程分流保留。
+
+Action固定为支持Node24的已审阅revision；产品Node/Remotion不变。两次均60分钟单job上限；诊断先上传、真实app后上传，600MiB合计上限/1天留存按当次额度核算，不上传模型/环境/私人缓存。结束账单新观察744/2000min、应付0、预算0StopYes、storage取整0/0.5GB(7%)，未改预算。旧五份应用、两份新应用、回执和完整私有源码长期保留；私有refs/品牌/样本不自动纳入有限C或可公开历史。
+
+## 以下为前五次运行的历史快照
+
 最新私有原生run `36893768101` / attempt1，workflow ref为 `codex/macos-desktop-0.5.0-20261001`，source与workflow commit均 `61ccea07e22ba8434030a2561779da801b4ad7c4`。标准macos-15 Apple Silicon单job、60分钟上限；main保持。本轮先追加两次、再追加三次，五槽均实际使用，没有自动重跑。
 
 | 层级 | 最新真实状态 | 证据边界 |

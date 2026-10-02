@@ -14,6 +14,7 @@ def start(window, out):
     from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
     from .build_identity import load_build_identity
     from .studio_project import load_project
+    from .macos_desktop_evidence import studio_snapshot, preserve_owned_project
     config = json.loads((out/'home-flow.json').read_text('utf8'))
     result = dict(passed=False, identity=load_build_identity().to_dict(), checks={},
                   events=[], actual_model=True, injected_transcript=False, paid_calls=0)
@@ -85,6 +86,8 @@ def start(window, out):
             project = load_project(target)
             result['recognized_text'] = [cue.text for cue in project.cues]
             result['project_path'] = str(target)
+            result['owned_project'] = preserve_owned_project(target, out.parent if config.get('recognition_only') else out,
+                                                             'restart' if config.get('recognition_only') else 'recognized')
             check('actual ASR text is nonempty', bool(project.cues and any(c.text.strip() for c in project.cues)))
             if config.get('recognition_only'):
                 result['restart_short_task']=True
@@ -94,6 +97,7 @@ def start(window, out):
             page = window.studio_page
             window.open_studio_project(target, mode='edit', source='home_release_validation')
             wait(lambda: page.project is not None and page.project.project_id == project.project_id and page._readiness.ready, 90, 'recognized result enters Studio')
+            result['studio_ready_snapshot'] = studio_snapshot(page); save()
             cue = page.project.cues[0]; page.select_cue(cue.id)
             page._seek(cue.start_ms/1000+.1); pump(.3)
             page._begin_canvas_inline_edit(); pump(.2)
@@ -170,7 +174,16 @@ def start(window, out):
             result['error'] = traceback.format_exc()
             result['block_reason'] = getattr(window, '_run_block_reason', '')
             result['console'] = window.console.toPlainText() if hasattr(window, 'console') else ''
+            result['studio_failure_snapshot'] = studio_snapshot(window.studio_page)
+            window.grab().save(str(out/'failure.png'))
         finally:
+            if result.get('project_path'):
+                try:
+                    result['final_owned_project'] = preserve_owned_project(Path(result['project_path']),
+                        out.parent if config.get('recognition_only') else out,
+                        'restart' if config.get('recognition_only') else 'final')
+                except Exception as exc:
+                    result['project_preservation_error'] = str(exc)
             guard.stop(); save()
             if getattr(window, 'worker', None) and window.worker.isRunning():
                 window.token.cancel(); window.worker.wait(10000)
