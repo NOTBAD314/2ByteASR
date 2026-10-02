@@ -14,7 +14,7 @@ WORK=Path(os.environ['TWOBYTEASR_MAC_BUILD_ROOT']).resolve()
 sys.path.insert(0,str(ROOT))
 from twobyteasr.platform_macos import cpu_factory_settings
 from twobyteasr.settings import DEFAULT_SETTINGS
-from scripts.macos_build import is_macho
+from scripts.macos_build import is_macho, selected_media_libraries
 native=json.loads(Path(os.environ['TWOBYTEASR_MAC_NATIVE_INPUTS']).read_text(encoding='utf8'))
 factory=WORK/'factory'
 factory.mkdir()
@@ -26,6 +26,9 @@ binaries=[(native['native_tools']['node']['path'],'tools/node'),
           (native['native_tools']['mpv']['path'],'tools/mpv'),
           (native['native_tools']['ffmpeg']['path'],'tools/ffmpeg/bin'),
           (native['native_tools']['ffprobe']['path'],'tools/ffmpeg/bin')]
+# mpv's standard FFmpeg dependency shares these basenames. Explicit selected
+# full-build libraries precede discovered dependencies in Analysis's TOC.
+binaries.extend((str(path),'.') for path in selected_media_libraries(Path(native['native_tools']['ffmpeg']['path'])))
 # QVideoSink uses Qt's native multimedia decoder plugin. Collect the precise
 # plugin class explicitly, while Analysis handles its linked libraries.
 binaries.extend(get_qt_library_info('PySide6').collect_plugins('multimedia'))

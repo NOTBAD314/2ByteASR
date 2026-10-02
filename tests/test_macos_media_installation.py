@@ -4,16 +4,67 @@ import copy
 import json
 from pathlib import Path
 import pytest
-from scripts.macos_media_contract import (digest,keg_version,verify_media_formula,
+from scripts.macos_media_contract import (digest,keg_version,formula_name,verify_required_filters,verify_media_formula,
     verify_keg_receipt,verify_binary_evidence,load_verified_tools)
 from scripts.macos_install_media import install_action,isolated_core_checkout
 
 LOCK=json.loads((Path(__file__).resolve().parents[1]/'packaging/macos/native-dependencies.lock.json').read_text('utf8'))
 
 
+def test_full_formula_identity_and_keg_only_tools_cannot_be_replaced_by_plain_ffmpeg(tmp_path):
+    expected=LOCK['media']['ffmpeg']
+    selected=formula('ffmpeg',[keg_version(expected)])
+    assert selected['name']=='ffmpeg-full'
+    verify_media_formula(selected,'ffmpeg',expected)
+    selected['name']='ffmpeg'
+    with pytest.raises(RuntimeError,match='formula drift'):
+        verify_media_formula(selected,'ffmpeg',expected)
+    receipt=dict(arch='arm64',poured_from_bottle=True,source=dict(versions=dict(stable=expected['version']),revision=expected['revision']))
+    verify_keg_receipt(receipt,tmp_path/'ffmpeg-full'/keg_version(expected),'ffmpeg',expected)
+    with pytest.raises(RuntimeError,match='keg path'):
+        verify_keg_receipt(receipt,tmp_path/'ffmpeg'/keg_version(expected),'ffmpeg',expected)
+
+
+def test_version_and_archive_identity_do_not_substitute_for_real_ass_filter_capability():
+    ordinary=' ... scale V->V Scale the input\n ... overlay VV->V Overlay\n'
+    with pytest.raises(RuntimeError,match='ass'):
+        verify_required_filters(ordinary,['ass','overlay','scale'])
+    verify_required_filters(ordinary+' ... ass V->V Render ASS\n',['ass','overlay','scale'])
+
+
+def test_explicit_full_keg_libraries_survive_pyinstaller_same_basename_deduplication(tmp_path):
+    from scripts.macos_build import selected_media_libraries
+    from PyInstaller.building.datastruct import normalize_toc
+    keg=tmp_path/'ffmpeg-full/9.0.2';(keg/'bin').mkdir(parents=True);(keg/'lib').mkdir()
+    tool=keg/'bin/ffmpeg';tool.write_bytes(b'full executable')
+    full=keg/'lib/libavfilter.11.dylib';full.write_bytes(b'full libass enabled')
+    plain=tmp_path/'ffmpeg/9.0.2/lib/libavfilter.11.dylib';plain.parent.mkdir(parents=True);plain.write_bytes(b'no ass')
+    inputs=[(p.name,str(p),'BINARY') for p in selected_media_libraries(tool)]
+    # Dependency discovery appends mpv's standard libraries after explicit
+    # entries; use PyInstaller's actual normalizer, not a duplicate algorithm.
+    actual=normalize_toc(inputs+[(plain.name,str(plain),'BINARY')])
+    assert actual==[(full.name,str(full),'BINARY')]
+
+
+def test_packaged_media_checks_the_relocated_tool_with_no_homebrew_path(tmp_path,monkeypatch):
+    from scripts.macos_build import finder_environment,verify_packaged_media
+    app=tmp_path/'moved/App.app';tool=app/'Contents/Frameworks/tools/ffmpeg/bin/ffmpeg'
+    tool.parent.mkdir(parents=True);tool.write_bytes(b'packaged and rewritten executable')
+    commands=[]
+    def output(cmd,**kwargs):
+        commands.append((cmd,kwargs['env']))
+        return 'ffmpeg version 9.0.2\n' if '-version' in cmd else ' ... ass V->V Render ASS\n'
+    monkeypatch.setattr('scripts.macos_build.subprocess.check_output',output)
+    record=verify_packaged_media(app,['ass'],finder_environment(tmp_path/'tmp/profile'))
+    assert record['passed'] and record['path']==str(tool) and record['sha256']==digest(tool)
+    assert all(c[0][0]==str(tool) and c[1]['PATH']=='/usr/bin:/bin:/usr/sbin:/sbin' for c in commands)
+    with pytest.raises(RuntimeError,match='subtitles'):
+        verify_packaged_media(app,['subtitles'],finder_environment(tmp_path/'tmp/profile'))
+
+
 def formula(name,installed):
     e=LOCK['media'][name]
-    return dict(name=name,versions=dict(stable=e['version']),revision=e['revision'],
+    return dict(name=formula_name(name,e),versions=dict(stable=e['version']),revision=e['revision'],
                 bottle=dict(stable=dict(files=dict(arm64_sequoia=e['arm64_sequoia_bottle']))),
                 installed=[dict(version=v) for v in installed])
 
@@ -41,7 +92,7 @@ def sealed(tmp_path):
     lp=tmp_path/'lock.json';lp.write_text(json.dumps(LOCK),'utf8')
     record=dict(passed=True,target='darwin-arm64',core_commit=LOCK['homebrew_core']['commit'],lock_sha256=digest(lp),media={})
     for name,e in LOCK['media'].items():
-        keg=tmp_path/name/keg_version(e);(keg/'bin').mkdir(parents=True)
+        keg=tmp_path/formula_name(name,e)/keg_version(e);(keg/'bin').mkdir(parents=True)
         tab=dict(arch='arm64',poured_from_bottle=True,source=dict(versions=dict(stable=e['version']),tap_git_head=LOCK['homebrew_core']['commit']))
         rp=keg/'INSTALL_RECEIPT.json';rp.write_text(json.dumps(tab),'utf8')
         entry=dict(keg=str(keg),receipt_sha256=digest(rp),archive=dict(sha256=e['arm64_sequoia_bottle']['sha256'],url=e['arm64_sequoia_bottle']['url']),tools={})
@@ -59,6 +110,7 @@ def test_builder_consumes_sealed_paths_without_path_or_rolling_metadata(tmp_path
     def output(cmd,**kwargs):
         invoked.append(cmd)
         if cmd[0]=='/usr/bin/lipo':return 'arm64\n'
+        if '-filters' in cmd:return '\n'.join(' ... '+name+' V->V' for name in LOCK['media']['ffmpeg']['required_filters'])
         return next(t['version'] for e in record['media'].values() for t in e['tools'].values() if t['path']==cmd[0])+'\n'
     monkeypatch.setattr('scripts.macos_media_contract.subprocess.check_output',output)
     monkeypatch.setenv('PATH','another-untrusted-tool-directory')
@@ -78,7 +130,11 @@ def test_acquisition_installation_and_execution_are_separate_checks(tmp_path,cas
     elif case=='path':tool['path_selected']=str(tmp_path/'other/mpv')
     else:Path(e['keg'],'INSTALL_RECEIPT.json').write_text('{}','utf8')
     rp.write_text(json.dumps(record),'utf8')
-    monkeypatch.setattr('scripts.macos_media_contract.subprocess.check_output',lambda cmd,**kw:'arm64\n' if cmd[0]=='/usr/bin/lipo' else next(t['version'] for entry in record['media'].values() for t in entry['tools'].values() if t['path']==cmd[0])+'\n')
+    def output(cmd,**kwargs):
+        if cmd[0]=='/usr/bin/lipo':return 'arm64\n'
+        if '-filters' in cmd:return '\n'.join(' ... '+name+' V->V' for name in LOCK['media']['ffmpeg']['required_filters'])
+        return next(t['version'] for entry in record['media'].values() for t in entry['tools'].values() if t['path']==cmd[0])+'\n'
+    monkeypatch.setattr('scripts.macos_media_contract.subprocess.check_output',output)
     with pytest.raises((RuntimeError,FileNotFoundError)):load_verified_tools(rp,lp)
 
 

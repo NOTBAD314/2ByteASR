@@ -50,7 +50,7 @@ def test_media_contract_rejects_the_actual_first_ci_version_and_revision_drift()
     lock=json.loads((Path(__file__).resolve().parents[1]/"packaging/macos/native-dependencies.lock.json").read_text("utf8"))
     for name,version,revision in (("ffmpeg","9.0.1",1),("mpv","0.41.0",9)):
         expected=lock["media"][name]
-        formula={"name":name,"versions":{"stable":version},"revision":revision,
+        formula={"name":expected.get('formula_name',name),"versions":{"stable":version},"revision":revision,
                  "bottle":{"stable":{"files":{"arm64_sequoia":{"sha256":expected["arm64_sequoia_bottle"]["sha256"]}}}}}
         with pytest.raises(RuntimeError,match="formula drift"):
             verify_media_formula(formula,name,expected)

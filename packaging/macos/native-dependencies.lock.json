@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "verified_date": "2026-10-01",
+  "verified_date": "2026-10-02",
   "target": "darwin-arm64",
   "minimum_macos": "15.0",
   "python_minor": "3.10",
@@ -19,14 +19,24 @@
     "ffmpeg": {
       "version": "9.0.2",
       "revision": 0,
-      "formula_path": "Formula/f/ffmpeg.rb",
-      "formula_sha256": "d276ecab3d5e109fadcb93a671a7175569ca7ac942be46008a41f4fa678509f0",
-      "official_url": "https://formulae.brew.sh/api/formula/ffmpeg.json",
+      "formula_path": "Formula/f/ffmpeg-full.rb",
+      "formula_sha256": "9d97328f2cc181719a6bc15982e3706f5c6ce39a2d959c96e40ccde503c81056",
+      "official_url": "https://formulae.brew.sh/api/formula/ffmpeg-full.json",
       "arm64_sequoia_bottle": {
         "cellar": "/opt/homebrew/Cellar",
-        "url": "https://ghcr.io/v2/homebrew/core/ffmpeg/blobs/sha256:c8006779a2919e921e66bbdbf2aa5c989acc5f3626884ec725e58e161f5e843f",
-        "sha256": "c8006779a2919e921e66bbdbf2aa5c989acc5f3626884ec725e58e161f5e843f"
-      }
+        "url": "https://ghcr.io/v2/homebrew/core/ffmpeg-full/blobs/sha256:ef9633f1fee8a0039c6b8ac241f6303c2d4768892f2e84a4934564e91e9fff90",
+        "sha256": "ef9633f1fee8a0039c6b8ac241f6303c2d4768892f2e84a4934564e91e9fff90"
+      },
+      "formula_name": "ffmpeg-full",
+      "required_filters": [
+        "ass",
+        "subtitles",
+        "overlay",
+        "scale",
+        "trim",
+        "concat",
+        "amix"
+      ]
     },
     "mpv": {
       "version": "0.41.0",

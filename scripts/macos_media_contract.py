@@ -18,11 +18,22 @@ def keg_version(expected: dict) -> str:
     return expected['version']+('_'+str(expected['revision']) if expected['revision'] else '')
 
 
+def formula_name(name: str, expected: dict) -> str:
+    return expected.get('formula_name', name)
+
+
+def verify_required_filters(output: str, required: list[str]) -> None:
+    names={match.group(1) for line in output.splitlines()
+           if (match:=re.match(r'^\s*[TSC.]{3}\s+(\S+)\s',line))}
+    missing=set(required)-names
+    if missing:raise RuntimeError('Required media filters absent: '+', '.join(sorted(missing)))
+
+
 def verify_media_formula(formula: dict, name: str, expected: dict, *, require_installed=True) -> dict:
     version=formula.get("versions",{}).get("stable")
     revision=formula.get("revision")
-    if formula.get("name")!=name or version!=expected["version"] or revision!=expected["revision"]:
-        raise RuntimeError(f"Media formula drift: {name}: observed {version}_{revision}, expected {expected['version']}_{expected['revision']}")
+    if formula.get("name")!=formula_name(name, expected) or version!=expected["version"] or revision!=expected["revision"]:
+        raise RuntimeError(f"Media formula drift: {name}: observed {formula.get('name')}@{version}_{revision}, expected {formula_name(name, expected)}@{expected['version']}_{expected['revision']}")
     bottle=formula.get("bottle",{}).get("stable",{}).get("files",{}).get("arm64_sequoia",{})
     if bottle.get("sha256")!=expected["arm64_sequoia_bottle"]["sha256"]:
         raise RuntimeError("Media arm64_sequoia bottle checksum drift: "+name)
@@ -32,11 +43,11 @@ def verify_media_formula(formula: dict, name: str, expected: dict, *, require_in
         versions=[row.get('version') for row in formula.get('installed',[])]
         if keg_version(expected) not in versions:
             raise RuntimeError(f'Installed keg differs: {name}: {versions}, expected {keg_version(expected)}')
-    return {"name":name,"version":version,"revision":revision,"bottle_tag":"arm64_sequoia","bottle_sha256":bottle["sha256"],"installed_checked":require_installed}
+    return {"name":name,"formula_name":formula_name(name, expected),"version":version,"revision":revision,"bottle_tag":"arm64_sequoia","bottle_sha256":bottle["sha256"],"installed_checked":require_installed}
 
 
 def verify_keg_receipt(receipt: dict,keg: Path,name: str,expected: dict) -> None:
-    if keg.name!=keg_version(expected) or keg.parent.name!=name:
+    if keg.name!=keg_version(expected) or keg.parent.name!=formula_name(name, expected):
         raise RuntimeError('Installed keg path/revision differs: '+str(keg))
     if receipt.get('arch')!='arm64' or not receipt.get('poured_from_bottle'):
         raise RuntimeError('Installed receipt is not an arm64 poured bottle: '+name)
@@ -83,6 +94,8 @@ def load_verified_tools(path: Path,lock_path: Path) -> dict:
             if arch!=tool['architecture']:raise RuntimeError('Media architecture changed: '+binary)
             actual=subprocess.check_output([tool['path'],'--version' if binary=='mpv' else '-version'],text=True)
             if actual.splitlines()[0]!=tool['version']:raise RuntimeError('Media output changed: '+binary)
+            if binary=='ffmpeg' and expected.get('required_filters'):
+                verify_required_filters(subprocess.check_output([tool['path'],'-hide_banner','-filters'],text=True),expected['required_filters'])
             tools[binary]=dict(tool)
     if set(tools)!={'ffmpeg','ffprobe','mpv'}:raise RuntimeError('Incomplete verified media tools')
     return tools

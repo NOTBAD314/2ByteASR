@@ -121,6 +121,33 @@ def finder_environment(boundary: Path) -> dict:
     return env
 
 
+def selected_media_libraries(ffmpeg: Path) -> list[Path]:
+    """Explicit full-build libraries win PyInstaller's first-entry deduplication.
+
+    mpv depends on the standard FFmpeg formula with the same library basenames.
+    Analysis sorts explicit inputs, so executable input order is insufficient.
+    Seed the selected keg libraries explicitly before dependency discovery.
+    """
+    keg=ffmpeg.resolve().parent.parent
+    libraries=sorted((keg/'lib').glob('*.dylib'))
+    if not libraries:raise RuntimeError('Selected FFmpeg keg has no native libraries')
+    for path in libraries:
+        if not path.resolve().is_relative_to(keg):
+            raise RuntimeError('Selected FFmpeg library escapes its keg: '+str(path))
+    return libraries
+
+
+def verify_packaged_media(app: Path, required_filters: list[str], environment: dict) -> dict:
+    from scripts.macos_media_contract import verify_required_filters
+    tool=app/'Contents/Frameworks/tools/ffmpeg/bin/ffmpeg'
+    version=subprocess.check_output([str(tool),'-version'],env=environment,text=True,stderr=subprocess.STDOUT,timeout=30)
+    filters=subprocess.check_output([str(tool),'-hide_banner','-filters'],env=environment,text=True,stderr=subprocess.STDOUT,timeout=30)
+    verify_required_filters(filters,required_filters)
+    return dict(passed=True,path=str(tool),sha256=sha256(tool),version=version.splitlines()[0],
+                required_filters=required_filters,filter_listing=filters,
+                environment_path=environment['PATH'])
+
+
 def archive_and_relocate(app: Path, output: Path) -> tuple[Path, Path, dict]:
     inventory=bundle_inventory(app)
     (output/"bundle-inventory.json").write_text(json.dumps(inventory,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
@@ -202,6 +229,8 @@ def main(argv=None):
     tools=load_verified_tools(args.media_receipt,LOCK)
     receipt.update(stage="native_media_verified",native_tools=tools,
                    media_install_receipt_sha256=sha256(args.media_receipt))
+    receipt['selected_media_libraries']=[dict(path=str(path),sha256=sha256(path))
+                                       for path in selected_media_libraries(Path(tools['ffmpeg']['path']))]
     receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     archive=output/Path(lock["node"]["url"]).name
     with urllib.request.urlopen(lock["node"]["url"],timeout=60) as response,archive.open("wb") as stream:
@@ -256,9 +285,18 @@ def main(argv=None):
     receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     zipped,relocated,relocation=archive_and_relocate(app,output)
     receipt["native_validation"]["relocation"]=relocation
+    receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     boundary=output.parent
     if "tmp" not in {part.casefold() for part in boundary.parts}:
         raise RuntimeError("Packaged QA requires an explicit disposable tmp boundary")
+    try:
+        receipt['native_validation']['packaged_media']=verify_packaged_media(
+            relocated,lock['media']['ffmpeg'].get('required_filters',[]),finder_environment(boundary/'relocated-media-profile'))
+    except Exception as exc:
+        receipt['native_validation']['packaged_media']=dict(passed=False,error=str(exc))
+        raise
+    finally:
+        receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     from scripts.macos_startup_contract import verify_relocated_startup
     receipt["native_validation"]["packaged_normal_entry_startup_smoke"]=verify_relocated_startup(
         relocated,boundary,output,finder_environment(boundary/"relocated-startup-profile"))

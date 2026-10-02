@@ -1,0 +1,13 @@
+# macOS 媒体输入：2026-10-02 功能修订
+
+原锁标准 ffmpeg9.0.2_0 的实际搬移包在 run36969434185 压制时报告 No such filter: ass。Studio编辑保存与四格式字幕回读均通过，这个失败属于媒体功能输入，不是模型或字幕文件失败。
+
+本次选定仍是官方 homebrew-core commit 0211e9c2eeea26bc0f1b382446dc076321e9a871，macOS15 arm64_sequoia；仅将逻辑 ffmpeg 输入切换到同一版本9.0.2/revision0的 keg-only ffmpeg-full。mpv0.41.0/revision10不变。不是滚动latest或现场回填版本。
+
+- [固定官方full配方](https://github.com/Homebrew/homebrew-core/blob/0211e9c2eeea26bc0f1b382446dc076321e9a871/Formula/f/ffmpeg-full.rb)，配方SHA256 9d97328f2cc181719a6bc15982e3706f5c6ce39a2d959c96e40ccde503c81056。
+- 目标bottle归档SHA256 ef9633f1fee8a0039c6b8ac241f6303c2d4768892f2e84a4934564e91e9fff90，原标准bottle为 c8006779a2919e921e66bbdbf2aa5c989acc5f3626884ec725e58e161f5e843f。
+- full配方明确 --enable-libass，依赖libass/fontconfig/freetype等；上游配方声明FFmpeg组合为GPL-3.0-or-later，保持该第三方范围，项目自身GPL-3.0-only不变。这份输入声明不表示内部实验二进制已取得公开发行的全部对应源码。
+- Homebrew从固定core处理bottle依赖、安装receipt和重定位。保留标准ffmpeg及其他runner工具；不给keg-only工具全局force-link。取得脚本的私有PATH先选准确full keg，封存实际路径/摘要；打包脚本随后只使用该回执。
+- 必需滤镜ass/subtitles/overlay/scale/trim/concat/amix在昂贵模型准备前由准确可执行文件真实枚举，打包入口再核对；缺失、错误摘要/版本/架构均失败。归档SHA与可执行SHA分别取证，不互相冒充。
+
+真实本轮状态见[macOS验证说明](../../docs/deployment/macos-validation.zh-CN.md)；full锁的原生验收结果在最终CI回执中单列，不继承前版结果。
