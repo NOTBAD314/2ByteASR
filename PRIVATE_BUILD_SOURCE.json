@@ -5977,8 +5977,8 @@
     },
     {
       "path": "tests/test_macos_desktop_evidence.py",
-      "bytes": 3568,
-      "sha256": "307d2cf8eb89ed417f245da78d9170b7628d9d56d6c287ea49b523b49640d9a9"
+      "bytes": 5611,
+      "sha256": "eefc909d6b722473bac06fd9968379e5c048ebe4e6060fb7c445e17f80390e64"
     },
     {
       "path": "tests/test_macos_gui_prepare.py",
@@ -8452,8 +8452,8 @@
     },
     {
       "path": "twobyteasr/studio_export_ui.py",
-      "bytes": 124067,
-      "sha256": "0683813def708e5f3f8a5f9224aca98bc1a287611862694e87aaacff6cd57e8a"
+      "bytes": 124042,
+      "sha256": "75e83fb33b31d8688ac6a79a891da4a158265d81d3917a6fe5cab6f3e3b692d5"
     },
     {
       "path": "twobyteasr/studio_fill_editors.py",
@@ -9186,7 +9186,7 @@
   "models": false,
   "precompiled_windows_payload": false,
   "internal_task_records": false,
-  "prior_private_source": "4f00e5cd8bafca7ae580228e5e1f17ebf08ee567",
+  "prior_private_source": "227d457083cec999ca480298f825c8e9a8815bbe",
   "media_core_commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-  "build_id": "macos-studio-20261002-run2"
+  "build_id": "macos-studio-20261002-run3"
 }

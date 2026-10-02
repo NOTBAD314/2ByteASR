@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from .studio_project import SubtitleProject
+from .platform_media import ffmpeg_tool
 
 
 class ProcessedFrameView(QLabel):
@@ -485,7 +486,7 @@ class StudioExportWorkspace(QWidget):
         super().__init__(parent)
         self.project, self.ass_path = project, str(ass_path)
         self.project_path = Path(project_path).resolve() if project_path else None
-        self.ffmpeg = Path(__file__).resolve().parents[1] / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+        self.ffmpeg = ffmpeg_tool()
         self._settings = QSettings("2ByteASR", "2ByteASR")
         try:
             self._saved_export_preferences = json.loads(str(self._settings.value('render/preferences_v1', '{}')))
