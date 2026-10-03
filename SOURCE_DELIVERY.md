@@ -12,7 +12,7 @@
 
 明确区分：A为固定的完整内部构建输入；B为配对源码与必要材料；C为从同一最新快照增量选择的[独立公开源码范围](SOURCE_ONLY_SCOPE.md)。C延续r2排除理由，但不是永远固定的2431路径白名单，也不能替代B。旧test.4/r2附件原件保留，不改名充当0.5.0。
 
-当前尚无公开安装包，本轮不推送、切换公开或发布新Release。若后续获准网络分发，应同处、同等便利提供准确对应源码和必要材料；main最新树或自动GitHub源码ZIP本身不能代替现有完整Setup对应源码。
+当前尚无公开安装包。0.5.0 源码与文档已进入原私有仓库 main 的更新准备，专用 Release 保持 draft 和 prerelease；私有草稿附件用于作者受控的发布准备，不是公众下载，也不表示第三方授予额外权利。正式提供完整附件时须同处、同等便利提供准确对应源码和必要材料；main 最新树或自动 GitHub 源码 ZIP 不能代替 Windows Setup 或 Mac 应用的完整对应源码。
 
 Third-party combination permissions and exact native build-source gaps remain separately documented. This local 0.5.0 build is not a public release or a complete source offer; consult the validation and source manifest for the actual scope.
 

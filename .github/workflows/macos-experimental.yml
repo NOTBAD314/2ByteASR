@@ -27,10 +27,10 @@ concurrency:
 jobs:
   native-arm64:
     # Official standard runner: macOS 15 / Apple Silicon arm64. Rechecked
-    # 2026-10-01. Dispatch only after actual included quota and $0 hard-stop
-    # budget have been verified. No larger runner, cache or automatic retry.
+    # 2026-10-03. One bounded dispatch after the actual included quota and
+    # existing stop-usage budgets were checked. No automatic retry or cache.
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 24
     defaults:
       run:
         shell: bash
@@ -47,7 +47,7 @@ jobs:
           test "$(uname -m)" = arm64
           [[ "$MAXIMUM_ARTIFACT_BYTES" =~ ^[0-9]+$ ]]
           test "$MAXIMUM_ARTIFACT_BYTES" -ge 16777216
-          test "$MAXIMUM_ARTIFACT_BYTES" -le 2147483648
+          test "$MAXIMUM_ARTIFACT_BYTES" -le 629145600
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # Node24, official action.yml checked 2026-10-02
         with:
           ref: ${{ inputs.source_sha }}
@@ -99,7 +99,22 @@ jobs:
         run: |
           set -euo pipefail
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_doctor.py --require-host --probe-torch --output "$MAC_QA_ROOT/doctor.json"
-          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_macos_platform.py tests/test_macos_build_contract.py tests/test_macos_gui_prepare.py tests/test_macos_delivery_boundary.py tests/test_macos_media_installation.py tests/test_studio_qt_preview.py tests/test_python_runtime_identity.py tests/test_macos_desktop_evidence.py --basetemp "$MAC_QA_ROOT/pytest" --junitxml "$MAC_QA_ROOT/tests.xml"
+          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_macos_platform.py tests/test_macos_build_contract.py tests/test_macos_gui_prepare.py tests/test_macos_delivery_boundary.py tests/test_macos_media_installation.py tests/test_studio_qt_preview.py tests/test_python_runtime_identity.py tests/test_macos_desktop_evidence.py tests/test_macos_setup_delivery.py tests/test_blank_project_projection.py tests/test_razor_caption_conservation.py tests/test_playhead_edit_target.py tests/test_static_caption_long_command.py::test_file_graph_keeps_external_relative_inputs_and_callbacks --basetemp "$MAC_QA_ROOT/pytest" --junitxml "$MAC_QA_ROOT/tests.xml"
+      - name: Build real DMG and verify drag-install Unicode copy
+        if: ${{ always() && steps.build.outcome == 'success' }}
+        id: dmg
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_package_dmg.py --app "$MAC_QA_ROOT/build/dist/2ByteASR.app" --output "$MAC_QA_ROOT/dmg"
+      - name: Installed app normal new blank project, save and reopen
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: blank_project
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); assert r["passed"] is True; print(r["installed_app"])')
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_blank_project_macos.py --app "$app" --output "$MAC_QA_ROOT/blank-project"
       - name: Packaged Qt QVideoSink real-frame media smoke
         if: ${{ always() && steps.build.outcome == 'success' }}
         id: preview
@@ -119,7 +134,7 @@ jobs:
         if: ${{ always() && inputs.run_model_smoke && steps.build.outcome == 'success' }}
         id: desktop
         continue-on-error: true
-        timeout-minutes: 30
+        timeout-minutes: 12
         run: |
           set -euo pipefail
           python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/build/native-build-inputs.json")); s=r["native_validation"]["packaged_normal_entry_startup_smoke"]; assert s.get("passed") is True or s.get("direct",{}).get("passed") is True, "Relocated startup failed; GUI prerequisites absent"'
@@ -146,15 +161,15 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
           path: ${{ env.MAC_QA_ROOT }}/artifacts/receipts/
-      - name: Retain real app within observed included allowance
+      - name: Retain real installer within observed included allowance
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: macos-arm64-app-${{ inputs.source_sha }}
+          name: macos-arm64-setup-${{ inputs.source_sha }}
           retention-days: 1
           if-no-files-found: warn
           compression-level: 0
           path: ${{ env.MAC_QA_ROOT }}/artifacts/application/
-      - name: Enforce app, relocation and requested desktop results
+      - name: Enforce installer, blank project and requested desktop results
         if: always()
         run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce

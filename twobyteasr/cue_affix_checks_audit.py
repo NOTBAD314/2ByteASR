@@ -4,6 +4,10 @@ from pathlib import Path
 
 
 def start(window,out):
+    config = json.loads((Path(out)/'config.json').read_text('utf8'))
+    if config.get('project36'):
+        from .project36_repair_audit import start as start_project36
+        return start_project36(window, out)
     from PySide6.QtCore import Qt,QTimer,QPoint,QSettings
     from PySide6.QtGui import QInputMethodEvent
     from PySide6.QtTest import QTest

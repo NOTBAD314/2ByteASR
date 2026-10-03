@@ -793,6 +793,11 @@ def caption_continuous_segments(sequence: EditSequence) -> list[VideoSegment]:
         first, last = group[0], group[-1]
         union_source = last.source_out_ms - first.source_in_ms
         union_time = last.timeline_out_ms - first.timeline_in_ms
+        # A blank project keeps a zero-duration identity placeholder until
+        # media is imported. It has no affine map to verify or rejoin.
+        if union_time <= 0:
+            result.extend(copy.deepcopy(group))
+            continue
         if all(first.source_in_ms + round(Fraction(
                 (piece.timeline_in_ms-first.timeline_in_ms)*union_source, union_time))
                 == piece.source_in_ms for piece in group):

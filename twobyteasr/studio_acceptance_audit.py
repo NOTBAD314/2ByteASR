@@ -43,6 +43,9 @@ def audit_directory() -> Path | None:
 def isolate_acceptance_settings() -> None:
     output = audit_directory()
     if output is None: return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'blank-project':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'macos-desktop', 'home-release-flow'}:
         from .ui import EndpointEditor
         from .studio_ai_flow import StudioAIFlowMixin
@@ -174,6 +177,11 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'blank-project':
+        from .blank_project_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'macos-desktop':
         from .macos_desktop_audit import start
         output=audit_directory()
