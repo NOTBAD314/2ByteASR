@@ -26,7 +26,7 @@ def selected_files(root: Path) -> list[Path]:
                 if path.is_file() and path.stat().st_size<=8*1024*1024:selected.append(path)
             for path in (directory/"exports").glob("*"):
                 if path.is_file() and path.suffix.lower() in {".srt",".ass",".txt",".json",".mp4"}:selected.append(path)
-    for name in ("doctor.json","runtime.json","runtime.pip-install.json","brew-installed.txt","tests.xml","ci-status.json","workflow-identity.json","runtime-identity.json"):
+    for name in ("doctor.json","runtime.json","runtime.pip-install.json","brew-installed.txt","tests.xml","ci-status.json","workflow-identity.json","runtime-identity.json","fixture-origin.json"):
         if (root/name).is_file():selected.append(root/name)
     return sorted(set(selected))
 

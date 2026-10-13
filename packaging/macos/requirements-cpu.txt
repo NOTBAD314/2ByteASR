@@ -13,3 +13,5 @@ kaldi_native_fbank==1.22.3
 textgrid==1.6.1
 funasr==1.4.1
 sentencepiece==0.2.1
+# Main runtime contract (dependencies.lock.json environments.main) since the speaker-embedding work.
+speechbrain==1.0.3

@@ -136,11 +136,21 @@ jobs:
         if: ${{ always() && inputs.run_model_smoke && steps.build.outcome == 'success' }}
         id: desktop
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/build/native-build-inputs.json")); s=r["native_validation"]["packaged_normal_entry_startup_smoke"]; assert s.get("passed") is True or s.get("direct",{}).get("passed") is True, "Relocated startup failed; GUI prerequisites absent"'
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$MAC_QA_ROOT/build/relocated/兔白 字幕・移動テスト/2ByteASR.app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio ci-fixtures/original-chinese-qa.wav --output "$MAC_QA_ROOT/desktop-flow"
+          # Speech is synthesized here with the runner's built-in voice; no audio file is committed.
+          audio="$MAC_QA_ROOT/smoke-speech.wav"
+          text='今天测试兔白字幕。我们使用本地模型识别中文。字幕可以编辑，剪切后保存工程，最后导出视频。'
+          if say -v Tingting --data-format=LEI16@16000 -o "$audio" "$text" && test -s "$audio"; then
+            origin='macOS say -v Tingting (zh_CN), synthesized on this runner'
+          else
+            audio="$GITHUB_WORKSPACE/assets/diagnostics/speech_en.wav"; text=''
+            origin='repository assets/diagnostics/speech_en.wav (no Chinese voice on this runner)'
+          fi
+          python -c 'import json,sys,hashlib; p=sys.argv[1]; json.dump(dict(audio=p,origin=sys.argv[2],text=sys.argv[3],sha256=hashlib.sha256(open(p,"rb").read()).hexdigest()),open(sys.argv[4],"w",encoding="utf8"),ensure_ascii=False,indent=2)' "$audio" "$origin" "$text" "$MAC_QA_ROOT/fixture-origin.json"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$MAC_QA_ROOT/build/relocated/兔白 字幕・移動テスト/2ByteASR.app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio "$audio" --output "$MAC_QA_ROOT/desktop-flow"
       - name: Record separate validation outcomes
         if: always()
         env:
