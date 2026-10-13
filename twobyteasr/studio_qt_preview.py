@@ -268,7 +268,14 @@ class QtEmbeddedVideoController(QObject):
         for slot in tuple(self._visual['overlays']):
             self._record_visual(slot, False)
         self.surface.update()
-        self.player.setSource(QUrl.fromLocalFile(str(source)))
+        url = QUrl.fromLocalFile(str(source))
+        if self.player.source() == url:
+            # QMediaPlayer ignores setSource() with its current URL: no new
+            # LoadedMedia, so reopening a project on the same media never left
+            # MEDIA_OPENING and Studio timed out at 准备播放器 (macOS CI,
+            # 2026-10-14). Clear first so the same file loads again.
+            self.player.setSource(QUrl())
+        self.player.setSource(url)
 
     def post_seek(self, seconds, *, accurate=True, generation=0):
         return self._post(lambda: self._seek(seconds, generation), 'seek')

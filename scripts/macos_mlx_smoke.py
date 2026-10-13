@@ -62,8 +62,12 @@ def main(argv=None) -> int:
         runtime = macos_model_prepare.prepare_mlx(ROOT, models=models, source=args.source, keys=keys)
         result['prepare_s'] = round(time.perf_counter() - started, 1)
         result['runtime_python'] = str(runtime)
-        result['readiness'] = {key: json.loads((data / '2ByteASR' / 'model-readiness' / (key + '.json'))
-                                               .read_text(encoding='utf-8')) for key in keys}
+        # Receipts go where the app's data root is; under a job-wide
+        # TWOBYTEASR_TEST_ROOT that is not ``data`` (2026-10-14).
+        from twobyteasr.runtime_paths import user_data_root
+        receipts = user_data_root() / 'model-readiness'
+        result['readiness'] = {key: json.loads((receipts / (key + '.json')).read_text(encoding='utf-8'))
+                               for key in keys}
         os.environ['TWOBYTEASR_MLX_PYTHON'] = str(runtime)
         speech = out / 'say-zh.wav'
         result['voice'] = _say(speech)

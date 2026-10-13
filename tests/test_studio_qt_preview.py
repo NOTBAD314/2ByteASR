@@ -127,6 +127,21 @@ def test_source_clear_rejects_queued_old_overlay_and_close_is_idempotent(app,con
     assert not controller.running
 
 
+def test_reloading_the_same_media_clears_the_source_first(controller, tmp_path):
+    """QMediaPlayer ignores setSource(current URL): a reopen of the same file
+    must clear first or it never reaches LoadedMedia (2026-10-14)."""
+    from PySide6.QtCore import QUrl
+    media = tmp_path / 'same.mp4'
+    media.write_bytes(b'not decoded in this test')
+    calls = []
+    original = controller.player.setSource
+    controller.player.setSource = lambda url: (calls.append(url.toLocalFile() or '<empty>'), original(url))[1]
+    controller.load(str(media))
+    controller.load(str(media))
+    path = media.resolve().as_posix()
+    assert calls == [path, '<empty>', path]
+
+
 def test_sync_player_operations_reject_worker_thread(controller):
     errors = []
     def worker():
