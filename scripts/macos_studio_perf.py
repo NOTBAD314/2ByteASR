@@ -71,7 +71,8 @@ def _machine() -> dict:
 
 def _app_ffmpeg(app: Path) -> Path:
     for candidate in (app / "Contents/Resources/tools/ffmpeg/bin/ffmpeg",
-                      app / "Contents/Frameworks/tools/ffmpeg/bin/ffmpeg"):
+                      app / "Contents/Frameworks/tools/ffmpeg/bin/ffmpeg",
+                      app.parent / "tools/ffmpeg/bin/ffmpeg.exe"):
         if candidate.is_file():
             return candidate
     raise SystemExit(f"No bundled ffmpeg in {app}")
@@ -248,13 +249,19 @@ def main() -> int:
     if out.exists() or "tmp" not in {p.casefold() for p in out.parts}:
         raise SystemExit("Choose a new output folder below a tmp directory")
     out.mkdir(parents=True)
+    app = args.app.resolve()
+    ffmpeg = args.ffmpeg.resolve() if args.ffmpeg else _app_ffmpeg(app)
+    # The export's media check probes in a spawned child that finds ffprobe under
+    # the install root; a CI checkout has no tools/ffmpeg, so use the app's (the
+    # missing ffprobe was reported as "文件不存在" for the media, 2026-10-14).
+    tool_root = ffmpeg.parent.parent.parent.parent
+    if (tool_root / "tools" / "ffmpeg" / "bin" / ffmpeg.name) == ffmpeg:
+        os.environ["2BYTEASR_INSTALL_ROOT"] = str(tool_root)
     # This process (fixture, export) writes app data only below the output;
     # the app process gets its own isolated profile in run_studio().
     os.environ["TWOBYTEASR_TEST_ROOT"] = str(out / "inproc")
     from twobyteasr.test_isolation import install
     install()
-    app = args.app.resolve()
-    ffmpeg = args.ffmpeg.resolve() if args.ffmpeg else _app_ffmpeg(app)
     result = {"machine": _machine(), "app": str(app), "ffmpeg": str(ffmpeg)}
 
     def save():

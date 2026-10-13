@@ -120,7 +120,9 @@ def _align_batch(model, audio, units, fa):
     ids = mx.array(model._tokenizer.encode(text, return_tensors="np", add_special_tokens=False))
     logits = model(ids, input_features=features, feature_attention_mask=mask)
     mx.eval(logits)
-    logits_np = np.array(logits[0] if logits.ndim == 3 else logits, dtype=np.float32)
+    # The 8-bit model computes in bfloat16, which numpy cannot take through
+    # the buffer protocol (first real Mac run, 2026-10-14): cast in MLX first.
+    logits_np = np.array((logits[0] if logits.ndim == 3 else logits).astype(mx.float32))
     ids_np = np.array(ids[0] if ids.ndim > 1 else ids)
     slots = ids_np == model.config.timestamp_token_id
     step = float(model.config.timestamp_segment_time)

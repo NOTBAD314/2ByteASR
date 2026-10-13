@@ -80,6 +80,7 @@ def fake_mlx(monkeypatch):
     core = types.ModuleType('mlx.core')
     core.__version__ = '0.32.3'
     core.array = np.asarray
+    core.float32 = np.float32  # the worker casts bfloat16 logits in MLX before numpy (2026-10-14)
     core.eval = lambda *a: None
     core.clear_cache = lambda: None
     core.cpu = 'Device(cpu, 0)'

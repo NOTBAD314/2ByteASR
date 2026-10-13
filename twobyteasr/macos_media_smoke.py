@@ -207,10 +207,14 @@ def main(output: str) -> int:
             bindings = QKeySequence.keyBindings(standard)
             default = QKeySequence(receipt['shortcut_defaults'][command])
             if sys.platform == 'darwin':
+                # Without a Qt standard Replace key, the shortcut registry's macOS
+                # default applies (Cmd+Shift+F since 2026-10-13; Cmd+H hides apps).
+                from .shortcut_registry import platform_defaults
+                fallback = platform_defaults('darwin')['find_replace'] if command == 'find_replace' else None
                 check(command+'_uses_qt_standard_binding',
-                      default == bindings[0] if bindings else command=='find_replace' and default==QKeySequence('Ctrl+Alt+F'),
+                      default == bindings[0] if bindings else command=='find_replace' and default==QKeySequence(fallback),
                       required=False,qt_bindings=[b.toString(QKeySequence.PortableText) for b in bindings],
-                      fallback_when_standard_absent='Ctrl+Alt+F' if command=='find_replace' else None)
+                      fallback_when_standard_absent=fallback)
             shortcut = QShortcut(default,window)
             shortcut.activated.connect(lambda name=command:actions.append(name))
             native_shortcuts.append(shortcut)
