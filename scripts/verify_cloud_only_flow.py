@@ -279,6 +279,14 @@ def _report_events(media) -> dict:
             report = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(report, dict):
         return found
+    # Stage failures and skips, in the receipt itself (2026-10-14: on the Mac
+    # runner the MLX timeline "did not complete" and the report was not kept).
+    found['stage_problems'] = [
+        {key: event.get(key) for key in ('event', 'kind', 'stage', 'model_id', 'role', 'backend', 'reason',
+                                         'error', 'error_type', 'detail', 'skip_reason') if event.get(key)}
+        for event in report.get('events') or report.get('run_events') or []
+        if any(word in str(event.get('event') or event.get('kind') or '').lower()
+               for word in ('fail', 'error', 'skip', 'unavailable', 'not_ready', 'degrad'))][:30]
     for event in report.get('events') or report.get('run_events') or []:
         kind = event.get('kind') or event.get('event')
         if kind == 'cloud_worker_launch':
