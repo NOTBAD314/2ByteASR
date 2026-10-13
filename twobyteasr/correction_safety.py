@@ -198,9 +198,16 @@ def apply_reference_consensus_corrections(segments):
         decision['independent_input_evidence'] = dict(evidence)
         for name in ('terminology_polish', 'terminology_normalization', 'source_coverage',
                      'speaker_evidence','native_model_probability','confidence_kind','timing_precision',
-                     'streaming_chunk_index','native_timestamp_source'):
+                     'streaming_chunk_index','native_timestamp_source',
+                     # 2026-10-13: provenance markers of display-estimate words
+                     # must survive, or estimates are later read as measured.
+                     'word_timing','timing_degradation'):
             if name in previous:
                 decision[name] = previous[name]
+        if 'forced_alignment_window' in previous and not str(getattr(segment, 'primary_source', '') or '').startswith('moss'):
+            # Cloud/other primaries timed by the local aligner on their own text.
+            # (MOSS rows keep their tuned route: Japanese re-aligns final cues.)
+            decision['forced_alignment_window'] = previous['forced_alignment_window']
         segment.caption_arbitration = decision
         if decision['reason'] == '用户手动确认':
             segment.text = decision['selected_text']

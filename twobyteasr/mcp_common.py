@@ -24,7 +24,10 @@ from pathlib import Path
 
 PROTOCOL = "2byteasr-mcp-bridge/1"
 SCOPES = ("current", "library")
-DEFAULTS = {"enabled": False, "scope": "current", "allow_edits": False, "allow_export": False}
+DEFAULTS = {"enabled": False, "scope": "current", "allow_edits": False, "allow_export": False,
+            # 2026-10-13: one folder the user authorized for exports (empty = the
+            # project's "MCP 导出" folder) and whether the data notice was read.
+            "export_dir": "", "acknowledged": False}
 EXPORT_FOLDER = "MCP 导出"
 MAX_LINE_BYTES = 4 * 1024 * 1024
 
@@ -65,6 +68,8 @@ def read_settings() -> dict:
     result["enabled"] = bool(result["enabled"])
     result["allow_edits"] = bool(result["allow_edits"])
     result["allow_export"] = bool(result["allow_export"])
+    result["acknowledged"] = bool(result["acknowledged"])
+    result["export_dir"] = str(result["export_dir"] or "") if isinstance(result["export_dir"], str) else ""
     if result["scope"] not in SCOPES:
         result["scope"] = "current"
     return result
@@ -75,7 +80,9 @@ def save_settings(values: dict) -> dict:
     clean = dict(DEFAULTS)
     clean.update({k: values[k] for k in DEFAULTS if k in values})
     clean = {"enabled": bool(clean["enabled"]), "scope": clean["scope"] if clean["scope"] in SCOPES else "current",
-             "allow_edits": bool(clean["allow_edits"]), "allow_export": bool(clean["allow_export"])}
+             "allow_edits": bool(clean["allow_edits"]), "allow_export": bool(clean["allow_export"]),
+             "export_dir": str(clean["export_dir"] or "") if isinstance(clean["export_dir"], str) else "",
+             "acknowledged": bool(clean["acknowledged"])}
     _write_settings_json(lambda payload: payload.__setitem__("mcp", clean))
     return clean
 
@@ -150,9 +157,55 @@ def safe_file_stem(name: str) -> str | None:
     return name
 
 
+SERVER_NAME = "2byteasr"
+
+
+def server_entry(command: str, args: list[str]) -> dict:
+    """One stdio server entry; a non-default data folder is passed on so the
+    client-started process finds the same pipe and key as this window."""
+    entry = {"command": command, "args": list(args)}
+    root = os.environ.get("2BYTEASR_USER_DATA_ROOT", "").strip()
+    if root:
+        entry["env"] = {"2BYTEASR_USER_DATA_ROOT": root}
+    return entry
+
+
 def client_config(command: str, args: list[str]) -> str:
     """The JSON a desktop MCP client needs (stdio)."""
-    return json.dumps({"mcpServers": {"2byteasr": {"command": command, "args": args}}}, ensure_ascii=False, indent=2)
+    return json.dumps({"mcpServers": {SERVER_NAME: server_entry(command, args)}}, ensure_ascii=False, indent=2)
+
+
+_TIME = re.compile(r"^\s*(?:(\d+):)?(?:(\d+):)?(\d+(?:\.\d+)?)\s*$")
+_MILLIS = re.compile(r"^\s*(\d+)\s*ms\s*$", re.IGNORECASE)
+
+
+def parse_time_ms(value) -> int | None:
+    """"01:02:03.5", "02:03", "62.5" or 62.5 (seconds), "62500ms" -> milliseconds."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("time must be seconds, \"62500ms\" or HH:MM:SS")
+    if isinstance(value, (int, float)):
+        if value < 0:
+            raise ValueError("time cannot be negative")
+        return int(round(float(value) * 1000))
+    millis = _MILLIS.match(str(value))
+    if millis:
+        return int(millis.group(1))
+    match = _TIME.match(str(value))
+    if not match:
+        raise ValueError(f"cannot read time: {value!r} (use HH:MM:SS.mmm or seconds)")
+    first, second, seconds = match.groups()
+    hours, minutes = (int(first), int(second)) if second is not None else (0, int(first or 0))
+    return int(round(((hours * 60 + minutes) * 60 + float(seconds)) * 1000))
+
+
+def format_time(milliseconds: int) -> str:
+    value = max(0, int(milliseconds))
+    hours, rest = divmod(value, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{millis:03d}"
 
 
 def server_command() -> tuple[str, list[str]]:

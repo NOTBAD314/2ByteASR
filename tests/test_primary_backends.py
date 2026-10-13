@@ -75,8 +75,8 @@ def test_cuda_requirements_follow_selected_combination():
             "qwen_asr_backend": "local",
         }
     }
+    # Qwen3-ForcedAligner runs on CPU without CUDA since 2026-10-13.
     assert selected_cuda_components(cuda_settings) == [
-        "Qwen3 ForcedAligner 时间轴",
         "Qwen3-ASR 本地文字复核",
     ]
 

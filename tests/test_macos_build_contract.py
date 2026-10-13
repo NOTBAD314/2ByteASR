@@ -18,8 +18,11 @@ def test_manual_workflow_is_bounded_read_only_and_pinned_to_trusted_source():
     assert workflow["permissions"]=={"contents":"read"}
     assert workflow["concurrency"]["cancel-in-progress"]=="false"
     job=workflow["jobs"]["native-arm64"]
-    assert job["runs-on"]=="macos-15"
-    assert int(job["timeout-minutes"])<=60
+    # 2026-10-14: the runner is selectable among Apple Silicon labels only (xlarge = paid
+    # larger runner); the cap covers the optional Studio performance check.
+    assert job["runs-on"]=="${{ inputs.app_runner || 'macos-15' }}"
+    assert set(workflow["on"]["workflow_dispatch"]["inputs"]["app_runner"]["options"])<={"macos-15","macos-15-xlarge","macos-14-xlarge"}
+    assert int(job["timeout-minutes"])<=100
     checkout=next(step for step in job["steps"] if "uses" in step and "actions/checkout@" in step["uses"])
     assert checkout["with"]["ref"]=="${{ inputs.source_sha }}"
     assert checkout["with"]["persist-credentials"]=="false"

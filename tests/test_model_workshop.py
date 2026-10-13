@@ -424,6 +424,21 @@ def test_structured_failure_handles_empty_detail_and_preserves_raw_log():
     app.processEvents()
 
 
+def test_runtime_download_failure_names_the_stage_and_what_to_try():
+    app = QApplication.instance() or QApplication([])
+    model = next(model for model in MODELS if model.key == 'moss')
+    dialog = ModelDownloadDialog(ROOT, model)
+    failure = '[2BYTEASR_INSTALL_ERROR] {"phase":"tools_preparing","category":"runtime_network","message":"uv 下载失败"}'
+    dialog.log.setPlainText(failure)
+    message = dialog._actionable_failure_message(1)
+    assert '运行环境准备阶段' in message and '尚未请求权重源' not in message
+    assert 'TUN' in message and 'HTTPS_PROXY' in message
+    dialog.log.setPlainText('error: No solution found when resolving dependencies\n'+failure)
+    assert '依赖版本冲突' in dialog._actionable_failure_message(1)
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_downloader_supports_model_workshop_only_mode():
     source = (ROOT / "scripts" / "download_models.ps1").read_text(encoding="utf-8-sig")
     assert '[string]$Only = ""' in source

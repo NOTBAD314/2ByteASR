@@ -562,6 +562,15 @@ def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=
     clock of ``audio`` (task PCM). The GUI process never imports torch.
     """
     import numpy as np
+    from .runtime import get_runtime_context
+    task_settings = get_runtime_context().asr_settings_snapshot or _legacy_runtime_value("RUNTIME_SETTINGS", RUNTIME_SETTINGS)
+    if str(((task_settings or {}).get("models") or {}).get("firered_asr_backend")) == "mlx_qwen_aligner":
+        # Apple Silicon: the same aligner and receipts through the MLX runtime.
+        from .mlx_backend import MlxUnavailableError, run_aligner
+        try:
+            return run_aligner(audio, jobs, passes=passes, batch_size=batch_size)
+        except MlxUnavailableError as exc:
+            raise AlignerUnavailableError(str(exc)) from exc
     model_path = resolve_qwen_aligner_local_source()
     if not model_path:
         raise AlignerUnavailableError(
@@ -645,10 +654,8 @@ def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, lang
     """
     from twobyteasr.language_rules import qwen_language_name, active_task_language
     language = language or qwen_language_name(active_task_language()) or "Chinese"
-    if not _cuda_runtime_ready():
-        print("   [警告] Qwen3 ForcedAligner 需要 CUDA，本次保留主力模型的粗时间轴。")
-        add_review_item(0.0, "时间轴模型未运行", "Qwen3-ForcedAligner 需要可用的 NVIDIA CUDA", priority=2)
-        return []
+    # Since 2026-10-13 the worker runs on CPU (float32) when CUDA is absent;
+    # same model and timestamp classes, slower. Its receipt names the device.
     owns_audio = isinstance(audio_source, (str, bytes, os.PathLike))
     audio = decode_audio_to_array(audio_source) if owns_audio else audio_source
     from twobyteasr.forced_alignment import segment_alignment_key
@@ -1394,7 +1401,9 @@ def _api_transcription_rows(result, chunk):
     owners = {}
     for index, word in enumerate(words):
         candidates = [s for s in segments if float(s['start'])-.05 <= float(word['start']) < float(s['end'])+.05]
-        matching = [s for s in candidates if word.get('speaker') and _normalize_speaker_id(s.get('speaker')) == _normalize_speaker_id(word.get('speaker'))]
+        # speaker_id 0 is a real speaker (Qwen-Audio-3.1 numbers from 0), not "unknown".
+        matching = [s for s in candidates if _normalize_speaker_id(word.get('speaker')) is not None
+                    and _normalize_speaker_id(s.get('speaker')) == _normalize_speaker_id(word.get('speaker'))]
         if matching or candidates:
             owners[index] = max(matching or candidates, key=lambda s: min(float(s['end']),float(word['end']))-max(float(s['start']),float(word['start'])))
     for segment in segments:
@@ -1478,9 +1487,17 @@ def _api_transcription_rows(result, chunk):
             "text": text,
             "confidence": float(confidence),
         }
-        if result.get('timestamp_source') == 'qwen31_native':
-            row['timestamp_source'] = 'qwen31_native_word' if tokens else 'qwen31_native_sentence'
+        native_source = result.get('timestamp_source')
+        if native_source in {'qwen31_native', 'qwen3_filetrans_native', 'mosi_native'}:
+            # Word rows carry provider word times; sentence rows only provider
+            # segment bounds (never per-character timing).
+            row['timestamp_source'] = native_source + ('_word' if tokens else '_sentence')
             row['native_timing_owner'] = True
+            row['timing_precision'] = 'word' if tokens else 'segment'
+        else:
+            # What the provider actually returned (2026-10-14): word times,
+            # segment bounds, or nothing but the request's own range.
+            row['timing_precision'] = 'word' if tokens else ('segment' if segments else 'request')
         if speaker:
             row["speaker"] = str(speaker)
         if tokens:
@@ -2464,8 +2481,10 @@ def transcribe_qwen_reference(
             )
             from .llm_config import validate_qwen_asr_endpoint
             validate_qwen_asr_endpoint(api_endpoint)
-            from .cloud_asr_jobs import FLASH, FILETRANS, SPARK
-            if api_endpoint.get('model') in {FLASH,FILETRANS,SPARK}:
+            from .cloud_asr_jobs import FLASH, SPARK
+            from .qwen31_asr import is_filetrans_model
+            from .mosi_asr import MODEL as MOSI_MODEL
+            if api_endpoint.get('model') in {FLASH,SPARK,MOSI_MODEL} or is_filetrans_model(api_endpoint.get('model')):
                 # Native workers receive the complete frozen analysis waveform;
                 # their own bounded chunks retain silence and exact offsets.
                 return _transcribe_api_owned(audio_path,[dict(start=0,end=len(audio)/sampling_rate,
@@ -2696,7 +2715,16 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
     stdout,stderr=''.join(captured['stdout']),''.join(captured['stderr'])
     elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
     if process.returncode != 0:
-        raise RuntimeError(f"{model_id} worker failed (exit {process.returncode}):\nstdout:\n{stdout[-4500:]}\nstderr:\n{stderr[-1500:]}")
+        log = f"{model_id} worker failed (exit {process.returncode}):\nstdout:\n{stdout[-4500:]}\nstderr:\n{stderr[-1500:]}"
+        from twobyteasr.cloud_api_worker import failure_from_text
+        problem = failure_from_text(stderr) if model_id == 'PRIMARY_API' else None
+        if problem:
+            # The explained cause goes first; truncated displays keep it.
+            error = RuntimeError(str(problem.get('message') or '') + (' ' + str(problem['action']) if problem.get('action') else '')
+                                 + '\n\n' + log)
+            error.problem = problem
+            raise error
+        raise RuntimeError(log)
     try:
         payload = json.loads(Path(output_path).read_text(encoding="utf-8"))
     except Exception as exc:
@@ -3246,6 +3274,11 @@ def transcribe_primary_reference(
     if backend == "paraformer":
         tokens = transcribe_paraformer_timeline(shared_audio, force=True)
         return tokens_to_reference_chunks(tokens, speech_regions, source="paraformer-primary")
+    if backend in {"mlx_qwen3_asr", "mlx_qwen3_asr_1_7b"}:
+        from .mlx_backend import transcribe_reference
+        from twobyteasr.language_rules import qwen_language_name, active_task_language
+        return transcribe_reference(shared_audio, speech_regions, backend=backend,
+                                    language=qwen_language_name(active_task_language()))
     mapped = "local" if backend == "qwen_local" else backend
     if mapped in {"api", "local", "whisper_turbo", "sensevoice", "funasr_nano"}:
         rows = transcribe_qwen_reference(

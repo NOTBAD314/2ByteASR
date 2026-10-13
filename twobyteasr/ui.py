@@ -121,7 +121,7 @@ from twobyteasr.ui_theme import (
     SURFACE,
     theme_definition,
 )
-from twobyteasr.i18n import apply_ui_language, current_language, save_language, translate, tr, bind_text, user_text
+from twobyteasr.i18n import apply_ui_language, current_language, save_language, translate, tr, bind_text, user_text, ui_literal
 from twobyteasr.hardware import detect_cuda_runtime
 from twobyteasr.model_workshop import (
     MODELS,
@@ -241,15 +241,35 @@ from twobyteasr.glossary_binding import GlossaryBindingResolver
 QWEN_API_KEY_HELP_URL = "https://help.aliyun.com/zh/model-studio/get-api-key"
 
 ASR_API_PRESETS = {
+    # 2026-10-13: Qwen Cloud — the official international Qwen API platform
+    # (home.qwencloud.com). One pay-as-you-go key, no workspace host, no OSS:
+    # audio goes through the provider's own 48-hour temporary upload.
+    "qwen_cloud_filetrans": {
+        "short": "Qwen Cloud 录音文件识别", "label": "Qwen Cloud（Qwen 官方 API）｜录音文件识别",
+        "protocol": "dashscope_filetrans", "model": "qwen-audio-3.1-asr-flash-filetrans",
+        "models": ("qwen-audio-3.1-asr-flash-filetrans", "qwen3-asr-flash-filetrans"),
+        "url": "https://maas.qwencloudapi.com/api/v1/services/audio/asr/transcription",
+    },
     "spark_asr_v2": {
         "short": "讯飞 Spark V2", "label": "讯飞 Spark-ASR-2.0（原生 WSS）",
         "protocol": "spark_wss", "model": "spark_asr_v2",
         "url": "wss://iat.cn-huabei-1.xf-yun.com/v1",
     },
     "qwen31_filetrans": {
-        "short": "Qwen 3.1 Filetrans", "label": "Qwen Audio 3.1｜长音频转写",
+        # One Bailian provider (one key + one OSS setup) with two documented
+        # 录音文件识别 models; each keeps its own request schema
+        # (twobyteasr.qwen31_asr.FILETRANS_MODELS).
+        "short": "百炼 录音文件识别", "label": "阿里云百炼｜录音文件识别（Qwen3-ASR / Qwen-Audio-3.1）",
         "protocol": "dashscope_filetrans", "model": "qwen-audio-3.1-asr-flash-filetrans",
+        "models": ("qwen3-asr-flash-filetrans", "qwen-audio-3.1-asr-flash-filetrans"),
         "url": "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
+    },
+    # 2026-10-13: MOSS-Transcribe-Diarize Pro on the MOSI platform. A separate
+    # cloud engine; it shares nothing with the local MOSS backend.
+    "mosi_moss_pro": {
+        "short": "MOSS Pro 云端", "label": "MOSS-Transcribe-Diarize Pro 云端（MOSI 平台）",
+        "protocol": "mosi_transcriptions", "model": "moss-transcribe-diarize-pro",
+        "url": "https://api.mosi.cn/v1",
     },
     "groq": {
         "short": "Groq",
@@ -306,6 +326,9 @@ PRIMARY_MODEL_CHOICES = (
     ("Fun-ASR Nano（中文与方言）", "funasr_nano", {"funasr_nano"}),
     ("GLM-ASR Nano（独立运行库）", "glm_asr_nano", {"glm_asr_nano"}),
     ("Canary-Qwen（英语，独立运行库）", "canary_qwen", {"canary_qwen", "canary_qwen_tokenizer"}),
+    # Apple Silicon only (MLX); the folders never exist elsewhere.
+    ("Qwen3-ASR 0.6B（Apple Silicon · MLX）", "mlx_qwen3_asr", {"mlx_qwen3_asr_0_6b"}),
+    ("Qwen3-ASR 1.7B（Apple Silicon · MLX）", "mlx_qwen3_asr_1_7b", {"mlx_qwen3_asr_1_7b"}),
 )
 REVIEW_MODEL_CHOICES = (
     ("本地 Qwen3-ASR 1.7B（更准确，约 4.7 GB）", "local", {"qwen_asr"}),
@@ -319,6 +342,7 @@ TIMELINE_MODEL_CHOICES = (
     ("Qwen3 ForcedAligner 字幕时间轴（多语种强制对齐）", "qwen_aligner", {"qwen_aligner"}),
     ("Whisper 字幕时间轴（多语种，短块级）", "whisper_turbo", {"whisper_turbo"}),
     ("Paraformer 字幕时间轴（中文时间戳）", "paraformer", {"paraformer"}),
+    ("Qwen3 ForcedAligner 字幕时间轴（Apple Silicon · MLX）", "mlx_qwen_aligner", {"mlx_qwen_aligner"}),
 )
 
 
@@ -1373,7 +1397,7 @@ class EndpointEditor(QFrame):
         self.model.setEditable(True)
         defaults = list(service_model_catalog(settings, active.get("service", "custom")))
         if not defaults and active["transport"] == AITransport.OPENAI_COMPATIBLE.value:
-            defaults = ["qwen3.7-flash-2026-07-15", "qwen3-max", "glm-5.2"]
+            defaults = ["qwen3.7-flash-2026-07-15", "qwen3.7-max", "glm-5.2"]
         self.model.addItems(defaults)
         self.model.setCurrentText(active["model"] or (defaults[0] if defaults else ""))
         self.base_url = QLineEdit(active["base_url"])
@@ -1537,7 +1561,17 @@ class EndpointEditor(QFrame):
         service_form = QFormLayout()
         service_form.setHorizontalSpacing(12)
         service_form.setVerticalSpacing(8)
-        service_form.addRow("AI 服务", self.service)
+        service_row = QHBoxLayout()
+        service_row.setContentsMargins(0, 0, 0, 0)
+        service_row.addWidget(self.service, 1)
+        # 2026-10-13: every provider has its own application guide.
+        self.guide_button = QPushButton("申请教程")
+        self.guide_button.setObjectName("helpLink")
+        self.guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        bind_text(self.guide_button, '查看这家服务的申请步骤、官方链接与费用说明', property='toolTip')
+        self.guide_button.clicked.connect(self._open_provider_guide)
+        service_row.addWidget(self.guide_button)
+        service_form.addRow("AI 服务", service_row)
         layout.addWidget(section_label("Provider"))
         layout.addLayout(service_form)
         layout.addWidget(section_label("Account / Auth"))
@@ -1757,6 +1791,21 @@ class EndpointEditor(QFrame):
 
     def _transport_changed(self) -> None:
         self._service_changed()
+
+    def _open_provider_guide(self) -> None:
+        from dataclasses import replace
+        from .api_setup_dialog import ApiSetupDialog
+        window = self.window()
+        factory = getattr(window, '_api_setup_host', None)
+        if factory is None:
+            parent = window.parentWidget() if window is not None else None
+            factory = getattr(parent.window() if parent is not None else None, '_api_setup_host', None)
+        if factory is None:
+            return
+        host = replace(factory(), open_text_settings=None)
+        service_id = str(self.service.currentData() or 'custom')
+        ApiSetupDialog(window, host, kind='text', initial=service_id,
+                       show_advanced=service_id in {'custom', 'grok_account', 'codex_cli', 'antigravity'}).exec()
 
     def refresh_theme_palette(self) -> None:
         theme = _active_theme_definition()
@@ -2545,7 +2594,8 @@ def persist_asr_configuration(
         raise RuntimeError("转写风格选项无效。")
     if models["primary_asr_backend"] not in {
         "moss", "firered", "qwen_local", "firered_llm", "whisper_turbo", "sensevoice",
-        "paraformer", "funasr_nano", "glm_asr_nano", "canary_qwen", "api", "none",
+        "paraformer", "funasr_nano", "glm_asr_nano", "canary_qwen", "mlx_qwen3_asr",
+        "mlx_qwen3_asr_1_7b", "api", "none",
     }:
         raise RuntimeError("主力转写后端选项无效。")
     if models["qwen_asr_backend"] not in {
@@ -2562,9 +2612,10 @@ def persist_asr_configuration(
     if models["qwen_asr_api_protocol"] not in {
         "dashscope_multimodal", "openai_transcription", "azure_transcription",
         "openrouter_verbose_json", "dashscope_filetrans", "dashscope_asr_flash", "spark_wss",
+        "mosi_transcriptions",
     }:
         raise RuntimeError("ASR API 协议选项无效。")
-    if models["firered_asr_backend"] not in {"local", "qwen_aligner", "whisper_turbo", "paraformer", "off"}:
+    if models["firered_asr_backend"] not in {"local", "qwen_aligner", "mlx_qwen_aligner", "whisper_turbo", "paraformer", "off"}:
         raise RuntimeError("字幕时间轴后端选项无效。")
     missing_keys = []
     if models["qwen_asr_backend"] == "api" or models["primary_asr_backend"] == "api":
@@ -3034,6 +3085,12 @@ class PromptDialog(SpringDialog):
         apply_ui_language(self)
 
 
+class _CudaProbeRelay(QObject):
+    """Carries the background CUDA probe result to the GUI thread."""
+
+    finished = Signal(object)
+
+
 class GuidedSetupDialog(SpringDialog):
     """First-run model-combination chooser. Nothing is downloaded implicitly."""
 
@@ -3043,9 +3100,14 @@ class GuidedSetupDialog(SpringDialog):
         "quality": ("moss", "local", "local"),
         "light": ("sensevoice", "off", "off"),
         "online": ("api", "off", "off"),
+        # Cloud text + local word times; the aligner runs on the CPU without CUDA.
+        "online_align": ("api", "qwen_aligner", "off"),
         "custom": ("none", "off", "off"),
     }
     SIZES = {
+        "mlx_qwen3_asr": 1.0,
+        "mlx_qwen3_asr_1_7b": 2.5,
+        "mlx_qwen_aligner": 1.3,
         "moss": 1.7,
         "firered": 4.4,
         "qwen_local": 4.7,
@@ -3066,9 +3128,18 @@ class GuidedSetupDialog(SpringDialog):
         self._cuda_status = None
         self._cuda_probe_started = False
         self.cuda_probe_finished.connect(self._cuda_probe_ready)
+        # Presets follow this computer (2026-10-13): Apple Silicon gets the MLX
+        # plan instead of the CUDA one; an Intel Mac has no local plan.
+        from .mlx_backend import platform_supported
+        self._apple_silicon = platform_supported()
+        self._intel_mac = sys.platform == "darwin" and not self._apple_silicon
+        self.PRESETS = dict(type(self).PRESETS)
+        if self._apple_silicon:
+            self.PRESETS["apple_local"] = ("mlx_qwen3_asr", "mlx_qwen_aligner", "off")
+            self.PRESETS["online_align"] = ("api", "mlx_qwen_aligner", "off")
         bind_text(self, '首次使用设置 - 2ByteASR', property='windowTitle')
         self.setMinimumSize(760, 610)
-        self.resize(800, 640)
+        self.resize(820, 760)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(14)
@@ -3083,7 +3154,8 @@ class GuidedSetupDialog(SpringDialog):
         title_box.addWidget(hint)
         header.addLayout(title_box, 1)
         self.lang_combo = FramelessPopupCombo()
-        self.lang_combo.addItem("中文", "zh")
+        self.lang_combo.addItem("简体中文", "zh")
+        self.lang_combo.addItem("繁體中文", "zh-Hant")
         self.lang_combo.addItem("English", "en")
         self.lang_combo.addItem("日本語", "ja")
         self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(current_language())))
@@ -3098,23 +3170,35 @@ class GuidedSetupDialog(SpringDialog):
         preset_hint.setObjectName("muted")
         layout.addWidget(preset_hint)
 
-        preset_row = QHBoxLayout()
+        preset_row = QGridLayout()
         preset_row.setSpacing(10)
         self.preset_group = QButtonGroup(self)
+        online_align_note = "上传音频；本机补字级时间"
         preset_copy = (
             ("quality", "质量优先", "MOSS + FireRed + Qwen"),
             ("light", "快速轻量", "CPU 友好，小体积"),
             ("online", "在线疾速", "免下载，需要 API Key"),
+            ("online_align", "云端 + 本地对齐", online_align_note),
             ("custom", "稍后决定", "先看界面，不下载"),
         )
+        if self._apple_silicon:
+            preset_copy = (("apple_local", "Mac 本地识别", "M 系列芯片，不上传音频"),) + preset_copy[1:]
+        elif self._intel_mac:
+            # No PyTorch or MLX build exists for Intel Macs: cloud only.
+            preset_copy = tuple(row for row in preset_copy if row[0] in {"online", "custom"})
+        columns = 3 if len(preset_copy) > 4 else max(1, len(preset_copy))
         for index, (key, label, note) in enumerate(preset_copy):
             button = QPushButton(f"{label}\n{note}")
             button.setCheckable(True)
             button.setMinimumHeight(98)
             button.setProperty("preset", key)
             button.setObjectName("presetCard")
+            # Equal columns; every note fits at the dialog's minimum width.
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.preset_group.addButton(button, index)
-            preset_row.addWidget(button, 1)
+            preset_row.addWidget(button, index // columns, index % columns)
+        for column in range(columns):
+            preset_row.setColumnStretch(column, 1)
         self.preset_group.buttonClicked.connect(self._preset_clicked)
         layout.addLayout(preset_row)
 
@@ -3133,6 +3217,8 @@ class GuidedSetupDialog(SpringDialog):
             ("SenseVoice Small（CPU 友好）", "sensevoice"),
             ("Paraformer（中文快速）", "paraformer"),
             ("Fun-ASR Nano（中文与方言）", "funasr_nano"),
+            *((("Qwen3-ASR 0.6B（Apple Silicon · MLX）", "mlx_qwen3_asr"),
+               ("Qwen3-ASR 1.7B（Apple Silicon · MLX）", "mlx_qwen3_asr_1_7b")) if self._apple_silicon else ()),
             ("在线 ASR API", "api"),
             ("尚未选择", "none"),
         ):
@@ -3143,6 +3229,8 @@ class GuidedSetupDialog(SpringDialog):
             ("Qwen3 ForcedAligner 字幕时间轴", "qwen_aligner"),
             ("Whisper 字幕时间轴（短块级）", "whisper_turbo"),
             ("Paraformer 字幕时间轴", "paraformer"),
+            *((("Qwen3 ForcedAligner 字幕时间轴（Apple Silicon · MLX）", "mlx_qwen_aligner"),)
+              if self._apple_silicon else ()),
             ("不生成字幕时间轴（仅 TXT）", "off"),
         ):
             self.timeline_combo.addItem(label, value)
@@ -3189,7 +3277,7 @@ class GuidedSetupDialog(SpringDialog):
         layout.addLayout(actions)
 
         self.preset_group.button(0).setChecked(True)
-        self._apply_preset("quality")
+        self._apply_preset(str(self.preset_group.button(0).property("preset")))
         self._start_cuda_probe()
 
     def _set_combo(self, combo, value):
@@ -3224,13 +3312,20 @@ class GuidedSetupDialog(SpringDialog):
             return
         self._cuda_probe_started = True
 
+        # The thread holds only a child relay, never the dialog: if the dialog
+        # is closed before the probe ends, its last reference must not be
+        # dropped (and the widget destroyed) on this thread (2026-10-14,
+        # 0xC0000374 at teardown). A deleted relay just refuses the emit.
+        relay = _CudaProbeRelay(self)
+        relay.finished.connect(self.cuda_probe_finished)
+
         def probe():
             try:
                 status = detect_cuda_runtime()
             except Exception:
                 status = None
             try:
-                self.cuda_probe_finished.emit(status)
+                relay.finished.emit(status)
             except RuntimeError:
                 pass
 
@@ -3253,24 +3348,16 @@ class GuidedSetupDialog(SpringDialog):
         for button in self.preset_group.buttons():
             button.setChecked(button.property("preset") == matched_preset)
         self.preset_group.setExclusive(True)
-        size = self.SIZES.get(primary, 0.0)
-        if timeline == "local" and primary != "firered":
-            size += self.SIZES["local_timeline"]
-        elif timeline == "qwen_aligner":
-            size += self.SIZES["qwen_aligner"]
-        elif timeline == "whisper_turbo" and primary != "whisper_turbo":
-            size += self.SIZES["whisper_turbo"]
-        elif timeline == "paraformer" and primary != "paraformer":
-            size += self.SIZES["paraformer"]
-        if review == "local" and primary != "qwen_local":
-            size += self.SIZES["local_review"]
-        elif review not in {"off", "api", "local"} and review != primary:
-            size += self.SIZES.get(review, 0.0)
+        size = self.estimate_size(primary, timeline, review)
         notes = []
-        if primary not in {"moss", "none"}:
+        if primary not in {"moss", "none", "api"}:
             notes.append("非 MOSS 主力当前按单说话人输出")
+        if primary in {"mlx_qwen3_asr", "mlx_qwen3_asr_1_7b"}:
+            notes.append("只按语音段给文字，字词时间由对齐模型补上")
+        if primary == "api" and timeline == "off":
+            notes.append("时间精度取决于所选云端服务（有的只有句段时间）")
         if primary == "api" or review == "api":
-            notes.append("需要在设置页填写对应 API Key")
+            notes.append("需要在“申请与设置 API”里填写 API Key，识别时会上传音频")
         if primary == "none":
             notes.append("运行字幕前必须在模型工坊选择主力模型")
         if primary == "none":
@@ -3312,6 +3399,24 @@ class GuidedSetupDialog(SpringDialog):
         self.gpu_info.style().unpolish(self.gpu_info)
         self.gpu_info.style().polish(self.gpu_info)
 
+    @classmethod
+    def estimate_size(cls, primary, timeline, review) -> float:
+        """Approximate download in GB for one combination (shared with the quick chooser)."""
+        size = cls.SIZES.get(primary, 0.0)
+        if timeline == "local" and primary != "firered":
+            size += cls.SIZES["local_timeline"]
+        elif timeline in {"qwen_aligner", "mlx_qwen_aligner"}:
+            size += cls.SIZES[timeline]
+        elif timeline == "whisper_turbo" and primary != "whisper_turbo":
+            size += cls.SIZES["whisper_turbo"]
+        elif timeline == "paraformer" and primary != "paraformer":
+            size += cls.SIZES["paraformer"]
+        if review == "local" and primary != "qwen_local":
+            size += cls.SIZES["local_review"]
+        elif review not in {"off", "api", "local"} and review != primary:
+            size += cls.SIZES.get(review, 0.0)
+        return size
+
     def selected_backends(self):
         return (
             str(self.primary_combo.currentData()),
@@ -3320,7 +3425,10 @@ class GuidedSetupDialog(SpringDialog):
         )
 
     def selected_download_keys(self):
-        primary, timeline, review = self.selected_backends()
+        return self.download_keys_for(*self.selected_backends())
+
+    @staticmethod
+    def download_keys_for(primary, timeline, review):
         primary_keys = {
             "moss": "moss",
             "firered": "firered_aed",
@@ -3331,10 +3439,13 @@ class GuidedSetupDialog(SpringDialog):
             "funasr_nano": "funasr_nano",
             "glm_asr_nano": "glm_asr_nano",
             "canary_qwen": "canary_qwen",
+            "mlx_qwen3_asr": "mlx_qwen3_asr_0_6b",
+            "mlx_qwen3_asr_1_7b": "mlx_qwen3_asr_1_7b",
         }
         timeline_keys = {
             "local": "firered_aed",
             "qwen_aligner": "qwen_aligner",
+            "mlx_qwen_aligner": "mlx_qwen_aligner",
             "whisper_turbo": "whisper_turbo",
             "paraformer": "paraformer",
         }
@@ -3776,9 +3887,44 @@ class ModalHost(QFrame):
             self.backdrop.setGeometry(self.rect())
 
 
+# Role-card statuses meaning "this computer cannot run it" (recognition_choices.unavailable_on_host).
+_HOST_LIMIT_STATUSES = frozenset({"需要 NVIDIA 显卡", "只能在 Apple Silicon Mac 上运行"})
+_HOST_LIMIT_RECOVERY = "换成能用的方式"
+
+
+def _bind_home_shortcuts(window, owner):
+    """Home keys from the shared registry: start, choose media, search (2026-10-13).
+
+    The shortcuts belong to the home action bar, which is only visible on
+    the home page, so Studio keys such as Ctrl+K stay with Studio.
+    """
+    from PySide6.QtGui import QShortcut
+    from . import shortcut_registry as keys
+
+    def start_key(key):
+        window.start_button.setShortcut(QKeySequence(key))
+        bind_text(window.start_button, '开始生成字幕 ({key})', property='toolTip',
+                  key=keys.display(key) if key else tr('未绑定'))
+
+    choose = QShortcut(QKeySequence("Ctrl+O"), owner)
+    choose.setContext(Qt.ShortcutContext.WindowShortcut)
+    choose.activated.connect(lambda: window._choose_media() if window._home_page_active() else None)
+    search = QShortcut(QKeySequence("Ctrl+K"), owner)
+    search.setContext(Qt.ShortcutContext.WindowShortcut)
+    search.activated.connect(lambda: window._open_feature_search() if window._home_page_active() else None)
+    window._home_shortcuts = (choose, search)
+    keys.keep_keys({"home.start_run": start_key, "home.choose_media": choose, "home.search": search})
+
+
 class MainWindow(QWidget):
+    # 2026-10-13: background results for the home "现在先做什么" card and the example project.
+    _onboarding_facts_ready = Signal(object)
+    _sample_ready = Signal(object)
+
     def __init__(self, media_paths, legacy, pipeline, startup_self_test, *, startup_page="recognition"):
         super().__init__()
+        self._onboarding_facts_ready.connect(self._onboarding_facts_received)
+        self._sample_ready.connect(self._sample_project_ready)
         self._workshop_page_instance = None
         self._history_page_instance = None
         self._studio_page_instance = None
@@ -4011,7 +4157,7 @@ class MainWindow(QWidget):
             page.update_requested.connect(self._check_updates)
             page.api_config_requested.connect(self._open_qwen_api_from_workshop)
             page.api_preset_requested.connect(self._apply_asr_api_preset)
-            page.api_configure_requested.connect(self._open_api_key_dialog_for_preset)
+            page.api_configure_requested.connect(self._open_api_setup_guide)
             page.backend_requested.connect(self._apply_workshop_backend)
             if self._density_comfortable is not None:
                 page.apply_density(self._density_comfortable)
@@ -4239,8 +4385,6 @@ class MainWindow(QWidget):
         self.brand.setObjectName("brand")
         self.brand.setTextFormat(Qt.TextFormat.RichText)
         self.brand.setAccessibleName("2ByteASR")
-        self.brand.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.brand.setToolTip("2ByteASR")
         subtitle = QLabel("兔白字幕")
         self.header_subtitle = subtitle
         subtitle.setObjectName("headerSubtitle")
@@ -4291,20 +4435,30 @@ class MainWindow(QWidget):
         bind_text(self.app_settings_button, '应用设置（界面主题、工程库、自动保存）', property='toolTip')
         self.app_settings_button.clicked.connect(self._open_application_settings)
         row.addWidget(self.app_settings_button)
+        # 2026-10-13: 说明 — guide, example, plan, API setup, search, shortcuts, diagnostics.
+        self.help_button = AnimatedButton("说明")
+        self.help_button.setObjectName("softAction")
+        install_themed_icon(self.help_button, "fa5s.question-circle", "accent")
+        bind_text(self.help_button, '新手引导、范例工程、功能搜索、快捷键与诊断信息', property='toolTip')
+        self.help_button.clicked.connect(self._show_help_menu)
+        row.addWidget(self.help_button)
         from .design.presentation import button_role
-        for button in (self.subtitle_studio_button, self.model_workshop_button, self.app_settings_button):
+        for button in (self.subtitle_studio_button, self.model_workshop_button, self.app_settings_button,
+                       self.help_button):
             button_role(button, "secondary", size="default")
             button.setProperty("homeNavigation", True)
             button.setIconSize(QSize(18, 18))
         # Keyboard users still Tab to every header command; a mouse click or
         # window activation no longer leaves a focus ring on the support button.
         for button in (self.support_button, self.update_button, self.subtitle_studio_button,
-                       self.model_workshop_button, self.return_recognition_button, self.app_settings_button):
+                       self.model_workshop_button, self.return_recognition_button, self.app_settings_button,
+                       self.help_button):
             button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.language_combo = user_text(FramelessPopupCombo())
         self.language_combo.setMinimumWidth(100)
         self.language_combo.setMaximumWidth(160)  # soft for CN labels
-        self.language_combo.addItem("中文", "zh")
+        self.language_combo.addItem("简体中文", "zh")
+        self.language_combo.addItem("繁體中文", "zh-Hant")
         self.language_combo.addItem("English", "en")
         self.language_combo.addItem("日本語", "ja")
         self.language_combo.setCurrentIndex(
@@ -4315,6 +4469,36 @@ class MainWindow(QWidget):
         chrome_column.addWidget(header_content, 1)
         outer.addWidget(chrome, 1)
         return header
+
+    def _show_help_menu(self):
+        from PySide6.QtWidgets import QMenu
+        from . import shortcut_registry as keys
+        menu = QMenu(self)
+        menu.setObjectName("helpMenu")
+        search_key = keys.tooltip_key("home.search")
+        entries = (
+            ("新手教学", self._start_home_tour),
+            ("显示新手引导", lambda: self._next_step_action("show_guide")),
+            ("打开范例工程", self._open_sample_project),
+            ("选择识别方式…", lambda: self._next_step_action("choose_plan")),
+            ("申请与设置 API…", self._open_api_setup_guide),
+            (None, None),
+            (tr("搜索功能与设置…（{key}）", key=search_key), self._open_feature_search),
+            ("快捷键…", lambda: self._open_application_settings(initial_section="快捷键")),
+            ("复制诊断信息…", self._open_diagnostics_dialog),
+            ("重新显示工作台操作提示", self._reset_teach_hints),
+        )
+        for label, handler in entries:
+            if label is None:
+                menu.addSeparator()
+                continue
+            action = menu.addAction(str(tr(label)) if type(label) is str else str(label))
+            action.triggered.connect(lambda _checked=False, callback=handler: callback())
+        menu.exec(self.help_button.mapToGlobal(self.help_button.rect().bottomLeft()))
+
+    def _open_diagnostics_dialog(self):
+        from .diagnostics_report import open_diagnostics_dialog
+        open_diagnostics_dialog(self)
 
     def _anchor_header_mascot(self):
         # Retained for older audit hooks. The brand mark is now owned by the
@@ -4376,6 +4560,10 @@ class MainWindow(QWidget):
 
     def _page_changed(self, index: int):
         current = self.pages.widget(index)
+        if current is self.__dict__.get("settings_scroll"):
+            self._schedule_next_step_probe()
+            if self.__dict__.pop("_home_tour_pending", False):
+                QTimer.singleShot(500, self._start_home_tour)
         completion = current.objectName() == 'completionScroll'
         studio = existing_page(self, "studio")
         in_studio = studio is not None and current is studio
@@ -4935,7 +5123,13 @@ class MainWindow(QWidget):
         self._open_application_settings(initial_section="高级设置")
 
     def _reset_teach_hints(self) -> None:
-        self.studio_page._teach_hints.reset()
+        studio = self.built_page("studio")
+        if studio is not None:
+            studio._teach_hints.reset()
+        else:
+            # No need to build the whole workbench just to clear a small file.
+            from .teach_hints import TeachHintStore
+            TeachHintStore().reset()
         bind_text(self.term_hint, '教学提示已重置；下次进入相应功能时会再次显示。')
         self.term_hint.setVisible(bool(self.term_hint.text()))
 
@@ -5011,7 +5205,105 @@ class MainWindow(QWidget):
         bind_text(self.asr_save_status, '已载入 {value0}；请填写该服务的 API Key 后保存', value0=preset['label'])
         self.asr_save_status.style().unpolish(self.asr_save_status)
         self.asr_save_status.style().polish(self.asr_save_status)
-        self._open_api_key_dialog()
+        self._open_api_setup_guide(preset_key)
+
+    # ---- 「申请与设置 API」 guide (2026-10-13) --------------------------------
+    def _api_setup_host(self):
+        from .api_setup_dialog import SetupHost
+        from .llm_config import read_asr_api_key, read_oss_credentials
+
+        def saved_key(provider, url):
+            return read_asr_api_key(provider, url)[0]
+
+        def open_text_settings(service_id):
+            self._open_ai_settings_dialog()
+            # Open on the service the guide was about (it is saved only with 保存).
+            dialog = getattr(self, "_ai_settings_dialog", None)
+            editor = dialog.findChild(EndpointEditor) if dialog is not None else None
+            index = editor.service.findData(str(service_id)) if editor is not None else -1
+            if index >= 0:
+                editor.service.setCurrentIndex(index)
+
+        return SetupHost(settings=lambda: self.legacy.RUNTIME_SETTINGS, saved_key=saved_key,
+                         saved_oss_credentials=read_oss_credentials,
+                         save=self._save_cloud_provider_from_guide,
+                         open_advanced=self._open_api_key_dialog_for_preset,
+                         open_text_settings=open_text_settings)
+
+    def _open_api_setup_guide(self, preset_key: str = "", kind: str = "asr"):
+        from .api_setup_dialog import ApiSetupDialog
+        initial = str(preset_key or self.qwen_asr_api_provider.currentData() or "mosi_moss_pro")
+        dialog = ApiSetupDialog(self, self._api_setup_host(), kind=kind, initial=initial)
+        dialog.exec()
+
+    def _save_cloud_provider_from_guide(self, provider: str, values: dict, use_as_primary: bool):
+        """Save one cloud ASR provider from the guide through the existing paths.
+
+        Keys go to the same encrypted store as the advanced form; settings go
+        through ``_save_asr_configuration``. Nothing is switched silently: any
+        follow-up change needed to run without CUDA is reported back.
+        """
+        from .llm_config import save_oss_credentials, save_spark_credentials, validate_qwen_asr_endpoint
+        preset = ASR_API_PRESETS.get(str(provider))
+        if preset is None:
+            return False, tr('未知的服务：{value0}', value0=provider)
+        model = str(values.get('model') or preset['model'])
+        url = str(values.get('url') or preset['url'])
+        if provider == 'spark_asr_v2':
+            credentials = {name: str(values.get(name) or '').strip() for name in ('app_id', 'api_key', 'api_secret')}
+            try:
+                validate_qwen_asr_endpoint(dict(protocol='spark_wss', model=model, url=url, **credentials),
+                                           require_key=False)
+                save_spark_credentials(url, **credentials)
+            except Exception as exc:
+                return False, str(exc)
+        from .api_setup_catalog import UPLOAD_OWN_OSS, UPLOAD_PROVIDER
+        if preset['protocol'] == 'dashscope_filetrans' and str(values.get('filetrans_upload') or '') == UPLOAD_OWN_OSS:
+            bucket = str(values.get('oss_bucket') or '').strip()
+            endpoint = str(values.get('oss_endpoint') or '').strip()
+            if not bucket:
+                return False, tr('请填写 OSS Bucket 名称（选了“使用我自己的 OSS”时需要它临时存放音频）。')
+            if not endpoint.lower().startswith('https://'):
+                return False, tr('OSS 地域无效。')
+            key_id = str(values.get('oss_access_key_id') or '').strip()
+            secret = str(values.get('oss_access_key_secret') or '').strip()
+            if key_id or secret:
+                try:
+                    save_oss_credentials(key_id, secret)
+                except Exception as exc:
+                    return False, tr('OSS 凭据保存失败：{exc}', exc=exc)
+            self.legacy.configure_runtime_asr({
+                'oss_region': str(values.get('oss_region') or 'cn-hangzhou'), 'oss_endpoint': endpoint,
+                'oss_bucket': bucket, 'oss_prefix': str(values.get('oss_prefix') or 'asr-temp/'),
+                'oss_auto_delete': bool(values.get('oss_auto_delete', True)), 'filetrans_upload': UPLOAD_OWN_OSS})
+        elif preset['protocol'] == 'dashscope_filetrans' and str(values.get('filetrans_upload') or '') == UPLOAD_PROVIDER:
+            # Trial temporary upload, only when explicitly chosen (ADR 0112); an existing OSS setup stays saved.
+            self.legacy.configure_runtime_asr({'filetrans_upload': UPLOAD_PROVIDER})
+        index = self.qwen_asr_api_provider.findData(provider)
+        if index >= 0:
+            self.qwen_asr_api_provider.setCurrentIndex(index)
+        self.qwen_asr_api_model.setText(model)
+        self.qwen_asr_api_url.setText(url)
+        self.qwen_asr_api_key.setText('' if provider == 'spark_asr_v2' else str(values.get('api_key') or '').strip())
+        notes = []
+        if use_as_primary:
+            combo_index = self.primary_asr_backend.findData('api')
+            if combo_index >= 0:
+                self.primary_asr_backend.setCurrentIndex(combo_index)
+            from .recognition_choices import cloud_followups, host_profile
+            current = dict(self.legacy.RUNTIME_SETTINGS.get('models', {}), **self._asr_values())
+            patch, notes = cloud_followups(current, installed_model_keys(APP_ROOT), host_profile())
+            for key, combo in (('firered_asr_backend', self.firered_asr_backend),
+                               ('qwen_asr_backend', self.qwen_asr_backend)):
+                if key in patch:
+                    found = combo.findData(patch[key])
+                    if found >= 0:
+                        combo.setCurrentIndex(found)
+        if not self._save_asr_configuration(show_feedback=False):
+            return False, getattr(self, '_run_block_reason', '') or tr('保存失败')
+        self._refresh_workshop_after_asr_change()
+        message = tr('已保存。') + (tr('已设为主力转写。') if use_as_primary else '')
+        return True, message + ''.join(notes)
 
     def _refresh_workshop_after_asr_change(self):
         workshop = self.built_page("workshop")
@@ -5093,6 +5385,219 @@ class MainWindow(QWidget):
         if automatic_checks_allowed():
             QTimer.singleShot(automatic_check_delay_ms(), self, self._auto_check_updates)
         QTimer.singleShot(2500, self, self._warm_studio_module)
+        # Hardware, models and cloud setup are checked off the GUI thread.
+        QTimer.singleShot(0, self, self._refresh_next_step)
+
+    # ---- 现在先做什么 (2026-10-13) --------------------------------------------
+    def _refresh_next_step(self, probe: bool = True):
+        """Re-evaluate the home card; ``probe`` re-checks this computer in the background."""
+        card = self.__dict__.get("next_step_card")
+        if card is None:
+            return
+        if os.environ.get("TWOBYTEASR_SKIP_FIRST_RUN_WIZARD") == "1" and not os.environ.get("TWOBYTEASR_ONBOARDING"):
+            card.hide()  # automated acceptance runs keep their historic home page
+            return
+        from . import onboarding
+        self._onboarding_state = onboarding.ensure_state()
+        self._render_next_step()
+        if not probe:
+            return
+        if not (getattr(self, "media_paths", None) or []):
+            # The welcome card needs no facts and nothing else shows without
+            # media: no background model/hardware scan competes with startup.
+            return
+        self._onboarding_generation = getattr(self, "_onboarding_generation", 0) + 1
+        generation = self._onboarding_generation
+        settings = copy.deepcopy(self.legacy.RUNTIME_SETTINGS)
+
+        def work():
+            try:
+                facts = onboarding.probe_facts(settings, APP_ROOT)
+            except Exception:
+                traceback.print_exc()
+                return
+            self._onboarding_facts_ready.emit((generation, facts))
+
+        threading.Thread(target=work, name="onboarding-facts", daemon=True).start()
+
+    def _schedule_next_step_probe(self):
+        """Coalesce bursts of setting changes into one background check."""
+        timer = self.__dict__.get("_next_step_probe_timer")
+        if timer is None:
+            timer = self._next_step_probe_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(400)
+            timer.timeout.connect(lambda: self._refresh_next_step(probe=True))
+        timer.start()
+
+    def _onboarding_facts_received(self, payload):
+        generation, facts = payload
+        if generation != getattr(self, "_onboarding_generation", 0):
+            return
+        self._onboarding_facts = facts
+        self._render_next_step()
+
+    def _render_next_step(self):
+        card = self.__dict__.get("next_step_card")
+        if card is None:
+            return
+        from .onboarding import compute_next_step
+        step = compute_next_step(media_count=len(getattr(self, "media_paths", []) or []),
+                                 facts=getattr(self, "_onboarding_facts", None),
+                                 state=getattr(self, "_onboarding_state", {}) or {},
+                                 running=bool(getattr(self, "_run_in_progress", False)))
+        card.show_step(step)
+
+    def _next_step_action(self, action: str):
+        from . import onboarding
+        if action == "choose_media":
+            self._choose_media()
+        elif action == "open_projects":
+            self.open_studio_project()
+        elif action == "open_sample":
+            self._open_sample_project()
+        elif action == "choose_plan":
+            if _open_quick_setup(self):
+                self._refresh_asr_summary()
+            self._refresh_next_step()
+        elif action == "setup_api":
+            self._open_api_setup_guide()
+            self._refresh_next_step()
+        elif action.startswith("use_plan:"):
+            self._apply_plan_choice(action.split(":", 1)[1])
+        elif action == "dismiss":
+            self._onboarding_state = onboarding.set_guide(False)
+            self._render_next_step()
+        elif action == "show_guide":
+            self._onboarding_state = onboarding.set_guide(True)
+            self._switch_page(0)
+            self._refresh_next_step()
+        elif action == "tour":
+            self._start_home_tour()
+
+    def _start_home_tour(self):
+        """Point at the real home page parts one by one (2026-10-14)."""
+        if self.pages.currentWidget() is not self.__dict__.get("settings_scroll"):
+            self._switch_page(0)
+            self._home_tour_pending = True
+            return
+        from . import onboarding
+        from .home_tour import start_home_tour
+
+        def done(completed):
+            onboarding.save_state(dict(onboarding.load_state(), tour_done=True))
+            self._tutorial_finish(completed)
+        start_home_tour(self, done)
+
+    # ---- tutorial demo data (2026-10-14): the bundled example, nothing uploaded --------
+    def _tutorial_prepare_demo(self):
+        """Make sure the example project and its video exist (first time ~2 s, off the GUI thread)."""
+        def work():
+            try:
+                from .sample_project import ensure_sample_project
+                self._tutorial_sample = ensure_sample_project()
+            except Exception:  # noqa: BLE001 - the media step reports it
+                traceback.print_exc()
+        threading.Thread(target=work, name="tutorial-sample", daemon=True).start()
+
+    def _tutorial_demo_media(self):
+        from .sample_project import ensure_sample_project, sample_root
+        ensure_sample_project()
+        return sample_root() / "范例影片.mp4"
+
+    def _tutorial_add_demo_media(self):
+        self._tutorial_media = str(self._tutorial_demo_media())
+        self.import_media([self._tutorial_media], replace=True)
+
+    def _tutorial_demo_completion(self):
+        """The result page of a pretend recognition: the example project, saved as it is."""
+        from .sample_project import ensure_sample_project, sample_root
+        from .service import MediaResult, QueueResult
+        from .studio_project import load_project
+        from .studio_subtitle_export import compile_srt
+        project_path = ensure_sample_project()
+        root = sample_root()
+        srt = root / "兔白字幕范例.srt"
+        srt.write_text(compile_srt(load_project(project_path).cues), encoding="utf-8")
+        report = root / "demo-report.json"
+        media = str(self._tutorial_demo_media())
+        report.write_text(json.dumps({
+            "status": "success", "demo": True, "media": {"path": media},
+            "result": {"outputs": {"project": str(project_path), "srt": str(srt)}, "elapsed_seconds": 12.6},
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        item = MediaResult(media_path=media, status="success", srt_path=str(srt), report_json_path=str(report),
+                           project_path=str(project_path), elapsed_seconds=12.6)
+        self._last_run_options = None
+        self._tutorial_demo_result = True  # not a first task, not a history record
+        try:
+            self._handle_result(QueueResult((item,), 12.6))
+        finally:
+            self._tutorial_demo_result = False
+
+    def _tutorial_finish(self, completed: bool):
+        """Leave the window as a new user expects: demo media gone, back on the home page."""
+        demo = getattr(self, "_tutorial_media", "")
+        if demo and [str(p) for p in (getattr(self, "media_paths", None) or [])] == [demo]:
+            self._clear_media_paths()
+        if completed and self.pages.currentWidget() is not self.__dict__.get("settings_scroll"):
+            self._return_to_settings()
+        self.activateWindow()
+        self.setFocus()  # keys go to the home page again, not to a page left behind
+
+    def _apply_plan_choice(self, option_key: str):
+        """A plan the user picked on the card: set the three roles, save once."""
+        from .onboarding import plan_patch
+        facts = getattr(self, "_onboarding_facts", None)
+        patch = plan_patch(option_key, facts) if facts is not None else {}
+        if not patch:
+            return
+        for key, combo in (("primary_asr_backend", self.primary_asr_backend),
+                           ("firered_asr_backend", self.firered_asr_backend),
+                           ("qwen_asr_backend", self.qwen_asr_backend)):
+            if key in patch:
+                index = combo.findData(patch[key])
+                if index < 0:
+                    combo.addItem(str(patch[key]), patch[key])
+                    index = combo.findData(patch[key])
+                combo.setCurrentIndex(index)
+        if self._save_asr_configuration(show_feedback=False):
+            self._refresh_asr_summary()
+        self._refresh_next_step()
+
+    def _open_sample_project(self):
+        """The bundled example (generated on first use, ~2 s, nothing uploaded)."""
+        from .sample_project import ensure_sample_project, sample_project_path
+        path = sample_project_path()
+        if path.is_file():
+            self.open_studio_project(str(path))
+            return
+        self._sample_progress = QMessageBox(self)
+        self._sample_progress.setIcon(QMessageBox.Icon.Information)
+        bind_text(self._sample_progress, '范例工程', property='windowTitle')
+        bind_text(self._sample_progress, '正在准备范例工程（示意影片与说明字幕，不上传任何东西）…')
+        self._sample_progress.setStandardButtons(QMessageBox.StandardButton.NoButton)
+        self._sample_progress.show()
+
+        def work():
+            try:
+                result = (True, str(ensure_sample_project()))
+            except Exception as exc:  # noqa: BLE001 - reported to the user
+                result = (False, str(exc))
+            self._sample_ready.emit(result)
+
+        threading.Thread(target=work, name="sample-project", daemon=True).start()
+
+    def _sample_project_ready(self, result):
+        ok, value = result
+        box = getattr(self, "_sample_progress", None)
+        if box is not None:
+            box.hide()
+            box.deleteLater()
+            self._sample_progress = None
+        if ok:
+            self.open_studio_project(value)
+        else:
+            QMessageBox.warning(self, tr('范例工程'), tr('没能准备范例工程：{reason}', reason=value))
 
     def _warm_studio_module(self):
         """Run the startup idle tasks, then load the Studio module tree.
@@ -5333,6 +5838,12 @@ class MainWindow(QWidget):
         page_heading.addWidget(page_subtitle)
         page_heading.addStretch(1)
         layout.addLayout(page_heading)
+        # 2026-10-13: "现在先做什么" — one short card from the real state
+        # (welcome for a fresh install, or what is missing). Hidden otherwise.
+        from .onboarding import build_card
+        self.next_step_card = build_card(page)  # styles itself from the current theme
+        self.next_step_card.action_requested.connect(self._next_step_action)
+        layout.addWidget(self.next_step_card)
         # 素材区放在最上方：整张卡片是选择/拖放主操作。空态是一块醒目的大投放区，
         # 载入素材后收成一行（2026-10-08）；见 _apply_media_mode。
         self.media_frame = MediaPickCard()
@@ -6215,7 +6726,8 @@ class MainWindow(QWidget):
         if media_missing:
             items.append(("media", translate("选择素材", language), self._choose_media))
         for role, status in plan_items:
-            action = "安装模型" if status == "需要下载" else "配置 API"
+            action = ("安装模型" if status == "需要下载" else
+                      _HOST_LIMIT_RECOVERY if status in _HOST_LIMIT_STATUSES else "配置 API")
             items.append(("plan", f"{translate(_ROLE_LABELS.get(role, role), language)} · {translate(status, language)}",
                           lambda _=False, r=role, a=action: self._recognition_recovery(r, a)))
         for kind, text, handler in items:
@@ -6319,7 +6831,7 @@ class MainWindow(QWidget):
         except (OSError, RuntimeError, TypeError, ValueError, KeyError):
             identity = {}
         if tile is not None and identity:
-            tile.set_summary(f"{identity.get('label', '')} · {identity.get('model') or translate('默认模型', language)}")
+            tile.set_summary(f"{translate(str(identity.get('label', '')), language)} · {identity.get('model') or translate('默认模型', language)}")
         if getattr(self, "_ai_has_draft", False):
             show("saved", "有未保存的修改", "warn")
         else:
@@ -6570,6 +7082,7 @@ class MainWindow(QWidget):
         self.start_button.setMinimumWidth(320)
         self.start_button.setShortcut(QKeySequence("Ctrl+Return"))
         bind_text(self.start_button, '开始生成字幕 (Ctrl+Enter)', property='toolTip')
+        _bind_home_shortcuts(self, bar)
         self.start_button.clicked.connect(self._start_run)
         # The dedicated Studio card owns this entrance; retain the attribute
         # for callers without a second competing footer action.
@@ -6947,6 +7460,49 @@ class MainWindow(QWidget):
     def _progress_settings(self):
         from .theme_manager import SETTINGS_APP, SETTINGS_ORG
         return QSettings(SETTINGS_ORG, SETTINGS_APP)
+
+    def _confirm_run_disclosure(self) -> bool:
+        """State what this run will use; ask once before audio goes to a cloud service (2026-10-13).
+
+        Every run logs engine, speaker source, timestamp source, uploads and
+        cost basis. A run that uploads audio asks once per provider/model/host
+        (the answer is remembered locally); text-only AI is never interrupted.
+        """
+        import hashlib
+        from .recognition_choices import disclosure_text, run_disclosure
+        try:
+            settings = json.loads(json.dumps(self.legacy.RUNTIME_SETTINGS, ensure_ascii=False))
+            settings.setdefault("models", {}).update(self._asr_values())
+            text = disclosure_text(settings)
+            info = run_disclosure(settings)
+        except Exception as exc:
+            self._append_console_line(f"[本次识别] 无法生成使用摘要：{exc}")
+            return True
+        self._append_console_line("[本次识别] " + text.replace("\n", "；"))
+        audio_uploads = [item for item in info["uploads"] if item.startswith("音频")]
+        if not audio_uploads or os.environ.get("TWOBYTEASR_TEST_ROOT"):
+            return True
+        signature = hashlib.sha256("|".join([info["engine"], *audio_uploads]).encode("utf-8")).hexdigest()[:24]
+        store = self._progress_settings()
+        if store.value(f"cloud_upload_ack/{signature}", False, type=bool):
+            return True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(tr("本次识别会上传音频"))
+        box.setText(tr("开始前请确认本次识别实际会使用的服务："))
+        box.setInformativeText(text)
+        remember = QCheckBox(tr("同样的服务与设置以后不再询问"))
+        remember.setChecked(True)
+        box.setCheckBox(remember)
+        start = box.addButton(tr("开始识别"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(tr("取消"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not start:
+            self._append_console_line("[本次识别] 已取消：未上传任何音频。")
+            return False
+        if remember.isChecked():
+            store.setValue(f"cloud_upload_ack/{signature}", True)
+        return True
 
     def _restore_progress_layout(self):
         settings = self._progress_settings()
@@ -7833,10 +8389,41 @@ class MainWindow(QWidget):
             if box.clickedButton() is open_button:
                 self._open_ai_provider_config()
                 return
+        # A cloud task that ended, vanished or whose submission is uncertain is
+        # never sent again automatically (it may be billed twice). Ask once.
+        from .cloud_api_worker import failure_from_text
+        resubmit = [problem for problem in (failure_from_text(str(getattr(item, 'error', '') or '')) for item in failed)
+                    if problem and problem.get('resubmit')]
+        settings_json = snapshot.settings_snapshot_json
+        if settings_json and 'cloud_resubmit_confirmed' in settings_json:
+            # The confirmation belongs to one retry only; never carry it forward.
+            try:
+                cleaned = json.loads(settings_json)
+                cleaned.get('models', {}).pop('cloud_resubmit_confirmed', None)
+                settings_json = json.dumps(cleaned, ensure_ascii=False)
+            except (TypeError, ValueError, AttributeError):
+                pass
+        if resubmit:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            bind_text(box, '重新提交云端识别？', property='windowTitle')
+            bind_text(box, '{reason}\n\n重新提交会再次上传音频，服务商可能再次计费。如果你不确定上次是否已经扣费，可以先到服务商控制台查看任务与账单。', reason=str(resubmit[0].get('message') or ''))
+            again = box.addButton(tr('重新提交'), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is not again:
+                return
+            try:
+                settings = json.loads(settings_json) if settings_json else copy.deepcopy(self.legacy.RUNTIME_SETTINGS)
+                settings.setdefault('models', {})['cloud_resubmit_confirmed'] = True
+                settings_json = json.dumps(settings, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return
         self.media_paths = _merge_media_paths([], [f.media_path for f in failed])
         self._retry_cached_failed=True
         self._retry_run_options = replace(snapshot, force_refresh_polish=False,
-                                          force_refresh_group=False, overwrite_policy='error')
+                                          force_refresh_group=False, overwrite_policy='error',
+                                          settings_snapshot_json=settings_json)
         self.retry_failed_button.setEnabled(False)
         self._switch_page(0)
         self._refresh_media_summary()
@@ -8225,6 +8812,7 @@ class MainWindow(QWidget):
     def _refresh_media_summary(self):
         language = getattr(self, "_ui_language", current_language())
         ready = bool(self.media_paths)
+        self._render_next_step()
         self.media_frame.setProperty("empty", not ready)
         self.media_frame.style().unpolish(self.media_frame)
         self.media_frame.style().polish(self.media_frame)
@@ -8241,7 +8829,7 @@ class MainWindow(QWidget):
             # re-rendered on every language switch. A translated source stayed
             # in the language that was active at this refresh.
             bind_text(self.media_drop_hint, '可继续拖入另一批素材，或点击右侧重新选择')
-            bind_text(self.header_status, f'●  {len(self.media_paths)} ' + ('media items ready' if language == 'en' else '个素材已就绪'))
+            bind_text(self.header_status, f'●  {len(self.media_paths)} ' + ('media items ready' if language == 'en' else ui_literal('个素材已就绪', language)))
         else:
             bind_text(self.media_name, '把视频或音频拖到这里')
             self.media_name.setToolTip("")
@@ -8815,6 +9403,16 @@ class MainWindow(QWidget):
                 else:
                     self.profile_recommendation.clear()
 
+    def _home_page_active(self) -> bool:
+        stack = getattr(self, "pages", None)
+        current = stack.currentIndex() if stack is not None else 0
+        modal = getattr(self, "_modal_host", None)
+        return current == 0 and not (modal is not None and modal.isVisible())
+
+    def _open_feature_search(self):
+        from .feature_search import open_feature_search
+        open_feature_search(self)
+
     def _choose_media(self):
         if self._run_in_progress or (self.worker is not None and self.worker.isRunning()):
             QMessageBox.information(self, tr('任务运行中'), tr('当前任务正在处理，请结束后再重新选择素材。'))
@@ -8982,6 +9580,16 @@ class MainWindow(QWidget):
             combo.setCurrentIndex(max(0, combo.findData(saved.get(key, default))))
             combo.setObjectName("homeLanguageCombo")
             row.addWidget(combo)
+        # 2026-10-13: punctuation default for new tasks (display/export only).
+        from .punctuation_style import MODE_ADD, MODE_NONE, MODE_ORIGINAL, default_mode_for_new_tasks
+        self.subtitle_punctuation = FramelessPopupCombo()
+        self.subtitle_punctuation.setObjectName("homeLanguageCombo")
+        for text, value in (("标点：保留原文", MODE_ORIGINAL), ("标点：添加标点", MODE_ADD), ("标点：不加标点", MODE_NONE)):
+            self.subtitle_punctuation.addItem(tr(text), value)
+        self.subtitle_punctuation.setCurrentIndex(max(0, self.subtitle_punctuation.findData(
+            default_mode_for_new_tasks(self.legacy.RUNTIME_SETTINGS))))
+        bind_text(self.subtitle_punctuation, '新任务的字幕标点；文稿不变，工作台里随时能换', property='toolTip')
+        row.addWidget(self.subtitle_punctuation)
         row.addStretch(1)
         bind_text(self.recognition_language, '自动：按转写里的假名判断中文或日语（只有汉字不算日语证据）。日语改用 Qwen3-ForcedAligner 对齐字词时间，需在模型工坊下载。', property='toolTip')
         bind_text(self.subtitle_output, '译文/双语：识别完成后用已配置的 AI 文字服务把日文翻成中文（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。', property='toolTip')
@@ -8996,7 +9604,7 @@ class MainWindow(QWidget):
         self.aligner_download_button.clicked.connect(self._open_aligner_in_workshop)
         self.aligner_download_button.hide()
         layout.addWidget(self.aligner_download_button)
-        for combo in (self.recognition_language, self.subtitle_output, self.translation_script):
+        for combo in (self.recognition_language, self.subtitle_output, self.translation_script, self.subtitle_punctuation):
             combo.currentIndexChanged.connect(self._subtitle_language_changed)
         self._subtitle_language_changed(save=False)
 
@@ -9030,7 +9638,13 @@ class MainWindow(QWidget):
         if translating:
             hints.append("完成识别后翻译成中文，发送字幕文字到已配置的 AI 文字服务（可能产生费用）。"
                          "中文素材不翻译。")
-        bind_text(self.subtitle_language_hint, " ".join(hints))
+        punctuation = str(self.subtitle_punctuation.currentData() or "original") \
+            if self.__dict__.get("subtitle_punctuation") is not None else "original"
+        if punctuation != "original":
+            from .punctuation_style import preview_rows
+            sample = preview_rows(None, punctuation, limit=1)[0][1]
+            hints.append(tr("标点效果：{value0}", value0=sample))
+        bind_text(self.subtitle_language_hint, " ".join(str(hint) for hint in hints))
         self.subtitle_language_hint.setVisible(bool(hints))
         if save:
             try:
@@ -9038,6 +9652,7 @@ class MainWindow(QWidget):
                 section.update(recognition_language=options["recognition_language"],
                                output=options["subtitle_output"],
                                translation_script=options["translation_script"])
+                self.legacy.RUNTIME_SETTINGS.setdefault("switches", {})["subtitle_punctuation"] = punctuation
                 save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
             except Exception:
                 pass
@@ -9134,7 +9749,7 @@ class MainWindow(QWidget):
         full = QPushButton("查看完整教程")
         full.setObjectName("helpLink")
         full.setCursor(Qt.CursorShape.PointingHandCursor)
-        full.clicked.connect(lambda: (pop.close(), self._open_asr_api_full_tutorial_dialog(provider)))
+        full.clicked.connect(lambda: (pop.close(), self._open_api_setup_guide(provider)))
         row.addWidget(full)
 
         doc = QPushButton("服务商文档")
@@ -9225,7 +9840,7 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------------
     def _fetch_asr_models(self):
         provider = str(self.qwen_asr_api_provider.currentData() or "qwen31_filetrans")
-        if provider in {'spark_asr_v2','qwen31_filetrans'}:
+        if provider in {'spark_asr_v2','qwen31_filetrans','qwen_cloud_filetrans'}:
             self.qwen_models_status.setVisible(True)
             bind_text(self.qwen_models_status, '原生接口无模型列表；按官方固定型号调用，实际识别尚需验证。')
             return
@@ -9331,6 +9946,7 @@ class MainWindow(QWidget):
     def _refresh_asr_summary(self):
         if not hasattr(self, "asr_panel"):
             return
+        self._schedule_next_step_probe()
         language = getattr(self, "_ui_language", current_language())
         # 短标签：角色卡 / 摘要共用的紧凑叫法。
         primary_short = {
@@ -9377,13 +9993,9 @@ class MainWindow(QWidget):
         from .llm_config import read_asr_api_key
 
         _models_cfg = self.legacy.RUNTIME_SETTINGS.get("models", {})
-        key_ready = bool(
-            read_asr_api_key(
-                str(_models_cfg.get("qwen_asr_api_provider", "qwen31_filetrans") or "qwen31_filetrans"),
-                str(_models_cfg.get("qwen_asr_api_url", ASR_API_PRESETS["qwen31_filetrans"]["url"]) or ""),
-            )[0]
-            or self.qwen_asr_api_key.text().strip()
-        )
+        from .recognition_choices import cloud_asr_readiness
+        key_ready, self._cloud_asr_block_reason = cloud_asr_readiness(
+            _models_cfg, typed_key=self.qwen_asr_api_key.text())
         self.asr_panel.set_summary(
             " / ".join(
                 (
@@ -9425,6 +10037,13 @@ class MainWindow(QWidget):
             },
         }
 
+        # 2026-10-14: a component this computer cannot run (CUDA without an
+        # NVIDIA GPU, MLX off Apple Silicon) is said before start, not after.
+        from .recognition_choices import host_profile, unavailable_on_host
+        host = self.__dict__.get("_home_host_profile")
+        if host is None:
+            host = self._home_host_profile = host_profile()
+
         def _status(role: str, backend: str) -> tuple[str, str, str]:
             """(kind, status_text, tone)。tone: good/warn/muted。"""
             if backend == "off":
@@ -9433,6 +10052,9 @@ class MainWindow(QWidget):
                 if key_ready:
                     return ("在线", "已配置", "good")
                 return ("在线", "未配置", "warn")
+            limit = unavailable_on_host(role, backend, host)
+            if limit:
+                return ("本地", limit, "warn")  # downloading would not help
             needs = required[role].get(backend)
             ready = bool(needs and needs <= installed)
             return ("本地", "已就绪" if ready else "需要下载", "good" if ready else "warn")
@@ -9450,6 +10072,8 @@ class MainWindow(QWidget):
                 model_name = labels.get(backend, backend)
                 if backend == "api" and status == "未配置":
                     recovery = "配置 API"
+                elif status in _HOST_LIMIT_STATUSES:
+                    recovery = _HOST_LIMIT_RECOVERY
                 elif status == "需要下载":
                     recovery = "安装模型"
                 else:
@@ -9478,7 +10102,7 @@ class MainWindow(QWidget):
                 ("review", qwen_backend),
             ):
                 _kind, status, _tone = _status(role, backend)
-                if status in {"需要下载", "未配置"}:
+                if status in {"需要下载", "未配置"} or status in _HOST_LIMIT_STATUSES:
                     problems.append(status)
                     plan_items.append((role, status))
             refresh_bar = getattr(self, "_refresh_readiness_bar", None)
@@ -9490,7 +10114,7 @@ class MainWindow(QWidget):
                 pending = ", ".join(translate(item, language) for item in dict.fromkeys(problems))
                 if language == "en":
                     text = "⚠ Before starting:"
-                elif language == "ja":
+                elif language in ("ja", "zh-Hant"):
                     text = "⚠ " + translate("开始前还需处理：", language)
                 else:
                     text = "⚠ 开始前还需处理："
@@ -9499,7 +10123,7 @@ class MainWindow(QWidget):
                 self.action_status.setObjectName("statusGood")
                 if language == "en":
                     text = f"✔ Recognition plan and {glossary_count} term libraries are ready"
-                elif language == "ja":
+                elif language in ("ja", "zh-Hant"):
                     text = "✔ " + translate("识别方案与 {n} 个词库已就绪", language).replace("{n}", str(glossary_count))
                 else:
                     text = f"✔ 识别方案与 {glossary_count} 个词库已就绪"
@@ -9664,10 +10288,17 @@ class MainWindow(QWidget):
         self._open_model_picker(role)
 
     def _recognition_recovery(self, role: str, action: str):
-        if "安装" in action or "下载" in action:
+        # Role cards emit the label in the current UI language; chips pass the
+        # Chinese source. Accept both (the en/ja "Install model" did nothing).
+        install = {"安装模型", tr("安装模型")}
+        api = {"配置 API", tr("配置 API")}
+        if action in {_HOST_LIMIT_RECOVERY, str(tr(_HOST_LIMIT_RECOVERY))}:
+            self._next_step_action("choose_plan")  # the chooser only offers what this computer can run
+        elif action in install or "安装" in action or "下载" in action:
             self._open_model_picker(role)
-        elif "API" in action or "配置" in action:
-            self._open_api_key_dialog()
+        elif action in api or "API" in action or "配置" in action:
+            # The step-by-step guide (per provider, with tests) replaces the bare key form.
+            self._open_api_setup_guide()
 
     def _open_api_key_dialog(self):
         """ASR API Key 配置（批准图：密钥进 AI 与密钥，不再有识别增强卡）。"""
@@ -9682,9 +10313,8 @@ class MainWindow(QWidget):
         title = QLabel("在线识别服务")
         title.setProperty("typography", "title")
         header.addWidget(title, 1)
-        from .design.presentation import button_role
-        close_header = button_role(QPushButton("×"), "ghost")
-        close_header.setFixedSize(32, 32)
+        from .design.presentation import button_role, glyph_button
+        close_header = glyph_button(button_role(QPushButton("×"), "ghost"))
         bind_text(close_header, '关闭在线识别设置', property='accessibleName')
         close_header.clicked.connect(dialog.reject)
         header.addWidget(close_header)
@@ -10323,7 +10953,7 @@ class MainWindow(QWidget):
         def describe(identity, enabled):
             if not enabled:
                 return translate('未启用', language)
-            return f"{identity['label']} · {identity['model'] or translate('默认模型', language)}"
+            return f"{translate(identity['label'], language)} · {identity['model'] or translate('默认模型', language)}"
         draft_switches = {'unified': self.unified_glm.isChecked(),
                           'polish': self.ai_polish.isChecked(), 'group': self.ai_grouping.isChecked()}
         saved_switches = {'unified': bool(saved.get('switches', {}).get('unified_glm_processing', False)),
@@ -10777,6 +11407,8 @@ class MainWindow(QWidget):
             local_analysis=(getattr(self,'_studio_recognition_context',None) or {}).get('recognition_purpose')=='analysis'
             if not self._save_ai_configuration(show_feedback=True, require_ready=not local_analysis):
                 return
+            if not self._confirm_run_disclosure():
+                return
             game_name = self.legacy.canonicalize_runtime_game_name(self.game_box.currentText())
             if game_name:
                 self.legacy.save_runtime_game_history(game_name)
@@ -11200,6 +11832,9 @@ class MainWindow(QWidget):
         if started:
             metrics.append((tr('已运行'), clock(now_perf - started)))
         if moss:
+            if int(payload.get('window_count') or 0) > 1:
+                # A long task runs as several windows (2026-10-13).
+                metrics.append((tr('识别分段'), f"{int(payload['window_index'])} / {int(payload['window_count'])}"))
             tokens = payload.get('generated_tokens')
             metrics.append((tr('累计输出'), f"{int(tokens):,} tokens" if tokens is not None else tr('尚未开始')))
             if payload.get('phase') in {'completed', 'needs_review'}:
@@ -11251,7 +11886,8 @@ class MainWindow(QWidget):
             bind_text(self.progress_resource, '同时进行：{steps}', steps=join_text(parts, separator='、'))
         else:
             # What the step is doing, in one sentence (M14: no "previous step").
-            description = moss_description(payload.get('phase')) if moss else stage_description(item.get('label'))
+            description = (moss_description(payload.get('phase'), int(payload.get('window_count') or 0) > 1)
+                           if moss else stage_description(item.get('label')))
             bind_text(self.progress_resource, description or '')
         self.progress_resource.setVisible(bool(self.progress_resource.text()))
         self.active_tasks_label.hide()
@@ -11370,7 +12006,10 @@ class MainWindow(QWidget):
         if not rows:
             live = getattr(self, '_stage_live', {}).get(2) or {}
             moss_running = 2 in getattr(self, '_active_stages', {}) and (live.get('payload') or {}).get('backend') == 'moss'
+            windowed = int((live.get('payload') or {}).get('window_count') or 0) > 1
             text = ('本次没有收到可预览的文字' if getattr(self, '_recognition_terminal', '') else
+                    'MOSS 正在分段识别，全部分段结束前不会产生逐句文字；之后逐字识别出的内容会在这里显示最近几句'
+                    if moss_running and windowed else
                     'MOSS 正在整段识别，识别结束前不会产生逐句文字；之后逐字识别出的内容会在这里显示最近几句' if moss_running else
                     '模型返回可读文字后，这里会实时显示最近几句')
             preview.set_empty_text(str(tr(text)))
@@ -11816,6 +12455,12 @@ class MainWindow(QWidget):
         self._release_run_state()
         self._progress_timer.stop()
         self.result_exit_code = result.exit_code
+        if getattr(result, "successes", None) and not getattr(self, "_tutorial_demo_result", False):
+            try:
+                from .onboarding import mark_first_task_done
+                mark_first_task_done()  # the welcome guide has done its job
+            except Exception:
+                pass
         self._active_stages.clear()
         if hasattr(self, '_progress_motion'):
             self._progress_motion.stop()
@@ -11921,9 +12566,9 @@ class MainWindow(QWidget):
         if hasattr(self, "open_priority_review_button"):
             if not hasattr(self, 'result_task_selector'):
                 self.open_priority_review_button.setVisible(bool(self._last_studio_project and review_total))
-        if not studio_context:
+        if not studio_context and not getattr(self, "_tutorial_demo_result", False):
             self._show_task_notification(*_completion_notification_spec(result, outcomes))
-        elif failure_count or cancel_count:
+        elif studio_context and (failure_count or cancel_count):
             self.studio_page.fail_recognition_runtime(
                 "任务已取消" if cancel_count and not failure_count else "识别失败，请检查模型与运行日志"
             )
@@ -12512,8 +13157,10 @@ def run_desktop_app(
     window.installEventFilter(paint_probe)
     window.show()
     _startup_mark("FIRST_SHOW")
+    # 2026-10-14: a fresh install is offered the quick chooser once, after the
+    # window shows; upgraded users and double-clicked projects never are.
     if startup_page == "recognition":
-        _run_first_run_wizard(window)
+        QTimer.singleShot(600, lambda: _offer_first_run_setup(window))
     if os.environ.get("TWOBYTEASR_STARTUP_OPEN_STUDIO") == "1" or os.environ.get("TWOBYTEASR_STARTUP_RAISE") == "1":
         # Instrumented startup route: navigate to the Studio Project Library as
         # if the user clicked the workbench entry, keeping the audit on the
@@ -12588,45 +13235,103 @@ def _run_first_run_wizard(parent) -> None:
     )
     if not preflight.should_prompt:
         return
+    _open_guided_setup(parent)
+
+
+def _offer_first_run_setup(window) -> None:
+    """A fresh install starts with the quick chooser, once (2026-10-14).
+
+    Upgraded users (recent projects, reports, saved keys) never see it at
+    startup; anyone can reopen it from the home card or 说明.
+    """
+    if os.environ.get("TWOBYTEASR_SKIP_FIRST_RUN_WIZARD") == "1":
+        return
+    from . import onboarding
+    state = onboarding.ensure_state()
+    if not state.get("fresh") or state.get("setup_offered"):
+        return
+    onboarding.save_state(dict(state, setup_offered=True))
+    if _open_quick_setup(window):
+        window._refresh_asr_summary()
+    window._refresh_next_step()
+    if not onboarding.load_state().get("tour_done"):
+        if window.pages.currentWidget() is window.__dict__.get("settings_scroll"):
+            QTimer.singleShot(500, window._start_home_tour)
+        else:
+            window._home_tour_pending = True  # e.g. the workshop opened for a download
+
+
+def _open_quick_setup(parent) -> bool:
+    """Big cards: local / cloud / light (Mac: Apple chip). ``自己选择模型…`` opens the detailed dialog."""
+    try:
+        from .quick_setup import QuickSetupDialog
+        dialog = QuickSetupDialog(parent, size_of=lambda backends: GuidedSetupDialog.estimate_size(*backends))
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.choice is None:
+            return False
+        if dialog.choice == "custom":
+            return _open_guided_setup(parent)
+        primary, timeline, review = dialog.backends
+        if dialog.choice == "cloud":
+            _apply_setup_choice(parent, primary, timeline, review, (), open_workshop=False, auto_download=False)
+            QTimer.singleShot(0, parent._open_api_setup_guide)
+            return True
+        keys = GuidedSetupDialog.download_keys_for(primary, timeline, review)
+        _apply_setup_choice(parent, primary, timeline, review, keys, open_workshop=True, auto_download=True)
+        return True
+    except Exception:
+        traceback.print_exc()
+        _startup_mark("FIRST_RUN_WIZARD_FAILED", traceback=traceback.format_exc())
+        return False
+
+
+def _open_guided_setup(parent) -> bool:
+    """The detailed chooser: every role and model (presets for this computer)."""
     try:
         dialog = GuidedSetupDialog(parent)
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+            return False
         primary, timeline, review = dialog.selected_backends()
-        download_keys = dialog.selected_download_keys()
-        desired = parent._asr_values()
-        desired.update(
-            primary_asr_backend=primary,
-            firered_asr_backend=timeline,
-            qwen_asr_backend=review,
-        )
-        # Persist the user's desired backends even though incomplete local models
-        # are deliberately hidden from the main selectors.  Once downloading
-        # finishes, refresh selects these saved roles automatically.
-        persist_asr_configuration(parent.legacy, desired, require_ready=False)
-        parent._missing_saved_asr_backends = populate_available_asr_choices(
-            parent.primary_asr_backend,
-            parent.qwen_asr_backend,
-            parent.firered_asr_backend,
-            parent.legacy.RUNTIME_SETTINGS,
-        )
-        parent._apply_asr_backend_mode()
-        if dialog.open_workshop:
-            def open_selected_combination():
-                parent._open_model_workshop()
-                parent.workshop_page.focus_primary_backend(primary)
-                if dialog.auto_download and download_keys:
-                    parent.workshop_page.download_combination(
-                        download_keys,
-                        "首次选择的字幕识别组合",
-                        auto_start=True,
-                    )
-
-            QTimer.singleShot(0, open_selected_combination)
+        _apply_setup_choice(parent, primary, timeline, review, dialog.selected_download_keys(),
+                            open_workshop=dialog.open_workshop, auto_download=dialog.auto_download)
+        return True
     except Exception:
         # A broken wizard must not strand a first-run user silently.
         traceback.print_exc()
         _startup_mark("FIRST_RUN_WIZARD_FAILED", traceback=traceback.format_exc())
+        return False
+
+
+def _apply_setup_choice(parent, primary, timeline, review, download_keys, *, open_workshop, auto_download):
+    """Save the chosen roles, refresh the home page, then open the workshop download if asked."""
+    desired = parent._asr_values()
+    desired.update(
+        primary_asr_backend=primary,
+        firered_asr_backend=timeline,
+        qwen_asr_backend=review,
+    )
+    # Persist the user's desired backends even though incomplete local models
+    # are deliberately hidden from the main selectors.  Once downloading
+    # finishes, refresh selects these saved roles automatically.
+    persist_asr_configuration(parent.legacy, desired, require_ready=False)
+    parent._missing_saved_asr_backends = populate_available_asr_choices(
+        parent.primary_asr_backend,
+        parent.qwen_asr_backend,
+        parent.firered_asr_backend,
+        parent.legacy.RUNTIME_SETTINGS,
+    )
+    parent._apply_asr_backend_mode()
+    if open_workshop:
+        def open_selected_combination():
+            parent._open_model_workshop()
+            parent.workshop_page.focus_primary_backend(primary)
+            if auto_download and download_keys:
+                parent.workshop_page.download_combination(
+                    download_keys,
+                    "首次选择的字幕识别组合",
+                    auto_start=True,
+                )
+
+        QTimer.singleShot(0, open_selected_combination)
 
 
 def _preview(screenshot_path: str, state: str = "settings") -> int:

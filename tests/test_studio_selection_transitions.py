@@ -150,6 +150,9 @@ def test_shortcut_existing_conflicts_empty_and_input_guard(tmp_path,monkeypatch)
     path=tmp_path/'studio-settings.json'
     path.write_text(json.dumps({'shortcuts':{'save':'Ctrl+D','play_pause':'A','undo':'Ctrl+Shift+D','selection_tool':''}}),'utf8')
     monkeypatch.setattr(ui,'studio_settings_path',lambda:path)
+    # 2026-10-13: Studio reads its keys through the shared shortcut registry.
+    import twobyteasr.shortcut_registry as registry
+    monkeypatch.setattr(registry,'settings_path',lambda:path)
     dummy=SimpleNamespace();loaded=ui.SubtitleStudioPage._load_shortcut_values(dummy)
     assert loaded['save']=='Ctrl+D' and loaded['play_pause']=='A' and loaded['selection_tool']==''
     assert all(loaded[key]=='' for key in ('track_forward_tool','video_transition','audio_transition'))

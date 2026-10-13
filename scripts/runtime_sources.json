@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "note": "Fallback sources for the model runtime, used only after the official source fails. Integrity never depends on the mirror: uv archives are checked against the SHA-256 below, managed Python against the SHA-256 built into uv, and PyPI/PyTorch packages against scripts/runtime_package_hashes.json (--require-hashes). Official uv URL/SHA stay in dependencies.lock.json managed_bootstrap.",
+  "uv": {
+    "version": "0.11.7",
+    "binaries": {
+      "uv.exe": "831730243cf7bbd496ff96353dcdba6f5d4dcbd22576af398130381ab44ac160",
+      "uvw.exe": "012267b72e3a69b337e4220558137ea2da755c1f4e4585de3b5852a4caae2415"
+    },
+    "fallbacks": [
+      {
+        "label": "Astral 下载站",
+        "url": "https://releases.astral.sh/github/uv/releases/download/0.11.7/uv-x86_64-pc-windows-msvc.zip",
+        "sha256": "fe0c7815acf4fc45f8a5eff58ed3cf7ae2e15c3cf1dceadbd10c816ec1690cc1"
+      },
+      {
+        "label": "阿里云 PyPI 镜像",
+        "url": "https://mirrors.aliyun.com/pypi/packages/a6/1d/b73e473da616ac758b8918fb218febcc46ddf64cba9e03894dfa226b28bd/uv-0.11.7-py3-none-win_amd64.whl",
+        "sha256": "5674dfb5944513f4b3735b05c2deba6b1b01151f46729d533d413a9a905f8c5d"
+      },
+      {
+        "label": "清华 PyPI 镜像",
+        "url": "https://pypi.tuna.tsinghua.edu.cn/packages/a6/1d/b73e473da616ac758b8918fb218febcc46ddf64cba9e03894dfa226b28bd/uv-0.11.7-py3-none-win_amd64.whl",
+        "sha256": "5674dfb5944513f4b3735b05c2deba6b1b01151f46729d533d413a9a905f8c5d"
+      },
+      {
+        "label": "腾讯云 PyPI 镜像",
+        "url": "https://mirrors.cloud.tencent.com/pypi/packages/a6/1d/b73e473da616ac758b8918fb218febcc46ddf64cba9e03894dfa226b28bd/uv-0.11.7-py3-none-win_amd64.whl",
+        "sha256": "5674dfb5944513f4b3735b05c2deba6b1b01151f46729d533d413a9a905f8c5d"
+      },
+      {
+        "label": "中科大 PyPI 镜像",
+        "url": "https://mirrors.ustc.edu.cn/pypi/packages/a6/1d/b73e473da616ac758b8918fb218febcc46ddf64cba9e03894dfa226b28bd/uv-0.11.7-py3-none-win_amd64.whl",
+        "sha256": "5674dfb5944513f4b3735b05c2deba6b1b01151f46729d533d413a9a905f8c5d"
+      },
+      {
+        "label": "PyPI 官方",
+        "url": "https://files.pythonhosted.org/packages/a6/1d/b73e473da616ac758b8918fb218febcc46ddf64cba9e03894dfa226b28bd/uv-0.11.7-py3-none-win_amd64.whl",
+        "sha256": "5674dfb5944513f4b3735b05c2deba6b1b01151f46729d533d413a9a905f8c5d"
+      }
+    ]
+  },
+  "python_official": "https://releases.astral.sh/github/python-build-standalone/releases/download",
+  "python_probe_archive": "20260211/cpython-3.10.19%2B20260211-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+  "python_mirrors": [
+    {"label": "npmmirror", "url": "https://registry.npmmirror.com/-/binary/python-build-standalone"},
+    {"label": "中科大镜像", "url": "https://mirrors.ustc.edu.cn/github-release/astral-sh/python-build-standalone"}
+  ],
+  "pypi_mirrors": [
+    {"label": "阿里云 PyPI 镜像", "url": "https://mirrors.aliyun.com/pypi/simple"},
+    {"label": "清华 PyPI 镜像", "url": "https://pypi.tuna.tsinghua.edu.cn/simple"},
+    {"label": "腾讯云 PyPI 镜像", "url": "https://mirrors.cloud.tencent.com/pypi/simple"},
+    {"label": "中科大 PyPI 镜像", "url": "https://mirrors.ustc.edu.cn/pypi/simple"}
+  ],
+  "pytorch_mirrors": [
+    {"label": "上海交大 PyTorch 镜像", "url": "https://mirror.sjtu.edu.cn/pytorch-wheels/{tag}"},
+    {"label": "南京大学 PyTorch 镜像", "url": "https://mirror.nju.edu.cn/pytorch/whl/{tag}"}
+  ]
+}

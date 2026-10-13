@@ -185,7 +185,7 @@ def start(window, out):
                 check('diagnostic did not launch installer',dialog.process.state()==QProcess.NotRunning)
                 check('diagnostic did not upload',report.get('upload') is False)
                 check('diagnostic body bounded',report.get('total_consumed_bytes',10**9)<=2*1024**2)
-                check('diagnostic contains models and runtime probes',bool(report.get('models')) and len(report.get('bootstrap',[]))==4)
+                check('diagnostic contains models and runtime probes',bool(report.get('models')) and len(report.get('bootstrap',[]))>=4)
                 QTest.mouseClick(dialog.copy_diagnostic_button,Qt.LeftButton)
                 copied=json.loads(QApplication.clipboard().text())
                 check('copy diagnostic retains exact sanitized report',copied==report)

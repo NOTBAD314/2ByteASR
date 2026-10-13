@@ -36,7 +36,7 @@ def test_first_run_guide_dialog_constructs_and_detects_hardware():
 
     app = QApplication.instance() or QApplication([])
     dialog = GuidedSetupDialog()
-    assert dialog.lang_combo.count() == 3
+    assert [dialog.lang_combo.itemData(i) for i in range(dialog.lang_combo.count())] == ['zh', 'zh-Hant', 'en', 'ja']
     # _detect_gpu must not raise even without nvidia-smi (CI)
     assert dialog.gpu_info.text()
     assert dialog.preset_group.button(0).minimumHeight() >= 90
@@ -44,7 +44,15 @@ def test_first_run_guide_dialog_constructs_and_detects_hardware():
     assert dialog.selected_backends() == ("sensevoice", "off", "off")
     assert dialog.selected_download_keys() == ("sensevoice",)
     assert dialog.preset_group.button(1).isChecked()
+    # The real CUDA probe is still running: let it report before the dialog becomes garbage, or a
+    # later collection on its output-pump thread tears the dialog down off the GUI thread.
+    deadline = time.monotonic() + 30
+    while dialog._cuda_status is None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
     dialog.close()
+    dialog.deleteLater()
+    app.processEvents()
 
 
 def test_first_run_guide_switches_presets_without_waiting_for_cuda_probe(monkeypatch):

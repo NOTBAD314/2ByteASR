@@ -211,6 +211,11 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-audio-worker':
         from twobyteasr.audio_process import main as audio_main
         return audio_main(sys.argv[2:])
+    if len(sys.argv) == 2 and sys.argv[1] == '--asr-api-worker':
+        # Cloud recognition request process (2026-10-13): runs with the app's
+        # own executable so cloud-only users need no local model runtime.
+        from twobyteasr.cloud_api_worker import main as cloud_api_worker_main
+        return cloud_api_worker_main()
     import multiprocessing
 
     multiprocessing.freeze_support()

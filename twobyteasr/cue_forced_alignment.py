@@ -218,11 +218,20 @@ def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions
     if not jobs:
         return 0
     from twobyteasr.asr import AlignerUnavailableError, run_qwen_aligner_worker, summarize_aligner_payload
+    from twobyteasr.service import CancelledError
     try:
         payload = run_qwen_aligner_worker(audio, jobs)
     except AlignerUnavailableError as exc:
         legacy.add_review_item(0.0, "缺少对齐模型", str(exc), priority=3, severity="warning")
         legacy.record_run_event("forced_alignment_unavailable", stage="final_cues", reason=str(exc))
+        return 0
+    except CancelledError:
+        raise
+    except Exception as exc:
+        # A failed aligner must not discard the recognized subtitles; cues keep
+        # their recognizer bounds and stay marked as lacking word alignment.
+        legacy.add_review_item(0.0, "字级对齐失败", str(exc)[:200], priority=2, severity="warning")
+        legacy.record_run_event("forced_alignment_failed", stage="final_cues", reason=str(exc)[:500])
         return 0
     attached = attach_results(cues, runs, payload)
     legacy.record_run_event("forced_alignment", stage="final_cues", language=language, attached=attached,

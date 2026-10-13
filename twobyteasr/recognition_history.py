@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from twobyteasr.i18n import current_language, translate
+from twobyteasr.i18n import current_language, translate, ui_literal
 from twobyteasr.ui_navigation import NAVIGATION_QSS, style_workspace_page_title
 from twobyteasr.ui_theme import (
     AMBER,
@@ -871,7 +871,7 @@ class HistoryCard(QFrame):
             metrics.addWidget(HistoryMetric(translate("素材时长", language), _duration_label(record.media_seconds)))
         cue_count = int(getattr(record, "cue_count", 0) or 0)
         if cue_count:
-            metrics.addWidget(HistoryMetric("字幕", f"{cue_count} 条"))
+            metrics.addWidget(HistoryMetric(translate("字幕", language), f"{cue_count} " + ui_literal("条", language)))
         metrics.addStretch(1)
         layout.addLayout(metrics)
 
@@ -895,21 +895,21 @@ class HistoryCard(QFrame):
         )
         metadata_items = [
             (ai, False),
-            (f"{record.glossary_count} " + ("term libraries" if language == "en" else "个词库"), False),
+            (f"{record.glossary_count} " + ("term libraries" if language == "en" else ui_literal("个词库", language)), False),
         ]
         if record.review_count:
             metadata_items.append((
-                f"{record.review_count} " + ("review items" if language == "en" else "項目" if language == "ja" else "项待检查"),
+                f"{record.review_count} " + ("review items" if language == "en" else "項目" if language == "ja" else ui_literal("项待检查", language)),
                 False,
             ))
         if record.anomaly_count:
             metadata_items.append((
-                f"{record.anomaly_count} " + ("issues" if language == "en" else "个问题"),
+                f"{record.anomaly_count} " + ("issues" if language == "en" else ui_literal("个问题", language)),
                 True,
             ))
         for text, warning in metadata_items:
             chip = QLabel(text)
-            is_review = text.endswith(("项待检查", "review items", "項目"))
+            is_review = text.endswith(("项待检查", ui_literal("项待检查", language), "review items", "項目"))
             chip.setObjectName(
                 "historyMetaChipWarn" if warning else
                 ("historyMetaChipReview" if is_review else "historyMetaChip")
@@ -1651,9 +1651,9 @@ class RecognitionHistoryPage(QWidget):
                 summary += f"\n{len(errors)} unreadable files"
         else:
             summary = (
-                f"{len(self.records)} 条任务记录\n"
-                f"{sum(record.has_anomaly for record in self.records)} 条含警告或异常"
-            ) + (f"\n{len(errors)} 个文件无法读取" if errors else "")
+                f"{len(self.records)} " + ui_literal("条任务记录", language) + "\n"
+                f"{sum(record.has_anomaly for record in self.records)} " + ui_literal("条含警告或异常", language)
+            ) + (f"\n{len(errors)} " + ui_literal("个文件无法读取", language) if errors else "")
         if loading:
             summary += "\n" + tr("正在读取 {count} 份报告…", count=loading)
         if self._notice:

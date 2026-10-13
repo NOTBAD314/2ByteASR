@@ -626,6 +626,7 @@ class SubtitleStudioPage(
         self._editor_compact_visibility: tuple[bool, ...] | None = None
         self._studio_shortcuts: list[QShortcut] = []
         self._performance_dialog = None
+        # Re-keyed from the shortcut registry in _install_shortcuts.
         self._performance_shortcut = QShortcut(QKeySequence("Ctrl+Shift+P"), self)
         self._performance_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._performance_shortcut.activated.connect(self._show_performance_panel)
@@ -649,6 +650,18 @@ class SubtitleStudioPage(
         self._close_complete = False
         self._close_thread: threading.Thread | None = None
         self._shortcut_values = self._load_shortcut_values()
+        import weakref
+        from . import shortcut_registry
+        page_ref = weakref.ref(self)
+
+        def _registry_changed(values, page_ref=page_ref):
+            page = page_ref()
+            if page is None:
+                raise RuntimeError("Studio page gone")  # the registry drops this listener
+            page._shortcut_registry_changed(values)
+
+        shortcut_registry.subscribe(_registry_changed)
+        self.destroyed.connect(lambda *_args, callback=_registry_changed: shortcut_registry.unsubscribe(callback))
         from .interaction_runtime import InteractionRuntimeAudit
         self._interaction_runtime_audit = InteractionRuntimeAudit(self)
         self.runtime_settings = getattr(getattr(parent, "legacy", None), "RUNTIME_SETTINGS", {})
@@ -828,39 +841,16 @@ class SubtitleStudioPage(
         ).start()
 
     def _load_shortcut_values(self) -> dict[str, str]:
-        from .studio_shortcuts import studio_default_shortcuts
-        try:
-            payload = json.loads(studio_settings_path().read_text(encoding="utf-8"))
-            values = payload.get("shortcuts", {}) if isinstance(payload, dict) else {}
-        except (OSError, ValueError, TypeError):
-            values = {}
-        loaded = {
-            command_id: str(values[command_id]) if command_id in values else default
-            for command_id, default in studio_default_shortcuts().items()
-        }
-        # 2026-09-03：合并工具默认键 M→B（用户指定，B 与 V/C 相邻）。设置对话框
-        # 在修复前无法打开，因此任何等于旧默认 "M" 的存量值都来自旧默认而非用户
-        # 自定义，一律迁移；用户此后可在设置里自行改回。
-        if str(loaded.get("merge_tool") or "").strip().upper() == "M":
-            loaded["merge_tool"] = STUDIO_COMMANDS["merge_tool"][1]
-        # Letter shortcuts are dispatched only outside text editors, so Review
-        # can use its compact R / Shift+R pair without stealing typed text.
-        if str(values.get("reasr_review") or "").strip().upper() == "R":
-            loaded["reasr_review"] = STUDIO_COMMANDS["reasr_review"][1]
-        if loaded.get("toggle_review", "").strip().upper() == "SHIFT+R":
-            loaded["toggle_review"] = STUDIO_COMMANDS["toggle_review"][1]
-        # New defaults never steal an existing custom binding. Leave the new
-        # command unbound and make the conflict visible in shortcut settings.
-        conflicts=[]
-        for command in ('track_forward_tool','video_transition','audio_transition'):
-            if command in values:continue
-            key=QKeySequence(loaded[command]).toString(QKeySequence.PortableText)
-            owners=[name for name,value in loaded.items() if name!=command and name in values
-                    and QKeySequence(value).toString(QKeySequence.PortableText)==key]
-            if owners:
-                loaded[command]='';conflicts.append(command)
-        self._new_shortcut_conflicts=conflicts
-        return loaded
+        """Studio bindings from the shared registry (2026-10-13).
+
+        The registry keeps the historic migrations (merge tool M→B, review
+        R/Shift+R) and never lets a new default steal a key the user chose:
+        such a command stays unbound and is reported in the shortcut settings.
+        """
+        from . import shortcut_registry
+        values, unbound = shortcut_registry.load_values(shortcut_registry.read_stored())
+        self._new_shortcut_conflicts = [key for key in unbound if key in STUDIO_COMMANDS]
+        return {key: values[key] for key in STUDIO_COMMANDS}
 
     def _studio_trace(self, event: str, **fields: object) -> None:
         """Queue Studio diagnostics without filesystem work on the GUI thread."""
@@ -928,14 +918,21 @@ class SubtitleStudioPage(
         self.startup_milestone_signal.emit(str(name), dict(fields))
 
     def _save_shortcut_values(self) -> None:
-        path = studio_settings_path()
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-        except (OSError, ValueError, TypeError):
-            payload = {}
-        payload["shortcuts"] = dict(self._shortcut_values)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # One store for every page; other Studio settings keys are kept.
+        from . import shortcut_registry
+        shortcut_registry.save_values(dict(self._shortcut_values))
+
+    def _shortcut_registry_changed(self, values: dict) -> None:
+        """Bindings saved elsewhere (application settings) apply at once."""
+        studio = {key: values.get(key, "") for key in STUDIO_COMMANDS}
+        if studio != getattr(self, "_shortcut_values", None):
+            self._shortcut_values = studio
+            self._install_shortcuts()
+
+    def _native_keys_blocked(self) -> bool:
+        """A modal card over the main window owns the keyboard."""
+        host = getattr(self.window(), "_modal_host", None)
+        return bool(host is not None and host.isVisible())
 
     def _studio_preferences(self) -> dict[str, object]:
         try:
@@ -1004,25 +1001,47 @@ class SubtitleStudioPage(
             "confirm_next_review": lambda: self._confirm_current_review(play_next=True),
             "reasr_review": self._reasr_current,
             "toggle_review": lambda: self._set_review_mode(not self._review_mode),
-            "edit_review": self._focus_review_editor,
             "skip_review": self._skip_current_review,
             "exit_review": self._exit_review,
             "add_subtitle": self._add_subtitle_at_playhead,
             "track_gain": self._show_track_gain,
+            # 2026-10-13: formerly hard-wired in the dispatcher, now rebindable.
+            "edit_at_playhead": self._shortcut_edit_at_playhead,
+            "select_all": self._shortcut_select_all,
+            "copy_style": self._shortcut_copy_style,
+            "paste_style": self._shortcut_paste_style,
+            "performance_panel": self._show_performance_panel,
+            "find": self._open_find_replace,
+            "find_replace": self._open_find_replace,
+            "review_play_context": self._shortcut_review_play,
+            "review_previous": lambda: self._step_priority(-1),
+            "review_next": lambda: self._step_priority(1),
+            "review_adopt_1": lambda: self._adopt_review_candidate(0),
+            "review_adopt_2": lambda: self._adopt_review_candidate(1),
+            "review_adopt_3": lambda: self._adopt_review_candidate(2),
+            "review_adopt_4": lambda: self._adopt_review_candidate(3),
         }
         if getattr(self,'_new_shortcut_conflicts',None):
             bind_text(self.save_state,'新增快捷键与已有自定义绑定冲突，已保留原绑定；请在快捷键设置中改绑')
-        if hasattr(self,'track_forward_tool_button'):
-            binding=self._shortcut_values.get('track_forward_tool','')
-            bind_text(self.track_forward_tool_button,'轨道向前选择 ({key}) · Shift 单轨',property='toolTip',key=binding or tr('未绑定'))
+        from . import shortcut_registry
         self._shortcut_lookup.clear()
+        self._review_shortcut_lookup = {}
         for command_id in self._command_callbacks:
-            sequence = self._shortcut_values.get(command_id, "")
+            sequence = shortcut_registry.normalize(self._shortcut_values.get(command_id, ""))
             if not sequence:
                 continue
-            canonical = QKeySequence(sequence).toString(QKeySequence.SequenceFormat.PortableText)
-            if canonical:
-                self._shortcut_lookup[canonical] = command_id
+            action = shortcut_registry.BY_ID.get(command_id)
+            target = (self._review_shortcut_lookup if action is not None and action.scope == "studio.review"
+                      else self._shortcut_lookup)
+            target.setdefault(sequence, command_id)
+        # Window-level shortcuts that must also work while a text box has focus
+        # (find/replace, performance panel) follow the same bindings.
+        for attribute, command_id in (("_find_replace_shortcut", "find_replace"), ("_find_shortcut", "find"),
+                                      ("_performance_shortcut", "performance_panel")):
+            shortcut = getattr(self, attribute, None)
+            if shortcut is not None:
+                shortcut.setKey(QKeySequence(self._shortcut_values.get(command_id, "")))
+        self._refresh_shortcut_tooltips()
         # 2026-09-19：焦点看门狗——mpv/预览子窗口的异步操作可能在编辑自愈
         # 之后再次把 Win32 焦点打到 NULL。仅在本应用处于前台时低频收回，
         # 绝不打扰用户正在使用的其他应用。
@@ -1283,80 +1302,101 @@ class SubtitleStudioPage(
         self._performance_dialog.activateWindow()
 
     def _dispatch_shortcut_sequence(self, sequence: str) -> bool:
+        """One key press → at most one command, from the shared registry.
+
+        Review-mode bindings win while review is on; everything else uses the
+        Studio bindings. Contextual commands (select all, style copy/paste,
+        edit at playhead) report "not handled" when they do not apply, so the
+        key reaches the focused widget instead of doing nothing.
+        """
         if self._editing_has_focus() or getattr(self,"_studio_ime_composing",False):
             return False
+        from .shortcut_registry import normalize
+        sequence = normalize(sequence)
         if sequence.casefold() in ("esc","escape") and self.timeline.cancel_selection_gesture():
             return True
-        if sequence.casefold() == "ctrl+shift+p":
-            self._show_performance_panel()
-            return True
-        # E is a core Studio edit command in both normal and Review modes.
-        # Keep it explicit so a stale/custom shortcut map cannot make the
-        # visible keyboard contract silently disappear.
-        if sequence.casefold() == "ctrl+shift+c" and self.project and self.selected_cue_id:
-            self._copy_subtitle_style()
-            return True
-        if sequence.casefold() == "ctrl+shift+v" and self.project and self.selected_cue_id:
-            self._paste_subtitle_style()
-            return True
-        if (
-            sequence.casefold() == "ctrl+a"
-            and self.project
-        ):
-            focus = QApplication.focusWidget()
-            if focus is self.timeline or (focus and self.timeline.isAncestorOf(focus)):
-                self.timeline.select_all_clips()
-                return True
-            if self._cue_list_has_focus():
-                self._select_all_timeline_cues()
-                return True
-        if sequence in {"E", "e"} and self.project:
-            self._studio_trace(
-                "KEY_E",
-                key="E",
-                focus_widget=type(QApplication.focusWidget()).__name__ if QApplication.focusWidget() else "None",
-                active_window=QApplication.activeWindow() is self.window(),
-                selected_cue=self.selected_cue_id,
-                review_mode=self._review_mode,
-            )
-            self._edit_subtitle_at_playhead()
-            return True
-        command_id = self._shortcut_lookup.get(sequence)
         in_review = bool(self._review_mode)
-        if in_review and sequence in {"1", "2", "3", "4"}:
-            self._adopt_review_candidate(int(sequence) - 1)
-            return True
-        if in_review and sequence == "Space":
-            self._review_space_pending = False
-            self._play_review_context()
-            return True
-        if in_review and sequence in {"Esc", "Escape"}:
-            self._exit_review()
-            return True
-        elif in_review and sequence in {"Enter", "Return"}:
-            command_id = "confirm_review"
-        elif in_review and sequence in {"Up", "Down"}:
-            self._step_priority(-1 if sequence == "Up" else 1)
-            return True
-        review_only = {
-            "confirm_review",
-            "confirm_next_review",
-            "reasr_review",
-            "skip_review",
-            "exit_review",
-        }
-        if command_id in review_only and not in_review:
-            return False
-        callback = (
-            self._play_review_context
-            if command_id == "replay_review"
-            else self._command_callbacks.get(command_id or "")
-        )
+        command_id = None
+        if in_review:
+            command_id = getattr(self, "_review_shortcut_lookup", {}).get(sequence)
+        if command_id is None:
+            command_id = self._shortcut_lookup.get(sequence)
+        callback = self._command_callbacks.get(command_id or "")
         if callback is None:
             return False
         with self._interaction_runtime_audit.measure(command_id or sequence):
-            callback()
+            handled = callback()
+        # Only the contextual commands may decline; every other command keeps
+        # the historic "key consumed" contract.
+        return not (handled is False and command_id in self._CONTEXTUAL_SHORTCUTS)
+
+    _CONTEXTUAL_SHORTCUTS = frozenset({"edit_at_playhead", "select_all", "copy_style", "paste_style"})
+
+    def _shortcut_edit_at_playhead(self):
+        if not self.project:
+            return False
+        self._studio_trace(
+            "KEY_E",
+            key="E",
+            focus_widget=type(QApplication.focusWidget()).__name__ if QApplication.focusWidget() else "None",
+            active_window=QApplication.activeWindow() is self.window(),
+            selected_cue=self.selected_cue_id,
+            review_mode=self._review_mode,
+        )
+        self._edit_subtitle_at_playhead()
         return True
+
+    def _shortcut_select_all(self):
+        if not self.project:
+            return False
+        focus = QApplication.focusWidget()
+        if focus is self.timeline or (focus and self.timeline.isAncestorOf(focus)):
+            self.timeline.select_all_clips()
+            return True
+        if self._cue_list_has_focus():
+            self._select_all_timeline_cues()
+            return True
+        return False
+
+    def _shortcut_copy_style(self):
+        if not (self.project and self.selected_cue_id):
+            return False
+        self._copy_subtitle_style()
+        return True
+
+    def _shortcut_paste_style(self):
+        if not (self.project and self.selected_cue_id):
+            return False
+        self._paste_subtitle_style()
+        return True
+
+    def _shortcut_review_play(self):
+        self._review_space_pending = False
+        self._play_review_context()
+        return True
+
+    def _refresh_shortcut_tooltips(self) -> None:
+        """Toolbar hints show the current keys (same wording as before for defaults)."""
+        from . import shortcut_registry as keys
+        values = self._shortcut_values
+
+        def key(command_id):
+            return keys.tooltip_key(command_id, values)
+
+        for attribute, template, command_id in (
+            ("save_button", "保存项目 ({key})", "save"),
+            ("track_forward_tool_button", "轨道向前选择 ({key}) · Shift 单轨", "track_forward_tool"),
+        ):
+            widget = getattr(self, attribute, None)
+            if widget is not None:
+                bind_text(widget, template, property="toolTip", key=key(command_id))
+        widget = getattr(self, "studio_find_replace_button", None)
+        if widget is not None:
+            bind_text(widget, '查找并替换字幕文字 ({find} / {replace})', property='toolTip',
+                      find=key("find"), replace=key("find_replace"))
+        widget = getattr(self, "review_mode_button", None)
+        if widget is not None:
+            bind_text(widget, '{key} 进入 / 退出审核模式', property='toolTip', key=key("toggle_review"))
 
     def _clear_review_space(self, generation: int) -> None:
         if generation == self._review_space_generation:

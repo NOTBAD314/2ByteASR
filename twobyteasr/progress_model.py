@@ -102,8 +102,20 @@ def stage_description(label) -> str:
     return STAGE_DESCRIPTIONS.get(stage_record_name(label), "")
 
 
-def moss_description(phase) -> str:
-    return MOSS_DESCRIPTIONS.get(str(phase or ""), "")
+# A long task split into windows (2026-10-13): "whole audio" would be wrong.
+MOSS_WINDOW_DESCRIPTIONS = {
+    "audio_encoding": "正在读取本段音频特征",
+    "generation": "正在分段识别长音频",
+    "completed": "分段识别已完成",
+    "needs_review": "分段识别已完成，部分结果需要复核",
+}
+
+
+def moss_description(phase, windowed=False) -> str:
+    phase = str(phase or "")
+    if windowed and phase in MOSS_WINDOW_DESCRIPTIONS:
+        return MOSS_WINDOW_DESCRIPTIONS[phase]
+    return MOSS_DESCRIPTIONS.get(phase, "")
 
 
 def phase_ranges(total) -> tuple[set, set, set, set]:

@@ -304,6 +304,9 @@ def build_visual_cue_snapshot(
             cue = next((item for item in project.cues if item.id == resolved_id), None)
     if cue is None:
         return None
+    # Web-theme previews and renders show the project's punctuation choice.
+    from .punctuation_style import style_cues
+    cue = style_cues(project, [cue])[0]
     resolved = resolve_cue_visual(project, cue)
     style = resolved.style
     from .resolved_caption_style import resolve_caption_style

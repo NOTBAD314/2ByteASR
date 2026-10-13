@@ -25,6 +25,20 @@ def button_role(button: QAbstractButton, role: str = "secondary", *, icon: str =
     return button
 
 
+def glyph_button(button: QAbstractButton, *, size: int = 32, glyph: int = 22):
+    """A square button labelled by one glyph, such as a dialog's ×.
+
+    The role/size rules pad every button by 16 px a side and set a 36 px
+    minimum height: in a 32 px square the × had no width left (nothing was
+    painted) and the square grew to 38 px tall (2026-10-13). The widget's own
+    sheet wins over those rules; the role keeps its colours, hover and focus.
+    """
+    inner = size - 2  # the role rules draw a 1 px border
+    button.setStyleSheet(f"padding: 0; min-width: {inner}px; max-width: {inner}px; "
+                         f"min-height: {inner}px; max-height: {inner}px; font-size: {glyph}px;")
+    return button
+
+
 def field_width(field: QWidget, role: str = "preferred", *, size: str = "default"):
     low, high = FIELD_WIDTHS[role]
     field.setProperty("fieldWidth", role)

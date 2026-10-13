@@ -80,7 +80,10 @@ def apply(root, language):
     from PySide6.QtGui import QAction
     from PySide6.QtWidgets import (QAbstractButton, QComboBox, QGroupBox, QLabel,
         QLineEdit, QPlainTextEdit, QTextEdit, QTabBar, QTableWidget, QListWidget, QPushButton, QWidget)
-    from .i18n import _KNOWN_KEYS, translate, render_arguments
+    from . import i18n as _i18n
+    from .i18n import translate, render_arguments
+    _i18n.language_table(language)  # zh-Hant loads on first use and extends the known keys
+    _KNOWN_KEYS = _i18n._KNOWN_KEYS
     reverse = _reverse_translations()
     zoom, zoom_factor, zoom_active = _zoom_state()
     # Containers whose items / documents the pass also rewrites are always
@@ -361,7 +364,7 @@ def _qt_language(app, language):
     if previous is not None:
         app.removeTranslator(previous)
     translator = QTranslator(app)
-    locale = {'zh':'zh_CN','ja':'ja','en':'en'}[language]
+    locale = {'zh':'zh_CN','zh-Hant':'zh_TW','ja':'ja','en':'en'}.get(language, 'zh_CN')
     if translator.load('qtbase_' + locale, QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
         app.installTranslator(translator)
     app._i18n_qt_translator = translator

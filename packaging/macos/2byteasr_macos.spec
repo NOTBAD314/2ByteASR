@@ -37,7 +37,7 @@ binaries.extend((str(path),'.') for path in selected_media_libraries(Path(native
 # QVideoSink uses Qt's native multimedia decoder plugin. Collect the precise
 # plugin class explicitly, while Analysis handles its linked libraries.
 binaries.extend(get_qt_library_info('PySide6').collect_plugins('multimedia'))
-for directory in ('assets','licenses','lexicons','renderer','twobyteasr','third_party','docs/design','scripts','packaging/macos'):
+for directory in ('assets','licenses','lexicons','renderer','twobyteasr','third_party','docs/design','docs/api-setup','scripts','packaging/macos'):
     for path in (ROOT/directory).rglob('*'):
         if not path.is_file(): continue
         relative=path.relative_to(ROOT)

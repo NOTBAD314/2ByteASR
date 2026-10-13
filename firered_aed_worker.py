@@ -36,10 +36,35 @@ def _install_forced_align_dtype_probe(torch):
         if getattr(log_probs, "dtype", None) not in allowed:
             log_probs = log_probs.float()
             _emit("align_dtype_cast", from_dtype=payload["log_probs_dtype"], to_dtype=str(log_probs.dtype))
+        device = getattr(log_probs, "device", None)
+        if getattr(device, "type", "") == "mps":
+            # torchaudio forced_align has no MPS kernel (2026-10-14): align on
+            # the CPU and hand the result back on the model's device.
+            result = original(log_probs.float().cpu(), targets.cpu(), *args, **kwargs)
+            return tuple(item.to(device) if hasattr(item, "to") else item for item in result)
         return original(log_probs, targets, *args, **kwargs)
 
     functional.forced_align = wrapped
     return functional, original
+
+
+def _resolve_device(torch, requested: str) -> str:
+    """cuda | mps | cpu for ``--device`` (2026-10-14).
+
+    ``auto`` keeps "requires CUDA" off macOS; on macOS it prefers the Apple GPU
+    (MPS) and falls back to the CPU.
+    """
+    requested = str(requested or "auto").lower()
+    if requested in ("auto", "cuda") and torch.cuda.is_available():
+        return "cuda"
+    if requested == "cuda" or (requested == "auto" and sys.platform != "darwin"):
+        raise RuntimeError("FireRedASR2-AED requires CUDA")
+    mps = getattr(torch.backends, "mps", None)
+    if requested in ("auto", "mps") and mps is not None and mps.is_available():
+        return "mps"
+    if requested == "mps":
+        raise RuntimeError("FireRedASR2-AED: Apple GPU (MPS) is not available to PyTorch on this computer")
+    return "cpu"
 
 
 def _atomic_write(path: Path, payload: object) -> None:
@@ -54,6 +79,8 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--model-dir", required=True)
     parser.add_argument('--batch-size', type=int, default=1)
+    parser.add_argument('--device', default=os.environ.get('TWOBYTEASR_FIRERED_DEVICE', 'auto'),
+                        choices=('auto', 'cuda', 'mps', 'cpu'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
     if root.name == 'workers':
@@ -66,8 +93,8 @@ def main() -> None:
     from fireredasr2s.fireredasr2 import FireRedAsr2, FireRedAsr2Config
 
     verify_model_files("firered_aed", Path(args.model_dir), root=root)
-    if not torch.cuda.is_available():
-        raise RuntimeError("FireRedASR2-AED requires CUDA")
+    kind = _resolve_device(torch, args.device)
+    cuda = kind == "cuda"
     jobs = json.loads(Path(args.manifest).read_text(encoding="utf-8")).get("jobs", [])
     if not jobs:
         raise RuntimeError("FireRedASR2-AED manifest is empty")
@@ -78,18 +105,24 @@ def main() -> None:
                  'encoder_ms':0., 'decode_ms':0., 'alignment_ms':0., 'batches':[],
                  'warmup':'first_batch_included', 'oom_retries':0,'batch_retries':0}
     restores=[]
+    def synchronize():
+        if kind == "cuda":
+            torch.cuda.synchronize()
+        elif kind == "mps":
+            torch.mps.synchronize()
     def measure(owner, name, key, *, cuda=False):
         original=getattr(owner,name)
         def measured(*args,**kwargs):
-            if cuda:torch.cuda.synchronize()
+            if cuda:synchronize()
             tick=time.perf_counter()
             try:return original(*args,**kwargs)
             finally:
-                if cuda:torch.cuda.synchronize()
+                if cuda:synchronize()
                 telemetry[key]+=(time.perf_counter()-tick)*1000
         setattr(owner,name,measured);restores.append((owner,name,original))
     try:
-        torch.cuda.reset_peak_memory_stats()
+        if cuda:
+            torch.cuda.reset_peak_memory_stats()
         load_started = time.perf_counter()
         _emit("loading", python=sys.executable, model_path=str(Path(args.model_dir).resolve()), pid=os.getpid())
         # FireRed's config selects BF16 on newer CUDA cards, while torchaudio
@@ -98,12 +131,17 @@ def main() -> None:
         if callable(original_bf16_check):
             torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
         dtype_probe = _install_forced_align_dtype_probe(torch)
+        # The library only knows CUDA or CPU: MPS loads on the CPU in float32
+        # and is moved to the Apple GPU below (2026-10-14).
         config = FireRedAsr2Config(
-            use_gpu=True, use_half=True, beam_size=3, nbest=1,
+            use_gpu=cuda, use_half=cuda, beam_size=3, nbest=1,
             decode_max_len=0, softmax_smoothing=1.25,
             aed_length_penalty=0.6, eos_penalty=1.0, return_timestamp=True,
         )
         model = FireRedAsr2.from_pretrained("aed", str(args.model_dir), config)
+        _emit("device", kind=kind, requested=args.device)
+        if kind == "mps":
+            model.model.to("mps")
         try:
             parameter = next(model.model.parameters())
             _emit("model_dtype", dtype=str(parameter.dtype), device=str(parameter.device))
@@ -116,12 +154,19 @@ def main() -> None:
         measure(model.model.encoder,'forward','encoder_ms',cuda=True)
         measure(model.model.decoder,'batch_beam_search','decode_ms',cuda=True)
         measure(model.model,'get_token_timestamp_torchaudio','alignment_ms',cuda=True)
-        measure(torch.Tensor,'cuda','cpu_to_gpu_ms',cuda=True)
+        if cuda:
+            measure(torch.Tensor,'cuda','cpu_to_gpu_ms',cuda=True)
         extractor=model.feat_extractor
         class TimedFeatures:
             def __call__(self,*args,**kwargs):
                 tick=time.perf_counter();reading=telemetry['audio_read_ms']
-                try:return extractor(*args,**kwargs)
+                try:
+                    out=extractor(*args,**kwargs)
+                    if kind=='mps' and isinstance(out,tuple) and len(out)>=2 and out[0] is not None:
+                        moved=time.perf_counter()
+                        out=(out[0].to('mps'),out[1].to('mps'))+tuple(out[2:])
+                        telemetry['cpu_to_gpu_ms']+=(time.perf_counter()-moved)*1000
+                    return out
                 finally:telemetry['features_ms']+=(time.perf_counter()-tick)*1000-(telemetry['audio_read_ms']-reading)
         model.feat_extractor=TimedFeatures()
         results = []
@@ -138,7 +183,9 @@ def main() -> None:
                 if batch_size<=1:raise
                 batch_size=max(1,batch_size//2);telemetry['batch_retries']+=1
                 if 'out of memory' in str(exc).lower():telemetry['oom_retries']+=1
-                gc.collect();torch.cuda.empty_cache()
+                gc.collect()
+                if cuda:torch.cuda.empty_cache()
+                elif kind=='mps':torch.mps.empty_cache()
                 _emit('concurrency_reduced',batch_size=batch_size,error_type=type(exc).__name__)
                 continue
             by_id={str(value.get('uttid')):value for value in values}
@@ -166,7 +213,10 @@ def main() -> None:
         telemetry.update(device=str(next(model.model.parameters()).device),dtype=str(next(model.model.parameters()).dtype),
             batch_size=batch_size,beam_size=3,coverage='full_audio_overlapping_windows',chunk_count=len(jobs),
             chunk_seconds=[round(float(job['duration']),3) for job in jobs],
-            peak_allocated_bytes=torch.cuda.max_memory_allocated(),peak_reserved_bytes=torch.cuda.max_memory_reserved(),
+            device_kind=kind,
+            peak_allocated_bytes=(torch.cuda.max_memory_allocated() if cuda else
+                                  int(torch.mps.driver_allocated_memory()) if kind == 'mps' else None),
+            peak_reserved_bytes=torch.cuda.max_memory_reserved() if cuda else None,
             first_result_ms=round(load_ms+telemetry['batches'][0]['elapsed_ms'],3))
         _atomic_write(Path(args.output), {"results": results, "load_ms":round(load_ms,3),
             "inference_ms":round((time.perf_counter()-inference_started)*1000,3),'telemetry':telemetry})
@@ -183,6 +233,11 @@ def main() -> None:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        elif getattr(getattr(torch, "mps", None), "empty_cache", None) and sys.platform == "darwin":
+            try:
+                torch.mps.empty_cache()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

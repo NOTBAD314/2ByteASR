@@ -25,7 +25,7 @@ DEFAULT_PROMPT = (
 
 # Application metadata, never passed as invented model.generate parameters.
 INFERENCE_MODE = "full_context"
-CACHE_VERSION = "moss-full-context-v1"
+CACHE_VERSION = "moss-full-context-v2"
 PROMPT_VERSION = "native-transcript-v1"
 GENERATION_POLICY = {"tokens_per_second": 24, "minimum_output_tokens": 2048,
                      "context_reserve": 32, "do_sample": False,
@@ -49,6 +49,334 @@ def ending_assessment(generated_tokens, budget, last_token, eos_ids):
     return "unexpected_stop", False
 
 
+# Capacity planning (2026-10-13). One generate holds the prompt, the transcript
+# and the KV cache of both. A 2 h 23 min stream needed 114,384 prompt tokens of a
+# 131,072-token context and a 14.0 GiB KV cache on a 16 GB GPU: it neither fits
+# nor could finish. Tasks that do not fit are split at quiet points into windows
+# that fit this GPU's free memory and the context; neighbouring windows overlap
+# by exactly ``overlap_seconds`` (the pipeline's merger owns each half).
+WINDOW_POLICY = {"overlap_seconds": 20.0, "cut_search_seconds": 45.0, "minimum_window_seconds": 180.0,
+                 "planning_output_tokens_per_second": 16, "prompt_overhead_tokens": 100,
+                 # Prefill peak per prompt token: MLP intermediates (3 x 3072 bf16),
+                 # expanded prefill K/V, hidden states. 22 KiB was measured at the
+                 # failing allocation of the 2 h 23 min report; 40 KiB keeps margin.
+                 "transient_bytes_per_prompt_token": 40 * 1024,
+                 "fixed_overhead_bytes": 800 * 2**20, "safety_bytes": 512 * 2**20,
+                 "allocator_headroom_bytes": 256 * 2**20, "max_oom_splits": 6}
+
+
+class WindowCapacityError(RuntimeError):
+    """Even the shortest allowed window cannot fit the free GPU memory."""
+
+
+def kv_bytes_per_token(text_config, dtype_bytes=2):
+    heads = int(text_config.num_attention_heads)
+    kv_heads = int(getattr(text_config, "num_key_value_heads", heads) or heads)
+    head_dim = int(getattr(text_config, "head_dim", 0) or text_config.hidden_size // heads)
+    return int(text_config.num_hidden_layers) * 2 * kv_heads * head_dim * int(dtype_bytes)
+
+
+def window_estimate(seconds, prompt_rate, context_limit, kv_bytes):
+    """Tokens and device bytes one window needs.
+
+    The KV cache is allocated for the whole output budget, so it never grows
+    (a growth step briefly needs the old and the new buffer at once).
+    """
+    policy = WINDOW_POLICY
+    prompt = policy["prompt_overhead_tokens"] + prompt_rate * seconds
+    room = context_limit - prompt - GENERATION_POLICY["context_reserve"]
+    wanted = max(GENERATION_POLICY["minimum_output_tokens"], seconds * GENERATION_POLICY["tokens_per_second"])
+    budget = max(0.0, min(wanted, room))
+    needed = max(GENERATION_POLICY["minimum_output_tokens"], seconds * policy["planning_output_tokens_per_second"])
+    total = (kv_bytes * (prompt + budget) + policy["transient_bytes_per_prompt_token"] * prompt
+             + policy["fixed_overhead_bytes"])
+    return {"seconds": round(seconds, 3), "prompt_tokens": int(math.ceil(prompt)), "output_budget": int(budget),
+            "bytes": int(total), "context_ok": bool(room >= needed)}
+
+
+def plan_windows(duration, prompt_tokens, context_limit, usable_bytes, kv_bytes, max_window_seconds=None):
+    """Single context when the task fits, otherwise the fewest windows that do.
+
+    ``max_window_seconds`` (env TWOBYTEASR_MOSS_MAX_WINDOW_SECONDS) only ever
+    shortens windows: a QA knob and a manual escape if free memory is misread.
+    """
+    policy = WINDOW_POLICY
+    rate = max(1e-6, (prompt_tokens - policy["prompt_overhead_tokens"]) / max(duration, 1e-6))
+    available = usable_bytes - policy["safety_bytes"]
+
+    try:
+        override = float(max_window_seconds) if max_window_seconds else None
+    except (TypeError, ValueError):
+        override = None
+    if override is not None:
+        override = max(override, policy["minimum_window_seconds"])
+
+    def fits(seconds):
+        if override is not None and seconds > override:
+            return False
+        estimate = window_estimate(seconds, rate, context_limit, kv_bytes)
+        return estimate["context_ok"] and estimate["bytes"] <= available
+
+    plan = {"duration": round(duration, 3), "prompt_tokens": int(prompt_tokens),
+            "prompt_tokens_per_second": round(rate, 4), "context_limit": int(context_limit),
+            "kv_bytes_per_token": int(kv_bytes), "usable_bytes": int(usable_bytes),
+            "overlap_seconds": policy["overlap_seconds"], "max_window_override": override}
+    if fits(duration):
+        plan.update(mode="single_context", count=1, max_window_seconds=round(duration, 3),
+                    estimate=window_estimate(duration, rate, context_limit, kv_bytes))
+        return plan
+    low, high = 0.0, float(duration)
+    for _ in range(48):
+        middle = (low + high) / 2
+        low, high = (middle, high) if fits(middle) else (low, middle)
+    plan["max_window_seconds"] = round(low, 1)
+    if low < policy["minimum_window_seconds"]:
+        plan.update(mode="insufficient", count=0, needed_bytes=window_estimate(
+            policy["minimum_window_seconds"], rate, context_limit, kv_bytes)["bytes"] + policy["safety_bytes"])
+        return plan
+    # Cuts move by up to cut_search_seconds and each window gains the overlap.
+    step = low - policy["overlap_seconds"] - 2 * policy["cut_search_seconds"]
+    count = max(2, math.ceil(duration / step))
+    plan.update(mode="context_windows", count=count, nominal_window_seconds=round(duration / count, 1),
+                estimate=window_estimate(duration / count + policy["overlap_seconds"] + 2 * policy["cut_search_seconds"],
+                                         rate, context_limit, kv_bytes))
+    return plan
+
+
+def quiet_cut(audio, target, search, *, lower=0.0, upper=None, sample_rate=16000):
+    """Centre of the quietest 0.8 s within ``search`` seconds of ``target`` (nearest on ties)."""
+    import numpy as np
+    upper = len(audio) / sample_rate if upper is None else upper
+    start, end = max(lower, target - search), min(upper, target + search)
+    hop = int(0.05 * sample_rate)
+    first = int(start * sample_rate)
+    segment = np.asarray(audio[first:int(end * sample_rate)], dtype=np.float32)
+    frames = len(segment) // hop
+    width = 16
+    if frames <= width:
+        return round(min(max(target, start), end), 3)
+    energy = np.sqrt(np.mean(np.square(segment[:frames * hop].reshape(frames, hop), dtype=np.float64), axis=1))
+    smooth = np.convolve(energy, np.ones(width) / width, mode="valid")
+    centres = start + (np.arange(len(smooth)) + width / 2) * 0.05
+    index = int(np.lexsort((np.abs(centres - target), np.round(smooth, 7)))[0])
+    return round(float(centres[index]), 3)
+
+
+def window_bounds(audio, duration, count, sample_rate=16000):
+    """Window (start, end) seconds; neighbours overlap by exactly ``overlap_seconds``."""
+    if count <= 1:
+        return [(0.0, float(duration))]
+    policy = WINDOW_POLICY
+    half = policy["overlap_seconds"] / 2
+    cuts, previous = [], 0.0
+    for index in range(1, count):
+        lower = previous + 2 * policy["overlap_seconds"]
+        upper = duration - (count - index) * 2 * policy["overlap_seconds"]
+        cut = quiet_cut(audio, duration * index / count, policy["cut_search_seconds"],
+                        lower=lower, upper=upper, sample_rate=sample_rate)
+        cuts.append(cut)
+        previous = cut
+    bounds = []
+    for index in range(count):
+        start = 0.0 if index == 0 else round(cuts[index - 1] - half, 3)
+        end = float(duration) if index == count - 1 else round(cuts[index] + half, 3)
+        bounds.append((start, end))
+    return bounds
+
+
+class DeviceOps:
+    """CUDA, Apple MPS and CPU differences in one place (2026-10-14).
+
+    The CUDA path calls exactly what the worker always called. MPS and CPU run
+    float32 (as the upstream MOSS example does off CUDA), have no allocator
+    fraction to set, and report memory from the MPS driver or the process.
+    """
+
+    def __init__(self, torch, kind, device):
+        self.torch, self.kind, self.device = torch, kind, device
+
+    @property
+    def cuda(self):
+        return self.kind == "cuda"
+
+    def empty_cache(self):
+        if self.kind == "cuda":
+            self.torch.cuda.empty_cache()
+        elif self.kind == "mps":
+            self.torch.mps.empty_cache()
+
+    def reset_peak(self):
+        if self.kind == "cuda":
+            self.torch.cuda.reset_peak_memory_stats()
+        self._peak = self.allocated_bytes()
+
+    def allocated_bytes(self):
+        try:
+            if self.kind == "cuda":
+                return int(self.torch.cuda.memory_allocated())
+            if self.kind == "mps":
+                return int(self.torch.mps.driver_allocated_memory())
+            return _process_rss_bytes()
+        except Exception:
+            return 0
+
+    def peak_gb(self):
+        if self.kind == "cuda":
+            return round(self.torch.cuda.max_memory_allocated() / 1024**3, 3)
+        self._peak = max(getattr(self, "_peak", 0), self.allocated_bytes())
+        return round(self._peak / 1024**3, 3)
+
+    def autocast(self, dtype):
+        if self.kind == "cuda":
+            return self.torch.amp.autocast("cuda", dtype=dtype)
+        import contextlib
+        return contextlib.nullcontext()
+
+    def is_oom(self, exc):
+        if isinstance(exc, self.torch.cuda.OutOfMemoryError):
+            return True
+        return self.kind != "cuda" and isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+
+    def usable(self):
+        """(bytes this process may still use, total, CUDA allocator fraction or None)."""
+        if self.kind == "cuda":
+            return usable_device_bytes(self.torch)
+        if self.kind == "mps":
+            total = int(self.torch.mps.recommended_max_memory())
+            used = self.allocated_bytes()
+            return max(0, total - used - WINDOW_POLICY["allocator_headroom_bytes"]), total, None
+        available, total = _system_memory_bytes()
+        return max(0, int(available * 0.85) - WINDOW_POLICY["allocator_headroom_bytes"]), total, None
+
+    def memory_fields(self):
+        if self.kind == "cuda":
+            free, total = self.torch.cuda.mem_get_info()
+            return {"vram_free_gb": round(free / 1024**3, 3), "vram_total_gb": round(total / 1024**3, 3),
+                    "allocated_gb": round(self.torch.cuda.memory_allocated() / 1024**3, 3),
+                    "reserved_gb": round(self.torch.cuda.memory_reserved() / 1024**3, 3)}
+        fields = {"device_kind": self.kind, "allocated_gb": round(self.allocated_bytes() / 1024**3, 3)}
+        if self.kind == "mps":
+            fields["mps_recommended_max_gb"] = round(self.torch.mps.recommended_max_memory() / 1024**3, 3)
+        return fields
+
+
+def _process_rss_bytes():
+    """Peak resident memory of this process (no extra packages needed)."""
+    try:
+        import psutil
+        return int(psutil.Process().memory_info().rss)
+    except Exception:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class Counters(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                            ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                            ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+            counters = Counters()
+            counters.cb = ctypes.sizeof(counters)
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE   # pseudo-handle -1, not a 32-bit int
+            get_info = kernel32.K32GetProcessMemoryInfo
+            get_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+            get_info.restype = wintypes.BOOL
+            if not get_info(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+                return 0
+            return int(counters.PeakWorkingSetSize)
+        except Exception:
+            return 0
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return int(rss if sys.platform == "darwin" else rss * 1024)
+    except Exception:
+        return 0
+
+
+def _system_memory_bytes():
+    """(available, total) physical memory."""
+    try:
+        import psutil
+        memory = psutil.virtual_memory()
+        return int(memory.available), int(memory.total)
+    except Exception:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            class Status(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            status = Status()
+            status.dwLength = ctypes.sizeof(status)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            return int(status.ullAvailPhys), int(status.ullTotalPhys)
+        except Exception:
+            pass
+    try:
+        pages, size = os.sysconf("SC_PHYS_PAGES"), os.sysconf("SC_PAGE_SIZE")
+        total = int(pages * size)
+        available = total // 2
+        if sys.platform == "darwin":
+            # vm_stat: free + inactive + speculative pages are reclaimable.
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
+            counts = {}
+            for line in out.splitlines()[1:]:
+                name, _, value = line.partition(":")
+                if value.strip().rstrip(".").isdigit():
+                    counts[name.strip()] = int(value.strip().rstrip("."))
+            page = int(out.split("page size of")[1].split()[0]) if "page size of" in out else size
+            available = page * sum(counts.get(name, 0) for name in ("Pages free", "Pages inactive", "Pages speculative"))
+        return int(available), total
+    except Exception:
+        return 8 * 1024**3, 16 * 1024**3
+
+
+def resolve_device(torch, requested):
+    """(kind, device, dtype) for ``--device`` auto | cuda | mps | cpu.
+
+    ``auto`` keeps the long-standing CUDA requirement off macOS (MOSS on a
+    Windows/Linux CPU is about real time and is never chosen silently); on
+    macOS it prefers the Apple GPU (MPS) and falls back to the CPU.
+    """
+    requested = str(requested or "auto").lower()
+    if requested in ("auto", "cuda") and torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        return "cuda", device, torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    if requested == "cuda" or (requested == "auto" and sys.platform != "darwin"):
+        raise RuntimeError("MOSS 当前工作流要求 CUDA GPU。")
+    mps = getattr(torch.backends, "mps", None)
+    if requested in ("auto", "mps") and mps is not None and mps.is_available():
+        return "mps", torch.device("mps"), torch.float32
+    if requested == "mps":
+        raise RuntimeError("这台电脑的 PyTorch 不能使用 Apple GPU（MPS 不可用）。")
+    return "cpu", torch.device("cpu"), torch.float32
+
+
+def usable_device_bytes(torch):
+    """Bytes this process may still allocate without spilling into shared memory.
+
+    On Windows the driver can back allocations with system RAM once the GPU is
+    full (the 2 h 23 min report: 17.4 GiB allocated on a 15.9 GiB card, ~700 s
+    of crawling prefill before the OOM). The returned fraction caps PyTorch at
+    the memory that is physically free now, so an overrun fails at once.
+    """
+    free, total = torch.cuda.mem_get_info()
+    reserved, allocated = torch.cuda.memory_reserved(), torch.cuda.memory_allocated()
+    limit = reserved + free - WINDOW_POLICY["allocator_headroom_bytes"]
+    fraction = min(1.0, max(0.05, limit / total))
+    return int(limit - allocated), int(total), fraction
+
+
 def audio_fingerprint(audio, sample_rate):
     import numpy as np
     digest = hashlib.sha256(f"float32-mono:{int(sample_rate)}:".encode())
@@ -68,20 +396,18 @@ class ExecutionProgress:
         self.tokens = 0
         self.first_token_seconds = None
         self.prompt_tokens = 0
-        self.cuda_ready = False
+        self.ops = None   # DeviceOps once the device is chosen
         self._rate_mark = (self.started, 0)
         self.stop = threading.Event()
+        # Current window of a long task, carried by every event (2026-10-13).
+        self.window = {}
 
     def device_memory(self):
-        """Measured VRAM: device-wide free/total and this process's allocator."""
-        if not self.cuda_ready:
+        """Measured device memory: CUDA free/total and allocator, or MPS/CPU usage."""
+        if self.ops is None:
             return {}
         try:
-            import torch
-            free, total = torch.cuda.mem_get_info()
-            return {"vram_free_gb": round(free / 1024**3, 3), "vram_total_gb": round(total / 1024**3, 3),
-                    "allocated_gb": round(torch.cuda.memory_allocated() / 1024**3, 3),
-                    "reserved_gb": round(torch.cuda.memory_reserved() / 1024**3, 3)}
+            return self.ops.memory_fields()
         except Exception:
             return {}
 
@@ -90,7 +416,7 @@ class ExecutionProgress:
             self.last_activity = time.monotonic()
         row = {"phase": self.phase, "elapsed_seconds": round(time.monotonic() - self.started, 3),
                "last_activity_elapsed_seconds": round(self.last_activity - self.started, 3),
-               "generated_tokens": self.tokens, "progress_percent": None, **fields}
+               "generated_tokens": self.tokens, "progress_percent": None, **self.window, **fields}
         print("MOSS_EVENT " + json.dumps(row, ensure_ascii=False), flush=True)
 
     def set_phase(self, phase):
@@ -136,6 +462,10 @@ def install_prefill_attention_policy(model, dtype, receipt):
     policy = {"kv_groups": groups, "head_dim": head_dim, "fused_gqa_kernel": None, "prefill_kv_expanded": False}
     receipt["attention_policy"] = policy
     if groups <= 1:
+        return policy
+    if not torch.cuda.is_available():
+        # MPS / CPU (2026-10-14): no CUDA kernel choice to probe; SDPA picks its own.
+        policy["non_cuda_default"] = True
         return policy
     try:
         from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -271,7 +601,9 @@ def install_encoder_batching(model, batch_size, progress):
     import torch
     from transformers.modeling_outputs import BaseModelOutput
     encoder = model.model.whisper_encoder
-    original = encoder.forward
+    # Installed once per window: always wrap the library's own forward.
+    original = getattr(encoder, "_twobyteasr_original_forward", None) or encoder.forward
+    encoder._twobyteasr_original_forward = original
     state = {"batch_size": batch_size}
 
     def forward(input_features, **kwargs):
@@ -289,26 +621,36 @@ def install_encoder_batching(model, batch_size, progress):
     return state
 
 
-def generate_full_context(model, processor, audio, messages, device, dtype, progress, receipt):
+def prompt_inputs(processor, audio, messages, context_limit):
+    """Processor output for one audio window (CPU tensors) and its prompt length."""
     import torch
-    from moss_transcribe_diarize.inference_utils import ProgressStreamer
-    context_limit = int(model.config.text_config.max_position_embeddings)
-    progress.set_phase("audio_encoding")
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     # Processor owns its 30s feature blocks and ordered audio_chunk_mapping.
     # Do not use truncation, VAD concatenation, or a shorter raw waveform.
     with torch.inference_mode():
-        inputs = processor(text=text, audio=[audio], max_length=context_limit,
-                           return_tensors="pt").to(device)
+        inputs = processor(text=text, audio=[audio], max_length=context_limit, return_tensors="pt")
+    return inputs, int(inputs["attention_mask"][0].sum().item())
+
+
+def generate_full_context(model, processor, audio, messages, device, dtype, progress, receipt, inputs=None):
+    """One generate over one audio window (the whole task when it fits)."""
+    import torch
+    ops = progress.ops or DeviceOps(torch, "cuda", device)
+    from moss_transcribe_diarize.inference_utils import ProgressStreamer
+    context_limit = int(model.config.text_config.max_position_embeddings)
+    progress.set_phase("audio_encoding")
+    if inputs is None:
+        inputs, _ = prompt_inputs(processor, audio, messages, context_limit)
+    inputs = inputs.to(device)
     prompt_len = int(inputs["attention_mask"][0].sum().item())
     budget, requested = generation_budget(len(audio) / processor.feature_extractor.sampling_rate, prompt_len, context_limit)
     receipt.update(input_tokens=prompt_len, max_new_tokens=budget, requested_output_tokens=requested,
                    context_limit=context_limit, processor_feature_chunk_count=int(inputs["input_features"].shape[0]))
     progress.emit(input_tokens=prompt_len, max_new_tokens=budget, context_limit=context_limit)
     progress.prompt_tokens = prompt_len
-    # KV buffers sized for the expected transcript (about 5-8 tokens per audio
-    # second measured); they grow only if a dense transcript needs more.
-    kv_capacity = prompt_len + min(budget, math.ceil(len(audio) / processor.feature_extractor.sampling_rate * 10) + 2048)
+    # KV buffers for the whole output budget: they never grow, so the memory
+    # planned by plan_windows is the memory used (2026-10-13).
+    kv_capacity = prompt_len + budget
     receipt["kv_cache"] = {"kind": "preallocated_growing", "initial_capacity_tokens": kv_capacity}
     config = copy.deepcopy(model.generation_config)
     config.max_new_tokens = budget
@@ -333,8 +675,8 @@ def generate_full_context(model, processor, audio, messages, device, dtype, prog
             # the driver so decoding does not hold VRAM other programs need.
             progress.first_token_seconds = round(progress.last_activity - progress.phase_started, 3)
             receipt["first_token_seconds"] = progress.first_token_seconds
-            receipt["prefill_peak_allocated_gb"] = round(torch.cuda.max_memory_allocated() / 1024**3, 3)
-            torch.cuda.empty_cache()
+            receipt["prefill_peak_allocated_gb"] = ops.peak_gb()
+            ops.empty_cache()
             progress.emit(first_token_seconds=progress.first_token_seconds,
                           prefill_peak_allocated_gb=receipt["prefill_peak_allocated_gb"], **progress.device_memory())
         elif count % 100 == 0:
@@ -350,19 +692,25 @@ def generate_full_context(model, processor, audio, messages, device, dtype, prog
         cache = growing_kv_cache(model, kv_capacity)
         if cache is None:
             receipt["kv_cache"] = {"kind": "default_dynamic", "reason": "config_without_layer_types"}
-        with torch.inference_mode(), torch.amp.autocast("cuda", dtype=dtype):
+        with torch.inference_mode(), ops.autocast(dtype):
             return model.generate(**inputs, generation_config=config, streamer=ProgressStreamer(token_callback),
                                   **({"past_key_values": cache} if cache is not None else {}))
 
     try:
         outputs = attempt()
-    except torch.cuda.OutOfMemoryError as exc:
+    except Exception as exc:
+        if not ops.is_oom(exc):
+            raise
+        if progress.phase != "audio_encoding":
+            # The decoder (prefill or decode) ran out: the same input cannot fit
+            # again. The caller splits this window instead (2026-10-13).
+            raise
         receipt["retries"].append({"reason": "cuda_oom", "detail": str(exc), "encoder_batch_size": 1})
         encoder_state["batch_size"] = 1
         # Release this attempt's traceback/tensors before retrying the SAME input.
         exc.__traceback__ = None
         gc.collect()
-        torch.cuda.empty_cache()
+        ops.empty_cache()
         progress.emit(retry_reason="cuda_oom", encoder_batch_size=1)
         outputs = attempt()  # One bounded retry; never independent audio requests.
     generated = outputs[0][prompt_len:]
@@ -376,6 +724,168 @@ def generate_full_context(model, processor, audio, messages, device, dtype, prog
                    encoder_batch_size=encoder_state["batch_size"],
                    truncation_reasons=[] if complete else [reason])
     return processor.tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
+WINDOW_RECORD_KEYS = ("generation_attempts", "input_tokens", "max_new_tokens", "requested_output_tokens",
+                      "context_limit", "processor_feature_chunk_count", "kv_cache", "first_token_seconds",
+                      "prefill_peak_allocated_gb", "decode_tokens_per_second", "decode_window_tokens_per_second",
+                      "final_context_tokens", "generated_tokens", "end_reason", "complete", "encoder_batch_size",
+                      "truncation_reasons")
+
+
+def parse_window_segments(raw_text, window_seconds, chunk_id, record, parse_transcript):
+    """Native MOSS rows of one window (times relative to the window start)."""
+    import re
+    segments = []
+    for segment in parse_transcript(raw_text):
+        text = str(segment.text).strip()
+        if text:
+            start, end = float(segment.start), float(segment.end)
+            if start < 0 or end <= start or end > window_seconds + 1:
+                record["complete"] = False
+                record.setdefault("truncation_reasons", []).append("invalid_timestamp")
+            segments.append({"start": start, "end": end,
+                             "speaker": parsed_speaker_label(segment.speaker, chunk_id), "text": text})
+    segments.sort(key=lambda row: (row["start"], row["end"]))
+    # A parser can silently skip an unfinished final clause: retain a review flag.
+    if segments and not re.search(r"\[[0-9]+(?:\.[0-9]+)?\]\s*$", raw_text):
+        record["complete"] = False
+        record.setdefault("truncation_reasons", []).append("unfinished_transcript_tail")
+    return segments
+
+
+def run_windows(model, processor, audio, messages, device, dtype, progress, receipt, payload,
+                parse_transcript, output_path):
+    """Plan, then generate each window in order; an OOM splits the window it hit."""
+    import numpy as np
+    import torch
+    rate = 16000
+    duration = len(audio) / rate
+    policy = WINDOW_POLICY
+    half = policy["overlap_seconds"] / 2
+    context_limit = int(model.config.text_config.max_position_embeddings)
+    progress.set_phase("audio_encoding")
+    full_inputs, full_prompt = prompt_inputs(processor, audio, messages, context_limit)
+    ops = progress.ops or DeviceOps(torch, "cuda", device)
+    usable, total, fraction = ops.usable()
+    if fraction is not None:
+        torch.cuda.set_per_process_memory_fraction(fraction, device)
+    kv_bytes = kv_bytes_per_token(model.config.text_config, torch.finfo(dtype).bits // 8)
+    plan = plan_windows(duration, full_prompt, context_limit, usable, kv_bytes,
+                        max_window_seconds=os.environ.get("TWOBYTEASR_MOSS_MAX_WINDOW_SECONDS"))
+    plan.update(device_total_bytes=total, memory_fraction=round(fraction, 4) if fraction is not None else None,
+                device_kind=ops.kind)
+    receipt["window_plan"] = plan
+    progress.emit(window_plan=plan, **progress.device_memory())
+    if plan["mode"] == "insufficient":
+        have, need = usable / 2**30, plan['needed_bytes'] / 2**30
+        minutes = policy['minimum_window_seconds'] / 60
+        if ops.kind == "cuda":
+            message = (f"显存不足：本机现在可用约 {have:.1f} GiB，MOSS 最短 {minutes:.0f} 分钟的"
+                       f"识别窗口也需要约 {need:.1f} GiB。请关闭占用显卡的程序后重试，或改用其他主力转写模型。")
+        else:
+            # Apple GPU (MPS) and CPU use system memory, not a graphics card (2026-10-14).
+            where = "这台 Mac 的内存（Apple 芯片的显卡与内存共用）" if ops.kind == "mps" else "本机内存"
+            message = (f"可用内存不足：{where}现在约剩 {have:.1f} GiB，MOSS 最短 {minutes:.0f} 分钟的识别窗口"
+                       f"还需要约 {need:.1f} GiB。请关闭其他占用内存的程序后重试，或改用云端识别等其他主力转写方式。")
+        raise WindowCapacityError(message)
+    queue = window_bounds(audio, duration, plan["count"], rate)
+    first_inputs = full_inputs if plan["count"] == 1 else None
+    del full_inputs
+    chunks, windows, attempts, splits = [], [], 0, 0
+    while queue:
+        start, end = queue.pop(0)
+        low, high = int(round(start * rate)), min(len(audio), int(round(end * rate)))
+        single = low == 0 and high == len(audio)
+        window_audio = audio if single else np.ascontiguousarray(audio[low:high])
+        record = {"generation_attempts": 0, "retries": []}
+        progress.window = {"window_index": len(chunks) + 1, "window_count": len(chunks) + 1 + len(queue),
+                           "window_start": round(low / rate, 3), "window_end": round(high / rate, 3)}
+        progress.emit()
+        ops.reset_peak()
+        failure = None
+        try:
+            raw_text = generate_full_context(model, processor, window_audio, messages, device, dtype,
+                                             progress, record, inputs=first_inputs)
+        except Exception as exc:
+            if not ops.is_oom(exc):
+                raise
+            failure = (str(exc), progress.phase)
+            exc.__traceback__ = None
+        if failure is not None:
+            # Outside the except block nothing pins the failed attempt's tensors.
+            first_inputs = None
+            attempts += record["generation_attempts"]
+            detail, phase = failure
+            del window_audio
+            gc.collect()
+            ops.empty_cache()
+            seconds = (high - low) / rate
+            if splits >= policy["max_oom_splits"] or seconds < 2 * policy["minimum_window_seconds"]:
+                raise WindowCapacityError(
+                    f"MOSS 分段后仍显存不足（{seconds / 60:.1f} 分钟的窗口，已拆分 {splits} 次）：{detail[:300]}") from None
+            cut = quiet_cut(audio, (low + high) / 2 / rate, min(policy["cut_search_seconds"], seconds / 4),
+                            lower=low / rate + 2 * policy["overlap_seconds"],
+                            upper=high / rate - 2 * policy["overlap_seconds"], sample_rate=rate)
+            queue[0:0] = [(low / rate, round(cut + half, 3)), (round(cut - half, 3), high / rate)]
+            splits += 1
+            receipt["retries"].append({"reason": "cuda_oom_window_split", "phase": phase,
+                                       "window": [round(low / rate, 3), round(high / rate, 3)], "cut": cut,
+                                       "detail": detail[:300]})
+            progress.emit(retry_reason="cuda_oom_window_split", window_start=low / rate, window_end=high / rate, cut=cut)
+            continue
+        first_inputs = None
+        attempts += record["generation_attempts"]
+        record["peak_allocated_gb"] = ops.peak_gb()
+        index = len(chunks) + 1
+        chunk = {"chunk_id": index, "offset": low / rate, "duration": (high - low) / rate,
+                 "audio_input": {"sampling_rate": rate, "sample_counts": [high - low],
+                                 "audio_seconds": [(high - low) / rate], "clock": "task_pcm_zero"},
+                 "raw_text": raw_text, "segments": []}
+        chunks.append(chunk)
+        payload["chunks"] = chunks
+        if single:
+            payload["raw_text"] = raw_text
+        # Preserve native raw output even if parsing fails.
+        atomic_write_json(output_path, payload)
+        progress.set_phase("parsing")
+        chunk["segments"] = parse_window_segments(raw_text, (high - low) / rate, index, record, parse_transcript)
+        if single and not chunk["segments"]:
+            raise RuntimeError("MOSS 整段输出无法解析为说话人时间段；原始输出已保留。")
+        chunk.update(prompt_tokens=record.get("input_tokens"), max_new_tokens=record.get("max_new_tokens"),
+                     generated_tokens=record.get("generated_tokens"), end_reason=record.get("end_reason"),
+                     complete=bool(record.get("complete")))
+        windows.append({"index": index, "start": round(low / rate, 3), "end": round(high / rate, 3),
+                        **{key: record.get(key) for key in WINDOW_RECORD_KEYS if key in record},
+                        "retries": record["retries"], "peak_allocated_gb": record["peak_allocated_gb"],
+                        "segments": len(chunk["segments"])})
+        atomic_write_json(output_path, payload)
+        del window_audio
+        gc.collect()
+        ops.empty_cache()
+    if not any(chunk["segments"] for chunk in chunks):
+        raise RuntimeError("MOSS 各段输出都无法解析为说话人时间段；原始输出已保留。")
+    receipt["retries"].extend(retry for window in windows for retry in window["retries"])
+    if len(chunks) == 1:
+        receipt.update({key: windows[0][key] for key in WINDOW_RECORD_KEYS if key in windows[0]})
+    else:
+        reasons = [f"window{row['index']}:{reason}" for row in windows for reason in row.get("truncation_reasons") or []]
+        receipt.update(input_tokens=sum(row.get("input_tokens") or 0 for row in windows),
+                       max_new_tokens=sum(row.get("max_new_tokens") or 0 for row in windows),
+                       requested_output_tokens=sum(row.get("requested_output_tokens") or 0 for row in windows),
+                       generated_tokens=sum(row.get("generated_tokens") or 0 for row in windows),
+                       context_limit=context_limit,
+                       end_reason="eos" if all(row.get("end_reason") == "eos" for row in windows) else next(
+                           row.get("end_reason") for row in windows if row.get("end_reason") != "eos"),
+                       complete=all(row.get("complete") for row in windows), truncation_reasons=reasons)
+    receipt.update(generation_attempts=attempts, application_chunk_count=len(chunks), windows=windows,
+                   window_mode="single_context" if len(chunks) == 1 else "context_windows")
+    segments = [row for chunk in chunks for row in chunk["segments"]]
+    receipt.update(raw_segment_count=len(segments),
+                   raw_speaker_distribution=dict(Counter(f"W{chunk['chunk_id']}:{row['speaker']}" if len(chunks) > 1
+                                                         else row["speaker"] for chunk in chunks for row in chunk["segments"])),
+                   last_transcript_end=max(chunk["offset"] + row["end"] for chunk in chunks for row in chunk["segments"]))
+    payload["generated_tokens"] = receipt["generated_tokens"]
 
 
 def parsed_speaker_label(value, chunk_id):
@@ -395,6 +905,11 @@ def parse_args():
     parser.add_argument("--checkpoint-dir", default="")
     parser.add_argument("--run-signature", default="")
     parser.add_argument("--task-audio-fingerprint", default="")
+    # 2026-10-14: auto keeps "CUDA required" off macOS; on macOS auto = MPS, else CPU.
+    parser.add_argument("--device", default=os.environ.get("TWOBYTEASR_MOSS_DEVICE", "auto"),
+                        choices=("auto", "cuda", "mps", "cpu"))
+    parser.add_argument("--dtype", default=os.environ.get("TWOBYTEASR_MOSS_DTYPE", "auto"),
+                        choices=("auto", "float32", "float16", "bfloat16"))
     return parser.parse_args()
 
 
@@ -642,15 +1157,22 @@ def main():
         from transformers import AutoModelForCausalLM, AutoProcessor
         from moss_transcribe_diarize import parse_transcript
         from moss_transcribe_diarize.inference_utils import build_transcription_messages, load_audio_item
-        if not torch.cuda.is_available():
-            raise RuntimeError("MOSS 当前工作流要求 CUDA GPU。")
-        device = torch.device("cuda:0")
-        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        progress.cuda_ready = True
+        kind, device, dtype = resolve_device(torch, args.device)
+        if args.dtype != "auto":
+            dtype = getattr(torch, args.dtype)
+        ops = DeviceOps(torch, kind, device)
+        progress.ops = ops
+        if kind == "cuda":
+            device_name = torch.cuda.get_device_name(device)
+            capability = ".".join(str(part) for part in torch.cuda.get_device_capability(device))
+        else:
+            import platform
+            device_name = "Apple GPU (MPS)" if kind == "mps" else (platform.processor() or platform.machine())
+            capability = ""
         receipt.update(dtype=str(dtype), torch_version=torch.__version__,
                        transformers_version=transformers.__version__, runtime=sys.executable,
-                       device_name=torch.cuda.get_device_name(device),
-                       device_capability=".".join(str(part) for part in torch.cuda.get_device_capability(device)))
+                       device_kind=kind, device_requested=args.device,
+                       device_name=device_name, device_capability=capability)
         model_source = resolve_model(args.model, install_root)
         payload["model"] = model_source
         _vendored_verify_model_files("moss", model_source, install_root=install_root)
@@ -670,8 +1192,8 @@ def main():
             raise ValueError("worker完整任务音频指纹与调度器不一致。")
         progress.emit(**receipt)
         progress.set_phase("model_loading")
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
+        ops.empty_cache()
+        ops.reset_peak()
         model_started = time.monotonic()
         model = AutoModelForCausalLM.from_pretrained(model_source, trust_remote_code=True,
                     dtype="auto", attn_implementation="sdpa").to(dtype=dtype).to(device).eval()
@@ -685,40 +1207,8 @@ def main():
         install_prefill_attention_policy(model, dtype, receipt)
         progress.emit(attention_policy=install_decode_attention(model, receipt), **progress.device_memory())
         messages = build_transcription_messages(args.audio, prompt=DEFAULT_PROMPT)
-        raw_text = generate_full_context(model, processor, audio, messages, device, dtype, progress, receipt)
-        payload["raw_text"] = raw_text
-        # Preserve native raw output even if parsing fails.
-        atomic_write_json(args.output, payload)
-        progress.set_phase("parsing")
-        segments = []
-        for segment in parse_transcript(raw_text):
-            text = str(segment.text).strip()
-            if text:
-                start, end = float(segment.start), float(segment.end)
-                if start < 0 or end <= start or end > receipt["task_audio_duration"] + 1:
-                    receipt["complete"] = False
-                    receipt.setdefault("truncation_reasons", []).append("invalid_timestamp")
-                segments.append({"start": start, "end": end,
-                                 "speaker": parsed_speaker_label(segment.speaker, 1), "text": text})
-        if not segments:
-            raise RuntimeError("MOSS 整段输出无法解析为说话人时间段；原始输出已保留。")
-        segments.sort(key=lambda row: (row["start"], row["end"]))
-        # A parser can silently skip an unfinished final clause: retain a review flag.
-        import re
-        if not re.search(r"\[[0-9]+(?:\.[0-9]+)?\]\s*$", raw_text):
-            receipt["complete"] = False
-            receipt.setdefault("truncation_reasons", []).append("unfinished_transcript_tail")
-        receipt.update(raw_segment_count=len(segments),
-                       raw_speaker_distribution=dict(Counter(row["speaker"] for row in segments)),
-                       last_transcript_end=max(row["end"] for row in segments))
-        chunk = {"chunk_id": 1, "offset": 0.0, "duration": receipt["task_audio_duration"],
-                 "audio_input": {"sampling_rate": 16000, "sample_counts": [len(audio)],
-                                 "audio_seconds": [len(audio) / 16000], "clock": "task_pcm_zero"},
-                 "raw_text": raw_text, "segments": segments,
-                 "prompt_tokens": receipt["input_tokens"], "max_new_tokens": receipt["max_new_tokens"],
-                 "generated_tokens": receipt["generated_tokens"]}
-        payload["chunks"] = [chunk]
-        payload["generated_tokens"] = receipt["generated_tokens"]
+        run_windows(model, processor, audio, messages, device, dtype, progress, receipt, payload,
+                    parse_transcript, args.output)
         progress.set_phase("handoff")
     except Exception as exc:
         receipt.update(failure_stage=progress.phase, end_reason=type(exc).__name__,
@@ -731,8 +1221,13 @@ def main():
             progress.phase: round(progress.phase_seconds.get(progress.phase, 0.0) + time.monotonic() - progress.phase_started, 3)})
         try:
             import torch
-            receipt["peak_allocated_gb"] = round(torch.cuda.max_memory_allocated() / 1024**3, 3)
-            receipt["peak_reserved_gb"] = round(torch.cuda.max_memory_reserved() / 1024**3, 3)
+            # Peaks are reset per window; keep the largest one.
+            peaks = [row.get("peak_allocated_gb") or 0 for row in receipt.get("windows") or []]
+            if progress.ops is not None and not progress.ops.cuda:
+                receipt["peak_allocated_gb"] = round(max([progress.ops.peak_gb(), *peaks]), 3)
+            else:
+                receipt["peak_allocated_gb"] = round(max([torch.cuda.max_memory_allocated() / 1024**3, *peaks]), 3)
+                receipt["peak_reserved_gb"] = round(torch.cuda.max_memory_reserved() / 1024**3, 3)
         except Exception:
             pass
         payload["performance"] = {key: receipt.get(key) for key in (

@@ -609,16 +609,17 @@ def _run_audited_model_stage(
 def check_runtime(legacy):
     legacy.check_runtime()
     from twobyteasr.hardware import (
-        combination_requires_cuda,
         require_cuda_runtime,
         require_local_torch_runtime,
+        selected_cuda_components,
     )
     from twobyteasr.model_integrity import verify_model_files
     from importlib.metadata import PackageNotFoundError, version as package_version
 
     require_local_torch_runtime(legacy.RUNTIME_SETTINGS)
-    if combination_requires_cuda(legacy.RUNTIME_SETTINGS):
-        require_cuda_runtime()
+    cuda_components = selected_cuda_components(legacy.RUNTIME_SETTINGS)
+    if cuda_components:
+        require_cuda_runtime(cuda_components)
     primary_key = str(getattr(legacy, "PRIMARY_ASR_BACKEND", "moss"))
     if primary_key in {'vibevoice_1_5b', 'vibevoice_7b'}:
         raise RuntimeError('VibeVoice-ASR-Streaming 已移除，请在模型工坊选择现有主力模型。')
@@ -663,6 +664,10 @@ def check_runtime(legacy):
         required.append((legacy.resolve_whisper_local_source(), "Whisper Turbo 主力模型"))
     elif primary_key in {"sensevoice", "funasr_nano", "paraformer"}:
         required.append((legacy.resolve_funasr_local_source(primary_key), f"{primary_key} 主力模型"))
+    elif primary_key in {"mlx_qwen3_asr", "mlx_qwen3_asr_1_7b"}:
+        from twobyteasr.mlx_backend import asr_key, model_dir as mlx_model_dir
+        key = asr_key(primary_key)
+        required.append((str(mlx_model_dir(key) or f"MLX {key}（未安装）"), "MLX Qwen3-ASR 主力模型"))
     if legacy.FIRERED_ASR_BACKEND == "local":
         required.extend(
             [
@@ -672,6 +677,9 @@ def check_runtime(legacy):
         )
     elif legacy.FIRERED_ASR_BACKEND == "qwen_aligner":
         required.append((legacy.resolve_qwen_aligner_local_source(), "Qwen3 ForcedAligner 模型"))
+    elif legacy.FIRERED_ASR_BACKEND == "mlx_qwen_aligner":
+        from twobyteasr.mlx_backend import ALIGNER_KEY, model_dir as mlx_model_dir
+        required.append((str(mlx_model_dir(ALIGNER_KEY) or "MLX Qwen3-ForcedAligner（未安装）"), "MLX Qwen3 ForcedAligner 模型"))
     elif legacy.FIRERED_ASR_BACKEND == "whisper_turbo":
         required.append((legacy.resolve_whisper_local_source(), "Whisper 字幕时间轴模型"))
     elif legacy.FIRERED_ASR_BACKEND == "paraformer":
@@ -1912,7 +1920,10 @@ def transcribe_moss_global(media_path, shared_audio, legacy, cache_context):
         print(f"[MOSS LAUNCH full_context] worker={paths['moss_worker']} runtime={paths['moss_python']} samples={len(shared_audio)} @ {legacy.AUDIO_SAMPLE_RATE}Hz", flush=True)
         lines = []
         try:
-            code, lines = _run_streaming_worker(command, MOSS_TIMEOUT_SECONDS)
+            # Long tasks run several windows in this one worker (2026-10-13); the
+            # no-progress guard still stops a stalled process after 15 minutes.
+            timeout = max(MOSS_TIMEOUT_SECONDS, len(shared_audio) / legacy.AUDIO_SAMPLE_RATE * 1.5)
+            code, lines = _run_streaming_worker(command, timeout)
             _parallel_cancel_poll()
             payload = _read_moss_worker_payload(output_path, code, lines, "MOSS 整段worker",
                                                recorder=legacy.record_run_event)
@@ -1946,13 +1957,14 @@ def _normalize_moss_full_context(payload, shared_audio, legacy):
     execution = payload.get("execution", {})
     expected = audio_fingerprint(shared_audio, legacy.AUDIO_SAMPLE_RATE)
     if (payload.get("inference_mode") != INFERENCE_MODE or payload.get("cache_version") != CACHE_VERSION
-        or len(chunks) != 1 or float(chunks[0].get("offset", -1)) != 0
         or execution.get("sample_count") != len(shared_audio)
         or execution.get("sample_rate") != legacy.AUDIO_SAMPLE_RATE
         or execution.get("task_audio_fingerprint") != expected):
-        raise RuntimeError("MOSS完整输入/模式/时钟校验失败；拒绝分块或不完整运输结果。")
-    rows = copy.deepcopy(chunks[0]["segments"])
+        raise RuntimeError("MOSS完整输入/模式/时钟校验失败；拒绝不完整运输结果。")
     duration = len(shared_audio) / legacy.AUDIO_SAMPLE_RATE
+    if len(chunks) != 1 or float(chunks[0].get("offset", -1)) != 0:
+        return _normalize_moss_windows(payload, shared_audio, legacy, duration)
+    rows = copy.deepcopy(chunks[0]["segments"])
     for row in rows:
         if not str(row.get("speaker", "")).strip():
             raise RuntimeError("MOSS原生标签缺失，拒绝伪造身份。")
@@ -1973,6 +1985,66 @@ def _normalize_moss_full_context(payload, shared_audio, legacy):
         legacy.add_review_item(0, "主力转写不完整", "MOSS整段生成需要复核：" + ",".join(execution.get("truncation_reasons", [])), priority=3)
     legacy.record_run_event("moss_full_context_normalized", **execution,
                            speaker_distribution=label_summary(rows))
+    return canonical
+
+
+def _validate_moss_windows(chunks, execution, duration):
+    """Windows the worker planned: from 0 s to the end, neighbours overlapping by exactly 20 s."""
+    if execution.get("window_mode") != "context_windows" or len(chunks) < 2:
+        raise RuntimeError("MOSS多段结果缺少分段计划回执；拒绝来历不明的分块结果。")
+    previous_end = None
+    for index, chunk in enumerate(chunks):
+        offset, length = float(chunk.get("offset", -1)), float(chunk.get("duration", 0))
+        if length <= MOSS_CHUNK_OVERLAP_SECONDS:
+            raise RuntimeError(f"MOSS第 {index + 1} 段过短，拒绝拼接。")
+        if index == 0 and abs(offset) > 1e-6:
+            raise RuntimeError("MOSS分段没有从任务 0 秒开始。")
+        if previous_end is not None and abs(previous_end - offset - MOSS_CHUNK_OVERLAP_SECONDS) > 0.01:
+            raise RuntimeError(f"MOSS第 {index + 1} 段与前一段的重叠不是 {MOSS_CHUNK_OVERLAP_SECONDS:g} 秒，拒绝拼接。")
+        previous_end = offset + length
+    if abs(previous_end - duration) > 0.05:
+        raise RuntimeError("MOSS分段没有覆盖到任务结尾。")
+
+
+def _normalize_moss_windows(payload, shared_audio, legacy, duration):
+    """Several context windows of one task, stitched by voiceprint (2026-10-13).
+
+    Each window has its own native labels. ``_merge_moss_chunks`` keeps each
+    window's half of the 20 s overlap and links labels by ECAPA voiceprint, then
+    by the overlap's text; ``chunks`` stay in the payload so a cached result is
+    stitched again the same way.
+    """
+    from moss_worker import INFERENCE_MODE, CACHE_VERSION
+    from twobyteasr.speaker_evidence import label_summary
+    chunks = payload["chunks"]
+    execution = payload.get("execution", {})
+    _validate_moss_windows(chunks, execution, duration)
+    for chunk in chunks:
+        for row in chunk["segments"]:
+            if not str(row.get("speaker", "")).strip():
+                raise RuntimeError("MOSS原生标签缺失，拒绝伪造身份。")
+    merged = _merge_moss_chunks(copy.deepcopy(payload), duration, legacy, shared_audio)
+    result = dict(payload, segments=merged["segments"], chunk_summaries=merged["chunk_summaries"])
+    canonical = normalize_moss_result(result, producer="moss_full_context", consumer="moss_pipeline")
+    canonical["provenance"]["normalization"] = "context_windows_voiceprint_stitched"
+    mapping = {f"W{summary['chunk_id']}:{local}": global_label
+               for summary in merged["chunk_summaries"] for local, global_label in summary["speaker_map"].items()}
+    canonical["metadata"].update(inference_mode=INFERENCE_MODE, cache_version=CACHE_VERSION,
+        raw_speaker_to_internal_speaker_id=mapping,
+        speaker_stages={"parsed_chunks": [label_summary(chunk["segments"]) for chunk in chunks],
+                        "global_identities": label_summary(canonical["segments"])})
+    legacy.add_review_item(0, "长音频分段识别",
+        f"音频约 {duration / 60:.0f} 分钟，超出本机单次识别容量，已分 {len(chunks)} 段识别；"
+        "跨段的说话人由声纹拼接，请抽查同一人是否被分成两个编号或两人被合并。", priority=2)
+    if not execution.get("complete"):
+        legacy.add_review_item(0, "主力转写不完整", "MOSS分段生成需要复核：" + ",".join(execution.get("truncation_reasons", [])), priority=3)
+    legacy.record_run_event("moss_windows_merged", windows=len(chunks),
+        bounds=[[round(float(c["offset"]), 3), round(float(c["offset"]) + float(c["duration"]), 3)] for c in chunks],
+        speaker_maps=[summary["speaker_map"] for summary in merged["chunk_summaries"]],
+        speaker_voice_scores=[summary["speaker_voice_scores"] for summary in merged["chunk_summaries"]],
+        speaker_distribution=label_summary(canonical["segments"]))
+    legacy.record_run_event("moss_full_context_normalized", **execution,
+                           speaker_distribution=label_summary(canonical["segments"]))
     return canonical
 
 
@@ -2023,6 +2095,30 @@ def precompute_moss_batch_cache(media_paths, legacy):
     Model features remain internally batched within each single generation.
     """
     return
+
+
+def _cloud_hint_signature(runtime_context, legacy):
+    try:
+        from twobyteasr.asr_api_process import cache_hint_signature
+        return cache_hint_signature(dict(runtime_context.asr_endpoint_snapshot or {}),
+                                    runtime_context.asr_settings_snapshot or legacy.RUNTIME_SETTINGS,
+                                    getattr(runtime_context, "requested_language", None))
+    except Exception as exc:  # never let a hint signature block recognition
+        return {"api_hints_v1": f"unavailable:{type(exc).__name__}"}
+
+
+def _main_runtime_available():
+    """True when the managed local model runtime (or a source interpreter) exists.
+
+    A cloud-only install has none; optional local helpers then take their
+    documented fallback instead of failing (2026-10-13).
+    """
+    try:
+        from twobyteasr.runtime_registry import resolve_runtime_python
+        python = resolve_runtime_python("main") or ('' if getattr(sys, 'frozen', False) else sys.executable)
+    except Exception:
+        return False
+    return bool(python) and os.path.isfile(python)
 
 
 def detect_firered_vad(audio, legacy):
@@ -2917,6 +3013,12 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
 
     resolver = speaker_identity_resolver()
     segments = []
+    # Forced-aligner tokens are this transcript's own words placed in time
+    # (aligned per primary row by ``alignment_key``): timing only, never a
+    # second opinion on the text, never borrowed by another row.
+    aligner_mode = bool(timeline_tokens) and all(
+        str(token.get("source") or "") == "qwen-forced-aligner" for token in timeline_tokens)
+    from twobyteasr.forced_alignment import segment_alignment_key
     for row in sorted(references or [], key=lambda item: (float(item["start"]), float(item["end"]))):
         start = max(0.0, float(row.get("start", 0.0)))
         end = max(start + 0.04, float(row.get("end", start)))
@@ -2927,10 +3029,16 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
         speaker = resolver.resolve("", local_speaker)
         row_tokens = list(row.get("tokens") or [])
         streaming=backend in {'vibevoice_1_5b','vibevoice_7b'}
+        aligned_own = []
+        aligned_key = ""
+        if aligner_mode and not row_tokens and not streaming:
+            aligned_key = segment_alignment_key(local_speaker, row.get("start", 0.0), row.get("end", 0.0))
+            aligned_own = [token for token in timeline_tokens if str(token.get("alignment_key")) == aligned_key]
+            row_tokens = list(aligned_own)
         if streaming:
             from twobyteasr.optional_timing import exact_tokens
             row_tokens=row_tokens or exact_tokens(row,timeline_tokens)
-        if not row_tokens and not streaming:
+        if not row_tokens and not streaming and not aligner_mode:
             row_tokens = [
                 item
                 for item in (timeline_tokens or [])
@@ -2949,7 +3057,10 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
                     float(token.get("confidence", 0.78)),
                 )
             )
-        if not words and not streaming:
+        # True while the characters are only spread over the row bounds (no
+        # measured unit placed them); such rows must never count as measured.
+        spread = not words and not streaming
+        if spread:
             words = _distributed_words(text, start, end, 0.76, legacy)
         segments.append(
             legacy.SpeechSegment(
@@ -2978,9 +3089,13 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
             if not words:
                 legacy.add_review_item(start,'VibeVoice 字级对齐未完成','保留主转写文字、原生身份和块级范围；未知模型概率不作为零概率。',priority=2)
             continue
+        if aligned_own:
+            segment.caption_arbitration = dict(segment.caption_arbitration or {}, forced_alignment_window={
+                "start": min(float(t["start"]) for t in aligned_own), "end": max(float(t["end"]) for t in aligned_own),
+                "job": aligned_key, "token_count": len(aligned_own), "kind": "forced_alignment_span"})
         # Independent text is evidence, never a replacement word sequence for
         # an unrelated API transcript. Project matching anchors onto this text.
-        nearby = [token for token in (timeline_tokens or [])
+        nearby = [] if aligner_mode else [token for token in (timeline_tokens or [])
                   if float(token.get('end',0)) >= start and float(token.get('start',0)) <= end]
         raw_firered = legacy.clean_subtitle_text(''.join(str(token.get('text','')) for token in nearby))
         candidate, similarity = legacy.best_alternate_window(text, raw_firered)
@@ -2997,14 +3112,53 @@ def build_alternate_primary_segments(references, timeline_tokens, legacy, backen
                 segment.reference_consensus = similarity
                 segment.caption_arbitration = dict(segment.caption_arbitration or {}, timing_evidence=dict(window))
         primary_words_match = bool(row.get('tokens')) and legacy.content_only(''.join(word.text for word in segment.words)) == legacy.content_only(text)
+        aligner_words_match = bool(aligned_own) and legacy.content_only(''.join(word.text for word in segment.words)) == legacy.content_only(text)
         if legacy.content_only(''.join(word.text for word in segment.words)) != legacy.content_only(text):
             segment.words = _distributed_words(text, start, end, float(row.get('confidence',.76)), legacy)
-        native_sentence = bool(row.get('timestamp_source')) and row.get('timestamp_source') != 'request_bounds_coarse'
-        segment.words = legacy.segment_content_timeline(segment, () if primary_words_match or native_sentence else nearby)
+            spread = True
+        # MLX recognition only knows its padded VAD window, not where speech
+        # starts and ends: that is not a native sentence time (2026-10-14).
+        native_sentence = bool(row.get('timestamp_source')) and row.get('timestamp_source') not in {
+            'request_bounds_coarse', 'vad_window'}
+        # The provider's own word units, before they are spread per character
+        # for display. A multi-character provider word (欢迎, 阿里云, hello) is
+        # one measured interval; its inner character times are not measured.
+        measured_basis = ('provider_words' if primary_words_match else
+                          'aligner_words' if aligner_words_match else '')
+        provider_words = [{'text': word.text, 'start_ms': int(round(float(word.start) * 1000)),
+                           'end_ms': int(round(float(word.end) * 1000))}
+                          for word in segment.words if legacy.content_only(word.text)] if measured_basis else []
+        segment.words = legacy.segment_content_timeline(
+            segment, () if primary_words_match or aligner_words_match or native_sentence else nearby)
         if primary_words_match:
             segment.final_timing_owner=f'{backend.upper()} word timestamps'
+        elif aligner_words_match:
+            segment.final_timing_owner='Qwen3-ForcedAligner on primary transcript'
         elif native_sentence:
             segment.final_timing_owner=f'{backend.upper()} native sentence timestamps'
+        firered_used = bool(nearby) and not native_sentence and bool(getattr(segment, 'firered_text', ''))
+        if not (primary_words_match or aligner_words_match) and (native_sentence or spread) and not firered_used:
+            # Only row bounds exist (MOSS Pro cloud segments, sentence-only
+            # Flash/Spark/OpenAI-compatible results, MLX VAD windows): the
+            # characters are spread evenly for display only. Mark them so the
+            # razor and timing repairs never treat them as measured.
+            vad_window = row.get('timestamp_source') == 'vad_window'
+            if vad_window:
+                segment.final_timing_owner = f'{backend.upper()} VAD window bounds (estimated)'
+            segment.caption_arbitration = dict(segment.caption_arbitration or {}, word_timing={
+                'basis': 'uniform_display_estimate',
+                'source': 'vad_window_bounds' if vad_window else 'api_sentence_bounds' if native_sentence
+                else 'row_bounds',
+                'timestamp_source': str(row.get('timestamp_source') or '')})
+        elif measured_basis and any(len(legacy.content_only(word['text'])) > 1 for word in provider_words):
+            # Keep the measured granularity: evidence stores the provider's (or
+            # the aligner's) whole words, so the razor never cuts inside one;
+            # the even split inside each word is display only (2026-10-14).
+            segment.caption_arbitration = dict(segment.caption_arbitration or {}, word_timing={
+                'basis': measured_basis, 'granularity': 'word',
+                'display_subdivision': 'even_within_word',
+                'timestamp_source': str(row.get('timestamp_source') or ''),
+                'measured_words': provider_words})
     if not segments:
         raise RuntimeError(f"{backend} 主力转写没有生成有效文字。")
     legacy.record_run_event(
@@ -3762,6 +3916,7 @@ def process_media(
         stage_index, stage_total, "统一 16k 音频采样时钟", "CPU+磁盘缓存", lambda: legacy.load_shared_audio(media_path, cache_context)
     )
     audio_seconds = len(shared_audio) / legacy.AUDIO_SAMPLE_RATE
+    legacy.record_run_event("task_audio_ready", seconds=round(audio_seconds, 3))
     from twobyteasr.speaker_evidence import save_speaker_evidence, fuse_moss_speakers
     speaker_audit_root = Path(cache_context["cache_dir"]) / "speaker-evidence"
     save_speaker_evidence(speaker_audit_root, "task-input", {
@@ -3871,6 +4026,7 @@ def process_media(
                                             "dashscope_multimodal",
                                         )
                                     ),
+                                    **_cloud_hint_signature(runtime_context, legacy),
                                 }
                                 if primary_backend == "api"
                                 else {}
@@ -3935,7 +4091,11 @@ def process_media(
 
     def run_vad_stage():
         audit_branch("vad")
-        use_firered_vad = primary_backend == "moss" or os.path.isdir(paths["firered_vad"])
+        use_firered_vad = primary_backend == "moss" or (
+            os.path.isdir(paths["firered_vad"]) and _main_runtime_available())
+        if not use_firered_vad and os.path.isdir(paths["firered_vad"]):
+            legacy.record_run_event("vad_backend_selected", backend="lightweight_vad",
+                                    reason="main_runtime_missing")
 
         def detect_selected_vad():
             if use_firered_vad:
@@ -3973,6 +4133,9 @@ def process_media(
     def run_firered_stage():
         audit_branch("firered")
         timeline_backend = str(getattr(legacy, "FIRERED_ASR_BACKEND", "local"))
+        if timeline_backend == "mlx_qwen_aligner":
+            # Same aligner and receipts; run_qwen_aligner_worker routes it to MLX.
+            timeline_backend = "qwen_aligner"
         from twobyteasr.language_rules import JA as _JA, supports as _supports
         japanese = getattr(runtime_context, "task_language", "") == _JA
         if japanese and timeline_backend != "off":
@@ -4117,10 +4280,14 @@ def process_media(
             ),
             selected=True,
             allow_failure=True,
+            # The probe exists only for FireRed. (Before 2026-10-13 the
+            # conditional sat inside the lambda, so every other timeline
+            # backend got a probe returning None -> "probe_failed" and the
+            # Qwen3-ForcedAligner timeline never ran for non-Japanese tasks.)
             environment_probe=(
-                lambda: legacy.probe_firered_environment(
+                (lambda: legacy.probe_firered_environment(
                     paths["main_python"], str(getattr(legacy, "FIRERED_MODEL_DIR", "") or ""), paths["firered_source"]
-                )
+                ))
                 if timeline_backend == "local" else None
             ),
         )
@@ -4297,6 +4464,11 @@ def process_media(
                     else "Qwen3-ASR VAD短块复核"
                 )
             )
+        if review_backend == "local":
+            # A selected local model is an acceptance source, never a silent
+            # cache substitute.  Keep old artifacts for forensic comparison but
+            # force a real load/inference for this stage.
+            legacy.record_run_event("CACHE_REJECTED", stage="qwen", reason="real_execution_required")
         return _run_audited_model_stage(
             legacy,
             model_id="qwen3-asr",
@@ -4318,20 +4490,26 @@ def process_media(
             ),
             selected=True,
             allow_failure=True,
+            # 2026-10-14: the condition belongs outside the lambda. Inside it,
+            # every non-local review (API, Whisper, SenseVoice, Fun-ASR Nano,
+            # FireRed LLM) got a probe that returned None and was skipped as
+            # "probe_failed" — the review stage never ran (user approved the fix).
             environment_probe=(
-                lambda: legacy.probe_qwen_environment(
+                (lambda: legacy.probe_qwen_environment(
                     paths["main_python"], str(legacy.resolve_qwen_asr_local_source())
-                )
+                ))
                 if review_backend == "local" else None
             ),
         )
-        if review_backend == "local":
-            # A selected local model is an acceptance source, never a silent
-            # cache substitute.  Keep old artifacts for forensic comparison but
-            # force a real load/inference for this stage.
-            legacy.record_run_event("CACHE_REJECTED", stage="qwen", reason="real_execution_required")
 
-    gpu_snapshot = _gpu_runtime_snapshot()
+    from twobyteasr.hardware import selected_cuda_components
+    if primary_backend == "moss" or selected_cuda_components(legacy.RUNTIME_SETTINGS):
+        gpu_snapshot = _gpu_runtime_snapshot()
+    else:
+        # No selected stage uses the GPU: skip the torch child process and
+        # nvidia-smi (cloud-only and CPU plans, 2026-10-13).
+        gpu_snapshot = {"status": "NOT_PROBED", "reason": "no_local_cuda_component",
+                        "total_vram_gb": None, "free_vram_gb": None}
     gpu_status = str(gpu_snapshot.get("status") or "UNKNOWN")
     total_vram_gb = gpu_snapshot.get("total_vram_gb")
     free_vram_gb = gpu_snapshot.get("free_vram_gb")

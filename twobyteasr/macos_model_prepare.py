@@ -144,6 +144,25 @@ def _child_environment() -> dict:
     return environment
 
 
+def _bootstrap_interpreter(managed: Path, lock: dict, environment: dict) -> tuple[Path, Path]:
+    """Verified uv and CPython 3.10 arm64 from the bootstrap lock."""
+    emit('tools_preparing')
+    uv_root = managed / 'tools' / ('uv-' + lock['uv']['version'])
+    # Re-extract from the verified cache before executing a tool;
+    # an executable left by a failed attempt is not trusted alone.
+    extract_archive(download_archive(lock['uv'], managed / 'bootstrap-cache'), uv_root)
+    uv = uv_root / lock['uv']['member']
+    uv.chmod(uv.stat().st_mode | 0o700)
+    emit('interpreter_preparing')
+    python_root = managed / 'python' / ('cpython-' + lock['python']['version'] + '-arm64-' + lock['python']['build'])
+    extract_archive(download_archive(lock['python'], managed / 'bootstrap-cache'), python_root)
+    base = python_root / 'python/bin/python3.10'
+    if not base.is_file():
+        raise RuntimeError('Verified Python archive has no native interpreter')
+    run([base, '-I', '-c', 'import sys,platform; assert platform.machine()=="arm64"; assert platform.python_version()=="' + lock['python']['version'] + '"'], cwd=managed, environment=environment)
+    return uv, base
+
+
 def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> Path:
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise RuntimeError('SenseVoice CPU preparation requires native Apple Silicon macOS')
@@ -179,21 +198,7 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
                 print('[运行库] 复用已核对的原生 CPU 环境', flush=True)
             else:
                 phase = 'tools_preparing'
-                emit(phase)
-                uv_root = managed / 'tools' / ('uv-' + lock['uv']['version'])
-                # Re-extract from the verified cache before executing a tool;
-                # an executable left by a failed attempt is not trusted alone.
-                extract_archive(download_archive(lock['uv'], managed / 'bootstrap-cache'), uv_root)
-                uv = uv_root / lock['uv']['member']
-                uv.chmod(uv.stat().st_mode | 0o700)
-                phase = 'interpreter_preparing'
-                emit(phase)
-                python_root = managed / 'python' / ('cpython-' + lock['python']['version'] + '-arm64-' + lock['python']['build'])
-                extract_archive(download_archive(lock['python'], managed / 'bootstrap-cache'), python_root)
-                base = python_root / 'python/bin/python3.10'
-                if not base.is_file():
-                    raise RuntimeError('Verified Python archive has no native interpreter')
-                run([base, '-I', '-c', 'import sys,platform; assert platform.machine()=="arm64"; assert platform.python_version()=="' + lock['python']['version'] + '"'], cwd=managed, environment=environment)
+                uv, base = _bootstrap_interpreter(managed, lock, environment)
                 phase = 'dependencies_installing'
                 emit(phase)
                 if not runtime_python.is_file():
@@ -267,6 +272,180 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
         print('[2BYTEASR_INSTALL_ERROR] ' + json.dumps(dict(phase=phase, category=category,
               message=str(exc)), ensure_ascii=False), flush=True)
         raise
+
+
+MLX_MODEL_KEYS = ('mlx_qwen3_asr_0_6b', 'mlx_qwen3_asr_1_7b', 'mlx_qwen_aligner')
+READINESS_TEXT = 'Hello this is a local speech recognition test the weather is sunny today'
+
+
+def _mlx_worker(root: Path) -> Path:
+    for candidate in (root / 'workers' / 'mlx_worker.py', root / 'mlx_worker.py'):
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError('mlx_worker.py is missing from this build')
+
+
+def check_mlx_runtime(python: Path, root: Path) -> bool:
+    """Torch-free MLX runtime: the worker's own import/device probe."""
+    if not python.is_file():
+        return False
+    try:
+        result = subprocess.run([str(python), '-I', str(_mlx_worker(root)), '--mode', 'probe'], cwd=root,
+                                capture_output=True, text=True, timeout=180, env=_child_environment())
+        if result.returncode:
+            return False
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        return bool(payload.get('ok')) and payload.get('machine') == 'arm64'
+    except (OSError, ValueError, IndexError, RuntimeError, subprocess.TimeoutExpired):
+        return False
+
+
+def validate_mlx_model(key: str, runtime_python: Path) -> dict:
+    """Real inference through the production adapter on the bundled sample.
+
+    Readiness only (the sample is synthetic English speech), not accuracy.
+    """
+    import wave
+    import numpy as np
+    from twobyteasr import mlx_backend
+    from twobyteasr.runtime_paths import detect_install_root
+    os.environ['TWOBYTEASR_MLX_PYTHON'] = str(runtime_python)
+    sample = detect_install_root() / 'assets/diagnostics/speech_en.wav'
+    with wave.open(str(sample), 'rb') as stream:
+        rate = stream.getframerate()
+        audio = np.frombuffer(stream.readframes(stream.getnframes()), dtype='<i2').astype(np.float32) / 32768
+    if rate != 16000:
+        raise RuntimeError('readiness sample must be 16 kHz')
+    duration = len(audio) / rate
+    started = time.time()
+    if key == mlx_backend.ALIGNER_KEY:
+        payload = mlx_backend.run_aligner(audio, [dict(id='readiness', text=READINESS_TEXT, window_start_ms=0,
+                                                       window_end_ms=int(duration * 1000), language='English')])
+        row = payload['results'][0]
+        units = row.get('word_units') or []
+        limit = duration * 1000 + 200
+        if (row.get('status') != 'aligned' or not units
+                or not all(0 <= unit['start_ms'] <= unit['end_ms'] <= limit for unit in units)
+                or not any(unit['start_ms'] < unit['end_ms'] for unit in units)):
+            raise RuntimeError('MLX 对齐没有返回有效的字词时间')
+        output = dict(units=len(units))
+    else:
+        backend = next(name for name, model in mlx_backend.PRIMARY_BACKENDS.items() if model == key)
+        rows = mlx_backend.transcribe_reference(audio, [dict(start=0.0, end=duration)], backend=backend,
+                                                language='English')
+        if not any(str(row.get('text') or '').strip() for row in rows):
+            raise RuntimeError('MLX Qwen3-ASR 没有返回文字')
+        output = dict(text=' '.join(row['text'] for row in rows)[:200])
+    return dict(model=key, inference_verified=True, elapsed_s=round(time.time() - started, 2),
+                sample=str(sample), sample_kind='bundled synthetic speech; readiness only, not accuracy', **output)
+
+
+def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool = True) -> Path:
+    """Private torch-free MLX runtime plus locked MLX models (Apple Silicon)."""
+    keys = tuple(dict.fromkeys(keys))
+    if not keys or not set(keys) <= set(MLX_MODEL_KEYS):
+        raise ValueError('unknown MLX model keys: ' + ','.join(keys))
+    if sys.platform != 'darwin' or platform.machine() != 'arm64':
+        raise RuntimeError('MLX 只能在 Apple Silicon（M 系列芯片）的 Mac 上运行')
+    release = tuple(int(part) for part in (platform.mac_ver()[0] or '0').split('.')[:2] if part.isdigit())
+    if release and release < (14,):
+        raise RuntimeError('MLX 运行库需要 macOS 14 或更新版本（当前 ' + platform.mac_ver()[0] + '）')
+    from twobyteasr.runtime_paths import user_data_root
+    from twobyteasr.runtime_registry import register_runtime, resolve_runtime_python
+    from twobyteasr.repository_download import preparation_lock
+    managed = user_data_root() / 'runtimes'
+    managed.mkdir(parents=True, exist_ok=True)
+    lock = json.loads((root / 'packaging/macos/bootstrap.lock.json').read_text('utf8'))
+    requirements = root / 'packaging/macos/requirements-mlx.txt'
+    identity = dict(target=lock['target'], python=lock['python'], uv=lock['uv'], pip=lock['pip'],
+                    requirements={requirements.name: sha256(requirements)})
+    signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
+    runtime = managed / 'mlx' / ('macos-mlx-' + signature)
+    runtime_python = runtime / 'bin/python'
+    environment = _child_environment()
+    environment['UV_CACHE_DIR'] = str(user_data_root() / 'cache/uv')
+    phase = 'preparing'
+    try:
+        with preparation_lock(managed / '.macos-mlx-prepare.lock'):
+            phase = 'runtime_installing'
+            emit(phase, device='mlx', model=','.join(keys))
+            previous = resolve_runtime_python('mlx', register=False)
+            if previous and Path(previous) != runtime_python and check_mlx_runtime(Path(previous), root):
+                runtime_python = Path(previous)
+                print('[运行库] 复用已核对的 MLX 环境', flush=True)
+            elif not check_mlx_runtime(runtime_python, root):
+                phase = 'tools_preparing'
+                uv, base = _bootstrap_interpreter(managed, lock, environment)
+                phase = 'dependencies_installing'
+                emit(phase)
+                if not runtime_python.is_file():
+                    run([uv, '--no-config', '--system-certs', 'venv', '--no-project', '--python', base,
+                         '--no-python-downloads', runtime], cwd=managed, environment=environment)
+                pip_wheel = download_archive(lock['pip'], managed / 'bootstrap-cache')
+                run([uv, '--no-config', 'pip', 'install', '--python', runtime_python, pip_wheel],
+                    cwd=managed, environment=environment)
+                report = runtime / 'pip-install.json'
+                # Every requirement is hash-pinned: pip refuses any other file.
+                run([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
+                     '--require-hashes', '--only-binary', ':all:', '--report', report,
+                     '--index-url', 'https://pypi.org/simple', '-r', requirements.name],
+                    cwd=requirements.parent, environment=environment)
+                run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
+                if not check_mlx_runtime(runtime_python, root):
+                    raise RuntimeError('MLX 运行库探测失败（需要 Apple Silicon 与 Metal）；之前的登记保持不变')
+                receipt = runtime / 'managed-runtime.json'
+                pending = receipt.with_suffix('.pending')
+                pending.write_text(json.dumps(dict(identity, signature=signature, role='mlx', runtime_ready=True,
+                                                   prepared_at=time.time()), ensure_ascii=False, indent=2),
+                                   encoding='utf8')
+                os.replace(pending, receipt)
+            phase = 'weights_downloading'
+            from twobyteasr.model_integrity import locked_model, verify_model_files
+            from twobyteasr.repository_download import download_model
+            # The resumable downloader is stdlib-only; the MLX interpreter runs it.
+            os.environ['TWOBYTEASR_DOWNLOAD_PYTHON'] = str(runtime_python)
+            for key in keys:
+                emit(phase, model=key)
+                spec = locked_model(key, root=root)
+                destination = models.expanduser().resolve() / Path(spec['path']).name
+                download_model(model_key=key, spec=spec, destination=destination, mode=source,
+                               staging_root=models.resolve() / '.download-staging')
+                verify_model_files(key, destination, root=root)
+            phase = 'model_loading'
+            receipts = user_data_root() / 'model-readiness'
+            receipts.mkdir(parents=True, exist_ok=True)
+            for key in keys:
+                emit(phase, model=key, device='mlx')
+                result = validate_mlx_model(key, runtime_python)
+                pending = receipts / (key + '.pending')
+                pending.write_text(json.dumps(dict(result, status='PASS', python=str(runtime_python)),
+                                              ensure_ascii=False, indent=2), encoding='utf8')
+                os.replace(pending, receipts / (key + '.json'))
+            # Registration only after real inference succeeded.
+            if register:
+                register_runtime('mlx', str(runtime_python), source='macos-gui-mlx-bootstrap')
+            emit('ready', model=','.join(keys), device='mlx', model_inference_verified=True)
+            return runtime_python
+    except Exception as exc:
+        category = 'permission' if isinstance(exc, PermissionError) else 'prepare_failed'
+        print('[2BYTEASR_INSTALL_ERROR] ' + json.dumps(dict(phase=phase, category=category,
+              message=str(exc)), ensure_ascii=False), flush=True)
+        raise
+
+
+def main_mlx(argv=None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--models', type=Path, required=True)
+    parser.add_argument('--keys', required=True)
+    parser.add_argument('--source', choices=['AUTO', 'HF_OFFICIAL', 'HF_MIRROR', 'MODELSCOPE'], default='AUTO')
+    args = parser.parse_args(argv)
+    try:
+        prepare_mlx(args.root.resolve(), models=args.models.resolve(), source=args.source,
+                    keys=[key for key in args.keys.split(',') if key])
+    except Exception:
+        return 1
+    return 0
 
 
 def main(argv=None) -> int:

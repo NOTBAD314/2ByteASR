@@ -21,6 +21,7 @@ if ($env:TWOBYTEASR_TEST_ROOT) {
     Write-Host ('[2BYTEASR_ISOLATION] '+(@{pid=$PID;runtime=$managed;root=$env:TWOBYTEASR_TEST_ROOT} | ConvertTo-Json -Compress))
 }
 $phase = 'tools_preparing'
+$category = $null
 function Stage([string]$name) {
     $script:phase=$name
     Write-Host ('[2BYTEASR_PHASE] '+(@{phase=$name;models=$ModelKey} | ConvertTo-Json -Compress))
@@ -64,6 +65,70 @@ function RunUv([string[]]$arguments) {
         }
     }
 }
+function Use-SystemProxy($system=$null) {
+    # Weight downloads (requests) already follow the Windows proxy setting;
+    # curl.exe and uv only read *_PROXY variables. A user's own value wins.
+    foreach ($name in @('HTTPS_PROXY','HTTP_PROXY','ALL_PROXY')) {
+        if ([Environment]::GetEnvironmentVariable($name,'Process') -or [Environment]::GetEnvironmentVariable($name.ToLowerInvariant(),'Process')) { return }
+    }
+    try {
+        $target=[Uri]'https://pypi.org/'
+        if (-not $system) { $system=[Net.WebRequest]::GetSystemWebProxy() }
+        if ($system.IsBypassed($target)) { return }
+        $resolved=$system.GetProxy($target)
+    } catch { return }
+    if (-not $resolved -or $resolved.Host -eq $target.Host -or $resolved.Scheme -notin @('http','https')) { return }
+    # Authority is host:port only; credentials never reach the log.
+    $value=$resolved.Scheme+'://'+$resolved.Authority
+    # A proxy app that exited can leave the Windows setting on; direct is better then.
+    $client=New-Object Net.Sockets.TcpClient
+    try { $reachable=$client.ConnectAsync($resolved.Host,$resolved.Port).Wait(2000) } catch { $reachable=$false } finally { $client.Dispose() }
+    if (-not $reachable) { Write-Host ('[网络] Windows 系统代理 '+$value+' 无法连接，按直连下载'); return }
+    $env:HTTPS_PROXY=$value; $env:HTTP_PROXY=$value
+    if (-not $env:NO_PROXY -and -not $env:no_proxy) { $env:NO_PROXY='localhost,127.0.0.1,::1' }
+    Write-Host ('[网络] 使用 Windows 系统代理 '+$value+'（curl/uv 不会自行读取系统代理）')
+}
+function Get-VerifiedFile([string]$url,[string]$sha,[string]$destination) {
+    # Returns '' on success, otherwise a short reason. Nothing unverified stays.
+    $pending=$destination+'.partial'
+    Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue
+    & (Join-Path $env:SystemRoot 'System32\curl.exe') --fail --location --retry 1 --connect-timeout 10 --speed-limit 20480 --speed-time 30 --max-time 900 --output $pending $url
+    $code=$LASTEXITCODE
+    if ($code -ne 0) {
+        Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue
+        $reason=@{6='域名无法解析';7='无法连接';22='来源返回错误状态';28='连接或传输超时';35='TLS 握手失败';56='连接中断'}[$code]
+        if (-not $reason) { $reason='curl 退出码 '+$code }
+        return $reason
+    }
+    if ((Sha $pending) -ne $sha) { Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue; return 'SHA-256 不符，已丢弃' }
+    Move-Item -LiteralPath $pending -Destination $destination -Force
+    return ''
+}
+function Get-UvArchive($sources,[string]$archive) {
+    # Sources are tried in order; the first verified archive wins.
+    $failures=@()
+    for ($index=0; $index -lt $sources.Count; $index++) {
+        $source=$sources[$index]
+        Write-Host ('[工具] 来源 '+($index+1)+'/'+$sources.Count+'：'+$source.label)
+        $problem=Get-VerifiedFile $source.url $source.sha256 $archive
+        if (-not $problem) { Write-Host ('[工具] 已从 '+$source.label+' 取得 uv，SHA-256 校验通过'); return }
+        $failures+=($source.label+'：'+$problem)
+        Write-Host ('[工具] '+$source.label+' 未成功（'+$problem+'）')
+    }
+    $script:category=if (@($failures | Where-Object { $_ -notlike '*SHA-256*' }).Count) { 'runtime_network' } else { 'checksum' }
+    throw ('uv 下载失败，GitHub 与备用来源都没有成功：'+($failures -join '；'))
+}
+function Install-ManagedPython([string]$version) {
+    $arguments=@('--no-config','--system-certs','python','install',$version,'--install-dir',$env:UV_PYTHON_INSTALL_DIR,'--no-bin','--no-registry')
+    try { RunUv $arguments; return } catch { Write-Host ('[运行库] 默认来源未能取得 Python '+$version+'：'+$_.Exception.Message) }
+    foreach ($mirror in @($script:pythonMirrors)) {
+        # uv checks every Python archive against the SHA-256 built into uv.
+        Write-Host ('[运行库] 改用 '+$mirror.label+' 取得 Python '+$version+'，由 uv 按内置 SHA-256 校验')
+        try { RunUv ($arguments+@('--mirror',$mirror.url)); return } catch { Write-Host ('[运行库] '+$mirror.label+' 未成功：'+$_.Exception.Message) }
+    }
+    $script:category='runtime_network'
+    throw ('Python '+$version+' 下载失败：默认来源与国内备用来源都没有成功，请查看上方 uv 输出')
+}
 $guard=$null
 try {
     New-Item -ItemType Directory -Path $managed -Force | Out-Null
@@ -80,6 +145,24 @@ try {
     Stage 'tools_preparing'
     $contract=Get-Content -LiteralPath (Join-Path $root 'dependencies.lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $boot=$contract.managed_bootstrap
+    Use-SystemProxy
+    # Official first; fallbacks are only for the same pinned uv version and are
+    # accepted solely by SHA-256, so a mirror cannot substitute other bytes.
+    $uvSources=@([pscustomobject]@{label='GitHub 官方';url=$boot.uv_url;sha256=$boot.uv_sha256})
+    $uvBinaries=$null
+    $script:pythonMirrors=@()
+    $sourcesFile=Join-Path $PSScriptRoot 'runtime_sources.json'
+    if (Test-Path -LiteralPath $sourcesFile) {
+        $fallback=Get-Content -LiteralPath $sourcesFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($fallback.uv.version -eq $boot.uv_version) {
+            $uvSources+=@($fallback.uv.fallbacks)
+            $uvBinaries=$fallback.uv.binaries
+        } else {
+            Write-Host ('[工具] 备用来源清单对应 uv '+$fallback.uv.version+'，与锁定的 '+$boot.uv_version+' 不同，只使用官方来源')
+        }
+        $script:pythonMirrors=@($fallback.python_mirrors)
+    }
+    $archiveHashes=@($uvSources | ForEach-Object { $_.sha256 })
     $tools=Join-Path $managed ('tools\uv-'+$boot.uv_version)
     New-Item -ItemType Directory -Path $tools -Force | Out-Null
     $archive=Join-Path $tools 'uv-windows.zip'
@@ -88,7 +171,7 @@ try {
     if (Test-Path -LiteralPath $toolReceipt) {
         try {
             $saved=Get-Content -LiteralPath $toolReceipt -Raw -Encoding UTF8 | ConvertFrom-Json
-            $toolReady=($saved.archive_sha256 -eq $boot.uv_sha256)
+            $toolReady=($archiveHashes -contains $saved.archive_sha256)
             foreach ($name in @('uv.exe','uvw.exe')) {
                 $file=Join-Path $tools $name
                 if (-not (Test-Path -LiteralPath $file) -or (Sha $file) -ne $saved.files.$name) { $toolReady=$false }
@@ -96,27 +179,32 @@ try {
         } catch { $toolReady=$false }
     }
     if (-not $toolReady) {
-      if (-not (Test-Path -LiteralPath $archive) -or (Sha $archive) -ne $boot.uv_sha256) {
-        $pending=$archive+'.partial'
-        Write-Host ('[工具] 获取固定版本 uv '+$boot.uv_version+'，校验 SHA-256')
-        & (Join-Path $env:SystemRoot 'System32\curl.exe') --fail --location --retry 1 --connect-timeout 20 --max-time 600 --output $pending $boot.uv_url
-        if ($LASTEXITCODE -ne 0) { throw 'uv HTTPS download failed' }
-        if ((Sha $pending) -ne $boot.uv_sha256) { throw 'uv SHA256 mismatch' }
-        Move-Item -LiteralPath $pending -Destination $archive -Force
+      # The archive name is kept for every source (a ZIP or the PyPI wheel, both
+      # ZIP files), so a manually placed official archive is still accepted.
+      if (-not ((Test-Path -LiteralPath $archive) -and ($archiveHashes -contains (Sha $archive)))) {
+        Write-Host ('[工具] 获取固定版本 uv '+$boot.uv_version+'，每个来源都校验 SHA-256')
+        Get-UvArchive $uvSources $archive
       }
     [Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null
     $zip=[IO.Compression.ZipFile]::OpenRead($archive)
     try {
         foreach ($entry in $zip.Entries) {
-            if ($entry.FullName -in @('uv.exe','uvw.exe')) {
-                $inputStream=$entry.Open(); $outputStream=[IO.File]::Create((Join-Path $tools $entry.FullName))
+            # Official ZIP: uv.exe at the root; PyPI wheel: uv-<version>.data/scripts/uv.exe.
+            $leaf=[IO.Path]::GetFileName($entry.FullName)
+            if ($leaf -in @('uv.exe','uvw.exe') -and ($entry.FullName -eq $leaf -or $entry.FullName -eq ('uv-'+$boot.uv_version+'.data/scripts/'+$leaf))) {
+                $inputStream=$entry.Open(); $outputStream=[IO.File]::Create((Join-Path $tools $leaf))
                 try { $inputStream.CopyTo($outputStream) } finally { $inputStream.Dispose(); $outputStream.Dispose() }
             }
         }
     } finally { $zip.Dispose() }
       $fileHashes=@{}
-      foreach ($name in @('uv.exe','uvw.exe')) { $fileHashes[$name]=Sha (Join-Path $tools $name) }
-      @{archive_sha256=$boot.uv_sha256;files=$fileHashes} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $toolReceipt -Encoding UTF8
+      foreach ($name in @('uv.exe','uvw.exe')) {
+          $file=Join-Path $tools $name
+          if (-not (Test-Path -LiteralPath $file)) { throw ('uv 压缩包缺少 '+$name) }
+          $fileHashes[$name]=Sha $file
+          if ($uvBinaries -and $fileHashes[$name] -ne $uvBinaries.$name) { $script:category='checksum'; throw ($name+' 与锁定的 SHA-256 不符') }
+      }
+      @{archive_sha256=(Sha $archive);files=$fileHashes} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $toolReceipt -Encoding UTF8
     }
     $script:uv=Join-Path $tools 'uv.exe'
     $env:UV_PYTHON_INSTALL_DIR=Join-Path $managed 'python'
@@ -127,11 +215,13 @@ try {
     Stage 'interpreter_preparing'
     # Patch version is explicit; preserves the existing main cp310 ABI contract.
     $version='3.10.19'
-    RunUv @('--no-config','--system-certs','python','install',$version,'--install-dir',$env:UV_PYTHON_INSTALL_DIR,'--no-bin','--no-registry')
+    Install-ManagedPython $version
     $python=Join-Path $env:UV_PYTHON_INSTALL_DIR ('cpython-'+$version+'-windows-x86_64-none\python.exe')
     if (-not (Test-Path -LiteralPath $python)) { throw 'Managed Python missing after installation' }
     Stage 'dependencies_installing'
     & $python -I (Join-Path $PSScriptRoot 'install_managed_backend.py') --root $root --uv $script:uv --models ($ModelKey -join ',')
+    # 75 = install_managed_backend.SOURCES_EXHAUSTED: official and mirror sources all failed.
+    if ($LASTEXITCODE -eq 75) { $script:category='runtime_network'; throw '运行库下载失败：官方来源与国内镜像都没有成功（详见上方日志）' }
     if ($LASTEXITCODE -ne 0) { throw "Managed runtime installation exit $LASTEXITCODE" }
     $registry=Get-Content -LiteralPath (Join-Path $managed 'registry.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $env:TWOBYTEASR_MAIN_PYTHON=$registry.runtimes.main.python_executable
@@ -140,6 +230,8 @@ try {
     if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -ErrorAction Stop }
     Stage 'runtime_ready'
 } catch {
-    Write-Host ('[2BYTEASR_INSTALL_ERROR] '+(@{phase=$phase;message=$_.Exception.Message;models=$ModelKey} | ConvertTo-Json -Compress))
+    $failure=@{phase=$phase;message=$_.Exception.Message;models=$ModelKey}
+    if ($category) { $failure.category=$category }
+    Write-Host ('[2BYTEASR_INSTALL_ERROR] '+($failure | ConvertTo-Json -Compress))
     throw
 } finally { if ($guard) { $guard.Dispose() } }

@@ -850,7 +850,6 @@ QWidget#accordionHeader {{ border-radius: 10px; }}
 QWidget#accordionHeader:hover {{ background: rgba(196, 171, 131, 0.14); }}
 QLabel#accordionSummary {{ color: #8a857a; font-size: 12px; }}
 QLabel#brand {{ font-size: 22px; font-weight: {WEIGHT_SCALE['heavy']}; padding: 4px 7px; border-radius: 8px; }}
-QLabel#brand:hover {{ background: #eee7d9; color: #365f3a; }}
 QLabel#title {{ font-size: 16px; font-weight: 600; }}
 QLabel#sectionTitle {{
     color: {INK};

@@ -63,8 +63,24 @@ def start(window, output):
                 if index>=0: combo.setCurrentIndex(index)
             completed=[]
             dialog.completed.connect(lambda ok,message:completed.append((bool(ok),str(message))))
+            # 2026-10-14: the dialog may still be appearing; a click before it is
+            # shown never reaches the button (CI then waited 20 min at 0%).
+            shown_by=time.monotonic()+10
+            while not (dialog.isVisible() and dialog.start_button.isVisible()) and time.monotonic()<shown_by:
+                QApplication.processEvents();time.sleep(.01)
+            settle=time.monotonic()+1.5
+            while time.monotonic()<settle:
+                QApplication.processEvents();time.sleep(.01)
             dialog.grab().save(str(output/"01-workshop-before.png"))
             QTest.mouseClick(dialog.start_button,Qt.MouseButton.LeftButton)
+            clicked_by=time.monotonic()+3
+            while dialog.start_button.isEnabled() and time.monotonic()<clicked_by:
+                QApplication.processEvents();time.sleep(.01)
+            receipt["start_click_delivered"]=not dialog.start_button.isEnabled()
+            if dialog.start_button.isEnabled():
+                # Same handler as the user's click; recorded, never silent.
+                dialog.start_button.click()
+            receipt["start_button_disabled_after_start"]=not dialog.start_button.isEnabled()
             deadline=time.monotonic()+1200
             while not completed and time.monotonic()<deadline:
                 QApplication.processEvents();time.sleep(.01)

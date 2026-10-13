@@ -202,6 +202,7 @@ class ApplicationSettingsDialog(SpringDialog):
                     row(group, title, control, note)
             advanced.addStretch()
 
+        self._build_shortcut_page(page)
         self._build_mcp_page(page, section, row, toggle, parent)
 
         about=page('2ByteASR','本地 AI 字幕与视频创作工具')
@@ -241,49 +242,147 @@ class ApplicationSettingsDialog(SpringDialog):
         apply_secondary_surface_theme(self)
         self._saved_values = self._values()
 
+    def _build_shortcut_page(self, page):
+        """快捷键: every page's keys in one place, saved immediately (2026-10-13)."""
+        from . import shortcut_registry
+        from .studio_shortcuts import ShortcutSettingsPanel
+        self.navigation.insertItem(self.navigation.count() - 1, '快捷键')
+        lay = page('快捷键', '按自己的习惯改键：工作台、审核模式、首页、AI 词库校对页与界面缩放。'
+                   '同一页面里重复的组合会提示是哪个功能；不同页面可以共用同一个组合。')
+        self.shortcut_panel = ShortcutSettingsPanel(shortcut_registry.current_values(), self,
+                                                    scopes=tuple(shortcut_registry.SCOPE_LABELS), embedded=True)
+        self.shortcut_panel.setObjectName('applicationShortcutPanel')
+        self.shortcut_panel.setMinimumHeight(520)
+        self.shortcut_panel.cancel_button.hide()
+        bind_text(self.shortcut_panel._save_button, '保存快捷键（立即生效）')
+        self.shortcut_panel.accepted.connect(self._save_shortcuts)
+        lay.addWidget(self.shortcut_panel, 1)
+        self._shortcut_saved = dict(self.shortcut_panel.values())
+
+    def _save_shortcuts(self) -> bool:
+        from . import shortcut_registry
+        panel = getattr(self, 'shortcut_panel', None)
+        if panel is None:
+            return True
+        values = panel.values()
+        if values == getattr(self, '_shortcut_saved', None):
+            return True
+        if shortcut_registry.blocking_conflicts(values):
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, tr('快捷键'), tr('还有快捷键冲突，请先在“快捷键”页处理。'))
+            self.navigation.setCurrentRow(self.navigation.count() - 3)
+            return False
+        shortcut_registry.save_values(values)
+        self._shortcut_saved = dict(values)
+        bind_text(panel.conflict_label, '已保存，立即生效。')
+        return True
+
     def _build_mcp_page(self, page, section, row, toggle, parent):
-        """外部 AI（MCP）: local access for desktop AI clients, off by default (2026-10-12)."""
+        """外部 AI（MCP）: local access for desktop AI clients, off by default (2026-10-12).
+
+        2026-10-13: what leaves the computer is said before access is turned on;
+        one export folder can be authorized; Claude Desktop is connected by
+        merging one entry into its config (backed up); the status tells
+        "written" apart from "a client actually called a tool".
+        """
         from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import QApplication
-        from . import mcp_common
+        from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+        from . import mcp_clients, mcp_common
         self.navigation.insertItem(self.navigation.count() - 1, '外部 AI（MCP）')
-        lay = page('外部 AI（MCP）', '让本机的 AI 客户端（支持 MCP 的桌面应用）读取当前工程、提出修改建议并导出。'
-                   '修改只会在你于本程序内点击“批准”后套用，并可撤销。默认关闭。')
+        lay = page('外部 AI（MCP）', '让 Claude 等 AI 客户端帮你查字幕、改字幕、导出。每次修改都要你批准，可以撤销。')
         values = mcp_common.read_settings()
+        self._mcp_acknowledged = bool(values.get('acknowledged') or values.get('enabled'))
+        from .onboarding import emphasis_html
+        from .theme_manager import theme_key
+        from .ui_theme import theme_definition
+        notice = QLabel(emphasis_html(str(tr('开启后，AI 客户端会读到授权范围内的**字幕内容**，并交给它使用的 AI 服务处理')),
+                                      theme_definition(theme_key()).accent))
+        notice.setObjectName('mcpDataNotice')
+        notice.setWordWrap(True)
+        notice.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(notice)
         access = section(lay)
         self.mcp_enabled = toggle(values['enabled'])
         bind_text(self.mcp_enabled, '开启本机 MCP 访问', property='accessibleName')
-        row(access, '开启本机 MCP 访问', self.mcp_enabled, '只接受本机当前用户的连接；关闭时不监听、不占资源')
+        row(access, '开启本机 MCP 访问', self.mcp_enabled, '关闭时不占资源')
         self.mcp_scope = field_width(StudioComboBox(), 'preferred')
         self.mcp_scope.addItem(tr('仅当前打开的工程'), 'current')
         self.mcp_scope.addItem(tr('工程库目录内的工程'), 'library')
         self.mcp_scope.setCurrentIndex(max(0, self.mcp_scope.findData(values['scope'])))
-        row(access, '授权范围', self.mcp_scope, '列出工程与导出都限制在此范围内；读取和修改只针对 Studio 当前打开的工程')
+        row(access, '授权范围', self.mcp_scope, '读取和修改只针对工作台当前打开的工程')
         self.mcp_allow_edits = toggle(values['allow_edits'])
-        row(access, '允许提出修改', self.mcp_allow_edits, '文字、译文、主要/次要角色、双语排版；每次都需在本程序内批准')
+        row(access, '允许提出修改', self.mcp_allow_edits, '每次都要你在兔白里批准，可以撤销')
         self.mcp_allow_export = toggle(values['allow_export'])
-        row(access, '允许导出字幕', self.mcp_allow_export, '写入工程文件夹下的“MCP 导出”，从不覆盖已有文件')
-        status = section(lay)
+        row(access, '允许导出字幕', self.mcp_allow_export, '只写到“MCP 导出”或下面的文件夹，不覆盖')
+        folder = QWidget()
+        folder_line = QHBoxLayout(folder)
+        folder_line.setContentsMargins(0, 0, 0, 0)
+        self.mcp_export_dir = QLineEdit(values.get('export_dir') or '')
+        self.mcp_export_dir.setObjectName('mcpExportDir')
+        self.mcp_export_dir.setReadOnly(True)
+        self.mcp_export_dir.setPlaceholderText(tr('未授权（只用工程文件夹里的“MCP 导出”）'))
+        self.mcp_export_dir.setMinimumWidth(260)
+        choose = button_role(bind_text(QPushButton(), '选择…'), 'secondary')
+        clear = button_role(bind_text(QPushButton(), '取消授权'), 'ghost')
+        folder_line.addWidget(self.mcp_export_dir, 1)
+        folder_line.addWidget(choose)
+        folder_line.addWidget(clear)
+        # Title and note above a full-width picker: a long path never squeezes the words.
+        folder_words = QVBoxLayout()
+        folder_words.setSpacing(4)
+        folder_title = bind_text(QLabel(), '另外授权的导出文件夹')
+        folder_title.setObjectName('settingsRowTitle')
+        folder_note = bind_text(QLabel(), 'AI 只能往这里写字幕，不能读取里面的文件')
+        folder_note.setObjectName('settingsDescription')
+        folder_note.setWordWrap(True)
+        folder_words.addWidget(folder_title)
+        folder_words.addWidget(folder_note)
+        folder_words.addWidget(folder)
+        access.addLayout(folder_words)
+
+        connect = section(lay)
+        heading = QLabel(tr('连接 AI 客户端'))
+        heading.setObjectName('settingsRowTitle')
+        connect.addWidget(heading)
+        self.mcp_client = field_width(StudioComboBox(), 'preferred')
+        self.mcp_client.addItem(tr('Claude Desktop（推荐）'), 'claude_desktop')
+        self.mcp_client.addItem(tr('Claude Code（命令行）'), 'claude_code')
+        self.mcp_client.addItem(tr('其他支持 MCP 的客户端（复制配置）'), 'other')
+        row(connect, '1. 选择客户端', self.mcp_client)
+        actions = QHBoxLayout()
+        self.mcp_write = button_role(bind_text(QPushButton(), '写入 Claude Desktop 配置'), 'primary')
+        self.mcp_write.setObjectName('mcpWriteClaude')
+        self.mcp_remove = button_role(bind_text(QPushButton(), '从 Claude Desktop 移除'), 'ghost')
+        self.mcp_remove.setObjectName('mcpRemoveClaude')
+        self.mcp_copy = button_role(bind_text(QPushButton(), '复制客户端配置'), 'secondary')
+        self.mcp_copy.setObjectName('mcpCopyConfig')
+        for widget in (self.mcp_write, self.mcp_remove, self.mcp_copy):
+            actions.addWidget(widget)
+        actions.addStretch(1)
+        connect.addLayout(actions)
+        self.mcp_steps = QLabel()
+        self.mcp_steps.setObjectName('settingsDescription')
+        self.mcp_steps.setWordWrap(True)
+        self.mcp_steps.setTextFormat(Qt.TextFormat.PlainText)
+        connect.addWidget(self.mcp_steps)
         self.mcp_status = QLabel()
         self.mcp_status.setObjectName('mcpStatus')
         self.mcp_status.setWordWrap(True)
         self.mcp_status.setTextFormat(Qt.TextFormat.PlainText)
-        status.addWidget(self.mcp_status)
-        buttons = QHBoxLayout()
-        self.mcp_copy = button_role(QPushButton(tr('复制客户端配置')), 'secondary')
-        self.mcp_revoke = button_role(QPushButton(tr('撤销授权（立即断开）')), 'secondary')
-        buttons.addWidget(self.mcp_copy)
-        buttons.addWidget(self.mcp_revoke)
-        buttons.addStretch(1)
-        status.addLayout(buttons)
-        tools = QLabel(tr('提供的工具：状态、工程列表、分页读取字幕与译文、搜索、说话人与角色、字词时间来源；'
-                          '预览修改（文字/译文、角色分组、双语排版）→ 程序内批准 → 套用 / 撤销；导出 SRT/JSON。'
-                          '不提供命令行、任意文件读写或直接改工程文件的工具。'))
+        self.mcp_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        connect.addWidget(self.mcp_status)
+        revoke_line = QHBoxLayout()
+        self.mcp_revoke = button_role(bind_text(QPushButton(), '撤销授权（立即断开）'), 'secondary')
+        revoke_line.addWidget(self.mcp_revoke)
+        revoke_line.addStretch(1)
+        connect.addLayout(revoke_line)
+        tools = QLabel(tr('能做：查字幕、改字幕（要你批准）、导出。不能：执行命令或读写其他文件。'))
         tools.setObjectName('settingsDescription')
         tools.setWordWrap(True)
         lay.addWidget(tools)
         lay.addStretch()
         owner = parent.window() if parent is not None else None
+        self._mcp_message = ''
 
         def bridge():
             if owner is None:
@@ -291,22 +390,110 @@ class ApplicationSettingsDialog(SpringDialog):
             from .mcp_bridge import _BRIDGE
             return _BRIDGE if _BRIDGE is not None and _BRIDGE.window is owner else None
 
+        def location():
+            return mcp_clients.claude_desktop_location()
+
+        def steps():
+            kind = self.mcp_client.currentData()
+            claude = kind == 'claude_desktop'
+            self.mcp_write.setVisible(claude)
+            self.mcp_remove.setVisible(claude)
+            self.mcp_copy.setText(tr('复制命令') if kind == 'claude_code' else tr('复制客户端配置'))
+            if claude:
+                place = location()
+                if place is None or not place.installed:
+                    text = tr('2. 先安装 Claude Desktop：{url}', url=mcp_clients.CLAUDE_DOWNLOAD_URL)
+                else:
+                    text = tr('2. 点“写入 Claude Desktop 配置”\n3. 完全退出 Claude 再打开\n'
+                              '4. 在 Claude 里问“兔白里打开的是哪个工程？”')
+            elif kind == 'claude_code':
+                text = tr('2. 复制命令，在终端运行一次')
+            else:
+                text = tr('2. 复制配置，贴到客户端的 MCP 设置里')
+            self.mcp_steps.setText(text)
+
         def refresh():
             current = bridge()
-            if current is None or not current.listening():
-                text = tr('状态：未开启') if not self.mcp_enabled.isChecked() else tr('状态：保存设置后开始监听')
+            listening = current is not None and current.listening()
+            command, args = mcp_common.server_command()
+            state = mcp_clients.entry_state(location(), command, args)
+            lines = mcp_clients.connection_lines(current.stats if current is not None else {}, listening, state)
+            if not listening:
+                lines.insert(0, tr('状态：未开启') if not self.mcp_enabled.isChecked() else tr('状态：保存设置后开始监听'))
+            elif current.stats.get('refused'):
+                lines.append(tr('拒绝的请求：{refused} 次', refused=current.stats.get('refused', 0)))
+            if self._mcp_message:
+                lines.append(self._mcp_message)
+            self.mcp_remove.setEnabled(state in ('written', 'outdated'))
+            self.mcp_status.setText('\n'.join(lines))
+
+        def enabled_changed(checked):
+            if not checked or self._mcp_acknowledged:
+                return
+            answer = QMessageBox.question(
+                self, tr('开启本机 MCP 访问'),
+                tr('开启后，AI 客户端会读到授权范围内的字幕内容，并交给它使用的 AI 服务处理。\n\n确定开启吗？'))
+            if answer == QMessageBox.StandardButton.Yes:
+                self._mcp_acknowledged = True
             else:
-                stats = current.stats
-                last = stats.get('last_method') or tr('暂无')
-                text = tr('状态：正在监听（{pipe}）。请求 {count} 次，拒绝 {refused} 次，最近：{last}',
-                          pipe=mcp_common.pipe_name(), count=stats.get('requests', 0),
-                          refused=stats.get('refused', 0), last=last)
-            self.mcp_status.setText(text)
+                self.mcp_enabled.blockSignals(True)
+                self.mcp_enabled.setChecked(False)
+                self.mcp_enabled.blockSignals(False)
+
+        def choose_folder():
+            start = self.mcp_export_dir.text() or str(Path.home())
+            chosen = QFileDialog.getExistingDirectory(self, tr('选择允许 AI 导出字幕的文件夹'), start)
+            if chosen:
+                if mcp_common.is_reparse_point(Path(chosen)):
+                    QMessageBox.warning(self, tr('导出文件夹'), tr('这个文件夹是链接或联接点，请选择普通文件夹。'))
+                    return
+                self.mcp_export_dir.setText(str(Path(chosen)))
+
+        def write_claude():
+            place = location()
+            if place is None or not place.installed:
+                self._mcp_message = tr('没有找到 Claude Desktop，未写入。')
+                refresh()
+                return
+            command, args = mcp_common.server_command()
+            answer = QMessageBox.question(
+                self, tr('写入 Claude Desktop 配置'),
+                tr('会在下面的文件里加入一项 2byteasr，先备份，其他设置不变。\n\n{path}', path=str(place.path)))
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                backup = mcp_clients.write_entry(place, command, args)
+            except (mcp_clients.ConfigError, OSError) as exc:
+                self._mcp_message = tr('没有写入：{reason}', reason=str(exc))
+            else:
+                self._mcp_message = (tr('已写入。备份：{backup}', backup=str(backup)) if backup
+                                     else tr('已写入（新建了配置文件）。'))
+                if not self.mcp_enabled.isChecked():
+                    self._mcp_message += tr('\n别忘了开启上面的“本机 MCP 访问”并保存，否则 Claude 的调用会被拒绝。')
+            refresh()
+
+        def remove_claude():
+            place = location()
+            if place is None:
+                return
+            try:
+                backup = mcp_clients.remove_entry(place)
+            except (mcp_clients.ConfigError, OSError) as exc:
+                self._mcp_message = tr('没有修改：{reason}', reason=str(exc))
+            else:
+                self._mcp_message = tr('已从 Claude Desktop 配置移除 2byteasr。备份：{backup}', backup=str(backup)) \
+                    if backup else tr('配置里本来就没有 2byteasr。')
+            refresh()
 
         def copy_config():
             command, args = mcp_common.server_command()
-            QApplication.clipboard().setText(mcp_common.client_config(command, args))
-            self.mcp_status.setText(tr('已复制。把它加入 AI 客户端的 MCP 配置（stdio）；本程序需在运行且已开启访问。'))
+            if self.mcp_client.currentData() == 'claude_code':
+                QApplication.clipboard().setText(mcp_clients.claude_code_command(command, args))
+                self._mcp_message = tr('已复制命令（配置已生成，尚未写入任何客户端）。')
+            else:
+                QApplication.clipboard().setText(mcp_common.client_config(command, args))
+                self._mcp_message = tr('已复制配置（已生成，尚未写入任何客户端）。本程序需在运行且已开启访问。')
+            refresh()
 
         def revoke():
             current = bridge()
@@ -317,25 +504,44 @@ class ApplicationSettingsDialog(SpringDialog):
                 mcp_common.delete_key()
             self.mcp_enabled.setChecked(False)
             self._saved_values = self._values()
-            self.mcp_status.setText(tr('已撤销：访问已关闭，新的请求都会被拒绝。需要时可重新开启。'))
+            self._mcp_message = tr('已撤销：访问已关闭，新的请求都会被拒绝。需要时可重新开启。')
+            refresh()
 
+        self.mcp_enabled.toggled.connect(enabled_changed)
+        choose.clicked.connect(choose_folder)
+        clear.clicked.connect(lambda: self.mcp_export_dir.setText(''))
+        self.mcp_client.currentIndexChanged.connect(lambda *_: steps())
+        self.mcp_write.clicked.connect(write_claude)
+        self.mcp_remove.clicked.connect(remove_claude)
         self.mcp_copy.clicked.connect(copy_config)
         self.mcp_revoke.clicked.connect(revoke)
         timer = QTimer(self)
         timer.setInterval(1000)
         timer.timeout.connect(refresh)
         timer.start()
+        steps()
         refresh()
 
     def mcp_values(self):
         return dict(enabled=self.mcp_enabled.isChecked(), scope=self.mcp_scope.currentData() or 'current',
-                    allow_edits=self.mcp_allow_edits.isChecked(), allow_export=self.mcp_allow_export.isChecked())
+                    allow_edits=self.mcp_allow_edits.isChecked(), allow_export=self.mcp_allow_export.isChecked(),
+                    export_dir=self.mcp_export_dir.text().strip(),
+                    acknowledged=bool(self._mcp_acknowledged or self.mcp_enabled.isChecked()))
 
     def _values(self):
         from PySide6.QtWidgets import QAbstractButton, QComboBox
-        return (tuple((w.objectName(), w.text()) for w in self.findChildren(QLineEdit)),
-                tuple(w.currentIndex() for w in self.findChildren(QComboBox)),
-                tuple(w.isChecked() for w in self.findChildren(QAbstractButton) if w.isCheckable()))
+        # The shortcut page keeps its own saved state (its search box and key
+        # editors are not settings); unsaved key edits compare as bindings.
+        panel = getattr(self, 'shortcut_panel', None)
+
+        def counted(widget):
+            return panel is None or not panel.isAncestorOf(widget)
+        shortcuts = (tuple(sorted(panel.values().items())) != tuple(sorted(self._shortcut_saved.items()))
+                     if panel is not None and hasattr(self, '_shortcut_saved') else False)
+        return (tuple((w.objectName(), w.text()) for w in self.findChildren(QLineEdit) if counted(w)),
+                tuple(w.currentIndex() for w in self.findChildren(QComboBox) if counted(w)),
+                tuple(w.isChecked() for w in self.findChildren(QAbstractButton) if w.isCheckable() and counted(w)),
+                shortcuts)
 
     def accept(self):
         from .model_root_settings import save_model_download_root
@@ -344,6 +550,8 @@ class ApplicationSettingsDialog(SpringDialog):
             save_model_download_root(self.model_root_edit.text(), owner=self.parentWidget().window() if self.parentWidget() else None)
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, tr('模型下载目录'), str(exc))
+            return
+        if not self._save_shortcuts():
             return
         super().accept()
 

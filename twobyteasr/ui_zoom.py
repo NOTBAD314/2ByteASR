@@ -499,13 +499,21 @@ class ZoomController(QObject):
         self._wheel_rest = 0
         from PySide6.QtGui import QKeySequence, QShortcut
         self._shortcuts = []
-        for keys, handler in (("Ctrl+0", lambda: self._key(DEFAULT_PERCENT)),
-                              ("Ctrl+=", lambda: self._key(step(1))), ("Ctrl++", lambda: self._key(step(1))),
-                              ("Ctrl+-", lambda: self._key(step(-1)))):
+        bindings = {}
+        for action_id, keys, handler in (("app.zoom_reset", "Ctrl+0", lambda: self._key(DEFAULT_PERCENT)),
+                                         ("app.zoom_in", "Ctrl+=", lambda: self._key(step(1))),
+                                         ("app.zoom_in_alt", "Ctrl++", lambda: self._key(step(1))),
+                                         ("app.zoom_out", "Ctrl+-", lambda: self._key(step(-1)))):
             shortcut = QShortcut(QKeySequence(keys), window)
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
             shortcut.activated.connect(handler)
             self._shortcuts.append(shortcut)
+            bindings[action_id] = shortcut
+        try:
+            from .shortcut_registry import keep_keys
+            keep_keys(bindings)  # customizable in 应用设置 → 快捷键
+        except Exception:
+            pass  # defaults above stay in effect
         if os.name == "nt":
             self._native = _NativeWheel(self)
             app.installNativeEventFilter(self._native)

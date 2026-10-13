@@ -6,6 +6,7 @@ runs one phase, writing every step to <out>/client-<phase>.json:
   full    discover → read → search → preview → apply (user approves in the app)
           → change visible → undo (approved) → reject path → export twice
   stale   preview, wait for the app to change the project, apply → refused
+  switch  preview, the app opens another project, apply → refused
   revoked any call after access was revoked → refused
 
 usage: mcp_client_flow.py --phase full --out DIR --server-json '["exe", "--mcp-stdio"]' [--env-json '{...}']
@@ -71,11 +72,55 @@ async def run(phase, out: Path, command, env):
                 export1 = await tool("export_subtitles", layers=["original", "bilingual"], name="mcp-demo")
                 export2 = await tool("export_subtitles", layers=["original"], name="mcp-demo")
                 bad = await tool("export_subtitles", layers=["original"], name="..\\..\\outside")
+                # 2026-10-13: speaker / time search, batch replace, punctuation style, format exports.
+                speakers = await tool("get_speakers")
+                name = ((speakers or {}).get("speakers") or [{}])[0].get("name", "")
+                by_speaker = await tool("search_cues", speaker=name)
+                by_time = await tool("get_cues", start="00:00:00", end="00:00:30")
+                needle = first["text"][:2]
+                replace = await tool("preview_replace", find=needle, replace=needle + "＊", cue_ids=[first["id"]])
+                replaced = await tool("apply_plan", plan_id=replace["plan_id"], wait_seconds=90)
+                replace_undone = await tool("undo_plan", plan_id=replace["plan_id"], wait_seconds=90)
+                style = await tool("preview_punctuation_style", mode="none")
+                styled = await tool("apply_plan", plan_id=style["plan_id"], wait_seconds=90)
+                (out / "client-styled.flag").write_text("none", "utf-8")
+                for _ in range(600):
+                    if (out / "app-saw-style.flag").exists():
+                        break
+                    await asyncio.sleep(0.1)
+                style_undone = await tool("undo_plan", plan_id=style["plan_id"], wait_seconds=90)
+                formats1 = await tool("export_subtitles", formats=["srt", "txt"], name="mcp-fmt", punctuation="add")
+                formats2 = await tool("export_subtitles", formats=["srt"], name="mcp-fmt")
+                authorized = await tool("export_subtitles", formats=["srt"], name="to-folder",
+                                        destination="authorized_folder")
                 log["summary"] = dict(project_cues=(status.get("project") or {}).get("cues"),
                                       applied=(applied or {}).get("status"), reuse_refused=again is None,
                                       undone=(undone or {}).get("status"), rejected=(rejected or {}).get("status"),
                                       export_files=[f["file"] for f in (export1 or {}).get("files", []) + (export2 or {}).get("files", [])],
-                                      bad_name_refused=bad is None)
+                                      bad_name_refused=bad is None,
+                                      speaker=name, speaker_matches=(by_speaker or {}).get("total"),
+                                      time_range_cues=(by_time or {}).get("total"),
+                                      readable_time=((by_time or {}).get("cues") or [{}])[0].get("start"),
+                                      replace_changes=(replace or {}).get("change_count"),
+                                      replaced=(replaced or {}).get("status"),
+                                      replace_undone=(replace_undone or {}).get("status"),
+                                      styled=(styled or {}).get("status"), style_undone=(style_undone or {}).get("status"),
+                                      format_files=[f["file"] for f in (formats1 or {}).get("files", []) + (formats2 or {}).get("files", [])],
+                                      format_punctuation=(formats1 or {}).get("punctuation"),
+                                      authorized_files=[f["file"] for f in (authorized or {}).get("files", [])])
+            elif phase == "switch":
+                page = await tool("get_cues", offset=0, limit=3)
+                target = page["cues"][1]
+                plan = await tool("preview_text_edits", edits=[{"cue_id": target["id"], "text": target["text"] + "?"}])
+                (out / "client-switch-previewed.flag").write_text(plan["plan_id"], "utf-8")
+                for _ in range(900):
+                    if (out / "app-switched.flag").exists():
+                        break
+                    await asyncio.sleep(0.1)
+                other = await tool("get_status")
+                refused = await tool("apply_plan", plan_id=plan["plan_id"])
+                log["summary"] = dict(switch_refused=refused is None,
+                                      other_project=((other or {}).get("project") or {}).get("name"))
             elif phase == "stale":
                 page = await tool("get_cues", offset=0, limit=3)
                 target = page["cues"][2]
@@ -95,7 +140,7 @@ async def run(phase, out: Path, command, env):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", required=True, choices=("full", "stale", "revoked"))
+    parser.add_argument("--phase", required=True, choices=("full", "stale", "switch", "revoked"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--server-json", required=True)
     parser.add_argument("--env-json", default="{}")

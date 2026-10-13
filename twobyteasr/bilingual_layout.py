@@ -231,8 +231,13 @@ def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settin
 
 
 def project_display_cues(project, cues=None) -> list:
-    return display_cues(cues if cues is not None else project.cues,
-                        translations=translations_of(project.generation_metadata),
+    # The project's punctuation style (保留原文 / 添加标点 / 不加标点) applies to
+    # everything drawn: live preview, ASS export and burn-in share this path.
+    from .punctuation_style import style_cues, style_translations
+    styled = style_cues(project, cues if cues is not None else project.cues)
+    return display_cues(styled,
+                        translations=style_translations(project.studio_state,
+                                                        translations_of(project.generation_metadata)),
                         settings=settings_from_state(project.studio_state), styles=project.styles,
                         speakers=project.speakers, style_recipes=project.style_recipes,
                         play_res_x=int(project.render_settings.get("play_res_x", 1920)),

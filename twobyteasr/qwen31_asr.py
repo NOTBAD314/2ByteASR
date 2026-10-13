@@ -9,8 +9,79 @@ import base64
 import json
 import math
 
+from dataclasses import dataclass
+
 FLASH = 'qwen-audio-3.1-asr-flash'
 FILETRANS = 'qwen-audio-3.1-asr-flash-filetrans'
+QWEN3_FILETRANS = 'qwen3-asr-flash-filetrans'
+
+
+@dataclass(frozen=True)
+class FiletransModel:
+    """Request/response schema of one DashScope 录音文件识别 model.
+
+    Sources (checked 2026-10-13): Qwen-ASR API reference
+    https://help.aliyun.com/zh/model-studio/qwen-asr-api-reference and the
+    非实时语音识别 guide
+    https://help.aliyun.com/zh/model-studio/non-realtime-speech-recognition-user-guide .
+    The two families differ; never swap only the model string.
+    """
+    model: str
+    label: str
+    input_field: str          # 'file_url' (one string) or 'file_urls' (list of one)
+    word_timestamps: str      # 'enable_words' (opt-in parameter) or 'always'
+    diarization: bool         # parameters.diarization_enabled supported
+    vocabulary: bool          # native hotwords (vocabulary / vocabulary_id)
+    context: bool             # input.context domain hints
+    language_parameter: bool  # parameters.language (one code, omit for mixed)
+    timestamp_source: str
+    max_hours: float = 12.0
+    diarization_max_hours: float = 2.0
+
+
+FILETRANS_MODELS = {
+    QWEN3_FILETRANS: FiletransModel(
+        QWEN3_FILETRANS, 'Qwen3-ASR-Flash 录音文件识别', 'file_url', 'enable_words',
+        diarization=False, vocabulary=False, context=False, language_parameter=True,
+        timestamp_source='qwen3_filetrans_native'),
+    FILETRANS: FiletransModel(
+        FILETRANS, 'Qwen-Audio-3.1-ASR-Flash 录音文件识别', 'file_urls', 'always',
+        diarization=True, vocabulary=True, context=True, language_parameter=False,
+        timestamp_source='qwen31_native'),
+}
+
+# Task language (首页“字幕语言”) -> parameters.language. ``auto`` sends nothing.
+FILETRANS_LANGUAGE_CODES = {'zh': 'zh', 'ja': 'ja', 'en': 'en'}
+
+
+def is_filetrans_model(model) -> bool:
+    return str(model or '') in FILETRANS_MODELS
+
+
+def filetrans_spec(model) -> FiletransModel:
+    try:
+        return FILETRANS_MODELS[str(model or '')]
+    except KeyError:
+        raise ASRProtocolError(f'不是已接入的百炼录音文件识别模型：{model}', 'input_limit') from None
+
+
+def filetrans_hints_for_model(model, canonical_terms, *, vocabulary_id='', vocabulary_model='', language=None):
+    """Per-model hints. Qwen3-ASR Filetrans has no hotword/context parameter.
+
+    The glossary still applies after recognition (词库校对); it is simply not
+    sent as a recognition hint for a model whose API does not accept one.
+    """
+    spec = filetrans_spec(model)
+    if spec.vocabulary:
+        hints = filetrans_hints(canonical_terms, vocabulary_id=vocabulary_id, vocabulary_model=vocabulary_model)
+    else:
+        terms = [str(x).strip() for x in canonical_terms if str(x).strip()]
+        hints = {'hint_counts': {'native_vocabulary': 0, 'context_terms': 0,
+                                 'unsupported_by_model': len(dict.fromkeys(terms))}}
+    code = FILETRANS_LANGUAGE_CODES.get(str(language or '').lower())
+    if spec.language_parameter and code:
+        hints['filetrans_language'] = code
+    return hints
 
 
 def filetrans_hints(canonical_terms, *, vocabulary_id='', vocabulary_model=''):

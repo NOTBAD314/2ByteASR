@@ -139,7 +139,9 @@ def open_application_settings(
     recovery_policy, theme_combo = dialog.recovery_policy, dialog.theme_combo
     reduce_motion_box = dialog.reduce_motion_box
     if isinstance(initial_section, str):
-        matches = dialog.navigation.findItems(initial_section, Qt.MatchFlag.MatchExactly)
+        from .i18n import tr
+        matches = (dialog.navigation.findItems(initial_section, Qt.MatchFlag.MatchExactly)
+                   or dialog.navigation.findItems(str(tr(initial_section)), Qt.MatchFlag.MatchExactly))
         if matches: dialog.navigation.setCurrentItem(matches[0])
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return False

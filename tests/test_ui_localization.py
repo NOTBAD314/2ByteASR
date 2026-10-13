@@ -44,7 +44,10 @@ def test_locale_files_load_with_identical_keys():
             for language in i18n.TRANSLATED_LANGUAGES}
     assert tables['en'].keys()==tables['ja'].keys() and len(tables['en'])>4000
     assert all(isinstance(value,str) and value.strip() for table in tables.values() for value in table.values())
-    assert i18n._TRANSLATIONS==tables
+    # zh-Hant (with its code-literal table) loads on first use (2026-10-14).
+    eager={language:table for language,table in tables.items() if language!='zh-Hant'}
+    assert {language:i18n._TRANSLATIONS[language] for language in eager}==eager
+    assert tables['zh-Hant'].items() <= i18n.language_table('zh-Hant').items()
 
 
 def test_dynamic_status_replaces_previous_capture(app):

@@ -19,8 +19,31 @@ _SESSION_SECRETS: dict[str, dict] = {}
 _SESSION_SECRETS_LOCK = threading.RLock()
 
 
+# macOS (2026-10-13): provider keys live in the login keychain. If the
+# keychain cannot be used, keys stay in memory for this session only; they are
+# never written to a plaintext file.
+_KEYCHAIN_STATE: dict[str, object] = {}
+
+
+def keychain_storage_enabled() -> bool:
+    if sys.platform != 'darwin':
+        return False
+    if 'enabled' not in _KEYCHAIN_STATE:
+        try:
+            from .macos_keychain import available
+            _KEYCHAIN_STATE['enabled'] = bool(available())
+        except Exception:
+            _KEYCHAIN_STATE['enabled'] = False
+    return bool(_KEYCHAIN_STATE['enabled'])
+
+
+def _keychain_failed(reason: str) -> None:
+    _KEYCHAIN_STATE['enabled'] = False
+    _KEYCHAIN_STATE['reason'] = reason
+
+
 def session_credentials_enabled() -> bool:
-    return sys.platform == 'darwin'
+    return sys.platform == 'darwin' and not keychain_storage_enabled()
 
 
 def clear_session_secrets() -> None:
@@ -29,15 +52,21 @@ def clear_session_secrets() -> None:
 
 
 def credential_storage_notice(language: str | None = None) -> str:
-    if not session_credentials_enabled():
+    session = session_credentials_enabled()
+    if not session and sys.platform != 'darwin':
         return '密钥使用 Windows DPAPI 加密保存在本机。'
     if language is None:
         from .i18n import current_language
         language = current_language()
+    if not session and keychain_storage_enabled():
+        return {
+            'en': 'Keys are saved in the macOS Keychain on this Mac.',
+            'ja': 'キーはこの Mac の macOS キーチェーンに保存されます。',
+        }.get(language, '密钥保存在这台 Mac 的“钥匙串”（Keychain）中。')
     return {
-        'en': 'Keys are kept for this session only and are cleared when the app quits. Keychain is not available yet.',
-        'ja': 'キーは今回のセッションのみ保持し、アプリ終了時に消去します。Keychain 保存は未対応です。',
-    }.get(language, '密钥仅保留在本次会话，退出软件后清除；Keychain 持久保存尚未实现。')
+        'en': 'The Keychain is not available, so keys are kept for this session only and cleared when the app quits.',
+        'ja': 'キーチェーンを使えないため、キーは今回のセッションのみ保持し、アプリ終了時に消去します。',
+    }.get(language, '无法使用钥匙串，密钥仅保留在本次会话，退出软件后清除（不会改用明文保存）。')
 
 
 PROVIDER_PRESETS = {
@@ -81,8 +110,10 @@ AI_SERVICE_SPECS = {
         "provider": "deepseek", "base_url": "https://api.deepseek.com/v1",
         # Registry fallback only. Live Studio selectors merge the provider's
         # own /models listing (discover_models) on top of this list.
+        # 2026-10-13 official: deepseek-flash (V4.1-Flash) is recommended; the
+        # old deepseek-v4-flash name still works and is served by V4.1-Flash.
         "model": "deepseek-v4-flash",
-        "models": ("deepseek-v4-flash", "deepseek-v4-pro"),
+        "models": ("deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"),
         "capabilities": ("text", "vision", "structured_output"),
     },
     "openai": {
@@ -95,8 +126,10 @@ AI_SERVICE_SPECS = {
         "label": "Gemini API", "transport": "openai_compatible",
         "provider": "gemini",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "model": "gemini-3.7-flash-high",
-        "models": ("gemini-3.7-flash-high", "gemini-2.5-flash"),
+        # Gemini API model ids documented 2026-10-13 (the "-high" names are
+        # Antigravity CLI names, not Gemini API ids).
+        "model": "gemini-3.8-flash",
+        "models": ("gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"),
         "capabilities": ("text", "vision", "structured_output"),
     },
     "antigravity": {
@@ -118,7 +151,7 @@ AI_SERVICE_SPECS = {
     "xai": {
         "label": "xAI API", "transport": "openai_compatible",
         "provider": "xai", "base_url": "https://api.x.ai/v1",
-        "model": "grok-4-latest", "models": ("grok-4-latest",),
+        "model": "grok-4.7", "models": ("grok-4.7", "grok-4.3"),
         "capabilities": ("text", "structured_output"),
     },
     "custom": {
@@ -131,7 +164,7 @@ AI_SERVICE_SPECS = {
         "provider": "bailian",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "qwen3.7-flash-2026-07-15",
-        "models": ("qwen3.7-flash-2026-07-15", "qwen3-max"),
+        "models": ("qwen3.7-flash-2026-07-15", "qwen3.7-max"),
         "capabilities": ("text", "vision", "structured_output"),
     },
 }
@@ -224,6 +257,15 @@ def _write_encrypted_secrets(payload: dict) -> Path:
     global _DECRYPTED_SECRETS
     _DECRYPTED_SECRETS = None
     path = secrets_path()
+    if keychain_storage_enabled():
+        from .macos_keychain import KeychainError, write as keychain_write
+        try:
+            keychain_write(payload)
+            with _SESSION_SECRETS_LOCK:
+                _SESSION_SECRETS[str(path)] = copy.deepcopy(payload)
+            return path
+        except KeychainError as exc:
+            _keychain_failed(str(exc))
     if session_credentials_enabled():
         with _SESSION_SECRETS_LOCK:
             _SESSION_SECRETS[str(path)] = copy.deepcopy(payload)
@@ -260,7 +302,22 @@ def _write_encrypted_secrets(payload: dict) -> Path:
 
 
 def _read_secrets(*, read_only_path: Path | None = None) -> dict:
-    if session_credentials_enabled():
+    if keychain_storage_enabled() and read_only_path is None:
+        key = str(secrets_path())
+        with _SESSION_SECRETS_LOCK:
+            cached = _SESSION_SECRETS.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+        from .macos_keychain import KeychainError, read as keychain_read
+        try:
+            payload = keychain_read() or {'schema': 2}
+        except KeychainError as exc:
+            _keychain_failed(str(exc))
+        else:
+            with _SESSION_SECRETS_LOCK:
+                _SESSION_SECRETS[key] = copy.deepcopy(payload)
+            return payload
+    if session_credentials_enabled() or sys.platform == 'darwin':
         # Never import or migrate a plaintext/Windows secrets file on Mac.
         if read_only_path is not None:
             return {'schema': 2}
@@ -313,7 +370,8 @@ def read_secret_value(*names: str) -> tuple[str, str]:
     for name in names:
         value = str(payload.get(name, "") or "").strip()
         if value:
-            label = '当前会话' if session_credentials_enabled() else 'Windows DPAPI'
+            label = ('macOS 钥匙串' if keychain_storage_enabled() else
+                     '当前会话' if session_credentials_enabled() else 'Windows DPAPI')
             return value, f"{label} / {name}"
     for name in names:
         value = str(os.environ.get(name, "") or "").strip()
@@ -432,13 +490,19 @@ def save_spark_credentials(url: str, **values) -> Path:
 
 def validate_qwen_asr_endpoint(endpoint: dict, *, require_key: bool = True) -> None:
     model = str(endpoint.get('model') or '')
-    if model.startswith('qwen3-asr-flash') and not model.endswith('-filetrans'):
+    from .qwen31_asr import is_filetrans_model
+    if model.startswith('qwen3-asr-flash') and not is_filetrans_model(model):
         from .i18n import tr
-        raise RuntimeError(tr('此 Qwen 云端短音频入口已移除，请选择 Qwen Audio 3.1 长音频转写。'))
-    if model.startswith('qwen-audio-') and model != 'qwen-audio-3.1-asr-flash-filetrans':
+        raise RuntimeError(tr('Qwen3-ASR-Flash 短音频聊天接口不回传可用时间戳，请选择 Qwen3-ASR-Flash 录音文件识别（Filetrans）。'))
+    if model.startswith('qwen-audio-') and not is_filetrans_model(model):
         raise RuntimeError('此 Qwen Audio 旧版本或短音频入口已移除，请选择 Qwen Audio 3.1 长音频转写。')
-    if model == 'qwen-audio-3.1-asr-flash-filetrans' and endpoint.get('protocol') != 'dashscope_filetrans':
-        raise RuntimeError('Qwen Audio 3.1 Filetrans 必须使用异步 Filetrans 协议。')
+    if is_filetrans_model(model) and endpoint.get('protocol') != 'dashscope_filetrans':
+        raise RuntimeError('百炼录音文件识别必须使用异步 Filetrans 协议。')
+    if is_filetrans_model(model) and '/compatible-mode/' in str(endpoint.get('url') or ''):
+        raise RuntimeError('录音文件识别不能使用聊天接口的 /compatible-mode/v1 地址；请贴入控制台的 API Host。')
+    from .mosi_asr import MODEL as MOSI_MODEL, PROTOCOL as MOSI_PROTOCOL
+    if (model == MOSI_MODEL) != (endpoint.get('protocol') == MOSI_PROTOCOL):
+        raise RuntimeError('MOSS-Transcribe-Diarize Pro 云端必须使用 MOSI 转写协议。')
     if model == 'microsoft/mai-transcribe-2':
         raise RuntimeError('旧 MAI 2 模型不能作为新版运行。请先向当前服务商确认 MAI 2.1 的实际模型 ID 或稳定别名映射。')
     if endpoint.get('protocol')=='spark_wss':
@@ -451,6 +515,7 @@ def validate_qwen_asr_endpoint(endpoint: dict, *, require_key: bool = True) -> N
     if endpoint.get("protocol", "dashscope_multimodal") not in {
         "dashscope_multimodal", "openai_transcription", "azure_transcription",
         "openrouter_verbose_json", "dashscope_filetrans", "dashscope_asr_flash",
+        "mosi_transcriptions",
     }:
         raise RuntimeError("ASR API 协议无效。")
     # Azure 部署地址必须带 ?api-version= 查询参数，其余协议仍禁 query。

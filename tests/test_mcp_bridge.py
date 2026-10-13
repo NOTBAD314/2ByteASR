@@ -278,7 +278,11 @@ def test_official_sdk_client_full_flow(bridge):
         time.sleep(0.01)
     thread.join(5)
     assert log.get("done"), (log.get("error"), sorted(log))
-    assert "preview_text_edits" in log["tools"] and "run_shell" not in log["tools"] and len(log["tools"]) == 13
+    assert "preview_text_edits" in log["tools"] and "run_shell" not in log["tools"] and len(log["tools"]) == 15
+    assert {"preview_replace", "preview_punctuation_style"} <= set(log["tools"])
+    # A real handshake plus tool calls: the app now knows the client actually connected.
+    assert _active.stats["client_started_at"] and _active.stats["last_tool_at"]
+    assert _active.stats["client"]                                          # the SDK client's own name
     assert log["status"]["project"]["cues"] == 3 and log["search"]["matches"][0]["id"] == "1"
     assert log["apply"]["status"] == "applied" and log["after_apply"] == "いい天気ね"
     assert log["undo"]["status"] == "undone" and page.project.cues[0].text == "いい天気" and clicked == 2
@@ -308,3 +312,89 @@ def test_client_disconnect_during_approval_and_expiry(bridge, monkeypatch):
     old = call("preview_text_edits", edits=[{"cue_id": "3", "text": "おはよう"}])
     with pytest.raises(RuntimeError, match="expired"):
         call("apply_plan", plan_id=old["plan_id"])
+
+
+def test_search_by_speaker_and_time_with_readable_times(bridge):
+    _active, _page, _path = bridge
+    assert [m["id"] for m in call("search", speaker="S1")["matches"]] == ["1", "3"]
+    ranged = call("get_cues", start="00:00:02.500", end="5.5")
+    assert [c["id"] for c in ranged["cues"]] == ["2", "3"] and ranged["total"] == 2
+    assert ranged["cues"][0]["start"] == "00:00:03.000" and ranged["cues"][0]["end_ms"] == 4000
+    found = call("search", query="お", speaker="S1", start="4000ms")
+    assert [m["id"] for m in found["matches"]] == ["3"]
+    with pytest.raises(RuntimeError, match="unknown_speaker"):
+        call("search", speaker="nobody")
+    with pytest.raises(RuntimeError, match="bad_params"):
+        call("get_cues", start="yesterday")
+    with pytest.raises(RuntimeError, match="bad_params"):
+        call("search")                                                    # nothing to search for
+
+
+def test_batch_replace_and_punctuation_need_approval_and_undo(bridge):
+    active, page, _path = bridge
+    plan = call("preview_replace", find="天気", replace="天氣", speaker="S1")
+    assert plan["change_count"] == 1 and plan["changes"][0]["text"] == {"before": "いい天気", "after": "いい天氣"}
+    assert page.project.cues[0].text == "いい天気"                           # preview changes nothing
+    applied, shown = answer_in_thread("apply_plan", True, plan_id=plan["plan_id"], wait_seconds=10)
+    assert applied["status"] == "applied" and page.project.cues[0].text == "いい天氣" and "いい天気" in shown
+    undone, _ = answer_in_thread("undo_plan", True, plan_id=plan["plan_id"], wait_seconds=10)
+    assert undone["status"] == "undone" and page.project.cues[0].text == "いい天気"
+    with pytest.raises(RuntimeError, match="no_change"):
+        call("preview_replace", find="not here", replace="x")
+    with pytest.raises(RuntimeError, match="bad_params"):
+        call("preview_replace", find="いい天気", replace="", cue_ids=["1"])  # would empty the line
+    before = [(c.id, c.start_ms, c.end_ms, c.speaker_id, c.text) for c in page.project.cues]
+    style = call("preview_punctuation_style", mode="add")
+    result, _ = answer_in_thread("apply_plan", True, plan_id=style["plan_id"], wait_seconds=10)
+    assert result["status"] == "applied" and page.project.studio_state["punctuation"]["mode"] == "add"
+    assert [(c.id, c.start_ms, c.end_ms, c.speaker_id, c.text) for c in page.project.cues] == before
+    shown_rows = call("get_cues")["cues"]
+    assert shown_rows[0]["text"] == "いい天気" and shown_rows[0].get("display_text", "いい天気") != ""
+    back, _ = answer_in_thread("undo_plan", True, plan_id=style["plan_id"], wait_seconds=10)
+    assert back["status"] == "undone" and "punctuation" not in page.project.studio_state
+    active.settings["allow_edits"] = False
+    with pytest.raises(RuntimeError, match="not_permitted"):
+        call("preview_replace", find="天気", replace="x")
+
+
+def test_export_formats_once_only_punctuation_and_authorized_folder(bridge, tmp_path):
+    active, page, path = bridge
+    folder = path.parent / common.EXPORT_FOLDER
+    first = call("export", formats=["srt", "txt"], name="cut", punctuation="none")
+    assert sorted(f["file"].split("\\")[-1] for f in first["files"]) == ["cut.srt", "cut.txt"]
+    srt = folder / "cut.srt"
+    before = srt.read_bytes()
+    second = call("export", formats=["srt"], name="cut")
+    assert second["files"][0]["file"].endswith("cut (2).srt") and srt.read_bytes() == before  # never replaced
+    assert "punctuation" not in page.project.studio_state                   # this export only
+    with pytest.raises(RuntimeError, match="not_permitted"):
+        call("export", formats=["srt"], destination="authorized_folder")   # nothing authorized yet
+    allowed = tmp_path / "交付 文件夹"
+    allowed.mkdir()
+    active.settings["export_dir"] = str(allowed)
+    done = call("export", formats=["json"], name="ep", destination="authorized_folder")
+    assert done["folder"] == "authorized_folder" and (allowed / "ep.json").is_file()
+    with pytest.raises(RuntimeError, match="bad_params"):
+        call("export", formats=["exe"])
+    with pytest.raises(RuntimeError, match="bad_params"):
+        call("export", destination="C:\Windows")
+    linked = tmp_path / "linked"
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(linked), str(allowed)], check=True, capture_output=True)
+    try:
+        active.settings["export_dir"] = str(linked)
+        with pytest.raises(RuntimeError, match="not_permitted"):
+            call("export", formats=["srt"], destination="authorized_folder")
+    finally:
+        os.rmdir(linked)
+
+
+def test_hello_is_not_counted_as_a_tool_call(bridge):
+    active, _page, _path = bridge
+    from twobyteasr import mcp_clients
+    call("hello")
+    assert active.stats["client_started_at"] and not active.stats["last_tool_at"]
+    lines = mcp_clients.connection_lines(active.stats, True, "written")
+    assert "还没有调用工具" in lines[1]
+    call("get_speakers")
+    assert active.stats["last_tool_at"]
+    assert "实际已连线" in mcp_clients.connection_lines(active.stats, True, "written")[1]

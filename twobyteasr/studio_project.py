@@ -2092,6 +2092,21 @@ def create_studio_outputs(
                     "start_ms": int(round(word_start_ms)),
                     "end_ms": int(round(word_end_ms)),
                 })
+        word_timing = arbitration.get("word_timing") if isinstance(arbitration, Mapping) else None
+        if isinstance(word_timing, Mapping) and word_timing.get("basis") in {"provider_words", "aligner_words"}:
+            # 2026-10-14: a cloud provider's (or the aligner's) multi-character
+            # words are the measured units; the per-character split is display only.
+            measured = [
+                {"text": str(word.get("text") or ""), "start_ms": int(word["start_ms"]), "end_ms": int(word["end_ms"])}
+                for word in word_timing.get("measured_words") or ()
+                if isinstance(word, Mapping) and str(word.get("text") or "").strip()
+                and isinstance(word.get("start_ms"), int) and isinstance(word.get("end_ms"), int)
+                and word["end_ms"] >= word["start_ms"]
+            ]
+            if measured:
+                words_payload = measured
+            arbitration["word_timing"] = {key: value for key, value in word_timing.items() if key != "measured_words"}
+            arbitration["word_timing"]["measured_word_count"] = len(measured)
         if words_payload:
             row["words"] = words_payload
         evidence[reference] = row
@@ -2177,6 +2192,11 @@ def create_studio_outputs(
         ]
     from .cue_forced_alignment import attach_project_evidence
     attach_project_evidence(project, cues)
+    punctuation_mode = str((metadata.get("subtitle_punctuation") or {}).get("mode") or "original")
+    if punctuation_mode in ("add", "none"):
+        # The punctuation choice made before recognition; 保留原文 stays implicit.
+        from .punctuation_style import state_value
+        project.studio_state["punctuation"] = state_value(punctuation_mode)
     output_mode = str((metadata.get("subtitle_output") or {}).get("mode") or "original")
     if output_mode in ("translation", "bilingual") and project.generation_metadata.get("translations"):
         # The display the user chose before recognition (original/translation/bilingual).

@@ -203,7 +203,10 @@ def record_media_event(event, **payload):
             return
         row = {"time": _now(), "event": str(event), **payload}
         _active_report["events"].append(row)
-        if event == 'moss_full_context_preparing':
+        if event == 'task_audio_ready':
+            # Known before any model runs, so a failed task still reports it.
+            _active_report.setdefault('media', {})['audio_seconds'] = payload.get('seconds')
+        elif event == 'moss_full_context_preparing':
             _active_report['moss_execution'] = {**payload, 'application_chunk_count': 0,
                 'worker_count': 0, 'generation_attempts': 0, 'complete': False}
         elif event in {"moss_full_context_execution", "moss_full_context_result"}:
@@ -273,6 +276,23 @@ def record_media_event(event, **payload):
             _active_report['terminology_summary']=dict(payload)
 
 
+def _moss_window_lines(execution):
+    """Readable window plan of a long MOSS task (2026-10-13)."""
+    plan = execution.get("window_plan") or {}
+    windows = execution.get("windows") or []
+    if not plan:
+        return []
+    usable = (plan.get("usable_bytes") or 0) / 2**30
+    if plan.get("mode") == "insufficient":
+        return [f"- MOSS 分段：显存不足，可用约 {usable:.1f} GiB，最短窗口需要约 "
+                f"{(plan.get('needed_bytes') or 0) / 2**30:.1f} GiB"]
+    if len(windows) <= 1 and plan.get("mode") == "single_context":
+        return [f"- MOSS 分段：一次完成（可用显存约 {usable:.1f} GiB，输入 {plan.get('prompt_tokens')} tokens）"]
+    spans = "、".join(f"{row.get('start', 0) / 60:.1f}–{row.get('end', 0) / 60:.1f} 分"
+                     f"（峰值 {row.get('peak_allocated_gb') or 0:.1f} GiB）" for row in windows)
+    return [f"- MOSS 分段：计划 {plan.get('count')} 段，实际 {len(windows)} 段，可用显存约 {usable:.1f} GiB；{spans}"]
+
+
 def _write_report(report):
     json_path, text_path = report_paths_for_media(report["media"]["path"], job_id=report.get("job_id"), media_index=report.get("media_index"))
     json_path = Path(json_path)
@@ -281,7 +301,7 @@ def _write_report(report):
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     result = report.get("result", {})
     elapsed_seconds = float(result.get("elapsed_seconds", 0) or 0)
-    audio_seconds = float(result.get("audio_seconds", 0) or 0)
+    audio_seconds = float(result.get("audio_seconds", 0) or report.get("media", {}).get("audio_seconds") or 0)
     realtime_ratio = elapsed_seconds / audio_seconds if audio_seconds > 0 else 0.0
     outcome = normalize_recognition_outcome(report)
     performance = report.get("settings", {}).get("performance", {})
@@ -322,7 +342,8 @@ def _write_report(report):
         f"- 云端批次：{'并行' if performance.get('parallel_cloud_batches') else '串行'}，"
         f"最多 {performance.get('cloud_batch_workers', 1)} 路",
         f"- MOSS/VAD：{'并行' if performance.get('parallel_cpu_vad') else '串行'}",
-        "- MOSS：完整任务音频 / 单上下文生成；旧分块并行设置不再生效",
+        "- MOSS：能放下时完整任务音频单上下文生成；超出本机容量时按静音切成几个大窗口依次生成",
+        *_moss_window_lines(report.get("moss_execution", {})),
         "- MOSS 实际执行：" + json.dumps(report.get("moss_execution", {}), ensure_ascii=False),
         f"- Qwen3-ASR：每批最多 {performance.get('qwen_asr_batch_size', 4)} 个短块",
         f"- FireRed/Qwen3 GPU：{'允许并行' if performance.get('parallel_gpu_asr') else '串行'}，"

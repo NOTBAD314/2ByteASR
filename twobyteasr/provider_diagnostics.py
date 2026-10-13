@@ -108,7 +108,10 @@ _PATTERNS=[
     re.compile(r'(?i)\bBearer\s+[^\s,"\']+'),
     re.compile(r'(?i)(?:access_token|refresh_token|id_token|api[_-]?key|authorization|cookie|password|token|secret)["\']?\s*[=:]\s*["\']?[^\s,"\';}&]+'),
     re.compile(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b'),
-    re.compile(r'\b(?:sk-|xai-|ghp_|glpat-|ya29\.|AIza)[A-Za-z0-9._-]{10,}'),
+    re.compile(r'\b(?:sk-|xai-|ghp_|glpat-|ya29\.|AIza|gsk_)[A-Za-z0-9._-]{10,}'),
+    # Alibaba Cloud AccessKey IDs (RAM) and signed-URL credentials in queries.
+    re.compile(r'\bLTAI[A-Za-z0-9]{12,}'),
+    re.compile(r'(?i)(?:OSSAccessKeyId|Signature|x-oss-credential|x-oss-signature|X-Amz-Credential|X-Amz-Signature)=[^&\s"\']+'),
     # An unanchored leading + retries at every character in a large CLI
     # stderr line, blocking both drain callbacks for minutes. Only begin at
     # the start of an address token; redaction semantics stay unchanged.
