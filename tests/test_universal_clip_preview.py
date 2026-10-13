@@ -107,8 +107,10 @@ def test_held_mouse_projects_audio_and_video_without_commit(timeline, lane, ms, 
     drawn = []
     for asset in t.project.media_pool:
         t.waveform_caches[asset.asset_id] = SimpleNamespace(metadata=SimpleNamespace(source_path=asset.canonical_source))
-    monkeypatch.setattr(t, '_waveform_envelope', lambda cache, a, b, pixels, left, right, rect:
-        drawn.append((cache.metadata.source_path, a, b, left, rect.center().y())))
+    # 2026-10-12: the lane draws fixed-grid tiles; the hook receives the same
+    # visible source range, left edge and lane rect as before.
+    monkeypatch.setattr(t, '_waveform_envelope_tiles', lambda cache, a, b, left, right, rect, *clip_range:
+        drawn.append((cache.metadata.source_path, a, b, left, rect.center().y())) or [])
     commits = []
     t.video_clip_move_committed.connect(lambda *v: commits.append(v))
     t.video_clip_reassign_committed.connect(lambda *v: commits.append(v))
@@ -174,7 +176,7 @@ def test_speed_waveform_uses_trimmed_source_window(timeline, monkeypatch):
     seen = []
     for asset in t.project.media_pool:
         t.waveform_caches[asset.asset_id] = SimpleNamespace(metadata=SimpleNamespace(source_path=asset.canonical_source))
-    monkeypatch.setattr(t, '_waveform_envelope', lambda cache, a, b, *args: seen.append((a, b)))
+    monkeypatch.setattr(t, '_waveform_envelope_tiles', lambda cache, a, b, *args: seen.append((a, b)) or [])
     t.repaint()
     assert (102000, 104000) in seen
 
@@ -193,8 +195,10 @@ def test_late_peak_result_after_cancel_never_restores_drag_or_wrong_source(timel
     cache = SimpleNamespace(metadata=SimpleNamespace(source_path=old_path, duration_ms=120000))
     t.set_cache(cache)
     drawn = []
-    monkeypatch.setattr(t, '_waveform_envelope', lambda cache, a, b, pixels, left, right, rect:
-        drawn.append((cache.metadata.source_path, a, b, left, rect.center().y())))
+    # 2026-10-12: the lane draws fixed-grid tiles; the hook receives the same
+    # visible source range, left edge and lane rect as before.
+    monkeypatch.setattr(t, '_waveform_envelope_tiles', lambda cache, a, b, left, right, rect, *clip_range:
+        drawn.append((cache.metadata.source_path, a, b, left, rect.center().y())) or [])
     t.repaint()
     assert t._clip_drag is None
     clip = t.project.video_tracks[1].clips[0]

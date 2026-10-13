@@ -42,6 +42,10 @@ def materialize_caption_project(revision):
         generation_metadata=thaw_json(revision.generation_metadata) or {},
         studio_state=thaw_json(revision.studio_state) or {},
         render_settings={'play_res_x':revision.play_res_x, 'play_res_y':revision.play_res_y, '_cue_domain':'timeline'})
+    # Original / translation / bilingual: the same display cues the ASS export
+    # draws (adjusted originals plus ``<id>#tr`` translation companions).
+    from .bilingual_layout import project_display_cues
+    project.cues = project_display_cues(project)
     return project
 
 
@@ -92,12 +96,16 @@ class PlaybackCaptionCache(QObject):
     def failure(self, revision, cue_id, width, height):
         with self._lock:return self._failures.get((*revision_key(revision,width,height),cue_id))
 
-    def prepare(self, revision, cue_ids, width, height):
+    def prepare(self, revision, cue_ids, width, height, *, merge=False):
+        """Latest request wins; ``merge`` appends to a pending request instead."""
         group = revision_key(revision,width,height)
         with self._lock:
             if self._closed: return
             missing = tuple(cue_id for cue_id in cue_ids if (*group,cue_id) not in self._frames and (*group,cue_id) not in self._failures)
             if not missing: return
+            pending = self._pending
+            if merge and pending is not None and revision_key(pending[0], pending[2], pending[3]) == group:
+                missing = tuple(dict.fromkeys((*pending[1], *missing)))
             self._pending = (revision, missing, width, height)
             self._wake.set()
             if self._running: return
@@ -128,6 +136,10 @@ class PlaybackCaptionCache(QObject):
                         if not self._closed:
                             self._materialized, self._materialized_key = project, key
                 from .visual_snapshot import build_visual_cue_snapshot
+                from .bilingual_layout import companion_id
+                present = {cue.id for cue in project.cues}
+                ids = tuple(dict.fromkeys(item for cue_id in ids for item in (
+                    (cue_id, companion_id(cue_id)) if companion_id(cue_id) in present else (cue_id,))))
                 for cue_id in ids:
                     with self._lock:
                         if self._closed: break

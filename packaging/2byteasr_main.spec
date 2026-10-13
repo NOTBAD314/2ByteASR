@@ -90,6 +90,7 @@ for filename in (
     "firered_aed_worker.py",
     "firered_vad_worker.py",
     "qwen_asr_worker.py",
+    "qwen_aligner_worker.py",
     "glm_asr_worker.py",
     "sensevoice_worker.py",
     "asr_api_worker.py",
@@ -117,6 +118,9 @@ if _probe_source.is_file():
 for _source_file in sorted((ROOT / "twobyteasr").glob("*.py")):
     if is_current_delivery_file(_source_file.relative_to(ROOT).as_posix()):
         datas.append((str(_source_file), "twobyteasr"))
+# UI translation catalogs, read by twobyteasr.i18n next to its own module.
+for _locale_file in sorted((ROOT / "twobyteasr" / "locales").glob("*.json")):
+    datas.append((str(_locale_file), "twobyteasr/locales"))
 
 # P8C-R3.1: pyd-free copy of the MOSS worker for the packaged runtime. The
 # install root carries the GUI's cp310 .pyd files; a 3.12 role venv running
@@ -136,7 +140,7 @@ if _speaker_embed_worker.is_file():
 # P9A-R7: real local FireRed-AED and Qwen3-ASR launchers.  Keep copies in the
 # pyd-free workers directory as well as the install root because packaged
 # startup resolves their paths from both locations across older bundles.
-for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
+for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "qwen_aligner_worker.py", ROOT / "ctc_aligner_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
     if _asr_worker.is_file():
         datas.append((str(_asr_worker), "."))
         datas.append((str(_asr_worker), "workers"))
@@ -171,12 +175,18 @@ excluded_modules = [
     "transformers",
 ]
 
+# Local MCP server (2026-10-12): ``2ByteASR.exe --mcp-stdio`` imports the
+# official SDK lazily; its protocol-version modules load by name.
+from PyInstaller.utils.hooks import collect_submodules
+_mcp_hidden = (collect_submodules("mcp", filter=lambda name: not name.startswith(("mcp.cli", "mcp.server.fastmcp")))
+               + collect_submodules("mcp_types"))
+
 a = Analysis(
     [str(ROOT / "quick_start.py")],
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["PySide6.QtNetwork", "PIL.Image", "qtawesome", "oss2", "oss2.defaults", "crcmod"],
+    hiddenimports=["PySide6.QtNetwork", "PIL.Image", "qtawesome", "oss2", "oss2.defaults", "crcmod", *_mcp_hidden],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

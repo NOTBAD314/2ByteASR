@@ -197,14 +197,12 @@ def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any
     project.validate()
     play_res_x = max(1, int(project.render_settings.get("play_res_x", 1920)))
     play_res_y = max(1, int(project.render_settings.get("play_res_y", 1080)))
-    metadata = getattr(project, "generation_metadata", None)
-    translations = metadata.get("translations") if isinstance(metadata, Mapping) else None
-    state = getattr(project, "studio_state", None)
-    bilingual = bool(state.get("bilingual_mode")) if isinstance(state, Mapping) else False
+    from .bilingual_layout import project_display_cues
     from .caption_frame_time import project_frame_rate
     if frame_rate is None:frame_rate=project_frame_rate(project)
     return _compile_ass_records(
-        cues=cues if cues is not None else project.cues,
+        # Original / translation / bilingual: the same layout the live preview draws.
+        cues=project_display_cues(project, cues if cues is not None else project.cues),
         frame_rate=frame_rate,
         styles=project.styles,
         speakers=project.speakers,
@@ -212,7 +210,7 @@ def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any
         style_recipes=project.style_recipes,
         play_res_x=play_res_x,
         play_res_y=play_res_y,
-        translations=translations if (bilingual and isinstance(translations, Mapping)) else None,
+        translations=None,
         stacking_enabled=project.studio_state.get('auto_subtitle_stacking',True),
     )
 
@@ -225,11 +223,18 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
     effects = thaw_json(revision.effects)
     recipes = thaw_json(revision.style_recipes)
     state = thaw_json(revision.studio_state) if getattr(revision, "studio_state", "") else {}
-    bilingual = bool(state.get("bilingual_mode")) if isinstance(state, Mapping) else False
     metadata = thaw_json(revision.generation_metadata) if getattr(revision, "generation_metadata", "") else {}
-    translations = metadata.get("translations") if isinstance(metadata, Mapping) else None
+    from .bilingual_layout import display_cues, settings_from_state, translations_of
+    settings = settings_from_state(state)
+    cues = revision.cues
+    if settings.mode != "original" and translations_of(metadata):
+        from .studio_project import StudioCue
+        cues = display_cues([StudioCue(**cue.to_dict()) for cue in cues], translations=translations_of(metadata),
+                            settings=settings, styles=revision.styles, speakers=revision.speakers,
+                            style_recipes=recipes if isinstance(recipes, Mapping) else {},
+                            play_res_x=revision.play_res_x, play_res_y=revision.play_res_y)
     return _compile_ass_records(
-        cues=revision.cues,
+        cues=cues,
         frame_rate=getattr(revision,'frame_rate',None),
         styles=revision.styles,
         speakers=revision.speakers,
@@ -237,7 +242,7 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
         style_recipes=recipes if isinstance(recipes, Mapping) else {},
         play_res_x=revision.play_res_x,
         play_res_y=revision.play_res_y,
-        translations=translations if (bilingual and isinstance(translations, Mapping)) else None,
+        translations=None,
         stacking_enabled=state.get('auto_subtitle_stacking',True),
     )
 

@@ -90,16 +90,16 @@ def test_apply_ui_language_roundtrip_restores_chinese():
         button.deleteLater()
 
 
-def test_no_cjk_left_in_round_translations():
-    """本轮词条的英文译文不应残留中文（品牌名与日文允许的汉字除外）。"""
-    from twobyteasr.i18n_round_20260919 import ROUND_2026_09_19
-
-    brand_tokens = ("优兔泊", "剪映")  # 自有/生态品牌名，翻译约定保留原文
-    bad = []
-    for zh, pair in ROUND_2026_09_19.items():
-        text = pair["en"]
-        for token in brand_tokens:
-            text = text.replace(token, "")
-        if re.search(r"[\u4e00-\u9fff]", text):
-            bad.append(zh)
+def test_no_cjk_left_in_english_translations():
+    """English values carry no Chinese, except these quoted examples (the
+    misheard spelling, the grammar pattern, the hesitation sound) and the
+    output file name, which the user sees in Chinese."""
+    allowed = {
+        "每行一个正确写法；常被听错的写法用 → 连到正确写法，例如：球球 → CHICHOO",
+        "动词重叠后不能再接补语（如“叠叠出”）",
+        "动词重叠后不能再接“形容词+了”（如“学学聪明了”）",
+        "识别原文里两次之间有“呃”等停顿，是起句重来",
+    }
+    bad = [zh for zh, en in _TRANSLATIONS["en"].items()
+           if re.search(r"[一-鿿]", en) and zh not in allowed and not zh.startswith("使用方式：")]
     assert not bad, f"en entries still contain CJK: {bad[:6]}"

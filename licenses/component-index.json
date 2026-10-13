@@ -1,7 +1,7 @@
 {
   "format": "2ByteASR license-material index",
   "schema_version": 1,
-  "date": "2026-09-30",
+  "date": "2026-10-13",
   "candidate": {
     "path": "releases/brand-review-20260930/2ByteASR-Setup-0.2.6-test.2.exe",
     "bytes": 993146272,
@@ -15,7 +15,7 @@
     "D": "用户另配外部服务/工具",
     "E": "仅本机开发工具，不在当前源码公开树或B中；工具产出/bootloader另列"
   },
-  "component_count": 604,
+  "component_count": 622,
   "components": [
     {
       "id": "npm:renderer/node_modules/@babel/code-frame/package.json",
@@ -15805,7 +15805,8 @@
         "B"
       ],
       "paths": [
-        "wheels/annotated_types-0.8.0-py3-none-any.whl"
+        "wheels/annotated_types-0.8.0-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:annotated_types"
       ],
       "upstream": [
         "Homepage, https://github.com/annotated-types/annotated-types",
@@ -15817,7 +15818,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -16375,7 +16376,8 @@
         "B"
       ],
       "paths": [
-        "wheels/exceptiongroup-1.3.1-py3-none-any.whl"
+        "wheels/exceptiongroup-1.3.1-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:exceptiongroup"
       ],
       "upstream": [
         "Changelog, https://github.com/agronholm/exceptiongroup/blob/main/CHANGES.rst",
@@ -16387,7 +16389,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -17054,7 +17056,8 @@
         "B"
       ],
       "paths": [
-        "wheels/h11-0.16.0-py3-none-any.whl"
+        "wheels/h11-0.16.0-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:h11"
       ],
       "upstream": [
         "https://github.com/python-hyper/h11"
@@ -17064,7 +17067,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -17751,7 +17754,8 @@
         "B"
       ],
       "paths": [
-        "wheels/itsdangerous-2.2.0-py3-none-any.whl"
+        "wheels/itsdangerous-2.2.0-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:itsdangerous"
       ],
       "upstream": [
         "Changes, https://itsdangerous.palletsprojects.com/changes/",
@@ -17765,7 +17769,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -18107,7 +18111,8 @@
         "B"
       ],
       "paths": [
-        "wheels/markdown_it_py-4.2.0-py3-none-any.whl"
+        "wheels/markdown_it_py-4.2.0-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:markdown_it"
       ],
       "upstream": [
         "Documentation, https://markdown-it-py.readthedocs.io",
@@ -18118,7 +18123,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -18359,7 +18364,8 @@
         "B"
       ],
       "paths": [
-        "wheels/mdurl-0.1.2-py3-none-any.whl"
+        "wheels/mdurl-0.1.2-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:mdurl"
       ],
       "upstream": [
         "Homepage, https://github.com/executablebooks/mdurl"
@@ -18369,7 +18375,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -19611,7 +19617,8 @@
         "B"
       ],
       "paths": [
-        "wheels/python_multipart-0.0.32-py3-none-any.whl"
+        "wheels/python_multipart-0.0.32-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:multipart"
       ],
       "upstream": [
         "Homepage, https://github.com/Kludex/python-multipart",
@@ -19624,7 +19631,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -20030,7 +20037,8 @@
         "B"
       ],
       "paths": [
-        "wheels/rich-15.0.0-py3-none-any.whl"
+        "wheels/rich-15.0.0-py3-none-any.whl",
+        "2ByteASR.exe!PYZ:rich"
       ],
       "upstream": [
         "Documentation, https://rich.readthedocs.io/en/latest/",
@@ -20041,7 +20049,7 @@
       "additional_conditions": [],
       "modification_status": "80个归档均匹配随包model_wheels.json的SHA256；不等于全部逐一重验上游",
       "patches": [],
-      "integration": "原wheel归档随包，模型准备时安装到私有Python环境",
+      "integration": "原wheel归档随包，模型准备时安装到私有Python环境；0.7.0 起同一版本也作为 PYZ 模块随主程序（MCP 依赖链）",
       "required_materials": [
         "对应版本许可全文、版权与适用NOTICE；先核查原文"
       ],
@@ -40089,6 +40097,1016 @@
       ],
       "copyright_attribution": [],
       "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:mcp",
+      "name": "mcp",
+      "version": "2.3.0",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:mcp"
+      ],
+      "upstream": [
+        "https://pypi.org/project/mcp/2.3.0/",
+        "https://github.com/modelcontextprotocol/python-sdk"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/mcp-2.3.0/licenses/LICENSE",
+          "sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/mcp-2.3.0/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/mcp/2.3.0/"
+      ],
+      "version_source": "https://pypi.org/project/mcp/2.3.0/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:mcp-types",
+      "name": "mcp-types",
+      "version": "2.3.0",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:mcp_types"
+      ],
+      "upstream": [
+        "https://pypi.org/project/mcp-types/2.3.0/",
+        "https://github.com/modelcontextprotocol/python-sdk"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/mcp-types-2.3.0/licenses/LICENSE",
+          "sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/mcp-types-2.3.0/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/mcp-types/2.3.0/"
+      ],
+      "version_source": "https://pypi.org/project/mcp-types/2.3.0/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:pydantic",
+      "name": "pydantic",
+      "version": "2.13.4",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:pydantic",
+        "pydantic-2.13.4.dist-info/"
+      ],
+      "upstream": [
+        "https://pypi.org/project/pydantic/2.13.4/",
+        "https://github.com/pydantic/pydantic"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/pydantic-2.13.4/licenses/LICENSE",
+          "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/pydantic-2.13.4/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/pydantic/2.13.4/"
+      ],
+      "version_source": "https://pypi.org/project/pydantic/2.13.4/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:pydantic_core",
+      "name": "pydantic_core",
+      "version": "2.46.4",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:pydantic_core",
+        "pydantic_core/_pydantic_core.cp310-win_amd64.pyd"
+      ],
+      "upstream": [
+        "https://pypi.org/project/pydantic_core/2.46.4/",
+        "https://github.com/sponsors/samuelcolvin"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；CPython扩展/DLL随包",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/pydantic_core-2.46.4/licenses/LICENSE",
+          "sha256": "fbe7f615f18d135c07000e5a86325db27f42c7729699ef166ac1f7a3f4586bf4",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/pydantic_core-2.46.4/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/pydantic_core/2.46.4/"
+      ],
+      "version_source": "https://pypi.org/project/pydantic_core/2.46.4/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:starlette",
+      "name": "starlette",
+      "version": "1.3.1",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:starlette"
+      ],
+      "upstream": [
+        "https://pypi.org/project/starlette/1.3.1/",
+        "https://github.com/Kludex/starlette"
+      ],
+      "license": "BSD-3-Clause",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/starlette-1.3.1/licenses/LICENSE.md",
+          "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/starlette-1.3.1/LICENSE.md"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/starlette/1.3.1/"
+      ],
+      "version_source": "https://pypi.org/project/starlette/1.3.1/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:uvicorn",
+      "name": "uvicorn",
+      "version": "0.52.0",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:uvicorn"
+      ],
+      "upstream": [
+        "https://pypi.org/project/uvicorn/0.52.0/",
+        "https://github.com/sponsors/encode"
+      ],
+      "license": "BSD-3-Clause",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/uvicorn-0.52.0/licenses/LICENSE.md",
+          "sha256": "efe1acf3e62fb99c288b0ec73e5a773b7268ef4320fe757ea994214e4b63c371",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/uvicorn-0.52.0/LICENSE.md"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/uvicorn/0.52.0/"
+      ],
+      "version_source": "https://pypi.org/project/uvicorn/0.52.0/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:sse-starlette",
+      "name": "sse-starlette",
+      "version": "3.5.0",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:sse_starlette"
+      ],
+      "upstream": [
+        "https://pypi.org/project/sse-starlette/3.5.0/",
+        "https://github.com/sysid/sse-starlette"
+      ],
+      "license": "BSD-3-Clause",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/sse-starlette-3.5.0/licenses/AUTHORS",
+          "sha256": "c2ff63d2ecf128bbda8ab1b2016830a5da124202fbb97168685bb9946aed3f1a",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/sse-starlette-3.5.0/licenses/LICENSE",
+          "sha256": "80af6bfccbebd2c14d4aab96695cab9950e177190cc80f5ef819e99996883e8e",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/sse-starlette-3.5.0/AUTHORS",
+        "licenses/materials/frozen/sse-starlette-3.5.0/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/sse-starlette/3.5.0/"
+      ],
+      "version_source": "https://pypi.org/project/sse-starlette/3.5.0/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:anyio",
+      "name": "anyio",
+      "version": "4.14.2",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:anyio"
+      ],
+      "upstream": [
+        "https://pypi.org/project/anyio/4.14.2/",
+        "https://github.com/agronholm/anyio"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/anyio-4.14.2/licenses/LICENSE",
+          "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/anyio-4.14.2/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/anyio/4.14.2/"
+      ],
+      "version_source": "https://pypi.org/project/anyio/4.14.2/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:httpx2",
+      "name": "httpx2",
+      "version": "2.13.1",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:httpx2",
+        "httpx2-2.13.1.dist-info/"
+      ],
+      "upstream": [
+        "https://pypi.org/project/httpx2/2.13.1/",
+        "https://github.com/pydantic/httpx2/blob/main/src/httpx2/CHANGELOG.md"
+      ],
+      "license": "BSD-3-Clause",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/httpx2-2.13.1/licenses/LICENSE.md",
+          "sha256": "7e7d6dbaf7fe160d39fd6e84fd02c33cab96bcbea34d36998d545bceb4a19c30",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/httpx2-2.13.1/LICENSE.md"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/httpx2/2.13.1/"
+      ],
+      "version_source": "https://pypi.org/project/httpx2/2.13.1/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:httpcore2",
+      "name": "httpcore2",
+      "version": "2.13.1",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:httpcore2",
+        "httpcore2-2.13.1.dist-info/"
+      ],
+      "upstream": [
+        "https://pypi.org/project/httpcore2/2.13.1/",
+        "https://github.com/pydantic/httpx2/blob/main/src/httpcore2/CHANGELOG.md"
+      ],
+      "license": "BSD-3-Clause",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/httpcore2-2.13.1/licenses/LICENSE.md",
+          "sha256": "c4df125c807b0613501e943a5c92496dd11d2c16604ce396097a8dde396304d9",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/httpcore2-2.13.1/LICENSE.md"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/httpcore2/2.13.1/"
+      ],
+      "version_source": "https://pypi.org/project/httpcore2/2.13.1/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:click",
+      "name": "click",
+      "version": "8.4.2",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:click",
+        "click-8.4.2.dist-info/"
+      ],
+      "upstream": [
+        "https://pypi.org/project/click/8.4.2/"
+      ],
+      "license": "BSD-3-Clause",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/click-8.4.2/licenses/LICENSE.txt",
+          "sha256": "9a8ad106a394e853bfe21f42f4e72d592819a22805d991b5f3275029292b658d",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/click-8.4.2/LICENSE.txt"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/click/8.4.2/"
+      ],
+      "version_source": "https://pypi.org/project/click/8.4.2/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:opentelemetry-api",
+      "name": "opentelemetry-api",
+      "version": "1.45.1",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:opentelemetry",
+        "opentelemetry_api-1.45.1.dist-info/"
+      ],
+      "upstream": [
+        "https://pypi.org/project/opentelemetry-api/1.45.1/",
+        "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api"
+      ],
+      "license": "Apache-2.0",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/opentelemetry-api-1.45.1/licenses/LICENSE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/opentelemetry-api-1.45.1/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/opentelemetry-api/1.45.1/"
+      ],
+      "version_source": "https://pypi.org/project/opentelemetry-api/1.45.1/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:truststore",
+      "name": "truststore",
+      "version": "0.10.4",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:truststore"
+      ],
+      "upstream": [
+        "https://pypi.org/project/truststore/0.10.4/",
+        "https://github.com/sethmlarson/truststore"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/truststore-0.10.4/licenses/LICENSE",
+          "sha256": "33be7b7e8fa4fd19b1760e1a8ed8a668bdab852c91b692dd41424bcb725a9fca",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/truststore-0.10.4/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/truststore/0.10.4/"
+      ],
+      "version_source": "https://pypi.org/project/truststore/0.10.4/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:typing-inspection",
+      "name": "typing-inspection",
+      "version": "0.4.2",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:typing_inspection"
+      ],
+      "upstream": [
+        "https://pypi.org/project/typing-inspection/0.4.2/",
+        "https://github.com/pydantic/typing-inspection"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/typing-inspection-0.4.2/licenses/LICENSE",
+          "sha256": "804b59b25f2c31bd278f9202a19ae49a3945aa2664387e2d0a128c7cacc61ec3",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/typing-inspection-0.4.2/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/typing-inspection/0.4.2/"
+      ],
+      "version_source": "https://pypi.org/project/typing-inspection/0.4.2/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:tzdata",
+      "name": "tzdata",
+      "version": "2026.3",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:tzdata"
+      ],
+      "upstream": [
+        "https://pypi.org/project/tzdata/2026.3/",
+        "https://github.com/python/tzdata/issues"
+      ],
+      "license": "Apache-2.0",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/tzdata-2026.3/licenses/LICENSE",
+          "sha256": "df58f69ea88683035d720b5375bcef0cf5aeaa98a1d098d572e0992c378deb46",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/tzdata-2026.3/licenses/licenses/LICENSE_APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位",
+        "IANA 时区数据本身另有公共领域声明，见原文 licenses/LICENSE_APACHE 与上游说明"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/tzdata-2026.3/LICENSE",
+        "licenses/materials/frozen/tzdata-2026.3/licenses/LICENSE_APACHE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/tzdata/2026.3/"
+      ],
+      "version_source": "https://pypi.org/project/tzdata/2026.3/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:pywin32",
+      "name": "pywin32",
+      "version": "312",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:pywintypes",
+        "2ByteASR.exe!PYZ:win32con",
+        "2ByteASR.exe!PYZ:win32evtlogutil",
+        "2ByteASR.exe!PYZ:winerror",
+        "pywin32_system32/pywintypes310.dll",
+        "win32/_win32sysloader.pyd",
+        "win32/win32api.pyd",
+        "win32/win32evtlog.pyd",
+        "win32/win32job.pyd",
+        "win32/win32pdh.pyd"
+      ],
+      "upstream": [
+        "https://pypi.org/project/pywin32/312/",
+        "https://github.com/mhammond/pywin32"
+      ],
+      "license": "PSF",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；CPython扩展/DLL随包",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/pywin32-312/licenses/adodbapi/license.txt",
+          "sha256": "5ea2f23c7f00c3006bacf267183e816d8d4b6dc95ea57a4ddb0ff81de6d8719e",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/pywin32-312/licenses/com/License.txt",
+          "sha256": "fad39c18fc3825fa278db1c86fd52cf88d7c525b3c2fbf7817fa383cbae4d423",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/pywin32-312/licenses/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE",
+          "sha256": "1c4cf44d2fb8bf2d10214d6da80cc9e05502824cc4460f35be4c7bcb4cde53da",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/pywin32-312/licenses/isapi/README.txt",
+          "sha256": "41383bcc95edb8138d37077ae54bfdcbd2a3b77bf745a8529a9c161146e22303",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/pywin32-312/licenses/pythonwin/License.txt",
+          "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/pywin32-312/licenses/pythonwin/pywin/idle/LICENSE.txt",
+          "sha256": "a0fa1e7b8a4230055685e796548ac084a6c0eea395294574093bba72efd9191b",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/pywin32-312/licenses/pythonwin/Scintilla/License.txt",
+          "sha256": "57ec79bbeab4fd1cf7460a7ad450d2ab01471810459aeae9e75e4c66b472095f",
+          "location": "B:Setup application tree"
+        },
+        {
+          "path": "licenses/python/pywin32-312/licenses/win32/License.txt",
+          "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位",
+        "pywin32 各子目录另有许可原文（adodbapi、Pythonwin、Scintilla、MAPIStubLibrary 等），实际随包的只是 win32 核心扩展与 pywintypes；逐项范围待核"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/pywin32-312/adodbapi/license.txt",
+        "licenses/materials/frozen/pywin32-312/com/License.txt",
+        "licenses/materials/frozen/pywin32-312/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE",
+        "licenses/materials/frozen/pywin32-312/isapi/README.txt",
+        "licenses/materials/frozen/pywin32-312/pythonwin/License.txt",
+        "licenses/materials/frozen/pywin32-312/pythonwin/pywin/idle/LICENSE.txt",
+        "licenses/materials/frozen/pywin32-312/pythonwin/Scintilla/License.txt",
+        "licenses/materials/frozen/pywin32-312/win32/License.txt"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/pywin32/312/"
+      ],
+      "version_source": "https://pypi.org/project/pywin32/312/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "frozen:pytest",
+      "name": "pytest",
+      "version": "9.1.1",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:_pytest"
+      ],
+      "upstream": [
+        "https://pypi.org/project/pytest/9.1.1/"
+      ],
+      "license": "MIT",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/pytest-9.1.1/licenses/LICENSE",
+          "sha256": "ca836a5f9ecca3b2f350230faa20a48fb8b145653b5568d784862df864706b9b",
+          "location": "B:Setup application tree"
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位",
+        "程序不运行测试：0.7.0 起 _pytest 模块被 PyInstaller 沿依赖链一并收入（MCP 依赖链的可选插件导入），之后应在 spec 里排除"
+      ],
+      "local_materials": [
+        "licenses/materials/frozen/pytest-9.1.1/LICENSE"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/pytest/9.1.1/"
+      ],
+      "version_source": "https://pypi.org/project/pytest/9.1.1/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "model:ja_ctc_aligner",
+      "name": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
+      "version": "cf031e020336460d15a417eba710bbc5bb43be9a",
+      "scopes": [
+        "C"
+      ],
+      "paths": [
+        "models/wav2vec2-large-xlsr-53-japanese"
+      ],
+      "upstream": [
+        {
+          "url": "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/tree/cf031e020336460d15a417eba710bbc5bb43be9a",
+          "mirror_repository": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
+          "mirror_revision": "18a6b5970be543c1171a30e5f2889c63878acd2e"
+        }
+      ],
+      "license": "Apache-2.0",
+      "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
+      "additional_conditions": [],
+      "modification_status": "包内没有该模型权重；下载时按文件哈希校验。未修改模型的声明仅限无本轮修改，不代替模型衍生关系证明",
+      "patches": [],
+      "integration": "模型工坊→download_models.ps1/模型完整性校验→主运行环境 ctc_aligner_worker.py；只用于日语句首校正",
+      "required_materials": [
+        "精确revision模型卡、许可全文、版权/NOTICE、基础模型/词表条款；向用户提供来源及适用条件"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": {
+        "path": "dependencies.lock.json",
+        "model_key": "ja_ctc_aligner",
+        "required_files": [
+          "config.json",
+          "preprocessor_config.json",
+          "special_tokens_map.json",
+          "vocab.json",
+          "pytorch_model.bin"
+        ],
+        "sha256": {
+          "config.json": "552b8c8c85c54a761899eb94b5eb3d58166e769df8e26cf515ab9da695772cd7",
+          "preprocessor_config.json": "c403ce09975b90dff0dd8302c42d422e9de1f166cd7772df23490069893cb0cf",
+          "special_tokens_map.json": "bb7068de1150661a10b55f9e4b12a0e77af8bf91f5e45e1b58afaf1d0e17f675",
+          "vocab.json": "9ffedf9c2da2617b01c4227a4db875d2dfd4e8c31fb9a13182d03c3280679ffe",
+          "pytorch_model.bin": "4f6821dcd79770fcd4c11487c4ee5c040b3a7e1863425224014ba5ea8fbc1b67"
+        }
+      },
+      "license_evidence": [
+        {
+          "url": "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/resolve/cf031e020336460d15a417eba710bbc5bb43be9a/README.md",
+          "sha256": "5b903915e4edb98bf7a5a7f6be42792458272c73cbff07f5c2f8f33765f8f070",
+          "local": "licenses/materials/models/ja_ctc_aligner/model-ja_ctc_aligner-README_md.txt"
+        }
+      ],
+      "pending": [
+        "required_files只含运行文件；模型卡已按固定revision取得",
+        "基础模型 facebook/wav2vec2-large-xlsr-53 与训练数据（Common Voice 6.1、CSS10、JSUT）的条款未逐项核实；模型卡的 Apache-2.0 不自动覆盖数据集条件"
+      ],
+      "local_materials": [
+        "licenses/materials/models/ja_ctc_aligner/model-ja_ctc_aligner-README_md.txt",
+        "licenses/materials/common/apache-2.0.txt"
+      ],
+      "copyright_evidence": [],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/tree/cf031e020336460d15a417eba710bbc5bb43be9a"
+      ],
+      "version_source": "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/tree/cf031e020336460d15a417eba710bbc5bb43be9a",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [],
+      "historical_no_sale_target_compatibility": "保持模型原条款；应用禁止出售条款不能缩减模型原有权利；下载时仍应交付通知"
     }
   ],
   "material_files": [
@@ -45773,6 +46791,249 @@
       "sha256": "95ec80da40b4af12ad4c4f3158c9cfb80f2479f3246e4260cb600827cc8c7836",
       "bytes": 4447,
       "source": "fdk-aac-free-2.0.0.tar.gz / NOTICE; Fedora f33 fixed SHA512"
+    },
+    {
+      "path": "licenses/materials/frozen/mcp-2.3.0/LICENSE",
+      "sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
+      "bytes": 1071,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/mcp-2.3.0/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/mcp-types-2.3.0/LICENSE",
+      "sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
+      "bytes": 1071,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/mcp-types-2.3.0/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pydantic-2.13.4/LICENSE",
+      "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3",
+      "bytes": 1129,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pydantic-2.13.4/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pydantic_core-2.46.4/LICENSE",
+      "sha256": "fbe7f615f18d135c07000e5a86325db27f42c7729699ef166ac1f7a3f4586bf4",
+      "bytes": 1101,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pydantic_core-2.46.4/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/starlette-1.3.1/LICENSE.md",
+      "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+      "bytes": 1518,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/starlette-1.3.1/licenses/LICENSE.md"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/uvicorn-0.52.0/LICENSE.md",
+      "sha256": "efe1acf3e62fb99c288b0ec73e5a773b7268ef4320fe757ea994214e4b63c371",
+      "bytes": 1526,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/uvicorn-0.52.0/licenses/LICENSE.md"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/sse-starlette-3.5.0/AUTHORS",
+      "sha256": "c2ff63d2ecf128bbda8ab1b2016830a5da124202fbb97168685bb9946aed3f1a",
+      "bytes": 395,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/sse-starlette-3.5.0/licenses/AUTHORS"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/sse-starlette-3.5.0/LICENSE",
+      "sha256": "80af6bfccbebd2c14d4aab96695cab9950e177190cc80f5ef819e99996883e8e",
+      "bytes": 1511,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/sse-starlette-3.5.0/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/anyio-4.14.2/LICENSE",
+      "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+      "bytes": 1081,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/anyio-4.14.2/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/httpx2-2.13.1/LICENSE.md",
+      "sha256": "7e7d6dbaf7fe160d39fd6e84fd02c33cab96bcbea34d36998d545bceb4a19c30",
+      "bytes": 1589,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/httpx2-2.13.1/licenses/LICENSE.md"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/httpcore2-2.13.1/LICENSE.md",
+      "sha256": "c4df125c807b0613501e943a5c92496dd11d2c16604ce396097a8dde396304d9",
+      "bytes": 1599,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/httpcore2-2.13.1/licenses/LICENSE.md"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/click-8.4.2/LICENSE.txt",
+      "sha256": "9a8ad106a394e853bfe21f42f4e72d592819a22805d991b5f3275029292b658d",
+      "bytes": 1475,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/click-8.4.2/licenses/LICENSE.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/opentelemetry-api-1.45.1/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/opentelemetry-api-1.45.1/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/truststore-0.10.4/LICENSE",
+      "sha256": "33be7b7e8fa4fd19b1760e1a8ed8a668bdab852c91b692dd41424bcb725a9fca",
+      "bytes": 1086,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/truststore-0.10.4/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/typing-inspection-0.4.2/LICENSE",
+      "sha256": "804b59b25f2c31bd278f9202a19ae49a3945aa2664387e2d0a128c7cacc61ec3",
+      "bytes": 1090,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/typing-inspection-0.4.2/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/tzdata-2026.3/LICENSE",
+      "sha256": "df58f69ea88683035d720b5375bcef0cf5aeaa98a1d098d572e0992c378deb46",
+      "bytes": 625,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/tzdata-2026.3/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/tzdata-2026.3/licenses/LICENSE_APACHE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/tzdata-2026.3/licenses/licenses/LICENSE_APACHE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/adodbapi/license.txt",
+      "sha256": "5ea2f23c7f00c3006bacf267183e816d8d4b6dc95ea57a4ddb0ff81de6d8719e",
+      "bytes": 26925,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/adodbapi/license.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/com/License.txt",
+      "sha256": "fad39c18fc3825fa278db1c86fd52cf88d7c525b3c2fbf7817fa383cbae4d423",
+      "bytes": 1570,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/com/License.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE",
+      "sha256": "1c4cf44d2fb8bf2d10214d6da80cc9e05502824cc4460f35be4c7bcb4cde53da",
+      "bytes": 1087,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/isapi/README.txt",
+      "sha256": "41383bcc95edb8138d37077ae54bfdcbd2a3b77bf745a8529a9c161146e22303",
+      "bytes": 330,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/isapi/README.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/pythonwin/License.txt",
+      "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+      "bytes": 1541,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/pythonwin/License.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/pythonwin/pywin/idle/LICENSE.txt",
+      "sha256": "a0fa1e7b8a4230055685e796548ac084a6c0eea395294574093bba72efd9191b",
+      "bytes": 12540,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/pythonwin/pywin/idle/LICENSE.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/pythonwin/Scintilla/License.txt",
+      "sha256": "57ec79bbeab4fd1cf7460a7ad450d2ab01471810459aeae9e75e4c66b472095f",
+      "bytes": 873,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/pythonwin/Scintilla/License.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pywin32-312/win32/License.txt",
+      "sha256": "a74d826efb242db087b850348e20abbfd591b51e2081f2048735290913872924",
+      "bytes": 1541,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pywin32-312/licenses/win32/License.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/frozen/pytest-9.1.1/LICENSE",
+      "sha256": "ca836a5f9ecca3b2f350230faa20a48fb8b145653b5568d784862df864706b9b",
+      "bytes": 1091,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": "licenses/python/pytest-9.1.1/licenses/LICENSE"
+      }
+    },
+    {
+      "path": "licenses/materials/models/ja_ctc_aligner/model-ja_ctc_aligner-README_md.txt",
+      "sha256": "5b903915e4edb98bf7a5a7f6be42792458272c73cbff07f5c2f8f33765f8f070",
+      "bytes": 8634,
+      "kind": "model_card",
+      "source": {
+        "url": "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/resolve/cf031e020336460d15a417eba710bbc5bb43be9a/README.md"
+      }
     }
   ],
   "limitations": [

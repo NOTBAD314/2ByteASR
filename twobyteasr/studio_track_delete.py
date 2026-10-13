@@ -275,12 +275,19 @@ def track_menu(page, kind, track_id, pos):
     from .studio_theme import create_studio_menu
     menu = create_studio_menu(page)
     if kind == 'subtitle':
+        from .studio_speaker_roles import GROUP_KEY, group_actions, role_menu
+        if track_id == GROUP_KEY:
+            # The shared secondary row: group-wide actions only.
+            group_actions(page, menu)
+            menu.exec(pos)
+            return
         from .studio_caption_timeline import DISABLED_KEY,set_caption_ripple_command
         from .i18n import tr
         enabled=track_id not in page.project.studio_state.get(DISABLED_KEY,[])
         action=menu.addAction(tr('跟随波纹编辑'))
         action.setCheckable(True);action.setChecked(enabled)
         action.triggered.connect(lambda checked:page.undo_stack.push(set_caption_ripple_command(page.project,track_id,checked)))
+        role_menu(page, menu, track_id)
         menu.addSeparator()
     if kind == 'audio':
         track = next((t for t in page.project.audio_tracks if t.id == track_id), None)

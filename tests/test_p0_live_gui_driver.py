@@ -29,8 +29,9 @@ on this desktop, then programmatically exercises the exact acceptance flows the 
      with partial bytes, and re-triggering the same key would resume (the ps1 + fast downloader do Range).
    - We do a controlled small download or inspect the mechanism.
 
-Run with the main venv python (not pythonw) so a real window appears.
-Do NOT set QT_QPA_PLATFORM=offscreen for this driver.
+Explicitly set TWOBYTEASR_LIVE_GUI_TESTS=1, TWOBYTEASR_TEST_ROOT to a
+fresh tmp profile, and QT_QPA_PLATFORM=windows before running this driver.
+Ordinary pytest collection skips it without changing the Qt platform.
 
 All assertions are done against the real widget tree and real objects.
 """
@@ -44,8 +45,21 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Ensure a real window appears on Windows desktop.
-os.environ.pop("QT_QPA_PLATFORM", None)
+import pytest
+
+_live_platform = os.environ.get("QT_QPA_PLATFORM", "").split(":", 1)[0].lower()
+if (os.environ.get("TWOBYTEASR_LIVE_GUI_TESTS") != "1"
+        or not os.environ.get("TWOBYTEASR_TEST_ROOT")
+        or _live_platform not in {"windows", "cocoa", "xcb", "wayland"}):
+    message = "Live GUI requires explicit opt-in, an isolated tmp profile, and a native Qt platform"
+    if __name__ == "__main__":
+        raise SystemExit(message)
+    pytest.skip(message, allow_module_level=True)
+
+# Standalone invocation does not load conftest; isolate before UI imports.
+from twobyteasr.test_isolation import install, install_pytest_network_guard
+install()
+install_pytest_network_guard()
 
 from PySide6.QtCore import QEvent, QPoint, QTimer, Qt, QCoreApplication, QProcess
 from PySide6.QtTest import QTest
@@ -54,9 +68,6 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QComboBox
 from twobyteasr.ui import MainWindow, FramelessPopupCombo
 from twobyteasr.model_workshop import ModelDownloadDialog, WorkshopModel, MODELS
 from twobyteasr.llm_config import read_api_key, save_api_key_for, secrets_path
-
-
-import pytest
 
 
 @pytest.fixture

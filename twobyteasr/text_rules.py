@@ -593,6 +593,11 @@ def collapse_excessive_adjacent_repetitions(text):
 
 def normalize_output_text(text):
     """执行文字清理；数字拼写只交给共用且可关闭的显式阶段。"""
+    from twobyteasr.language_rules import is_japanese
+    if is_japanese():
+        # Japanese kanji are not traditional Chinese; Chinese fillers, phrase
+        # fixes and Chinese canonical spellings never rewrite Japanese text.
+        return clean_subtitle_text(text)
     text = simplify_chinese(clean_subtitle_text(text)).replace("呃", "")
     # “上舰”是直播会员语境中的固定动作。仅修正带倒计时的完整短语，
     # 不对普通“剑/线”做全局同音替换。
@@ -707,8 +712,20 @@ def apply_editorial_segment_rules(segments):
     canonical_applied = Counter()
     collapsed_repeat_count = 0
     dropped_count = 0
+    from twobyteasr.language_rules import is_japanese
+    japanese = is_japanese()
     for segment in segments:
         original = clean_subtitle_text(segment.text)
+        if japanese:
+            # No Chinese stutter collapse (ねえねえ is ordinary Japanese), no
+            # Chinese canonical spellings and no Chinese numeral formatting.
+            segment.text = normalize_output_text(original)
+            if not content_only(segment.text):
+                dropped_count += 1
+                continue
+            segment.segment_id = len(normalized) + 1
+            normalized.append(segment)
+            continue
         suppressed_count += sum(
             original.count(phrase) for phrase in SUBTITLE_SUPPRESSED_PHRASES
         )
@@ -748,17 +765,87 @@ def apply_editorial_segment_rules(segments):
     return remove_overlapping_duplicate_segments(normalized)
 
 
+# Content characters: CJK ideographs, kana (incl. ー and 々, not the ・
+# separator) and ASCII letters/digits. Kana never occur in Chinese transcripts,
+# so Chinese results are unchanged; without them Japanese text had almost no
+# "content" and was mis-measured, mis-aligned and over-merged.
+from twobyteasr.language_rules import CONTENT_CHAR_CLASS  # noqa: E402
+_CONTENT_RE = re.compile(f"[{CONTENT_CHAR_CLASS}]+")
+
+
 def content_only(text):
-    return "".join(re.findall(r"[\u3400-\u9fffA-Za-z0-9]+", str(text))).lower()
+    return "".join(_CONTENT_RE.findall(str(text))).lower()
 
 
 def content_exact(text):
     """断句验证用：忽略标点和空格，但保留英文大小写。"""
-    return "".join(re.findall(r"[\u3400-\u9fffA-Za-z0-9]+", str(text)))
+    return "".join(_CONTENT_RE.findall(str(text)))
 
 
 def display_length(text):
     return len(content_only(text))
+
+
+# 2026-10-12（识别结果多余空白）：只清理排版残渣，不碰有意义的单个空格。
+# 零宽字符从不表达停顿；表情符号序列里的 U+200D 是例外（见下）。
+FORMAT_INVISIBLE_CHARACTERS = frozenset("\u200b\u200c\u200d\u2060\ufeff")
+# 全角标点自带字距：紧贴在它们旁边的空格只是替换/拼接残留。
+_FULLWIDTH_SPACE_BEFORE = "，。！？；：、）」』】》〉"
+_FULLWIDTH_SPACE_AFTER = "，。！？；：、（「『【《〈"
+
+
+def is_format_space(char):
+    """Whitespace or an invisible zero-width character (never content)."""
+    return char.isspace() or char in FORMAT_INVISIBLE_CHARACTERS
+
+
+def strip_format_space(text):
+    """Strip whitespace/zero-width characters at both edges of one cue text."""
+    text = str(text)
+    start, end = 0, len(text)
+    while start < end and is_format_space(text[start]):
+        start += 1
+    while end > start and is_format_space(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
+def _emoji_joiner(text, index):
+    import unicodedata
+    if not 0 < index < len(text) - 1:
+        return False
+    before, after = text[index - 1], text[index + 1]
+    return (unicodedata.category(before) in ("So", "Sk", "Mn")
+            and unicodedata.category(after) == "So")
+
+
+def normalize_format_whitespace(text):
+    """Remove format-only whitespace junk from one cue; keep meaningful spaces.
+
+    Removed: zero-width characters (U+200B/U+200C/U+200D/U+2060/U+FEFF; an
+    emoji ZWJ sequence keeps its joiner), leading/trailing whitespace of each
+    line (half-width, U+3000, NBSP, tabs), a space touching full-width
+    punctuation (replacement/merge residue), and every other horizontal
+    whitespace run collapses to one U+0020.  Kept: each single inner space —
+    the product's CJK pause spacing ("对 对 很不错啊 嗯"), English word spaces,
+    and user-normalized terms or number formats containing one space.  Line
+    breaks are user typesetting and stay.  Idempotent.
+    """
+    text = str(text if text is not None else "")
+    if not text:
+        return text
+    if any(char in FORMAT_INVISIBLE_CHARACTERS for char in text):
+        text = "".join(char for index, char in enumerate(text)
+                       if char not in FORMAT_INVISIBLE_CHARACTERS
+                       or (char == "\u200d" and _emoji_joiner(text, index)))
+    lines = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = strip_format_space(line)
+        line = re.sub(r"[^\S\n]+", " ", line)
+        line = re.sub(rf" (?=[{_FULLWIDTH_SPACE_BEFORE}])", "", line)
+        line = re.sub(rf"(?<=[{_FULLWIDTH_SPACE_AFTER}]) ", "", line)
+        lines.append(line)
+    return "\n".join(lines).strip("\n")
 
 
 def balanced_partition_word_run(units):

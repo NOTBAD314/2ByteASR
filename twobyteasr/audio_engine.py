@@ -160,6 +160,40 @@ def _atempo_chain(rate: float) -> str:
     return ",".join(f"atempo={value:.6f}" for value in values)
 
 
+def _decode_input(source, seek_ms, stream_index, decode_source):
+    """Read an indexed audio-only copy of an unindexed FLV when one is ready.
+
+    ``decode_source`` = {"path", "offset_ms"} from IndexedMediaCache: the copy
+    keeps the original audio timestamps, and ``offset_ms`` (container start of
+    the original minus start of the copy) keeps ``-ss`` in the SAME source
+    time domain. FFmpeg's FLV seek scans from the file head (0.3-1.5 s per
+    seek on an hour-long recording); the copy seeks in ~20 ms. Positions below
+    the head threshold decode from the first sample in both files.
+    """
+    if not isinstance(decode_source, Mapping):
+        return source, seek_ms, stream_index
+    path = str(decode_source.get("path") or "")
+    if not path or not os.path.isfile(path):
+        return source, seek_ms, stream_index
+    if seek_ms >= 250:
+        seek_ms = max(0, int(seek_ms) + int(decode_source.get("offset_ms") or 0))
+    return path, seek_ms, 0
+
+
+def _with_decode_source(layer: dict) -> dict:
+    """Attach a ready audio seek copy (FLV only); the source stays the identity."""
+    source = str(layer.get("source_path") or "")
+    if source.lower().endswith(".flv"):
+        try:
+            from .indexed_media import GLOBAL_INDEXED_MEDIA
+            decode = GLOBAL_INDEXED_MEDIA.audio_seek_source(source)
+        except Exception:
+            decode = None
+        if decode:
+            layer["decode_source"] = dict(decode)
+    return layer
+
+
 def build_audio_decode_command(
     ffmpeg: str | os.PathLike[str],
     source: str | os.PathLike[str],
@@ -173,6 +207,7 @@ def build_audio_decode_command(
     source_out_ms: int | None = None,
     av_sync_map=None,
     audio_envelopes=(), project_ms=0, transport_rate=1., stream_index=0,
+    decode_source=None,
 ) -> list[str]:
     from .studio_track_gain import gain_amplitude
     # Window positions are audio-content ms; a gappy recording's file
@@ -180,6 +215,8 @@ def build_audio_decode_command(
     seek_ms = int(source_ms)
     if av_sync_map is not None and not av_sync_map.is_identity and seek_ms >= 250:
         seek_ms = int(av_sync_map.content_to_source_ms(seek_ms))
+    use_seek = seek_ms >= 250
+    source, seek_ms, stream_index = _decode_input(source, seek_ms, stream_index, decode_source)
     filters = []
     # Input -ss at/near zero skips AAC priming twice in the bundled FFmpeg.
     # Decode the short head normally and trim samples after decoding instead.
@@ -201,7 +238,7 @@ def build_audio_decode_command(
         filters.append(envelope.rstrip(','))
     return [
         str(Path(ffmpeg)), "-hide_banner", "-loglevel", "error", "-nostdin",
-        *(["-ss", f"{max(0, seek_ms) / 1000.0:.6f}"] if seek_ms >= 250 else []),
+        *(["-ss", f"{max(0, seek_ms) / 1000.0:.6f}"] if use_seek else []),
         "-i", str(Path(source)),
         "-map", f"0:a:{int(stream_index)}", "-vn", "-sn", "-dn", "-af", ",".join(filters),
         "-f", str(pcm_format), "-ac", str(max(1, int(channels))),
@@ -232,8 +269,12 @@ def build_audio_mix_command(ffmpeg, layers, *, transport_rate=1.0,
         seek_ms = source_ms
         if av_sync_map is not None and not av_sync_map.is_identity and seek_ms >= 250:
             seek_ms = int(av_sync_map.content_to_source_ms(seek_ms))
-        command += (["-ss", f"{seek_ms/1000:.6f}"] if seek_ms >= 250 else [])
-        command += ["-i", str(layer['source_path'])]
+        use_seek = seek_ms >= 250
+        input_path, seek_ms, stream_index = _decode_input(
+            layer['source_path'], seek_ms, int(layer.get('stream_index', 0)), layer.get('decode_source'))
+        layer = {**layer, 'stream_index': stream_index}
+        command += (["-ss", f"{max(0, seek_ms)/1000:.6f}"] if use_seek else [])
+        command += ["-i", str(input_path)]
         head = f"atrim=start={source_ms/1000:.6f},asetpts=PTS-STARTPTS," if 0 < source_ms < 250 else ""
         rate = max(.125, float(layer.get('playback_rate') or 1.) * transport_rate)
         if layer.get('source_out_ms') is not None:
@@ -753,6 +794,7 @@ class _AudioEngineWorker(QObject):
             "state": str(state),
             "transport_generation": self._transport_generation,
             "source_path": self._source_path,
+            "decode_input": "audio_seek_copy" if getattr(self, "_decode_input_path", self._source_path) != self._source_path else "source",
             "source_start_ms": self._source_start_ms,
             "decoder_command_start_ms": self._decoder_command_start_ms,
             "requested_source_ms": self._requested_source_ms,
@@ -941,7 +983,9 @@ class _AudioEngineWorker(QObject):
             av_sync_map=self._av_sync_map,
             audio_envelopes=getattr(self,'_audio_envelopes',()), project_ms=getattr(self,'_project_start_ms',0),
             transport_rate=self._transport_rate, stream_index=getattr(self,'_stream_index',0),
+            decode_source=getattr(self, '_decode_source', None),
         )
+        self._decode_input_path = command[command.index('-i') + 1] if '-i' in command else self._source_path
         if len(self._mix_layers) > 1:
             command = build_audio_mix_command(
                 self.ffmpeg_path, self._mix_layers, transport_rate=self._transport_rate,
@@ -1102,6 +1146,7 @@ class _AudioEngineWorker(QObject):
 
     @Slot(object)
     def synchronize(self, payload: object) -> None:
+        handled_at = time.perf_counter()
         try:
             request = dict(payload) if isinstance(payload, Mapping) else {}
             map_payload = request.get("av_sync_map")
@@ -1136,6 +1181,9 @@ class _AudioEngineWorker(QObject):
             self._audio_envelopes = request.get('audio_envelopes',())
             self._project_start_ms = request.get('project_ms',0)
             self._stream_index = int(request.get('stream_index',0))
+            # Indexed audio-only copy for fast seeks; it only changes how the
+            # next decoder reads the same source, never restarts the current one.
+            self._decode_source = request.get('decode_source') if isinstance(request.get('decode_source'), Mapping) else None
             self._active_input = {key:request[key] for key in ('track_id','audio_track_id','clip_id','audio_clip_id','asset_id','source_ms','project_ms') if key in request}
             gain_db = float(request.get("gain_db", 0.))
             source_out_ms = request.get("source_out_ms")
@@ -1274,6 +1322,15 @@ class _AudioEngineWorker(QObject):
                 self._audio_data_available()
             self._emit("PAUSED" if self._paused else "SYNCED")
         finally:
+            elapsed_ms = (time.perf_counter() - handled_at) * 1000.0
+            if elapsed_ms >= 200.0:
+                # Rare by construction: a request that holds the endpoint
+                # thread (decoder restart, sink start/stop) long enough to
+                # delay pause/seek acknowledgements.
+                GLOBAL_STUDIO_TRACE.emit("AUDIO_ENDPOINT_SLOW_SYNC", {
+                    "elapsed_ms": round(elapsed_ms, 1), "paused": bool(self._paused),
+                    "sink_started": bool(self._sink_started),
+                    "transport_generation": self._transport_generation})
             self.synchronize_complete.emit()
 
     @Slot()
@@ -1374,6 +1431,7 @@ class StudioAudioEngine(QObject):
         self._shutdown_requested = False
         self._sync_inflight = False
         self._pending_sync: dict[str, Any] | None = None
+        self._last_transition: tuple[bool, tuple] | None = None
         self._last_source_request = None
         self._av_sync_map_payload = None
         # 7c4fb89 只在 set_av_sync_map 里初始化这组状态：synchronize
@@ -1442,7 +1500,7 @@ class StudioAudioEngine(QObject):
                         )
 
     def synchronize_mix(self, layers, *, paused: bool, transport_rate: float, volume: float) -> None:
-        audible = [dict(layer) for layer in layers if layer.get("source_path")]
+        audible = [_with_decode_source(dict(layer)) for layer in layers if layer.get("source_path")]
         anchor = dict(audible[0]) if audible else {}
         anchor["mix_layers"] = audible
         self.synchronize(anchor, audible=bool(audible), paused=paused,
@@ -1457,7 +1515,7 @@ class StudioAudioEngine(QObject):
         transport_rate: float,
         volume: float,
     ) -> None:
-        payload = dict(layer or {})
+        payload = _with_decode_source(dict(layer or {}))
         if self._av_sync_map_payload is not None:
             payload["av_sync_map"] = self._av_sync_map_payload
         if self._draining and not audible:
@@ -1500,6 +1558,14 @@ class StudioAudioEngine(QObject):
         if self._shutdown_requested:
             return
         self._last_payload = payload
+        transition = (bool(paused), tuple(payload['transport_generation']))
+        if transition != getattr(self, "_last_transition", None):
+            # Pause/resume and new transport generations only (low volume):
+            # the evidence for seek holds and pause latency.
+            self._last_transition = transition
+            GLOBAL_STUDIO_TRACE.emit("AUDIO_SYNC_FORWARD", {
+                "paused": bool(paused), "transport_generation": payload['transport_generation'],
+                "inflight": bool(getattr(self, "_sync_inflight", False)), "source_ms": target})
         self._pending_sync = payload
         self._flush_sync()
 
@@ -1544,11 +1610,22 @@ class StudioAudioEngine(QObject):
         payload = self._pending_sync
         self._pending_sync = None
         self._sync_inflight = True
+        self._sync_sent_at = time.perf_counter()
+        self._sync_sent_paused = bool(payload.get("paused", True))
         self._sync_call.emit(payload)
 
     @Slot()
     def _synchronize_complete(self) -> None:
         self._sync_inflight = False
+        sent_at = getattr(self, "_sync_sent_at", 0.0)
+        if sent_at:
+            latency_ms = (time.perf_counter() - sent_at) * 1000.0
+            if latency_ms >= 500.0:
+                # A late acknowledgement delays every queued pause/resume.
+                GLOBAL_STUDIO_TRACE.emit("AUDIO_SYNC_SLOW_ACK", {
+                    "latency_ms": round(latency_ms, 1),
+                    "request_paused": bool(getattr(self, "_sync_sent_paused", True)),
+                    "queued_after": self._pending_sync is not None})
         self._flush_sync()
 
     def telemetry_snapshot(self) -> dict[str, Any]:

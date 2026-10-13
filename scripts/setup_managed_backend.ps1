@@ -13,6 +13,13 @@ if ($ModelKey | Where-Object { $_ -in @('diarizen','diarizen_embedding','vibevoi
 }
 $base = if ($env:2BYTEASR_USER_DATA_ROOT) { $env:2BYTEASR_USER_DATA_ROOT } else { $env:LOCALAPPDATA }
 $managed = Join-Path $base '2ByteASR\runtimes'
+if ($env:TWOBYTEASR_TEST_ROOT) {
+    $isolatedPrefix=[IO.Path]::GetFullPath($env:TWOBYTEASR_TEST_ROOT).TrimEnd('\')+'\'
+    foreach ($directory in @($managed,$env:LOCALAPPDATA,$env:TEMP,$env:HF_HOME,$env:MODELSCOPE_CACHE,$env:TORCH_HOME)) {
+        if ($directory -and -not [IO.Path]::GetFullPath($directory).StartsWith($isolatedPrefix,[StringComparison]::OrdinalIgnoreCase)) { throw '隔离运行库或缓存目录越界，未开始安装。' }
+    }
+    Write-Host ('[2BYTEASR_ISOLATION] '+(@{pid=$PID;runtime=$managed;root=$env:TWOBYTEASR_TEST_ROOT} | ConvertTo-Json -Compress))
+}
 $phase = 'tools_preparing'
 function Stage([string]$name) {
     $script:phase=$name

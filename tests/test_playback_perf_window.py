@@ -140,3 +140,27 @@ def test_media_clock_heartbeat_downsampled_but_semantic_changes_logged(qapp):
         assert len(page.perf("MEDIA_CLOCK_POSITION")) == 4
     finally:
         canvas.deleteLater()
+
+
+def test_steady_playback_ticks_write_one_record_per_second(qapp):
+    """2026-10-11: playing logged ~70 MEDIA_CLOCK_POSITION + POSITION_MUTATION
+    + MEDIA_CLOCK_OWNER records a second; studio-open.log reached 1.27 GB."""
+    canvas = MpvCanvas()
+    page = _FakePage()
+    canvas._studio_page = lambda: page
+    try:
+        _adopt(canvas, 1000.0, source="user_seek", paused=False)
+        for index in range(1, 31):  # ~0.5 s of 60 Hz ticks
+            _adopt(canvas, 1000.0 + index * 16.7, source="visual_tick", paused=False)
+        assert len(page.perf("MEDIA_CLOCK_POSITION")) <= 2
+        assert len(page.perf("POSITION_MUTATION")) <= 2
+        # The loop detector still sees every step.
+        assert len(canvas._position_trace_samples) >= 30
+        # A seek and a pause are logged at once.
+        _adopt(canvas, 9000.0, source="user_seek", paused=False)
+        assert page.perf("MEDIA_CLOCK_POSITION")[-1]["position_ms"] == 9000.0
+        assert page.perf("POSITION_MUTATION")[-1]["source"] == "USER_SEEK"
+        _adopt(canvas, 9016.7, source="visual_tick", paused=True)
+        assert page.perf("MEDIA_CLOCK_POSITION")[-1]["position_ms"] == 9016.7
+    finally:
+        canvas.deleteLater()

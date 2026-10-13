@@ -30,7 +30,8 @@ class TimelineScrub(QObject):
             # issue a coarse decode until the pointer actually moves.
             self.pressed = True
             self.resume = (not self.page.video.playback_position_snapshot().paused
-                           or bool(getattr(self.page.video,'_buffered_play_pending',False)))
+                           or bool(getattr(self.page.video,'_buffered_play_pending',False))
+                           or bool(getattr(self.page.video,'_seek_hold_active',False)))
             return
         if not self.active:
             self.active = self.page._timeline_scrub_active = True

@@ -118,6 +118,13 @@ def candidates(paths, files):
                     active=bool(consumer_starts() or thread and thread.is_alive() and path==writer_path)
                     add(path,'log','studio_runtime_trace_legacy',protected='当前应用诊断日志仍在写入；关闭对应应用后可清理' if active else '')
             except OSError:pass
+        # The rotated-out trace (runtime_trace.TRACE_LOG_MAX_BYTES) is never written again.
+        if path==paths.log_root/'studio-open.previous.log':
+            try:
+                with path.open(encoding='utf8',errors='replace') as stream:first=stream.readline(2048)
+                if re.match(r'\[\d{2}:\d{2}:\d{2}\.\d{3}\] event=[A-Z][A-Z_0-9]+(?: |\n)',first):
+                    add(path,'log','studio_runtime_trace_legacy')
+            except OSError:pass
         if path.parent==paths.log_root and (path.name=='startup-trace.jsonl' or re.fullmatch(r'processes-(\d+)\.jsonl',path.name)):
             try:
                 with path.open(encoding='utf8') as stream:first=stream.readline(8193)

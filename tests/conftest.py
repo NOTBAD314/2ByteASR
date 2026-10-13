@@ -14,7 +14,9 @@ kept) and ``*_API_KEY`` variables are dropped, so no saved key is visible.
 Runners that already set ``TWOBYTEASR_TEST_ROOT`` keep their own root.
 ``grok``/``codex``/``agy`` on PATH resolve to failing fakes in that root.
 qtawesome loads its icon fonts privately instead of registering them with
-Windows (see ``_keep_icon_fonts_in_process``).
+Windows through the same boundary used by source/frozen audits. Python TCP
+connections are restricted to loopback in both pytest entries; Qt/native
+subprocess networking is outside this Python guard.
 
 An audit hook then refuses, and fails the test for, any file access under the
 real user-data folders and any launch of a real account CLI. Tests that need
@@ -76,8 +78,10 @@ def _install_isolation():
     real = _real_local_app_data_dirs()
     if not os.environ.get("TWOBYTEASR_TEST_ROOT"):
         os.environ["TWOBYTEASR_TEST_ROOT"] = str(_new_isolation_root())
-    from twobyteasr.test_isolation import install, isolation_root
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from twobyteasr.test_isolation import install, isolation_root, install_pytest_network_guard
     install()
+    install_pytest_network_guard()
     root = isolation_root()
     try:
         from PySide6.QtCore import QSettings
@@ -124,43 +128,6 @@ def _use_fake_account_clis():
 _use_fake_account_clis()
 
 
-def _keep_icon_fonts_in_process():
-    """On Windows qtawesome copies its fonts into %LOCALAPPDATA%\\Microsoft\\Windows\\Fonts
-    whenever they are missing there and registers them for the whole sign-in
-    session (AddFontResourceW + HKCU Fonts values); the copies stay locked until
-    sign-out. Tests point LOCALAPPDATA at fresh temp folders, so every test
-    process registered another set. Skip that install step: qtawesome then reads
-    its bundled fonts and loads them with QFontDatabase.addApplicationFontFromData,
-    which is private to the process. Patched on import, so processes that never
-    show an icon do not load QtWidgets for it."""
-    if os.name != "nt":
-        return
-    import importlib.abc
-    import importlib.machinery
-
-    def patch(module):
-        module.IconicFont._install_fonts = lambda self, fonts_directory, system_wide=False: fonts_directory
-
-    class PatchIconicFont(importlib.abc.MetaPathFinder):
-        def find_spec(self, name, path, target=None):
-            if name != "qtawesome.iconic_font":
-                return None
-            spec = importlib.machinery.PathFinder.find_spec(name, path)
-            if spec is not None and spec.loader is not None:
-                run = spec.loader.exec_module
-
-                def exec_module(module):
-                    run(module)
-                    patch(module)
-                spec.loader.exec_module = exec_module
-            return spec
-
-    if "qtawesome.iconic_font" in sys.modules:
-        patch(sys.modules["qtawesome.iconic_font"])
-    sys.meta_path.insert(0, PatchIconicFont())
-
-
-_keep_icon_fonts_in_process()
 # Fake CLIs written by tests live in tmp_path (inside the root unless --basetemp moves it).
 _SAFE_EXECUTABLE_DIRS = [os.path.normcase(str(ISOLATION_ROOT)), os.path.normcase(str(ROOT / "tmp"))]
 GUARD_VIOLATIONS = []

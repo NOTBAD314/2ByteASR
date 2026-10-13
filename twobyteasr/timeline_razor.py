@@ -78,6 +78,7 @@ def _block_rect(timeline, cue) -> QRectF | None:
     track = timeline._track_layout()[0].get(cue.speaker_id)
     if track is None:
         return None
+    track = timeline._cue_band(cue, track)  # its sub-lane on the shared secondary row
     left = max(timeline.TRACK_HEADER_WIDTH, timeline._time_to_x(cue.start_ms))
     right = min(timeline._content_right(), timeline._time_to_x(cue.end_ms))
     if right - left < 2:
@@ -358,6 +359,7 @@ def _paint_cut(timeline, painter, palette, colors, resolution, blocked) -> None:
     painter.drawLine(QPointF(xx, timeline.RULER_HEIGHT - 8), QPointF(xx, bottom))
     track = timeline._track_layout()[0].get(resolution.cue.speaker_id)
     if track is not None:
+        track = timeline._cue_band(resolution.cue, track)
         painter.setPen(QPen(color, 2.2, pen.style()))
         painter.drawLine(QPointF(xx, track.top() + 3), QPointF(xx, track.bottom() - 3))
     marker = QPainterPath(QPointF(xx - 6, timeline.RULER_HEIGHT - 9))

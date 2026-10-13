@@ -32,6 +32,66 @@ def lease_overlay(path, producer):
         return nullcontext()
 
 
+class _DeferredLease:
+    """lease_overlay() executed on a storage thread, released after it.
+
+    The GUI publish path wrote one SQLite lease (INSERT + UPDATE + commit)
+    per overlay update; with a busy disk that was a 0.3 s GUI stall during
+    fast playback (2026-10-12 GUI_STALL stacks). Files written moments ago in
+    an active overlay session are protected by the storage scanner anyway,
+    so registering a few milliseconds later keeps the same guarantee.
+    """
+
+    def __init__(self, path, producer):
+        self._lock = threading.Lock()
+        self._lease = None
+        self._released = False
+        _storage_queue().put((self._acquire, (path, producer)))
+
+    def _acquire(self, path, producer):
+        lease = lease_overlay(path, producer)
+        with self._lock:
+            if not self._released:
+                self._lease = lease
+                return
+        lease.__exit__(None, None, None)
+
+    def __exit__(self, *_exc):
+        with self._lock:
+            self._released = True
+            lease, self._lease = self._lease, None
+        if lease is not None:
+            _storage_queue().put((lease.__exit__, (None, None, None)))
+        return False
+
+
+_storage_jobs = None
+_storage_jobs_lock = threading.Lock()
+
+
+def _storage_queue():
+    global _storage_jobs
+    with _storage_jobs_lock:
+        if _storage_jobs is None:
+            import queue
+            _storage_jobs = queue.Queue()
+
+            def run():
+                while True:
+                    job, args = _storage_jobs.get()
+                    try:
+                        job(*args)
+                    except Exception:
+                        pass
+            threading.Thread(target=run, name='overlay-storage-lease', daemon=True).start()
+        return _storage_jobs
+
+
+def lease_overlay_deferred(path, producer):
+    """Same lease as :func:`lease_overlay`, without SQLite on the caller thread."""
+    return _DeferredLease(path, producer)
+
+
 def ensure_overlay_session(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)

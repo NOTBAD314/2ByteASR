@@ -271,7 +271,9 @@ def _record_fused_review_classification(
             ] += 1
         elif (firered_selected and firered_failed) or (qwen_selected and qwen_failed):
             counts["SINGLE_SOURCE_DEGRADED"] += 1
-        if firered_selected and (
+        aligned = float((getattr(segment, "caption_arbitration", None) or {})
+                        .get("forced_alignment_window", {}).get("token_count", 0) or 0) > 0
+        if firered_selected and not aligned and (
             firered_failed
             or not has_firered
             or float(segment.firered_alignment_confidence or 0.0) < 0.60
@@ -2660,8 +2662,16 @@ def build_moss_host_primary_segments(
                 "start": float(token["start"]),
                 "end": float(token["end"]),
                 "confidence": float(token.get("confidence", 0.75)),
+                "source": str(token.get("source") or ""),
+                "alignment_key": str(token.get("alignment_key") or ""),
             }
         )
+    # Forced-aligner tokens are this transcript's own words placed in time:
+    # timing evidence only, never an independent second opinion on the text.
+    aligner_mode = bool(tokens) and all(token["source"] == "qwen-forced-aligner" for token in tokens)
+    from twobyteasr.language_rules import JA as _JA, japanese_display_source
+    from twobyteasr.forced_alignment import segment_alignment_key
+    japanese = getattr(runtime_context, "task_language", "") == _JA
     result = []
     dropped_no_speech = 0
     for index, moss in enumerate(moss_segments):
@@ -2670,7 +2680,8 @@ def build_moss_host_primary_segments(
             continue
         start = max(0.0, float(moss["start"]))
         end = max(start + 0.01, float(moss["end"]))
-        moss_text = legacy.clean_subtitle_text(moss.get("text", ""))
+        raw_moss_text = str(moss.get("text", "") or "")
+        moss_text = legacy.clean_subtitle_text(japanese_display_source(raw_moss_text) if japanese else raw_moss_text)
         if not legacy.content_only(moss_text):
             continue
         speech_overlap = sum(
@@ -2689,19 +2700,29 @@ def build_moss_host_primary_segments(
             if token["end"] >= start - MOSS_SPEAKER_PAD_SECONDS
             and token["start"] <= end + MOSS_SPEAKER_PAD_SECONDS
         ]
-        raw_firered = legacy.clean_subtitle_text(
-            "".join(token["text"] for token in nearby_tokens)
-        )
-        firered_candidate, firered_similarity = legacy.best_alternate_window(
-            moss_text, raw_firered
-        )
-        if firered_similarity < 0.42:
-            firered_candidate = ""
-        firered_window = (
-            _firered_token_window(nearby_tokens, start, end)
-            if firered_candidate
-            else None
-        )
+        aligned_window = None
+        if aligner_mode:
+            key = segment_alignment_key(moss.get("speaker"), moss["start"], moss["end"])
+            own = [token for token in tokens if token["alignment_key"] == key]
+            nearby_tokens = own
+            raw_firered, firered_candidate, firered_similarity, firered_window = "", "", 0.0, None
+            if own:
+                aligned_window = {"start": min(t["start"] for t in own), "end": max(t["end"] for t in own),
+                                  "job": key, "token_count": len(own), "kind": "forced_alignment_span"}
+        else:
+            raw_firered = legacy.clean_subtitle_text(
+                "".join(token["text"] for token in nearby_tokens)
+            )
+            firered_candidate, firered_similarity = legacy.best_alternate_window(
+                moss_text, raw_firered
+            )
+            if firered_similarity < 0.42:
+                firered_candidate = ""
+            firered_window = (
+                _firered_token_window(nearby_tokens, start, end)
+                if firered_candidate
+                else None
+            )
         if (
             coverage_mode == "host_priority"
             and speaker not in host_speakers
@@ -2709,6 +2730,10 @@ def build_moss_host_primary_segments(
         ):
             continue
         confidence = 0.78 if firered_similarity >= 0.78 else (0.64 if firered_similarity >= 0.55 else 0.50)
+        if aligner_mode:
+            # No second recognizer text here (the aligner reuses this text):
+            # a neutral baseline; the Qwen review decides real disputes.
+            confidence = 0.64
         overlap_conflict = any(
             other_index != index
             and str(other.get("speaker") or "S00") != speaker
@@ -2746,6 +2771,9 @@ def build_moss_host_primary_segments(
         )
         if firered_window:
             segment.caption_arbitration = dict(segment.caption_arbitration or {}, timing_evidence=dict(firered_window))
+        if aligned_window:
+            segment.caption_arbitration = dict(segment.caption_arbitration or {},
+                                               forced_alignment_window=dict(aligned_window))
         segment.caption_arbitration['word_timing'] = {'basis': 'uniform_display_estimate', 'source': 'moss_sentence_bounds'}
         if overlap_conflict:
             legacy.add_review_item(
@@ -2774,7 +2802,8 @@ def build_moss_host_primary_segments(
         raise RuntimeError("MOSS 没有筛出可用的主播字幕。")
     print(
         f"   [完成] MOSS 对白主稿：{len(result)} 段；覆盖模式 {coverage_mode}；"
-        f"未再补入 {sum(1 for token in tokens if not any(segment.start - 0.2 <= (token['start'] + token['end']) / 2.0 <= segment.end + 0.2 for segment in result))} 个段外 FireRed 字词。"
+        f"未再补入 {sum(1 for token in tokens if not any(segment.start - 0.2 <= (token['start'] + token['end']) / 2.0 <= segment.end + 0.2 for segment in result))} "
+        + ("个段外对齐时间片（属于未选说话人）。" if aligner_mode else "个段外 FireRed 字词。")
     )
     if dropped_no_speech:
         print(f"   [VAD拒绝] {dropped_no_speech} 个 MOSS 段缺少实际人声覆盖。")
@@ -3169,7 +3198,11 @@ def restore_qwen_supported_dialogue_segments(
         start = max(0.0, float(item.get("start", 0.0)))
         end = max(start + 0.01, float(item.get("end", start)))
         duration = end - start
-        text = legacy.clean_subtitle_text(item.get("text", ""))
+        raw_text = str(item.get("text", "") or "")
+        if getattr(runtime_context, "task_language", "") == "ja":
+            from twobyteasr.language_rules import japanese_display_source
+            raw_text = japanese_display_source(raw_text)
+        text = legacy.clean_subtitle_text(raw_text)
         speech_overlap = sum(
             _time_overlap(start, end, float(region["start"]), float(region["end"]))
             for region in speech_regions
@@ -3203,17 +3236,29 @@ def restore_qwen_supported_dialogue_segments(
             if float(token.get("end", 0.0)) >= start - MOSS_SPEAKER_PAD_SECONDS
             and float(token.get("start", 0.0)) <= end + MOSS_SPEAKER_PAD_SECONDS
         ]
-        firered_context = legacy.clean_subtitle_text(
-            "".join(token.get("text", "") for token in nearby_tokens)
-        )
-        firered_candidate, firered_similarity = legacy.best_alternate_window(
-            text, firered_context
-        )
-        firered_window = (
-            _firered_token_window(nearby_tokens, start, end)
-            if firered_candidate and firered_similarity >= 0.42
-            else None
-        )
+        aligned_window = None
+        if nearby_tokens and all(token.get("source") == "qwen-forced-aligner" for token in nearby_tokens):
+            # Aligner tokens repeat this transcript: timing of this speaker's
+            # own segment only, never a second text source.
+            from twobyteasr.forced_alignment import segment_alignment_key
+            key = segment_alignment_key(item.get("speaker"), item.get("start", 0.0), item.get("end", 0.0))
+            own = [token for token in nearby_tokens if str(token.get("alignment_key")) == key]
+            firered_context, firered_candidate, firered_similarity, firered_window = "", "", 0.0, None
+            if own:
+                aligned_window = {"start": min(float(t["start"]) for t in own), "end": max(float(t["end"]) for t in own),
+                                  "job": key, "token_count": len(own), "kind": "forced_alignment_span"}
+        else:
+            firered_context = legacy.clean_subtitle_text(
+                "".join(token.get("text", "") for token in nearby_tokens)
+            )
+            firered_candidate, firered_similarity = legacy.best_alternate_window(
+                text, firered_context
+            )
+            firered_window = (
+                _firered_token_window(nearby_tokens, start, end)
+                if firered_candidate and firered_similarity >= 0.42
+                else None
+            )
         qwen_confidences = []
         for chunk in matched_qwen_chunks:
             try:
@@ -3259,7 +3304,8 @@ def restore_qwen_supported_dialogue_segments(
             firered_text=firered_candidate if firered_similarity >= 0.42 else "",
             primary_source="moss-dialogue-qwen-restored",
             reference_consensus=max(qwen_similarity, firered_similarity),
-            caption_arbitration={"timing_evidence": dict(firered_window)} if firered_window else {},
+            caption_arbitration=({"timing_evidence": dict(firered_window)} if firered_window
+                                 else {"forced_alignment_window": aligned_window} if aligned_window else {}),
         ))
     if not restored:
         return segments, 0
@@ -3286,15 +3332,18 @@ def reconcile_firered_moss_qwen(segments, legacy):
     # shared spans before the broader arbitration scores are calculated.
     segments = legacy.apply_reference_consensus_corrections(segments)
     promoted = 0
+    from twobyteasr.language_rules import is_japanese
+    # Japanese kanji are not traditional Chinese: compare and adopt as written.
+    simplify = (lambda text: text) if is_japanese() else legacy.simplify_chinese
     for segment in segments:
-        primary = legacy.clean_subtitle_text(legacy.simplify_chinese(segment.text))
+        primary = legacy.clean_subtitle_text(simplify(segment.text))
         moss = legacy.clean_subtitle_text(
-            legacy.simplify_chinese(segment.moss_text or segment.alternate_text)
+            simplify(segment.moss_text or segment.alternate_text)
         )
         firered = legacy.clean_subtitle_text(
-            legacy.simplify_chinese(segment.firered_text or segment.alternate_text)
+            simplify(segment.firered_text or segment.alternate_text)
         )
-        qwen = legacy.clean_subtitle_text(legacy.simplify_chinese(segment.qwen_asr_text))
+        qwen = legacy.clean_subtitle_text(simplify(segment.qwen_asr_text))
         if not primary:
             continue
         first_reference = firered if segment.primary_source.startswith("moss-host") else moss
@@ -3924,6 +3973,29 @@ def process_media(
     def run_firered_stage():
         audit_branch("firered")
         timeline_backend = str(getattr(legacy, "FIRERED_ASR_BACKEND", "local"))
+        from twobyteasr.language_rules import JA as _JA, supports as _supports
+        japanese = getattr(runtime_context, "task_language", "") == _JA
+        if japanese and timeline_backend != "off":
+            # FireRed/Paraformer/Whisper-as-timeline are Chinese timing tools
+            # here; Japanese audio is aligned to its own transcript instead.
+            if timeline_backend != "qwen_aligner":
+                legacy.record_run_event("timeline_backend_rerouted", requested=timeline_backend,
+                                        selected="qwen_aligner", reason="japanese_audio",
+                                        requested_supports_japanese=_supports(
+                                            {"local": "firered_aed"}.get(timeline_backend, timeline_backend), "align", _JA))
+                print(f"   [语言] 日语音频不送 {timeline_backend}，改用 Qwen3-ForcedAligner 对齐日文转写。")
+            timeline_backend = "qwen_aligner"
+            return _run_audited_model_stage(
+                legacy, model_id="qwen_aligner", role="timeline_alignment", backend=timeline_backend,
+                media_path=media_path, worker="qwen_aligner_worker.py", runtime=paths["main_python"],
+                runner=lambda: legacy.run_timed_stage(
+                    4, stage_total, "Qwen3 ForcedAligner 日语字词时间轴", "GPU",
+                    lambda: canonical_result_from_segments(
+                        legacy.transcribe_qwen_aligner_reference(
+                            shared_audio, moss_payload.get("segments", []), language="Japanese"),
+                        producer="qwen_aligner_worker", consumer="firered_stage", backend="qwen_aligner",
+                        language="ja", allow_empty=True)),
+                selected=True, allow_failure=True)
         if timeline_backend == "off":
             print("   [分析稿] 未选择独立时间轴模型，沿用主力 ASR 粗时间。")
             return _run_audited_model_stage(
@@ -4022,9 +4094,10 @@ def process_media(
                 stage_label,
                 "GPU",
                 lambda: (
-                        legacy.transcribe_qwen_aligner_reference(
-                        shared_audio, moss_payload.get("segments", [])
-                    )
+                    canonical_result_from_segments(
+                        legacy.transcribe_qwen_aligner_reference(shared_audio, moss_payload.get("segments", [])),
+                        producer="qwen_aligner_worker", consumer="firered_stage", backend="qwen_aligner",
+                        allow_empty=True)
                     if timeline_backend == "qwen_aligner"
                     else (
                         legacy.reference_chunks_to_timeline_tokens(
@@ -4086,6 +4159,25 @@ def process_media(
             speech_regions = run_vad_stage()
             moss_payload = run_moss_stage()
     stage_index = 3
+
+    # The language this task runs with: a manual choice, otherwise the kana
+    # share of the primary transcript (kanji alone never mean Chinese).
+    from twobyteasr.language_rules import resolve_task_language, JA as _JA
+    task_language, language_evidence = resolve_task_language(
+        getattr(runtime_context, "requested_language", "auto"),
+        [str(row.get("text") or "") for row in moss_payload.get("segments", [])],
+        asr_detected=(moss_payload.get("metadata") or {}).get("detected_language") or moss_payload.get("language"),
+    )
+    runtime_context.task_language = task_language
+    runtime_context.language_evidence = language_evidence
+    legacy.TASK_LANGUAGE = task_language
+    legacy.record_run_event("TASK_LANGUAGE", language=task_language, **language_evidence)
+    print(f"   [语言] 本任务按{'日语' if task_language == _JA else '中文'}处理"
+          f"（{language_evidence.get('decided_by')}，假名占比 {language_evidence.get('kana_share', 0):.0%}）。")
+    if task_language == _JA and firered_early is not None:
+        # The overlapped FireRed run started before the language was known.
+        legacy.record_run_event("timeline_result_discarded", backend="firered", reason="japanese_audio")
+        firered_early = None
 
     from twobyteasr.speaker_evidence import needs_moss_speakers
     from twobyteasr.speaker_strategy import resolve
@@ -4432,6 +4524,16 @@ def process_media(
             label='独立文字复核', resource='未启用', reason='review_backend_off')
     stage_index = 6
     segments = attach_qwen_review_evidence(segments, qwen_chunks, legacy)
+    if getattr(runtime_context, "task_language", "") == "ja" and not moss_payload.get("host_speakers"):
+        # build_moss_host_primary_segments records the hosts on a validated
+        # copy, so this payload never carried them and the Qwen-supported
+        # restoration below silently did nothing. Japanese tasks (no FireRed
+        # evidence at all) restore other characters from the Qwen review.
+        selected = (((moss_payload.get("metadata") or {}).get("speaker_stages") or {})
+                    .get("selected_hosts") or {}).get("labels")
+        moss_payload["host_speakers"] = list(selected or sorted({segment.speaker for segment in segments}))
+        legacy.record_run_event("host_speakers_propagated", hosts=moss_payload["host_speakers"],
+                                reason="validated_copy_kept_host_speakers", language="ja")
     segments, _restored_dialogue_count = restore_qwen_supported_dialogue_segments(
         segments,
         qwen_chunks,
@@ -4473,9 +4575,16 @@ def process_media(
         segment.caption_arbitration = dict(segment.caption_arbitration or {})
         segment.caption_arbitration['acoustic_words'] = [
             {'text': str(token.get('text') or ''), 'start_ms': round(float(token['start'])*1000),
-             'end_ms': round(float(token['end'])*1000), 'model': 'firered'}
+             'end_ms': round(float(token['end'])*1000),
+             'model': 'qwen3_forced_aligner' if token.get('source') == 'qwen-forced-aligner' else 'firered',
+             **({'granularity': token.get('granularity'), 'start_basis': token.get('start_basis'),
+                 'end_basis': token.get('end_basis')} if token.get('source') == 'qwen-forced-aligner' else {})}
             for token in (firered_tokens or []) if token.get('text') and float(token['end']) > segment.start
-            and float(token['start']) < segment.end]
+            and float(token['start']) < segment.end
+            # An aligner token belongs to the speaker segment it was aligned in.
+            and (token.get('source') != 'qwen-forced-aligner'
+                 or str(token.get('alignment_key')) == str(
+                     (segment.caption_arbitration.get('forced_alignment_window') or {}).get('job')))]
         segment.moss_start = float(segment.moss_start or segment.start)
         segment.moss_end = float(segment.moss_end or segment.end)
         if segment.firered_text and segment.firered_end > segment.firered_start:
@@ -4502,6 +4611,12 @@ def process_media(
                 segment.final_start + 0.01, float(segment.firered_end)
             )
             segment.final_timing_owner = "FireRed"
+        elif (segment.caption_arbitration.get('forced_alignment_window') or {}).get('end', 0) > (
+                segment.caption_arbitration.get('forced_alignment_window') or {}).get('start', 0):
+            window = segment.caption_arbitration['forced_alignment_window']
+            segment.final_start = float(window['start'])
+            segment.final_end = max(segment.final_start + 0.01, float(window['end']))
+            segment.final_timing_owner = "Qwen3-ForcedAligner"
         else:
             segment.final_start = float(segment.start)
             segment.final_end = float(segment.end)
@@ -4537,7 +4652,13 @@ def process_media(
         stage_index = 5
 
     save_speaker_evidence(speaker_audit_root, "aligned", legacy.serialize_segments(segments))
-    if not analysis_transcript:
+    japanese_task = getattr(runtime_context, "task_language", "") == _JA
+    if japanese_task and not analysis_transcript:
+        # FireRedASR2-LLM is a Chinese recognizer: never a vote on Japanese text.
+        stage_index += 1
+        legacy.record_run_event('stage_skipped', index=stage_index, total=stage_total,
+            label='FireRedASR2-LLM 争议片段复核', resource='未启用', reason='japanese_audio')
+    if not analysis_transcript and not japanese_task:
         stage_index += 1
         segments = legacy.run_timed_stage(
             stage_index,
@@ -4563,7 +4684,13 @@ def process_media(
 
     from twobyteasr.terminology import apply_to_segments, runtime_snapshot
     term_snapshot = runtime_snapshot(legacy)
-    segments = apply_to_segments(segments, term_snapshot, legacy)
+    if japanese_task:
+        # Glossaries hold Chinese alias -> canonical spellings; applying them
+        # would rewrite Japanese words that merely share kanji.
+        legacy.record_run_event("terminology_skipped", reason="japanese_audio",
+                                libraries=[library.id for library in term_snapshot.libraries])
+    else:
+        segments = apply_to_segments(segments, term_snapshot, legacy)
 
     if text_plan.polish:
         stage_index += 1
@@ -4596,6 +4723,25 @@ def process_media(
     # authoritative local pass runs before grouping and its word alignment.
     segments = apply_to_segments(segments, term_snapshot, legacy)
     save_speaker_evidence(speaker_audit_root, "polished", legacy.serialize_segments(segments))
+    if getattr(runtime_context, "task_language", "") == "ja":
+        # Japanese line breaks follow bunsetsu boundaries of these exact texts
+        # (nagisa in the main runtime, no model). Without it the script-class
+        # heuristic protects words but cannot split long hiragana stretches.
+        from twobyteasr import japanese_morphology
+        texts = [segment.text for segment in segments]
+        try:
+            tagged = japanese_morphology.tag_texts(texts)
+        except Exception as error:
+            tagged = None
+            legacy.record_run_event("japanese_morphology_unavailable", error=str(error)[:300])
+            print(f"   [日语断句] 分词不可用，改用文字类别近似规则：{str(error)[:120]}")
+        document = japanese_morphology.build_document(texts, tagged)
+        japanese_morphology.install(document)
+        legacy.record_run_event("japanese_morphology", **document.receipt(),
+                                elapsed_ms=(tagged or {}).get("elapsed_ms"))
+        if tagged:
+            print(f"   [日语断句] nagisa 文节：{document.measured_segments}/{len(texts)} 段，"
+                  f"{len(document.allowed)} 个可断点，其中 {len(document.strong)} 个强断点。")
 
     grouping_uses_ai = text_plan.group
     stage_index += 1
@@ -4611,7 +4757,9 @@ def process_media(
         (
             f"{runtime_context.provider_snapshot.provider}/{runtime_context.provider_snapshot.model} · {runtime_context.provider_snapshot.transport}+说话人插话保护"
             if grouping_uses_ai
-            else ("VibeVoice 原生块+真实词级对齐+块级待审" if primary_backend.startswith('vibevoice_') else "MOSS 自然语句+FireRed 停顿+本地护栏")
+            else ("VibeVoice 原生块+真实词级对齐+块级待审" if primary_backend.startswith('vibevoice_')
+                  else "MOSS 自然语句+日语文节+对齐停顿" if getattr(runtime_context, "task_language", "") == "ja"
+                  else "MOSS 自然语句+FireRed 停顿+本地护栏")
         ),
         lambda: legacy.run_cached_stage(
             "grouped" if grouping_uses_ai else "grouped_local",
@@ -4683,6 +4831,35 @@ def process_media(
     # editorial tails across a different speaker's source onset.
     from twobyteasr.display_timing import protect_runtime_display_tails
     overlap_audit = protect_runtime_display_tails(cues, segments)
+    if japanese_task and not analysis_transcript and str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) != "off":
+        # Word timing must belong to the text the user will edit: align each
+        # final caption's current text (adjacent same-speaker captions together).
+        from twobyteasr.cue_forced_alignment import align_final_cues
+        print("   [日语字级时间] 按最终字幕文字对齐（同说话人相邻字幕成段对齐）…")
+        aligned_cues = align_final_cues(cues, shared_audio, legacy, speech_regions=speech_regions)
+        measured = sum(1 for cue in cues if any(
+            piece.get("start_basis") == "model" and piece.get("end_basis") == "model"
+            for piece in (getattr(cue, "forced_alignment", None) or {}).get("segments") or ()))
+        print(f"   [日语字级时间] {measured}/{len(cues)} 条字幕有模型实测的字词片段"
+              + (f"；{len(cues) - measured} 条只有估算（边界不可靠或整段被压缩），工作台会标出。"
+                 if measured < len(cues) else "。"))
+        legacy.record_run_event("japanese_word_timing_summary", cues=len(cues), attached=aligned_cues,
+                                measured=measured)
+        # Cuts inside one speaker's utterance that the aligner did not measure
+        # were estimated by line breaking; move them to the pause in the audio
+        # when (and only when) there is a clear one.
+        from twobyteasr.cue_boundary_refine import apply_to_runtime_cues
+        snapped = apply_to_runtime_cues(cues, shared_audio, legacy)
+        if snapped:
+            print(f"   [日语切点] {len(snapped)} 个未实测的切点移到了前面的停顿处（中位 "
+                  f"{sorted(c['old_ms'] - c['new_ms'] for c in snapped)[len(snapped) // 2]} ms）。")
+        # Line starts placed by the optional CTC aligner when they agree within
+        # 80 ms with an independent reference (aligner-measured start, else the
+        # current start). Ends are never taken from it.
+        from twobyteasr.ctc_alignment import apply_to_runtime_cues as refine_starts
+        refined = refine_starts(cues, shared_audio, legacy)
+        if refined:
+            print(f"   [日语句首] {len(refined)} 条字幕的开头按 CTC 对齐模型校正（与参考相差 80 ms 内）。")
     save_speaker_evidence(speaker_audit_root, "final", legacy.serialize_cues(cues))
     speaker_processing['stages']['final_cues'] = label_summary(cues)
     legacy.record_run_event('speaker_identity_stages', **speaker_processing)

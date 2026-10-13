@@ -98,6 +98,8 @@ _SOURCE_FILES = {
     "asr_api_worker.py",
     "requirements-main.txt",
     "qwen_asr_worker.py",
+    "qwen_aligner_worker.py",
+    "ctc_aligner_worker.py",
     "speaker_embed_worker.py",
 }
 _RENDERER_SOURCE_ROOTS = ("renderer/public/", "renderer/src/", "renderer/app/")

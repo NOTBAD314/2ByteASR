@@ -47,6 +47,10 @@ __all__ = [
     'resolve_qwen_aligner_local_source',
     'align_qwen_transcript_segments',
     'transcribe_qwen_aligner_reference',
+    'run_qwen_aligner_worker',
+    'aligner_tokens',
+    'summarize_aligner_payload',
+    'AlignerUnavailableError',
     'resolve_whisper_local_source',
     'transcribe_whisper_reference',
     'reference_chunks_to_timeline_tokens',
@@ -543,59 +547,143 @@ def align_qwen_transcript_segments(aligner, audio, transcript_segments, *, sampl
     return sorted(tokens, key=lambda item: (item["start"], item["end"]))
 
 
-def transcribe_qwen_aligner_reference(audio_source, transcript_segments):
-    """Use the pinned Qwen3 forced aligner as an alternative word-timeline backend."""
-    backend = str(_legacy_runtime_value("FIRERED_ASR_BACKEND", FIRERED_ASR_BACKEND))
-    if backend != "qwen_aligner":
-        return []
-    import gc
-    import torch
-    from twobyteasr.model_integrity import verify_model_files
+class AlignerUnavailableError(RuntimeError):
+    """The forced aligner is not installed; never replaced by a proportional estimate."""
 
+
+ALIGNER_WINDOW_PAD_MS = 300
+ALIGNER_PROTOCOL = "qwen-aligner-units-v1"
+
+
+def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=8):
+    """Run ``qwen_aligner_worker.py`` in the main managed runtime and validate its receipt.
+
+    ``jobs`` are ``{id, window_start_ms, window_end_ms, text, language}`` on the
+    clock of ``audio`` (task PCM). The GUI process never imports torch.
+    """
+    import numpy as np
+    model_path = resolve_qwen_aligner_local_source()
+    if not model_path:
+        raise AlignerUnavailableError(
+            "Qwen3-ForcedAligner 0.6B 未安装：日语字级时间需要它。请在模型工坊下载“Qwen3 ForcedAligner 字幕时间轴”。")
+    runtime = _main_worker_python()
+    worker = os.path.join(os.path.abspath(SCRIPT_DIR), "qwen_aligner_worker.py")
+    if not os.path.isfile(runtime) or not os.path.isfile(worker):
+        raise RuntimeError(f"Qwen3-ForcedAligner worker runtime missing: python={runtime}, worker={worker}")
+    pcm = np.ascontiguousarray(audio, dtype=np.float32)
+    if pcm.ndim != 1 or not np.isfinite(pcm).all():
+        raise RuntimeError("对齐 worker 需要有限值单声道 float32 PCM")
+    digest = hashlib.sha256(pcm.tobytes()).hexdigest()
+    policy = {"version": ALIGNER_PROTOCOL, "audio_format": "float32-mono-npy-v1", "sample_rate": AUDIO_SAMPLE_RATE,
+              "batch_size": max(1, min(16, int(batch_size))), "passes": list(passes)}
+    jobs = [dict(job, id=str(job["id"])) for job in jobs]
+    with tempfile.TemporaryDirectory(prefix="qwen_aligner_worker_") as temp_dir:
+        audio_path = os.path.join(temp_dir, "audio.npy")
+        np.save(audio_path, pcm, allow_pickle=False)
+        manifest = os.path.join(temp_dir, "manifest.json")
+        output = os.path.join(temp_dir, "results.json")
+        Path(manifest).write_text(json.dumps({"policy": policy, "jobs": jobs, "audio": {
+            "path": audio_path, "samples": int(pcm.size), "sha256": digest}}, ensure_ascii=False), encoding="utf-8")
+        payload = _run_isolated_asr_worker(
+            python_utf8_command([runtime, "-I", worker, "--manifest", manifest, "--output", output,
+                                 "--model-dir", model_path]),
+            output, model_id="QWEN3-ALIGNER", audio_input="shared_audio", model_path=model_path,
+            entrypoint="qwen_aligner_worker.py")
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list) or [str(row.get("id")) for row in results] != [job["id"] for job in jobs]:
+        raise RuntimeError("对齐 worker 返回的任务缺失、重复或乱序")
+    if (payload.get("policy") != policy or payload.get("audio_sha256") != digest
+            or payload.get("protocol") != ALIGNER_PROTOCOL):
+        raise RuntimeError("对齐 worker 回执与输入不一致")
+    for job, row in zip(jobs, results):
+        if row.get("text") != job["text"]:
+            raise RuntimeError("对齐 worker 改写了输入文字")
+    return payload
+
+
+def aligner_tokens(payload, *, source="qwen-forced-aligner"):
+    """Reliable aligned pieces as timeline tokens (seconds); text is the original substring."""
+    tokens = []
+    for row in payload.get("results") or ():
+        text = str(row.get("text") or "")
+        for piece in row.get("segments") or ():
+            start, end = int(piece["start_ms"]), int(piece["end_ms"])
+            fragment = text[int(piece["char_start"]):int(piece["char_end"])]
+            if end <= start or not fragment.strip():
+                continue
+            measured = piece.get("start_basis") == "model" and piece.get("end_basis") == "model"
+            tokens.append({"text": fragment, "start": round(start / 1000.0, 3), "end": round(end / 1000.0, 3),
+                           "confidence": 0.9 if measured else 0.6, "source": source,
+                           "granularity": piece.get("granularity"), "start_basis": piece.get("start_basis"),
+                           "end_basis": piece.get("end_basis"), "alignment_job": str(row.get("id")),
+                           "alignment_key": str(row.get("id")).split("#", 1)[0]})
+    return sorted(tokens, key=lambda item: (item["start"], item["end"]))
+
+
+def summarize_aligner_payload(payload):
+    totals = {}
+    statuses = {}
+    for row in payload.get("results") or ():
+        statuses[row.get("status")] = statuses.get(row.get("status"), 0) + 1
+        for key, value in (row.get("stats") or {}).items():
+            if isinstance(value, bool):
+                totals[key] = totals.get(key, 0) + int(value)
+            elif isinstance(value, (int, float)):
+                totals[key] = totals.get(key, 0) + value
+    return {"jobs": len(payload.get("results") or ()), "statuses": statuses, "stats": totals,
+            "model": payload.get("model"), "model_revision": payload.get("model_revision"),
+            "code": payload.get("code"), "unit_policy": payload.get("unit_policy"),
+            "load_ms": payload.get("load_ms"), "inference_ms": payload.get("inference_ms")}
+
+
+def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, language=None):
+    """Forced-align the primary transcript per segment with Qwen3-ForcedAligner.
+
+    Runs in the main managed runtime (``qwen_aligner_worker.py``). Each segment
+    is aligned inside its own padded window, so overlapping speakers are never
+    forced into one monotonic sequence. Returns flat timeline tokens.
+    """
+    from twobyteasr.language_rules import qwen_language_name, active_task_language
+    language = language or qwen_language_name(active_task_language()) or "Chinese"
     if not _cuda_runtime_ready():
-        print("   [警告] Qwen3 ForcedAligner 需要 CUDA，本次保留 MOSS 粗时间轴。")
-        return []
-    source = resolve_qwen_aligner_local_source()
-    if not source:
-        print("   [警告] Qwen3 ForcedAligner 未完整安装；请在模型工坊下载后重试。")
+        print("   [警告] Qwen3 ForcedAligner 需要 CUDA，本次保留主力模型的粗时间轴。")
+        add_review_item(0.0, "时间轴模型未运行", "Qwen3-ForcedAligner 需要可用的 NVIDIA CUDA", priority=2)
         return []
     owns_audio = isinstance(audio_source, (str, bytes, os.PathLike))
     audio = decode_audio_to_array(audio_source) if owns_audio else audio_source
-    aligner = None
+    from twobyteasr.forced_alignment import segment_alignment_key
+    jobs = []
+    seen = {}
+    for row in transcript_segments or ():
+        start_ms = int(round(float(row.get("start", 0.0)) * 1000))
+        end_ms = int(round(float(row.get("end", 0.0)) * 1000))
+        text = str(row.get("text") or "").strip()
+        if end_ms - start_ms < 180 or not content_only(text):
+            continue
+        key = segment_alignment_key(row.get("speaker"), row.get("start", 0.0), row.get("end", 0.0))
+        seen[key] = seen.get(key, 0) + 1
+        jobs.append({"id": key if seen[key] == 1 else f"{key}#{seen[key]}", "alignment_key": key,
+                     "window_start_ms": max(0, start_ms - ALIGNER_WINDOW_PAD_MS),
+                     "window_end_ms": end_ms + ALIGNER_WINDOW_PAD_MS, "text": text, "language": language})
+    if not jobs:
+        return []
+    print(f"   Qwen3 ForcedAligner（{language}）：对齐 {len(jobs)} 段主力转写…")
     try:
-        from qwen_asr import Qwen3ForcedAligner
-
-        verify_model_files("qwen_aligner", source)
-        dtype = torch.bfloat16 if _cuda_bf16_supported() else torch.float16
-        print("   加载 Qwen3 ForcedAligner 0.6B，生成字/词级时间戳...")
-        aligner = Qwen3ForcedAligner.from_pretrained(
-            source,
-            local_files_only=True,
-            device_map="cuda:0",
-            dtype=dtype,
-        )
-        tokens = align_qwen_transcript_segments(
-            aligner,
-            audio,
-            transcript_segments,
-            sampling_rate=AUDIO_SAMPLE_RATE,
-        )
-        print(f"   [完成] Qwen3 ForcedAligner：生成 {len(tokens)} 个时间单元。")
-        return tokens
+        payload = run_qwen_aligner_worker(audio, jobs)
     except CancelledError:
         raise
+    except AlignerUnavailableError as exc:
+        print(f"   [警告] {exc}")
+        add_review_item(0.0, "缺少对齐模型", str(exc), priority=3, severity="warning")
+        return []
     except Exception as exc:
-        print(f"   [警告] Qwen3 ForcedAligner 失败，保留 MOSS 粗时间轴：{exc}")
+        print(f"   [警告] Qwen3 ForcedAligner 失败，保留主力模型粗时间轴：{exc}")
         add_review_item(0.0, "时间轴模型失败", str(exc)[:160], priority=2)
         return []
-    finally:
-        if aligner is not None:
-            del aligner
-        if owns_audio and audio is not None:
-            del audio
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    tokens = aligner_tokens(payload)
+    record_run_event("forced_alignment", stage="segments", language=language, **summarize_aligner_payload(payload))
+    print(f"   [完成] Qwen3 ForcedAligner：{len(tokens)} 个可靠时间片。")
+    return tokens
 
 
 def resolve_whisper_local_source():
@@ -2770,10 +2858,17 @@ def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root
     worker = os.path.join(os.path.abspath(SCRIPT_DIR), "qwen_asr_worker.py")
     if not os.path.isfile(runtime) or not os.path.isfile(worker):
         raise RuntimeError(f"Qwen worker runtime missing: python={runtime}, worker={worker}")
+    from twobyteasr.language_rules import qwen_language_name, active_task_language, JA
+    task_language = active_task_language() or getattr(get_runtime_context(), "requested_language", "zh")
     policy = {"version": "qwen-worker-shared-float32-v1",
         "batch_size": max(1, min(12, int(_legacy_runtime_value("QWEN_ASR_BATCH_SIZE", QWEN_ASR_BATCH_SIZE)))),
         "max_new_tokens": int(_legacy_runtime_value("QWEN_ASR_MAX_NEW_TOKENS", QWEN_ASR_MAX_NEW_TOKENS)),
-        "sample_rate": AUDIO_SAMPLE_RATE, "audio_format": "float32-mono-npy-v1"}
+        "sample_rate": AUDIO_SAMPLE_RATE, "audio_format": "float32-mono-npy-v1",
+        # Chinese for Chinese tasks (unchanged), Japanese for Japanese, None = identify.
+        "language": qwen_language_name(task_language)}
+    if task_language == JA:
+        # The context is a Chinese terminology hint; it must not steer Japanese.
+        context = ""
     record_run_event("asr_terminology_input", backend="qwen3_worker", model="Qwen3-ASR",
         method="context_hint", native_hotwords=False, context_sent=bool(context),
         **_qwen_context_receipt(context))
@@ -2816,7 +2911,8 @@ def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root
             text = clean_subtitle_text(value.get("text", ""))
             if content_only(text):
                 references.append({"start": chunk["start"], "end": chunk["end"], "text": text,
-                    "confidence": float(value.get("confidence", 0.0) or 0.0)})
+                    "confidence": float(value.get("confidence", 0.0) or 0.0),
+                    "language": str(value.get("language") or "")})
         if not references:
             raise RuntimeError("Qwen worker returned no parsed text")
         return references

@@ -40,6 +40,51 @@ def performance_snapshot(page, *, compact=False) -> dict:
         "tracks": [{'id':t.id,'enabled':getattr(t,'enabled',True),'muted':getattr(t,'muted',False)}
                    for t in getattr(getattr(page,'project',None),'audio_tracks',())],
         "autosave": list(getattr(page, "_autosave_profile", ()))[-8:],
+        "gui_loop": _gui_loop_stats(),
+        "pending": _pending_work(page),
+    }
+
+
+def _gui_loop_stats() -> dict | None:
+    from .gui_stall_watchdog import instance
+    watchdog = instance()
+    return watchdog.lag_stats() if watchdog is not None else None
+
+
+def _pending_work(page) -> dict:
+    """Queued requests that can pile up behind a busy GUI thread."""
+    engine = getattr(page, 'audio_engine', None)
+    canvas = getattr(page, 'video', None)
+    controller = getattr(canvas, 'controller', None)
+    actor = getattr(controller, '_actor', None)
+    requests = getattr(actor, '_requests', None)
+    scene = getattr(page, '_caption_scene', None)
+    return {
+        "audio_sync_inflight": bool(getattr(engine, '_sync_inflight', False)),
+        "audio_sync_queued": getattr(engine, '_pending_sync', None) is not None,
+        "mpv_actor_queue": len(requests) if requests is not None else None,
+        "caption_warm_pending": len(getattr(scene, 'warm_pending', ()) or ()),
+        "caption_frames_cached": len(getattr(scene, 'frames', ()) or ()),
+    }
+
+
+def stall_context(page) -> dict:
+    """Small playback picture attached to a GUI_STALL record (GUI thread)."""
+    canvas = getattr(page, 'video', None)
+    clock = getattr(canvas, '_playback_clock', None)
+    snapshot = clock.snapshot() if clock is not None else None
+    project = getattr(page, 'project', None)
+    return {
+        "page_visible": bool(page.isVisible()),
+        "paused": bool(getattr(canvas, '_paused', True)),
+        "rate": float(getattr(canvas, '_playback_rate', 1.0) or 1.0),
+        "startup_state": str(getattr(canvas, '_startup_state', '')),
+        "playhead_ms": int(getattr(getattr(page, 'timeline', None), 'playhead_ms', 0) or 0),
+        "clock_media_ms": round(float(snapshot.presentation_media_ms), 1) if snapshot else None,
+        "clock_generation": int(snapshot.playback_generation) if snapshot else None,
+        "cue_count": len(getattr(project, 'cues', ()) or ()),
+        "playback_mode": str(getattr(page, '_playback_mode', '')),
+        "pending": _pending_work(page),
     }
 
 

@@ -47,14 +47,21 @@ def settle_layout(root: QWidget) -> None:
     root.ensurePolished()
     # Hidden pages can contain thousands of controls. They do not participate
     # in this transition's geometry and will settle naturally when shown.
-    widgets = [root, *(widget for widget in root.findChildren(QWidget)
-                       if widget.isVisibleTo(root))]
-    for widget in widgets:
+    # Walk only the visible tree (pruning hidden subtrees at their top) instead
+    # of listing every descendant of the window and testing each one
+    # (2026-10-12: a page switch enumerated all pages' widgets).
+    direct = Qt.FindChildOption.FindDirectChildrenOnly
+    layout_request = QEvent.Type.LayoutRequest
+    stack = [root]
+    while stack:
+        widget = stack.pop()
         if widget.layout() is not None:
             widget.layout().activate()
-        QCoreApplication.sendPostedEvents(widget, QEvent.Type.LayoutRequest)
+        QCoreApplication.sendPostedEvents(widget, layout_request)
         if isinstance(widget, QSplitter):
             widget.refresh()
+        children = [child for child in widget.findChildren(QWidget, options=direct) if not child.isHidden()]
+        stack.extend(reversed(children))
 
 
 @contextmanager

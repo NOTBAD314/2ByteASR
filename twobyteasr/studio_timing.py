@@ -237,6 +237,38 @@ def split_alignment(cue: StudioCue, project: SubtitleProject | None) -> tuple[tu
     return cue_words(project, cue)
 
 
+_SPLIT_EDGE_SPACE = r"[\s\u200b\u200c\u200d\u2060\ufeff]+"
+
+
+def trim_cut_pieces(pieces: Iterable[str]) -> list[str]:
+    """Consecutive slices of one text; whitespace on each cut is the boundary.
+
+    2026-10-12: a razor/AI cut at a pause space left "这里怎么办 " on the
+    left.  The space now belongs to neither part; the outer edges of the
+    original text are untouched.  Word alignment is content-indexed (and
+    re-derived from the parent's tokens for the new cues), so no timing
+    moves.  A piece that would become whitespace-only keeps its raw slice
+    (callers already refuse an empty side).
+    """
+    import re
+    raw = [str(piece) for piece in pieces]
+    result = []
+    for index, piece in enumerate(raw):
+        trimmed = piece
+        if index:
+            trimmed = re.sub(r"\A" + _SPLIT_EDGE_SPACE, "", trimmed)
+        if index < len(raw) - 1:
+            trimmed = re.sub(_SPLIT_EDGE_SPACE + r"\Z", "", trimmed)
+        result.append(trimmed if trimmed.strip() else piece)
+    return result
+
+
+def split_texts_at(text: str, position: int) -> tuple[str, str]:
+    """Cut ``text`` at ``position`` (see ``trim_cut_pieces``)."""
+    left, right = trim_cut_pieces((text[:position], text[position:]))
+    return left, right
+
+
 def describe_split(
     cue: StudioCue,
     split_ms: int,
@@ -267,7 +299,8 @@ def describe_split(
         duration = max(1, cue.end_ms - cue.start_ms)
         ratio = (clamped - cue.start_ms) / duration
         position = min(len(cue.text) - 1, max(1, round(len(cue.text) * ratio)))
-        return SplitPreview(clamped, cue.text[:position], cue.text[position:], cue.start_ms, clamped,
+        left_text, right_text = split_texts_at(cue.text, position)
+        return SplitPreview(clamped, left_text, right_text, cue.start_ms, clamped,
                             clamped, cue.end_ms, ESTIMATED_SPLIT, reason)
     # A word whose sound has started belongs to the left. The media cut stays
     # where the user put it; the text boundary follows the measured onsets, so
@@ -280,10 +313,11 @@ def describe_split(
         return SplitBlocked(clamped, 'after_last_word_onset', source, reason, tuple(words))
     position = right[0].char_start
     straddled = left[-1] if left[-1].end_ms > clamped else None
+    left_text, right_text = split_texts_at(cue.text, position)
     return SplitPreview(
         split_ms=clamped,
-        left_text=cue.text[:position],
-        right_text=cue.text[position:],
+        left_text=left_text,
+        right_text=right_text,
         left_start_ms=cue.start_ms,
         left_end_ms=clamped,
         right_start_ms=clamped,

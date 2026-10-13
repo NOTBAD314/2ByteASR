@@ -51,6 +51,11 @@ def main() -> None:
     sample_rate = int(policy.get("sample_rate", 0))
     if not 1 <= batch_size <= 12 or not 1 <= max_new_tokens <= 4096 or sample_rate != 16000:
         raise RuntimeError("Invalid Qwen worker generation policy")
+    # Spoken language for every window: "Chinese", "Japanese", or None to let
+    # Qwen3-ASR identify it. Policies without the key keep the Chinese default.
+    language = policy.get("language", "Chinese")
+    if language not in {None, "Chinese", "Japanese"}:
+        raise RuntimeError("Invalid Qwen worker language")
     if not jobs:
         raise RuntimeError("Qwen3-ASR manifest is empty")
     load_started = time.perf_counter()
@@ -77,7 +82,7 @@ def main() -> None:
                 audio.append((pcm, sample_rate))
             values = model.transcribe(audio=audio,
                 context=[str(job.get("context") or "") for job in batch],
-                language=["Chinese"] * len(batch), return_time_stamps=False)
+                language=[language] * len(batch), return_time_stamps=False)
             if len(values) != len(batch):
                 raise RuntimeError("Qwen returned a partial batch")
             for job, value in zip(batch, values):
@@ -87,6 +92,7 @@ def main() -> None:
                 except (TypeError, ValueError):
                     confidence = 0.0
                 results.append({"segment_id": int(job["segment_id"]), "text": text,
+                    "language": str(getattr(value, "language", "") or ""),
                     "confidence": confidence, "start": job["start"], "end": job["end"],
                     "samples": job["samples"], "pcm_sha256": job["pcm_sha256"],
                     "context_sha256": hashlib.sha256(str(job.get("context") or "").encode("utf8")).hexdigest()})

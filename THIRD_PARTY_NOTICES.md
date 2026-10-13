@@ -1,12 +1,14 @@
 # 第三方组件、许可与来源声明
 
+> 2026-10-13：0.7.0 新增随安装包附带的组件与可下载模型见文末“0.7.0 新增”一节；下方原有记录与证据等级不变。
+
 本声明随 0.2.6-test.3 内部候选提供。自有代码按 [GPL-3.0-only](PROJECT_LICENSE.md) 授权；第三方保留原版权、许可及权利。基线组件证据来自品牌 test.2（SHA `0d2796a1…c88878c`）；当前构建保留既有运行依赖并精确排除四个冗余 Qt 文件，新候选身份与实际入包结果另见同版本交付回执。旧 Setup 原样保留，不自动包含新增材料。
 
 [当前 GPL 路线及未解决项](licenses/GPL3_ROUTE.md)区分旧禁售冲突撤销、实际修正、对应源码缺口及组合许可问题。Remotion/GSAP、素材权利和第三方源码缺口仍开放，此声明不授予未取得权利，也不表示整个组合已可公开分发。
 
 ## 每个组件的详细声明
 
-[完整组件目录](licenses/COMPONENTS.md)逐项提供604条分层记录的名称/准确版本、范围、实际路径、版权证据、官方与版本来源、本地原文位置、用途/集成、修改/补丁、对应源码义务、证据等级及缺口。记录含重复层级和未查明项，不代表604种软件均已获得法律核实。
+[完整组件目录](licenses/COMPONENTS.md)逐项提供622条分层记录的名称/准确版本、范围、实际路径、版权证据、官方与版本来源、本地原文位置、用途/集成、修改/补丁、对应源码义务、证据等级及缺口。记录含重复层级和未查明项，不代表604种软件均已获得法律核实。
 
 [机器索引](licenses/component-index.json)提供原文、NOTICE、例外和源码材料的逐文件SHA/来源；[模型表](licenses/MODELS.md)区分代码、权重、配置/词表；[源码说明](licenses/SOURCES.md)说明实际可取得内容与未完成范围；[分发状态](licenses/DISTRIBUTION-STATUS.md)保留开放事项。
 
@@ -74,3 +76,37 @@ Remotion4.0.513已回复：**所请求覆盖GPL下游的特殊豁免已拒绝**�
 当前生产高级字幕仍保留；直接/传递npm包、真实API、compositor/Rust/媒体DLL、Chromium、自动npm安装/备用CLI、两个独立onedir及配对B内部材料已分别核对。现有HTML档案可独立求值，正常Studio宿主仍调用Remotion；最小纯CDP验证不会偷偷替换全部AI功能。原封存Setup/候选/A/B/C声明与自有GPL-3.0-only、0.2.6-test.3分界保持。
 
 [组件、实际材料及发布门](licenses/REMOTION_DEPENDENCY_AUDIT.md)。新统一候选保留既有实现并继续标公开发布阻塞；纯源码C不代替内部B及原生对应材料。
+
+## 0.7.0 新增（2026-10-13）
+
+0.7.0 相对 0.6.5 安装包，主程序新增本机 MCP 服务（官方 Python SDK `mcp` 2.3.0），因此 PyInstaller 把它的依赖链一并收入主程序。按 0.6.5 与 0.7.0 两个主程序的 PYZ 模块与载荷文件逐项比较，新增的第三方组件如下（B＝随安装包附带）。每项的原许可文件从构建环境的发行包元数据原样复制到 `licenses/materials/frozen/`，安装后也在程序目录的 `licenses/python/`；逐文件 SHA-256 见 [机器索引](licenses/component-index.json)，逐项记录见[组件目录](licenses/COMPONENTS.md)第 605 条起。
+
+| 组件及版本 | 范围与用途 | 许可与原文 |
+|---|---|---|
+| mcp 2.3.0 | B，PYZ | MIT；原文 `licenses/materials/frozen/mcp-2.3.0/` |
+| mcp-types 2.3.0 | B，PYZ | MIT；原文 `licenses/materials/frozen/mcp-types-2.3.0/` |
+| pydantic 2.13.4 | B，PYZ | MIT；原文 `licenses/materials/frozen/pydantic-2.13.4/` |
+| pydantic_core 2.46.4 | B，PYZ＋_pydantic_core.cp310-win_amd64.pyd | MIT；原文 `licenses/materials/frozen/pydantic_core-2.46.4/` |
+| starlette 1.3.1 | B，PYZ | BSD-3-Clause；原文 `licenses/materials/frozen/starlette-1.3.1/` |
+| uvicorn 0.52.0 | B，PYZ | BSD-3-Clause；原文 `licenses/materials/frozen/uvicorn-0.52.0/` |
+| sse-starlette 3.5.0 | B，PYZ | BSD-3-Clause；原文 `licenses/materials/frozen/sse-starlette-3.5.0/` |
+| anyio 4.14.2 | B，PYZ | MIT；原文 `licenses/materials/frozen/anyio-4.14.2/` |
+| httpx2 2.13.1 | B，PYZ | BSD-3-Clause；原文 `licenses/materials/frozen/httpx2-2.13.1/` |
+| httpcore2 2.13.1 | B，PYZ | BSD-3-Clause；原文 `licenses/materials/frozen/httpcore2-2.13.1/` |
+| click 8.4.2 | B，PYZ | BSD-3-Clause；原文 `licenses/materials/frozen/click-8.4.2/` |
+| opentelemetry-api 1.45.1 | B，PYZ | Apache-2.0；原文 `licenses/materials/frozen/opentelemetry-api-1.45.1/` |
+| truststore 0.10.4 | B，PYZ | MIT；原文 `licenses/materials/frozen/truststore-0.10.4/` |
+| typing-inspection 0.4.2 | B，PYZ | MIT；原文 `licenses/materials/frozen/typing-inspection-0.4.2/` |
+| tzdata 2026.3 | B，PYZ | Apache-2.0；原文 `licenses/materials/frozen/tzdata-2026.3/` |
+| pywin32 312 | B，PYZ＋pywintypes310.dll、_win32sysloader.pyd、win32api.pyd、win32evtlog.pyd、win32job.pyd、win32pdh.pyd | PSF；原文 `licenses/materials/frozen/pywin32-312/` |
+| pytest 9.1.1 | B，PYZ | MIT；原文 `licenses/materials/frozen/pytest-9.1.1/` |
+
+另有 8 个组件原来就作为离线 wheel 随包（h11 0.16.0、rich 15.0.0、itsdangerous 2.2.0、markdown-it-py 4.2.0、mdurl 0.1.2、python-multipart 0.0.32、annotated-types 0.8.0、exceptiongroup 1.3.1），0.7.0 起同一版本也进入主程序 PYZ；许可与原文不变，组件目录已补路径。
+
+说明：
+- `pytest` 只因依赖链被收入 `_pytest` 模块，程序不运行测试；之后应在打包规则里排除。
+- `pywin32` 的发行包含多份子项目许可原文（全部保留）；实际随包的只是 win32 核心扩展与 `pywintypes310.dll`。
+- `tzdata` 的 Python 包是 Apache-2.0，IANA 时区数据本身另有公共领域声明。
+- 模型（C，首次下载）：日语 CTC 对齐模型 `jonatasgrosman/wav2vec2-large-xlsr-53-japanese`（Apache-2.0，固定版本 `cf031e02…`；国内来源 ModelScope 固定提交 `18a6b597…`），模型卡原文见 `licenses/materials/models/ja_ctc_aligner/`，[模型表](licenses/MODELS.md)记录其基础模型与训练数据条款待核。
+
+这一节只登记新增组件及其原文；不改变上文的公开分发阻塞项（见[分发状态](licenses/DISTRIBUTION-STATUS.md)），也不表示组合已获法律核实。

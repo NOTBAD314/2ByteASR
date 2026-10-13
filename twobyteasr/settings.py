@@ -88,6 +88,12 @@ DEFAULT_SETTINGS = {
         "language": "zh",
         "reduce_motion": False,
     },
+    # Spoken language of the media and the subtitles to produce (not the UI language).
+    "subtitle_language": {
+        "recognition_language": "auto",
+        "output": "original",
+        "translation_script": "zh-Hans",
+    },
     "performance": {
         "parallel_cloud_batches": True,
         "cloud_batch_workers": 4,
@@ -304,6 +310,13 @@ def _merge_known_settings(defaults, payload):
             warnings.append(
                 f"models.{key} must be one of {sorted(allowed)}; default was used"
             )
+    allowed_language = {"recognition_language": {"auto", "zh", "ja"},
+                        "output": {"original", "translation", "bilingual"},
+                        "translation_script": {"zh-Hans", "zh-Hant"}}
+    for key, allowed in allowed_language.items():
+        if result["subtitle_language"].get(key) not in allowed:
+            result["subtitle_language"][key] = defaults["subtitle_language"][key]
+            warnings.append(f"subtitle_language.{key} must be one of {sorted(allowed)}; default was used")
     allowed_transports = {"openai_compatible", "antigravity_cli", "grok_cli", "codex_cli"}
     for key in ("polish_transport", "group_transport"):
         if result["models"][key] not in allowed_transports:

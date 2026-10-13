@@ -6,8 +6,76 @@ from difflib import SequenceMatcher
 from .studio_text_tools import TextOccurrence
 
 
-def diff_occurrences(cue, final, *, reason, source, selected=True, evidence='', missing=''):
-    """Keep the editable cue as the baseline; each independent diff can be declined."""
+def format_only_change(original, replacement):
+    """True when a diff only changes whitespace or what clean_subtitle_text drops.
+
+    Such a change is the correction service's input normalization, never a
+    model decision (2026-10-12: "AI 校对 · 删去「 」 · 推荐" on a sentence the
+    model left untouched).
+    """
+    if ''.join(str(original).split()) == ''.join(str(replacement).split()):
+        return True
+    from .text_rules import clean_subtitle_text
+    return clean_subtitle_text(original) == clean_subtitle_text(replacement)
+
+
+def _clean_to_raw_spans(raw, clean):
+    """For every character of ``clean_subtitle_text(raw)``, its raw [start, end)."""
+    starts, ends = [0] * len(clean), [0] * len(clean)
+    for tag, a, b, c, d in SequenceMatcher(None, raw, clean, autojunk=False).get_opcodes():
+        if tag == 'equal' or (tag == 'replace' and b - a == d - c):
+            for offset in range(d - c):
+                starts[c + offset], ends[c + offset] = a + offset, a + offset + 1
+        elif tag in ('replace', 'insert'):
+            for index in range(c, d):
+                starts[index], ends[index] = a, b
+    return starts, ends
+
+
+def transplant_model_edits(raw, edited):
+    """Re-apply a correction-service result onto the editable cue text.
+
+    The correction service validates edits on ``clean_subtitle_text(raw)``
+    (spaces collapsed and stripped, ordinary punctuation deleted).  Diffing
+    its result against the raw cue attributed that normalization to the
+    model.  Here only the model's own changes (normalized input -> result)
+    are mapped back onto ``raw``; everything else keeps the cue's spacing and
+    punctuation.  Returns ``raw`` when the model changed nothing, the edited
+    text unchanged when it is not in the normalized space (legacy providers
+    that answer with the raw text), or ``None`` when the mapping cannot be
+    proven (the caller then filters format-only occurrences instead).
+    """
+    from .text_rules import clean_subtitle_text
+    raw, edited = str(raw), str(edited)
+    baseline = clean_subtitle_text(raw)
+    if edited in (raw, baseline):
+        return raw
+    if clean_subtitle_text(edited) != edited:
+        return edited
+    starts, ends = _clean_to_raw_spans(raw, baseline)
+    pieces, cursor = [], 0
+    for tag, a, b, c, d in SequenceMatcher(None, baseline, edited, autojunk=False).get_opcodes():
+        if tag == 'equal':
+            continue
+        if a < b:
+            low, high = starts[a], ends[b - 1]
+        else:
+            low = high = ends[a - 1] if a else (starts[0] if baseline else 0)
+        if low < cursor:
+            return None
+        pieces.extend((raw[cursor:low], edited[c:d]))
+        cursor = high
+    pieces.append(raw[cursor:])
+    result = ''.join(pieces)
+    return result if clean_subtitle_text(result) == edited else None
+
+
+def diff_occurrences(cue, final, *, reason, source, selected=True, evidence='', missing='',
+                     ignore_format_only=False):
+    """Keep the editable cue as the baseline; each independent diff can be declined.
+
+    ``ignore_format_only`` (model proposals): a whitespace/normalization-only
+    difference is never offered as a suggestion."""
     intervals=[]
     identifier=lambda char:char.isascii() and (char.isalnum() or char=='_')
     for tag,a,b,c,d in SequenceMatcher(None,cue.text,final,autojunk=False).get_opcodes():
@@ -20,6 +88,8 @@ def diff_occurrences(cue, final, *, reason, source, selected=True, evidence='', 
         if intervals and a<=intervals[-1][1] and c<=intervals[-1][3]:
             previous=intervals.pop();intervals.append((previous[0],max(b,previous[1]),previous[2],max(d,previous[3])))
         else:intervals.append((a,b,c,d))
+    if ignore_format_only:
+        intervals=[row for row in intervals if not format_only_change(cue.text[row[0]:row[1]], final[row[2]:row[3]])]
     return [TextOccurrence(cue.id, cue.start_ms, cue.text[a:b], final[c:d], (a, b),
         reason=reason, confidence=1.0 if source == 'local_confirmed' else .75,
         default_selected=selected, source=source, evidence=evidence, missing_evidence=missing)

@@ -20,7 +20,9 @@ const entryPoint = path.join(rendererRoot, 'src', 'index.ts');
 const configuredChrome = process.env.TWOBYTEASR_RENDERER_CHROME ||
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
-// Fonts live canonically in assets/fonts/; populate public/fonts/ at startup.
+// Fonts live canonically in assets/fonts/ (public PR #2 by CODE-A-DUCK). Fill public/fonts/
+// only where a font is missing or differs in size: an installed or signed app already ships
+// them and must not be rewritten at every start.
 const assetsRoot = path.resolve(rendererRoot, '..', 'assets', 'fonts');
 const publicFonts = path.join(rendererRoot, 'public', 'fonts');
 const BUNDLED_FONTS = [
@@ -29,10 +31,17 @@ const BUNDLED_FONTS = [
   'SourceHanSansSC-Medium.woff2', 'ZCOOLKuaiLe-Regular.ttf',
   'ZCOOLQingKeHuangYou-Regular.ttf',
 ];
-await fs.mkdir(publicFonts, {recursive: true});
-await Promise.all(BUNDLED_FONTS.map(f =>
-  fs.copyFile(path.join(assetsRoot, f), path.join(publicFonts, f)).catch(() => {})
-));
+await fs.mkdir(publicFonts, {recursive: true}).catch(() => {});
+await Promise.all(BUNDLED_FONTS.map(async (name) => {
+  const source = path.join(assetsRoot, name);
+  const target = path.join(publicFonts, name);
+  try {
+    const [wanted, present] = await Promise.all([fs.stat(source), fs.stat(target).catch(() => null)]);
+    if (!present || present.size !== wanted.size) await fs.copyFile(source, target);
+  } catch {
+    // Missing source or a read-only install: the renderer keeps whatever fonts it ships with.
+  }
+}));
 
 let serveUrl = null;
 let browser = null;

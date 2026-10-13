@@ -45,12 +45,21 @@ def test_invalid_boundaries_do_not_mutate(controller,edge,point):
     assert c.session.undo_stack.count()==0 and messages and not ripple
 
 
-@pytest.mark.parametrize('context',['highlight','video','audio'])
+@pytest.mark.parametrize('context',['video','audio'])
 def test_video_context_is_not_hijacked_by_cue_highlight(controller,context):
     c,p,messages,ripple=controller
-    if context=='highlight':c.page._manual_selection_hold=False
-    else:c.page.timeline.selected_track_header=(context,'V1')
+    c.page.timeline.selected_track_header=(context,'V1')
     c.trim_to_playhead('start'); assert ripple==['start'] and c.session.undo_stack.count()==0
+
+
+def test_clock_highlight_inside_a_caption_is_the_qw_target(controller):
+    # ADR 0104 (2026-10-11): without an explicit click, Q/W edit the caption
+    # under the playhead in one press (it supersedes ADR 0077's video default).
+    c,p,messages,ripple=controller
+    c.page._manual_selection_hold=False
+    type(c)._mirror_clock_selection=lambda self,cue_id:None
+    c.trim_to_playhead('start')
+    assert not ripple and c.session.undo_stack.count()==1 and p.cues[0].start_ms==11000
 
 
 def test_locked_and_multi_selection_refused(controller):

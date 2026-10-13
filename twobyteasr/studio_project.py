@@ -2010,6 +2010,7 @@ def create_studio_outputs(
 ) -> dict[str, str]:
     """Create an archived Studio project without mutating ASR outputs."""
 
+    cues = list(cues)
     metadata = _mapping(generation_metadata)
     from .recognition_result import recognition_project_path
     job_id = str(metadata.get("job_id") or "")
@@ -2174,6 +2175,18 @@ def create_studio_outputs(
             for reference, row in segment_rows
             if int(row["end_ms"]) > cue.start_ms and int(row["start_ms"]) < cue.end_ms
         ]
+    from .cue_forced_alignment import attach_project_evidence
+    attach_project_evidence(project, cues)
+    output_mode = str((metadata.get("subtitle_output") or {}).get("mode") or "original")
+    if output_mode in ("translation", "bilingual") and project.generation_metadata.get("translations"):
+        # The display the user chose before recognition (original/translation/bilingual).
+        from .bilingual_layout import BilingualSettings, compact_defaults
+        project.studio_state["bilingual"] = dict(BilingualSettings(mode=output_mode).to_dict(), **compact_defaults())
+        project.studio_state["bilingual_mode"] = True
+    # Main/secondary speaker roles for the timeline: decided once here, on a
+    # project nobody has arranged yet (older projects only via the menu).
+    from .speaker_roles import initialize_for_recognition
+    initialize_for_recognition(project)
     if existing_job_project is not None:
         from .recognition_result import committed_result_reference, cue_identity, digest_payload
         reference = committed_result_reference(existing_job_project, project_path)

@@ -18,10 +18,15 @@ import uuid
 MAX_PROJECTS = 2000
 MAX_ENTRIES = 20000
 MAX_DEPTH = 12
-MAX_JSON_BYTES = 16 * 1024 * 1024
-MAX_TOTAL_JSON_BYTES = 64 * 1024 * 1024
+# Every saved project (autosaves included) is read in full before a media
+# cache may be removed. 2026-10-11: a real library had 383 project files /
+# 231 MB, so the former 64 MB total (16 MB per file, 10 s) always failed
+# closed and the storage page could never clean any media cache. The check
+# runs on the storage worker and stays cancellable.
+MAX_JSON_BYTES = 128 * 1024 * 1024
+MAX_TOTAL_JSON_BYTES = 2 * 1024**3
 MAX_HASH_BYTES = 32 * 1024**3
-SCAN_SECONDS = 10
+SCAN_SECONDS = 90
 VERIFY_SECONDS = 60
 
 

@@ -226,6 +226,9 @@ class StudioReadiness(QObject):
         self.generation += 1
         epoch = self.generation
         self.path, self.active, self.ready = path, True, False
+        heap = getattr(page, '_project_heap', None)
+        if heap is not None:
+            heap.load_started()
         self.requested_file_identity = file_identity
         self.started = self.last_tick = time.perf_counter()
         self.profile = {'kind': 'warm' if getattr(self, '_ever_ready', False) else 'cold',
@@ -412,6 +415,9 @@ class StudioReadiness(QObject):
             self.profile['open_phases'] = dict(getattr(page, 'last_open_profile', {}))
             self.overlay.hide()
             page._studio_trace('STUDIO_READY_GATE', **self.profile)
+            heap = getattr(page, '_project_heap', None)
+            if heap is not None:
+                heap.load_finished()
             self._finish()
             # Load the Chinese word/pinyin dictionaries in the background now,
             # so the proofreading page never waits on their one-time load.
@@ -423,6 +429,9 @@ class StudioReadiness(QObject):
     def fail(self, stage, error):
         self.page.timeline.setUpdatesEnabled(True)
         self.active, self.ready = False, False
+        heap = getattr(self.page, '_project_heap', None)
+        if heap is not None:
+            heap.load_finished(settle=False)
         self.timer.stop()
         self.steps = None
         self.profile['error'] = {'stage': stage, 'message': error}
@@ -445,6 +454,9 @@ class StudioReadiness(QObject):
 
     def cancel(self):
         self.page.timeline.setUpdatesEnabled(True)
+        heap = getattr(self.page, '_project_heap', None)
+        if heap is not None:
+            heap.load_finished(settle=False)
         self.generation += 1
         self.active = self.ready = False
         self.steps = None

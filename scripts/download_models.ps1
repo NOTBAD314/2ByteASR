@@ -21,11 +21,16 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $LockPath = Join-Path $ProjectRoot "dependencies.lock.json"
 if ($env:2BYTEASR_MODEL_ROOT) {
     $ModelsRoot = $env:2BYTEASR_MODEL_ROOT
-    New-Item -ItemType Directory -Path $ModelsRoot -Force | Out-Null
 } else {
     $ModelsRoot = Join-Path $ProjectRoot "models"
 }
 $ManifestPath = Join-Path $ModelsRoot ".twobyteasr-models.json"
+if ($env:TWOBYTEASR_TEST_ROOT) {
+    $isolatedPrefix=[IO.Path]::GetFullPath($env:TWOBYTEASR_TEST_ROOT).TrimEnd('\')+'\'
+    if (-not [IO.Path]::GetFullPath($ModelsRoot).StartsWith($isolatedPrefix,[StringComparison]::OrdinalIgnoreCase)) { throw '隔离模型目录越界，未开始下载。' }
+    Write-Host ('[2BYTEASR_ISOLATION] '+(@{pid=$PID;models=$ModelsRoot;root=$env:TWOBYTEASR_TEST_ROOT} | ConvertTo-Json -Compress))
+}
+New-Item -ItemType Directory -Path $ModelsRoot -Force | Out-Null
 
 # ModelScope（魔搭）镜像（可选）：设置 2BYTEASR_MODELSCOPE_ORG=你的组织名后，
 # 直链兜底会优先从魔搭拉取（国内带宽通常优于 hf-mirror→AWS 链）。
@@ -45,8 +50,8 @@ if ($Source -eq "HF_MIRROR") {
     $env:HF_ENDPOINT = "https://hf-mirror.com"
 } elseif ($Source -eq "HF_OFFICIAL") {
     $env:HF_ENDPOINT = "https://huggingface.co"
-} elseif ($Source -eq "AUTO" -and -not $env:HF_ENDPOINT) {
-    $env:HF_ENDPOINT = "https://hf-mirror.com"
+} elseif ($Source -eq "AUTO") {
+    $env:HF_ENDPOINT = "https://huggingface.co"
 }
 Write-Host "[网络] 下载源：$Source" -ForegroundColor Cyan
 Write-Host '[2BYTEASR_PHASE] {"phase":"preparing"}'
@@ -71,6 +76,7 @@ function Resolve-ProjectPath {
 function Test-ModelFiles {
     param($Spec, [switch]$VerifyHashes)
     $root = Resolve-ProjectPath $Spec.path
+    if (Test-Path -LiteralPath (Join-Path $root '.2byteasr-install-pending.json')) { return $false }
     foreach ($relative in $Spec.required_files) {
         $requiredPath = Join-Path $root ($relative -replace '/', '\')
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -237,7 +243,7 @@ foreach ($property in $Lock.models.PSObject.Properties) {
 $allowedOnlyNames = @(
     "moss", "firered_vad", "firered_aed", "qwen_asr", "speaker_embedding",
     "qwen_aligner", "whisper_turbo", "sensevoice", "paraformer", "funasr_nano",
-    "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b"
+    "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b", "ja_ctc_aligner"
 )
 $onlyNames = @(
     $Only -split ',' |
@@ -419,7 +425,7 @@ foreach ($entry in $modelSpecs) {
         }
     } elseif ($Source -in @("AUTO", "HF_MIRROR", "HF_OFFICIAL")) {
         if ($Source -eq "AUTO") {
-            Write-Host "[自动] 按顺序尝试 ModelScope（若 lock 已声明）→ HF 镜像 → HF 官方；每个源失败后最多再试 1 次。" -ForegroundColor Cyan
+            Write-Host "[自动] 按顺序尝试已核对版本的 ModelScope → HF 官方；每个文件重试有上限。" -ForegroundColor Cyan
         } else {
             Write-Host "[指定源] 只使用 $Source，失败不会静默改走其他源。" -ForegroundColor Cyan
         }

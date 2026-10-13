@@ -19,7 +19,13 @@ import json
 import sys
 import traceback
 
-from twobyteasr.startup_trace import mark as _startup_mark
+if len(sys.argv) >= 2 and sys.argv[1] == '--mcp-stdio':
+    # The MCP stdio server starts once per client session: no startup trace
+    # line (importing startup_trace appends one) and no other log writes.
+    def _startup_mark(*_args, **_details):
+        return None
+else:
+    from twobyteasr.startup_trace import mark as _startup_mark
 
 
 
@@ -154,6 +160,11 @@ def _write_setup_marker() -> None:
 
 
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == '--mcp-stdio':
+        # Local MCP server for desktop AI clients: protocol on stdout only, no
+        # GUI, no logs or data writes; it forwards to the running window.
+        from twobyteasr.mcp_stdio import main as mcp_stdio_main
+        return mcp_stdio_main(sys.argv[2:])
     if len(sys.argv) == 3 and sys.argv[1] == '--data-roots-inspect':
         from twobyteasr.data_roots_inspect import main as inspect_data_roots
         return inspect_data_roots(sys.argv[2])
@@ -271,10 +282,15 @@ def main() -> int:
         import moss_firered_pipeline  # type: ignore
         import subtitle_core  # type: ignore
         subtitle_core.FIRERED_MODEL_DIR = subtitle_core._resolve_firered_model_dir()
-        from twobyteasr.ui import run_desktop_app  # type: ignore
+        from twobyteasr.ui import after_startup_idle, run_desktop_app  # type: ignore
 
-        for line in runtime_fingerprint_lines(build_identity):
-            _append_startup_log(line)
+        def write_runtime_fingerprint():
+            for line in runtime_fingerprint_lines(build_identity):
+                _append_startup_log(line)
+
+        # The fingerprint imports the Studio module tree to read its feature
+        # symbols (~0.4 s); it is written once the window is interactive.
+        after_startup_idle(write_runtime_fingerprint)
 
         _startup_mark("IMPORTS_DONE")
 

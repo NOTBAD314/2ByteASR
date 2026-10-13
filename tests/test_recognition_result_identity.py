@@ -350,3 +350,36 @@ def test_reopening_still_rejects_another_project_job_or_media(tmp_path, owned_li
         project, requested = load_project(other["project"]), other["project"]
     with pytest.raises(RecognitionResultMismatch):
         verify_result_reference(working_reference(json.dumps(ref)), project=project, project_path=requested)
+
+
+def test_pending_studio_reload_retry_accepts_later_proofreading(tmp_path, owned_library):
+    """A Studio-run recognition whose in-app reload failed is retried on the
+    next Studio entry. By then the result page may have proofread the project;
+    the retry must check identity like any reopen, not the delivered digest."""
+    from twobyteasr.recognition_result import WORKING_SCOPE
+    from twobyteasr.studio_commands import BatchReplaceTextCommand
+    from twobyteasr.ui import MainWindow
+    result = create(media(tmp_path), "pending-job", "原来的字幕")
+    path = Path(result["project"])
+    project = load_project(path)
+    BatchReplaceTextCommand(project, {project.cues[0].id: "校对后的字幕"}, needle="校对").redo()
+    save_project(project, path)
+    calls = []
+    studio = SimpleNamespace(_pending_recognition_reload=str(path),
+                             _pending_recognition_result_ref=result["result_ref_json"],
+                             _studio_trace=lambda *a, **k: None)
+    window = SimpleNamespace(built_page=lambda name: studio,
+                             open_studio_project=lambda *a, **k: calls.append((a, k)))
+    MainWindow._retry_pending_recognition_reload(window)
+    assert studio._pending_recognition_reload == ""
+    (args, kwargs), = calls
+    assert args == (str(path),) and kwargs["source"] == "studio_recognition"
+    retry_ref = kwargs["expected_result_ref"]
+    assert json.loads(retry_ref)["scope"] == WORKING_SCOPE
+    assert verify_result_reference(retry_ref, project_path=path).cues[0].text == "校对后的字幕"
+    # Identity is still enforced: another project at that path is refused.
+    other = load_project(path)
+    other.project_id = "someone-else"
+    save_project(other, path)
+    with pytest.raises((RecognitionResultMismatch, ValueError)):
+        verify_result_reference(retry_ref, project_path=path)

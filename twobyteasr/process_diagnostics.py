@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 _queue = queue.Queue(maxsize=256)
+_YOUNG_CHILD_S = 15.0
+_SETTLED_POLL_S = 5.0
 _lock = threading.Lock()
 _thread = None
 
@@ -38,6 +40,12 @@ def _write(path, payload):
     except OSError:pass
 
 
+def _poll_due(owned, now, last):
+    """0.5 s cadence while a child is new, then every _SETTLED_POLL_S."""
+    young=any(now-entry[-1]<_YOUNG_CHILD_S for entry in owned.values())
+    return now-last>=(.5 if young else _SETTLED_POLL_S)
+
+
 def _run():
     from .processes import _window_snapshot
     try:
@@ -59,12 +67,20 @@ def _run():
             if payload['phase']=='start' and payload.get('child_pid') and psutil:
                 try:
                     process=psutil.Process(payload['child_pid'])
-                    if process.ppid()==os.getpid():owned[process.pid]=(process,path,payload)
+                    if process.ppid()==os.getpid():owned[process.pid]=(process,path,payload,time.monotonic())
                 except psutil.Error:pass
         except queue.Empty:pass
-        if not psutil or time.monotonic()-last<.5:continue
-        last=time.monotonic()
-        for pid,(process,path,payload) in list(owned.items()):
+        if not psutil or not owned:continue
+        # Windows (consoles, browsers, firewall prompts) appear when a child
+        # starts. Watch new children every 0.5 s; long-lived ones (mpv, the
+        # media probe, renderers) only every 5 s. Polling them all at 2 Hz
+        # cost ~20% of a core for hours. Keep one filtered EnumWindows per
+        # child: sharing a single full snapshot instead measured 3-5 GUI
+        # heartbeat gaps >=100 ms per 5 s idle (1 this way), cause not found.
+        now=time.monotonic()
+        if not _poll_due(owned,now,last):continue
+        last=now
+        for pid,(process,path,payload,_started) in list(owned.items()):
             try:
                 if not process.is_running():owned.pop(pid,None);continue
                 family=[process,*process.children(recursive=True)]

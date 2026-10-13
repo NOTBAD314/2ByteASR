@@ -104,6 +104,26 @@ TWO_CHARACTER_VISUAL_PAUSE = frozenset(
 )
 
 
+# Japanese openers that belong to the clause after them (いや|もはやこれは).
+JAPANESE_TWO_CHARACTER_ATTACH_RIGHT = frozenset(
+    ("いや", "ねえ", "ねぇ", "まあ", "でも", "ああ", "あの", "ほら", "おい", "さあ", "じゃ", "えっ", "うん", "だが")
+)
+
+
+def _japanese_opens_next(previous, current, following, short_text):
+    """Japanese: a two-character opener joins the next clause, not the finished one."""
+    from twobyteasr.language_rules import is_japanese, japanese_strong_breaks
+    if not is_japanese() or following is None:
+        return False
+    if short_text in JAPANESE_TWO_CHARACTER_ATTACH_RIGHT:
+        return True
+    if previous is None:
+        return False
+    left = len(content_exact(previous.text))
+    strong = japanese_strong_breaks(previous.text + current.text + following.text)
+    return left in strong and left + 2 not in strong
+
+
 def merge_isolated_two_character_cues(cues):
     """把孤立两字条安全并入紧邻的同主播字幕，不跨插话或长停顿。"""
     if len(cues) < 2:
@@ -135,13 +155,15 @@ def merge_isolated_two_character_cues(cues):
 
         previous = rows[index - 1] if index > 0 else None
         following = rows[index + 1] if index + 1 < len(rows) else None
+        opens_next = short_text in TWO_CHARACTER_ATTACH_RIGHT or _japanese_opens_next(
+            previous, current, following, short_text)
         can_attach_left = can_merge(previous, current)
         can_attach_right = can_merge(
             current,
             following,
             max_gap=(
                 HARD_GAP_SECONDS
-                if short_text in TWO_CHARACTER_ATTACH_RIGHT
+                if opens_next
                 else TWO_CHARACTER_MERGE_MAX_GAP_SECONDS
             ),
         )
@@ -149,7 +171,7 @@ def merge_isolated_two_character_cues(cues):
         # 连词、回答和称呼依附后文；普通两字名词/人名默认收回上一句。
         # 这里只看全局紧邻项，因此不会越过另一位主播的插话。
         attach_right = can_attach_right and (
-            short_text in TWO_CHARACTER_ATTACH_RIGHT or not can_attach_left
+            opens_next or not can_attach_left
         )
         if attach_right:
             separator = " " if short_text in TWO_CHARACTER_VISUAL_PAUSE else ""

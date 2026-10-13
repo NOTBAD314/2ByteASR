@@ -155,6 +155,11 @@ def attach_timeline_result(result, snapshot):
         [sid for sid in order if sid in speaker_ids] + speaker_ids))
     captured.studio_state['subtitle_track_visibility'] = copy.deepcopy(
         result.studio_state.get('subtitle_track_visibility', {}))
+    # Speaker roles belong to the new result's speakers, never the old ones.
+    if result.studio_state.get('speaker_roles'):
+        captured.studio_state['speaker_roles'] = copy.deepcopy(result.studio_state['speaker_roles'])
+    else:
+        captured.studio_state.pop('speaker_roles', None)
     if captured.studio_state.get('last_selected_cue') not in {c.id for c in result.cues}:
         captured.studio_state.pop('last_selected_cue', None)
     captured.generation_metadata.pop('speaker_recovery_error', None)

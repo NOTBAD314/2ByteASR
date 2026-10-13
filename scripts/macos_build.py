@@ -148,11 +148,16 @@ def verify_packaged_media(app: Path, required_filters: list[str], environment: d
                 environment_path=environment['PATH'])
 
 
+def product_version() -> str:
+    """The product version the .app, archive and DMG are named after (2byteasr_version.json)."""
+    return json.loads((ROOT/"2byteasr_version.json").read_text(encoding="utf8"))["version"]
+
+
 def archive_and_relocate(app: Path, output: Path) -> tuple[Path, Path, dict]:
     inventory=bundle_inventory(app)
     (output/"bundle-inventory.json").write_text(json.dumps(inventory,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     run(["/usr/bin/codesign","--verify","--deep","--strict",app],log=output/"signing.log",timeout=90)
-    zipped=output/"2ByteASR-0.5.0-macos-arm64-experimental.app.zip"
+    zipped=output/f"2ByteASR-{product_version()}-macos-arm64-experimental.app.zip"
     run(["/usr/bin/ditto","-c","-k","--sequesterRsrc","--keepParent",app,zipped],log=output/"archive.log")
     # Expand the actual deliverable into a different, Unicode location before
     # launching. This checks the archive users will receive, not a copy of the
@@ -206,14 +211,14 @@ def main(argv=None):
     dirty=bool(subprocess.check_output(["git","-C",str(ROOT),"status","--porcelain","--untracked-files=all"],text=True).strip())
     if dirty and not args.allow_dirty: raise SystemExit("Checkout is dirty; commit or use explicit --allow-dirty and inspect the fixed snapshot")
     version=json.loads((ROOT/"2byteasr_version.json").read_text(encoding="utf8"))["version"]
-    if version!="0.5.0": raise SystemExit("This experiment is paired with product 0.5.0")
+    if not re.fullmatch(r"\d+\.\d+\.\d+",version): raise SystemExit("2byteasr_version.json must name a release version")
     output=args.output.expanduser().resolve()
     if output.exists(): raise SystemExit("Output already exists; choose a new build directory")
     output.mkdir(parents=True)
     source=output/"source"
     inputs=copy_snapshot(ROOT,source)
     from twobyteasr.build_identity import create_build_metadata
-    build_id="0.5.0-macos-arm64-"+args.source_sha[:12]
+    build_id=version+"-macos-arm64-"+args.source_sha[:12]
     identity=create_build_metadata(ROOT,channel=build_id)
     metadata=output/"2byteasr_build.json"
     metadata.write_text(json.dumps(identity,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
@@ -303,7 +308,7 @@ def main(argv=None):
     receipt["native_validation"].update(model_inference=False,embedded_video=False,studio_full_flow=False,physical_ime=False,human_listening=False,mps_model=False)
     receipt_path.write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+"\n",encoding="utf8")
     (output/"SHA256SUMS.txt").write_text(sha256(zipped)+"  "+zipped.name+"\n",encoding="utf8")
-    artifact={"app_version":"0.5.0","build_id":build_id,"target":"darwin-arm64","source_identity":identity,
+    artifact={"app_version":version,"build_id":build_id,"target":"darwin-arm64","source_identity":identity,
               "artifact":{"file":zipped.name,"bytes":zipped.stat().st_size,"sha256":sha256(zipped)},
               "developer_id_signed":False,"notarized":False,"platform_materials_complete":False,
               "validation":receipt["native_validation"]}

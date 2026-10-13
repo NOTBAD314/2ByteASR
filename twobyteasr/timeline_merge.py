@@ -60,6 +60,7 @@ def _ghost_rect(timeline, state) -> QRectF | None:
     track = timeline._track_layout()[0].get(first.speaker_id)
     if track is None:
         return None
+    track = timeline._cue_band(first, track)
     start, end = state.span
     left = max(timeline.TRACK_HEADER_WIDTH, timeline._time_to_x(start))
     right = min(timeline._content_right(), timeline._time_to_x(end))
