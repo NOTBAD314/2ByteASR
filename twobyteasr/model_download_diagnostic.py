@@ -90,14 +90,36 @@ def bounded_probe(client, url, filename, *, limit=PROBE_BYTES, metadata=False):
     return result
 
 
-def bootstrap_probes(lock):
-    """The common pre-weight chain uses curl/uv; report that distinction."""
-    return [
+def bootstrap_probes(lock, root=None):
+    """The common pre-weight chain uses curl/uv; report that distinction.
+
+    Official sources first, then the first domestic fallback of each kind that
+    the installer tries next (scripts/runtime_sources.json)."""
+    sources = {}
+    if root is not None and (Path(root)/'scripts/runtime_sources.json').is_file():
+        sources = json.loads((Path(root)/'scripts/runtime_sources.json').read_text('utf-8'))
+    archive = sources.get('python_probe_archive', '')
+    probes = [
         ('uv 工具', lock['managed_bootstrap']['uv_url'], 'uv-windows.zip', False),
-        ('Python 发布元数据', 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest', 'python-release.json', True),
+        *([('Python 安装包', sources['python_official']+'/'+archive, 'python.tar.gz', False)]
+          if archive and sources.get('python_official') else
+          [('Python 发布元数据', 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest', 'python-release.json', True)]),
         ('PyTorch CUDA 包索引', 'https://download.pytorch.org/whl/cu128/torch/', 'torch-index', True),
         ('PyPI 包索引', 'https://pypi.org/simple/requests/', 'requests-index', True),
     ]
+    domestic_uv = next((item for item in sources.get('uv', {}).get('fallbacks', []) if 'PyPI 镜像' in item['label']), None)
+    if domestic_uv:
+        probes.append((f"uv 工具（{domestic_uv['label']}）", domestic_uv['url'], 'uv.whl', False))
+    if archive and sources.get('python_mirrors'):
+        mirror = sources['python_mirrors'][0]
+        probes.append((f"Python 安装包（{mirror['label']}）", mirror['url']+'/'+archive, 'python.tar.gz', False))
+    if sources.get('pytorch_mirrors'):
+        mirror = sources['pytorch_mirrors'][0]
+        probes.append((f"PyTorch 包索引（{mirror['label']}）", mirror['url'].format(tag='cu128')+'/torch/', 'torch-index', True))
+    if sources.get('pypi_mirrors'):
+        mirror = sources['pypi_mirrors'][0]
+        probes.append((f"PyPI 包索引（{mirror['label']}）", mirror['url']+'/requests/', 'requests-index', True))
+    return probes
 
 
 def check_downloads(root: Path, model_root: Path, keys, mode='AUTO', *, notify=None, cancel=None):
@@ -117,7 +139,7 @@ def check_downloads(root: Path, model_root: Path, keys, mode='AUTO', *, notify=N
         marker.unlink()
         result['disk']=dict(writable=True,free_bytes=shutil.disk_usage(model_root).free)
     except OSError as exc: result['disk']=dict(writable=False,category=category(exc),detail=redact(str(exc)))
-    for stage, url, filename, metadata in bootstrap_probes(lock):
+    for stage, url, filename, metadata in bootstrap_probes(lock, root):
         if cancel and cancel.is_set(): result['cancelled']=True;break
         probe=bounded_probe(client,url,filename,metadata=metadata)
         probe.update(stage=stage,scope='requests reachability only; actual runtime installer uses curl/uv with system certificates')

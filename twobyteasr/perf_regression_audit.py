@@ -204,8 +204,11 @@ def start(window, out: Path):
                         pass
                 memory = process.memory_info()
                 row = {"label": label, "t": round(time.perf_counter() - started, 2),
-                       "rss_mb": round(memory.rss / 1e6, 1), "private_mb": round(memory.private / 1e6, 1),
-                       "threads": process.num_threads(), "handles": process.num_handles(),
+                       "rss_mb": round(memory.rss / 1e6, 1),
+                       # private / handles exist only on Windows; macOS reports open descriptors (2026-10-14).
+                       "private_mb": round(getattr(memory, "private", memory.rss) / 1e6, 1),
+                       "threads": process.num_threads(),
+                       "handles": process.num_handles() if hasattr(process, "num_handles") else process.num_fds(),
                        "cpu_s": round(cpu.user + cpu.system, 3), **_gui_objects(),
                        "children": children, "caches": self.cache_stats()}
             except Exception as exc:

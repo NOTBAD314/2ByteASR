@@ -103,15 +103,21 @@ def _project_for_cues(project: SubtitleProject, cues: Iterable[StudioCue]) -> Su
     return subset
 
 
-def _export_view_cues(project: SubtitleProject):
+def _export_view_cues(project: SubtitleProject, *, styled: bool = True):
     """导出口径=当前活动序列的 timeline 域投影（2026-09-19 P0）。
 
     剪辑模式导出的是这段剪辑（序列时间从 00:00 起）；完整录播导出全集。
     project.cues 永远保持全集+源时间，不因导出被改写。
+    2026-10-13：文字按工程的标点选择（保留原文 / 添加标点 / 不加标点）输出；
+    ``styled=False`` 给出原稿（JSON 的 original_text 与字级时间用它）。
     """
     from .studio_edit_sequence import projected_cues
 
-    return projected_cues(project, domain="timeline")
+    view = projected_cues(project, domain="timeline")
+    if not styled:
+        return view
+    from .punctuation_style import style_cues
+    return style_cues(project, view)
 
 
 def _lookup_translation(view: dict, cue_id: str) -> dict | None:
@@ -217,6 +223,7 @@ def _safe_word_timing(project: SubtitleProject, cue: StudioCue, cues_by_id: dict
 
 def _compile_json(project: SubtitleProject) -> str:
     from .language_rules import project_language
+    from .punctuation_style import MODE_ORIGINAL, project_mode, protected_terms_of, style_text, style_translation
     from .subtitle_translation import container_target, translation_view
 
     speakers = {speaker.id: speaker.name for speaker in project.speakers}
@@ -224,31 +231,49 @@ def _compile_json(project: SubtitleProject) -> str:
     translations = translation_view(project)
     untranslated = {"text": "", "status": "untranslated", "origin": "", "target": target}
     cues_by_id = {item.id: item for item in project.cues}
+    mode = project_mode(project)
+    language = project_language(project) or ""
+    terms = protected_terms_of(project)
     rows = []
-    for cue in sorted(_export_view_cues(project), key=lambda item: (item.start_ms, item.end_ms, item.id)):
+    for cue in sorted(_export_view_cues(project, styled=False), key=lambda item: (item.start_ms, item.end_ms, item.id)):
         info = _lookup_translation(translations, cue.id) or untranslated
         speaker_name = speakers.get(cue.speaker_id, cue.speaker_id)
+        styled = style_text(cue.text, mode, language=language, protected_terms=terms)
+        word_timing = _safe_word_timing(project, cue, cues_by_id)
+        if mode != MODE_ORIGINAL and styled.changed:
+            # Word pieces index the manuscript (original_text); give the
+            # positions in the exported text too.
+            for piece in word_timing.get("pieces") or ():
+                start, end = piece.get("char_start"), piece.get("char_end")
+                if isinstance(start, int) and isinstance(end, int) and 0 <= start < end <= len(styled.index_map):
+                    mapped = [value for value in styled.index_map[start:end] if value is not None]
+                    if mapped:
+                        piece["text_char_start"], piece["text_char_end"] = mapped[0], mapped[-1] + 1
+        translation = {key: info.get(key, "") for key in ("text", "status", "origin", "target")}
+        translation["text"] = style_translation(translation["text"], mode)
         rows.append({
             "id": cue.id,
             "start_ms": cue.start_ms,
             "end_ms": cue.end_ms,
-            "text": cue.text,
+            "text": styled.text,
             "speaker_id": cue.speaker_id,
             "speaker_name": speaker_name,
             "style_id": cue.style_id,
             # Bilingual additions (2026-10-12); the keys above are unchanged.
+            # original_text is the manuscript; text follows the punctuation choice.
             "original_text": cue.text,
             "duration_ms": cue.end_ms - cue.start_ms,
             "speaker": {"id": cue.speaker_id, "name": speaker_name},
-            "translation": {key: info.get(key, "") for key in ("text", "status", "origin", "target")},
-            "word_timing": _safe_word_timing(project, cue, cues_by_id),
+            "translation": translation,
+            "word_timing": word_timing,
         })
     payload = {
         "schema_version": 1,
         "kind": "2byteasr-subtitle-export",
         "project_id": project.project_id,
-        "original_language": project_language(project) or "",
+        "original_language": language,
         "translation_target": target,
+        "punctuation": mode,
         "cues": rows,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -572,6 +597,12 @@ def export_language_layers(
         raise ValueError("unsupported speaker export mode")
     resolved_target = normalize_target(target) if target else container_target(project)
     translations = translation_view(project, target=resolved_target if target else None)
+    from .punctuation_style import MODE_NONE, project_mode, style_translation
+    if project_mode(project) == MODE_NONE and translations:
+        # 不加标点 applies to every layer; translations are copied, never rewritten.
+        translations = {key: (dict(value, text=style_translation(value.get("text", ""), MODE_NONE))
+                              if isinstance(value, dict) else value)
+                        for key, value in translations.items()}
     original_suffix = original_suffix or project_language(project) or "ja"
     translation_suffix = _translation_suffix(resolved_target)
     base = output_basename(stem or "subtitles")

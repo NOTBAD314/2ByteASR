@@ -16,6 +16,9 @@ _ALIASES = {
     'whisper': 'whisper-turbo', 'sensevoice': 'sensevoice',
     'funasr_sensevoice': 'sensevoice', 'funasr_nano': 'funasr-nano',
     'qwen_aligner': 'qwen_aligner', 'qwen3-aligner': 'qwen_aligner', 'qwen3_aligner': 'qwen_aligner',
+    'mlx_qwen3_asr': 'mlx_qwen3_asr', 'mlx-qwen3-asr': 'mlx_qwen3_asr', 'mlx-asr': 'mlx_qwen3_asr',
+    'mlx_qwen3_asr_1_7b': 'mlx_qwen3_asr_1_7b',
+    'mlx_qwen_aligner': 'mlx_qwen_aligner', 'mlx-align': 'mlx_qwen_aligner',
 }
 
 

@@ -27,7 +27,8 @@ from pathlib import Path
 
 from twobyteasr.runtime_paths import user_data_root
 
-RUNTIME_ROLES = ("main", "moss", "firered_llm", "glm_asr", "canary")
+# "mlx": Apple Silicon MLX speech runtime without PyTorch (2026-10-13).
+RUNTIME_ROLES = ("main", "moss", "firered_llm", "glm_asr", "canary", "mlx")
 
 _ROLE_VENV_NAMES = {
     "canary": ".venv-canary",
@@ -35,6 +36,7 @@ _ROLE_VENV_NAMES = {
     "main": ".venv-main",
     "moss": ".venv-moss",
     "firered_llm": ".venv-firered-llm",
+    "mlx": ".venv-mlx",
 }
 
 _ROLE_DIRS = {
@@ -49,6 +51,7 @@ _ROLE_ENV_OVERRIDES = {
     "main": ("TWOBYTEASR_MAIN_PYTHON", "TWOBYTEASR_MAIN_RUNTIME_PYTHON"),
     "moss": ("TWOBYTEASR_MOSS_PYTHON", "TWOBYTEASR_MOSS_RUNTIME_PYTHON"),
     "firered_llm": ("TWOBYTEASR_FIRERED_LLM_PYTHON",),
+    "mlx": ("TWOBYTEASR_MLX_PYTHON",),
 }
 
 REGISTRY_SCHEMA_VERSION = 1

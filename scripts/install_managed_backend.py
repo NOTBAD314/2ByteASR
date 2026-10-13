@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -17,9 +18,20 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
 
+# Fallback sources and the official hashes that make them safe to use.
+RUNTIME_SOURCES = Path('scripts/runtime_sources.json')
+PACKAGE_HASHES = Path('scripts/runtime_package_hashes.json')
+
 
 class RemovedModelError(ValueError):
     """A retired key must be rejected before runtime/cache preparation."""
+
+
+class SourcesExhausted(RuntimeError):
+    """Official and fallback sources all failed (exit code SOURCES_EXHAUSTED)."""
+
+
+SOURCES_EXHAUSTED = 75
 
 
 def save(path, value):
@@ -27,6 +39,67 @@ def save(path, value):
     pending = path.with_suffix(path.suffix + '.pending')
     pending.write_text(json.dumps(value, ensure_ascii=False, indent=2), 'utf8')
     os.replace(pending, path)
+
+
+def role_python(role):
+    return '3.12.13' if role in {'moss', 'glm_asr', 'canary'} else '3.10.19'
+
+
+def planned_roles(requested, previous_main_models=()):
+    main_models = (set(requested) - {'moss', 'firered_llm', 'omni_asr_llm_7b'}) | set(previous_main_models)
+    roles = [('main', main_models)]
+    if 'moss' in requested: roles.append(('moss', {'moss'}))
+    if 'firered_llm' in requested: roles.append(('firered_llm', {'firered_llm'}))
+    if 'glm_asr_nano' in requested: roles.append(('glm_asr', {'glm_asr_nano'}))
+    if 'canary_qwen' in requested: roles.append(('canary', {'canary_qwen'}))
+    return roles
+
+
+def role_packages(contract, role, models):
+    env_contract = contract['environments'][role]
+    packages = dict(env_contract['packages']) if models else {}
+    packages['requests'] = '2.33.0'
+    if models & {'sensevoice', 'paraformer', 'funasr_nano'}: packages['funasr'] = '1.4.1'
+    if models & {'qwen_asr', 'qwen_aligner'}: packages['qwen-asr'] = '0.0.6'
+    if models & {'speaker_embedding', 'moss'}: packages['speechbrain'] = '1.0.3'
+    if models & {'firered_vad', 'firered_aed'}: packages['sentencepiece'] = '0.2.2'
+    if role == 'moss':
+        packages.update(soundfile='0.14.0', kaldiio='2.18.1')
+    return packages
+
+
+def role_pins(contract, role, models, tag):
+    packages = role_packages(contract, role, models)
+    pins = [f'{name.split("[")[0]}=={value}' for name, value in packages.items()]
+    if models:
+        env_contract = contract['environments'][role]
+        pins.extend([f'torch=={env_contract["torch"]}+{tag}', f'torchaudio=={env_contract["torchaudio"]}+{tag}'])
+    return pins
+
+
+def normalize(name):
+    return re.sub(r'[-_.]+', '-', name).lower()
+
+
+def hashed_environment(root, role, version, tag, pins):
+    """Official-hash table for one environment, or None with the reason."""
+    path = root / PACKAGE_HASHES
+    if not path.is_file():
+        return None, '安装包缺少锁定哈希表'
+    entry = json.loads(path.read_text('utf8'))['environments'].get(f'{role}|{version}|{tag}')
+    if not entry:
+        return None, f'锁定哈希表没有 {role} / Python {version} / {tag}'
+    for pin in pins:
+        name, _, version_pin = pin.partition('==')
+        item = entry['packages'].get(normalize(name))
+        if not item or item['version'] != version_pin:
+            return None, f'锁定哈希表与当前依赖版本不一致（{pin}）'
+    return entry, ''
+
+
+def mirror_list(root, key):
+    path = root / RUNTIME_SOURCES
+    return list(json.loads(path.read_text('utf8')).get(key, [])) if path.is_file() else []
 
 
 def main():
@@ -63,6 +136,20 @@ def main():
         if code:raise subprocess.CalledProcessError(code,[str(x) for x in arguments])
     def uv(*arguments):
         run([args.uv, '--no-config', '--system-certs', *arguments])
+    def install_python(version):
+        install = ('python', 'install', version, '--install-dir', managed/'python', '--no-bin', '--no-registry')
+        try:
+            return uv(*install)
+        except subprocess.CalledProcessError as error:
+            failure = error
+        for mirror in mirror_list(root, 'python_mirrors'):
+            # uv checks every Python archive against the SHA-256 built into uv.
+            print(f"[运行库] 默认来源未能取得 Python {version}，改用 {mirror['label']}，由 uv 按内置 SHA-256 校验", flush=True)
+            try:
+                return uv(*install, '--mirror', mirror['url'])
+            except subprocess.CalledProcessError:
+                continue
+        raise SourcesExhausted(f'Python {version} 下载失败：默认来源与国内备用来源都没有成功') from failure
     wheel_manifest = root/'wheels/model_wheels.json'
     if wheel_manifest.is_file():
         for item in json.loads(wheel_manifest.read_text('utf8'))['wheels']:
@@ -81,9 +168,9 @@ def main():
                 major = int(result.stdout.strip().split('.')[0])
                 tag = contract['runtime']['cuda_wheel_modern' if major >= 12 else 'cuda_wheel']
     registry = load_registry()
-    main_models = requested - {'moss', 'firered_llm', 'omni_asr_llm_7b'}
     # The same pinned main contract underlies standard adapters. Union only the
     # app-managed selection, and create a new environment when the set changes.
+    previous_main_models = set()
     previous = registry.get('main', {}).get('python_executable', '')
     if previous and Path(previous).resolve().is_relative_to(managed.resolve()):
         receipt = Path(previous).parent.parent / 'managed-runtime.json'
@@ -91,23 +178,11 @@ def main():
             previous_identity=json.loads(receipt.read_text('utf8'))
             if previous_identity.get('role')!='main':
                 raise RuntimeError('主运行库注册角色不匹配，拒绝把其他模型环境当作 main 覆盖。')
-            main_models.update(previous_identity.get('models', []))
-    roles = [('main', main_models)]
-    if 'moss' in requested: roles.append(('moss', {'moss'}))
-    if 'firered_llm' in requested: roles.append(('firered_llm', {'firered_llm'}))
-    if 'glm_asr_nano' in requested: roles.append(('glm_asr', {'glm_asr_nano'}))
-    if 'canary_qwen' in requested: roles.append(('canary', {'canary_qwen'}))
-    for role, models in roles:
+            previous_main_models.update(previous_identity.get('models', []))
+    for role, models in planned_roles(requested, previous_main_models):
         env_contract = contract['environments'][role]
-        packages = dict(env_contract['packages']) if models else {}
-        packages['requests'] = '2.33.0'
-        if models & {'sensevoice', 'paraformer', 'funasr_nano'}: packages['funasr'] = '1.4.1'
-        if models & {'qwen_asr', 'qwen_aligner'}: packages['qwen-asr'] = '0.0.6'
-        if models & {'speaker_embedding', 'moss'}: packages['speechbrain'] = '1.0.3'
-        if models & {'firered_vad', 'firered_aed'}: packages['sentencepiece'] = '0.2.2'
-        if role == 'moss':
-            packages.update(soundfile='0.14.0', kaldiio='2.18.1')
-        version = '3.12.13' if role in {'moss','glm_asr','canary'} else '3.10.19'
+        packages = role_packages(contract, role, models)
+        version = role_python(role)
         identity = dict(role=role, models=sorted(models), packages=packages, python=version,
                         torch=env_contract['torch'] if models else None, tag=tag, schema=1)
         signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
@@ -120,36 +195,89 @@ def main():
             print('[运行库] 复用已验证环境 '+str(runtime), flush=True)
             continue
         base = managed / 'python' / f'cpython-{version}-windows-x86_64-none/python.exe'
-        uv('python', 'install', version, '--install-dir', managed/'python', '--no-bin', '--no-registry')
+        install_python(version)
         if not python.is_file():
             uv('venv', '--no-project', '--python', base, '--managed-python', '--no-python-downloads', runtime)
         constraints=runtime/'constraints.txt'
-        pins=[f'{name.split("[")[0]}=={value}' for name,value in packages.items()]
-        if models:pins.extend([f'torch=={env_contract["torch"]}+{tag}',f'torchaudio=={env_contract["torchaudio"]}+{tag}'])
+        pins=role_pins(contract, role, models, tag)
         constraints.write_text('\n'.join(pins)+'\n','utf8')
         # uv 0.11.7 splits --constraint values on spaces, even when the OS
         # receives one quoted argument. Commands run in managed, so this
         # role/signature-relative path preserves user/install paths verbatim.
         constraint_arg = str(constraints.relative_to(managed))
         links = ['--find-links', str(root/'wheels')] if (root/'wheels').is_dir() else []
+        torch_pins = pins[-2:] if models else []
+        package_pins = [f'{key}=={value}' for key, value in packages.items()]
+        source = root / contract['sources']['moss']['path'] if role == 'moss' else None
+        mirror = {'entry': None, 'used': False}
+        build = runtime/'mirror-build-constraints.txt'
+        def install_from_mirrors(failure):
+            # Once an official source fails, the whole environment (PyTorch,
+            # packages, MOSS dependencies) is installed from mirrors in one
+            # resolution. Every package of the closure is pinned with its
+            # official SHA-256, which uv verifies. Only wheel hashes are listed
+            # where a wheel exists, so a mirror cannot swap in a source build;
+            # the few source-only packages build with setuptools/wheel that
+            # are hash-pinned as well (--build-constraint).
+            entry, reason = hashed_environment(root, role, version, tag, pins)
+            if not entry:
+                raise RuntimeError(f'官方来源未成功，且不能安全改用镜像：{reason}') from failure
+            hashed = runtime/'mirror-constraints.txt'
+            hashed.write_text(''.join(
+                f"{name}=={item['version']} " + ' '.join('--hash=sha256:'+value for value in item['sha256']) + '\n'
+                for name, item in sorted(entry['packages'].items())), 'utf8')
+            build.write_text(mirror_build_constraints(root), 'utf8')
+            requirements = [*torch_pins, *package_pins, *pinned_names(entry, entry.get('extra_requirements', []))]
+            # The CPU build ships in wheels/; only CUDA builds need a PyTorch mirror.
+            cpython = 'cp' + version.replace('.', '')[:3]
+            bundled = links and all(any((root/'wheels').glob(f"{pin.replace('==', '-')}-{cpython}-*.whl")) for pin in torch_pins)
+            torch_mirrors = mirror_list(root, 'pytorch_mirrors') if torch_pins and not bundled else [None]
+            for pypi in mirror_list(root, 'pypi_mirrors'):
+                for torch_mirror in torch_mirrors or [None]:
+                    torch_links = []
+                    if torch_mirror:
+                        base_url = torch_mirror['url'].format(tag=tag).rstrip('/')
+                        torch_links = ['--find-links', base_url+'/torch/', '--find-links', base_url+'/torchaudio/']
+                    label = pypi['label'] + (' + ' + torch_mirror['label'] if torch_mirror else '')
+                    print(f'[运行库] 官方来源未成功，改用 {label}；每个包都按锁定 SHA-256 校验', flush=True)
+                    try:
+                        uv('pip', 'install', '--python', python, '--index-url', pypi['url'], *torch_links, *links,
+                           '--constraint', str(hashed.relative_to(managed)),
+                           '--build-constraint', str(build.relative_to(managed)), *requirements)
+                    except subprocess.CalledProcessError:
+                        continue
+                    mirror.update(entry=entry, used=True, index=pypi['url'], constraints=str(hashed.relative_to(managed)))
+                    return
+            raise SourcesExhausted('运行库下载失败：官方来源与国内镜像都没有成功') from failure
+        def official_or_mirror(official, requirements):
+            if mirror['used']:
+                return  # the mirror resolution already covered this step
+            try:
+                uv('pip', 'install', '--python', python, *official, *requirements)
+            except subprocess.CalledProcessError as error:
+                install_from_mirrors(error)
+        if source is not None and not (source/'pyproject.toml').is_file():
+            raise RuntimeError('安装包缺少已锁定的 MOSS 源码，请修复安装包；不需要系统 Git')
         if models:
-            uv('pip', 'install', '--python', python, '--index-url', f'https://download.pytorch.org/whl/{tag}',
-               *links, f"torch=={env_contract['torch']}+{tag}", f"torchaudio=={env_contract['torchaudio']}+{tag}")
-        uv('pip', 'install', '--python', python, '--index-url', 'https://pypi.org/simple', *links,
-           '--constraint',constraint_arg,
-           *[f'{key}=={value}' for key, value in packages.items()])
-        if role == 'moss':
-            source = root / contract['sources']['moss']['path']
-            if not (source/'pyproject.toml').is_file():
-                raise RuntimeError('安装包缺少已锁定的 MOSS 源码，请修复安装包；不需要系统 Git')
-            uv('pip', 'install', '--python', python, *links, '--constraint',constraint_arg,str(source)+'[torch-runtime]')
+            official_or_mirror(['--index-url', f'https://download.pytorch.org/whl/{tag}', *links], torch_pins)
+        official_or_mirror(['--index-url', 'https://pypi.org/simple', *links, '--constraint', constraint_arg], package_pins)
+        if source is not None:
+            moss_target = str(source)+'[torch-runtime]'
+            official_or_mirror([*links, '--constraint', constraint_arg], [moss_target])
+            if mirror['used']:
+                # Its dependencies came with the mirror resolution above; the
+                # locked source is built with the hash-pinned build backend.
+                uv('pip', 'install', '--python', python, '--index-url', mirror['index'], *links,
+                   '--constraint', mirror['constraints'], '--build-constraint', str(build.relative_to(managed)), moss_target)
         if models & {'firered_vad','firered_aed','firered_llm'}:
-            source = root / contract['sources']['firered']['path']
-            if not (source/'fireredasr2s/__init__.py').is_file():
+            firered = root / contract['sources']['firered']['path']
+            if not (firered/'fireredasr2s/__init__.py').is_file():
                 raise RuntimeError('安装包缺少已锁定 FireRed 源码；不需要系统 Git')
         uv('pip', 'check', '--python', python)
         frozen = subprocess.check_output([str(args.uv),'--no-config','pip','freeze','--python',str(python)],
                                          creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        if mirror['used']:
+            verify_mirror_install(frozen.decode('utf8', 'replace'), mirror['entry'])
         (runtime/'installed.lock.txt').write_bytes(frozen)
         save(receipt, dict(identity, prepared_at=time.time()))
         from twobyteasr.model_runtime_cleanup import write_runtime_inventory
@@ -159,12 +287,49 @@ def main():
     mark_runtime_cache_ready()
 
 
+def pinned_names(entry, requirements):
+    """Pin each requirement (e.g. MOSS's "librosa>=0.11.0") to its locked version."""
+    pins = []
+    for requirement in requirements:
+        name = normalize(re.match(r'\s*([A-Za-z0-9][A-Za-z0-9._-]*)', requirement).group(1))
+        item = entry['packages'].get(name)
+        if not item:
+            raise RuntimeError(f'锁定哈希表缺少 {name}')
+        pins.append(f"{name}=={item['version']}")
+    return pins
+
+
+def mirror_build_constraints(root):
+    """Source builds on the mirror path use the locked setuptools/wheel only."""
+    backend = json.loads((root/PACKAGE_HASHES).read_text('utf8'))['build_backend']
+    return ''.join(f"{name}=={item['version']} " + ' '.join('--hash=sha256:'+value for value in item['sha256']) + '\n'
+                   for name, item in sorted(backend.items()))
+
+
+def verify_mirror_install(frozen, entry):
+    """Everything installed from a mirror must be a locked, hash-checked file."""
+    unexpected = []
+    for line in frozen.splitlines():
+        name, separator, version = line.strip().partition('==')
+        if not separator:
+            continue  # the local MOSS source, recorded as "name @ file://..."
+        item = entry['packages'].get(normalize(name))
+        if not item or item['version'] != version:
+            unexpected.append(line.strip())
+    if unexpected:
+        raise RuntimeError('镜像安装出现锁定哈希表之外的包：' + '、'.join(unexpected))
+
+
 if __name__ == '__main__':
     try:
         main()
     except RemovedModelError:
         raise
-    except BaseException:
+    except BaseException as error:
         from twobyteasr.runtime_download_cache import mark_runtime_cache_state
         mark_runtime_cache_state('paused')
+        if isinstance(error, SourcesExhausted):
+            # setup_managed_backend.ps1 reports this exit code as a network failure.
+            print(f'[运行库] {error}', file=sys.stderr, flush=True)
+            sys.exit(SOURCES_EXHAUSTED)
         raise

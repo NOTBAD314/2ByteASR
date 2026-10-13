@@ -482,15 +482,24 @@ def detect_cuda_runtime(probe: dict | None = None) -> CudaRuntimeStatus:
     )
 
 
-def require_cuda_runtime() -> CudaRuntimeStatus:
+NO_CUDA_ALTERNATIVES = (
+    "没有可用的 NVIDIA 显卡时可以改用：云端识别（不下载本地模型，需要 API Key）；"
+    "SenseVoice 或 Whisper（CPU）本地识别；字幕时间轴选“关闭”或可在 CPU 运行的对齐方式。"
+)
+
+
+def require_cuda_runtime(components: list[str] | tuple[str, ...] = ()) -> CudaRuntimeStatus:
     status = detect_cuda_runtime(ready_torch_probe())
     if not status.ready:
-        raise RuntimeError(f"{status.summary} {status.guidance}")
+        named = "、".join(components)
+        prefix = f"本次选择的 {named} 需要 NVIDIA CUDA。" if named else ""
+        raise RuntimeError(f"{prefix}{status.summary} {status.guidance} {NO_CUDA_ALTERNATIVES}")
     return status
 
 
 CUDA_REQUIRED_PRIMARY = {"moss", "firered", "qwen_local", "firered_llm"}
-CUDA_REQUIRED_TIMELINE = {"local", "qwen_aligner"}
+# Qwen3-ForcedAligner runs on CPU without CUDA since 2026-10-13 (slower).
+CUDA_REQUIRED_TIMELINE = {"local"}
 CUDA_REQUIRED_REVIEW = {"local", "firered_llm"}
 
 LOCAL_PRIMARY = {
@@ -516,9 +525,16 @@ def selected_local_runtime_components(settings: dict) -> list[str]:
     return selected
 
 
-def require_local_torch_runtime(settings: dict) -> TorchAudioRuntimeStatus:
+def require_local_torch_runtime(settings: dict) -> TorchAudioRuntimeStatus | None:
+    """Check torch/torchaudio only when a selected stage runs locally.
+
+    A cloud-only plan never starts the torch probe (a child process that
+    imports torch; 2-6 s on machines without CUDA, where it is not cached).
+    """
+    if not selected_local_runtime_components(settings):
+        return None
     status = detect_torch_audio_runtime(ready_torch_probe())
-    if selected_local_runtime_components(settings) and not status.ready:
+    if not status.ready:
         raise RuntimeError(f"{status.summary} {status.guidance}")
     return status
 

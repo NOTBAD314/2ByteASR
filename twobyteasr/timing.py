@@ -569,24 +569,40 @@ def collect_review_items(segments, cues, speech_regions, firered_tokens=()):
                     priority=2,
                 )
 
+        if not firered_tokens:
+            # No timeline model ran (e.g. cloud-only or "timeline off"):
+            # there is nothing to compare, so no per-segment anchor items.
+            continue
         anchor = firered_anchor_coverage(segment, firered_tokens)
         anchor_coverages.append(anchor["coverage"])
         if len(text) >= 4 and (
             anchor["coverage"] < 0.55 or anchor["largest"] < 0.30
         ):
+            aligner = all(str(token.get("source") or "") == "qwen-forced-aligner" for token in firered_tokens)
+            moss = str(getattr(segment, "primary_source", "") or "").startswith("moss")
             add_review_item(
                 segment.start,
                 "时间锚覆盖低",
                 (
-                    f"FireRed 字锚覆盖 {anchor['coverage']:.0%}，"
+                    f"{'Qwen3 对齐器' if aligner else 'FireRed'} 字锚覆盖 {anchor['coverage']:.0%}，"
                     f"最长连续 {anchor['largest']:.0%}，"
                     f"缺段首/段尾 {anchor['missing_prefix']}/{anchor['missing_suffix']} 字；"
-                    "该段使用 MOSS 外边界回退"
+                    + ("该段使用 MOSS 外边界回退" if moss else "该段使用主力识别的句段边界")
                 ),
                 segment.text,
                 priority=2,
                 severity="info",
             )
+    if segments and not firered_tokens:
+        add_review_item(
+            segments[0].start,
+            "时间锚覆盖低",
+            "本次没有运行字级时间轴模型：字幕使用主力识别返回的时间；只有句段时间的字幕不能按字精确剪辑。"
+            "需要时可在模型工坊“字幕时间轴”页安装对齐模型后重新识别。",
+            "",
+            priority=3,
+            severity="info",
+        )
 
     if anchor_coverages:
         usable = sum(value >= 0.55 for value in anchor_coverages)

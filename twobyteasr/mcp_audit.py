@@ -67,6 +67,23 @@ def start(window, output):
         from .application_settings_ui import ApplicationSettingsDialog
         return next((w for w in QApplication.topLevelWidgets() if isinstance(w, ApplicationSettingsDialog) and w.isVisible()), None)
 
+    def answer_question(name, yes=True):
+        """Click the real QMessageBox the next user step opens (consent / write confirmation)."""
+        from PySide6.QtWidgets import QMessageBox
+
+        def run():
+            box = next((w for w in QApplication.topLevelWidgets() if isinstance(w, QMessageBox) and w.isVisible()), None)
+            if box is None:
+                QTimer.singleShot(150, run)
+                return
+            result.setdefault('questions', []).append(dict(name=name, title=box.windowTitle(), text=box.text()))
+            box.grab().save(str(output / f'question-{name}.png'))
+            button = box.button(QMessageBox.StandardButton.Yes if yes else QMessageBox.StandardButton.No)
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        QTimer.singleShot(300, run)
+
+    claude_config = Path(os.environ.get('APPDATA', '')) / 'Claude' / 'claude_desktop_config.json'
+
     def drive_settings(action):
         def run():
             dialog = settings_dialog()
@@ -80,15 +97,49 @@ def start(window, output):
             QApplication.processEvents()
             if action == 'enable':
                 dialog.grab().save(str(output / '01-settings-off.png'))
+                answer_question('consent', yes=False)            # declining leaves access off
+                QTest.mouseClick(dialog.mcp_enabled, Qt.MouseButton.LeftButton)
+                result['declined_stays_off'] = not dialog.mcp_enabled.isChecked()
+                answer_question('consent', yes=True)
                 for box in (dialog.mcp_enabled, dialog.mcp_allow_edits, dialog.mcp_allow_export):
                     if not box.isChecked():
                         QTest.mouseClick(box, Qt.MouseButton.LeftButton)
+                authorized = output / 'authorized folder 授权'
+                authorized.mkdir(exist_ok=True)
+                dialog.mcp_export_dir.setText(str(authorized))   # what the folder picker fills in
                 QTest.mouseClick(dialog.mcp_copy, Qt.MouseButton.LeftButton)
                 result['client_config'] = QApplication.clipboard().text()
+                # Claude Desktop config inside the isolated APPDATA: another server must survive.
+                claude_config.parent.mkdir(parents=True, exist_ok=True)
+                claude_config.write_text(json.dumps({'mcpServers': {'other': {'command': 'other.exe'}},
+                                                     'preferences': {'keep': True}}), 'utf-8')
+                answer_question('write-claude', yes=True)
+                QTest.mouseClick(dialog.mcp_write, Qt.MouseButton.LeftButton)
+                QApplication.processEvents()
+                result['claude_written'] = json.loads(claude_config.read_text('utf-8'))
+                result['claude_backups'] = sorted(p.name for p in claude_config.parent.glob('*2byteasr-backup*'))
+                result['status_after_write'] = dialog.mcp_status.text()
                 dialog.grab().save(str(output / '02-settings-on.png'))
+                from PySide6.QtWidgets import QScrollArea
+                scroll = dialog.mcp_status.parent()
+                while scroll is not None and not isinstance(scroll, QScrollArea):
+                    scroll = scroll.parent()
+                if scroll is not None:
+                    scroll.ensureWidgetVisible(dialog.mcp_revoke)
+                    QApplication.processEvents()
+                    dialog.grab().save(str(output / '02b-settings-claude-written.png'))
                 from PySide6.QtWidgets import QDialogButtonBox
                 QTest.mouseClick(dialog.buttons.button(QDialogButtonBox.StandardButton.Save), Qt.MouseButton.LeftButton)
             else:
+                from PySide6.QtWidgets import QScrollArea
+                scroll = dialog.mcp_status.parent()
+                while scroll is not None and not isinstance(scroll, QScrollArea):
+                    scroll = scroll.parent()
+                if scroll is not None:
+                    scroll.ensureWidgetVisible(dialog.mcp_revoke)
+                QApplication.processEvents()
+                result['status_before_revoke'] = dialog.mcp_status.text()
+                dialog.grab().save(str(output / '07-settings-connected.png'))
                 QTest.mouseClick(dialog.mcp_revoke, Qt.MouseButton.LeftButton)
                 QApplication.processEvents()
                 result['revoke_status'] = dialog.mcp_status.text()
@@ -112,12 +163,22 @@ def start(window, output):
         yield 1.0
         from .mcp_bridge import _BRIDGE
         settings = common.read_settings()
-        check('settings dialog turns MCP on with edit/export permissions', settings == dict(
-            enabled=True, scope='current', allow_edits=True, allow_export=True) and _BRIDGE is not None and _BRIDGE.listening(),
-              settings)
+        check('consent is asked first; declining keeps access off', result.get('declined_stays_off')
+              and len(result.get('questions') or []) >= 2, result.get('questions'))
+        check('settings dialog turns MCP on with edit/export permissions and one authorized folder',
+              settings.get('enabled') and settings.get('allow_edits') and settings.get('allow_export')
+              and settings.get('acknowledged') and settings.get('scope') == 'current'
+              and settings.get('export_dir', '').endswith('authorized folder 授权')
+              and _BRIDGE is not None and _BRIDGE.listening(), settings)
         config = json.loads(result.get('client_config') or '{}')
         check('copied client config runs the product with --mcp-stdio',
               (config.get('mcpServers', {}).get('2byteasr', {}).get('args') or [''])[-1] == '--mcp-stdio', config)
+        written = result.get('claude_written') or {}
+        check('Claude Desktop config: our entry added, other server and preferences kept, backup made',
+              set(written.get('mcpServers', {})) == {'other', '2byteasr'} and written.get('preferences') == {'keep': True}
+              and len(result.get('claude_backups') or []) == 1 and '已写入' in (result.get('status_after_write') or '')
+              and '实际已连线' not in (result.get('status_after_write') or ''),
+              dict(written=written, backups=result.get('claude_backups'), status=result.get('status_after_write')))
         before = {c.id: (c.text, c.start_ms, c.end_ms, c.speaker_id) for c in page.project.cues}
         # ---- full flow ----
         process = client('full')
@@ -145,6 +206,21 @@ def start(window, output):
                 yield .8
                 _capture(window, output / '05-applied-visible.png')
                 (output / 'app-saw-change.flag').write_text('1', 'utf-8')
+            styled_flag = output / 'client-styled.flag'
+            if styled_flag.exists() and not (output / 'app-saw-style.flag').exists():
+                from .bilingual_layout import project_display_cues
+                from .punctuation_style import project_mode
+                shown = project_display_cues(page.project)
+                manuscript = {c.id: c.text for c in page.project.cues}
+                marks = set('，。、；：')  # never protected (decimals and URLs may keep '.' and ':')
+                check('punctuation style from the client: display has no sentence marks, manuscript unchanged',
+                      project_mode(page.project) == 'none' and all(not (set(c.text) & marks) for c in shown)
+                      and {c.id: c.text for c in page.project.cues} == manuscript
+                      and {k: v[0] for k, v in before.items()} == manuscript,
+                      dict(mode=project_mode(page.project), sample=[c.text for c in shown[:3]]))
+                yield .8
+                _capture(window, output / '06-punctuation-none.png')
+                (output / 'app-saw-style.flag').write_text('1', 'utf-8')
             yield .1
         full = json.loads((output / 'client-full.json').read_text('utf-8')) if (output / 'client-full.json').exists() else {}
         summary = full.get('summary') or {}
@@ -154,10 +230,23 @@ def start(window, output):
               and len(summary.get('export_files') or []) == 3, summary)
         check('rejected regrouping changed nothing', summary.get('rejected') == 'rejected'
               and 'speaker_roles' not in page.project.studio_state)
+        check('search by speaker and time range with readable times', summary.get('speaker_matches')
+              and summary.get('time_range_cues') and ':' in str(summary.get('readable_time') or ''), summary)
+        check('batch replace and punctuation style: previewed, approved in the app, undone by the client',
+              summary.get('replace_changes') == 1 and summary.get('replaced') == 'applied'
+              and summary.get('replace_undone') == 'undone' and summary.get('styled') == 'applied'
+              and summary.get('style_undone') == 'undone' and 'punctuation' not in page.project.studio_state, summary)
         after = {c.id: (c.text, c.start_ms, c.end_ms, c.speaker_id) for c in page.project.cues}
         check('after undo the project equals the start', after == before)
         exported = sorted(p.name for p in (Path(spec['project']).parent / common.EXPORT_FOLDER).glob('*'))
-        check('exports landed in the project folder without overwriting', len(exported) == 3, exported)
+        formats = summary.get('format_files') or []
+        check('exports landed in the project folder without overwriting', len(exported) == 3 + len(formats) == 6
+              and any(name.endswith(' (2).srt') for name in exported), exported)
+        check('this-export-only punctuation leaves the project style alone', summary.get('format_punctuation') == 'add'
+              and 'punctuation' not in page.project.studio_state, summary.get('format_punctuation'))
+        authorized = Path(common.read_settings().get('export_dir') or '')
+        check('export into the one authorized folder', (authorized / 'to-folder.srt').is_file()
+              and summary.get('authorized_files') == ['to-folder.srt'], sorted(p.name for p in authorized.glob('*')))
         check('no file escaped the project folder', not (Path(spec['project']).parent.parent / 'outside.ja.srt').exists())
         protocol = next((s for s in full.get('steps', []) if s['name'] == 'initialize'), {})
         result['protocol'] = protocol
@@ -172,10 +261,30 @@ def start(window, output):
         check('a plan previewed before a user edit is refused as stale', stale.get('stale_refused') and not dialogs(), stale)
         page.undo_stack.undo()
         yield .5
+        # ---- switching projects between preview and apply ----
+        from .sample_project import ensure_sample_project
+        sample = ensure_sample_project()
+        process = client('switch')
+        yield lambda: (output / 'client-switch-previewed.flag').exists() or process.poll() is not None
+        original_id = page.project.project_id
+        page.session.undo_stack.setClean()                   # the start state; nothing to save
+        window.open_studio_project(str(sample), mode='edit', source='mcp_audit')
+        yield lambda: ready() and page.project.project_id != original_id
+        yield .8
+        _capture(window, output / '06b-switched-project.png')
+        sample_texts = [c.text for c in page.project.cues]
+        (output / 'app-switched.flag').write_text('1', 'utf-8')
+        yield lambda: process.poll() is not None
+        switched = json.loads((output / 'client-switch.json').read_text('utf-8')).get('summary') or {}
+        check('a plan for the previous project is refused after switching', switched.get('switch_refused')
+              and not dialogs() and [c.text for c in page.project.cues] == sample_texts, switched)
         # ---- revoke ----
         drive_settings('revoke')
         open_application_settings(page)
         yield .5
+        check('settings status said "actually connected" with the client name before revoking',
+              '实际已连线' in (result.get('status_before_revoke') or '') and bool(_BRIDGE.stats.get('client')),
+              dict(status=result.get('status_before_revoke'), client=_BRIDGE.stats.get('client')))
         check('revoke turns access off and deletes the key', not common.read_settings()['enabled']
               and not common.read_key() and not _BRIDGE.listening(), result.get('revoke_status'))
         process = client('revoked')

@@ -71,6 +71,11 @@ def start(window, output):
                 'passed':('MOSS' in window.progress_stage.text() and window.progress_bar.maximum()==1000
                           and (tokens is None or f'{int(tokens):,} tokens' in facts.values())),
                 'text':window.progress_stage.text(),'bar_max':window.progress_bar.maximum(),'facts':facts})
+            if int(payload.get('window_count') or 0) > 1:
+                # Long tasks run as several windows (2026-10-13): the step shows which one.
+                expected=f"{int(payload['window_index'])} / {int(payload['window_count'])}"
+                checks.append({'phase':payload['phase'],'check':'window number shown',
+                               'passed':facts.get('识别分段')==expected,'expected':expected})
             window.grab().save(str(output/(payload['phase']+'.png')))
             QTimer.singleShot(400,tick)
         except Exception as exc:

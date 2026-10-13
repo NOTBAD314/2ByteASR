@@ -238,6 +238,13 @@ def finalize_cues(    cues,
     return finalized
 
 
+def _punctuation_default(runtime_context, legacy) -> str:
+    """The home-page choice frozen in this task's settings snapshot."""
+    from .punctuation_style import default_mode_for_new_tasks
+    settings = getattr(runtime_context, "asr_settings_snapshot", None) or getattr(legacy, "RUNTIME_SETTINGS", {}) or {}
+    return default_mode_for_new_tasks(settings)
+
+
 def complete_media_run(
     *,
     cues,
@@ -338,6 +345,11 @@ def complete_media_run(
                             "subtitle_output": {
                                 "mode": str(getattr(runtime_context, "subtitle_output", "original") or "original"),
                                 "translation_script": str(getattr(runtime_context, "translation_script", "zh-Hans") or "zh-Hans"),
+                            },
+                            # New-task punctuation default (2026-10-13); applied to the project's
+                            # display/export only, the recognized text is stored unchanged.
+                            "subtitle_punctuation": {
+                                "mode": _punctuation_default(runtime_context, legacy),
                             },
                             **translation_metadata,
                         },

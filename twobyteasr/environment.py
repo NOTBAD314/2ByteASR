@@ -40,6 +40,8 @@ from twobyteasr.processes import (
 PROBE_TIMEOUT_SECONDS = 60.0
 
 _ENVIRONMENTS_LOCK_KEY = "environments"
+# Runtimes without PyTorch (Apple Silicon MLX, 2026-10-13).
+TORCHLESS_ROLES = frozenset({"mlx"})
 
 
 class EnvironmentContractError(RuntimeError):
@@ -106,7 +108,9 @@ def environments_contract(role, *, lock_file=None):
             f"依赖清单缺少 {role} 环境契约（environments.{role}）。"
         )
     contract = environments[role]
-    for field_name in ("python", "torch", "torchaudio"):
+    # The Apple Silicon MLX runtime (2026-10-13) deliberately has no PyTorch.
+    required = ("python",) if role in TORCHLESS_ROLES else ("python", "torch", "torchaudio")
+    for field_name in required:
         if not contract.get(field_name):
             raise EnvironmentContractError(
                 f"environments.{role} 缺少 {field_name} 版本。"
@@ -228,21 +232,30 @@ def probe_script_path():
 def required_environment_roles(runtime_settings):
     """Roles the current pipeline configuration actually needs.
 
-    Main is always required.  MOSS only when the primary backend uses the
-    separate .venv-moss environment (a broken MOSS venv must not block e.g.
-    a FireRed-only configuration).
+    Main is required only when a selected stage runs a local model.  A
+    cloud-only plan (cloud primary, timeline off, review off/cloud) needs no
+    local Python environment at all: the cloud worker runs with the app's own
+    executable, and optional local helpers (FireRedVAD, Japanese morphology)
+    fall back gracefully when main is absent (2026-10-13).  MOSS only when the
+    primary backend uses the separate .venv-moss environment (a broken MOSS
+    venv must not block e.g. a FireRed-only configuration).
     """
-    roles = ["main"]
-    if runtime_settings:
-        primary = str(
-            runtime_settings.get("models", {}).get("primary_asr_backend", "moss")
-        )
-        if primary == "moss":
-            roles.append("moss")
-        if primary == "firered_llm" or str(
-            runtime_settings.get("models", {}).get("qwen_asr_backend", "off")
-        ) == "firered_llm":
-            roles.append("firered_llm")
+    if not runtime_settings:
+        return ["main"]
+    from .hardware import LOCAL_PRIMARY, LOCAL_REVIEW, LOCAL_TIMELINE
+    models = runtime_settings.get("models", {})
+    primary = str(models.get("primary_asr_backend", "moss"))
+    timeline = str(models.get("firered_asr_backend", "local"))
+    review = str(models.get("qwen_asr_backend", "off"))
+    roles = []
+    if primary in LOCAL_PRIMARY or timeline in LOCAL_TIMELINE or review in LOCAL_REVIEW:
+        roles.append("main")
+    if primary == "moss":
+        roles.append("moss")
+    if primary == "firered_llm" or review == "firered_llm":
+        roles.append("firered_llm")
+    if primary in {"mlx_qwen3_asr", "mlx_qwen3_asr_1_7b"} or timeline == "mlx_qwen_aligner":
+        roles.append("mlx")
     return roles
 
 

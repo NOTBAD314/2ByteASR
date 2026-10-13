@@ -80,6 +80,23 @@ def _align_batch(aligner, audios, unit_lists, torch):
     return results
 
 
+def select_device(torch, requested: str = "auto"):
+    """CUDA (bf16/fp16) when usable, otherwise CPU float32 (2026-10-13).
+
+    The CPU route uses the same official model, processor and timestamp
+    classes; only speed differs. ``TWOBYTEASR_ALIGNER_DEVICE=cpu`` forces CPU
+    for comparisons on a CUDA machine.
+    """
+    requested = str(requested or "auto").lower()
+    if requested not in {"auto", "cuda", "cpu"}:
+        raise RuntimeError(f"Unsupported aligner device: {requested}")
+    if requested != "cpu" and torch.cuda.is_available():
+        return "cuda:0", (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
+    if requested == "cuda":
+        raise RuntimeError("Qwen3-ForcedAligner: CUDA was requested but is not available")
+    return "cpu", torch.float32
+
+
 def _tag_texts(manifest_path: Path, output: Path) -> None:
     """Model-free mode: nagisa words and part-of-speech tags for subtitle line breaking."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -138,13 +155,12 @@ def main() -> None:
     if not jobs:
         raise RuntimeError("Aligner manifest is empty")
     verify_model_files("qwen_aligner", Path(args.model_dir), root=root)
-    if not torch.cuda.is_available():
-        raise RuntimeError("Qwen3-ForcedAligner requires CUDA")
-    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    device, dtype = select_device(torch, os.environ.get("TWOBYTEASR_ALIGNER_DEVICE", "auto"))
     load_started = time.perf_counter()
-    _emit("loading", python=sys.executable, model_path=str(Path(args.model_dir).resolve()), pid=os.getpid(), jobs=len(jobs))
+    _emit("loading", python=sys.executable, model_path=str(Path(args.model_dir).resolve()), pid=os.getpid(),
+          jobs=len(jobs), device=device, dtype=str(dtype))
     aligner = Qwen3ForcedAligner.from_pretrained(str(args.model_dir), local_files_only=True,
-                                                 device_map="cuda:0", dtype=dtype)
+                                                 device_map=device, dtype=dtype)
     load_ms = (time.perf_counter() - load_started) * 1000.0
     _emit("loaded", elapsed_ms=round(load_ms, 3))
     try:
@@ -206,10 +222,11 @@ def main() -> None:
         _atomic_write(Path(args.output), {
             "protocol": PROTOCOL, "policy": policy, "results": [results[str(job["id"])] for job in jobs],
             "audio_sha256": audio_spec.get("sha256"), "python": sys.executable, "pid": os.getpid(),
-            "torch_version": torch.__version__, "dtype": str(dtype), "model": fa.ALIGNER_REPO,
+            "torch_version": torch.__version__, "dtype": str(dtype), "device": device,
+            "backend": "torch-cuda" if device.startswith("cuda") else "torch-cpu", "model": fa.ALIGNER_REPO,
             "model_revision": fa.ALIGNER_REVISION, "code": fa.ALIGNER_CODE, "unit_policy": fa.UNIT_POLICY_VERSION,
             "load_ms": round(load_ms, 3), "inference_ms": round(inference_ms, 3)})
-        _emit("completed", aligned=len(prepared), jobs=len(jobs), inference_ms=round(inference_ms, 3))
+        _emit("completed", aligned=len(prepared), jobs=len(jobs), inference_ms=round(inference_ms, 3), device=device)
     finally:
         del aligner
         gc.collect()

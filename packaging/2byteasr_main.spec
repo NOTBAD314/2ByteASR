@@ -38,6 +38,8 @@ for source, destination in (
     ("assets", "assets"),
     ("licenses", "licenses"),
     ("docs/design/caption-preferences.json", "docs/design"),
+    # In-app 「申请与设置 API」 guides (2026-10-13); same files as the repo docs.
+    ("docs/api-setup", "docs/api-setup"),
     ("lexicons", "lexicons"),
     ("renderer", "renderer"),
     ("scripts", "scripts"),

@@ -197,5 +197,7 @@ def test_mac_replace_without_qt_binding_avoids_command_hide(monkeypatch):
     original=QKeySequence.keyBindings
     monkeypatch.setattr(QKeySequence,'keyBindings',lambda key:[] if key==QKeySequence.Replace else original(key))
     defaults=studio_shortcuts.studio_default_shortcuts()
-    assert defaults['find_replace']=='Ctrl+Alt+F'
+    # 2026-10-13: Option-Command-F was already "保存当前帧"; Shift-Command-F is free.
+    assert defaults['find_replace']=='Ctrl+Shift+F'
+    assert defaults['find_replace']!=defaults['save_current_frame']
     assert defaults['save']==original(QKeySequence.Save)[0].toString(QKeySequence.PortableText)

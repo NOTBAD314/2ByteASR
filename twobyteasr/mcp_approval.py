@@ -23,6 +23,13 @@ def describe(plan) -> str:
                     lines.append(f"#{change['cue_id']} {title}：{change[name]['before']}  →  {change[name]['after']}")
         elif plan.kind == "roles":
             lines.append(f"{change['speaker_id']}：{change['before']} → {change['role']}")
+        elif plan.kind == "punctuation":
+            from .punctuation_style import MODE_LABELS
+            lines.append(tr("字幕标点：{before} → {after}（只影响显示与导出，文稿、时间、说话人不变）",
+                            before=tr(MODE_LABELS.get(change["before"], change["before"])),
+                            after=tr(MODE_LABELS.get(change["after"], change["after"]))))
+            for before, after in change.get("examples") or ():
+                lines.append(f"  {before}  →  {after}")
         else:
             lines.append(tr("显示 {mode} · 顺序 {order} · 紧凑排版 {compact}", mode=change["mode"],
                             order=change["order"], compact=tr("是") if change["compact"] else tr("否")))

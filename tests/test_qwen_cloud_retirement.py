@@ -61,7 +61,10 @@ def test_factory_endpoint_and_catalog_only_offer_latest_cloud_qwen(monkeypatch):
     assert calls==[("qwen31_filetrans",endpoint["url"])]
     assert "dashscope" not in ASR_API_PRESETS and "qwen_api" not in CANONICAL_MODEL_ORDER
     cloud=[m for m in MODELS if m.api_preset and str(ASR_API_PRESETS[m.api_preset]["model"]).startswith("qwen")]
-    assert [m.key for m in cloud]==["qwen31_filetrans"]
+    # Two entries, one model family: Qwen Cloud (official international API)
+    # and 百炼, both on the latest Filetrans model.
+    assert [m.key for m in cloud]==["qwen_cloud_filetrans","qwen31_filetrans"]
+    assert {ASR_API_PRESETS[m.api_preset]["model"] for m in cloud}=={LATEST}
     assert {"qwen_local","qwen_aligner"}<={m.key for m in MODELS}
     from twobyteasr.model_benchmarks import reference_api_model
     assert reference_api_model(LATEST,"accuracy","zh") is None
@@ -141,7 +144,7 @@ def test_asr_placeholder_never_uses_unrelated_legacy_stage_secret(monkeypatch):
 def test_retired_short_endpoint_error_uses_selected_language(monkeypatch,language):
     from twobyteasr import i18n
     monkeypatch.setattr(i18n,"current_language",lambda:language)
-    source="此 Qwen 云端短音频入口已移除，请选择 Qwen Audio 3.1 长音频转写。"
+    source="Qwen3-ASR-Flash 短音频聊天接口不回传可用时间戳，请选择 Qwen3-ASR-Flash 录音文件识别（Filetrans）。"
     with pytest.raises(RuntimeError) as error:
         llm_config.validate_qwen_asr_endpoint({"model":"qwen3-asr-flash"})
     assert str(error.value)==i18n.tr(source)

@@ -30,6 +30,11 @@ def summarize(root: Path) -> dict:
         runtime_identity=status(read('runtime-identity.json')),
         embedded_preview=status(read('native-media-smoke/result.json')),
         hardware=status(read('hardware-probe/result.json'),'hardware_encode_passed'),
+        cloud_only=status(read('cloud-only/result.json')),
+        keychain=status(read('keychain/result.json')),
+        mlx=status(read('mlx/result.json')),
+        cloud_mlx=status(read('cloud-mlx/result.json')),
+        cloud_mlx_requested=os.environ.get('CLOUD_MLX_REQUESTED','false')=='true',
         test_step=os.environ.get('TEST_OUTCOME','unknown'),
         model_requested=os.environ.get('MODEL_REQUESTED','false')=='true',
         source_sha=os.environ.get('SOURCE_SHA'),workflow_identity=read('workflow-identity.json'))
@@ -44,7 +49,7 @@ def main(argv=None):
     if not args.enforce:(args.qa_root/'ci-status.json').write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
     print(json.dumps(record,ensure_ascii=False))
     if args.enforce:
-        required=['runtime_identity','media','app','relocation','startup','dmg','blank_project']+(['model_preparation','home_studio','restart_reuse','export_decode'] if record['model_requested'] else [])
+        required=['runtime_identity','media','app','relocation','startup','dmg','blank_project']+(['model_preparation','home_studio','restart_reuse','export_decode'] if record['model_requested'] else [])+(['cloud_only','keychain','mlx','cloud_mlx'] if record.get('cloud_mlx_requested') else [])
         selection_path=args.qa_root/'artifacts/receipts/artifact-selection.json'
         selection=json.loads(selection_path.read_text('utf8')) if selection_path.is_file() else {}
         delivered=any(row['path'].endswith('.dmg') for row in selection.get('files',[]))

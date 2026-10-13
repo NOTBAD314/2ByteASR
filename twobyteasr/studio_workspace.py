@@ -282,6 +282,16 @@ class StudioWorkspaceBuilder:
         build_bilingual_menu(page, bilingual_menu)
         page.bilingual_toggle_button.setMenu(bilingual_menu)
         bar.addWidget(page.bilingual_toggle_button)
+        # 2026-10-13: punctuation style (添加标点 / 不加标点 / 保留原文) for preview
+        # and every export; the manuscript is never rewritten by the choice.
+        page.punctuation_button = QPushButton("标点")
+        page.punctuation_button.setObjectName("studioButton")
+        page.punctuation_button.setIcon(_icon("fa5s.paragraph", GREEN))
+        punctuation_menu = create_studio_menu(page)
+        from .studio_punctuation import build_menu as build_punctuation_menu
+        build_punctuation_menu(page, punctuation_menu)
+        page.punctuation_button.setMenu(punctuation_menu)
+        bar.addWidget(page.punctuation_button)
         clip_assistant = QPushButton("剪辑助手")
         page.studio_clip_assistant_button = clip_assistant
         clip_assistant.setObjectName("studioButton")
@@ -301,11 +311,12 @@ class StudioWorkspaceBuilder:
         bind_text(shortcut_entry, '配置 Studio 快捷键', property='toolTip')
         shortcut_entry.clicked.connect(page._show_shortcut_settings)
         bar.addWidget(shortcut_entry)
-        find_replace_shortcut = QShortcut(QKeySequence("Ctrl+H"), page)
+        # Keys come from the shortcut registry (_install_shortcuts re-keys them).
+        find_replace_shortcut = QShortcut(QKeySequence(page._shortcut_values.get("find_replace", "Ctrl+H")), page)
         find_replace_shortcut.activated.connect(page._open_find_replace)
         page._find_replace_shortcut = find_replace_shortcut
         # Ctrl+F is the usual "find"; it opens the same find/replace tools.
-        find_shortcut = QShortcut(QKeySequence("Ctrl+F"), page)
+        find_shortcut = QShortcut(QKeySequence(page._shortcut_values.get("find", "Ctrl+F")), page)
         find_shortcut.activated.connect(page._open_find_replace)
         page._find_shortcut = find_shortcut
         bar.addWidget(page._toolbar_divider())

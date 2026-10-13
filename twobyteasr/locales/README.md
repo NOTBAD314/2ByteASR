@@ -1,6 +1,7 @@
 # UI translations
 
-`en.json` and `ja.json` hold every English and Japanese UI string. Each file is
+`en.json` and `ja.json` hold every English and Japanese UI string; `zh-Hant.json` holds
+繁體中文 (generated, see below). Each file is
 one flat JSON object:
 
 ```json
@@ -29,3 +30,19 @@ python scripts/i18n_locales.py check
 
 Do not add new `i18n_round_*.py` modules; they were merged into these files on
 2026-10-11.
+
+## 繁體中文 (zh-Hant, since 2026-10-14)
+
+The Chinese source strings are Simplified. `zh-Hant.json` (same keys) and
+`zh-Hant-chars.json` (single-character fallback) are **generated** from them
+with OpenCC (`s2twp`, Taiwan wording) by `scripts/make_zh_hant.py`, which also
+writes `docs/api-setup/*.zh-Hant.md`. Do not edit them by hand; after adding UI
+strings, run it in an environment that has `opencc` installed:
+
+```
+python -X utf8 scripts/make_zh_hant.py
+```
+
+Until it is rerun, new strings are shown with the character fallback (only
+known UI strings are converted; user content never is). `check` reports how
+many strings are waiting.

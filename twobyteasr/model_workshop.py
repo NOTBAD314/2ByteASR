@@ -285,6 +285,9 @@ class WorkshopModel:
     # Models a pipeline step uses automatically once installed (no role to
     # select): the installed state shows this text instead of "接入中".
     auto_stage: str = ""
+    # Host platforms the model can run on ("darwin-arm64"); empty = the
+    # existing per-platform rules apply.
+    platforms: tuple[str, ...] = ()
 
 
 MODELS = (
@@ -293,11 +296,26 @@ MODELS = (
         '协议接入；真实服务验证待完成',
         '单会话不超过 60 秒，长音频连续切块，动态修订替换。没有原生说话人能力；时间证据不足时由所选对齐模型补充。可保留已有字幕的说话人标签。',(),
         api_preset='spark_asr_v2',asr_capabilities=('ASR_TEXT',),adapter_bindings=(('primary','api'),('review','api'))),
-    WorkshopModel('qwen31_filetrans','api','Qwen Audio 3.1｜长音频转写','QF',
-        '长文件异步 · 保存 task_id 后继续查询','在线 · 百炼 Key + 用户 OSS','不占本地空间',
-        '协议接入；真实服务验证待完成',
-        'qwen-audio-3.1-asr-flash-filetrans：单文件不超过 12 小时；原生分离按官方建议限 2 小时单声道。临时对象与签名链接由你的 OSS 提供，结果成功持久化后清理。超时不会自动重新付费提交。',(),
+    # 2026-10-13: Qwen Cloud, the official international Qwen API (no workspace
+    # host). 2026-10-14 (ADR 0112): regular use needs the user's own OSS; the
+    # provider's temporary upload is a labelled trial only.
+    WorkshopModel('qwen_cloud_filetrans','api','Qwen Cloud｜录音文件识别','QC',
+        '长文件异步 · Qwen-Audio-3.1 或 Qwen3-ASR','在线 · Qwen Cloud API Key + 自己的 OSS','不占本地空间',
+        '不需要显卡与本地模型；正式使用需要自己的 OSS 私有存储',
+        'Qwen 官方国际站（home.qwencloud.com）的录音文件识别：Qwen-Audio-3.1 返回字/词级时间与说话人，Qwen3-ASR 返回字/词级时间（无说话人）。音频先传到你自己的 OSS 私有存储，用限时签名链接交给服务商，结果保存后删除；服务商临时上传只供试用（48 小时失效，官方说明勿用于生产）。单文件不超过 12 小时。Key 与阿里云百炼（中国站）的不能互换。超时不会自动重新付费提交。',(),
+        api_preset='qwen_cloud_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
+    WorkshopModel('qwen31_filetrans','api','阿里云百炼｜录音文件识别','QF',
+        '长文件异步 · Qwen3-ASR 或 Qwen-Audio-3.1','在线 · 百炼 Key + API Host','不占本地空间',
+        '不需要显卡；正式使用需要自己的 OSS 私有存储',
+        '同一个百炼 Key 下两个模型：Qwen3-ASR-Flash（字/词级时间，无说话人，不支持热词）与 Qwen-Audio-3.1（字/词级时间与说话人，支持热词）。单文件不超过 12 小时；说话人区分官方建议 2 小时内。音频先传到你自己的 OSS 私有存储，用限时签名链接交给百炼，结果成功保存后删除；百炼临时上传只供试用（48 小时失效，官方说明勿用于生产）。超时不会自动重新付费提交。',(),
         api_preset='qwen31_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
+    # 2026-10-13: cloud MOSS on the MOSI platform; independent of the local
+    # "moss" card (no shared settings, key or job state).
+    WorkshopModel('mosi_moss_pro','api','MOSS-Transcribe-Diarize Pro 云端','MP',
+        '云端多人转写 · 本地文件直传','在线 · 只需 MOSI API Key','不占本地空间',
+        '不需要显卡与本地模型；句段级时间',
+        'MOSI 平台的 moss-transcribe-diarize-pro：上传本次音频，返回文字、句段起止时间与说话人。单次最长 60 分钟，更长自动分段且各段说话人不合并。只有句段时间；需要按字剪辑时可再配本地对齐模型。按音频时长计费（官方价格页 ¥2.00/小时，2026-10-13 核对）。',(),
+        api_preset='mosi_moss_pro',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),)),
     WorkshopModel(
         "moss",
         "primary",
@@ -625,10 +643,10 @@ MODELS = (
         "Qwen3-ForcedAligner 0.6B",
         "Qa",
         "11 种语言 · 字/词级强制对齐",
-        "本地 · NVIDIA CUDA",
+        "本地 · NVIDIA CUDA 或 CPU（较慢）",
         "约 1.8 GB",
         "官方字词时间戳 · 已接入",
-        "Qwen 官方强制对齐模型，可根据 MOSS 已有文字生成字级或词级时间戳；可直接替换 FireRed 作为多语种时间轴后端。",
+        "Qwen 官方强制对齐模型，可根据已有文字（MOSS、本地或云端识别）生成字级或词级时间戳；可直接替换 FireRed 作为多语种时间轴后端。没有 NVIDIA 显卡时用 CPU 运行，结果相同但更慢。",
         (("字词对齐", 94), ("多语言", 76), ("运行速度", 72)),
         (),
         ("qwen_aligner",),
@@ -663,6 +681,78 @@ MODELS = (
         languages=("日本語",),
         asr_capabilities=("ALIGNMENT",),
         auto_stage="已安装 · 日语识别时自动使用",
+    ),
+    WorkshopModel(
+        "mlx_qwen3_asr_0_6b",
+        "primary",
+        "Qwen3-ASR 0.6B（Apple Silicon）",
+        "Qm",
+        "M 系列芯片 Mac 本地识别 · 不需要 NVIDIA",
+        "本地 · Apple Silicon（MLX）",
+        "约 1.0 GB",
+        "社区 MLX 移植 · 兔白尚未在真 Mac 上验收",
+        "Qwen3-ASR 0.6B 的 MLX 8-bit 版本（mlx-community），在 M 系列芯片的 Mac 上本地识别，不上传音频。它按语音段给出文字，不给字词时间，也不区分说话人；需要字词时间时，请同时安装“Qwen3 对齐模型（Apple Silicon）”。",
+        (("运行速度", 86), ("文字精度", 74), ("硬件友好", 92)),
+        (),
+        ("mlx_qwen3_asr_0_6b",),
+        "mlx_qwen3_asr_0_6b",
+        runtime_available=True,
+        logo_asset="qwen.png",
+        icon_name="fa5s.microchip",
+        icon_color="#ffffff",
+        icon_background="#6f63c9",
+        languages=("多语言", "中文", "日本語"),
+        asr_capabilities=("ASR_TEXT", "LANGUAGE_ID"),
+        adapter_bindings=(("primary", "mlx_qwen3_asr"),),
+        platforms=("darwin-arm64",),
+    ),
+    WorkshopModel(
+        "mlx_qwen3_asr_1_7b",
+        "primary",
+        "Qwen3-ASR 1.7B（Apple Silicon）",
+        "QM",
+        "M 系列芯片 Mac 本地识别 · 更准、更慢",
+        "本地 · Apple Silicon（MLX）",
+        "约 2.5 GB",
+        "社区 MLX 移植 · 兔白尚未在真 Mac 上验收",
+        "Qwen3-ASR 1.7B 的 MLX 8-bit 版本（mlx-community），比 0.6B 更准但更慢、占用更多内存。只按语音段给文字，不给字词时间，不区分说话人。",
+        (("运行速度", 70), ("文字精度", 84), ("硬件友好", 80)),
+        (),
+        ("mlx_qwen3_asr_1_7b",),
+        "mlx_qwen3_asr_1_7b",
+        runtime_available=True,
+        logo_asset="qwen.png",
+        icon_name="fa5s.microchip",
+        icon_color="#ffffff",
+        icon_background="#5a4fb8",
+        languages=("多语言", "中文", "日本語"),
+        asr_capabilities=("ASR_TEXT", "LANGUAGE_ID"),
+        adapter_bindings=(("primary", "mlx_qwen3_asr_1_7b"),),
+        platforms=("darwin-arm64",),
+    ),
+    WorkshopModel(
+        "mlx_qwen_aligner",
+        "timeline",
+        "Qwen3 对齐模型（Apple Silicon）",
+        "Qa",
+        "字/词级强制对齐 · 不是语音识别模型",
+        "本地 · Apple Silicon（MLX）",
+        "约 1.3 GB",
+        "回执与 CUDA/CPU 版相同 · 尚未在真 Mac 上验收",
+        "Qwen3-ForcedAligner 0.6B 的 MLX 8-bit 版本：只给已有文字（本地或云端识别的结果）配上字/词时间，它本身不会把语音转成文字。对齐在本机进行，不上传音频。",
+        (("字词对齐", 92), ("多语言", 76), ("硬件友好", 90)),
+        (),
+        ("mlx_qwen_aligner",),
+        "mlx_qwen_aligner",
+        runtime_available=True,
+        logo_asset="qwen.png",
+        icon_name="fa5s.magic",
+        icon_color="#ffffff",
+        icon_background="#8a78df",
+        languages=("多语言", "11种"),
+        asr_capabilities=("ALIGNMENT",),
+        adapter_bindings=(("timeline", "mlx_qwen_aligner"),),
+        platforms=("darwin-arm64",),
     ),
     WorkshopModel(
         "funasr_nano",
@@ -707,6 +797,15 @@ def _capability_supports_role(capabilities: tuple[str, ...], role: str) -> bool:
 
 def _adapter_backend(model: WorkshopModel, role: str) -> str | None:
     return dict(model.adapter_bindings).get(role)
+
+
+MLX_DOWNLOAD_KEYS = frozenset({"mlx_qwen3_asr_0_6b", "mlx_qwen3_asr_1_7b", "mlx_qwen_aligner"})
+
+
+def _host_platform_tag() -> str:
+    import platform
+    machine = platform.machine().lower()
+    return f"{sys.platform}-{ {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(machine, machine) }"
 
 
 def _model_roles(model: WorkshopModel) -> tuple[str, ...]:
@@ -765,7 +864,7 @@ def _stars(score: int) -> str:
 
 
 CANONICAL_MODEL_ORDER = (
-    'spark_asr_v2','qwen31_filetrans',
+    'qwen_cloud_filetrans','spark_asr_v2','qwen31_filetrans','mosi_moss_pro',
     "moss",
     "firered",
     "qwen_local",
@@ -779,6 +878,9 @@ CANONICAL_MODEL_ORDER = (
     "funasr_nano",
     "qwen_aligner",
     "ja_ctc_aligner",
+    "mlx_qwen3_asr_0_6b",
+    "mlx_qwen3_asr_1_7b",
+    "mlx_qwen_aligner",
     "groq_api",
     "openai_api",
     "mai_latest",
@@ -930,7 +1032,7 @@ _TECHNICAL_PROFILES = {
     "qwen_aligner": {
         "purpose": "根据已有文字生成字级或词级强制对齐时间轴。",
         "strengths": "适合已有可靠初稿时精修字幕边界，并支持多语种对齐。",
-        "limits": "它不是从零转写模型；需要已有文字，并且本机运行依赖 CUDA。",
+        "limits": "它不是从零转写模型；需要已有文字。没有 NVIDIA CUDA 时用 CPU 运行，较慢。",
         "io": "输入音频加已有文本；输出字/词与音频时间边界的对齐结果。",
         "source": "Qwen3-ForcedAligner 官方模型卡。",
         "url": "https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B",
@@ -1052,7 +1154,7 @@ _TECHNICAL_PROFILES_EN = {
     "qwen_aligner": {
         "purpose": "Character- or word-level forced alignment from existing text.",
         "strengths": "Refines subtitle boundaries when a reliable draft already exists and supports multilingual alignment.",
-        "limits": "It is not a from-scratch transcriber: existing text is required, and local use depends on CUDA.",
+        "limits": "It is not a from-scratch transcriber: existing text is required. Without NVIDIA CUDA it runs on the CPU, more slowly.",
         "io": "Input: audio plus existing text. Output: character / word alignment time boundaries.",
         "source": "Qwen3-ForcedAligner official model card.",
     },
@@ -2767,7 +2869,11 @@ class ModelDownloadDialog(QDialog):
         title.setObjectName("workshopDetailTitle")
         layout.addWidget(title)
         note = QLabel("窗口会一直保留；可断点续传，不需要重新安装 2ByteASR。")
-        if sys.platform == 'darwin':
+        if sys.platform == 'darwin' and set(self.download_keys) <= MLX_DOWNLOAD_KEYS:
+            note.setText('Apple Silicon 本地模型（MLX）：首次准备会联网下载私有运行库（不含 PyTorch）与模型，'
+                         '完成后用自带的英文样本实际跑一次推理。社区 MLX 实现，兔白尚未在真机完成验收。')
+            note.setWordWrap(True)
+        elif sys.platform == 'darwin':
             from .platform_macos import macos_copy
             note.setText(macos_copy(
                 '当前使用 SenseVoice CPU：模型 MPS 适配尚未验证。首次准备自动联网；取消后已校验资源保持。',
@@ -2923,8 +3029,11 @@ class ModelDownloadDialog(QDialog):
         if detached:
             self._finish_with_error(tr('模型外部目录已解除关联。请在模型存储管理中选择受管存储位置，或重新关联原目录后再下载；不会覆盖已解除关联的外部文件。'))
             return
+        if set(self.download_keys) & MLX_DOWNLOAD_KEYS and not _host_platform_tag() == 'darwin-arm64':
+            self._finish_with_error(tr('MLX 模型只能在 Apple Silicon（M 系列芯片）的 Mac 上使用；没有开始下载。'))
+            return
         if sys.platform == 'darwin':
-            if self.download_keys != ('sensevoice',):
+            if self.download_keys != ('sensevoice',) and not set(self.download_keys) <= MLX_DOWNLOAD_KEYS:
                 from .platform_macos import macos_copy
                 self._finish_with_error(macos_copy(
                     '本次 macOS 实验仅支持 SenseVoice CPU；其他本地模型尚未完成原生适配。',
@@ -2960,7 +3069,10 @@ class ModelDownloadDialog(QDialog):
         self.pause_button.setVisible(True)
         bind_text(self.pause_button, translate('暂停下载', language))
         if sys.platform == 'darwin':
-            self._start_macos_cpu()
+            if set(self.download_keys) <= MLX_DOWNLOAD_KEYS:
+                self._start_macos_mlx()
+            else:
+                self._start_macos_cpu()
             return
         script = self.root / "scripts" / "download_models.ps1"
         powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
@@ -2994,6 +3106,29 @@ class ModelDownloadDialog(QDialog):
         self.process.start(program, arguments)
         if not self.process.waitForStarted(5000):
             self._finish_with_error("无法启动模型下载器。请运行“配置或修复 2ByteASR”后重试。")
+
+    def _start_macos_mlx(self):
+        from twobyteasr.runtime_paths import get_runtime_paths, user_data_root
+        from twobyteasr.processes import sanitized_child_environment
+        arguments = ['--macos-prepare-mlx', '--root', str(self.root), '--models',
+                     str(get_runtime_paths().model_root), '--keys', ','.join(self.download_keys),
+                     '--source', str(self.source_combo.currentData() or 'AUTO')]
+        program = sys.executable
+        if not getattr(sys, 'frozen', False):
+            arguments.insert(0, str(self.root / 'scripts/macos_launch.py'))
+        environment = QProcessEnvironment()
+        for key, value in sanitized_child_environment().items():
+            environment.insert(key, value)
+        environment.insert('PYTHONUTF8', '1')
+        environment.insert('PYTHONIOENCODING', 'utf-8')
+        environment.insert('_PYI_RESET_ENVIRONMENT', '1')
+        self.process.setProcessEnvironment(environment)
+        user_data_root().mkdir(parents=True, exist_ok=True)
+        self.process.setWorkingDirectory(str(user_data_root()))
+        self.log.appendPlainText('[模型工坊] 准备 Apple Silicon MLX 运行库与模型：' + '、'.join(self.download_keys))
+        self.process.start(program, arguments)
+        if not self.process.waitForStarted(5000):
+            self._finish_with_error('无法启动 MLX 准备进程；已有运行库和模型文件保持。')
 
     def _start_macos_cpu(self):
         from twobyteasr.runtime_paths import get_runtime_paths, user_data_root
@@ -3314,15 +3449,25 @@ class ModelDownloadDialog(QDialog):
                     continue
         if failures:
                 failure=failures[-1]
-                source_text=' → '.join(sources) if sources else '尚未请求权重源'
-                header=f"{self.model.name} · {source_text}（{'已尝试备援' if len(sources)>1 else '未尝试备援'}）\n"
+                if sources:
+                    header=f"{self.model.name} · {' → '.join(sources)}（{'已尝试备援' if len(sources)>1 else '未尝试备援'}）\n"
+                elif failure.get('phase') in {'tools_preparing', 'interpreter_preparing', 'dependencies_installing'}:
+                    header=f"{self.model.name} · 运行环境准备阶段（尚未开始下载权重）\n"
+                else:
+                    header=f"{self.model.name} · 尚未请求权重源（未尝试备援）\n"
                 detail=str(failure.get('message') or failure.get('detail') or '').partition('\n')[0][:220]
                 category=failure.get('category','')
+                if category=='runtime_network':
+                    # A conflict, permission or disk problem also makes every source fail.
+                    if 'no solution found' in lowered or 'unsatisfiable' in lowered:category='dependency_conflict'
+                    elif 'os error 5' in lowered or 'access is denied' in lowered or '拒绝访问' in output:category='permission'
+                    elif 'no space left' in lowered or 'disk full' in lowered or 'os error 112' in lowered or '磁盘空间不足' in output:category='disk_space'
                 summaries={'permission':'准备目录不可写或文件被占用，请检查日志中的具体路径后重试。',
                     'disk_space':'磁盘空间不足，请为应用数据目录释放空间后重试。',
                     'http_access':'来源拒绝访问（401/403）。请检查该模型的授权要求或选择已验证来源。',
                     'source_unavailable':'锁定版本或文件不存在（404）。请复制诊断反馈，不要反复重下。',
                     'network_timeout':'来源连接或传输停滞超时。请重试或切换已验证来源。',
+                    'runtime_network':'运行环境（uv、Python、PyTorch 等）下载失败：官方来源和国内备用来源都没有连通。可以打开代理工具的 TUN（虚拟网卡）模式，或设置 HTTPS_PROXY 环境变量并重启程序后重试；已校验的文件会保留。',
                     'connection':'连接中断。已下载分片保留，请检查网络后重试。',
                     'dns':'来源域名无法解析。请检查当前网络并复制诊断。',
                     'proxy':'程序使用的代理无法连接。请检查下载诊断中的代理状态。',
@@ -5067,6 +5212,7 @@ class ModelWorkshopPage(QWidget):
                 if state=='partial':badge_text='权重不完整'
                 if state=='unreadable':badge_text='目录无法读取'
                 if state=='platform_unverified':badge_text='当前平台未验证'
+                if state=='platform_unavailable' and model.platforms:badge_text='仅限 Apple Silicon Mac'
                 card.set_state_badge(
                     translate(badge_text, language),
                     "ready"
@@ -5144,7 +5290,10 @@ class ModelWorkshopPage(QWidget):
 
     def _compute_model_state(self, model: WorkshopModel, role: str) -> str:
         models = self.runtime_settings.get("models", {})
-        if sys.platform == 'darwin' and model.download_key and model.download_key != 'sensevoice':
+        if model.platforms and _host_platform_tag() not in model.platforms:
+            return 'platform_unavailable'
+        if (sys.platform == 'darwin' and model.download_key and model.download_key != 'sensevoice'
+                and not model.platforms):
             return 'platform_unavailable'
         if not model.available:
             return "planned"
@@ -5199,6 +5348,11 @@ class ModelWorkshopPage(QWidget):
         installed = bool(model.install_keys) and all(key in self._installed for key in model.install_keys)
         if not installed:
             return "missing"
+        if model.platforms:
+            # MLX models run in their own torch-free runtime (2026-10-13).
+            from .mlx_backend import runtime_python as mlx_runtime_python
+            if not mlx_runtime_python():
+                return 'runtime_missing'
         if sys.platform == 'darwin' and model.download_key == 'sensevoice':
             from .environment import fast_preflight
             runtime_check = fast_preflight('main')
@@ -5243,6 +5397,8 @@ class ModelWorkshopPage(QWidget):
         if state=='platform_unverified':return '当前平台未验证',False
         if model.key in self._removing: return '正在永久删除…', False
         if state == 'platform_unavailable':
+            if model.platforms:
+                return '仅限 Apple Silicon Mac', False
             from .platform_macos import macos_copy
             return macos_copy('尚未适配 macOS', 'Not yet adapted to macOS', 'macOS 未対応'), False
         if state == 'partial': return '补齐缺失文件', True

@@ -645,6 +645,8 @@ class StudioProjectController:
         from .studio_bilingual import sync_controls
         from .bilingual_layout import settings_from_state
         sync_controls(page, settings_from_state(project.studio_state))
+        from .studio_punctuation import sync_controls as sync_punctuation
+        sync_punctuation(page)
         page.continuous_review_toggle.blockSignals(True)
         page.continuous_review_toggle.setChecked(bool(studio_state.get("continuous_review", False)))
         page.continuous_review_toggle.blockSignals(False)

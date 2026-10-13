@@ -136,7 +136,7 @@ try:
     check('retired model entries absent',not {'nemotron','qwen_api','qwen31_flash','qwen_audio_asr_flash','qwen_audio_filetrans'} & set(page._cards))
     from twobyteasr.ui import ASR_API_PRESETS
     check('cloud Qwen presets contain only latest Filetrans',
-          {key for key,value in ASR_API_PRESETS.items() if str(value.get('model','')).startswith('qwen')} == {'qwen31_filetrans'}
+          {key for key,value in ASR_API_PRESETS.items() if str(value.get('model','')).startswith('qwen')} == {'qwen31_filetrans','qwen_cloud_filetrans'}
           and 'dashscope' not in ASR_API_PRESETS)
     page.focus_primary_backend('api');QApplication.processEvents()
     check('setup API navigation focuses current Filetrans card',page.browser_role=='api' and page.detail_model_key=='qwen31_filetrans')

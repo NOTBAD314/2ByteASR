@@ -1,4 +1,4 @@
-"""UI language overlay (zh / en / ja).
+"""UI language overlay (zh / zh-Hant / en / ja).
 
 The application's built-in strings are Chinese. This module overlays English
 or Japanese translations at runtime by walking the widget tree, so the UI
@@ -25,7 +25,10 @@ from twobyteasr.settings import load_runtime_settings, save_runtime_settings
 
 
 LOCALE_DIR = Path(__file__).resolve().parent / "locales"
-TRANSLATED_LANGUAGES = ("en", "ja")
+# 2026-10-14: 繁體中文 (zh-Hant) is generated from the Simplified sources by
+# scripts/make_zh_hant.py; "zh" stays the Simplified source text.
+TRANSLATED_LANGUAGES = ("en", "ja", "zh-Hant")
+SUPPORTED_LANGUAGES = ("zh", "zh-Hant", "en", "ja")
 # language -> reason, for a locale file that could not be read. The UI then
 # keeps the Chinese source text for that language instead of failing to start.
 LOCALE_LOAD_ERRORS: dict[str, str] = {}
@@ -61,7 +64,7 @@ def current_language() -> str:
     if _CURRENT_LANGUAGE_CACHE is None:
         settings, _path, _warnings = load_runtime_settings()
         value = str(settings.get("ui", {}).get("language", "zh"))
-        _CURRENT_LANGUAGE_CACHE = value if value in ("zh", "en", "ja") else "zh"
+        _CURRENT_LANGUAGE_CACHE = value if value in SUPPORTED_LANGUAGES else "zh"
     return _CURRENT_LANGUAGE_CACHE
 
 
@@ -72,7 +75,7 @@ def invalidate_language_cache() -> None:
 
 def save_language(language: str) -> None:
     global _CURRENT_LANGUAGE_CACHE
-    if language not in ("zh", "en", "ja"):
+    if language not in SUPPORTED_LANGUAGES:
         raise ValueError(f"Unsupported UI language: {language}")
     settings, _path, _warnings = load_runtime_settings()
     settings.setdefault("ui", {})["language"] = language
@@ -82,9 +85,28 @@ def save_language(language: str) -> None:
     refresh_application(language)
 
 
+_HANT_CHARS: dict[str, str] | None = None
+
+
+def _hant_fallback(text: str) -> str:
+    """Character-level 繁體 for a UI string added after zh-Hant.json was generated."""
+    global _HANT_CHARS
+    if _HANT_CHARS is None:
+        try:
+            with (LOCALE_DIR / "zh-Hant-chars.json").open(encoding="utf-8") as stream:
+                _HANT_CHARS = dict(json.load(stream))
+        except (OSError, ValueError):
+            _HANT_CHARS = {}
+    return "".join(_HANT_CHARS.get(ch, ch) for ch in text)
+
+
 def translate(text: str, language: str | None = None) -> str:
     language = current_language() if language is None else language
-    return _TRANSLATIONS.get(language, {}).get(text, text)
+    table = _TRANSLATIONS.get(language, {})
+    if language == "zh-Hant" and text not in table and text in _KNOWN_KEYS:
+        # Only known UI source strings are converted; user content never is.
+        return _hant_fallback(text)
+    return table.get(text, text)
 
 
 class TranslatedText(str):

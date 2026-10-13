@@ -361,7 +361,7 @@ def _qt_language(app, language):
     if previous is not None:
         app.removeTranslator(previous)
     translator = QTranslator(app)
-    locale = {'zh':'zh_CN','ja':'ja','en':'en'}[language]
+    locale = {'zh':'zh_CN','zh-Hant':'zh_TW','ja':'ja','en':'en'}.get(language, 'zh_CN')
     if translator.load('qtbase_' + locale, QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
         app.installTranslator(translator)
     app._i18n_qt_translator = translator

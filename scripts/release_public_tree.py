@@ -26,8 +26,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# docs/api-setup/: the in-app 「申请与设置 API」 guides are read at runtime (2026-10-13).
 SCOPED_PREFIXES = ("twobyteasr/", "scripts/", "packaging/", "installer/", "launcher/", "lexicons/",
-                   "licenses/", ".github/workflows/", "docs/releases/", "renderer/", "tests/")
+                   "licenses/", ".github/workflows/", "docs/releases/", "docs/api-setup/", "renderer/", "tests/")
 ROOT_FILES = {"LICENSE", "THIRD_PARTY_NOTICES.md", "PROJECT_LICENSE.md", "SOURCE_DELIVERY.md",
               "BUILD_FROM_SOURCE.md", "CHANGELOG.md", "CONTRIBUTING.md", "UPDATING.md", "RELEASING.md",
               "2byteasr_version.json", "dependencies.lock.json", "game_profiles.json", "glossary.txt",
