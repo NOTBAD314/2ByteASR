@@ -402,7 +402,7 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
             phase = 'weights_downloading'
             from twobyteasr.model_integrity import locked_model, verify_model_files
             from twobyteasr.repository_download import download_model
-            # The resumable downloader is stdlib-only; the MLX interpreter runs it.
+            # The MLX interpreter runs the resumable downloader (requests is in requirements-mlx.txt).
             os.environ['TWOBYTEASR_DOWNLOAD_PYTHON'] = str(runtime_python)
             for key in keys:
                 emit(phase, model=key)

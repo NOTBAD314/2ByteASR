@@ -101,8 +101,9 @@ def make_fixture(ffmpeg: Path, out: Path, *, minutes: float, cues: int) -> dict:
     step = (duration_ms - 4000) / cues
     for index in range(cues):
         start = int(500 + index * step)
-        # Every third line overlaps the next speaker (talking over each other).
-        length = int(step * (1.6 if index % 3 == 0 else 0.9)) + 400
+        # Every third line overlaps the next speakers (talking over each other) and
+        # is long enough (~4 s) to stay grabbable in a 120 s view on a small screen.
+        length = int(step * 1.6) + 3000 if index % 3 == 0 else int(step * 0.9) + 400
         text = LINES[index % len(LINES)]
         rows.append(StudioCue(id=f"perf{index:05d}", start_ms=start, end_ms=min(duration_ms - 1, start + length),
                               text=text, speaker_id=speakers[index % 4].id, style_id=styles[index % 4].id))
@@ -190,6 +191,10 @@ def run_export(ffmpeg: Path, out: Path, *, start: float, seconds: float) -> dict
     export = out / "export"
     export.mkdir()
     project = load_project(out / "project.2byteproj")
+    import unicodedata
+    sources = [{"path": asset.canonical_source, "exists": os.path.exists(asset.canonical_source),
+                "nfc": unicodedata.is_normalized("NFC", asset.canonical_source),
+                "nfd": unicodedata.is_normalized("NFD", asset.canonical_source)} for asset in project.media_pool]
     write_export_ass(project, export / "export.ass", fps=30)
     settings = RenderSettings(encoder="auto", quality_mode="crf", quality=20, preset="medium",
                               width=1920, height=1080, fps=30, audio_codec="aac")
@@ -215,7 +220,7 @@ def run_export(ffmpeg: Path, out: Path, *, start: float, seconds: float) -> dict
             probe = {"error": repr(exc)}
     metadata = dict(job.completion_metadata or {})
     duration = float((probe.get("format") or {}).get("duration") or 0)
-    return {"error": error, "wall_s": round(wall, 2), "seconds": seconds,
+    return {"error": error, "media_sources": sources, "wall_s": round(wall, 2), "seconds": seconds,
             "speed_x_realtime": round(seconds / wall, 2) if wall and not error else None,
             "output_duration_s": round(duration, 3), "output_bytes": output.stat().st_size if output.is_file() else 0,
             "encoder": metadata.get("actual_encoder"), "rate_control": metadata.get("actual_rate_control"),

@@ -319,6 +319,13 @@ def test_first_run_presets_follow_the_computer(monkeypatch):
     windows._apply_preset('online_align')
     assert windows.selected_download_keys() == ('qwen_aligner',)
     windows.close()
+    # Delete explicitly: left to Python's cycle collector at interpreter exit,
+    # these dialogs (with their frameless combo popups) corrupted the heap
+    # (0xC0000374 on Windows, SIGSEGV on macOS CI) after every test had passed.
+    from PySide6.QtCore import QCoreApplication, QEvent
+    for item in (dialog, intel, windows):
+        item.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     app.processEvents()
 
 

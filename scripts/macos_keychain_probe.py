@@ -31,8 +31,22 @@ def main(argv=None) -> int:
     data.mkdir(exist_ok=True)
     os.environ['2BYTEASR_USER_DATA_ROOT'] = str(data)
     os.environ['LOCALAPPDATA'] = str(data)
+    # Importing twobyteasr under TWOBYTEASR_TEST_ROOT (set for the whole CI job)
+    # moves HOME into the isolated folder, where `security` finds no keychain.
+    # The item name is still the separate test item (2026-10-14).
+    real_home = os.environ.get('HOME', '')
     sys.path.insert(0, str(ROOT))
     from twobyteasr import llm_config, macos_keychain
+    if real_home and os.environ.get('HOME') != real_home:
+        import subprocess
+        original_run = macos_keychain._run
+
+        def run_with_real_home(args, *, input_text=None, runner=None):
+            if runner is not None:
+                return original_run(args, input_text=input_text, runner=runner)
+            return subprocess.run([macos_keychain.SECURITY, *args], input=input_text, capture_output=True,
+                                  text=True, timeout=20, env=dict(os.environ, HOME=real_home))
+        macos_keychain._run = run_with_real_home
     result = {'platform': sys.platform, 'service_is_daily_item': macos_keychain.service_name() == macos_keychain.SERVICE,
               'steps': []}
     probe = 'sk-2byteasr-keychain-probe-' + secrets.token_hex(8)

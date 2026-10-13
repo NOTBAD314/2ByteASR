@@ -86,6 +86,10 @@ def main(argv=None):
     # Establish the existing acceptance guard without touching a CI user's
     # normal profile. The empty guard is not opened as a recognition project.
     env={key:os.environ[key] for key in ("HOME","LANG","LC_ALL","TMPDIR","DISPLAY") if key in os.environ}
+    # 2026-10-14: a fresh profile now opens the first-run chooser and the guided
+    # tour; like the Windows acceptance runs, this audit drives the workshop and
+    # Home itself (the tour's dimmed overlay otherwise blocks Home Start).
+    env.update(TWOBYTEASR_SKIP_FIRST_RUN_WIZARD="1")
     env.update(PATH="/usr/bin:/bin:/usr/sbin:/sbin",PYTHONNOUSERSITE="1",
                TWOBYTEASR_TEST_ROOT=str(output),
                TWOBYTEASR_INVOKER_CWD=str(invoker),TWOBYTEASR_ACCEPTANCE_DIR=str(output),
