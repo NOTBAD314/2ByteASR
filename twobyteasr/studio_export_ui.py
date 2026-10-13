@@ -873,6 +873,30 @@ class StudioExportWorkspace(QWidget):
         format_row.addStretch(1)
         column.addLayout(format_row)
 
+        # Language layers (shown when the project has translations): original,
+        # Chinese translation, and both in one cue (two lines).
+        language_row = QHBoxLayout()
+        self.subtitle_language_label = QLabel("语言")
+        language_row.addWidget(self.subtitle_language_label)
+        self.subtitle_language_checks = {}
+        for label, layer, checked in (("原文", "original", True), ("中文译文", "translation", True),
+                                      ("双语（同一条两行）", "bilingual", True)):
+            check = QCheckBox()
+            check.setChecked(checked)
+            bind_text(check, label)
+            self.subtitle_language_checks[layer] = check
+            language_row.addWidget(check)
+        self.subtitle_translation_first = QCheckBox()
+        bind_text(self.subtitle_translation_first, "双语中文在上")
+        self.subtitle_translation_first.setChecked(True)
+        language_row.addWidget(self.subtitle_translation_first)
+        language_row.addStretch(1)
+        self.subtitle_language_row = QWidget()
+        self.subtitle_language_row.setLayout(language_row)
+        has_translations = bool((getattr(self.project, "generation_metadata", None) or {}).get("translations"))
+        self.subtitle_language_row.setVisible(has_translations)
+        column.addWidget(self.subtitle_language_row)
+
         speaker_row = QHBoxLayout()
         speaker_row.addWidget(QLabel("说话人"))
         self.subtitle_speaker_group = QButtonGroup(self)
@@ -1027,13 +1051,27 @@ class StudioExportWorkspace(QWidget):
         self.subtitle_open_folder.hide()
         self.subtitle_copy_path.hide()
         bind_text(self.subtitle_export_status, '正在写入并回读验证…')
+        layered = None
         try:
-            artifacts = export_subtitle_artifacts(
-                self.project,
-                directory,
-                base_name,
-                SubtitleExportOptions(formats, mode),
-            )
+            layers = [layer for layer, control in getattr(self, "subtitle_language_checks", {}).items()
+                      if control.isChecked()] if self.subtitle_language_row.isVisible() else []
+            if layers and "srt" in formats:
+                from .studio_subtitle_export import export_language_layers
+                # Japanese / Chinese / bilingual SRT (+ JSON with both texts and word timing);
+                # never overwrites an existing file.
+                layered = export_language_layers(
+                    self.project, directory, base_name,
+                    tuple(layers) + (("json",) if "json" in formats else ()),
+                    translation_first=self.subtitle_translation_first.isChecked(), speaker_mode=mode)
+                formats = frozenset(formats - {"srt", "json"})
+            artifacts = list(layered.artifacts) if layered is not None else []
+            if formats:
+                artifacts += list(export_subtitle_artifacts(
+                    self.project,
+                    directory,
+                    base_name,
+                    SubtitleExportOptions(formats, mode),
+                ))
         except Exception as exc:
             bind_text(self.subtitle_export_status, '字幕导出失败：{value0}', value0=' '.join(str(exc).split())[:180])
             return
@@ -1044,6 +1082,11 @@ class StudioExportWorkspace(QWidget):
             "subtitle/export_destination", self._selected_subtitle_destination_mode()
         )
         bind_text(self.subtitle_export_status, '已导出并验证 {value0} 个文件 · {destination_reason}', value0=len(artifacts), destination_reason=tr(destination_reason))
+        if layered is not None and (layered.missing_translation_count or layered.needs_update_count):
+            bind_text(self.subtitle_export_status,
+                      '已导出并验证 {value0} 个文件 · {destination_reason} · {missing} 条没有译文（双语只写原文）· {stale} 条译文需要更新',
+                      value0=len(artifacts), destination_reason=tr(destination_reason),
+                      missing=layered.missing_translation_count, stale=layered.needs_update_count)
         self.subtitle_open_folder.show()
         self.subtitle_copy_path.show()
 

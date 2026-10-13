@@ -182,7 +182,7 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
                         path = str(Path(assets[clip['asset_id']]['canonical_source']).resolve())
                         decoder = decoders.get(clip["id"])
                         if decoder is None:
-                            decoder = SequentialExportDecoder(indexes[path])
+                            decoder = SequentialExportDecoder(indexes[path], cancelled=cancelled)
                             decoders[clip["id"]] = decoder
                         (fw,fh,pixels), receipt = decoder.read(source_seconds,context=dict(export_job_id=job_id,
                             clip_id=clip['id'],timeline_frame_index=index,timeline_pts=str(timeline_seconds),

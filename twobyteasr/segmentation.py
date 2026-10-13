@@ -6,6 +6,7 @@ import warnings
 # The core owns runtime configuration; these imports preserve the existing public contract.
 from subtitle_core import *  # noqa: F401,F403
 from twobyteasr.runtime import get_runtime_context
+from twobyteasr.language_rules import CONTENT_CHAR_CLASS
 
 __all__ = [
     'INTERJECTION_MERGES',
@@ -169,6 +170,10 @@ SHORT_ACTION_FRAGMENTS = frozenset(("我们抽", "我们来", "我们看", "我�
 
 def semantic_restart_boundary_offsets(text):
     """识别口语中第二个独立重点的开头，避免两个判断挤在同一条。"""
+    from twobyteasr.language_rules import is_japanese, japanese_strong_breaks
+    if is_japanese():
+        # 日语：句末助词后、感叹词/连词前、MOSS 停顿处（文节分析给出）。
+        return japanese_strong_breaks(text)
     source = content_exact(text)
     if len(source) < 10:
         return set()
@@ -393,7 +398,7 @@ def split_text_at_content_ranges(text, ranges):
     positions = [
         index
         for index, char in enumerate(text)
-        if re.match(r"[\u3400-\u9fffA-Za-z0-9]", char)
+        if re.match(f"[{CONTENT_CHAR_CLASS}]", char)
     ]
     parts = []
     string_start = 0
@@ -463,10 +468,17 @@ def lexical_forbidden_boundary_offsets(text):
 
 
 def chinese_word_spans(source_text):
-    """用通用中文分词得到词级跨度；失败则退回单字跨度。"""
+    """用通用中文分词得到词级跨度；失败则退回单字跨度。
+
+    日语任务改用文节近似（内容词连同其后的平假名），jieba 会把去掉假名后的
+    日文汉字误分成中文词（「天才」被切成「…当天|才」）。
+    """
     source = str(source_text or "")
     if not source:
         return []
+    from twobyteasr.language_rules import is_japanese, japanese_phrase_spans
+    if is_japanese():
+        return japanese_phrase_spans(source)
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings(

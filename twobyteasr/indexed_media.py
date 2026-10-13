@@ -53,6 +53,11 @@ class IndexedMediaCache:
         self._sync_scan_done: set[str] = set()
         self._media_touched: dict[str, float] = {}
         self._ready_identities: dict[str, tuple[int, int]] = {}
+        # source -> (checked_at, {"path","offset_ms"} | None)
+        self._audio_seek: dict[str, tuple[float, dict | None]] = {}
+        self._audio_seek_builds: set[str] = set()
+        self._audio_seek_failures: set[str] = set()
+        self._legacy_map_checked: set[str] = set()
 
     # ------------------------------------------------------------------ API
 
@@ -178,6 +183,10 @@ class IndexedMediaCache:
         if not safe_path(folder, (self.root,)):
             return None
         cached = load_sync_map(folder)
+        if cached is not None and cached.gaps and cached.stream_indices is None:
+            # Saved before streams were classified by codec type (2026-10-12):
+            # verify in the background that stream 0 really was the video.
+            self._verify_legacy_sync_map(source, folder)
         if cached is not None:
             # 2026-09-18 P0 残余：map 命中即早退，坏代理被采用门删除后
             # 永远无人重建（用户 6.4GB 工程实测：336s 塌缩产物删了就没了，
@@ -200,6 +209,36 @@ class IndexedMediaCache:
                 name="studio-avsync-scan",
             ).start()
         return None
+
+    def _verify_legacy_sync_map(self, source: str, folder: Path) -> None:
+        with self._lock:
+            if source in self._legacy_map_checked:
+                return
+            self._legacy_map_checked.add(source)
+
+        def verify():
+            from .avsync import load_sync_map, probe_av_stream_indices, save_sync_map
+            try:
+                video, audio = probe_av_stream_indices(source, self._ffprobe_path())
+                cached = load_sync_map(folder)
+                if cached is None:
+                    return
+                if (video, audio) == (0, 1):
+                    cached.stream_indices = {"video": 0, "audio": 1}
+                    save_sync_map(folder, cached)
+                    return
+                # Holes were assigned to the wrong streams: drop the map and
+                # any proxy folded with it; the next lookup rescans.
+                for name in ("sync-map.json", "continuous.mkv", "continuous.json"):
+                    (Path(folder) / name).unlink(missing_ok=True)
+                with self._lock:
+                    self._sync_scan_done.discard(source)
+                GLOBAL_STUDIO_TRACE.emit("MEDIA_OPTIMIZE", {"source": source, "stage": "legacy_sync_map_dropped",
+                                                            "video_index": video, "audio_index": audio})
+            except Exception as exc:
+                GLOBAL_STUDIO_TRACE.emit("MEDIA_OPTIMIZE", {"source": source, "stage": "legacy_sync_map_check_failed",
+                                                            "error": str(exc)[-300:]})
+        threading.Thread(target=verify, daemon=True, name="studio-avsync-verify").start()
 
     def playback_source(self, source: str):
         """Best preview-timebase artifact: proxy > optimized > (None, original)."""
@@ -264,6 +303,77 @@ class IndexedMediaCache:
         return studio_ffmpeg_path().with_name(
             "ffprobe.exe" if os.name == "nt" else "ffprobe"
         )
+
+    # --------------------------------------------- audio seek copy (FLV)
+    def audio_seek_source(self, source: str) -> dict | None:
+        """Indexed audio-only copy of an FLV for the preview audio decoder.
+
+        Returns ``{"path", "offset_ms"}`` when a validated copy for this exact
+        source (path, size, mtime, generator version) exists; otherwise starts
+        one background build and returns None (the decoder keeps reading the
+        original). Cheap enough for every playback tick: answers are memoised
+        and an unknown result is re-checked at most every two seconds.
+        """
+        source = str(source or "")
+        if not source.lower().endswith(".flv"):
+            return None
+        now = time.monotonic()
+        with self._lock:
+            known = self._audio_seek.get(source)
+        if known is not None and (known[1] is not None or now - known[0] < 2.0):
+            return known[1]
+        result = None
+        try:
+            folder = self._cache_folder(source)
+            if folder is not None:
+                result = audio_seek_copy_ready(folder, source)
+                if result is None:
+                    self._schedule_audio_seek_copy(source, folder)
+        except OSError:
+            result = None
+        with self._lock:
+            self._audio_seek[source] = (now, result)
+        return result
+
+    def _schedule_audio_seek_copy(self, source: str, folder: Path) -> None:
+        from .storage_service import safe_path
+        if not safe_path(folder, (self.root,)):
+            return
+        with self._lock:
+            if source in self._audio_seek_builds or source in self._audio_seek_failures:
+                return
+            self._audio_seek_builds.add(source)
+        threading.Thread(target=self._build_audio_seek_copy, args=(source, folder),
+                         daemon=True, name="studio-audio-seek-copy").start()
+
+    def _build_audio_seek_copy(self, source: str, folder: Path) -> None:
+        started = time.perf_counter()
+        cancel = threading.Event()
+        with self._lock:
+            self._cancel_events['audio-seek:' + source] = cancel
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            with self._generation_lock(folder, cancel):
+                if audio_seek_copy_ready(folder, source) is None:
+                    from .audio_engine import studio_ffmpeg_path
+                    marker = build_audio_seek_copy(source, folder, studio_ffmpeg_path(),
+                                                   self._ffprobe_path(), cancelled=cancel.is_set)
+                    self._register_media(folder / AUDIO_SEEK_COPY_NAME, source, "audio-seek-copy")
+                    GLOBAL_STUDIO_TRACE.emit("MEDIA_OPTIMIZE", {
+                        "source": source, "stage": "audio_seek_copy_ready",
+                        "seconds": round(time.perf_counter() - started, 2),
+                        "size_bytes": marker.get("size_bytes"), "offset_ms": marker.get("offset_ms")})
+        except Exception as exc:
+            with self._lock:
+                if not isinstance(exc, InterruptedError):
+                    self._audio_seek_failures.add(source)
+            GLOBAL_STUDIO_TRACE.emit("MEDIA_OPTIMIZE", {
+                "source": source, "stage": "audio_seek_copy_failed", "error": str(exc)[-300:]})
+        finally:
+            with self._lock:
+                self._audio_seek_builds.discard(source)
+                self._cancel_events.pop('audio-seek:' + source, None)
+                self._audio_seek.pop(source, None)
 
     def prepare_timeline_source(self, source: str, *, ffmpeg=None, cancelled=None) -> dict:
         """Resolve one source's content clock for a worker, never the UI thread.
@@ -877,6 +987,116 @@ class IndexedMediaCache:
             progress = seconds / duration_s if duration_s > 0 else 0.0
             self._set_progress(source, progress)
         except (ValueError, TypeError):
+            pass
+
+
+# ------------------------------------------------- audio seek copy helpers
+AUDIO_SEEK_COPY_NAME = "audio-seek.mka"
+AUDIO_SEEK_MARKER_NAME = "audio-seek.json"
+# Bump when the copy or its time mapping changes; older copies are rebuilt.
+AUDIO_SEEK_COPY_VERSION = 1
+
+
+def audio_seek_copy_ready(folder: Path, source: str) -> dict | None:
+    folder = Path(folder)
+    try:
+        marker = json.loads((folder / AUDIO_SEEK_MARKER_NAME).read_text(encoding="utf-8"))
+        stat = Path(source).stat()
+        copy = folder / AUDIO_SEEK_COPY_NAME
+        if (int(marker.get("generator_version") or 0) != AUDIO_SEEK_COPY_VERSION
+                or int(marker.get("source_size") or -1) != stat.st_size
+                or int(marker.get("source_mtime_ns") or -1) != stat.st_mtime_ns
+                or copy.stat().st_size != int(marker.get("size_bytes") or -1)):
+            return None
+        return {"path": str(copy), "offset_ms": int(marker.get("offset_ms") or 0)}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _probe_times(ffprobe: Path, path) -> dict:
+    result = run_hidden_subprocess(
+        [str(ffprobe), "-v", "error", "-show_entries",
+         "format=start_time,duration:stream=index,codec_type,start_time",
+         "-of", "json", str(path)],
+        purpose="probe audio seek copy times", capture_output=True, timeout=120, check=False)
+    payload = json.loads(result.stdout or "{}")
+    fmt = payload.get("format") or {}
+    audio = next((s for s in payload.get("streams") or () if s.get("codec_type") == "audio"), {})
+    def ms(value):
+        try:
+            return float(value) * 1000.0
+        except (TypeError, ValueError):
+            return None
+    return {"start_ms": ms(fmt.get("start_time")), "duration_ms": ms(fmt.get("duration")),
+            "audio_start_ms": ms(audio.get("start_time")),
+            "streams": [s.get("codec_type") for s in payload.get("streams") or ()]}
+
+
+def build_audio_seek_copy(source: str, folder: Path, ffmpeg: Path, ffprobe: Path, *, cancelled=None) -> dict:
+    """Stream-copy the first audio stream into an indexed Matroska file.
+
+    Packets are copied byte for byte with their original timestamps
+    (``-copyts``, no genpts, no resampling, no fixed delay), so the copy's
+    audio at source time T is exactly the original's audio at T; the marker
+    stores the container-start offset that keeps ``-ss`` in that domain.
+    """
+    folder = Path(folder)
+    source_path = Path(source)
+    stat = source_path.stat()
+    required = stat.st_size // 10 + 64 * 1024 * 1024
+    if shutil.disk_usage(folder).free < required:
+        raise OSError(f"中间媒体空间不足：预计需要 {required} 字节")
+    original = _probe_times(ffprobe, source_path)
+    if "audio" not in original["streams"] or original["start_ms"] is None:
+        raise ValueError("no audio stream or container start time")
+    partial = folder / f".audio-seek.{os.getpid()}.partial.mka"
+    command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+               "-i", str(source_path), "-map", "0:a:0", "-c", "copy", "-copyts",
+               "-avoid_negative_ts", "disabled", "-f", "matroska", str(partial)]
+    process = popen_hidden_subprocess(command, purpose="audio seek copy",
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        while process.poll() is None:
+            if cancelled is not None and cancelled():
+                process.kill()
+                raise InterruptedError("audio seek copy cancelled")
+            time.sleep(0.2)
+        error = (process.stderr.read() if process.stderr else b"").decode("utf-8", "replace")
+        if process.returncode != 0 or not partial.is_file():
+            raise RuntimeError(f"audio seek copy failed ({process.returncode}): {error[-300:]}")
+        copied = _probe_times(ffprobe, partial)
+        if copied["streams"] != ["audio"] or copied["start_ms"] is None or copied["duration_ms"] is None:
+            raise ValueError(f"audio seek copy probe mismatch: {copied}")
+        expected_start = original["audio_start_ms"]
+        if expected_start is not None and abs(copied["start_ms"] - expected_start) > 2.0:
+            raise ValueError(f"audio seek copy start {copied['start_ms']} != {expected_start}")
+        if original["duration_ms"] is not None:
+            source_end = original["start_ms"] + original["duration_ms"]
+            copy_end = copied["start_ms"] + copied["duration_ms"]
+            if abs(copy_end - source_end) > 1500.0:
+                raise ValueError(f"audio seek copy ends at {copy_end} vs source {source_end}")
+        target = folder / AUDIO_SEEK_COPY_NAME
+        os.replace(partial, target)
+        marker = {
+            "generator_version": AUDIO_SEEK_COPY_VERSION,
+            "source": str(source_path), "source_size": stat.st_size, "source_mtime_ns": stat.st_mtime_ns,
+            "container_start_ms": round(original["start_ms"], 3),
+            "copy_start_ms": round(copied["start_ms"], 3),
+            "offset_ms": int(round(original["start_ms"] - copied["start_ms"])),
+            "duration_ms": round(copied["duration_ms"], 3),
+            "size_bytes": target.stat().st_size, "created_at": time.time(),
+            "parameters": {"codec": "copy", "copyts": True, "stream": "0:a:0"},
+        }
+        temporary = folder / f".{AUDIO_SEEK_MARKER_NAME}.tmp"
+        temporary.write_text(json.dumps(marker, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        os.replace(temporary, folder / AUDIO_SEEK_MARKER_NAME)
+        return marker
+    finally:
+        if process.poll() is None:
+            process.kill()
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
             pass
 
 

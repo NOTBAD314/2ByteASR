@@ -67,6 +67,10 @@ def start(window, out):
             dialog.show()
             dialog.grab().save(str(out/(key+'-before.png')))
             QTest.mouseClick(dialog.start_button,Qt.LeftButton)
+            if config.get('cancel_retry'):
+                first_pid=int(dialog.process.processId())
+                QTest.mouseClick(dialog.start_button,Qt.LeftButton)
+                check('duplicate start keeps one worker '+key,int(dialog.process.processId())==first_pid)
             started=time.monotonic()
             save(); QTimer.singleShot(1000,poll)
         except Exception:
@@ -82,8 +86,29 @@ def start(window, out):
             if not phases or phases[-1]['phase']!=current['phase']:
                 phases.append(dict(phase=current['phase'],elapsed_s=current['elapsed_s']))
             if dialog.process.state()!=QProcess.NotRunning:
+                if config.get('cancel_retry') and not current.get('cancel_requested') and dialog._last_bytes>=16*1024**2:
+                    import psutil
+                    owner=psutil.Process(int(dialog.process.processId()))
+                    current['cancel_pids']=[owner.pid,*[p.pid for p in owner.children(recursive=True)]]
+                    current['cancel_requested']=True
+                    current['bytes_before_cancel']=dialog._last_bytes
+                    dialog.grab().save(str(out/(current['key']+'-downloading.png')))
+                    QTest.mouseClick(dialog.pause_button,Qt.LeftButton)
                 if time.monotonic()-started>config.get('timeout_s',7200):
                     dialog._request_pause();raise TimeoutError('QA model preparation deadline')
+                save();QTimer.singleShot(1000,poll);return
+            if current.get('cancel_requested') and not current.get('retry_clicked'):
+                import psutil
+                check('cancel stops owned descendants '+current['key'],not any(psutil.pid_exists(pid) for pid in current['cancel_pids']))
+                check('cancel is not installation success '+current['key'],dialog._paused and not dialog._finished_ok)
+                from .runtime_paths import get_runtime_paths
+                model_root=get_runtime_paths().model_root
+                partials={str(p.relative_to(model_root)):p.stat().st_size for p in (model_root/'.downloads').rglob('*.part.*') if p.is_file()}
+                check('cancel retains actual network partials '+current['key'],sum(partials.values())>0)
+                current['cancelled_partials']=partials
+                dialog.grab().save(str(out/(current['key']+'-cancelled.png')))
+                current['retry_clicked']=True
+                QTest.mouseClick(dialog.start_button,Qt.LeftButton)
                 save();QTimer.singleShot(1000,poll);return
             current['prepare_ok']=dialog._finished_ok
             current['download']='PASS' if dialog._finished_ok else 'FAIL'
@@ -123,6 +148,8 @@ def start(window, out):
             window._open_model_workshop()
             QTest.qWait(800)
             window.grab().save(str(out/'workshop.png'))
+            if config.get('diagnostic_only'):
+                verify_download_diagnostic();return
             if config.get('native_ui'):
                 verify_native_windows()
                 finish()
@@ -136,6 +163,37 @@ def start(window, out):
         except Exception:
             finish(traceback.format_exc())
     QTimer.singleShot(500,run)
+
+    def verify_download_diagnostic():
+        nonlocal dialog
+        from .model_workshop import ModelDownloadDialog,MODELS
+        from PySide6.QtWidgets import QApplication
+        dialog=ModelDownloadDialog(window.workshop_page.root,next(m for m in MODELS if m.key==pending[0]),window)
+        dialog.show();dialog.raise_();QTest.qWait(300)
+        for width,height in ((900,620),(640,480)):
+            dialog.resize(width,height);QTest.qWait(200)
+            check('download check button reachable '+str(width),QApplication.widgetAt(dialog.check_download_button.mapToGlobal(dialog.check_download_button.rect().center())) is dialog.check_download_button)
+            dialog.grab().save(str(out/f'download-diagnostic-{width}.png'))
+        QTest.mouseClick(dialog.check_download_button,Qt.LeftButton)
+        began=time.monotonic()
+        def completed():
+            try:
+                if dialog._diagnostic_report is None:
+                    if time.monotonic()-began>300:raise TimeoutError('light diagnostic deadline')
+                    QTimer.singleShot(200,completed);return
+                report=dialog._diagnostic_report
+                check('diagnostic did not launch installer',dialog.process.state()==QProcess.NotRunning)
+                check('diagnostic did not upload',report.get('upload') is False)
+                check('diagnostic body bounded',report.get('total_consumed_bytes',10**9)<=2*1024**2)
+                check('diagnostic contains models and runtime probes',bool(report.get('models')) and len(report.get('bootstrap',[]))==4)
+                QTest.mouseClick(dialog.copy_diagnostic_button,Qt.LeftButton)
+                copied=json.loads(QApplication.clipboard().text())
+                check('copy diagnostic retains exact sanitized report',copied==report)
+                (out/'copied-diagnostic.json').write_text(json.dumps(copied,ensure_ascii=False,indent=2),'utf8')
+                dialog.grab().save(str(out/'download-diagnostic-completed.png'))
+                dialog.close();finish()
+            except Exception:finish(traceback.format_exc())
+        QTimer.singleShot(200,completed)
 
     def verify_project():
         from PySide6.QtWidgets import QApplication

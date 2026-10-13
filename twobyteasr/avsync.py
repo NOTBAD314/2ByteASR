@@ -70,6 +70,7 @@ class AVSyncMap:
         source_duration_ms: int | None = None,
         overrides: Iterable[SyncOverride] = (),
         stream_holes: Mapping[str, Iterable[tuple[int, int]]] | None = None,
+        stream_indices: Mapping[str, int] | None = None,
     ) -> None:
         # The content clock follows AUDIO. Joint holes shift both worlds;
         # video-only holes are reported but never shift the audio clock (the
@@ -89,6 +90,11 @@ class AVSyncMap:
             (int(a), int(b)) for a, b in holes.get("audio", ())
         )
         self.source_duration_ms = int(source_duration_ms or 0)
+        # Which file streams the scan classified as video/audio. Maps saved
+        # before 2026-10-12 lack it and assumed video=0, audio=1.
+        self.stream_indices: dict[str, int] | None = (
+            {str(k): int(v) for k, v in stream_indices.items()} if stream_indices else None
+        )
         self.overrides: tuple[SyncOverride, ...] = tuple(
             sorted(overrides, key=lambda item: (item.at_ms, item.offset_ms))
         )
@@ -141,6 +147,8 @@ class AVSyncMap:
             self.all_gaps,
             source_duration_ms=self.source_duration_ms,
             overrides=overrides,
+            stream_holes={"video": self.video_holes, "audio": self.audio_holes},
+            stream_indices=self.stream_indices,
         )
 
     # ---------------------------------------------------------- (de)coding
@@ -149,6 +157,7 @@ class AVSyncMap:
         return {
             "schema_version": AV_SYNC_MAP_SCHEMA,
             "source_duration_ms": self.source_duration_ms,
+            **({"stream_indices": dict(self.stream_indices)} if self.stream_indices else {}),
             "stream_holes": {
                 "video": [list(item) for item in self.video_holes],
                 "audio": [list(item) for item in self.audio_holes],
@@ -192,6 +201,7 @@ class AVSyncMap:
             gaps,
             source_duration_ms=int(payload.get("source_duration_ms", 0) or 0),
             overrides=overrides,
+            stream_indices=payload.get("stream_indices") if isinstance(payload.get("stream_indices"), Mapping) else None,
             stream_holes={
                 key: tuple(
                     (int(item[0]), int(item[1]))
@@ -226,6 +236,9 @@ def scan_timestamp_gaps(
     """
     media = Path(media_path)
     ffprobe = Path(ffprobe_path)
+    # FLV stream numbering follows the order of the first packets: OBS/RTMP
+    # recordings often put audio first. Classify by codec type, never by index.
+    video_index, audio_index = probe_av_stream_indices(media, ffprobe)
     command = [
         str(ffprobe), "-v", "error",
         "-show_entries", "packet=stream_index,pts_time,dts_time",
@@ -237,7 +250,7 @@ def scan_timestamp_gaps(
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
     )
-    prev = {0: None, 1: None}
+    prev = {video_index: None, audio_index: None}
     video_gaps: list[tuple[float, float]] = []
     audio_gaps: list[tuple[float, float]] = []
     negative_jumps = 0
@@ -278,7 +291,7 @@ def scan_timestamp_gaps(
                 negative_jumps += 1
                 continue
             if delta > gap_threshold_seconds:
-                (video_gaps if stream == 0 else audio_gaps).append((previous, stamp))
+                (video_gaps if stream == video_index else audio_gaps).append((previous, stamp))
     finally:
         if process.poll() is None:
             process.kill()
@@ -333,6 +346,7 @@ def scan_timestamp_gaps(
     sync_map = AVSyncMap(
         merged,
         source_duration_ms=duration,
+        stream_indices={"video": video_index, "audio": audio_index},
         stream_holes={
             "video": [
                 (int(start * 1000), int(end * 1000)) for start, end in video_gaps
@@ -368,6 +382,21 @@ def scan_timestamp_gaps(
         "packets": packets,
     })
     return result
+
+
+def probe_av_stream_indices(media_path: str | Path, ffprobe_path: str | Path) -> tuple[int, int]:
+    """File indices of the first video and first audio stream (default 0, 1)."""
+    try:
+        result = run_hidden_subprocess(
+            [str(ffprobe_path), "-v", "error", "-show_entries", "stream=index,codec_type",
+             "-of", "json", str(media_path)],
+            purpose="classify av streams", capture_output=True, timeout=60, check=False)
+        streams = json.loads(result.stdout or "{}").get("streams") or []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        streams = []
+    video = next((int(s["index"]) for s in streams if s.get("codec_type") == "video"), 0)
+    audio = next((int(s["index"]) for s in streams if s.get("codec_type") == "audio"), 1)
+    return video, audio
 
 
 def load_sync_map(cache_dir: str | Path) -> AVSyncMap | None:

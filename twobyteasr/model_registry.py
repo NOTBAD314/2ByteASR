@@ -112,6 +112,8 @@ def _health_for(
     hashes: dict[str, str],
     compatible: bool,
 ) -> tuple[ModelHealth, tuple[str, ...]]:
+    if (folder / '.2byteasr-install-pending.json').exists():
+        return ModelHealth.PARTIAL, ('安装提交尚未完成，请重试校验。',)
     if not required:
         if folder.is_dir():
             return (ModelHealth.INSTALLED if compatible else ModelHealth.INCOMPATIBLE), ()

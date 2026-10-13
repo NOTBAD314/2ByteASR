@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 
 from subtitle_core import *  # noqa: F401,F403
 from twobyteasr.text_similarity import phonetic_text
+from twobyteasr.language_rules import CONTENT_CHAR_CLASS
 from twobyteasr.segmentation import (
     lexical_forbidden_boundary_offsets,
     segmenter_forbidden_boundary_offsets,
@@ -553,7 +554,7 @@ def text_boundary_hints(text):
     positions = [
         index
         for index, char in enumerate(text)
-        if re.match(r"[\u3400-\u9fffA-Za-z0-9]", char)
+        if re.match(f"[{CONTENT_CHAR_CLASS}]", char)
     ]
     hints = set()
     for offset in range(1, len(positions)):

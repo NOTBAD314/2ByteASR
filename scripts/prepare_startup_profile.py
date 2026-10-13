@@ -69,14 +69,20 @@ def main() -> int:
     for name in COPY_DIRS:
         if (real / name).is_dir():
             shutil.copytree(real / name, data / name)
-    studio_settings = real / "SubtitleStudioPreview" / "settings.json"
-    if studio_settings.is_file():
-        text = studio_settings.read_text(encoding="utf-8-sig")
-        real_json = json.dumps(str(real))[1:-1]
-        copy_json = json.dumps(str(data))[1:-1]
+    # Studio's small top-level state (settings, the project-library index that
+    # drives the home/library cards, presets) with paths moved into the copy,
+    # plus the card thumbnails. Its big preview/log caches are not copied.
+    real_json = json.dumps(str(real))[1:-1]
+    copy_json = json.dumps(str(data))[1:-1]
+    studio_real = real / "SubtitleStudioPreview"
+    if studio_real.is_dir():
         (data / "SubtitleStudioPreview").mkdir()
-        (data / "SubtitleStudioPreview" / "settings.json").write_text(
-            text.replace(real_json, copy_json), encoding="utf-8")
+        for source in studio_real.glob("*.json"):
+            text = source.read_text(encoding="utf-8-sig")
+            (data / "SubtitleStudioPreview" / source.name).write_text(
+                text.replace(real_json, copy_json), encoding="utf-8")
+        if (studio_real / "thumbnails").is_dir():
+            shutil.copytree(studio_real / "thumbnails", data / "SubtitleStudioPreview" / "thumbnails")
     registry = real / "runtimes" / "registry.json"
     if registry.is_file():
         (data / "runtimes").mkdir()

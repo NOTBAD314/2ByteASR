@@ -81,6 +81,65 @@ _GRID_MIN_CARD_WIDTH = 280
 _GRID_MAX_CARD_WIDTH = 380
 
 
+# Decoded library covers are cached by bytes, not count: a card view and a
+# list view of ~120 projects need two sizes each, which thrashed a 128-entry
+# cache on every view switch (2026-10-12).
+_COVER_CACHE_BYTES = 64 * 1024 * 1024
+_COVER_CACHE_ENTRIES = 600
+_HERO_COVER_MAX_WIDTH = 1280
+_INTERNAL_PROJECT_DIRS = {
+    "autosave", "autosaves", "backup", "backups", "recovery",
+    "recoveries", "checkpoint", "checkpoints", "temp", "tmp",
+}
+
+
+def _internal_project_snapshot(path: Path, library_root: Path) -> bool:
+    """Autosave/backup/recovery copies inside the library are not projects."""
+    try:
+        parts = path.relative_to(library_root).parts if path.is_relative_to(library_root) else path.parts
+    except ValueError:
+        parts = path.parts
+    lowered_parts = {part.lower() for part in parts}
+    name = path.name.lower()
+    return bool(
+        lowered_parts & _INTERNAL_PROJECT_DIRS
+        or any(marker in name for marker in (".previous", ".autosave", ".backup", ".recovery", ".checkpoint", ".tmp"))
+        or re.fullmatch(r"[0-9a-f]{24,64}\.2byteproj", name)
+    )
+
+
+def _dedupe_library_records(merged: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Formal project entries win. A project id is canonical; legacy projects
+    without a stable id fall back to their normalized source-media path."""
+    deduplicated: list[dict[str, object]] = []
+    logical_seen: set[str] = set()
+    for record in merged:
+        project_id = str(record.get("project_id", "")).strip().lower()
+        media = str(record.get("source_media", "")).strip()
+        media_key = str(Path(media).expanduser()).replace("/", "\\").lower() if media else ""
+        key = f"project:{project_id}" if project_id else (f"media:{media_key}" if media_key else f"path:{str(record.get('path', '')).lower()}")
+        if key in logical_seen:
+            continue
+        logical_seen.add(key)
+        deduplicated.append(record)
+    return deduplicated
+
+
+def _library_display_signature(records: list[dict[str, object]]) -> tuple:
+    """What the cards, rows and hero show of each record, in order.
+
+    Bookkeeping fields (underscore keys: summary/repair flags, presence) and
+    the informational ``status`` string are excluded, so the background scan
+    of an unchanged library compares equal to the first paint from the index
+    and does not rebuild every card a second time.
+    """
+    return tuple(
+        tuple(sorted((str(key), repr(value)) for key, value in record.items()
+                     if not str(key).startswith("_") and key != "status"))
+        for record in records
+    )
+
+
 class _ProjectCard(QToolButton):
     """Composite card that keeps the legacy QToolButton click contract."""
 
@@ -98,6 +157,11 @@ class _ProjectCard(QToolButton):
 
 class StudioHubMixin:
     _LIBRARY_BUILD_BATCH = 8
+    # Cards / rows built when the library opens; more are built as the user
+    # scrolls towards the end (2026-10-12: building all ~120 cards kept the
+    # page janky for seconds after it appeared).
+    _LIBRARY_INITIAL_CARD_ROWS = 4
+    _LIBRARY_INITIAL_LIST_ROWS = 24
 
     def _apply_hub_paper_texture(self, widget: QWidget) -> None:
         """Create one deterministic warm paper tile; never repaint it per frame."""
@@ -130,6 +194,32 @@ class StudioHubMixin:
         card_width = (available - gap * (columns - 1)) // columns
         card_width = max(_GRID_MIN_CARD_WIDTH, min(_GRID_MAX_CARD_WIDTH, card_width))
         return columns, card_width, gap
+
+    def _library_layout_width(self) -> int:
+        """Width the card grid is laid out for.
+
+        The scroll area's own width, not its viewport's: the viewport narrows
+        when the vertical bar appears after the first cards, which changed the
+        card width by a few pixels and rebuilt every card a second time. The
+        grid metrics already keep a scrollbar gutter.
+        """
+        scroll = getattr(self, "project_library_scroll", None)
+        if scroll is None:
+            return self.width()
+        # Entering Studio shows the page / hub; their layouts may not have
+        # caught up with the window yet. Settle only the chain from the window
+        # down to the scroll area (never the hidden editor tree) first.
+        chain, widget = [], scroll
+        while widget is not None:
+            chain.append(widget)
+            if widget.isWindow():
+                break
+            widget = widget.parentWidget()
+        for widget in reversed(chain):
+            layout = widget.layout()
+            if layout is not None:
+                layout.activate()
+        return max(0, scroll.width() - 2 * scroll.frameWidth())
 
     def _library_visible_content_width(self) -> int:
         scroll = getattr(self, "project_library_scroll", None)
@@ -216,6 +306,9 @@ class StudioHubMixin:
                 records = self._project_library_records()
             except (OSError, ValueError, TypeError) as exc:
                 records = {'error': f'工程库读取失败：{exc}。原工程未被修改。'}
+            # Project / media presence is checked here, never while building
+            # cards: media often lives on external drives that may be asleep.
+            self._library_presence_next = self._check_library_presence(records)
             try:
                 self.library_records_ready_signal.emit(records, scan_generation)
             except RuntimeError:
@@ -223,8 +316,43 @@ class StudioHubMixin:
 
         threading.Thread(target=scan, name="studio-library-scan", daemon=True).start()
 
+    @staticmethod
+    def _check_library_presence(records) -> dict[str, tuple[bool, bool | None]]:
+        """(project file present, source media present or None) per record path."""
+        presence: dict[str, tuple[bool, bool | None]] = {}
+        if not isinstance(records, list):
+            return presence
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            path = str(record.get("path", "") or "")
+            if not path:
+                continue
+            media = str(record.get("source_media") or "").strip()
+            try:
+                project_present = Path(path).is_file()
+            except OSError:
+                project_present = False
+            try:
+                media_present = Path(media).is_file() if media else None
+            except OSError:
+                media_present = False
+            presence[path] = (project_present, media_present)
+        return presence
+
+    def _hub_on_screen(self) -> bool:
+        empty = getattr(self, "studio_empty", None)
+        if empty is None:
+            return True  # headless hosts (tests) have no hub widgets
+        try:
+            return bool(empty.isVisible())
+        except RuntimeError:
+            return False
+
     def _library_scan_ready(self, records, scan_generation: int = -1) -> None:
         self._hub_scan_pending = False
+        presence = getattr(self, "_library_presence_next", None)
+        self._library_presence_next = None
         if scan_generation != int(getattr(self, "_hub_scan_generation", 0)):
             # Stale snapshot captured before a structural change: rescan.
             self._request_library_scan()
@@ -240,13 +368,25 @@ class StudioHubMixin:
             self.hub_loading_label.show()
             self.project_library_empty.hide()
             return
+        if presence:
+            known = getattr(self, "_library_presence", None)
+            if known is None:
+                known = self._library_presence = {}
+            known.update(presence)
         warnings = getattr(self, '_library_read_warnings', [])
         self.hub_loading_label.setText('\n'.join(warnings))
         self.hub_loading_label.setWordWrap(True)
         self.hub_loading_label.setVisible(bool(warnings))
         self._hub_library_records = records
-        if self.project is None:
-            self._rebuild_project_library()
+        if self.project is not None:
+            return
+        if not self._hub_on_screen():
+            # The user left the library while files were read: keep the
+            # result and render it when the library is shown again.
+            self._hub_rebuild_pending = True
+            return
+        self._rebuild_project_library()
+        self._apply_library_presence()
 
     def _rebuild_project_library(self) -> None:
         if not hasattr(self, "studio_empty"):
@@ -267,11 +407,39 @@ class StudioHubMixin:
             records.sort(key=lambda record: str(record.get("created_at", "")), reverse=True)
         else:
             records.sort(key=lambda record: (str(record.get("last_opened", "")), str(record.get("updated_at", ""))), reverse=True)
-        viewport_width = self.project_library_scroll.viewport().width() if hasattr(self, "project_library_scroll") else self.width()
-        columns, card_width, gap = self._library_grid_metrics(viewport_width)
+        columns, card_width, gap = self._library_grid_metrics(self._library_layout_width())
         selection_mode = bool(getattr(self, "_library_selection_mode", False))
-        signature = (repr(records), query, sort_mode, columns, card_width, theme_key(), selection_mode, current_language())
-        if signature == getattr(self, "_hub_render_signature", None):
+        signature = (_library_display_signature(records), query, sort_mode, columns, card_width, theme_key(),
+                     selection_mode, current_language())
+        self._hub_rebuild_pending = False
+        current = getattr(self, "_hub_render_signature", None)
+        if signature == current:
+            # Same cards: keep them (and their scroll); newer bookkeeping
+            # fields of the same projects are adopted without a rebuild.
+            self._hub_display_records = records
+            self._sync_resume_hero_geometry()
+            return
+        if (current is not None and getattr(self, "_hub_card_widgets", None)
+                and signature[:3] + signature[5:] == current[:3] + current[5:]
+                and not getattr(self, "_hub_relayout_due", False)):
+            # Only the grid width differs: a transient geometry while the
+            # hub is being shown again. Re-check once the layout settled;
+            # rebuild only if the width really changed (2026-10-12).
+            timer = getattr(self, "_hub_relayout_timer", None)
+            if timer is None:
+                timer = self._hub_relayout_timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.setInterval(120)
+
+                def relayout():
+                    self._hub_relayout_due = True
+                    try:
+                        if self.project is None and self._hub_on_screen():
+                            self._rebuild_project_library()
+                    finally:
+                        self._hub_relayout_due = False
+                timer.timeout.connect(relayout)
+            timer.start()
             self._sync_resume_hero_geometry()
             return
         self._hub_render_signature = signature
@@ -292,42 +460,98 @@ class StudioHubMixin:
                 item.widget().deleteLater()
         self._hub_card_widgets = []
         self._hub_row_widgets = []
+        self._hub_status_widgets = {}
+        self._hub_built_views = set()
         self._library_cover_labels = {}
         self._library_build_generation = getattr(self, "_library_build_generation", 0) + 1
-        generation = self._library_build_generation
         for column in range(8):
             # Each grid cell contains an entire flex row, not one card. Giving
             # unused grid columns a card width doubled the minimum width.
             self.all_projects_layout.setColumnMinimumWidth(column, 0)
             self.all_projects_layout.setColumnStretch(column, 0)
-
-        # 2026-09-18 III 工程库懒加载：卡片/列表行分批创建（每批 8 个，
-        # QTimer(0) 链），首屏立即可操作，后续滚动中补齐；重建/筛选/切管理
-        # 态通过 generation 失效旧批次。封面解码在后台线程出 QImage。
-        pending_records = list(records)
-        pending_cards: list[QToolButton] = []
-        batch_timer = getattr(self, "_library_build_timer", None)
-        if batch_timer is None:
-            batch_timer = self._library_build_timer = QTimer(self)
-            batch_timer.setSingleShot(True)
-        try:
-            batch_timer.timeout.disconnect()
-        except (RuntimeError, TypeError):
-            pass
         self.all_projects_heading.setVisible(True)
         self.all_projects_stack.setVisible(bool(records))
         self.project_library_empty.setVisible(not records)
         self.resume_hero.setVisible(bool(records) and not query)
         self._sync_resume_hero_geometry()
-        restored = [False]
+        # Only the visible view (cards or list) is built; the other one is
+        # built when the user switches to it (2026-10-12).
+        mode = "list" if getattr(self, "_project_library_view_mode", "card") == "list" else "card"
+        self._hub_grid_metrics = (columns, card_width, gap)
+        self._build_library_view(mode, saved_scroll=saved_scroll)
+        self._start_library_cover_worker()
+        self._set_project_library_view(mode, refresh=False)
+        self._hub_viewport_width = self.project_library_scroll.viewport().width()
+        self._library_update_manage_bar()
+
+    def _build_library_view(self, view: str, *, saved_scroll=None) -> None:
+        """Create one view's widgets for the displayed records in batches.
+
+        2026-09-18 III 工程库懒加载：每批 8 个（QTimer(0) 链），首屏立即可操作，
+        后续滚动中补齐；重建/筛选/切管理态通过 generation 失效旧批次。封面解码在
+        后台线程出 QImage。
+        """
+        records = list(getattr(self, "_hub_display_records", ()) or ())
+        generation = getattr(self, "_library_build_generation", 0)
+        built = getattr(self, "_hub_built_views", None)
+        if built is None:
+            built = self._hub_built_views = set()
+        built.add(view)
+        columns, card_width, gap = getattr(self, "_hub_grid_metrics", None) or self._library_grid_metrics(
+            self.project_library_scroll.viewport().width())
+        preferences = getattr(self, "_studio_preferences", None)
+        auto_cover = (preferences() if callable(preferences) else {}).get("auto_cover", True) is not False
+        pending_records = list(records)
+        pending_cards: list[QToolButton] = []
+        timers = getattr(self, "_library_build_timers", None)
+        if timers is None:
+            timers = self._library_build_timers = {}
+        batch_timer = timers.get(view)
+        if batch_timer is None:
+            batch_timer = timers[view] = QTimer(self)
+            batch_timer.setSingleShot(True)
+            if view == "card":
+                self._library_build_timer = batch_timer
+        slots = getattr(self, "_library_build_slots", None)
+        if slots is None:
+            slots = self._library_build_slots = {}
+        previous = slots.pop(view, None)
+        if previous is not None:
+            try:
+                batch_timer.timeout.disconnect(previous)
+            except (RuntimeError, TypeError):
+                pass
+        restored = [saved_scroll is None]
+        target = [max(16, columns * self._LIBRARY_INITIAL_CARD_ROWS) if view == "card"
+                  else self._LIBRARY_INITIAL_LIST_ROWS]
+        waiting = getattr(self, "_library_build_more", None)
+        if waiting is None:
+            waiting = self._library_build_more = {}
+        waiting.pop(view, None)
+        if not getattr(self, "_library_scroll_hooked", False) and hasattr(self, "project_library_scroll"):
+            bar = self.project_library_scroll.verticalScrollBar()
+            bar.valueChanged.connect(self._library_scrolled)
+            bar.rangeChanged.connect(lambda _low, _high: self._library_scrolled())
+            self._library_scroll_hooked = True
 
         def restore_scroll_once():
-            if restored[0] or saved_scroll is None:
+            if restored[0]:
                 return
-            restored[0] = True
             bar = self.project_library_scroll.verticalScrollBar()
+            if saved_scroll > bar.maximum() and pending_records:
+                return  # build on until the previous position exists again
+            restored[0] = True
             if saved_scroll <= bar.maximum():
                 bar.setValue(saved_scroll)
+
+        def built_count() -> int:
+            return len(self._hub_card_widgets) if view == "card" else len(self._hub_row_widgets)
+
+        def continue_or_wait() -> None:
+            if built_count() < target[0] or not restored[0] or pending_cards:
+                batch_timer.start(0)
+            else:
+                waiting[view] = (generation, target, batch_timer)
 
         def build_batch() -> None:
             if generation != getattr(self, "_library_build_generation", 0):
@@ -335,17 +559,19 @@ class StudioHubMixin:
             batch = pending_records[:self._LIBRARY_BUILD_BATCH]
             del pending_records[:self._LIBRARY_BUILD_BATCH]
             for record in batch:
-                card = self._build_project_card(record, card_width)
-                self._hub_card_widgets.append(card)
-                pending_cards.append(card)
-                path = Path(str(record.get("path", "")))
-                source_path = Path(str(record.get("source_media") or ""))
-                cover = self._library_cover_path(record)
-                if bool(record.get("_needs_metadata_repair")):
-                    self._queue_project_metadata_repair(record)
-                elif not cover.is_file() and source_path.is_file() and path.is_file() and self._studio_preferences().get("auto_cover", True) is not False:
-                    self._queue_project_cover_backfill(record)
-                self._add_project_list_row(record)
+                if view == "card":
+                    card = self._build_project_card(record, card_width)
+                    self._hub_card_widgets.append(card)
+                    pending_cards.append(card)
+                else:
+                    self._add_project_list_row(record)
+                self._queue_library_maintenance(record, auto_cover)
+            if view != "card":
+                self.project_list_layout.activate()
+                restore_scroll_once()
+                if pending_records:
+                    continue_or_wait()
+                return
             # 按整行落位卡片网格
             while len(pending_cards) >= columns:
                 row_cards = pending_cards[:columns]
@@ -366,7 +592,7 @@ class StudioHubMixin:
                     row_host, self.all_projects_layout.count(), 0)
             restore_scroll_once()
             if pending_records:
-                batch_timer.start(0)
+                continue_or_wait()
                 return
             # 尾行
             if pending_cards:
@@ -386,31 +612,147 @@ class StudioHubMixin:
                     row_host, self.all_projects_layout.count(), 0)
                 pending_cards.clear()
             self.all_projects_layout.activate()
-            self.project_list_layout.activate()
             restore_scroll_once()
 
         batch_timer.timeout.connect(build_batch)
+        slots[view] = build_batch
         build_batch()
-        self._start_library_cover_worker()
-        self._set_project_library_view(getattr(self, "_project_library_view_mode", "card"), refresh=False)
-        self._hub_viewport_width = self.project_library_scroll.viewport().width()
-        self._library_update_manage_bar()
+
+    def _library_scrolled(self, _value=None) -> None:
+        """Near the end of the built cards: build the next rows."""
+        waiting = getattr(self, "_library_build_more", None) or {}
+        view = "list" if getattr(self, "_project_library_view_mode", "card") == "list" else "card"
+        entry = waiting.get(view)
+        if entry is None:
+            return
+        generation, target, timer = entry
+        if generation != getattr(self, "_library_build_generation", 0):
+            waiting.pop(view, None)
+            return
+        scroll = self.project_library_scroll
+        bar = scroll.verticalScrollBar()
+        if bar.maximum() - bar.value() > scroll.viewport().height():
+            return
+        waiting.pop(view, None)
+        columns = (getattr(self, "_hub_grid_metrics", None) or (1,))[0]
+        target[0] += max(16, columns * self._LIBRARY_INITIAL_CARD_ROWS) if view == "card" \
+            else self._LIBRARY_INITIAL_LIST_ROWS
+        timer.start(0)
+
+    def _queue_library_maintenance(self, record: dict[str, object], auto_cover: bool) -> None:
+        """Metadata repair / cover backfill, decided without touching media drives."""
+        if bool(record.get("_needs_metadata_repair")):
+            self._queue_project_metadata_repair(record)
+            return
+        if not auto_cover:
+            return
+        presence = (getattr(self, "_library_presence", None) or {}).get(str(record.get("path", "")))
+        if not presence or not presence[0] or not presence[1]:
+            return  # unknown until the background scan reports, or offline
+        cover = self._library_cover_path(record)
+        if not cover.is_file():
+            self._queue_project_cover_backfill(record)
+
+    def _project_presence(self, record: dict[str, object]):
+        path = str(record.get("path", "") or "")
+        known = (getattr(self, "_library_presence", None) or {}).get(path)
+        if known is not None:
+            return known
+        if str(record.get("status") or "") == "工程文件已移动":
+            # recent_project_records() already found the project file gone.
+            return False, None
+        return None
 
     def _project_status(self, record: dict[str, object]) -> tuple[str, str]:
-        path = Path(str(record.get("path", "")))
-        source_value = str(record.get("source_media") or "").strip()
-        source = Path(source_value) if source_value else None
-        if not path.is_file():
+        presence = self._project_presence(record)
+        if presence is None:
+            # Not checked yet: the background scan reports moments later.
+            return tr("正在检查…"), "checking"
+        project_present, media_present = presence
+        if not project_present:
             return tr("工程文件已移动"), "missing"
-        if source is not None and not source.is_file():
+        if media_present is False:
             return tr("素材离线"), "offline"
         return tr("可继续"), "ready"
+
+    def _apply_library_presence(self) -> None:
+        """Update status pills in place after a scan (no card rebuild)."""
+        records = {str(record.get("path", "")): record
+                   for record in (getattr(self, "_hub_display_records", ()) or ())}
+        from shiboken6 import isValid
+        for path, widgets in list((getattr(self, "_hub_status_widgets", None) or {}).items()):
+            record = records.get(path)
+            if record is None:
+                continue
+            status_text, status_key = self._project_status(record)
+            for kind, widget, extra in widgets:
+                if not isValid(widget):
+                    continue
+                if widget.property("status") == status_key:
+                    continue
+                widget.setProperty("status", status_key)
+                if kind == "row":
+                    widget.setText("●  " + status_text)
+                    widget.setAccessibleName(status_text)
+                    if extra is not None and isValid(extra):
+                        extra.setText(tr("继续编辑") if status_key == "ready" else tr("查看工程"))
+                else:
+                    widget.setText(status_text)
+                    if extra is not None and isValid(extra):
+                        name = display_project_name(record)
+                        count = int(record.get("cue_count", 0) or 0)
+                        duration = max(0, int(record.get("duration_ms", 0) or 0))
+                        extra.set_project_text(tr("{name}\n{count} 条字幕 · {duration}\n{status}", name=name,
+                                                  count=count, duration=_library_duration(duration),
+                                                  status=status_text))
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+        display = getattr(self, "_hub_display_records", None) or []
+        query = self.project_search.text().strip() if hasattr(self, "project_search") else ""
+        if display and not query and getattr(self, "_resume_target", "") == str(display[0].get("path", "")):
+            self._update_resume_project(display[0])
+        if self._hub_on_screen():
+            preferences = getattr(self, "_studio_preferences", None)
+            auto_cover = (preferences() if callable(preferences) else {}).get("auto_cover", True) is not False
+            for record in display:
+                self._queue_library_maintenance(record, auto_cover)
+
+    def _register_status_widget(self, record, kind: str, widget, extra=None) -> None:
+        registry = getattr(self, "_hub_status_widgets", None)
+        if registry is None:
+            registry = self._hub_status_widgets = {}
+        registry.setdefault(str(record.get("path", "")), []).append((kind, widget, extra))
 
     @staticmethod
     def _cover_source_pixmap(record: dict[str, object]) -> QPixmap:
         cover = StudioHubMixin._library_cover_path(record)
         pixmap = QPixmap(str(cover)) if cover.is_file() else QPixmap()
         return pixmap if not pixmap.isNull() else QPixmap()
+
+    def _hero_cover_pixmap(self, record: dict[str, object]) -> QPixmap:
+        """The hero's cover, decoded once per file version at a bounded width."""
+        if not str(record.get('cover_path') or ''):
+            return QPixmap()
+        cover = self._library_cover_path(record)
+        try:
+            stat = cover.stat()
+        except OSError:
+            return QPixmap()
+        key = (str(cover), stat.st_mtime_ns, stat.st_size)
+        cached = getattr(self, "_hero_cover_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        from PySide6.QtGui import QImageReader
+        reader = QImageReader(str(cover))
+        reader.setAutoTransform(True)
+        size = reader.size()
+        if size.isValid() and size.width() > _HERO_COVER_MAX_WIDTH:
+            reader.setScaledSize(QSize(_HERO_COVER_MAX_WIDTH,
+                                       max(1, round(size.height() * _HERO_COVER_MAX_WIDTH / size.width()))))
+        image = reader.read()
+        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+        self._hero_cover_cache = (key, pixmap)
+        return pixmap
 
     # 2026-09-18 III：工程库封面解码/缩放移出 GUI 线程。worker 产出目标
     # 尺寸 QImage（文件 IO+平滑缩放都在后台），GUI 侧只 fromImage 贴 label。
@@ -423,15 +765,14 @@ class StudioHubMixin:
         return cover
 
     def _enqueue_library_cover(self, record: dict[str, object], width: int, height: int, label) -> None:
-        try:
-            from PySide6.QtGui import QImage
-        except ImportError:
+        if not str(record.get('cover_path') or ''):
             return
         cover = self._library_cover_path(record)
-        if not cover.is_file():
+        try:
+            stat = cover.stat()
+        except OSError:
             return
         key = (str(cover), int(width), int(height))
-        stat = cover.stat()
         stamp = (stat.st_mtime_ns, stat.st_size)
         cached = getattr(self, '_library_cover_images', {}).get(key)
         if cached is not None and cached[0] == stamp:
@@ -510,14 +851,12 @@ class StudioHubMixin:
         cache = getattr(self, '_library_cover_images', None)
         if cache is None:
             cache = self._library_cover_images = OrderedDict()
-        try:
-            stat = Path(path).stat()
-            cache[key] = ((stat.st_mtime_ns, stat.st_size), image)
-            cache.move_to_end(key)
-            while len(cache) > 128:
-                cache.popitem(last=False)
-        except OSError:
-            pass
+        cache[key] = ((stat.st_mtime_ns, stat.st_size), image)
+        cache.move_to_end(key)
+        self._library_cover_bytes = sum(int(entry[1].sizeInBytes()) for entry in cache.values())
+        while cache and (len(cache) > _COVER_CACHE_ENTRIES or self._library_cover_bytes > _COVER_CACHE_BYTES):
+            _old_key, (_stamp, old_image) = cache.popitem(last=False)
+            self._library_cover_bytes -= int(old_image.sizeInBytes())
         labels = getattr(self, "_library_cover_labels", {}).pop(key, None) or []
         pixmap = QPixmap.fromImage(image)
         from shiboken6 import isValid
@@ -591,6 +930,7 @@ class StudioHubMixin:
         status.setProperty("status", status_key)
         status.setFixedHeight(24)
         media_layout.addWidget(status, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._register_status_widget(record, "card", status, card)
         layout.addWidget(media)
         metrics = QFontMetrics(card.font())
         title = user_text(QLabel(metrics.elidedText(name, Qt.TextElideMode.ElideRight, cover_width)))
@@ -711,6 +1051,7 @@ class StudioHubMixin:
         layout.addWidget(status, 0, Qt.AlignmentFlag.AlignVCenter)
         open_button = QPushButton("继续编辑" if status_key == "ready" else "查看工程")
         open_button.setObjectName("projectRowOpen")
+        self._register_status_widget(record, "row", status, open_button)
         install_themed_icon(open_button, "fa5s.arrow-right", "primary")
         open_button.setAccessibleName(f"{open_button.text()} {name}")
         open_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -793,7 +1134,7 @@ class StudioHubMixin:
         enabled = bool(str(path))
         self.resume_continue_button.setEnabled(enabled)
         self.resume_details_button.setEnabled(enabled)
-        source = self._cover_source_pixmap(record)
+        source = self._hero_cover_pixmap(record)
         self._resume_has_cover = not source.isNull()
         if source.isNull():
             source = self._placeholder_cover(640, 360)
@@ -812,6 +1153,10 @@ class StudioHubMixin:
             self.project_card_view_button.setChecked(mode == "card")
         if hasattr(self, "project_list_view_button"):
             self.project_list_view_button.setChecked(mode == "list")
+        built = getattr(self, "_hub_built_views", None)
+        if (built is not None and mode not in built and getattr(self, "_hub_render_signature", None) is not None
+                and hasattr(self, "all_projects_layout") and getattr(self, "project", None) is None):
+            self._build_library_view(mode)
         if hasattr(self, "all_projects_layout") and mode == "card":
             self.all_projects_layout.activate()
             self.all_projects_layout.setGeometry(self.all_projects_host.rect())
@@ -872,18 +1217,9 @@ class StudioHubMixin:
             # parent (portable runs/tests). Filter its internal subfolders,
             # not the caller's choice of ancestor directory.
             resolved = path.resolve()
-            parts = resolved.relative_to(library_root).parts if resolved.is_relative_to(library_root) else path.parts
-            lowered_parts = {part.lower() for part in parts}
-            name = path.name.lower()
-            internal_dirs = {
-                "autosave", "autosaves", "backup", "backups", "recovery",
-                "recoveries", "checkpoint", "checkpoints", "temp", "tmp",
-            }
-            return bool(
-                lowered_parts & internal_dirs
-                or any(marker in name for marker in (".previous", ".autosave", ".backup", ".recovery", ".checkpoint", ".tmp"))
-                or re.fullmatch(r"[0-9a-f]{24,64}\.2byteproj", name)
-            )
+            if not resolved.is_relative_to(library_root):
+                resolved = path
+            return _internal_project_snapshot(resolved, library_root)
 
         def enrich(record: dict[str, object], project_path: Path) -> dict[str, object]:
             nonlocal index_dirty
@@ -968,19 +1304,7 @@ class StudioHubMixin:
             merged.append(record)
             seen.add(resolved)
 
-        # Formal project entries win. A project id is canonical; legacy projects
-        # without a stable id fall back to their normalized source-media path.
-        deduplicated: list[dict[str, object]] = []
-        logical_seen: set[str] = set()
-        for record in merged:
-            project_id = str(record.get("project_id", "")).strip().lower()
-            media = str(record.get("source_media", "")).strip()
-            media_key = str(Path(media).expanduser()).replace("/", "\\").lower() if media else ""
-            key = f"project:{project_id}" if project_id else (f"media:{media_key}" if media_key else f"path:{str(record.get('path', '')).lower()}")
-            if key in logical_seen:
-                continue
-            logical_seen.add(key)
-            deduplicated.append(record)
+        deduplicated = _dedupe_library_records(merged)
         if index_dirty and not self._library_read_warnings:
             with _LIBRARY_INDEX_LOCK:
                 if scan_generation == int(getattr(self, '_hub_scan_generation', 0)):
@@ -994,40 +1318,73 @@ class StudioHubMixin:
         index fall back to their persisted recent fields (or basic path info),
         and the background scan refreshes them moments later.
         """
+        # 2026-10-12: built exactly like the background scan builds an
+        # unchanged library (same fields, order, filtering and dedupe), so the
+        # scan result compares equal and does not rebuild every card. No file
+        # system checks here: those run in the scan thread.
         index = load_library_index()
         if not index:
             return None
+        library_root = Path(os.path.abspath(project_library_root()))
+        root_key = os.path.normcase(str(library_root)).rstrip("\\/") + os.sep
+
+        def summary(entry: dict[str, object]) -> dict[str, object]:
+            values = {key: entry[key] for key in _LIBRARY_INDEX_SUMMARY_KEYS if key in entry}
+            values["_needs_metadata_repair"] = bool(entry.get("needs_metadata_repair"))
+            values["_summary_loaded"] = True
+            return values
+
         merged: list[dict[str, object]] = []
         seen: set[str] = set()
-        for item in self.recent_project_records():
+        for recent_index, item in enumerate(self._recent_records_unchecked()):
             path = str(item.get("path", ""))
-            resolved = str(Path(path).expanduser().resolve()) if path else path
-            if not path or resolved in seen:
+            if not path:
+                continue
+            resolved = os.path.abspath(os.path.expanduser(path))
+            if _internal_project_snapshot(Path(resolved), library_root) or resolved in seen:
                 continue
             record = dict(item)
             record["path"] = resolved
             entry = index.get(resolved)
             if isinstance(entry, dict):
-                record.update({key: entry[key] for key in _LIBRARY_INDEX_SUMMARY_KEYS if key in entry})
-            record.setdefault("last_opened", str(record.get("modified", "")) or "9999")
+                record.update(summary(entry))
+            record.setdefault("last_opened", str(record.get("modified", "")) or f"9999-recent-{9999 - recent_index:04d}")
             merged.append(record)
             seen.add(resolved)
-        for resolved, entry in index.items():
-            if resolved in seen or not isinstance(entry, dict):
-                continue
-            if not Path(resolved).is_file():
-                # Keep the record visible with its cached summary; the scan
-                # marks/removes it after the fact (offline drives included).
-                pass
-            record = {
-                "path": resolved,
-                "name": str(entry.get("name") or Path(resolved).stem),
-                "last_opened": str(entry.get("updated_at") or ""),
-            }
-            record.update({key: entry[key] for key in _LIBRARY_INDEX_SUMMARY_KEYS if key in entry})
+        library_entries = sorted(
+            ((key, entry) for key, entry in index.items()
+             if key not in seen and isinstance(entry, dict)
+             and os.path.normcase(key).startswith(root_key)
+             and not _internal_project_snapshot(Path(key), library_root)),
+            key=lambda item: int(item[1].get("mtime_ns", 0) or 0),
+            reverse=True,
+        )
+        for resolved, entry in library_entries:
+            record = {"path": resolved, "name": Path(resolved).stem, "last_opened": ""}
+            record.update(summary(entry))
             merged.append(record)
             seen.add(resolved)
-        return merged or None
+        return _dedupe_library_records(merged) or None
+
+    def _recent_records_unchecked(self) -> list[dict[str, object]]:
+        """recent_project_records() without its per-file existence checks."""
+        try:
+            payload = json.loads(studio_settings_path().read_text(encoding="utf-8"))
+            recent = payload.get("recent_projects", []) if isinstance(payload, dict) else []
+        except (OSError, ValueError, TypeError):
+            recent = []
+        records: list[dict[str, object]] = []
+        for item in recent:
+            record = dict(item) if isinstance(item, dict) else {"path": str(item)}
+            path = Path(str(record.get("path", "")))
+            record.setdefault("name", path.stem)
+            record.setdefault("source_media", "")
+            record.setdefault("modified", "")
+            record.setdefault("cue_count", 0)
+            record.setdefault("cover_path", "")
+            record.setdefault("pinned", False)
+            records.append(record)
+        return records
 
     def _open_recent_project_card(self, target: str) -> None:
         """Card-level entry point; keeps the canonical path and reports progress."""

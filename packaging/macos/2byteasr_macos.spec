@@ -4,7 +4,7 @@ from pathlib import Path
 import json
 import os
 import sys
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 from PyInstaller.utils.hooks.qt import get_qt_library_info
 
 if sys.platform != 'darwin':
@@ -16,6 +16,11 @@ from twobyteasr.platform_macos import cpu_factory_settings
 from twobyteasr.settings import DEFAULT_SETTINGS
 from scripts.macos_build import is_macho, selected_media_libraries
 native=json.loads(Path(os.environ['TWOBYTEASR_MAC_NATIVE_INPUTS']).read_text(encoding='utf8'))
+VERSION=json.loads((ROOT/'2byteasr_version.json').read_text(encoding='utf8'))['version']
+# Local MCP server (2026-10-12): the same official SDK modules as the Windows spec;
+# the CLI and FastMCP extras are not used.
+mcp_hidden=(collect_submodules('mcp',filter=lambda name: not name.startswith(('mcp.cli','mcp.server.fastmcp')))
+            +collect_submodules('mcp_types'))
 factory=WORK/'factory'
 factory.mkdir()
 (factory/'2byteasr_settings.json').write_text(json.dumps(cpu_factory_settings(DEFAULT_SETTINGS),ensure_ascii=False,indent=2)+'\n',encoding='utf8')
@@ -45,7 +50,7 @@ for path in ROOT.iterdir():
 datas.append((str(ROOT/'twobyteasr/environment_probe.py'),'.'))
 excluded=['torch','torchaudio','transformers','funasr','modelscope','librosa','numba','scipy','sklearn','speechbrain','accelerate','qwen_asr','PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets','PySide6.QtWebEngineQuick','PySide6.QtDataVisualization','qtpy.QtDataVisualization']
 a=Analysis([str(ROOT/'scripts/macos_launch.py')],pathex=[str(ROOT)],binaries=binaries,datas=datas,
-           hiddenimports=['PySide6.QtNetwork','PySide6.QtMultimedia','PIL.Image','qtawesome','oss2','oss2.defaults','crcmod'],
+           hiddenimports=['PySide6.QtNetwork','PySide6.QtMultimedia','PIL.Image','qtawesome','oss2','oss2.defaults','crcmod',*mcp_hidden],
            hookspath=[],hooksconfig={},runtime_hooks=[],excludes=excluded,noarchive=False,optimize=1)
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='2ByteASR',debug=False,bootloader_ignore_signals=False,
@@ -53,5 +58,5 @@ exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='2ByteASR',debug=False,bootl
 coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='2ByteASR')
 app=BUNDLE(coll,name='2ByteASR.app',icon=native['app_icon']['path'],bundle_identifier='org.2byteasr.desktop.experimental',
            info_plist={'CFBundleName':'2ByteASR','CFBundleDisplayName':'兔白字幕 / 2ByteASR',
-                       'CFBundleShortVersionString':'0.5.0','CFBundleVersion':'0.5.0',
+                       'CFBundleShortVersionString':VERSION,'CFBundleVersion':VERSION,
                        'LSMinimumSystemVersion':'15.0','NSHighResolutionCapable':True})

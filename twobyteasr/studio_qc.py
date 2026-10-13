@@ -218,16 +218,8 @@ _TERMINAL = "。！？!?…"
 _PUNCTUATION = "，。！？；：、,.!?;:"
 
 
-def _interjection_anchor_class() -> str:
-    """AI 断句句内节奏位的锚字集（语气词/应答/句末助词）。
-
-    2026-09-18 VIII：normalize_safe_text 曾把"中文之间的空格"全部删除、
-    QC 规则把它们全部标"多余空格"——这会把 AI 断句刻意插入的句内空格
-    （"对 对 很不错啊 嗯"）整体回滚。语气字后的单个空格是合法节奏位，
-    予以豁免；其余清洗逻辑保持原样。
-    """
-    from .sentence_refine import INTERJECTION_CHARS
-    return "".join(sorted(INTERJECTION_CHARS))
+# 2026-09-18 VIII 曾只豁免语气字后的单个空格；2026-10-12 起中文字间的单个
+# 半角空格一律视为有意的停顿排版（normalize_format_spaces），不再删除。
 
 
 def _is_pure_interjection(text: str) -> bool:
@@ -691,13 +683,13 @@ class ASREvidenceRule:
 class TextQualityRule:
     def evaluate(self, cue: StudioCue, context: _QCContext) -> Iterable[QCIssue]:
         text = _visible_text(cue.text)
-        interjections = re.escape(_interjection_anchor_class())
-        if text != text.strip() or re.search(r"[ \t]{2,}", text) or re.search(
-            rf"(?<=[{_CJK}，。！？；：])(?<![{interjections}])\s+(?=[{_CJK}，。！？；：])", text
-        ):
+        # 2026-10-12: a single half-width space between CJK characters is the
+        # product's pause spacing (“有点担心 有点担心”), not an error.
+        if normalize_format_spaces(text) != text:
             yield QCIssue(
                 "extra_spaces", QCSeverity.INFO, QCCategory.TEXT, cue.id,
-                "多余空格", "存在首尾空格、连续空格或中文之间的无意义空格。",
+                "多余空格", "存在首尾空白、连续空格、全角标点旁的空格或不可见空白（不换行/零宽字符）；"
+                "中文之间的单个停顿空格是有意排版，不算问题。",
                 fix_action="normalize_text", source="text_rule",
             )
         if re.search(rf"([{re.escape(_PUNCTUATION)}])\1+", text):
@@ -1123,15 +1115,53 @@ def _halfwidth_alphanumerics(text: str) -> str:
     return "".join(result)
 
 
+_FORMAT_INVISIBLE = frozenset("\u200b\u200c\u200d\u2060\ufeff")
+_SPACE_BEFORE_FULLWIDTH = "，。！？；：、）」』】》〉"
+_SPACE_AFTER_FULLWIDTH = "，。！？；：、（「『【《〈"
+
+
+def _emoji_joiner(text: str, index: int) -> bool:
+    if not 0 < index < len(text) - 1:
+        return False
+    return (unicodedata.category(text[index - 1]) in ("So", "Sk", "Mn")
+            and unicodedata.category(text[index + 1]) == "So")
+
+
+def normalize_format_spaces(text: str) -> str:
+    """Format-only whitespace cleanup; the same rules as
+    ``text_rules.normalize_format_whitespace`` (kept here so Studio QC does not
+    import the recognition facade).
+
+    Removes zero-width characters, edge whitespace of each line, spaces that
+    touch full-width punctuation, and collapses other whitespace runs (incl.
+    U+3000/NBSP) to one U+0020.  Keeps every single inner space: CJK pause
+    spacing, English word spacing and user typesetting.  Idempotent.
+    """
+    text = str(text or "")
+    if any(char in _FORMAT_INVISIBLE for char in text):
+        text = "".join(char for index, char in enumerate(text)
+                       if char not in _FORMAT_INVISIBLE
+                       or (char == "\u200d" and _emoji_joiner(text, index)))
+    lines: list[str] = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = re.sub(r"\A\s+|\s+\Z", "", line)
+        line = re.sub(r"[^\S\n]+", " ", line)
+        line = re.sub(rf" (?=[{_SPACE_BEFORE_FULLWIDTH}])", "", line)
+        line = re.sub(rf"(?<=[{_SPACE_AFTER_FULLWIDTH}]) ", "", line)
+        lines.append(line)
+    return "\n".join(lines).strip("\n")
+
+
 def normalize_safe_text(text: str) -> str:
-    """Apply only formatting changes that do not choose alternative wording."""
+    """Apply only formatting changes that do not choose alternative wording.
+
+    2026-10-12: single spaces between CJK characters are intentional pause
+    spacing and stay; only format junk (``normalize_format_spaces``) goes.
+    """
     value = _halfwidth_alphanumerics(str(text or ""))
-    interjections = re.escape(_interjection_anchor_class())
     lines: list[str] = []
     for line in value.splitlines() or [value]:
-        line = re.sub(r"[ \t]+", " ", line.strip())
-        # 语气字后的单个空格=AI 断句句内节奏位，豁免；其余中文间空格仍清洗。
-        line = re.sub(rf"(?<=[{_CJK}，。！？；：、])(?<![{interjections}]) +(?=[{_CJK}，。！？；：、])", "", line)
+        line = normalize_format_spaces(line)
         line = re.sub(rf"([{re.escape(_PUNCTUATION)}])\1+", r"\1", line)
         line = re.sub(r"(?<![A-Za-z])i(?![A-Za-z])", "I", line)
         line = re.sub(r"(?<=\d)，(?=\d)", ",", line)

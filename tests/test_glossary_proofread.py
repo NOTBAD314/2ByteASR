@@ -1202,3 +1202,25 @@ def test_leaving_by_another_page_writes_the_file_first(tmp_path):
         assert load_project(path).cues[0].text == "校对后的字幕"
     finally:
         _close(page)
+
+
+def test_flush_save_never_reports_a_still_running_save_as_written():
+    """A save slower than the wait (slow/network drive) used to be dropped and
+    reported as written, so Studio could load and later overwrite the older
+    file. The page now keeps the thread and says the file is still written."""
+    from twobyteasr.glossary_proofread import GlossaryProofreadPage
+
+    class SlowThread:
+        def __init__(self):
+            self.waits = 0
+
+        def wait(self, _ms):
+            self.waits += 1
+            return False
+
+    thread = SlowThread()
+    page = SimpleNamespace(_save_timer=SimpleNamespace(isActive=lambda: False), _save_thread=thread,
+                           _save_again=False, _save_error="", _save_now=lambda: None)
+    assert GlossaryProofreadPage._flush_save(page) is False
+    assert page._save_thread is thread and thread.waits == 1
+    assert page._save_error

@@ -57,6 +57,33 @@ REFINE_SYSTEM_PROMPT = """你是中文直播字幕的断句与节奏编排引擎
 split_after_chars 与 space_after_chars 都是原文的 0 基字符索引，空格也计数。
 word_boundaries.after_chars 使用同一索引。不得返回输入 cues 或省略 keep 项。"""
 
+JAPANESE_REFINE_SYSTEM_PROMPT = """你是日语字幕（日文原文）的断句与节奏编排引擎。输入是一批字幕 cue（含原文、时间与
+真实停顿证据），你必须为每条 cue 决定 keep / split / space，协议与输出格式完全相同：
+- keep：保持原样（默认；不确定时一律 keep）。
+- split：在"原文第几个字符后"切分。只能切在文节之间：名词、动词、形容词连同其后的送假名、
+  助词（は、が、を、に、で、と、も、へ、の、って）、助动词（だ、です、ます、た、て、ない）是一个整体；
+  不得切开一个词（天|才、恐ろし|い、ストリート|ファイター、2024|年），下一段不得以助词或助动词开头，
+  连体词（この、その、あの）与后面的名词同段。两段各自语义完整、每段≥约1.2s，停顿是加强证据。
+- space：只在文节之间插入一个半角空格，用于原本有「、」或明显气口的位置
+  （「恐ろしいわ すえ恐ろしいわ」「えっ ちょっと待って」）。不要在词内插空格。
+硬性规则：只能返回字符索引，禁止改写、增删、翻译或重排原文任何字符；汉字/假名写法保持原样；
+不删去重复词（「怖いわ怖いわ」可分开但不删）；只返回 JSON：
+{"results":[{"cue_id":"输入的ID","action":"keep","split_after_chars":[],"space_after_chars":[],"reason":"原因"}]}
+split_after_chars 与 space_after_chars 都是原文的 0 基字符索引，空格也计数。每个输入 cue_id 恰好返回一次。"""
+
+
+def refine_system_prompt(language: str = "") -> str:
+    return JAPANESE_REFINE_SYSTEM_PROMPT if language == "ja" else REFINE_SYSTEM_PROMPT
+
+
+def _japanese_boundaries(text: str) -> set[int]:
+    """Character offsets between Japanese phrases (allowed cut/space positions)."""
+    from .language_rules import japanese_phrase_spans
+    spans = japanese_phrase_spans(text)
+    inside = {index for start, end, _word in spans for index in range(start + 1, end)}
+    return {index for index in range(1, len(text)) if index not in inside}
+
+
 REFINE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -126,6 +153,23 @@ def validate_action(text: str, raw: Mapping[str, Any]) -> CueRefineAction | None
         return None
     if action == "keep":
         return CueRefineAction(cue_id=str(raw.get("cue_id") or ""), action="keep")
+    from .language_rules import is_japanese
+    if is_japanese():
+        # Japanese: cuts and rhythm spaces only between phrases, never inside a word.
+        allowed = _japanese_boundaries(text)
+        if action == "space":
+            spaces = [index for index in spaces if index + 1 < length and text[index + 1] != " " and text[index] != " "]
+            if not spaces:
+                return CueRefineAction(cue_id=str(raw.get("cue_id") or ""), action="keep")
+            if any(index + 1 not in allowed for index in spaces):
+                return None
+            return CueRefineAction(cue_id=str(raw.get("cue_id") or ""), action="space", space_after_chars=spaces)
+        if not splits or any(index + 1 not in allowed for index in splits):
+            return None
+        bounds = [0, *(index + 1 for index in splits), length]
+        if any(len(text[left:right].strip()) < 2 for left, right in zip(bounds, bounds[1:])):
+            return None
+        return CueRefineAction(cue_id=str(raw.get("cue_id") or ""), action="split", split_after_chars=splits)
     if action == "space":
         if not spaces:
             return None
@@ -151,6 +195,8 @@ def validate_action(text: str, raw: Mapping[str, Any]) -> CueRefineAction | None
     bounds = [0, *(index + 1 for index in splits), length]
     for left, right in zip(bounds, bounds[1:]):
         segment = text[left:right]
+        if not segment.strip():
+            return None  # 只有空格的一段不是字幕
         if len(segment) >= 3:
             continue
         stripped = segment.strip()
@@ -221,6 +267,10 @@ def build_replacement_cues(
     split_indices = sorted(action.split_after_chars)
     bounds = [0, *(index + 1 for index in split_indices), len(text)]
     segments_text = [text[left:right] for left, right in zip(bounds, bounds[1:])]
+    # 2026-10-12：在停顿空格处切分时空格就是边界，不留在任一段的首尾；
+    # 时间仍按原文字符索引分配（allocate_split_times），与去空格无关。
+    from .studio_timing import trim_cut_pieces
+    segments_text = trim_cut_pieces(segments_text)
     timings, estimated = allocate_split_times(cue, split_indices, project=project)
     action.estimated_timing = estimated
     used = used_ids if used_ids is not None else set()
@@ -350,7 +400,18 @@ def refine_cues_with_llm(
         models["group"] = polish
         settings["models"] = models
     provider = provider_for_stage(settings, "group", sender=provider_post)
+    from .language_rules import language_scope, project_language
+    from .japanese_morphology import document_for_texts, phrase_scope
+    language = project_language(project) if project is not None else ""
+    # Japanese: proposed breaks are checked against bunsetsu of the current
+    # (possibly hand-edited) texts, as in recognition; heuristic only when the
+    # tagger is unavailable.
+    document = document_for_texts([cue.text for cue in cues]) if language == "ja" else None
+    with language_scope(language or None), phrase_scope(document):
+        return _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language)
 
+
+def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language):
     by_id = {cue.id: cue for cue in cues}
     ordered = sorted(cues, key=lambda item: item.start_ms)
     neighbors: dict[str, tuple[str, str]] = {}
@@ -382,7 +443,7 @@ def refine_cues_with_llm(
             try:
                 content = provider.complete(
             [
-                {"role": "system", "content": REFINE_SYSTEM_PROMPT},
+                {"role": "system", "content": refine_system_prompt(language)},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
             max_tokens=6000,

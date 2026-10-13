@@ -245,3 +245,21 @@ def test_saved_cache_junction_alias_is_unknown_even_when_lexical_path_differs(pr
     scan=proof.saved_project_references(service.paths,[str(cache)])
     assert not scan.complete and any('链接' in error for error in scan.errors)
     assert not proof.verified_relinked_asset(item,service.paths).verified
+
+
+def test_library_larger_than_the_old_total_read_cap_is_still_verified(service):
+    """2026-10-11: a real library held 383 project/autosave files (231 MB);
+    the former 64 MB total cap made every media cache unverifiable, so the
+    storage page could never clean any of them."""
+    cache=service.paths.cache_root/'proxy.mp4';cache.write_bytes(b'tiny')
+    other=service.paths.user_data_root/'other.flv'
+    for index in range(70):  # ~70 MB of saved projects without that cache
+        value=SubtitleProject(media=StudioMedia(path=str(other),duration_ms=2000,width=160,height=90))
+        value.generation_metadata['notes']='x'*(1024*1024)
+        value.validate();path=service.paths.project_root/f'p{index}'/f'p{index}.2byteproj'
+        save_project(value,path)
+    holder=service.paths.project_root/'holder'/'holder.2byteproj';holder.parent.mkdir(parents=True)
+    project(cache,holder)
+    result=proof.saved_project_references(service.paths,[str(cache)])
+    assert result.complete, result.errors[:2]
+    assert result.references[str(cache)] == (str(holder),)

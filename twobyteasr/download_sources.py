@@ -127,7 +127,8 @@ def user_facing_source_choices():
 def modelscope_declared(spec):
     if not isinstance(spec, dict):
         return False
-    return bool(str(spec.get("modelscope_repository") or "").strip())
+    manifest = (spec.get('source_manifests') or {}).get('modelscope') or {}
+    return manifest.get('compatible') is not False and bool(str(manifest.get('repository') or spec.get("modelscope_repository") or "").strip())
 
 
 def _modelscope_repository(spec):
@@ -167,7 +168,7 @@ def resolve_artifact(model_key, relative, spec, mode):
         planned = []
         if modelscope_declared(spec):
             planned.append("MODELSCOPE")
-        planned.extend(("HF_MIRROR", "HF_OFFICIAL"))
+        planned.append("HF_OFFICIAL")
         return [item for item in (_one_source(spec, relative, name) for name in planned) if item]
 
     resolved = _one_source(spec, relative, mode)

@@ -11,6 +11,8 @@ PySide6==6.9.2
 QtAwesome==1.4.0
 # 四十轮：OSS 临时音频中转（Qwen filetrans provider 需要；已随主 venv 安装）。
 oss2==2.19.1
+# 2026-10-12：本机 MCP 服务（可选功能，默认关闭；官方 SDK）。
+mcp==2.3.0
 
 # huggingface_hub / transformers versions are controlled exclusively by
 # dependencies.lock.json (environments.main / environments.moss).  Never pin

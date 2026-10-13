@@ -4,7 +4,7 @@ param(
     [ValidateSet(
         "moss", "firered_vad", "firered_aed", "qwen_asr", "speaker_embedding",
         "qwen_aligner", "whisper_turbo", "sensevoice", "paraformer", "funasr_nano",
-        "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b"
+        "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b", "ja_ctc_aligner"
     )]
     [string[]]$ModelKey
 )

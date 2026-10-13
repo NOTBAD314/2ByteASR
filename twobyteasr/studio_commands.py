@@ -430,10 +430,13 @@ class ReplaceCuesCommand(QUndoCommand):
                 | DirtyDomain.AUTOSAVE
             ),
             cue_ids=affected,
-            mutate=lambda: setattr(self.project, "cues", copy.deepcopy(cues)),
+            mutate=lambda: self._mutate(cues),
             changed=self.changed,
             selection_after=selection_after,
         )
+
+    def _mutate(self, cues: list[StudioCue]) -> None:
+        self.project.cues = copy.deepcopy(cues)
 
     def redo(self) -> None:
         self._apply(self.after)
@@ -673,6 +676,75 @@ class ApplySafeFixesCommand(ReplaceCuesCommand):
             changed,
             MutationOrigin.SAFE_FIX,
         )
+        self._word_state_before, self._word_state_after = _format_only_word_state(
+            project, self.before, self.after)
+
+    def _mutate(self, cues: list[StudioCue]) -> None:
+        super()._mutate(cues)
+        state = self._word_state_after if cues is self.after else self._word_state_before
+        _restore_word_state(self.project, state)
+
+
+def _format_only_word_state(project: SubtitleProject, before, after):
+    """Word receipts/term overrides that follow a format-only text fix.
+
+    2026-10-12: a safe fix that only changes spacing/punctuation/case keeps
+    every content character, so a caption receipt (char indices) and a term
+    word override (keyed by the exact text) are carried to the new text
+    instead of silently falling back to re-alignment/pending.  Returns
+    ``(before, after)`` snapshots for undo/redo; content changes (merges,
+    width fixes) are left to the existing re-alignment path.
+    """
+    from .cue_word_alignment import content_positions
+    from .studio_caption_timeline import KEY
+    receipts = (project.studio_state.get(KEY) or {}).get('instances', {})
+    overrides = project.studio_state.get('term_word_overrides', {}) or {}
+    old_by_id = {cue.id: cue for cue in before}
+    state_before = {'instances': {}, 'overrides': {}}
+    state_after = {'instances': {}, 'overrides': {}}
+    for cue in after:
+        old = old_by_id.get(cue.id)
+        if old is None or old.text == cue.text:
+            continue
+        old_positions, new_positions = content_positions(old.text), content_positions(cue.text)
+        if [c for _, c in old_positions] != [c for _, c in new_positions]:
+            continue
+        index_map = {}
+        for (old_index, _c), (new_index, _d) in zip(old_positions, new_positions):
+            index_map.setdefault(old_index, new_index)
+        override = overrides.get(cue.id)
+        if override and override.get('text') == old.text:
+            state_before['overrides'][cue.id] = copy.deepcopy(override)
+            state_after['overrides'][cue.id] = {**copy.deepcopy(override), 'text': cue.text}
+        receipt = receipts.get(cue.id)
+        if not receipt or receipt.get('text') != old.text:
+            continue
+        moved = copy.deepcopy(receipt)
+        try:
+            for key in ('words', 'word_base_words'):
+                for word in moved.get(key) or ():
+                    word['char_end'] = index_map[int(word['char_end']) - 1] + 1
+                    word['char_start'] = index_map[int(word['char_start'])]
+        except (KeyError, TypeError, ValueError):
+            continue  # an index off the content characters: re-align as before
+        moved['text'] = cue.text
+        state_before['instances'][cue.id] = copy.deepcopy(receipt)
+        state_after['instances'][cue.id] = moved
+    return state_before, state_after
+
+
+def _restore_word_state(project: SubtitleProject, state) -> None:
+    if not state or not (state['instances'] or state['overrides']):
+        return
+    from .studio_caption_timeline import KEY
+    if state['instances']:
+        receipts = project.studio_state.setdefault(KEY, {'version': 1, 'instances': {}}).setdefault('instances', {})
+        for cue_id, receipt in state['instances'].items():
+            receipts[cue_id] = copy.deepcopy(receipt)
+    if state['overrides']:
+        overrides = project.studio_state.setdefault('term_word_overrides', {})
+        for cue_id, override in state['overrides'].items():
+            overrides[cue_id] = copy.deepcopy(override)
 
 
 def _validate_speaker_references(project: SubtitleProject) -> None:

@@ -32,9 +32,19 @@ def test_bound_messages_have_both_translations():
 
 def test_complete_format_specifications_match():
     def fields(s):return sorted((name,spec,conv) for _,name,spec,conv in Formatter().parse(s) if name is not None)
-    from twobyteasr.i18n_catalog import STRINGS
-    for source,pair in STRINGS.items():
-        for translated in pair:assert fields(source)==fields(translated),(source,translated)
+    for language in ('en','ja'):
+        for source,translated in i18n._TRANSLATIONS[language].items():
+            assert fields(source)==fields(translated),(language,source,translated)
+
+
+def test_locale_files_load_with_identical_keys():
+    import json
+    assert not i18n.LOCALE_LOAD_ERRORS
+    tables={language:json.loads((i18n.LOCALE_DIR/f'{language}.json').read_text('utf8'))
+            for language in i18n.TRANSLATED_LANGUAGES}
+    assert tables['en'].keys()==tables['ja'].keys() and len(tables['en'])>4000
+    assert all(isinstance(value,str) and value.strip() for table in tables.values() for value in table.values())
+    assert i18n._TRANSLATIONS==tables
 
 
 def test_dynamic_status_replaces_previous_capture(app):

@@ -214,8 +214,45 @@ def classify_request_error(error: BaseException) -> str:
     return "request_error"
 
 
+# Same set as text_rules.FORMAT_INVISIBLE_CHARACTERS; duplicated so this
+# validator never imports the subtitle_core facade.
+_BOUNDARY_INVISIBLE = frozenset("\u200b\u200c\u200d\u2060\ufeff")
+
+
+def _boundary_space(char) -> bool:
+    return char.isspace() or char in _BOUNDARY_INVISIBLE
+
+
+def strip_boundary_space(text) -> str:
+    text = str(text)
+    start, end = 0, len(text)
+    while start < end and _boundary_space(text[start]):
+        start += 1
+    while end > start and _boundary_space(text[end - 1]):
+        end -= 1
+    return text[start:end]
+
+
 def validate_grouped_text(segments, cues) -> bool:
-    return "".join(x.text for x in segments) == "".join(x.text for x in cues)
+    """Source conservation modulo whitespace that sits on a cue boundary.
+
+    Every non-whitespace source character and every inner space must appear
+    exactly once, in order.  Only whitespace at a cue edge may be dropped
+    (2026-10-12: the inter-cue space of "这里怎么办 我们还能挠三下" used to be
+    kept as "这里怎么办 " — format junk, not content).
+    """
+    source = "".join(x.text for x in segments)
+    cursor = 0
+    for cue in cues:
+        core = strip_boundary_space(cue.text)
+        while cursor < len(source) and _boundary_space(source[cursor]):
+            cursor += 1
+        if not source.startswith(core, cursor):
+            return False
+        cursor += len(core)
+    while cursor < len(source) and _boundary_space(source[cursor]):
+        cursor += 1
+    return cursor == len(source)
 
 
 def restore_source_text(segments, cues) -> bool:
@@ -223,6 +260,7 @@ def restore_source_text(segments, cues) -> bool:
 
     Legacy display helpers normalize punctuation/spacing. They may choose the
     boundaries, never the immutable source characters emitted by Stage 9.
+    Whitespace on a boundary is the boundary itself: it goes to neither cue.
     """
     from .text_rules import content_only
     source = "".join(item.text for item in segments)
@@ -236,7 +274,7 @@ def restore_source_text(segments, cues) -> bool:
     for cue, count in zip(cues, counts):
         consumed += count
         end = positions[consumed] if consumed < len(positions) else len(source)
-        cue.text = source[start:end]
+        cue.text = strip_boundary_space(source[start:end])
         start = end
     return validate_grouped_text(segments, cues)
 

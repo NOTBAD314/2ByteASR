@@ -694,6 +694,14 @@ _REFERENCE_INDEX: dict[tuple[str, str], dict] = {
         "default": None, "unsupported": {},
         "gap": "无公开对齐速度数据（AAS 表未含吞吐）",
     },
+    ("ja_ctc_aligner", "accuracy"): {
+        "scenes": {}, "default": None, "unsupported": {},
+        "gap": "非从零转写模型：只用于日语句首校正，无公开对齐精度数据",
+    },
+    ("ja_ctc_aligner", "speed"): {
+        "scenes": {}, "default": None, "unsupported": {},
+        "gap": "无公开速度数据；本机 4 分钟片段约 11 秒（含模型载入）",
+    },
     # ── 在线 API（按实际解析型号给分；密钥未配置不影响公开参考分）──
     ("qwen_api", "accuracy"): {
         "scenes": {

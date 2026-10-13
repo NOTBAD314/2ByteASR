@@ -18,6 +18,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import random
 import sys
 from dataclasses import replace
@@ -54,8 +55,10 @@ def derive(project, *, target: int, speakers: int, seed: int, name: str):
         style_ids.append(variant.id)
     used_styles = style_ids[:4]
     originals = sorted(derived.cues, key=lambda c: (c.start_ms, c.id))
+    if target < 1 or not originals:
+        raise ValueError("A positive target and a non-empty base project are required")
     cues = []
-    copies = max(1, round(target / len(originals)))
+    copies = math.ceil(target / len(originals))
     for copy_index in range(copies):
         offset = rng.randint(0, max(1, duration // copies)) if copy_index else 0
         for cue in originals:
@@ -84,6 +87,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--counts", type=int, nargs="+", default=[1000, 3000],
+                        help="Exact positive cue counts (for example: 100 1000 10000)")
     args = parser.parse_args()
     out = args.output.resolve()
     if not out.is_relative_to(ROOT / "tmp") or out.exists():
@@ -94,8 +99,14 @@ def main() -> int:
     (out / "base.2byteproj").write_bytes(base_bytes)
     project = load_project(args.base)
     summary = {"base": {"cues": len(project.cues), "speakers": len(project.speakers)}}
-    for name, target, speakers, seed in (("mix1000", 1000, 4, 1), ("dense3000", 3000, 6, 2)):
+    if any(count < 1 for count in args.counts):
+        raise SystemExit("Cue counts must be positive")
+    for seed, target in enumerate(dict.fromkeys(args.counts), 1):
+        name = ("mix" if target <= 1000 else "dense") + str(target)
+        speakers = 4 if target <= 1000 else 6
         derived = derive(project, target=target, speakers=speakers, seed=seed, name=name)
+        if len(derived.cues) != target:
+            raise RuntimeError(f"Fixture {name} has {len(derived.cues)} cues, expected {target}")
         path = save_project(derived, out / f"{name}.2byteproj")
         summary[name] = {"cues": len(derived.cues), "speakers": len({c.speaker_id for c in derived.cues}),
                          "styles": len({c.style_id for c in derived.cues}), "bytes": path.stat().st_size}

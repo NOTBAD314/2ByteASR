@@ -219,6 +219,19 @@ def main(args=None):
     os.environ['TWOBYTEASR_PROCESS_ROLE'] = 'studio-audio'
     connection = Client(address, family='AF_PIPE' if os.name=='nt' else 'AF_UNIX', authkey=bytes.fromhex(key))
     app = QCoreApplication([])
+    if os.environ.get("TWOBYTEASR_STALL_WATCHDOG", "1").strip() not in {"0", "false", "off"}:
+        # The endpoint's Qt thread services sync requests and the sink; a
+        # blocked thread delays every pause/seek. Stacks go to this process's
+        # own log (stderr = audio-endpoint-*.log), only when it is stuck.
+        from .gui_stall_watchdog import GuiStallWatchdog
+
+        def write_stall(kind, record):
+            sys.stderr.write(json.dumps({"event": "AUDIO_ENDPOINT_" + kind,
+                                         "at": time.strftime("%H:%M:%S"), **record},
+                                        ensure_ascii=False) + "\n")
+            sys.stderr.flush()
+        endpoint_watchdog = GuiStallWatchdog(app, sink=write_stall)
+        endpoint_watchdog.start()
     from .audio_engine import _AudioEngineWorker
     worker = _AudioEngineWorker(Path(ffmpeg))
     if os.name=='nt':

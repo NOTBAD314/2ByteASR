@@ -89,6 +89,14 @@ def main():
                 text='Hello this is a local speech recognition test the weather is sunny today')])
             if not output or not all(0<=x['start']<x['end']<=duration+.2 for x in output):
                 raise RuntimeError('对齐 worker 没有返回有效时间戳')
+        elif model=='ja_ctc_aligner':
+            from twobyteasr import ctc_alignment
+            payload=ctc_alignment.run_worker(audio,[dict(id='readiness',text='こんにちはきょうはいいてんきです',
+                window_start_ms=0,window_end_ms=int(duration*1000))])
+            output=payload['results'][0]
+            chars=output.get('chars') or []
+            if output.get('status')!='aligned' or not chars or not all(0<=c['start_ms']<c['end_ms']<=duration*1000+200 for c in chars):
+                raise RuntimeError('CTC 对齐 worker 没有返回有效字符时间')
         elif model=='firered_aed':
             output=asr._transcribe_firered_worker(audio,duration,str(get_runtime_paths().model_root/'FireRedASR2-AED'))
         elif model=='firered_llm':

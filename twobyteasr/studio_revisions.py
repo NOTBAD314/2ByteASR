@@ -224,7 +224,9 @@ class SubtitleRenderRevision:
         from .studio_revisions import thaw_json
 
         state = thaw_json(self.studio_state) if self.studio_state else {}
-        flag = "bi" if isinstance(state, Mapping) and state.get("bilingual_mode") else "mono"
+        from .bilingual_layout import settings_from_state
+        settings = settings_from_state(state if isinstance(state, Mapping) else {})
+        flag = "mono" if settings.mode == "original" else "bi:" + repr(sorted(settings.to_dict().items()))
         return (
             self.project_id,
             self.mapping_revision,
@@ -364,9 +366,44 @@ class StudioRevisionStore:
         memo = getattr(self, "_studio_state_memo", None)
         if memo is not None and memo[0] == key:
             return memo[1]
-        frozen = freeze_json(state)
+        frozen = self._freeze_studio_state_sharing(state)
         self._studio_state_memo = (key, frozen)
         return frozen
+
+    def _freeze_studio_state_sharing(self, state) -> FrozenJSON:
+        """``freeze_json(state)``, reusing every unchanged caption receipt.
+
+        One timing/text edit changes one or two of thousands of caption
+        receipts (with their word lists), but re-freezing all of them was
+        ~78% of a Q/W commit on a 3000-caption project. A receipt is reused
+        only when its marshal bytes (exact types and key order) are equal."""
+        import marshal
+        from .studio_caption_timeline import KEY
+        timeline = state.get(KEY)
+        instances = timeline.get("instances") if isinstance(timeline, Mapping) else None
+        if not isinstance(instances, Mapping) or not instances:
+            return freeze_json(state)
+        previous = getattr(self, "_receipt_freeze_memo", {})
+        current = {}
+        frozen_instances = []
+        for name, receipt in sorted(instances.items(), key=lambda pair: str(pair[0])):
+            try:
+                data = marshal.dumps(receipt)
+            except ValueError:
+                return freeze_json(state)
+            hit = previous.get(str(name))
+            frozen = hit[1] if hit is not None and hit[0] == data else freeze_json(receipt)
+            current[str(name)] = (data, frozen)
+            frozen_instances.append((str(name), frozen))
+        self._receipt_freeze_memo = current
+
+        def frozen_timeline():
+            return FrozenMap(tuple(
+                (str(key), FrozenMap(tuple(frozen_instances)) if key == "instances" else freeze_json(item))
+                for key, item in sorted(timeline.items(), key=lambda pair: str(pair[0]))))
+        return FrozenMap(tuple(
+            (str(key), frozen_timeline() if key == KEY else freeze_json(item))
+            for key, item in sorted(state.items(), key=lambda pair: str(pair[0]))))
 
     def _capture_render(self, revision: int) -> SubtitleRenderRevision:
         settings = self.project.render_settings
@@ -420,7 +457,9 @@ class StudioRevisionStore:
             render_settings=freeze_json(project.render_settings),
             report_path=str(project.report_path),
             original_outputs=freeze_json(project.original_outputs),
-            studio_state=freeze_json(project.studio_state),
+            # Same content as the render revision's copy; usually a memo hit.
+            studio_state=(self._frozen_studio_state() if project.studio_state is not None
+                          else freeze_json(None)),
             edit_sequence=freeze_json(sequence_of(project).to_dict()),
         )
 
