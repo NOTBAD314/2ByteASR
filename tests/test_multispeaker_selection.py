@@ -174,6 +174,32 @@ def test_host_priority_restores_qwen_supported_dialogue(monkeypatch):
     assert [item.speaker for item in restored] == ["S01", "S02"]
 
 
+def test_japanese_restoration_uses_aligner_tokens_for_timing_only():
+    events = []
+    legacy = _build_legacy(events)
+    context = SimpleNamespace(dialogue_coverage_mode="host_priority", task_language="ja")
+    payload = {"host_speakers": ["S01"], "segments": [
+        {"speaker": "S01", "start": 0.0, "end": 1.0, "text": "おはよう"},
+        {"speaker": "S02", "start": 1.2, "end": 2.2, "text": "ねえ、聞こえた？"},
+    ]}
+    aligner = [
+        {"start": 1.31, "end": 1.52, "text": "ねえ", "source": "qwen-forced-aligner", "alignment_key": "S02@1200-2200"},
+        {"start": 1.60, "end": 2.05, "text": "聞こえた", "source": "qwen-forced-aligner", "alignment_key": "S02@1200-2200"},
+        {"start": 0.10, "end": 0.90, "text": "おはよう", "source": "qwen-forced-aligner", "alignment_key": "S01@0-1000"},
+    ]
+    restored, count = pipeline.restore_qwen_supported_dialogue_segments(
+        [], [{"start": 1.2, "end": 2.2, "text": "ねえ聞こえた"}], payload, aligner,
+        [{"start": 0.0, "end": 2.2}], legacy, runtime_context=context,
+    )
+    assert count == 1
+    (segment,) = restored
+    assert segment.speaker == "S02" and segment.text == "ねえ 聞こえた？"
+    # The aligner repeats MOSS's own words: no FireRed text or vote, only its own window.
+    assert segment.firered_text == "" and segment.alternate_text == "" and segment.firered_start == 0.0
+    assert segment.caption_arbitration["forced_alignment_window"] == {
+        "start": 1.31, "end": 2.05, "job": "S02@1200-2200", "token_count": 2, "kind": "forced_alignment_span"}
+
+
 def test_all_dialogue_preserves_overlapping_speakers_with_safety_lock(monkeypatch):
     result, payload, tokens, speech, legacy, context, _events = _coverage_fixture(
         monkeypatch, "all_dialogue"

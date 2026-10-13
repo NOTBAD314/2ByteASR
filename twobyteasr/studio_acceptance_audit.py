@@ -60,7 +60,23 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'razor-word-split':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('razor-word-split', 'ja-bilingual', 'bilingual-playback', 'speaker-roles', 'mcp', 'ctc-refine'):
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        output = audit_directory()
+        if output is not None and os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('ja-bilingual', 'ctc-refine'):
+            # Re-alignment runs the real aligner from the declared read-only
+            # model folder and existing main runtime (hashed manifest).
+            from .glossary_live_resources import install
+            install(output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'six-fixes':
+        output = audit_directory()
+        if output is not None:
+            from PySide6.QtCore import QSettings
+            QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+            QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(output/'qt-settings'))
+            QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.SystemScope, str(output/'qt-system'))
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -86,6 +102,19 @@ def isolate_acceptance_settings() -> None:
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'moss-full-context':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-pages':
+        # Page-entry timing on a prepared copy of the real profile: keep its
+        # settings, reports and project library (TWOBYTEASR_TEST_ROOT); no network.
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        output = audit_directory()
+        if output is not None:
+            # Windowed builds have no stderr: keep native-fault stacks.
+            import faulthandler
+            stream = (output/'audit-native-fault.log').open('w', encoding='utf8')
+            globals()['_audit_fault_stream'] = stream  # kept open for the process lifetime
+            faulthandler.enable(file=stream, all_threads=True)
         return
     scenario=os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')
     if scenario in {'real-glossary-repair','real-glossary-repair-live'}:
@@ -318,6 +347,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-pages':
+        from .perf_pages_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-recognition':
         from .perf_recognition_audit import start
         output = audit_directory()
@@ -330,6 +364,36 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'razor-word-split':
         from .razor_split_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ja-bilingual':
+        from .ja_bilingual_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'bilingual-playback':
+        from .bilingual_playback_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-roles':
+        from .speaker_roles_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mcp':
+        from .mcp_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ctc-refine':
+        from .ctc_refine_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'six-fixes':
+        from .six_fixes_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

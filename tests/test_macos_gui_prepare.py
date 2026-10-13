@@ -136,7 +136,8 @@ def test_macos_model_state_finishes_background_runtime_check(monkeypatch):
     monkeypatch.setattr(environment, 'preflight', lambda role: environment.PreflightResult(role='main', ok=True))
     page = SimpleNamespace(browser_role='primary', runtime_settings={'models': {'primary_asr_backend': 'sensevoice'}},
                            _active_download_dialog=lambda key: None, _registry=None, _installed={'sensevoice'},
-                           _mac_cpu_probe_result=None, _mac_cpu_probe_running=False)
+                           _mac_cpu_probe_result=None, _mac_cpu_probe_running=False, _state_memo=None)
+    page._compute_model_state = lambda item, role: workshop.ModelWorkshopPage._compute_model_state(page, item, role)
     def finish(result):
         page._mac_cpu_probe_result = result
         page._mac_cpu_probe_running = False

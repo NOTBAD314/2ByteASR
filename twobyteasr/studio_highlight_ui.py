@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QToolButton,
@@ -104,24 +105,25 @@ def _section_frame(title: str, body_text: str, theme, *, accent: bool):
     edge = getattr(theme, "accent", "#33CC66")
     soft = getattr(theme, "surface", "#1E1E22")
     border = getattr(theme, "border", "#3A3A40")
+    # 2026-10-11: a left rule only; the card is the single box (no box-in-box).
     if accent:
         # 为什么值得剪：主题 accent 左缘 + 同族浅底，视觉权重最高但不做重色块。
         frame.setStyleSheet(
             f"QFrame#highlightSectionWhy {{"
-            f" background: {soft}; border: 1px solid {border};"
-            f" border-left: 3px solid {edge}; border-radius: 6px; }}"
+            f" background: {soft}; border: none;"
+            f" border-left: 3px solid {edge}; border-radius: 0; }}"
             " QLabel { background: transparent; border: none; }"
         )
     else:
-        # 发生了什么：轻一档——无填充、细边、无 accent，避免与上方 section 同级。
+        # 发生了什么：轻一档——无填充、无 accent，避免与上方 section 同级。
         frame.setStyleSheet(
             f"QFrame#highlightSectionWhat {{"
-            f" background: transparent; border: 1px solid {border};"
-            f" border-left: 3px solid {border}; border-radius: 6px; }}"
+            f" background: transparent; border: none;"
+            f" border-left: 3px solid {border}; border-radius: 0; }}"
             " QLabel { background: transparent; border: none; }"
         )
     box = QVBoxLayout(frame)
-    box.setContentsMargins(9, 6, 9, 6)
+    box.setContentsMargins(8, 3, 4, 3)
     box.setSpacing(2)
     head = QLabel(title)
     head.setObjectName("contextEmpty")
@@ -139,6 +141,7 @@ class HighlightCandidateCard(QFrame):
     preview_requested = Signal(str)
     accept_requested = Signal(str)
     ignore_requested = Signal(str)
+    remove_requested = Signal(str)
 
     def __init__(self, candidate: HighlightCandidate, parent=None) -> None:
         super().__init__(parent)
@@ -148,8 +151,8 @@ class HighlightCandidateCard(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         theme = theme_definition(theme_key())
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 9, 10, 9)
-        layout.setSpacing(5)
+        layout.setContentsMargins(9, 7, 9, 8)
+        layout.setSpacing(4)
         heading = QHBoxLayout()
         badge = QLabel(f"{candidate.grade or '推荐'}  {round(candidate.score * 100)}")
         badge.setObjectName("highlightGrade")
@@ -170,7 +173,7 @@ class HighlightCandidateCard(QFrame):
         hook_text = QLabel(candidate.hook or candidate.title or "等待补充事件摘要")
         hook_text.setObjectName("highlightTitle")
         hook_text.setWordWrap(True)
-        _clamp_label_lines(hook_text, 2)
+        _clamp_label_lines(hook_text, 3)
         layout.addWidget(hook_text)
 
         why = _section_frame(
@@ -178,7 +181,7 @@ class HighlightCandidateCard(QFrame):
             candidate.clip_reason or candidate.reason or "等待补充编辑判断",
             theme, accent=True,
         )
-        _clamp_label_lines(why.body, 6)
+        # Full text, wrapped: the list scrolls instead of truncating reasons.
         layout.addWidget(why)
 
         what = _section_frame(
@@ -186,7 +189,6 @@ class HighlightCandidateCard(QFrame):
             candidate.event_summary or candidate.hook or candidate.title or "",
             theme, accent=False,
         )
-        _clamp_label_lines(what.body, 5)
         layout.addWidget(what)
 
         # 底部统计=簇级唯一口径（2026-09-19 P1：卡片/详情/文案同源；
@@ -217,9 +219,9 @@ class HighlightCandidateCard(QFrame):
         evidence_summary = QLabel("   ".join(summary_bits))
         evidence_summary.setObjectName("contextEmpty")
         evidence_summary.setWordWrap(True)
-        evidence_summary.setVisible(bool(summary_bits))
+        # Secondary statistics open with 详情; the card body stays readable.
+        evidence_summary.setVisible(False)
         bind_text(evidence_summary, '统计为候选范围簇级口径：有效条数已剔除广告/例行弹幕；峰值=簇内最高倍数窗；惊叹/笑声为弹幕条数（非命中次数）。', property='toolTip')
-        layout.addWidget(evidence_summary)
 
         signal_in = candidate.signal_in_ms if candidate.signal_in_ms is not None else candidate.source_in_ms
         signal_out = candidate.signal_out_ms if candidate.signal_out_ms is not None else candidate.source_out_ms
@@ -267,23 +269,25 @@ class HighlightCandidateCard(QFrame):
         actions = QGridLayout()
         actions.setSpacing(5)
         preview = QPushButton("预览")
-        accept = QPushButton("加入剪辑")
+        in_bin = candidate.status == "accepted"
+        accept = QPushButton("移出候选箱" if in_bin else "加入剪辑")
         ignore = QPushButton("忽略")
         detail = QPushButton("详情")
         self._action_buttons=(preview,accept,ignore,detail)
         self._action_grid=actions
         self._action_columns=0
         for button in self._action_buttons:
-            button.setObjectName("studioPrimary" if button is accept else "studioButton")
+            button.setObjectName("studioPrimary" if button is accept and not in_bin else "studioButton")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             button.setMinimumWidth(0)
         preview.clicked.connect(lambda: self.preview_requested.emit(self.candidate_id))
-        accept.clicked.connect(lambda: self.accept_requested.emit(self.candidate_id))
+        accept.clicked.connect(lambda: (self.remove_requested if in_bin else self.accept_requested).emit(self.candidate_id))
         ignore.clicked.connect(lambda: self.ignore_requested.emit(self.candidate_id))
-        detail.clicked.connect(lambda: self._toggle_details(details, evidence, context_block))
+        detail.clicked.connect(lambda: self._toggle_details(details, evidence, context_block, evidence_summary))
         # Footer order: content (title/reason/evidence) first, actions last —
         # buttons mid-card cut the reading flow and orphan the evidence block.
+        layout.addWidget(evidence_summary)
         layout.addWidget(evidence)
         layout.addWidget(context_block)
         layout.addWidget(details)
@@ -291,7 +295,7 @@ class HighlightCandidateCard(QFrame):
         self._reflow_actions()
 
     def _reflow_actions(self):
-        columns=4 if self.width()>=520 else 2
+        columns=4 if self.width()>=340 else 2
         if columns==self._action_columns:return False
         self._action_columns=columns
         while self._action_grid.count():self._action_grid.takeAt(0)
@@ -315,9 +319,12 @@ class HighlightCandidateCard(QFrame):
                     if item.sizeHint()!=size:item.setSizeHint(size)
                     break
 
-    def _toggle_details(self, details: QLabel, evidence: QLabel | None = None, context_block: QLabel | None = None) -> None:
+    def _toggle_details(self, details: QLabel, evidence: QLabel | None = None, context_block: QLabel | None = None,
+                        summary: QLabel | None = None) -> None:
         visible = not details.isVisible()
         details.setVisible(visible and bool(details.text()))
+        if summary is not None:
+            summary.setVisible(visible and bool(summary.text()))
         # 2026-09-19 P1：原始弹幕证据与完整字幕上下文随详情一起展开。
         if evidence is not None:
             evidence.setVisible(visible and bool(evidence.text()))
@@ -364,18 +371,16 @@ class HighlightBinCard(QFrame):
         self.candidate_id = candidate.id
         self.setObjectName("highlightBinCard")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 7, 7, 7)
-        layout.setSpacing(6)
-        copy_block = QVBoxLayout()
-        copy_block.setSpacing(1)
-        title = QLabel(f"✓ {candidate.title}")
-        title.setObjectName("highlightTitle")
-        title.setWordWrap(True)
-        clock = QLabel(_clock_range(candidate.source_in_ms, candidate.source_out_ms))
-        clock.setObjectName("contextEmpty")
-        copy_block.addWidget(title)
-        copy_block.addWidget(clock)
-        layout.addLayout(copy_block, 1)
+        layout.setContentsMargins(8, 3, 4, 3)
+        layout.setSpacing(4)
+        # One compact row: order, kept range (what is generated), title.
+        from .elided_label import ElidedLabel
+        clock = QLabel(f"{index + 1}. {_clock_range(candidate.source_in_ms, candidate.source_out_ms)}")
+        clock.setObjectName("highlightTitle")
+        title = ElidedLabel(candidate.title, mode=Qt.TextElideMode.ElideRight, minimum=24)
+        title.setObjectName("contextEmpty")
+        layout.addWidget(clock)
+        layout.addWidget(title, 1)
         up = QPushButton("↑")
         down = QPushButton("↓")
         remove = QPushButton("×")
@@ -387,7 +392,7 @@ class HighlightBinCard(QFrame):
             button.setObjectName("studioButton")
             button.setToolTip(tooltip)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFixedSize(34, 34)
+            button.setFixedSize(28, 28)
             layout.addWidget(button)
         up.setEnabled(index > 0)
         down.setEnabled(index < count - 1)
@@ -489,6 +494,21 @@ class HighlightAssistantPanel(QWidget):
         self.config_toggle.setArrowType(Qt.ArrowType.DownArrow)
         config_header.addWidget(self.config_toggle)
         layout.addLayout(config_header)
+
+        # 2026-10-11: data, analysis and speech-pause settings share one
+        # collapsible scroll area. Once candidates exist it folds away and the
+        # candidate list is the panel's only main scroll region.
+        self.settings_area = QScrollArea()
+        self.settings_area.setObjectName("highlightSettingsArea")
+        self.settings_area.setWidgetResizable(True)
+        self.settings_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        settings_content = QWidget()
+        settings_content.setObjectName("contextContent")
+        settings_layout = QVBoxLayout(settings_content)
+        settings_layout.setContentsMargins(0, 0, 4, 0)
+        settings_layout.setSpacing(8)
+        self.settings_area.setWidget(settings_content)
 
         self.config_body = QWidget()
         config_body_layout = QVBoxLayout(self.config_body)
@@ -640,9 +660,12 @@ class HighlightAssistantPanel(QWidget):
         self.autocut_review_controls.hide()
         autocut_form.addRow(self.autocut_review_controls)
         self._autocut_ranges: list[tuple[int, int]] = []
-        layout.addWidget(self.config_body)
+        settings_layout.addWidget(self.config_body)
         # Audio pause detection remains available without captions/danmaku.
-        layout.addWidget(autocut)
+        self.autocut_box = autocut
+        settings_layout.addWidget(autocut)
+        settings_layout.addStretch(1)
+        layout.addWidget(self.settings_area, 1)
         self.config_toggle.toggled.connect(self._toggle_config)
         self._restore_ai_selection()
 
@@ -667,10 +690,12 @@ class HighlightAssistantPanel(QWidget):
         candidates_layout.setSpacing(7)
         self.candidates_heading = self._heading("剪辑候选")
         candidates_layout.addWidget(self.candidates_heading)
-        candidates_separator = QFrame()
-        candidates_separator.setFrameShape(QFrame.Shape.HLine)
-        candidates_separator.setFrameShadow(QFrame.Shadow.Plain)
-        candidates_layout.addWidget(candidates_separator)
+        # Which data really went into these candidates (XML file and count).
+        self.analysis_source = QLabel()
+        self.analysis_source.setObjectName("cardMeta")
+        self.analysis_source.setWordWrap(True)
+        self.analysis_source.hide()
+        candidates_layout.addWidget(self.analysis_source)
         # 候选区常驻：没有候选时也保留分隔与占位说明，而不是整块消失
         # （三十一轮用户反馈：收起后只剩"分析录播"，面板像坏了一样空白）。
         self.candidates_empty = QLabel(
@@ -685,7 +710,8 @@ class HighlightAssistantPanel(QWidget):
             f"border: 1px solid {theme.border}; border-radius: 8px; }}"
         )
         self.results = SmoothCardList()
-        self.results.setMinimumHeight(190)
+        self.results.setMinimumHeight(150)
+        self.results.setSpacing(3)
         self.results.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.results.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.results.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -696,8 +722,18 @@ class HighlightAssistantPanel(QWidget):
         bin_header_layout = QHBoxLayout(self.bin_header)
         bin_header_layout.setContentsMargins(0, 0, 0, 0)
         bin_header_layout.setSpacing(6)
+        self.bin_toggle = QToolButton()
+        self.bin_toggle.setObjectName("styleSectionHeader")
+        self.bin_toggle.setCheckable(True)
+        self.bin_toggle.setChecked(False)
+        self.bin_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.bin_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.bin_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        bind_text(self.bin_toggle, '展开候选箱，调整顺序或移除', property='toolTip')
+        self.bin_toggle.toggled.connect(self._toggle_bin)
+        bin_header_layout.addWidget(self.bin_toggle, 1)
         self.bin_label = self._heading("剪辑候选箱")
-        bin_header_layout.addWidget(self.bin_label, 1)
+        self.bin_label.setWordWrap(True)
         self.clear_bin_button = QPushButton("清空候选")
         self.clear_bin_button.setObjectName("studioButton")
         self.clear_bin_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -705,9 +741,12 @@ class HighlightAssistantPanel(QWidget):
         bin_header_layout.addWidget(self.clear_bin_button)
         self.bin_header.hide()
         candidates_layout.addWidget(self.bin_header)
+        # Collapsed: one wrapped line with the order and kept ranges.
+        candidates_layout.addWidget(self.bin_label)
+        self.bin_label.hide()
         self.bin = SmoothCardList()
-        self.bin.setMinimumHeight(72)
-        self.bin.setMaximumHeight(190)
+        self.bin.setMinimumHeight(48)
+        self.bin.setMaximumHeight(150)
         self.bin.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.bin.setStyleSheet(list_qss)
         self.bin.hide()
@@ -725,8 +764,15 @@ class HighlightAssistantPanel(QWidget):
         generate_row.addWidget(self.restore_button)
         self.generate_row_host.hide()
         candidates_layout.addWidget(self.generate_row_host)
+        self.edit_result = QLabel()
+        self.edit_result.setObjectName("highlightEditResult")
+        self.edit_result.setWordWrap(True)
+        self.edit_result.hide()
+        candidates_layout.addWidget(self.edit_result)
+        self._sequence_edited = False
         self.candidates_body.hide()
         layout.addWidget(self.candidates_body, 1)
+        self._layout = layout
         for button in (
             self.xml_button,
             self.xml_unbind_button,
@@ -836,6 +882,8 @@ class HighlightAssistantPanel(QWidget):
         # the settings area is folded away, so every click has a visible
         # effect (三十一轮：双 tab 点击无视觉变化).
         self.config_toggle.setChecked(stage != "candidates")
+        self._stage = "settings" if self.config_toggle.isChecked() else "candidates"
+        self._apply_stage()
 
     def _apply_stage(self) -> None:
         """Single source of truth for settings/candidates visibility.
@@ -856,10 +904,62 @@ class HighlightAssistantPanel(QWidget):
         self.candidates_empty.setVisible(show_candidates_zone and not has_candidates)
         self.results.setVisible(show_candidates_zone and has_candidates)
         form_expanded = self.config_toggle.isChecked()
+        # Speech-pause detection needs no captions or XML, so a compact empty
+        # project still shows it; analysis settings follow the toggle.
+        settings_shown = compact_empty or form_expanded
+        self.settings_area.setVisible(settings_shown)
         self.config_body.setVisible(not compact_empty and form_expanded)
         self.config_summary.setVisible(not compact_empty and not form_expanded)
         self.config_toggle.setVisible(not compact_empty)
         self.analyze_button.setVisible(not compact_empty)
+        if has_candidates and not form_expanded:
+            bind_text(self.config_summary, '{count} 条候选 · {data}', count=self.results.count(),
+                      data=tr(self._source_label()))
+        if not getattr(self, "_analyzing", False):
+            (bind_text(self.analyze_button, '重新分析') if has_candidates
+             else bind_text(self.analyze_button, '分析录播'))
+        layout = getattr(self, "_layout", None)
+        if layout is not None:
+            # Before analysis the settings own the space; afterwards the list.
+            layout.setStretchFactor(self.settings_area, (2 if has_candidates else 1) if settings_shown else 0)
+            layout.setStretchFactor(self.candidates_body, 3 if has_candidates or not settings_shown else 0)
+
+    def _source_label(self) -> str:
+        return {"subtitles_xml": "字幕 + 弹幕", "xml": "弹幕", "subtitles": "字幕"}.get(self._auto_mode, "无法分析")
+
+    def _toggle_bin(self, expanded: bool) -> None:
+        self.bin_toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        has_bin = self.bin.count() > 0
+        self.bin.setVisible(has_bin and expanded)
+        self.bin_label.setVisible(has_bin and not expanded)
+
+    def show_edit_result(self, text: str, *, ok: bool = True) -> None:
+        """What the last generate/restore actually did (or why it did not)."""
+        theme = theme_definition(theme_key())
+        self.edit_result.setStyleSheet(
+            f"QLabel#highlightEditResult {{ color: {theme.text if ok else theme.warning}; "
+            f"background: {theme.accent_soft if ok else theme.warning_soft}; border-radius: 6px; padding: 6px 8px; }}")
+        self.edit_result.setText(text)
+        self.edit_result.setVisible(bool(text))
+
+    def show_candidates_stage(self) -> None:
+        """Fold the settings after an analysis produced candidates."""
+        if self.results.count():
+            self._show_stage("candidates")
+
+    def _refresh_analysis_source(self) -> None:
+        info = (self._project.studio_state.get("highlight_analysis") if self._project is not None else None) or {}
+        if not info or not self.results.count():
+            self.analysis_source.hide()
+            return
+        path = str(info.get("danmaku_path") or "")
+        count = int(info.get("danmaku_count") or 0)
+        if path and count:
+            bind_text(self.analysis_source, '依据：弹幕 {count} 条（{name}）', count=f"{count:,}", name=Path(path).name)
+        else:
+            bind_text(self.analysis_source, '依据：仅字幕（本次分析未使用弹幕 XML）')
+        self.analysis_source.setToolTip(path)
+        self.analysis_source.show()
 
     def active_stage(self) -> str:
         return self._stage
@@ -878,6 +978,8 @@ class HighlightAssistantPanel(QWidget):
             bind_text(self.skill_label, '切片分析使用内置规则；口播停顿使用本地音频检测。')
 
     def set_project_status(self, project: SubtitleProject | None, danmaku_path: str = "") -> None:
+        if project is not self._project:
+            self.show_edit_result("")
         previous = self.autocut_audio_track.currentData()
         self.autocut_audio_track.blockSignals(True)
         self.autocut_audio_track.clear()
@@ -888,7 +990,12 @@ class HighlightAssistantPanel(QWidget):
         self.autocut_audio_track.setCurrentIndex(max(0,index))
         self.autocut_audio_track.blockSignals(False)
         self._project = project
+        from .danmaku_binding import binding_of, binding_matches_source, describe
+        # An XML recorded for another source recording is never analysed.
+        if project is not None and binding_of(project) and not binding_matches_source(project):
+            danmaku_path = ""
         self._danmaku_path = str(danmaku_path or "")
+        self.set_danmaku_state(*describe(project))
         if project is None:
             bind_text(self.status, '尚未打开工程')
             self._refresh_data_mode()
@@ -901,7 +1008,9 @@ class HighlightAssistantPanel(QWidget):
         self.status.setVisible(bool(self.status.text()))
         self._refresh_skill()
         self._refresh_data_mode()
-        candidates = sequence_of(project).clip_candidates
+        sequence = sequence_of(project)
+        self._sequence_edited = not sequence.is_identity()
+        candidates = sequence.clip_candidates
         signature = json.dumps(
             [candidate.to_dict() for candidate in candidates],
             ensure_ascii=False,
@@ -911,6 +1020,8 @@ class HighlightAssistantPanel(QWidget):
         if signature != self._candidate_signature:
             self.reload_candidates(candidates)
             self._candidate_signature = signature
+        else:
+            self._refresh_bin_controls()
         self._append_analysis_note()
 
     def _refresh_data_mode(self) -> None:
@@ -1064,6 +1175,37 @@ class HighlightAssistantPanel(QWidget):
         self.status.setVisible(bool(base))
         self._last_note = self._analysis_note
 
+    def set_danmaku_state(self, state: str, name: str = "", fields: dict | None = None) -> None:
+        """Concrete XML state from danmaku_binding.describe; never a bare 'unmatched'."""
+        fields = dict(fields or {})
+        count = int(fields.get("count") or 0)
+        self._danmaku_state = state
+        texts = {
+            "no_project": ('弹幕 XML：尚未打开工程', {}),
+            "no_media": ('弹幕 XML：先导入录播视频，会自动查找同名 XML', {}),
+            "offline": ('弹幕 XML：素材离线，暂时无法查找 {name}', {"name": name}),
+            "searching": ('弹幕 XML：正在素材目录查找 {name}…', {"name": name}),
+            "none": ('弹幕 XML：素材目录没有同名文件 {name}', {"name": name}),
+            "ambiguous": ('弹幕 XML：素材目录有 {count} 个同名 XML，请选择一个',
+                          {"count": len(fields.get("candidates") or ())}),
+            "invalid": ('弹幕 XML：{name} 无法读取（{error}）', {"name": name, "error": str(fields.get("error") or "")[:80]}),
+            "unbound": ('弹幕 XML：已解除匹配，可重新导入', {}),
+            "missing": ('弹幕 XML：找不到已绑定的 {name}', {"name": name}),
+            "stale": ('弹幕 XML：{name} 属于另一个素材，未使用', {"name": name}),
+            "automatic": ('弹幕 XML ✓ 已自动匹配同名文件\n{name} · {count} 条弹幕' if count
+                          else '弹幕 XML ✓ 已自动匹配同名文件\n{name}', {"name": name, "count": f"{count:,}"}),
+            "manual": ('弹幕 XML ✓ 已手动指定\n{name} · {count} 条弹幕' if count
+                       else '弹幕 XML ✓ 已手动指定\n{name}', {"name": name, "count": f"{count:,}"}),
+        }
+        text, values = texts.get(state, texts["no_project"])
+        bind_text(self.xml_status, text, **values)
+        self.xml_status.setToolTip(str(fields.get("path") or ""))
+        bound = state in {"automatic", "manual"}
+        (bind_text(self.xml_button, '更换') if bound
+         else bind_text(self.xml_button, '选择…') if state == "ambiguous"
+         else bind_text(self.xml_button, '导入弹幕 XML'))
+        self.xml_unbind_button.setVisible(bound)
+
     def set_xml_discovery(
         self,
         candidates: tuple[str, ...] | list[str],
@@ -1071,6 +1213,10 @@ class HighlightAssistantPanel(QWidget):
         *,
         automatic: bool = False,
     ) -> None:
+        if self._project is not None:
+            # Legacy callers: the project's binding record is the source of truth.
+            self.set_project_status(self._project, bound_path)
+            return
         candidates = tuple(str(item) for item in candidates if str(item))
         self._danmaku_path = str(bound_path or "")
         if bound_path:
@@ -1111,6 +1257,7 @@ class HighlightAssistantPanel(QWidget):
             card = HighlightCandidateCard(candidate, self.results)
             card.preview_requested.connect(self._preview_candidate)
             card.accept_requested.connect(self.add_to_bin_requested.emit)
+            card.remove_requested.connect(self.remove_from_bin_requested.emit)
             card.ignore_requested.connect(self.ignore_requested.emit)
             item.setSizeHint(QSize(0, card.sizeHint().height()))
             self.results.setItemWidget(item, card)
@@ -1123,14 +1270,44 @@ class HighlightAssistantPanel(QWidget):
             card.move_requested.connect(self.candidate_move_requested.emit)
             bin_item.setSizeHint(QSize(0, card.sizeHint().height()))
             self.bin.setItemWidget(bin_item, card)
-        bind_text(self.bin_label, '剪辑候选箱  {value0}', value0=self.bin.count())
-        has_bin = self.bin.count() > 0
-        self.bin_header.setVisible(has_bin)
-        self.bin.setVisible(has_bin)
-        self.generate_row_host.setVisible(has_bin)
+        # As tall as its rows (at most 150 px), so the leftover height goes to
+        # the candidate list instead of a blank area under the bin.
+        rows = sum(self.bin.sizeHintForRow(i) + 2 * self.bin.spacing() for i in range(self.bin.count()))
+        self.bin.setFixedHeight(max(48, min(150, rows + 2 * self.bin.frameWidth() + 2)))
+        total_ms =sum(max(0, c.source_out_ms - c.source_in_ms) for c in accepted)
+        bind_text(self.bin_toggle, '剪辑候选箱 · {count} 段 · 共 {duration}', count=len(accepted),
+                  duration=_duration_label(total_ms))
+        # Collapsed summary: the generation order and the ranges really kept.
+        self.bin_label.setText("  ".join(
+            f"{index}. {_clock_range(c.source_in_ms, c.source_out_ms)}" for index, c in enumerate(accepted, 1)))
+        self._refresh_bin_controls()
         has_candidates = self.results.count() > 0
         bind_text(self.candidates_heading, '剪辑候选 · {value0} 条（按推荐度排序）', value0=self.results.count())
-        self._show_stage("candidates" if has_candidates else "settings")
+        # Fold settings when candidates first appear; adding to the bin or a
+        # refresh must not fold settings the user opened again.
+        had_candidates = getattr(self, "_had_candidates", False)
+        self._had_candidates = has_candidates
+        if has_candidates != had_candidates or not has_candidates:
+            self._show_stage("candidates" if has_candidates else "settings")
+        else:
+            self._apply_stage()
+        if self._project is not None:
+            # Cues may have been added since the project was bound.
+            self._refresh_data_mode()
+        self._refresh_analysis_source()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if self._project is not None:
+            self._refresh_data_mode()
+
+    def _refresh_bin_controls(self) -> None:
+        has_bin = self.bin.count() > 0
+        self.bin_header.setVisible(has_bin)
+        self._toggle_bin(self.bin_toggle.isChecked())
+        self.generate_button.setVisible(has_bin)
+        self.restore_button.setVisible(bool(self._sequence_edited))
+        self.generate_row_host.setVisible(has_bin or bool(self._sequence_edited))
 
     def current_id(self) -> str:
         item = self.results.currentItem()
@@ -1161,7 +1338,11 @@ class HighlightAssistantPanel(QWidget):
             self.ignore_requested.emit(cue_id)
 
     def _pick_xml(self) -> None:
-        path, _filter = QFileDialog.getOpenFileName(self, tr('导入弹幕 XML'), "", "Danmaku XML (*.xml);;All files (*.*)")
+        # Start beside the original recording, where same-name XML files live.
+        start = ""
+        if self._project is not None and str(self._project.media.path or ""):
+            start = str(Path(self._project.media.path).parent)
+        path, _filter = QFileDialog.getOpenFileName(self, tr('导入弹幕 XML'), start, "Danmaku XML (*.xml);;All files (*.*)")
         if path:
             self.xml_selected.emit(path)
 
@@ -1173,6 +1354,7 @@ class HighlightAssistantPanel(QWidget):
             bind_text(self.status, '请先识别字幕或导入弹幕 XML')
             return
         self.analyze_button.setEnabled(False)
+        self._analyzing = True
         bind_text(self.analyze_button, '正在分析…')
         self.cancel_button.show()
         self._analysis_note = ""
@@ -1197,17 +1379,19 @@ class HighlightAssistantPanel(QWidget):
         self._analyze()
 
     def analysis_finished(self) -> None:
+        self._analyzing = False
         self.analyze_button.setEnabled(self._auto_mode != "none")
-        bind_text(self.analyze_button, '分析录播')
+        (bind_text(self.analyze_button, '重新分析') if self.results.count()
+         else bind_text(self.analyze_button, '分析录播'))
         self.cancel_button.setEnabled(True)
         self.cancel_button.hide()
 
     def refresh_theme_palette(self) -> None:
         theme = theme_definition(theme_key())
+        # One box per card: the list itself draws no frame or fill.
         list_qss = (
-            f"QListWidget {{ color: {theme.text}; background: {theme.surface}; "
-            f"border: 1px solid {theme.border}; border-radius: 8px; "
-            f"padding: 2px 8px 2px 2px; }} "
+            f"QListWidget {{ color: {theme.text}; background: transparent; "
+            f"border: none; padding: 0 4px 0 0; }} "
             f"QScrollBar:vertical {{ background: transparent; width: 6px; margin: 2px 1px 2px 0; }} "
             f"QScrollBar::handle:vertical {{ background: {theme.border}; border-radius: 3px; min-height: 28px; }} "
             f"QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}"

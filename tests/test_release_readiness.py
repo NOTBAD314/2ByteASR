@@ -32,7 +32,9 @@ def test_dependency_lock_has_pinned_public_components():
         "firered_llm",
         "glm_asr_nano",
         "canary_qwen",
+        "canary_qwen_tokenizer",
         "omni_asr_llm_7b",
+        "ja_ctc_aligner",
     }
     for group in (lock["sources"], lock["models"]):
         for item in group.values():

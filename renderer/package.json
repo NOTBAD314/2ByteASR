@@ -1,10 +1,9 @@
 {
   "name": "2byteasr-advanced-renderer",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "private": true,
   "scripts": {
-    "preflight": "node populate-fonts.mjs",
-    "render": "node populate-fonts.mjs && remotion render src/index.ts SubtitleOverlay"
+    "render": "remotion render src/index.ts SubtitleOverlay"
   },
   "dependencies": {
     "@remotion/bundler": "^4.0.0",

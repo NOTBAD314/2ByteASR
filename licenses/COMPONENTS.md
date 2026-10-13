@@ -4,7 +4,7 @@
 
 版权字段仅展示可定位到组件专属授权前言或核对过的源文件头的声明，不代表穷尽全部权利人。通用许可起草者、字体例外和条约句子不作为组件权利人；未核实项保留状态，完整原文不裁剪。
 
-基于品牌Setup `0d2796a1…c88878c`。本目录记录新补到源码树的材料，不表示旧Setup已含这些文件，也不代表发行兼容性已获批准。604条为分层记录，含重复依赖及未查明原生库。各项保持原审计证据等级。
+基于品牌Setup `0d2796a1…c88878c`。本目录记录新补到源码树的材料，不表示旧Setup已含这些文件，也不代表发行兼容性已获批准。622条为分层记录（2026-10-13 补 0.7.0 新增 18 条：MCP 依赖链 17 个随包 Python 组件与日语 CTC 对齐模型；另 8 个原离线 wheel 组件同时进入主程序 PYZ），含重复依赖及未查明原生库。各项保持原审计证据等级。
 
 A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发包）；C＝首次准备下载；D＝用户另配；E＝仅开发。自有代码现采用GPL-3.0-only；独立第三方许可不变，旧禁售目标已经撤销。
 
@@ -2602,7 +2602,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 260. annotated-types — 0.8.0
 
-- 范围/位置：B；`wheels/annotated_types-0.8.0-py3-none-any.whl`。
+- 范围/位置：B；`wheels/annotated_types-0.8.0-py3-none-any.whl`、`2ByteASR.exe!PYZ:annotated_types`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：MIT。组件版权声明：Copyright (c) 2022 the contributors。
 - 来源：[对应来源](https://pypi.org/project/annotated-types/0.8.0/)；[对应来源](https://github.com/annotated-types/annotated-types)；[对应来源](https://github.com/annotated-types/annotated-types/releases)。版本依据及SHA见机器索引对应`wheel:wheels/annotated_types-0.8.0-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE](materials/wheel/annotated-types-0.8.0/LICENSE)
@@ -2692,7 +2692,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 269. exceptiongroup — 1.3.1
 
-- 范围/位置：B；`wheels/exceptiongroup-1.3.1-py3-none-any.whl`。
+- 范围/位置：B；`wheels/exceptiongroup-1.3.1-py3-none-any.whl`、`2ByteASR.exe!PYZ:exceptiongroup`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：元数据未声明。组件版权声明：Copyright (c) 2022 Alex Grönholm。
 - 来源：[对应来源](https://pypi.org/project/exceptiongroup/1.3.1/)；[对应来源](https://github.com/agronholm/exceptiongroup/blob/main/CHANGES.rst)；[对应来源](https://github.com/agronholm/exceptiongroup/issues)；[对应来源](https://github.com/agronholm/exceptiongroup)。版本依据及SHA见机器索引对应`wheel:wheels/exceptiongroup-1.3.1-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE](materials/wheel/exceptiongroup-1.3.1/LICENSE)
@@ -2762,7 +2762,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 276. h11 — 0.16.0
 
-- 范围/位置：B；`wheels/h11-0.16.0-py3-none-any.whl`。
+- 范围/位置：B；`wheels/h11-0.16.0-py3-none-any.whl`、`2ByteASR.exe!PYZ:h11`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：MIT。组件版权声明：Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors。
 - 来源：[对应来源](https://pypi.org/project/h11/0.16.0/)；[对应来源](https://github.com/python-hyper/h11)。版本依据及SHA见机器索引对应`wheel:wheels/h11-0.16.0-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE.txt](materials/wheel/h11-0.16.0/LICENSE.txt)
@@ -2832,7 +2832,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 283. itsdangerous — 2.2.0
 
-- 范围/位置：B；`wheels/itsdangerous-2.2.0-py3-none-any.whl`。
+- 范围/位置：B；`wheels/itsdangerous-2.2.0-py3-none-any.whl`、`2ByteASR.exe!PYZ:itsdangerous`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：元数据未声明。组件版权声明：Copyright 2011 Pallets。
 - 来源：[对应来源](https://pypi.org/project/itsdangerous/2.2.0/)；[对应来源](https://itsdangerous.palletsprojects.com/changes/)；[对应来源](https://discord.gg/pallets)；[对应来源](https://itsdangerous.palletsprojects.com/)；[对应来源](https://palletsprojects.com/donate)；[对应来源](https://github.com/pallets/itsdangerous/)。版本依据及SHA见机器索引对应`wheel:wheels/itsdangerous-2.2.0-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE.txt](materials/wheel/itsdangerous-2.2.0/LICENSE.txt)
@@ -2882,7 +2882,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 288. markdown-it-py — 4.2.0
 
-- 范围/位置：B；`wheels/markdown_it_py-4.2.0-py3-none-any.whl`。
+- 范围/位置：B；`wheels/markdown_it_py-4.2.0-py3-none-any.whl`、`2ByteASR.exe!PYZ:markdown_it`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：元数据未声明。组件版权声明：Copyright (c) 2020 ExecutableBookProject；Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin.。
 - 来源：[对应来源](https://pypi.org/project/markdown-it-py/4.2.0/)；[对应来源](https://markdown-it-py.readthedocs.io)；[对应来源](https://github.com/executablebooks/markdown-it-py)。版本依据及SHA见机器索引对应`wheel:wheels/markdown_it_py-4.2.0-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE](materials/wheel/markdown-it-py-4.2.0/LICENSE)；[LICENSE.markdown-it](materials/wheel/markdown-it-py-4.2.0/LICENSE.markdown-it)
@@ -2912,7 +2912,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 291. mdurl — 0.1.2
 
-- 范围/位置：B；`wheels/mdurl-0.1.2-py3-none-any.whl`。
+- 范围/位置：B；`wheels/mdurl-0.1.2-py3-none-any.whl`、`2ByteASR.exe!PYZ:mdurl`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：元数据未声明。组件版权声明：Copyright (c) 2015 Vitaly Puzrin, Alex Kocharin.；Copyright (c) 2021 Taneli Hukkinen。
 - 来源：[对应来源](https://pypi.org/project/mdurl/0.1.2/)；[对应来源](https://github.com/executablebooks/mdurl)。版本依据及SHA见机器索引对应`wheel:wheels/mdurl-0.1.2-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE](materials/wheel/mdurl-0.1.2/LICENSE)
@@ -3042,7 +3042,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 304. python-multipart — 0.0.32
 
-- 范围/位置：B；`wheels/python_multipart-0.0.32-py3-none-any.whl`。
+- 范围/位置：B；`wheels/python_multipart-0.0.32-py3-none-any.whl`、`2ByteASR.exe!PYZ:multipart`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：Apache-2.0。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
 - 来源：[对应来源](https://pypi.org/project/python-multipart/0.0.32/)；[对应来源](https://github.com/Kludex/python-multipart)；[对应来源](https://kludex.github.io/python-multipart/)；[对应来源](https://github.com/Kludex/python-multipart/blob/master/CHANGELOG.md)。版本依据及SHA见机器索引对应`wheel:wheels/python_multipart-0.0.32-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE.txt](materials/wheel/python-multipart-0.0.32/LICENSE.txt)
@@ -3102,7 +3102,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 
 ## 310. rich — 15.0.0
 
-- 范围/位置：B；`wheels/rich-15.0.0-py3-none-any.whl`。
+- 范围/位置：B；`wheels/rich-15.0.0-py3-none-any.whl`、`2ByteASR.exe!PYZ:rich`（0.7.0 起随主程序，MCP 依赖链）。
 - 许可：MIT。组件版权声明：Copyright (c) 2020 Will McGugan。
 - 来源：[对应来源](https://pypi.org/project/rich/15.0.0/)；[对应来源](https://rich.readthedocs.io/en/latest/)；[对应来源](https://github.com/Textualize/rich)。版本依据及SHA见机器索引对应`wheel:wheels/rich-15.0.0-py3-none-any.whl`。
 - 完整原文及现有材料：[LICENSE](materials/wheel/rich-15.0.0/LICENSE)
@@ -6053,3 +6053,183 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 - 用途/集成：构建工具及安装器/卸载器代码；解包器报格式6.7.0不是构建工具版本；修改/补丁：未证明逐字节未修改。
 - 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
 - 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：保留实际编译器版本与许可；解包仅验证载荷，不重建安装器。
+
+## 605. mcp — 2.3.0
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:mcp`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/mcp/2.3.0/)；[对应来源](https://github.com/modelcontextprotocol/python-sdk)。版本依据及SHA见机器索引对应`frozen:mcp`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/mcp-2.3.0/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 606. mcp-types — 2.3.0
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:mcp_types`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/mcp-types/2.3.0/)；[对应来源](https://github.com/modelcontextprotocol/python-sdk)。版本依据及SHA见机器索引对应`frozen:mcp-types`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/mcp-types-2.3.0/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 607. pydantic — 2.13.4
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:pydantic`、`pydantic-2.13.4.dist-info/`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/pydantic/2.13.4/)；[对应来源](https://github.com/pydantic/pydantic)。版本依据及SHA见机器索引对应`frozen:pydantic`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/pydantic-2.13.4/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 608. pydantic_core — 2.46.4
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:pydantic_core`、`pydantic_core/_pydantic_core.cp310-win_amd64.pyd`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/pydantic_core/2.46.4/)；[对应来源](https://github.com/sponsors/samuelcolvin)。版本依据及SHA见机器索引对应`frozen:pydantic_core`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/pydantic_core-2.46.4/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；CPython扩展/DLL随包；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 609. starlette — 1.3.1
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:starlette`。
+- 许可：BSD-3-Clause。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/starlette/1.3.1/)；[对应来源](https://github.com/Kludex/starlette)。版本依据及SHA见机器索引对应`frozen:starlette`。
+- 完整原文及现有材料：[LICENSE.md](materials/frozen/starlette-1.3.1/LICENSE.md)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 610. uvicorn — 0.52.0
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:uvicorn`。
+- 许可：BSD-3-Clause。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/uvicorn/0.52.0/)；[对应来源](https://github.com/sponsors/encode)。版本依据及SHA见机器索引对应`frozen:uvicorn`。
+- 完整原文及现有材料：[LICENSE.md](materials/frozen/uvicorn-0.52.0/LICENSE.md)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 611. sse-starlette — 3.5.0
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:sse_starlette`。
+- 许可：BSD-3-Clause。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/sse-starlette/3.5.0/)；[对应来源](https://github.com/sysid/sse-starlette)。版本依据及SHA见机器索引对应`frozen:sse-starlette`。
+- 完整原文及现有材料：[AUTHORS](materials/frozen/sse-starlette-3.5.0/AUTHORS)；[LICENSE](materials/frozen/sse-starlette-3.5.0/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 612. anyio — 4.14.2
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:anyio`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/anyio/4.14.2/)；[对应来源](https://github.com/agronholm/anyio)。版本依据及SHA见机器索引对应`frozen:anyio`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/anyio-4.14.2/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 613. httpx2 — 2.13.1
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:httpx2`、`httpx2-2.13.1.dist-info/`。
+- 许可：BSD-3-Clause。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/httpx2/2.13.1/)；[对应来源](https://github.com/pydantic/httpx2/blob/main/src/httpx2/CHANGELOG.md)。版本依据及SHA见机器索引对应`frozen:httpx2`。
+- 完整原文及现有材料：[LICENSE.md](materials/frozen/httpx2-2.13.1/LICENSE.md)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 614. httpcore2 — 2.13.1
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:httpcore2`、`httpcore2-2.13.1.dist-info/`。
+- 许可：BSD-3-Clause。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/httpcore2/2.13.1/)；[对应来源](https://github.com/pydantic/httpx2/blob/main/src/httpcore2/CHANGELOG.md)。版本依据及SHA见机器索引对应`frozen:httpcore2`。
+- 完整原文及现有材料：[LICENSE.md](materials/frozen/httpcore2-2.13.1/LICENSE.md)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 615. click — 8.4.2
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:click`、`click-8.4.2.dist-info/`。
+- 许可：BSD-3-Clause。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/click/8.4.2/)。版本依据及SHA见机器索引对应`frozen:click`。
+- 完整原文及现有材料：[LICENSE.txt](materials/frozen/click-8.4.2/LICENSE.txt)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 616. opentelemetry-api — 1.45.1
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:opentelemetry`、`opentelemetry_api-1.45.1.dist-info/`。
+- 许可：Apache-2.0。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/opentelemetry-api/1.45.1/)；[对应来源](https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-api)。版本依据及SHA见机器索引对应`frozen:opentelemetry-api`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/opentelemetry-api-1.45.1/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 617. truststore — 0.10.4
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:truststore`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/truststore/0.10.4/)；[对应来源](https://github.com/sethmlarson/truststore)。版本依据及SHA见机器索引对应`frozen:truststore`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/truststore-0.10.4/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 618. typing-inspection — 0.4.2
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:typing_inspection`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/typing-inspection/0.4.2/)；[对应来源](https://github.com/pydantic/typing-inspection)。版本依据及SHA见机器索引对应`frozen:typing-inspection`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/typing-inspection-0.4.2/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位。
+
+## 619. tzdata — 2026.3
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:tzdata`。
+- 许可：Apache-2.0。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/tzdata/2026.3/)；[对应来源](https://github.com/python/tzdata/issues)。版本依据及SHA见机器索引对应`frozen:tzdata`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/tzdata-2026.3/LICENSE)；[LICENSE_APACHE](materials/frozen/tzdata-2026.3/licenses/LICENSE_APACHE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位；IANA 时区数据本身另有公共领域声明，见原文 licenses/LICENSE_APACHE 与上游说明。
+
+## 620. pywin32 — 312
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:pywintypes`、`2ByteASR.exe!PYZ:win32con`、`2ByteASR.exe!PYZ:win32evtlogutil`、`2ByteASR.exe!PYZ:winerror`、`pywin32_system32/pywintypes310.dll`、`win32/_win32sysloader.pyd`、`win32/win32api.pyd`、`win32/win32evtlog.pyd`、`win32/win32job.pyd`、`win32/win32pdh.pyd`。
+- 许可：PSF。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/pywin32/312/)；[对应来源](https://github.com/mhammond/pywin32)。版本依据及SHA见机器索引对应`frozen:pywin32`。
+- 完整原文及现有材料：[license.txt](materials/frozen/pywin32-312/adodbapi/license.txt)；[License.txt](materials/frozen/pywin32-312/com/License.txt)；[LICENSE](materials/frozen/pywin32-312/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE)；[README.txt](materials/frozen/pywin32-312/isapi/README.txt)；[License.txt](materials/frozen/pywin32-312/pythonwin/License.txt)；[LICENSE.txt](materials/frozen/pywin32-312/pythonwin/pywin/idle/LICENSE.txt)；[License.txt](materials/frozen/pywin32-312/pythonwin/Scintilla/License.txt)；[License.txt](materials/frozen/pywin32-312/win32/License.txt)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；CPython扩展/DLL随包；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位；pywin32 各子目录另有许可原文（adodbapi、Pythonwin、Scintilla、MAPIStubLibrary 等），实际随包的只是 win32 核心扩展与 pywintypes；逐项范围待核。
+
+## 621. pytest — 9.1.1
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:_pytest`。
+- 许可：MIT。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://pypi.org/project/pytest/9.1.1/)。版本依据及SHA见机器索引对应`frozen:pytest`。
+- 完整原文及现有材料：[LICENSE](materials/frozen/pytest-9.1.1/LICENSE)
+- 用途/集成：PyInstaller PYZ模块；0.7.0 起随主程序（本机 MCP 服务的官方 SDK 依赖链）；修改/补丁：未证明逐字节未修改。
+- 源码与配套义务：对应版本许可全文、版权与适用NOTICE；先核查原文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：确认实际模块与该版本来源的字节对应；元数据不可代替上游许可，原文路径已定位；程序不运行测试：0.7.0 起 _pytest 模块被 PyInstaller 沿依赖链一并收入（MCP 依赖链的可选插件导入），之后应在 spec 里排除。
+
+## 622. jonatasgrosman/wav2vec2-large-xlsr-53-japanese — cf031e020336460d15a417eba710bbc5bb43be9a
+
+- 范围/位置：C；`models/wav2vec2-large-xlsr-53-japanese`。
+- 许可：Apache-2.0。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
+- 来源：[对应来源](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/tree/cf031e020336460d15a417eba710bbc5bb43be9a)；ModelScope 固定提交 `18a6b5970be543c1171a30e5f2889c63878acd2e`（5 个必需文件与锁定 SHA-256 逐个相同）。版本依据及SHA见机器索引对应`model:ja_ctc_aligner`。
+- 完整原文及现有材料：[model-ja_ctc_aligner-README_md.txt](materials/models/ja_ctc_aligner/model-ja_ctc_aligner-README_md.txt)；[apache-2.0.txt](materials/common/apache-2.0.txt)
+- 用途/集成：模型工坊→download_models.ps1/模型完整性校验→主运行环境 ctc_aligner_worker.py；只用于日语句首校正；修改/补丁：包内没有该模型权重；下载时按文件哈希校验。未修改模型的声明仅限无本轮修改，不代替模型衍生关系证明。
+- 源码与配套义务：精确revision模型卡、许可全文、版权/NOTICE、基础模型/词表条款；向用户提供来源及适用条件。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：required_files只含运行文件；模型卡已按固定revision取得；基础模型 facebook/wav2vec2-large-xlsr-53 与训练数据（Common Voice 6.1、CSS10、JSUT）的条款未逐项核实；模型卡的 Apache-2.0 不自动覆盖数据集条件。

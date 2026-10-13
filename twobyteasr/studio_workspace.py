@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QMenu,
@@ -277,12 +277,9 @@ class StudioWorkspaceBuilder:
         from PySide6.QtWidgets import QMenu
 
         bilingual_menu = create_studio_menu(page)
-        action_toggle = bilingual_menu.addAction("开启 / 关闭双语显示")
-        action_toggle.triggered.connect(
-            lambda: page._set_bilingual_mode(not page.bilingual_toggle_button.isChecked())
-        )
-        action_translate = bilingual_menu.addAction("AI 翻译字幕…")
-        action_translate.triggered.connect(page._open_translation_dialog)
+        # Original / translation / bilingual display, order, fonts, translation.
+        from .studio_bilingual import build_menu as build_bilingual_menu
+        build_bilingual_menu(page, bilingual_menu)
         page.bilingual_toggle_button.setMenu(bilingual_menu)
         bar.addWidget(page.bilingual_toggle_button)
         clip_assistant = QPushButton("剪辑助手")
@@ -724,7 +721,9 @@ class StudioWorkspaceBuilder:
         page.context_panel = QFrame()
         page.context_panel.setObjectName("contextPanel")
         page.context_panel.setMinimumWidth(360)
-        page.context_panel.setMaximumWidth(520)
+        # 2026-10-11: the splitter may widen the tool panel (clip candidates are
+        # long texts); 520 left no room to drag it wider on large screens.
+        page.context_panel.setMaximumWidth(760)
         page.context_panel.setMinimumHeight(120)
         context_layout = QVBoxLayout(page.context_panel)
         context_layout.setContentsMargins(0, 0, 0, 0)
@@ -765,7 +764,8 @@ class StudioWorkspaceBuilder:
         from .studio_highlight_ui import HighlightAssistantPanel
         page.highlight_panel = HighlightAssistantPanel()
         page.highlight_tab_index = page.context_drawer.addTab(
-            self._scroll_context_panel(page.highlight_panel), QIcon(), "剪辑助手"
+            self._self_scrolling_context_panel(page.highlight_panel, page.highlight_panel.settings_area),
+            QIcon(), "剪辑助手"
         )
         from .studio_media_pool_ui import StudioMediaPoolPanel
 
@@ -1798,32 +1798,46 @@ class StudioWorkspaceBuilder:
         )
         page.video_transform_controls = []
 
+        page._video_axis_pairs = []
+
         def add_pair(row: int, first: int, second: int, middle: QWidget | None = None) -> None:
-            """Keep both axes together, independent of the drawer width."""
+            """X and Y side by side; a narrow drawer stacks Y under X."""
             label_a, name_a, min_a, max_a, suffix_a = controls[first]
             grid.addWidget(QLabel(label_a.split()[0]), row, 0)
             pair = QWidget()
             pair.setObjectName("videoAxisPair")
-            fields = QHBoxLayout(pair)
+            fields = QGridLayout(pair)
             fields.setContentsMargins(0, 0, 0, 0)
-            fields.setSpacing(6)
-            axis_x = QLabel("X"); axis_x.setObjectName("videoAxisLabel")
-            fields.addWidget(axis_x)
+            fields.setHorizontalSpacing(6)
+            fields.setVerticalSpacing(6)
+
+            def axis_group(axis: str, control: QWidget, extra: QWidget | None = None) -> QWidget:
+                group = QWidget()
+                row_layout = QHBoxLayout(group)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(6)
+                label = QLabel(axis); label.setObjectName("videoAxisLabel")
+                row_layout.addWidget(label)
+                row_layout.addWidget(control)
+                if extra is not None:
+                    row_layout.addWidget(extra)
+                group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                return group
+
             control_a = spin(name_a, min_a, max_a, suffix_a)
             setattr(page, name_a, control_a)
             page.video_transform_controls.append(control_a)
-            fields.addWidget(control_a)
             label_b, name_b, min_b, max_b, suffix_b = controls[second]
-            axis_y = QLabel("Y"); axis_y.setObjectName("videoAxisLabel")
-            fields.addWidget(axis_y)
             control_b = spin(name_b, min_b, max_b, suffix_b)
             setattr(page, name_b, control_b)
             page.video_transform_controls.append(control_b)
-            fields.addWidget(control_b)
-            if middle is not None:
-                fields.addWidget(middle)
-            fields.addStretch(1)
+            group_x = axis_group("X", control_a)
+            group_y = axis_group("Y", control_b, middle)
+            fields.addWidget(group_x, 0, 0)
+            fields.addWidget(group_y, 0, 1)
+            fields.setColumnStretch(2, 1)
             grid.addWidget(pair, row, 1)
+            page._video_axis_pairs.append((fields, group_x, group_y))
 
         # 五十轮（用户反馈）：缩放默认等比（链锁 ON），改 X 自动带 Y；按钮可关闭。
         page.video_scale_link = QToolButton()
@@ -1878,6 +1892,37 @@ class StudioWorkspaceBuilder:
         # 锚点 X/Y 同行（Premiere 式双值行）。
         add_pair(row, 6, 7)
         row += 1
+
+        def reflow_axis_pairs() -> None:
+            """Side by side when the drawer is wide enough; else Y under X.
+
+            Measured from the panel (= drawer viewport) width: the group box
+            itself never shrinks below the side-by-side minimum.
+            """
+            outer = layout.contentsMargins()
+            inner = grid.contentsMargins()
+            label_column = grid.cellRect(0, 0).width() if grid.cellRect(0, 0).isValid() else 48
+            available = (panel.width() - outer.left() - outer.right() - inner.left() - inner.right()
+                         - 4 - label_column - grid.horizontalSpacing())
+            for fields, group_x, group_y in page._video_axis_pairs:
+                needed = group_x.sizeHint().width() + fields.horizontalSpacing() + group_y.sizeHint().width()
+                stacked = needed > available
+                position = fields.getItemPosition(fields.indexOf(group_y))[:2]
+                if stacked and position != (1, 0):
+                    fields.removeWidget(group_y)
+                    fields.addWidget(group_y, 1, 0)
+                elif not stacked and position != (0, 1):
+                    fields.removeWidget(group_y)
+                    fields.addWidget(group_y, 0, 1)
+
+        class _AxisReflow(QObject):
+            def eventFilter(self, watched, event):
+                if event.type() == QEvent.Type.Resize:
+                    QTimer.singleShot(0, reflow_axis_pairs)
+                return False
+
+        page._video_axis_reflow = _AxisReflow(panel)
+        panel.installEventFilter(page._video_axis_reflow)
         grid.addWidget(QLabel("适配"), row, 0)
         page.video_fit_mode = QComboBox()
         page.video_fit_mode.addItem("完整显示", "contain")
@@ -1994,6 +2039,9 @@ class StudioWorkspaceBuilder:
         # Retain legacy inspector state bindings for old projects, while all
         # user-facing sound operations live on the corresponding A lane.
         audio_box.hide()
+        # Defaults for newly applied transitions: secondary, collapsed, last.
+        from .studio_transition_ui import create_default_durations
+        create_default_durations(page, layout)
         audio_hint = QLabel('声音开关、Solo 和音量请在对应的 A 波形行调整。')
         audio_hint.setWordWrap(True)
         audio_hint.setObjectName('contextEmpty')
@@ -2005,6 +2053,10 @@ class StudioWorkspaceBuilder:
             page.video_key_similarity, page.video_key_smoothness, page.video_key_spill,
         ]:
             control.setEnabled(False)
+        # Nothing is selected yet: blank fields, not "缩放 1.00%" / "不透明度 0.00%".
+        show_placeholders = getattr(page, "_show_video_transform_placeholders", None)
+        if callable(show_placeholders):
+            show_placeholders(True)
         return panel
 
     def _scroll_context_panel(self, panel: QWidget) -> QScrollArea:
@@ -2032,6 +2084,25 @@ class StudioWorkspaceBuilder:
                 page._wheel_scroll_owners[control] = area
         return area
 
+
+    def _self_scrolling_context_panel(self, panel: QWidget, area: QScrollArea) -> QWidget:
+        """A tab whose panel owns its scroll regions (no outer scroll around them).
+
+        The clip assistant's candidate list must be the one main scroll region;
+        an outer scroll area around it nested list-in-scroll-in-scroll.
+        """
+        page = self.page
+        if not panel.objectName():
+            panel.setObjectName("contextContent")
+        panel.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        panel.setMinimumWidth(0)
+        if not hasattr(page, "_wheel_scroll_owners"):
+            page._wheel_scroll_owners = {}
+        for control_type in (QComboBox, QAbstractSpinBox, QSlider):
+            for control in area.widget().findChildren(control_type):
+                control.installEventFilter(page)
+                page._wheel_scroll_owners[control] = area
+        return panel
 
     def _ai_panel(self) -> QWidget:
         page = self.page

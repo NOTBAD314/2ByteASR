@@ -202,6 +202,8 @@ class ApplicationSettingsDialog(SpringDialog):
                     row(group, title, control, note)
             advanced.addStretch()
 
+        self._build_mcp_page(page, section, row, toggle, parent)
+
         about=page('2ByteASR','本地 AI 字幕与视频创作工具')
         build=load_build_identity()
         version=bind_text(QLabel(), '版本 {value0}', value0=build.app_version);version.setProperty('typography','title');about.addWidget(version)
@@ -238,6 +240,96 @@ class ApplicationSettingsDialog(SpringDialog):
         f.addWidget(self.buttons);outer.addWidget(footer)
         apply_secondary_surface_theme(self)
         self._saved_values = self._values()
+
+    def _build_mcp_page(self, page, section, row, toggle, parent):
+        """外部 AI（MCP）: local access for desktop AI clients, off by default (2026-10-12)."""
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+        from . import mcp_common
+        self.navigation.insertItem(self.navigation.count() - 1, '外部 AI（MCP）')
+        lay = page('外部 AI（MCP）', '让本机的 AI 客户端（支持 MCP 的桌面应用）读取当前工程、提出修改建议并导出。'
+                   '修改只会在你于本程序内点击“批准”后套用，并可撤销。默认关闭。')
+        values = mcp_common.read_settings()
+        access = section(lay)
+        self.mcp_enabled = toggle(values['enabled'])
+        bind_text(self.mcp_enabled, '开启本机 MCP 访问', property='accessibleName')
+        row(access, '开启本机 MCP 访问', self.mcp_enabled, '只接受本机当前用户的连接；关闭时不监听、不占资源')
+        self.mcp_scope = field_width(StudioComboBox(), 'preferred')
+        self.mcp_scope.addItem(tr('仅当前打开的工程'), 'current')
+        self.mcp_scope.addItem(tr('工程库目录内的工程'), 'library')
+        self.mcp_scope.setCurrentIndex(max(0, self.mcp_scope.findData(values['scope'])))
+        row(access, '授权范围', self.mcp_scope, '列出工程与导出都限制在此范围内；读取和修改只针对 Studio 当前打开的工程')
+        self.mcp_allow_edits = toggle(values['allow_edits'])
+        row(access, '允许提出修改', self.mcp_allow_edits, '文字、译文、主要/次要角色、双语排版；每次都需在本程序内批准')
+        self.mcp_allow_export = toggle(values['allow_export'])
+        row(access, '允许导出字幕', self.mcp_allow_export, '写入工程文件夹下的“MCP 导出”，从不覆盖已有文件')
+        status = section(lay)
+        self.mcp_status = QLabel()
+        self.mcp_status.setObjectName('mcpStatus')
+        self.mcp_status.setWordWrap(True)
+        self.mcp_status.setTextFormat(Qt.TextFormat.PlainText)
+        status.addWidget(self.mcp_status)
+        buttons = QHBoxLayout()
+        self.mcp_copy = button_role(QPushButton(tr('复制客户端配置')), 'secondary')
+        self.mcp_revoke = button_role(QPushButton(tr('撤销授权（立即断开）')), 'secondary')
+        buttons.addWidget(self.mcp_copy)
+        buttons.addWidget(self.mcp_revoke)
+        buttons.addStretch(1)
+        status.addLayout(buttons)
+        tools = QLabel(tr('提供的工具：状态、工程列表、分页读取字幕与译文、搜索、说话人与角色、字词时间来源；'
+                          '预览修改（文字/译文、角色分组、双语排版）→ 程序内批准 → 套用 / 撤销；导出 SRT/JSON。'
+                          '不提供命令行、任意文件读写或直接改工程文件的工具。'))
+        tools.setObjectName('settingsDescription')
+        tools.setWordWrap(True)
+        lay.addWidget(tools)
+        lay.addStretch()
+        owner = parent.window() if parent is not None else None
+
+        def bridge():
+            if owner is None:
+                return None
+            from .mcp_bridge import _BRIDGE
+            return _BRIDGE if _BRIDGE is not None and _BRIDGE.window is owner else None
+
+        def refresh():
+            current = bridge()
+            if current is None or not current.listening():
+                text = tr('状态：未开启') if not self.mcp_enabled.isChecked() else tr('状态：保存设置后开始监听')
+            else:
+                stats = current.stats
+                last = stats.get('last_method') or tr('暂无')
+                text = tr('状态：正在监听（{pipe}）。请求 {count} 次，拒绝 {refused} 次，最近：{last}',
+                          pipe=mcp_common.pipe_name(), count=stats.get('requests', 0),
+                          refused=stats.get('refused', 0), last=last)
+            self.mcp_status.setText(text)
+
+        def copy_config():
+            command, args = mcp_common.server_command()
+            QApplication.clipboard().setText(mcp_common.client_config(command, args))
+            self.mcp_status.setText(tr('已复制。把它加入 AI 客户端的 MCP 配置（stdio）；本程序需在运行且已开启访问。'))
+
+        def revoke():
+            current = bridge()
+            if current is not None:
+                current.revoke()
+            else:
+                mcp_common.save_settings(dict(mcp_common.read_settings(), enabled=False))
+                mcp_common.delete_key()
+            self.mcp_enabled.setChecked(False)
+            self._saved_values = self._values()
+            self.mcp_status.setText(tr('已撤销：访问已关闭，新的请求都会被拒绝。需要时可重新开启。'))
+
+        self.mcp_copy.clicked.connect(copy_config)
+        self.mcp_revoke.clicked.connect(revoke)
+        timer = QTimer(self)
+        timer.setInterval(1000)
+        timer.timeout.connect(refresh)
+        timer.start()
+        refresh()
+
+    def mcp_values(self):
+        return dict(enabled=self.mcp_enabled.isChecked(), scope=self.mcp_scope.currentData() or 'current',
+                    allow_edits=self.mcp_allow_edits.isChecked(), allow_export=self.mcp_allow_export.isChecked())
 
     def _values(self):
         from PySide6.QtWidgets import QAbstractButton, QComboBox

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import bisect
+import marshal
 import re
 import warnings
 from contextlib import AbstractContextManager
@@ -324,6 +325,16 @@ class ProjectStateRuntime:
                 )
 
 
+def _json_snapshot(value):
+    """Rollback copy of a JSON-shaped project dict (marshal: ~4x deepcopy)."""
+    if type(value) in (dict, list):
+        try:
+            return marshal.loads(marshal.dumps(value))
+        except (ValueError, TypeError):
+            pass
+    return copy.deepcopy(value)
+
+
 class StateTransaction(AbstractContextManager["StateTransaction"]):
     """Nested-safe, rollback-capable mutation boundary for one user action."""
 
@@ -453,9 +464,9 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
         if domains & DirtyDomain.PROJECT_METADATA and self._metadata_snapshot is None:
             self._metadata_snapshot = (
                 copy.deepcopy(self.project.media),
-                copy.deepcopy(self.project.studio_state),
-                copy.deepcopy(self.project.generation_metadata),
-                copy.deepcopy(self.project.render_settings),
+                _json_snapshot(self.project.studio_state),
+                _json_snapshot(self.project.generation_metadata),
+                _json_snapshot(self.project.render_settings),
             )
         if domains & MEDIA_DOMAINS:
             if self._media_pool_snapshot is None:

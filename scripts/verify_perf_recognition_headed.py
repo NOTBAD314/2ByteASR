@@ -53,6 +53,14 @@ def main():
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--ai", action="store_true")
+    parser.add_argument("--ai-scope", choices=("all", "grouping"), default="all",
+                        help="With --ai: 'grouping' keeps AI proofreading off and only enables AI line breaking")
+    parser.add_argument("--subtitle-output", choices=("original", "translation", "bilingual"),
+                        help="Subtitle output for this run (translation/bilingual call the configured text service)")
+    parser.add_argument("--settings", type=Path,
+                        help="Explicit non-secret settings fixture; avoids reading daily settings")
+    parser.add_argument("--model-root", type=Path, default=ROOT / "models",
+                        help="Explicit existing read-only model resource directory")
     parser.add_argument("--timeout", type=int, default=3000)
     args = parser.parse_args()
     out = args.output.resolve()
@@ -60,7 +68,8 @@ def main():
         raise SystemExit("Fresh repository tmp output required")
     out.mkdir(parents=True)
     user_root = Path(os.environ["LOCALAPPDATA"]) / "2ByteASR"
-    daily_settings, secrets = user_root / "2byteasr_settings.json", user_root / "secrets.dat"
+    daily_settings = args.settings.resolve() if args.settings else user_root / "2byteasr_settings.json"
+    secrets = user_root / "secrets.dat"
     protected = {str(daily_settings): sha(daily_settings)}
     if args.ai:
         protected[str(secrets)] = sha(secrets)
@@ -74,13 +83,18 @@ def main():
     settings = {key: daily[key] for key in ("schema_version", "models", "switches", "performance") if key in daily}
     if not args.ai:
         settings.setdefault("switches", {}).update(enable_ai_polish=False, use_ai_grouping=False)
+    elif args.ai_scope == "grouping":
+        settings.setdefault("switches", {}).update(enable_ai_polish=False, use_ai_grouping=True)
+    if args.subtitle_output:
+        settings["subtitle_language"] = {"recognition_language": "auto", "output": args.subtitle_output,
+                                         "translation_script": "zh-Hans"}
     # Isolated profiles read settings from <test root>/config (settings.stable_settings_root).
     config = out / "config"
     config.mkdir(parents=True)
     (config / "2byteasr_settings.json").write_text(json.dumps(settings, ensure_ascii=False, indent=2), "utf8")
 
     junction = out / "models"
-    subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(ROOT / "models")], check=True, capture_output=True)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(args.model_root.resolve())], check=True, capture_output=True)
     roles = {}
     for role, venv in (("main", ".venv-main"), ("moss", ".venv-moss")):
         python, config = ROOT / venv / "Scripts" / "python.exe", ROOT / venv / "pyvenv.cfg"
@@ -92,6 +106,24 @@ def main():
         manifest["secrets"] = {"path": str(secrets), "sha256": protected[str(secrets)]}
     manifest_path = out / "borrowed-resources.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf8")
+
+    # Isolate this preparation process too, before importing product modules.
+    os.environ.update(TWOBYTEASR_TEST_ROOT=str(out),
+                      TWOBYTEASR_STARTUP_TRACE=str(out / "preparation-startup.jsonl"))
+    from twobyteasr.test_isolation import install
+    install()
+    # Older frozen builds install qtawesome fonts across the Windows session.
+    # Seed copies from the exact package so baseline runs do not register fonts.
+    bundle = args.exe.resolve().parent if args.exe else ROOT / "dist/2ByteASR"
+    if args.exe and args.exe.resolve() == ROOT / "2ByteASR.exe":
+        bundle = ROOT / "dist/2ByteASR"
+    fonts = bundle / "qtawesome/fonts"
+    if fonts.is_dir():
+        destination = out / "local/Microsoft/Windows/Fonts"
+        destination.mkdir(parents=True, exist_ok=True)
+        for font in fonts.iterdir():
+            if font.is_file():
+                shutil.copy2(font, destination / font.name)
 
     # The acceptance guard requires an owned project inside the output; it is
     # not opened (the audit works from Home).

@@ -62,7 +62,9 @@ def _trace_path() -> Path:
         return Path(configured)
     # External model workers run a real Python, but load this module from the
     # same installed bundle. Both processes must treat its directory as read-only.
-    if getattr(sys, "frozen", False) or (Path(__file__).resolve().parents[1] / "python310.dll").is_file():
+    # Isolated audits must not append to the repository's reports/ folder.
+    if (getattr(sys, "frozen", False) or os.environ.get("TWOBYTEASR_TEST_ROOT")
+            or (Path(__file__).resolve().parents[1] / "python310.dll").is_file()):
         from .runtime_paths import user_data_root
         return user_data_root() / "logs" / "startup-trace.jsonl"
     return Path(__file__).resolve().parents[1] / "reports" / "startup-trace.jsonl"

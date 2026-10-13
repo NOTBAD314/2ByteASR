@@ -130,7 +130,34 @@ def create_inspector(page,parent):
     remove=QPushButton(tr('删除转场'));remove.clicked.connect(lambda:delete_selected(page));form.addRow(remove)
     box.hide()
     parent.addWidget(box)
-    defaults=QGroupBox(tr('默认转场时长'));layout=QFormLayout(defaults)
+
+
+def create_default_durations(page,parent):
+    """Project defaults for newly applied transitions: a secondary, collapsed
+    section at the end of the Video panel (2026-10-12: it used to sit above
+    position/scale, the controls users adjust most often)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QFormLayout,QSpinBox,QToolButton,QWidget,QVBoxLayout,QSizePolicy
+    section=QWidget();section.setObjectName('videoDefaultsSection')
+    outer=QVBoxLayout(section);outer.setContentsMargins(0,0,0,0);outer.setSpacing(4)
+    header=QToolButton();header.setObjectName('videoDefaultsToggle')
+    header.setCheckable(True);header.setChecked(False)
+    header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+    header.setArrowType(Qt.ArrowType.RightArrow)
+    header.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
+    content=QWidget();layout=QFormLayout(content);layout.setContentsMargins(18,2,4,4)
+    content.setVisible(False)
+    outer.addWidget(header);outer.addWidget(content)
+    page.default_transition_toggle=header;page.default_transition_content=content
+    def refresh_summary():
+        video=getattr(page,'default_video_transition_duration',None)
+        audio=getattr(page,'default_audio_transition_duration',None)
+        if video is not None and audio is not None:
+            bind_text(header,'默认转场时长 · 视频 {video} ms · 音频 {audio} ms',video=video.value(),audio=audio.value())
+    def toggled(checked):
+        content.setVisible(bool(checked))
+        header.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+    header.toggled.connect(toggled)
     for media,label,value in (('video','视频',500),('audio','音频',300)):
         spin=QSpinBox();spin.setRange(1,10000);spin.setValue(value);spin.setSuffix(' ms')
         layout.addRow(tr(label),spin)
@@ -138,5 +165,7 @@ def create_inspector(page,parent):
             if page.project:
                 page.project.studio_state['default_'+m+'_transition_ms']=s.value();page._schedule_autosave()
         spin.editingFinished.connect(save_default)
+        spin.valueChanged.connect(lambda _v:refresh_summary())
         setattr(page,'default_'+media+'_transition_duration',spin)
-    parent.addWidget(defaults)
+    refresh_summary()
+    parent.addWidget(section)

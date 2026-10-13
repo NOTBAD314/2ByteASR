@@ -34,6 +34,7 @@ import re
 import subprocess
 import time
 from difflib import SequenceMatcher
+from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1055,15 +1056,32 @@ def line_units(text, marks):
     return units
 
 
-def wrap_units(units, width, top_metrics, below_metrics, pad):
+def _font_advance_cache(metrics):
+    """Bound repeated shaping work to this widget's exact font metrics.
+
+    Keep short words/characters only; a long unbroken caption must not fill
+    a cache with thousands of large strings. The owner replaces these caches
+    with its metrics on font/zoom changes and clears them with the document.
+    """
+    cached = lru_cache(maxsize=2048)(metrics.horizontalAdvance)
+
+    def advance(text):
+        return cached(text) if len(text) <= 128 else metrics.horizontalAdvance(text)
+
+    advance.cache_clear = cached.cache_clear
+    return advance
+
+
+def wrap_units(units, width, top_metrics, below_metrics, pad, *, advances=None):
     """Greedy line breaking; a marked unit is as wide as its wider half."""
+    top_advance, below_advance = advances or (top_metrics.horizontalAdvance, below_metrics.horizontalAdvance)
     lines, line, x = [], [], 0.0
     for unit in units:
-        top_w = top_metrics.horizontalAdvance(unit["top"]) if unit["top"] else 0.0
+        top_w = top_advance(unit["top"]) if unit["top"] else 0.0
         if unit["mark"] is None:
             w = top_w
         else:
-            below_w = below_metrics.horizontalAdvance(unit["below"]) if unit["below"] else 0.0
+            below_w = below_advance(unit["below"]) if unit["below"] else 0.0
             w = max(top_w, below_w, pad * 1.6) + 2 * pad
         unit["w"], unit["top_w"] = w, top_w
         if line and x + w > width:
@@ -1174,6 +1192,7 @@ class CaptionReviewList(QWidget):
         self.mono.setPixelSize(z(self.SMALL_PX))
         self.body_metrics = QFontMetricsF(self.body)
         self.below_metrics = QFontMetricsF(self.below)
+        self._layout_advances = (_font_advance_cache(self.body_metrics), _font_advance_cache(self.below_metrics))
         self.small_metrics = QFontMetricsF(self.small)
         self.label_metrics = QFontMetricsF(self.label_font)
         self.mono_metrics = QFontMetricsF(self.mono)
@@ -1235,6 +1254,8 @@ class CaptionReviewList(QWidget):
     def set_rows(self, rows, visible=None):
         self.rows = rows
         self._layout_cache.clear()
+        for advance in self._layout_advances:
+            advance.cache_clear()
         self.set_visible(list(range(len(rows))) if visible is None else visible)
 
     def set_visible(self, visible):
@@ -1258,7 +1279,7 @@ class CaptionReviewList(QWidget):
         needle = self.find.get("needle") or ""
         return find_spans(row["base"], needle) if needle else []
 
-    def _marks(self, row):
+    def _marks(self, row, groups=None):
         """Inline marks: search hits, changes made here, then proposals by
         priority — one mark per real change of a proposal."""
         text = row["base"]
@@ -1275,7 +1296,8 @@ class CaptionReviewList(QWidget):
             if not any(a < max(mark["end"], mark["start"] + 1) and mark["start"] < b for a, b in taken):
                 marks.append(mark)
                 taken.append((mark["start"], max(mark["end"], mark["start"] + 1)))
-        group_by_part = {index: group for group in self.groups(row) for index in group["parts"]}
+        groups = self.groups(row) if groups is None else groups
+        group_by_part = {index: group for group in groups for index in group["parts"]}
         ranked = sorted(self._visible_issues(row), key=lambda pair: (PRIORITY.get(pair[1]["kind"], 8), pair[0]))
         for index, issue in ranked:
             if issue["stale"] or issue["checked"] and issue["kind"] == "suspect":
@@ -1314,8 +1336,9 @@ class CaptionReviewList(QWidget):
                 marks.append(dict(start=start, end=end, below=below, style=kind, ref=index))
         return marks
 
-    def _row_key(self, row):
-        return (row["cue_id"], row["base"], row.get("origin"), self._zoom, int(self._text_width()), self.stutter,
+    def _row_key(self, row, width=None):
+        return (row["cue_id"], row["base"], row.get("origin"), self._zoom,
+                int(self._text_width() if width is None else width), self.stutter,
                 self.terms.version, self.find.get("needle"), self.find.get("replace"),
                 tuple(sorted(start for cue, start in self.find.get("excluded") or () if cue == row["cue_id"])),
                 tuple(sorted(index for cue, index in self.expanded if cue == row["cue_id"])),
@@ -1323,13 +1346,15 @@ class CaptionReviewList(QWidget):
                        i.get("default")) for i in row["issues"]))
 
     def _row_layout(self, row):
-        key = self._row_key(row)
+        width = self._text_width()
+        key = self._row_key(row, width)
         cached = self._layout_cache.get(row["cue_id"])
         if cached is not None and cached[0] == key:
             return cached[1]
-        units = line_units(row["base"], self._marks(row))
-        width = self._text_width()
-        lines = wrap_units(units, width, self.body_metrics, self.below_metrics, self.MARK_PAD)
+        groups = self.groups(row)
+        units = line_units(row["base"], self._marks(row, groups))
+        lines = wrap_units(units, width, self.body_metrics, self.below_metrics, self.MARK_PAD,
+                           advances=self._layout_advances)
         heights = [self.LINE + (self.BELOW if any(u["mark"] is not None and (u["below"] or u["mark"]["style"].endswith("_delete"))
                                                   for u in line) else 0) for line in lines]
         last_end = (lines[-1][-1]["x"] + lines[-1][-1]["w"]) if lines and lines[-1] else 0.0
@@ -1338,7 +1363,7 @@ class CaptionReviewList(QWidget):
         if edit_newline:
             heights.append(self.LINE)
         entries = []
-        for group in self.groups(row):
+        for group in groups:
             entries.append(("group", group))
             if (row["cue_id"], group["parts"][0]) in self.expanded:
                 entries.extend(("detail", (group, line)) for line in self._detail_lines(row, group))
@@ -2588,12 +2613,30 @@ class _StutterThread(QThread):
 
 
 class _SaveThread(QThread):
-    """Saves a project nobody else edits (no Studio open) off the UI thread."""
+    """Write a private snapshot while the proofreading page keeps editing."""
     done = Signal(str)
 
     def __init__(self, project, path, parent=None):
+        runtime = getattr(project, "_studio_state_runtime", None)
+        if runtime is not None and runtime._active is not None:
+            raise RuntimeError("不能在媒体编辑事务提交前保存工程")
+        # The caller is the GUI thread. Capture before starting the worker:
+        # asdict/save_project walks cues and receipts separately, so sharing
+        # the live project could save pre-edit text with post-undo metadata.
+        # Keep the existing validated, backed-up atomic save in the worker.
+        from .studio_runtime_state import _json_snapshot
+        # Recognition evidence and proofreading receipts dominate large
+        # projects. Reuse the transaction snapshot copier for those JSON
+        # fields, together so aliases within/between them stay consistent.
+        # It falls back to deepcopy for values marshal cannot preserve.
+        values = [project.asr_evidence, project.generation_metadata, project.studio_state,
+                  project.edit_history, project.style_recipes, project.effects,
+                  project.render_settings, project.original_outputs, project.edit_sequence]
+        frozen = _json_snapshot(values)
+        memo = {id(value): copied for value, copied in zip(values, frozen)}
+        snapshot = copy.deepcopy(project, memo)
         super().__init__(parent)
-        self.project, self.path = project, path
+        self.project, self.path = snapshot, path
 
     def run(self):
         try:
@@ -3860,7 +3903,13 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         if self._save_thread is not None and self._save_thread.isRunning():
             self._save_again = True
             return
-        thread = _SaveThread(project, self._project_path, self)
+        try:
+            thread = _SaveThread(project, self._project_path, self)
+        except Exception as exc:
+            self._save_error = str(exc) or type(exc).__name__
+            self._set_status(tr("修改还在本页，但没有保存到工程文件：{reason}。可以再试一次保存（离开本页时也会再试）",
+                                reason=self._save_error[:200]))
+            return
         self._save_thread = thread
 
         def done(error):
@@ -3894,8 +3943,14 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             if thread is None:
                 break
             # The finished signal is queued; deliver it so the error is known.
-            thread.wait(15000)
+            finished = thread.wait(15000)
             QApplication.processEvents()
+            if not finished:
+                # Still writing (slow or network drive): never report the
+                # file as saved or let Studio read it half-written. The
+                # thread stays tracked; its finished signal clears this.
+                self._save_error = tr("工程文件仍在写入（磁盘较慢），请稍候重试")
+                return False
             if self._save_thread is thread:
                 self._save_thread = None
             if self._save_again:

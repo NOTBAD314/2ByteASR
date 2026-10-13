@@ -144,6 +144,12 @@ def open_application_settings(
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return False
     dialog.storage_panel.save_policy()
+    # Local MCP access (additive "mcp" settings key; off by default).
+    from .mcp_common import save_settings as save_mcp_settings
+    mcp_values = save_mcp_settings(dialog.mcp_values())
+    from . import mcp_bridge
+    if mcp_values["enabled"] or mcp_bridge._BRIDGE is not None:
+        mcp_bridge.bridge_for(owner).apply_settings(mcp_values)
     workshop = existing_page(owner, 'workshop')
     if workshop is not None:
         workshop.refresh()

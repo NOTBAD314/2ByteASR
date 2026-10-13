@@ -82,7 +82,7 @@ def test_resolve_moss_urls_and_hosts_per_mode(lock):
         "https://modelscope.cn/api/v1/models/openmoss/MOSS-Transcribe-Diarize/repo?"
     )
     assert "FilePath=model-00000-of-00001.safetensors" in ms[0].url
-    assert "Revision=master" in ms[0].url
+    assert "Revision=" + spec['modelscope_revision'] in ms[0].url
 
     mirror = sources.resolve_artifact("moss", artifact, spec, "HF_MIRROR")
     assert len(mirror) == 1
@@ -107,7 +107,7 @@ def test_auto_sequence_prefers_modelscope_when_declared(lock):
         lock["models"]["whisper_turbo"],
         "AUTO",
     )
-    assert [item.mode for item in whisper] == ["MODELSCOPE", "HF_MIRROR", "HF_OFFICIAL"]
+    assert [item.mode for item in whisper] == ["MODELSCOPE", "HF_OFFICIAL"]
     assert whisper[0].host == "modelscope.cn"
 
     moss = sources.resolve_artifact(
@@ -116,7 +116,7 @@ def test_auto_sequence_prefers_modelscope_when_declared(lock):
         lock["models"]["moss"],
         "AUTO",
     )
-    assert [item.mode for item in moss] == ["MODELSCOPE", "HF_MIRROR", "HF_OFFICIAL"]
+    assert [item.mode for item in moss] == ["MODELSCOPE", "HF_OFFICIAL"]
     assert moss[0].host == "modelscope.cn"
 
 

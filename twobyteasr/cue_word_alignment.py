@@ -71,8 +71,14 @@ def evidence_tokens(project, refs, rows=None):
     ``words`` are derived and never used.
     """
     from .word_timing_provenance import estimated_word_timing
+    from .cue_forced_alignment import is_cue_alignment_row
     if rows is None:
         rows = [(ref, project.asr_evidence.get(ref, {})) for ref in refs]
+    # A caption's own forced alignment of its current text supersedes the
+    # segment rows it overlaps (whose tokens are another text's timing).
+    own = [(ref, row) for ref, row in rows if is_cue_alignment_row(row)]
+    if own:
+        rows = own
     records = []
     term_pending = False
     derived = False
@@ -333,7 +339,10 @@ def _independent_words(project, cue):
         pending = TERM_PENDING
     receipt = project.studio_state[KEY].get('instances', {}).get(cue.id, {})
     from .word_timing_provenance import estimated_word_timing
-    if (not receipt.get('acoustic_word_observation') and any(
+    from .cue_forced_alignment import is_cue_alignment_row
+    if (not receipt.get('acoustic_word_observation')
+            and not any(is_cue_alignment_row(project.asr_evidence.get(ref)) for ref in cue.evidence_refs)
+            and any(
             estimated_word_timing(project.asr_evidence.get(ref, {}))
             and not (project.asr_evidence.get(ref, {}).get('caption_arbitration') or {}).get('acoustic_words')
             for ref in cue.evidence_refs)):

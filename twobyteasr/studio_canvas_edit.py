@@ -121,13 +121,86 @@ class StudioCanvasEditMixin:
             self._refresh_ass_preview()
         self._finish_position_overlay_interaction()
 
+    def _clear_video_gdi(self, screen_rect) -> None:
+        """Clear a vacated area in the GDI layer under mpv's swapchain (Windows).
+
+        A hidden native card leaves its pixels in the window surface that the
+        compositor shows under the video whenever mpv's swapchain is being
+        resized (entering Review shrank the video and the old edit card
+        reappeared for a few frames). mpv never paints that GDI layer itself;
+        black is what mpv shows there anyway. Nothing visible is covered.
+        """
+        import ctypes
+        from ctypes import wintypes as W
+        parent = int(getattr(self, "video", None).internalWinId() or 0) if getattr(self, "video", None) else 0
+        if not parent:
+            return
+        user, gdi = ctypes.WinDLL("user32"), ctypes.WinDLL("gdi32")
+        enum_proc = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+        user.EnumChildWindows.argtypes = [W.HWND, enum_proc, W.LPARAM]
+        user.MapWindowPoints.argtypes = [W.HWND, W.HWND, ctypes.POINTER(W.POINT), W.UINT]
+        user.GetDC.argtypes, user.GetDC.restype = [W.HWND], W.HDC
+        user.ReleaseDC.argtypes = [W.HWND, W.HDC]
+        user.FillRect.argtypes = [W.HDC, ctypes.POINTER(W.RECT), W.HBRUSH]
+        gdi.GetStockObject.argtypes, gdi.GetStockObject.restype = [ctypes.c_int], W.HGDIOBJ
+        handles = [parent]
+        callback = enum_proc(lambda hwnd, _param: handles.append(int(hwnd)) or True)
+        user.EnumChildWindows(W.HWND(parent), callback, 0)
+        brush = gdi.GetStockObject(4)  # BLACK_BRUSH
+        for hwnd in handles:
+            rect = W.RECT(*screen_rect)
+            points = ctypes.cast(ctypes.pointer(rect), ctypes.POINTER(W.POINT))
+            user.MapWindowPoints(None, W.HWND(hwnd), points, 2)
+            dc = user.GetDC(W.HWND(hwnd))
+            if dc:
+                user.FillRect(dc, ctypes.byref(rect), brush)
+                user.ReleaseDC(W.HWND(hwnd), dc)
+
     def _set_subtitle_editor_visible(self, visible: bool) -> None:
         card = getattr(self, "subtitle_edit_card", None)
         if card is None:
             return
+        if not visible and card.isVisible():
+            import sys
+            handle = int(card.internalWinId() or 0)
+            if sys.platform == "win32" and handle:
+                import ctypes
+                from ctypes import wintypes as W
+                vacated = W.RECT()
+                if ctypes.windll.user32.GetWindowRect(W.HWND(handle), ctypes.byref(vacated)):
+                    card.setVisible(False)
+                    try:
+                        self._clear_video_gdi((vacated.left, vacated.top, vacated.right, vacated.bottom))
+                    except (OSError, AttributeError, ValueError):
+                        pass
+                    return
+        if visible and not card.isVisible():
+            # 2026-10-11 (E/R flash): the card is a native window over the
+            # video. Shown as before, its first composited frame was blank,
+            # held old pixels, or sat at its old place until Qt laid it out.
+            # Place it where its bottom-centred grid cell puts it, then make
+            # the first paint happen before control returns to the compositor.
+            host = card.parentWidget()
+            if host is not None:
+                if card.layout() is not None:
+                    card.layout().activate()
+                hint, low, high = card.sizeHint(), card.minimumSize(), card.maximumSize()
+                width = min(host.width(), high.width(), max(hint.width(), low.width()))
+                height = min(host.height(), high.height(), max(hint.height(), low.height()))
+                card.setGeometry((host.width() - width) // 2, host.height() - height, width, height)
         card.setVisible(bool(visible))
         if visible:
             card.raise_()
+            if card.layout() is not None:
+                card.layout().activate()
+            import sys
+            handle = int(card.internalWinId() or 0)
+            if sys.platform == "win32" and handle:
+                import ctypes
+                # RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW: dispatch the
+                # first WM_PAINT now (Qt exposes and paints synchronously).
+                ctypes.windll.user32.RedrawWindow(ctypes.c_void_p(handle), None, None, 0x0001 | 0x0080 | 0x0100)
+            card.repaint()
 
     def _widget_alive(self, widget) -> bool:
         if widget is None:

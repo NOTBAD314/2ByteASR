@@ -1,6 +1,4 @@
 """Offline pytest entry; local renderers and explicitly stubbed providers work."""
-import ipaddress
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -10,17 +8,9 @@ import os
 import uuid
 os.environ.setdefault('TWOBYTEASR_TEST_ROOT',str(Path(__file__).resolve().parents[1]/'tmp'/'isolated-tests'/uuid.uuid4().hex))
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-from twobyteasr.test_isolation import install
+from twobyteasr.test_isolation import install, install_pytest_network_guard
 install()
-_connect=socket.socket.connect
-def local_connect(sock,address):
-    if isinstance(address,tuple):
-        host=str(address[0])
-        try:local=ipaddress.ip_address(host).is_loopback
-        except ValueError:local=host.lower()=='localhost'
-        if not local:raise RuntimeError('Offline regression blocked external connection')
-    return _connect(sock,address)
-socket.socket.connect=local_connect
+install_pytest_network_guard()
 _popen=subprocess.Popen
 class OfflinePopen(_popen):
     def __init__(self,args,*pos,**kwargs):

@@ -101,6 +101,35 @@ def _apply_intra_phrase_spacing_to_cues(cues):
     return cues
 
 
+def normalize_delivered_cue_text(cues, legacy=None):
+    """The one deterministic format cleanup before cues become the project.
+
+    2026-10-12: recognition results carried format junk such as the trailing
+    space of "这里怎么办 " (Stage 9 boundary residue, also replayed from
+    cached grouped/final_timing artifacts).  This runs on the final cue list
+    of every path immediately before ``create_studio_outputs`` builds the
+    project and stamps its delivery reference, so the saved project, the
+    result digest, the workbench, proofreading, reopen and export all see the
+    same text.  Only format whitespace changes
+    (``text_rules.normalize_format_whitespace``); content characters never
+    move, and project word alignment is content-indexed.  Idempotent.
+    """
+    from .text_rules import normalize_format_whitespace
+    changed = []
+    for cue in cues:
+        text = getattr(cue, "text", None)
+        if not isinstance(text, str):
+            continue
+        cleaned = normalize_format_whitespace(text)
+        if cleaned != text and cleaned.strip():
+            cue.text = cleaned
+            changed.append({"cue_id": getattr(cue, "cue_id", None), "before": text, "after": cleaned})
+    record = getattr(legacy, "record_run_event", None)
+    if changed and callable(record):
+        record("cue_format_whitespace_normalized", count=len(changed), samples=changed[:20])
+    return changed
+
+
 def finalize_cues(    cues,
     segments,
     firered_tokens,
@@ -232,6 +261,8 @@ def complete_media_run(
     """Write outputs transactionally, finish the report, and return public paths."""
     review_items = legacy.print_review_summary()
     runtime_context = runtime_context or get_runtime_context()
+    # Before the project and its delivery digest exist: never a later rewrite.
+    normalize_delivered_cue_text(cues, legacy)
     output_details = {}
     # Recognition persists its project and report. File export is an explicit
     # user operation; even legacy saved output switches must not write siblings
@@ -239,6 +270,19 @@ def complete_media_run(
     txt_path = ""
     srt_path = ""
     include_srt = False
+
+    # Japanese -> Chinese, when chosen before the task: written with the project.
+    translation_metadata = {}
+    from twobyteasr.service import CancelledError
+    try:
+        from twobyteasr.recognition_translation import translate_runtime_cues
+        translation_metadata = translate_runtime_cues(cues, runtime_context, legacy)
+    except CancelledError:
+        raise
+    except Exception as exc:  # the recognition result is still delivered
+        legacy.add_review_item(0.0, "翻译未完成", f"识别结果已保存；可在工作台重新翻译：{exc}"[:200],
+                               priority=2, severity="warning")
+        legacy.record_run_event("subtitle_translation_failed", error=f"{type(exc).__name__}: {exc}"[:300])
 
     def write_studio_project():
         try:
@@ -285,6 +329,17 @@ def complete_media_run(
                             "polishing_summary": dict(getattr(runtime_context,"polishing_summary",{}) or {}),
                             "terminology_snapshot": (runtime_context.glossary_snapshot.to_dict()
                                 if getattr(runtime_context, "glossary_snapshot", None) is not None else {}),
+                            # Spoken language of the media (not of any speaker) and how it was decided.
+                            "language": {
+                                "code": str(getattr(runtime_context, "task_language", "") or "zh"),
+                                "requested": str(getattr(runtime_context, "requested_language", "auto") or "auto"),
+                                "evidence": dict(getattr(runtime_context, "language_evidence", {}) or {}),
+                            },
+                            "subtitle_output": {
+                                "mode": str(getattr(runtime_context, "subtitle_output", "original") or "original"),
+                                "translation_script": str(getattr(runtime_context, "translation_script", "zh-Hans") or "zh-Hans"),
+                            },
+                            **translation_metadata,
                         },
                         glossary_ids=getattr(runtime_context, "enabled_glossary_ids", ()),
                         target_project_path=str(

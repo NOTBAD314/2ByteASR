@@ -72,6 +72,11 @@ class RunOptions:
     glossary_snapshot_json: str = field(default="", repr=False)
     enable_term_search: bool = False
     job_id: str = ""
+    # Spoken language of the media: auto (detect from the transcript), zh or ja.
+    recognition_language: str = "auto"
+    # Subtitles to produce: original, translation or bilingual (original + translation).
+    subtitle_output: str = "original"
+    translation_script: str = "zh-Hans"
 
     def __post_init__(self) -> None:
         if self.job_id:
@@ -89,6 +94,12 @@ class RunOptions:
             raise ValueError("overwrite_policy 只能是 overwrite、skip 或 error")
         if self.recognition_purpose not in {"final", "analysis"}:
             raise ValueError("recognition_purpose 只能是 final 或 analysis")
+        if self.recognition_language not in {"auto", "zh", "ja"}:
+            raise ValueError("recognition_language 只能是 auto、zh 或 ja")
+        if self.subtitle_output not in {"original", "translation", "bilingual"}:
+            raise ValueError("subtitle_output 只能是 original、translation 或 bilingual")
+        if self.translation_script not in {"zh-Hans", "zh-Hant"}:
+            raise ValueError("translation_script 只能是 zh-Hans 或 zh-Hant")
 
     @classmethod
     def from_legacy(cls, legacy: Any, *, overwrite_policy: str = "overwrite") -> "RunOptions":
@@ -168,6 +179,9 @@ class RunOptions:
             recognition_snapshot=json.loads(self.recognition_snapshot_json) if self.recognition_snapshot_json else {},
             speaker_source=__import__('twobyteasr.speaker_strategy', fromlist=['resolve']).resolve(
                 json.loads(self.settings_snapshot_json) if self.settings_snapshot_json else getattr(legacy, 'RUNTIME_SETTINGS', {})),
+            requested_language=self.recognition_language,
+            subtitle_output=self.subtitle_output,
+            translation_script=self.translation_script,
         )
 
     def apply(
@@ -203,6 +217,9 @@ class RunOptions:
         context.recognition_purpose = configured.recognition_purpose
         context.recognition_snapshot = configured.recognition_snapshot
         context.speaker_source = configured.speaker_source
+        context.requested_language = configured.requested_language
+        context.subtitle_output = configured.subtitle_output
+        context.translation_script = configured.translation_script
         context.event_log_path = ""
         context.review_items.clear()
         sync_legacy_runtime(legacy, context)

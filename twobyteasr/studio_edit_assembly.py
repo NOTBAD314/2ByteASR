@@ -17,6 +17,13 @@ from .i18n import bind_text
 
 from .i18n import tr
 
+def _clock(ms: int) -> str:
+    total = max(0, int(ms)) // 1000
+    hours, rest = divmod(total, 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+
+
 class StudioEditAssemblyMixin:
     """Feature-domain mixin; host class provides widgets and state."""
 
@@ -184,37 +191,139 @@ class StudioEditAssemblyMixin:
         project = self.project
         if project is None:
             return
-        self.undo_stack.push(generate_edit_command(project, changed=self._sequence_changed))
-        self._reload_edit_playback()
+        from .studio_edit_sequence import timeline_duration_ms
+        panel = self.highlight_panel
+        full_ms = int(project.media.duration_ms or 0)
+        try:
+            command = generate_edit_command(project, changed=self._sequence_changed, page=self,
+                                            locked_speakers=self.timeline.locked_speakers)
+        except ValueError as exc:
+            panel.show_edit_result(tr(str(exc)), ok=False)
+            self.save_state.setText(tr(str(exc)))
+            return
+        if command is not None:
+            self.undo_stack.push(command)
+            self._reload_edit_playback()
+        # The result is the whole new timeline: show it from its first frame.
+        self._present_whole_timeline(0)
+        sequence = sequence_of(project)
+        duration = timeline_duration_ms(project)
+        left_out = getattr(command, 'left_out_captions', 0) if command is not None else 0
+        panel.show_edit_result(tr(
+            '已生成剪辑：{count} 段，共 {duration}（完整录播 {full}）。Ctrl+Z 撤销，「返回完整录播」可恢复。'
+            if command is not None else '时间轴已是候选箱的剪辑结果：{count} 段，共 {duration}（完整录播 {full}）。',
+            count=len(sequence.segments), duration=_clock(duration), full=_clock(full_ms))
+            + (tr('{count} 条字幕不在保留区间，返回完整录播可恢复。', count=left_out) if left_out else ''), ok=True)
+        bind_text(self.save_state, '已生成剪辑 · {count} 段 · {duration}', count=len(sequence.segments),
+                  duration=_clock(duration))
 
     def _restore_full_sequence(self) -> None:
         project = self.project
         if project is None:
             return
-        self.undo_stack.push(restore_full_sequence_command(project, self._sequence_changed))
-        self._reload_edit_playback()
+        panel = self.highlight_panel
+        try:
+            command = restore_full_sequence_command(project, self._sequence_changed, page=self,
+                                                    locked_speakers=self.timeline.locked_speakers)
+        except ValueError as exc:
+            panel.show_edit_result(tr(str(exc)), ok=False)
+            self.save_state.setText(tr(str(exc)))
+            return
+        if command is not None:
+            self.undo_stack.push(command)
+            self._reload_edit_playback()
+        self._present_whole_timeline(None)
+        from .studio_edit_sequence import timeline_duration_ms
+        panel.show_edit_result(tr('已返回完整录播（{duration}）。', duration=_clock(timeline_duration_ms(project))), ok=True)
 
-    def _import_danmaku_xml(self, path: str) -> None:
+    def _present_whole_timeline(self, playhead_ms) -> None:
+        """Fit the edited timeline in view and hold the player on one frame."""
+        try:
+            if self.video.controller and not bool(self.video.playback_position_snapshot().paused):
+                self.video.set_paused(True)
+                self._sync_play_button(True)
+        except (RuntimeError, AttributeError):
+            pass
+        self._fit_timeline()
+        if playhead_ms is not None:
+            self.timeline.set_playhead(int(playhead_ms))
+            self._seek(int(playhead_ms) / 1000.0)
+
+    def _refresh_danmaku_status(self) -> None:
+        if hasattr(self, "highlight_panel"):
+            from .danmaku_binding import effective_path
+            self.highlight_panel.set_project_status(self.project, effective_path(self.project) if self.project else "")
+
+    def _schedule_danmaku_discovery(self, manual_path: str = "") -> None:
+        """Find/validate the same-name XML beside the ORIGINAL source, off the GUI thread.
+
+        ``manual_path`` validates a file the user chose (or dropped) instead.
+        Results are applied only to the project and source they were made for.
+        """
+        import threading
+        from .danmaku_binding import (
+            DanmakuDiscovery, binding_of, discover_for_source, inspect_xml,
+            needs_discovery, normalized_source, primary_source)
         project = self.project
         if project is None:
+            self._refresh_danmaku_status()
             return
-        from .studio_runtime_state import DirtyDomain, state_for
+        legacy = "" if binding_of(project) else str(sequence_of(project).danmaku_path or "")
+        manual = str(manual_path or legacy)
+        if not manual and not needs_discovery(project):
+            self._refresh_danmaku_status()
+            return
+        project_id, source = project.project_id, primary_source(project)
+        explicit = bool(manual_path)
 
-        resolved = str(Path(path).resolve())
-        with state_for(project).transaction(
-            project,
-            action_id="bind_danmaku_xml",
-            dirty=DirtyDomain.CLIP_STATUS | DirtyDomain.AUTOSAVE,
-        ):
-            sequence_of(project).danmaku_path = str(path)
-        self.highlight_panel.set_xml_discovery(
-            (resolved,), resolved, automatic=False
-        )
+        def work() -> None:
+            if manual:
+                count, duration, error = inspect_xml(manual)
+                result = DanmakuDiscovery(normalized_source(source), "manual" if explicit else "legacy_manual",
+                                          path=str(Path(manual).resolve()), count=count,
+                                          duration_ms=duration, error=error)
+            else:
+                result = discover_for_source(source)
+            try:
+                self.danmaku_discovery_signal.emit(project_id, result)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="studio-danmaku-discovery").start()
+        if not manual:
+            self._refresh_danmaku_status()
+
+    def _danmaku_discovery_ready(self, project_id: str, discovery) -> None:
+        project = self.project
+        if project is None or project.project_id != project_id:
+            return  # a late result for another project is discarded
+        from .danmaku_binding import apply_discovery, bind_manual, normalized_source, primary_source
+        from .studio_runtime_state import DirtyDomain, state_for
+        if discovery.source_path != normalized_source(primary_source(project)):
+            return  # the source changed while searching
+        manual = discovery.status in {"manual", "legacy_manual"}
+        # A user choice is an edit (saved); an automatic match is re-found on
+        # open and saved with the next edit, without forcing an autosave.
+        dirty = DirtyDomain.CLIP_STATUS | DirtyDomain.PROJECT_METADATA
+        if discovery.status == "manual":
+            dirty |= DirtyDomain.AUTOSAVE
+        with state_for(project).transaction(project, action_id="danmaku_binding", dirty=dirty):
+            if manual:
+                bind_manual(project, discovery.path, discovery.count, discovery.duration_ms, discovery.error)
+            else:
+                apply_discovery(project, discovery)
+        self._refresh_danmaku_status()
+
+    def _import_danmaku_xml(self, path: str) -> None:
+        if self.project is None or not path:
+            return
+        self._schedule_danmaku_discovery(manual_path=str(path))
 
     def _unbind_danmaku_xml(self) -> None:
         project = self.project
         if project is None:
             return
+        from .danmaku_binding import unbind
         from .studio_runtime_state import DirtyDomain, state_for
 
         with state_for(project).transaction(
@@ -226,22 +335,17 @@ class StudioEditAssemblyMixin:
                 | DirtyDomain.AUTOSAVE
             ),
         ):
-            sequence_of(project).danmaku_path = ""
-            project.studio_state["media_xml_match"] = "none"
-        self.highlight_panel.set_xml_discovery(
-            tuple(project.studio_state.get("media_xml_candidates", ())),
-            "",
-            automatic=False,
-        )
+            unbind(project)
+        self._refresh_danmaku_status()
 
     def _analyze_highlights(self, options: dict) -> None:
         project = self.project
         if project is None:
             self.highlight_panel.analysis_finished()
             return
-        sequence = sequence_of(project)
+        from .danmaku_binding import effective_path
         payload = {
-            "danmaku_path": sequence.danmaku_path,
+            "danmaku_path": effective_path(project),
             "mode": options.get("mode") or "subtitles_xml",
             "target_count": int(options.get("target_count") or 20),
             "min_seconds": int(options.get("min_seconds") or 30),
@@ -251,6 +355,7 @@ class StudioEditAssemblyMixin:
             "runtime_settings": self.runtime_settings,
         }
         request = begin_request(self, "highlight")
+        request.analysis_input = {"danmaku_path": payload["danmaku_path"], "mode": payload["mode"]}
         self._highlight_worker = HighlightAnalyzeWorker(copy.deepcopy(project), copy.deepcopy(payload))
         self._highlight_worker.finished_ok.connect(lambda result: self._highlights_ready(result, request))
         self._highlight_worker.failed.connect(lambda message: self._highlights_failed(message, request))
@@ -276,9 +381,19 @@ class StudioEditAssemblyMixin:
             str(result.get("llm_status") or ""),
             str(result.get("llm_error") or ""),
         )
+        from .studio_runtime_state import DirtyDomain, state_for
+        # Provenance of these candidates: which XML (and how many comments)
+        # really went into the analysis.
+        provenance = {key: result.get(key) for key in (
+            "danmaku_count", "danmaku_duration_ms", "local_count", "llm_status", "ai_service", "model")}
+        provenance.update(getattr(request, "analysis_input", {}) or {}, candidates=len(candidates))
+        with state_for(project).transaction(project, action_id="highlight_provenance",
+                                            dirty=DirtyDomain.PROJECT_METADATA):
+            project.studio_state["highlight_analysis"] = provenance
         self.undo_stack.push(replace_candidates_command(project, candidates, "AI 剪辑候选", self._sequence_changed))
-        sequence = sequence_of(project)
-        self.highlight_panel.set_project_status(project, sequence.danmaku_path)
+        self._refresh_danmaku_status()
+        if candidates:
+            self.highlight_panel.show_candidates_stage()
         self.timeline.update()
 
     def _highlights_failed(self, message: str, request=None) -> None:

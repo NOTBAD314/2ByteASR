@@ -982,7 +982,9 @@ def group_subtitles(
             "不修改任何字幕文字..."
         )
     else:
+        from .language_rules import is_japanese
         print(
+            "   [本地断句] 已关闭 AI 断句；使用 MOSS 自然语句、日语文节与对齐停顿。" if is_japanese() else
             "   [本地断句] 已关闭 AI 断句；使用 MOSS 自然语句、FireRed 停顿与本地护栏。"
         )
     cues = []

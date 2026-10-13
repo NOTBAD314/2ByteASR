@@ -46,11 +46,14 @@ def test_unrelated_text_is_never_aligned():
     assert cue_words(p,p.cues[0])==((),'text_changed_or_inside_multi_character_token')
 
 
-@pytest.mark.parametrize('at, left',[(500,'啊，'),(700,'啊，这个 '),(1350,'啊，这个 FPS60 ')])
+# 2026-10-12（用户要求）：切在停顿空格处时空格就是边界，不留在左段句尾
+# （旧期望为 '啊，这个 ' / '啊，这个 FPS60 '）。
+@pytest.mark.parametrize('at, left',[(500,'啊，'),(700,'啊，这个'),(1350,'啊，这个 FPS60')])
 def test_manual_retains_cut_and_assigns_indivisible_words(at,left):
     p=project(); cut=resolve_split(p.cues[0],at,project=p)
     assert cut.split_ms==at and cut.left_text==left
-    assert cut.left_text+cut.right_text==p.cues[0].text
+    assert not cut.right_text.startswith(' ')
+    assert cut.left_text+cut.right_text==p.cues[0].text or cut.left_text+' '+cut.right_text==p.cues[0].text
     assert cut.timing_source=='exact_token_text'
 
 

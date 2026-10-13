@@ -15,6 +15,7 @@ _ALIASES = {
     'whisper_turbo': 'whisper-turbo', 'whisper-turbo': 'whisper-turbo',
     'whisper': 'whisper-turbo', 'sensevoice': 'sensevoice',
     'funasr_sensevoice': 'sensevoice', 'funasr_nano': 'funasr-nano',
+    'qwen_aligner': 'qwen_aligner', 'qwen3-aligner': 'qwen_aligner', 'qwen3_aligner': 'qwen_aligner',
 }
 
 

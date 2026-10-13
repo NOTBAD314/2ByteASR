@@ -10,7 +10,22 @@ import statistics
 from copy import copy
 
 
-def project_word_boundaries(project, cue):
+def _speaker_view(project, speaker_id, views=None):
+    """``project`` seeing only evidence rows of ``speaker_id`` (or unlabeled).
+
+    ``views`` memoizes one view per speaker for a whole-project pass; building
+    the filtered evidence for every cue was O(cues x evidence rows)."""
+    if views is not None and speaker_id in views:
+        return views[speaker_id]
+    view = copy(project)
+    view.asr_evidence = {ref: row for ref, row in project.asr_evidence.items()
+                        if not row.get('speaker_id') or row['speaker_id'] == speaker_id}
+    if views is not None:
+        views[speaker_id] = view
+    return view
+
+
+def project_word_boundaries(project, cue, *, views=None):
     """Read measured cue boundaries in the current display clock.
 
     A saved complete alignment can still prove an unchanged first/last token
@@ -21,9 +36,7 @@ def project_word_boundaries(project, cue):
         return None, None
     from .cue_word_alignment import cue_words, content_positions
     from .word_timing_provenance import estimated_word_timing
-    view = copy(project)
-    view.asr_evidence = {ref: row for ref, row in project.asr_evidence.items()
-                        if not row.get('speaker_id') or row['speaker_id'] == cue.speaker_id}
+    view = _speaker_view(project, cue.speaker_id, views)
     words, reason = cue_words(view, cue)
     if words and reason in ('exact_token_text', 'derived_term_source_span'):
         return min(w.start_ms for w in words), max(w.end_ms for w in words)
@@ -84,20 +97,41 @@ def independent_overlap_verified(project,left,right):
     return classify_overlap(*spans)=='acoustic' if all(spans) else False
 
 
+def _verified_overlap_pairs(project):
+    """Overlapping cue pairs with independent simultaneous-speech evidence.
+
+    Sweeps cues by start time: only time-overlapping pairs can qualify, so
+    this is O(cues + overlaps) instead of checking every pair (50 million at
+    10,000 captions). The check is symmetric; callers test both orders."""
+    ordered = sorted(project.cues, key=lambda c: (c.start_ms, c.end_ms))
+    verified = set()
+    for index, a in enumerate(ordered):
+        for later in range(index+1, len(ordered)):
+            b = ordered[later]
+            if b.start_ms >= a.end_ms:
+                break
+            if (min(a.end_ms,b.end_ms) > max(a.start_ms,b.start_ms)
+                    and independent_overlap_verified(project,a,b)):
+                verified.add((a.id, b.id))
+    return verified
+
+
 def project_display_tail_plan(project):
     rows=[dict(id=c.id,start_ms=c.start_ms,end_ms=c.end_ms,speaker=c.speaker_id) for c in project.cues]
-    acoustic={c.id:project_acoustics(project,c) for c in project.cues}
-    boundaries = {c.id: project_word_boundaries(project, c) for c in project.cues}
-    verified = {(a.id, b.id) for i, a in enumerate(project.cues) for b in project.cues[i+1:]
-                if min(a.end_ms,b.end_ms) > max(a.start_ms,b.start_ms)
-                and independent_overlap_verified(project,a,b)}
+    views = {}
+    boundaries = {c.id: project_word_boundaries(project, c, views=views) for c in project.cues}
+    acoustic={c.id:project_acoustics(project,c,boundaries=boundaries[c.id]) for c in project.cues}
+    verified = _verified_overlap_pairs(project)
     changes,audit=protect_intervals(rows,acoustic,word_boundaries=boundaries,verified_pairs=verified)
     by_id={c.id:c for c in project.cues}
     frame=project_frame_ms(project)
+    labels={}  # the first speaker entry with that id names it
+    for speaker in project.speakers:
+        labels.setdefault(speaker.id, speaker.name or speaker.id)
     for pair in audit:
         left,right=by_id[pair['left']],by_id[pair['right']]
         pair.update(raw_labels=[left.speaker_id,right.speaker_id],
-                    display_labels=[next((s.name or s.id for s in project.speakers if s.id==c.speaker_id),c.speaker_id) for c in (left,right)],
+                    display_labels=[labels.get(c.speaker_id,c.speaker_id) for c in (left,right)],
                     cue_before=[[left.start_ms,left.end_ms],[right.start_ms,right.end_ms]],frame_ms=frame,
                     independently_verified=independent_overlap_verified(project,left,right))
         if pair['classification'] == 'acoustic' and not pair['independently_verified']:
@@ -129,7 +163,8 @@ def protect_intervals(rows, acoustic, *, word_boundaries=None, verified_pairs=()
     audit = []
     ordered = sorted(rows, key=lambda row: (row["start_ms"], row["end_ms"], row["id"]))
     for index, left in enumerate(ordered):
-        for right in ordered[index+1:]:
+        for later in range(index+1, len(ordered)):
+            right = ordered[later]
             if right["start_ms"] >= left["end_ms"]:
                 break
             a, b = acoustic.get(left["id"], []), acoustic.get(right["id"], [])
@@ -165,8 +200,8 @@ def protect_intervals(rows, acoustic, *, word_boundaries=None, verified_pairs=()
     return {row["id"]: ends[row["id"]] for row in rows if ends[row["id"]] != row["end_ms"]}, audit
 
 
-def project_acoustics(project, cue):
-    start, end = project_word_boundaries(project, cue)
+def project_acoustics(project, cue, *, boundaries=None):
+    start, end = project_word_boundaries(project, cue) if boundaries is None else boundaries
     if start is not None and end is not None and end > start:
         return [(start, end)]
     spans = []
@@ -239,8 +274,11 @@ def protect_project_display_tails(project):
 def protect_runtime_display_tails(cues, segments):
     if not segments:
         return []  # No source evidence: leave timing unchanged for review.
-    rows = [dict(id=str(cue.cue_id), start_ms=round(cue.start*1000), end_ms=round(cue.end*1000), speaker=cue.speaker)
-            for cue in cues]
+    # Key by position: content recovery may append cues whose ids repeat an
+    # existing cue's id until the final renumbering (2026-10-11 688 s run).
+    keys = [str(index) for index in range(len(cues))]
+    rows = [dict(id=key, start_ms=round(cue.start*1000), end_ms=round(cue.end*1000), speaker=cue.speaker)
+            for key, cue in zip(keys, cues)]
     acoustic = {}
     from types import SimpleNamespace
     evidence = {}
@@ -254,13 +292,13 @@ def protect_runtime_display_tails(cues, segments):
             for word in getattr(segment, 'words', ()) or ()]
         evidence[str(index)] = row
     view = SimpleNamespace(asr_evidence=evidence, render_settings={}, studio_state={}, cues=[])
-    for cue in cues:
-        view.cues.append(SimpleNamespace(id=str(cue.cue_id), text=cue.text,
+    for key, cue in zip(keys, cues):
+        view.cues.append(SimpleNamespace(id=key, text=cue.text,
             start_ms=round(cue.start*1000), end_ms=round(cue.end*1000), speaker_id=cue.speaker,
             evidence_refs=[str(i) for i,s in enumerate(segments) if s.speaker==cue.speaker
                            and s.end>cue.start and s.start<cue.end]))
     boundaries = {c.id: project_word_boundaries(view,c) for c in view.cues}
-    for cue in cues:
+    for key, cue in zip(keys, cues):
         spans = []
         for segment in segments:
             if segment.speaker != cue.speaker or segment.end <= cue.start or segment.start >= cue.end:
@@ -273,17 +311,18 @@ def protect_runtime_display_tails(cues, segments):
             b = getattr(segment, "firered_end", 0) if firered else getattr(segment, "moss_end", 0)
             if b > a:
                 spans.append((round(a*1000), round(b*1000)))
-        acoustic[str(cue.cue_id)] = spans
+        acoustic[key] = spans
     changes, audit = protect_intervals(rows, acoustic, word_boundaries=boundaries)
     for pair in audit:
+        pair.update(left=str(cues[int(pair['left'])].cue_id), right=str(cues[int(pair['right'])].cue_id))
         # Mono source boundaries alone do not prove simultaneous speakers.
         if pair['classification'] == 'acoustic':
             pair.update(classification='source_overlap_unverified', review_required=True)
         if pair['evidence_kind'] != 'measured_cue_words':
             pair['evidence_kind'] = 'source_intervals_without_editorial_or_search_padding'
-    for cue in cues:
-        if str(cue.cue_id) in changes:
-            cue.end = changes[str(cue.cue_id)] / 1000
+    for key, cue in zip(keys, cues):
+        if key in changes:
+            cue.end = changes[key] / 1000
     return audit
 
 

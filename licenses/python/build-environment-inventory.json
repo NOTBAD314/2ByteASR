@@ -284,11 +284,27 @@
     ]
   },
   {
+    "name": "httpcore2",
+    "version": "2.13.1",
+    "license": "BSD-3-Clause",
+    "license_files": [
+      "licenses/python/httpcore2-2.13.1/licenses/LICENSE.md"
+    ]
+  },
+  {
     "name": "httpx",
     "version": "0.28.1",
     "license": "BSD-3-Clause",
     "license_files": [
       "licenses/python/httpx-0.28.1/licenses/LICENSE.md"
+    ]
+  },
+  {
+    "name": "httpx2",
+    "version": "2.13.1",
+    "license": "BSD-3-Clause",
+    "license_files": [
+      "licenses/python/httpx2-2.13.1/licenses/LICENSE.md"
     ]
   },
   {
@@ -458,6 +474,22 @@
     ]
   },
   {
+    "name": "mcp",
+    "version": "2.3.0",
+    "license": "MIT",
+    "license_files": [
+      "licenses/python/mcp-2.3.0/licenses/LICENSE"
+    ]
+  },
+  {
+    "name": "mcp-types",
+    "version": "2.3.0",
+    "license": "MIT",
+    "license_files": [
+      "licenses/python/mcp-types-2.3.0/licenses/LICENSE"
+    ]
+  },
+  {
     "name": "mdurl",
     "version": "0.1.2",
     "license": null,
@@ -536,6 +568,14 @@
     "license": null,
     "license_files": [
       "licenses/python/omegaconf-2.3.1/licenses/LICENSE"
+    ]
+  },
+  {
+    "name": "opentelemetry-api",
+    "version": "1.45.1",
+    "license": "Apache-2.0",
+    "license_files": [
+      "licenses/python/opentelemetry-api-1.45.1/licenses/LICENSE"
     ]
   },
   {
@@ -742,6 +782,15 @@
     ]
   },
   {
+    "name": "PyJWT",
+    "version": "2.15.1",
+    "license": "MIT",
+    "license_files": [
+      "licenses/python/PyJWT-2.15.1/licenses/AUTHORS.rst",
+      "licenses/python/PyJWT-2.15.1/licenses/LICENSE"
+    ]
+  },
+  {
     "name": "pynndescent",
     "version": "0.6.0",
     "license": "BSD-2-Clause",
@@ -811,6 +860,21 @@
     "license": "MIT",
     "license_files": [
       "licenses/python/pytz-2026.3.post1/LICENSE.txt"
+    ]
+  },
+  {
+    "name": "pywin32",
+    "version": "312",
+    "license": "PSF",
+    "license_files": [
+      "licenses/python/pywin32-312/licenses/adodbapi/license.txt",
+      "licenses/python/pywin32-312/licenses/com/License.txt",
+      "licenses/python/pywin32-312/licenses/com/win32comext/mapi/src/MAPIStubLibrary/LICENSE",
+      "licenses/python/pywin32-312/licenses/isapi/README.txt",
+      "licenses/python/pywin32-312/licenses/pythonwin/License.txt",
+      "licenses/python/pywin32-312/licenses/pythonwin/Scintilla/License.txt",
+      "licenses/python/pywin32-312/licenses/pythonwin/pywin/idle/LICENSE.txt",
+      "licenses/python/pywin32-312/licenses/win32/License.txt"
     ]
   },
   {
@@ -1074,6 +1138,15 @@
     ]
   },
   {
+    "name": "sse-starlette",
+    "version": "3.5.0",
+    "license": "BSD-3-Clause",
+    "license_files": [
+      "licenses/python/sse-starlette-3.5.0/licenses/AUTHORS",
+      "licenses/python/sse-starlette-3.5.0/licenses/LICENSE"
+    ]
+  },
+  {
     "name": "starlette",
     "version": "1.3.1",
     "license": "BSD-3-Clause",
@@ -1182,6 +1255,14 @@
     "license": "Apache 2.0 License",
     "license_files": [
       "licenses/python/transformers-4.57.6/licenses/LICENSE"
+    ]
+  },
+  {
+    "name": "truststore",
+    "version": "0.10.4",
+    "license": "MIT",
+    "license_files": [
+      "licenses/python/truststore-0.10.4/licenses/LICENSE"
     ]
   },
   {

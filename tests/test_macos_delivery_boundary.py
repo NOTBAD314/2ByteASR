@@ -18,6 +18,8 @@ def test_artifact_selection_does_not_expose_runtime_models_or_nested_build_sourc
         "build/app.app.zip","build/native-build-inputs.json","desktop-flow/exports/中文.srt"}
     with pytest.raises(SystemExit,match="reserve at least"):
         main(["--qa-root",str(root),"--maximum-bytes","16"])
+    with pytest.raises(SystemExit,match="600 MiB cap"):
+        main(["--qa-root",str(root),"--maximum-bytes",str(601*1024*1024)])
     assert not (root/"artifacts").exists()
 
 
@@ -182,3 +184,39 @@ def test_ci_status_preserves_not_executed_export_instead_of_claiming_execution_f
     (tmp_path / "desktop-flow").mkdir()
     (tmp_path / "desktop-flow/export-validation.json").write_text('{"passed":false,"status":"not_executed"}')
     assert summarize(tmp_path)["export_decode"] == "not_executed"
+
+
+def test_dmg_delivery_keeps_install_receipts_and_omits_duplicate_zip(tmp_path):
+    root = tmp_path/'tmp/qa'
+    for name, content in (
+        ('build/real.app.zip', b'zip'),
+        ('dmg/2ByteASR-Setup.dmg', b'dmg'),
+        ('dmg/dmg-result.json', b'{"passed":true}'),
+        ('blank-project/blank-project-summary.json', b'{"passed":true}'),
+        ('blank-project/profile/settings.json', b'private'),
+    ):
+        path=root/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(content)
+    assert main(['--qa-root', str(root), '--maximum-bytes', str(20*1024*1024)]) == 0
+    receipts=root/'artifacts/receipts'
+    selection=json.loads((receipts/'artifact-selection.json').read_text('utf8'))
+    assert {row['path'] for row in selection['files']} == {
+        'dmg/2ByteASR-Setup.dmg', 'dmg/dmg-result.json', 'blank-project/blank-project-summary.json'}
+    assert selection['withheld'][0]['path'] == 'build/real.app.zip'
+    assert (root/'artifacts/application/dmg/2ByteASR-Setup.dmg').read_bytes() == b'dmg'
+    assert not (receipts/'blank-project/profile/settings.json').exists()
+
+
+def test_setup_gate_requires_native_blank_checks_and_downloadable_installer(tmp_path):
+    from scripts.macos_ci_status import main as status_main
+    root=tmp_path/'tmp/qa'; root.mkdir(parents=True)
+    record=dict(runtime_identity='passed', media='passed', app='passed', relocation='passed',
+                startup='passed', dmg='passed', blank_project='failed', model_requested=False,
+                test_step='success')
+    saved=root/'ci-status.json'
+    saved.write_text(json.dumps(record))
+    assert status_main(['--qa-root', str(root), '--enforce']) == 1
+    record['blank_project']='passed'; saved.write_text(json.dumps(record))
+    assert status_main(['--qa-root', str(root), '--enforce']) == 1
+    selection=root/'artifacts/receipts/artifact-selection.json'; selection.parent.mkdir(parents=True)
+    selection.write_text(json.dumps({'files':[{'path':'dmg/2ByteASR-Setup.dmg'}]}))
+    assert status_main(['--qa-root', str(root), '--enforce']) == 0

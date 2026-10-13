@@ -52,6 +52,29 @@ def _reverse_translations():
     return _REVERSE_TRANSLATIONS[1]
 
 
+def _zoom_state():
+    """(percent, factor, active) of the interface zoom; never fails."""
+    try:
+        from . import ui_zoom
+        percent = ui_zoom.zoom_percent()
+        return percent, percent / 100.0, percent != ui_zoom.DEFAULT_PERCENT or bool(ui_zoom._state.get("touched"))
+    except Exception:
+        return 100, 1.0, False
+
+
+def _pass_signature(obj, language, zoom, text_widget, line_edit):
+    """Everything the language pass reads from a plain widget, plus language
+    and zoom. Equal to the stamp left by the previous pass means the pass
+    would change nothing (2026-10-12: page switches re-walked whole pages)."""
+    return (
+        language, zoom,
+        obj.text() if text_widget else None,
+        obj.toolTip(), obj.accessibleName(), obj.statusTip(), obj.whatsThis(),
+        obj.windowTitle() if obj.isWindow() else None,
+        obj.placeholderText() if line_edit else None,
+    )
+
+
 def apply(root, language):
     from PySide6.QtCore import QSignalBlocker, Qt
     from PySide6.QtGui import QAction
@@ -59,6 +82,10 @@ def apply(root, language):
         QLineEdit, QPlainTextEdit, QTextEdit, QTabBar, QTableWidget, QListWidget, QPushButton, QWidget)
     from .i18n import _KNOWN_KEYS, translate, render_arguments
     reverse = _reverse_translations()
+    zoom, zoom_factor, zoom_active = _zoom_state()
+    # Containers whose items / documents the pass also rewrites are always
+    # visited; plain widgets are skipped when nothing they show changed.
+    always = (QComboBox, QTabBar, QTableWidget, QListWidget, QGroupBox, QTextEdit, QPlainTextEdit)
 
     def property_text(obj, prop, text, setter):
         if prop == "text" and obj.property("i18nUserText"):
@@ -113,6 +140,12 @@ def apply(root, language):
         if id(obj) in seen:
             continue
         seen.add(id(obj))
+        stamped = None
+        if isinstance(obj, QWidget) and not isinstance(obj, always) and not hasattr(obj, "informativeText"):
+            stamped = _pass_signature(obj, language, zoom, isinstance(obj, (QLabel, QAbstractButton)),
+                                      isinstance(obj, QLineEdit))
+            if getattr(obj, "_i18n_pass", None) == stamped:
+                continue
         if isinstance(obj, (QLabel, QAbstractButton, QAction)):
             property_text(obj, "text", obj.text(), obj.setText)
         # flexibleWidth: the owner reflows the button itself (it must not pin a
@@ -120,9 +153,16 @@ def apply(root, language):
         if (isinstance(obj, QPushButton) and obj.text() and obj.minimumWidth() != obj.maximumWidth()
                 and not obj.property('flexibleWidth')):
             if not hasattr(obj, '_i18n_base_minimum'):
-                obj._i18n_base_minimum = obj.minimumWidth()
+                # Logical px: the button's own minimum before any text fit.
+                obj._i18n_base_minimum = obj.minimumWidth() / zoom_factor
             content = obj.fontMetrics().horizontalAdvance(obj.text()) + 28 + (obj.iconSize().width()+6 if not obj.icon().isNull() else 0)
-            obj.setMinimumWidth(max(obj._i18n_base_minimum, min(max(content, obj.sizeHint().width() + 4),obj.maximumWidth())))
+            minimum = max(round(obj._i18n_base_minimum * zoom_factor),
+                          min(max(content, obj.sizeHint().width() + 4), obj.maximumWidth()))
+            obj.setMinimumWidth(minimum)
+            if zoom_active:
+                # Measured from the zoomed font already: tell the interface
+                # zoom so its next pass keeps it instead of scaling it again.
+                obj.setProperty("_uiZoom_min_w", [round(minimum / zoom_factor), minimum])
         if isinstance(obj, QGroupBox):
             property_text(obj, "title", obj.title(), obj.setTitle)
         for prop in ('informativeText', 'detailedText'):
@@ -181,6 +221,10 @@ def apply(root, language):
                     if item:
                         _item(item, language, capture=False)
             del blocker
+        if stamped is not None:
+            # What this widget shows after the pass (setters may have changed it).
+            obj._i18n_pass = _pass_signature(obj, language, zoom, isinstance(obj, (QLabel, QAbstractButton)),
+                                             isinstance(obj, QLineEdit))
 
 
 def _item(item, language, *, capture):
@@ -231,10 +275,12 @@ def install_language_events():
             self.busy = False
 
         def eventFilter(self,obj,event):
-            if not self.busy and isinstance(obj,QWidget) and event.type() == QEvent.Type.Show:
-                self.pending[id(obj)] = weakref.ref(obj)
-                if not self.timer.isActive():
-                    self.timer.start(0)
+            # Installed on the application: read the type once and leave fast.
+            if event.type() != _SHOW or self.busy or not isinstance(obj, QWidget):
+                return False
+            self.pending[id(obj)] = weakref.ref(obj)
+            if not self.timer.isActive():
+                self.timer.start(0)
             return False
 
         def flush(self):
@@ -244,19 +290,40 @@ def install_language_events():
             self.busy = True
             try:
                 roots = [r() for r in pending.values() if r() is not None and isValid(r())]
-                ids={id(r) for r in roots}
+                from shiboken6 import getCppPointer
+
+                def key_of(widget):
+                    # The C++ address: Python wrappers of parents are created
+                    # on demand, so their id() may be reused within this loop.
+                    return getCppPointer(widget)[0]
+                ids = {key_of(r) for r in roots}
+                covered = {}
+
                 def has_pending_parent(widget):
-                    parent=widget.parentWidget()
+                    # Memoized per ancestor: a shown page queues every child.
+                    chain = []
+                    parent = widget.parentWidget()
+                    result = False
                     while parent is not None:
-                        if id(parent) in ids:return True
-                        parent=parent.parentWidget()
-                    return False
+                        key = key_of(parent)
+                        if key in covered:
+                            result = covered[key]
+                            break
+                        if key in ids:
+                            result = True
+                            break
+                        chain.append(key)
+                        parent = parent.parentWidget()
+                    for key in chain:
+                        covered[key] = result
+                    return result
                 roots = [r for r in roots if not has_pending_parent(r)]
                 for root in roots:
                     apply(root,current_language())
             finally:
                 self.busy = False
 
+    _SHOW = QEvent.Type.Show
     app._i18n_events = LanguageEvents()
     app.installEventFilter(app._i18n_events)
 

@@ -160,7 +160,8 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         token.raise_if_cancelled()
     from .terminology_retrieval import retrieve_candidates
     from .terminology_support import recall_gaps, suspicious_spans
-    from .studio_glossary_review import diff_occurrences, recover_review_edits, local_review_candidates
+    from .studio_glossary_review import (diff_occurrences, recover_review_edits, local_review_candidates,
+                                         transplant_model_edits)
     original_segments = copy.deepcopy(segments)
     for segment,cue in zip(original_segments,cues):
         segment.text=cue.text
@@ -169,7 +170,14 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
     suspects=suspicious_spans(original_segments,candidates,gaps)
     hits = []
     for segment, cue in zip(segments, cues):
-        ai_draft=proposed.get(segment.segment_id,segment.text)
+        model_text=proposed.get(segment.segment_id,segment.text)
+        # 2026-10-12: the service answers in clean_subtitle_text space (spaces
+        # collapsed/stripped, ordinary punctuation deleted) even when the model
+        # made no edit or the request fell back. Only the model's own edits,
+        # re-applied onto the editable text, may become an AI proposal.
+        ai_draft=transplant_model_edits(segment.text,model_text)
+        transplanted=ai_draft is not None
+        if ai_draft is None:ai_draft=model_text
         # A model's unchanged/failed response cannot erase confirmed local normalization.
         final=resolver.resolve(ai_draft,scene=scene).text
         local_only=final==segment.text
@@ -178,7 +186,8 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         reason='当前词库本地确认名称规范化（未核验原音）' if local_only else 'AI 校对建议'
         if manual and not local_only:reason+='；已有人工修改，需确认'
         hits.extend(diff_occurrences(cue,final,reason=reason,source=source,
-            selected=local_only or not manual,missing='未核验原音'))
+            selected=local_only or not manual,missing='未核验原音',
+            ignore_format_only=not local_only))
         detail=details.get(segment.segment_id,{})
         review,invalid=recover_review_edits(cue,segment.text,detail,snapshot,scene)
         cue_candidates=[row for row in candidates if any(m.get('cue_id')==segment.segment_id for m in row['matches'])]
@@ -204,6 +213,7 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
                 'reason':rejected.get('review_state'),'canonical_options':[]})
         receipt['segments'].append({'cue_id':cue.id,'original_baseline':cue.text,'original_asr':cue.original_text,
             'input_text':segment.text,'local_draft':segment.text,'ai_draft':ai_draft,
+            'ai_model_text':model_text,'ai_edits_transplanted':transplanted,
             'ai_response_edits':copy.deepcopy(detail.get('returned_edits',())), 'final_text':final,
             'local_normalization':local_normalizations.get(segment.segment_id),'detail':detail,
             'retrieved_candidates':cue_candidates,'final_diff':[{'span':list(h.span),'from':h.original,

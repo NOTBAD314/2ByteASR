@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+import time as _time
 from PySide6.QtCore import QThread
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor, QCursor, QPixmap
@@ -573,6 +574,7 @@ class StudioVideoFlowMixin:
             bind_text(self.video_transform_selection_label, f"{track.id} · {asset_name or '素材'} · {clip.timeline_in_ms / 1000:.1f}s–{clip.timeline_out_ms / 1000:.1f}s")
         else:
             bind_text(self.video_transform_selection_label, '在时间线选择一个视频片段')
+        self._show_video_transform_placeholders(clip is None)
         if clip is not None:
             values = dict(vars(clip.transform))
             values.update(self._video_transform_preview_overrides.get(clip.id, {}))
@@ -628,15 +630,59 @@ class StudioVideoFlowMixin:
         self._video_transform_preview_overrides[clip.id] = self._video_transform_values_from_controls()
         self._sync_video_compositor(int(self.timeline.playhead_ms))
 
+    def _show_video_transform_placeholders(self, empty: bool) -> None:
+        """No selected clip: blank fields instead of misleading 1% / 0% values.
+
+        QDoubleSpinBox clamps its initial 0 to each range's minimum, so an
+        empty panel used to read "缩放 1.00%" and "不透明度 0.00%" (or keep the
+        last clip's numbers). Nothing is written to any clip here.
+        """
+        spins = [*getattr(self, "video_transform_controls", ()),
+                 getattr(self, "video_key_similarity", None), getattr(self, "video_key_smoothness", None)]
+        combos = [getattr(self, "video_fit_mode", None), getattr(self, "video_blend_mode", None)]
+        self._updating_video_transform_ui = True
+        try:
+            for control in [*spins, *combos]:
+                if control is not None:
+                    control.blockSignals(True)
+            for control in spins:
+                if control is None:
+                    continue
+                control.setSpecialValueText("—" if empty else "")
+                if empty:
+                    control.setValue(control.minimum())
+            if empty:
+                for combo in combos:
+                    if combo is not None:
+                        combo.setCurrentIndex(-1)
+        finally:
+            for control in [*spins, *combos]:
+                if control is not None:
+                    control.blockSignals(False)
+            self._updating_video_transform_ui = False
+
     def _video_transform_control_committed(self, *_args) -> None:
         if getattr(self, "_updating_video_transform_ui", False):
             return
         track, clip = self._selected_video_clip()
         if track is None or clip is None:
             return
-        self._video_transform_committed(
-            track.id, clip.id, self._video_transform_values_from_controls()
-        )
+        values = self._video_transform_values_from_controls()
+        current = vars(clip.transform)
+        # Fields show two decimals (percent / degrees): an untouched field
+        # differs from the stored value by at most half a display step.
+        unchanged = all(
+            abs(float(values[key]) - float(current.get(key, values[key])))
+            <= (0.0051 if key == "rotation" else 0.000051)
+            for key in values if key != "fit_mode"
+        ) and values.get("fit_mode") == current.get("fit_mode", values.get("fit_mode"))
+        if unchanged:
+            # editingFinished also fires on focus-out without an edit: drop the
+            # preview override, but never push an empty undo step.
+            if self._video_transform_preview_overrides.pop(str(clip.id), None) is not None:
+                self._sync_video_compositor(int(self.timeline.playhead_ms))
+            return
+        self._video_transform_committed(track.id, clip.id, values)
 
     def _video_fit_mode_committed(self, *_args) -> None:
         """Apply fit as a canvas preset, even after a manual resize/move."""
@@ -1621,11 +1667,23 @@ class StudioVideoFlowMixin:
                     volume=float(self.volume_slider.value()) / 100.0,
                 )
                 self._silence_mix_audio_engines()
-        scene.raise_()
-        if hasattr(self, "advanced_cue_overlay") and self.advanced_cue_overlay.isVisible():
-            self.advanced_cue_overlay.raise_()
-        if hasattr(self, "position_overlay") and self.position_overlay.isVisible():
-            self.position_overlay.raise_()
+        # Restack the native overlay windows above the video only when the
+        # stack can have changed. Every playback tick used to issue three
+        # SetWindowPos calls next to mpv's cross-process video window.
+        advanced = getattr(self, "advanced_cue_overlay", None)
+        position = getattr(self, "position_overlay", None)
+        stack_key = (id(scene), bool(scene.isVisible()),
+                     bool(advanced is not None and advanced.isVisible()),
+                     bool(position is not None and position.isVisible()),
+                     tuple(str(layer.get("clip_id") or "") for layer in layers))
+        now = _time.monotonic()
+        if stack_key != getattr(self, "_overlay_stack_key", None) or now - getattr(self, "_overlay_stack_at", 0.0) > 2.0:
+            self._overlay_stack_key, self._overlay_stack_at = stack_key, now
+            scene.raise_()
+            if advanced is not None and advanced.isVisible():
+                advanced.raise_()
+            if position is not None and position.isVisible():
+                position.raise_()
 
     def _resync_compositor_after_keep(self, timeline_ms: int) -> None:
         """keep-mpv 早退路径仍要让合成器退役已结束的叠加层。
@@ -2100,7 +2158,10 @@ class StudioVideoFlowMixin:
 
     def _sync_multitrack_preview_at(self, timeline_ms: int) -> None:
         self._maybe_apply_av_sync_map()
-        paused = bool(self.video._paused) and not getattr(self.video, '_buffered_play_pending', False)
+        intended = getattr(self.video, 'playback_intended', None)
+        if intended is None:
+            intended = not self.video._paused or bool(getattr(self.video, '_buffered_play_pending', False))
+        paused = not intended
         if getattr(self.video, '_startup_state', 'READY') != 'READY' and getattr(self.video, '_startup_play_requested', False):
             paused = False
         preview = self._activate_multitrack_preview(timeline_ms)

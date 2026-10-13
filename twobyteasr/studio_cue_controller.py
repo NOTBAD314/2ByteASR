@@ -76,8 +76,62 @@ class StudioCueController:
                     candidates.append(cue)
         return min(candidates, key=rank) if candidates else None
 
-    def sync_playhead_target(self, milliseconds: int, *, force: bool = False):
-        cue = self.resolve_playhead_target(milliseconds)
+    # Q/W auto targets stop at this distance: a caption further away is an
+    # old selection, not what a gap click at this point is about.
+    EDIT_TARGET_REACH_MS = 10_000
+
+    def resolve_edit_target(self, milliseconds: int):
+        """Q/W target from the playhead alone (2026-10-11).
+
+        Inside a caption: that caption (overlaps: current track first, then
+        track order). In a gap: the caption whose start or end boundary is
+        nearest to the playhead, measured on the interval boundaries (not
+        centres), within ``EDIT_TARGET_REACH_MS``. Only visible, shown and
+        unlocked caption tracks; the current track wins a tie. E and R keep
+        their own rule (``resolve_playhead_target``).
+        """
+        project, page = self.session.project, self.page
+        if project is None:
+            return None
+        runtime = state_for(project)
+        timeline = page.timeline
+        hidden = set(getattr(timeline, 'hidden_speakers', ()) or ())
+        locked = set(getattr(timeline, 'locked_speakers', ()) or ())
+        visibility = getattr(page, '_subtitle_track_visibility', {}) or {}
+
+        def eligible(cue):
+            return (cue.id in runtime.cue_by_id and cue.end_ms > cue.start_ms
+                    and cue.speaker_id not in locked and cue.speaker_id not in hidden
+                    and visibility.get(cue.speaker_id, True))
+        header = getattr(timeline, 'selected_track_header', None)
+        speaker = (header[1] if header and header[0] == 'subtitle'
+                   else getattr(self.session, 'preferred_subtitle_speaker', ''))
+        order = getattr(timeline, '_speaker_ids', ()) or [s.id for s in project.speakers]
+        ranks = {key: i for i, key in enumerate(order)}
+        value = int(milliseconds)
+        inside = [cue for cue in runtime.cues_at(value) if eligible(cue)]
+        if inside:
+            return min(inside, key=lambda cue: (cue.speaker_id != speaker, ranks.get(cue.speaker_id, len(ranks)),
+                                                cue.speaker_id, -cue.start_ms, cue.id))
+        reach = self.EDIT_TARGET_REACH_MS
+        nearby = [cue for cue in runtime.visible_cues(value - reach, value + reach) if eligible(cue)]
+
+        def distance(cue):
+            return cue.start_ms - value if cue.start_ms >= value else value - cue.end_ms
+        nearby = [cue for cue in nearby if distance(cue) <= reach]
+        if not nearby:
+            return None
+        return min(nearby, key=lambda cue: (distance(cue), cue.speaker_id != speaker,
+                                            ranks.get(cue.speaker_id, len(ranks)), cue.start_ms, cue.id))
+
+    def sync_playhead_target(self, milliseconds: int, *, force: bool = False, rule: str = 'clock'):
+        """Mirror the clock target as the light selection.
+
+        ``rule='edit'`` (a paused, user-placed playhead) shows exactly what
+        Q/W will act on; playback and E keep the clock rule.
+        """
+        cue = (self.resolve_edit_target(milliseconds) if rule == 'edit'
+               else self.resolve_playhead_target(milliseconds))
         cue_id = cue.id if cue else ''
         session = self.session
         if not force and cue_id == session.observed_playhead_target_id:
@@ -882,15 +936,11 @@ class StudioCueController:
         )
         if str(value) == current:
             return False
-        self.session.undo_stack.push(
-            SetCueTranslationCommand(
-                project,
-                cue_id,
-                str(value),
-                lambda cue_id=cue_id: self.cue_changed(cue_id, columns=()),
-            )
-        )
-        return True
+        # A typed translation is a manual record: protected from AI batches and
+        # kept with its history (the render view follows the records).
+        from .studio_bilingual import set_manual_translation
+        return set_manual_translation(self, cue_id, str(value),
+                                      lambda cue_id=cue_id: self.cue_changed(cue_id, columns=()))
 
     def set_speaker(self, cue_id: str, speaker_id: str) -> bool:
         project = self.session.project
@@ -1109,15 +1159,36 @@ class StudioCueController:
         start = max(0, cue.start_ms + int(delta))
         self.set_timing(cue.id, start, start + (cue.end_ms - cue.start_ms))
 
+    def _video_edit_mode(self) -> bool:
+        """A video clip or a video/audio track header is the current target."""
+        timeline = self.page.timeline
+        header = getattr(timeline, 'selected_track_header', None)
+        return bool(getattr(timeline, 'selected_video_clip_id', '')
+                    or (header and header[0] in {'video', 'audio'}))
+
     def trim_to_playhead(self, edge: str) -> None:
+        """Q/W in one press: resolve the target, edit its boundary, refresh.
+
+        A caption the user clicked (and has not moved away from) is kept.
+        Otherwise the caption under / nearest to the playhead is resolved,
+        shown as the selection, and edited in this same key press. Video
+        mode (a selected clip or video track) keeps the video ripple.
+        """
         project = self.session.project
         if not project:
             return
         cue = self.explicit_edit_target()
+        if cue is None and not self._video_edit_mode():
+            cue = self.resolve_edit_target(int(self.page.timeline.playhead_ms))
+            if cue is not None:
+                self.session.observed_playhead_target_id = cue.id
+                self.session.playhead_target_id = cue.id
+                self._mirror_clock_selection(cue.id)
+                cue = self.session._cue_lookup.get(cue.id) or cue
         if cue is None:
             self.page._ripple_video_to_playhead(edge)
             return
-        if len(self.selected_cue_ids()) != 1:
+        if self.page._manual_selection_hold and len(self.selected_cue_ids()) != 1:
             bind_text(self.page.save_state, 'Q/W 边界编辑请只选中一条字幕')
             return
         if cue.speaker_id in self.page.timeline.locked_speakers:

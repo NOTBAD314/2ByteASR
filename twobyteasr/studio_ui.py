@@ -233,6 +233,9 @@ class SubtitleStudioPage(
 
     media_ingest_ready_signal = Signal(object)
 
+    # project_id, DanmakuDiscovery — same-name XML search finished (worker).
+    danmaku_discovery_signal = Signal(str, object)
+
     project_media_probe_ready_signal = Signal(int, str, object)
 
     ai_ready_signal = Signal(object)
@@ -287,6 +290,9 @@ class SubtitleStudioPage(
         previous = self.session.runtime
         if previous is not None:
             previous.unsubscribe(self._consume_state_delta)
+        heap = getattr(self, '_project_heap', None)
+        if heap is not None and value is not self.session.project:
+            heap.release()  # no deferred collection for a project that is gone
         self.session.project = value
         # These QObjects are children of this page. close() alone kept one of
         # each alive per project switch, still holding the previous project.
@@ -449,9 +455,24 @@ class SubtitleStudioPage(
         from .gui_thread_handoff import GuiThreadHandoff
         self._gui_thread_handoff=GuiThreadHandoff()
         self.destroyed.connect(self._gui_thread_handoff.release)
-        from .playback_gc_budget import PlaybackGcBudget
+        # GUI_STALL records (stack samples only while the GUI thread is stuck).
+        from .gui_stall_watchdog import install as _install_stall_watchdog
+        _watchdog = _install_stall_watchdog(QApplication.instance())
+        if _watchdog is not None:
+            from .studio_performance import stall_context
+            from .gui_stall_watchdog import probe_embedded_windows
+            _watchdog.add_context('studio', lambda: stall_context(self))
+            _watchdog.add_native_probe('embedded_video', lambda: probe_embedded_windows(
+                int(getattr(getattr(self, 'video', None), '_embed_hwnd', 0) or 0)))
+        from .playback_gc_budget import PlaybackGcBudget, ProjectHeapPolicy
         self._playback_gc_budget = PlaybackGcBudget(self)
         self.destroyed.connect(self._playback_gc_budget.close)
+        # Full collections wait while a project loads; the deferred one runs
+        # when the page is idle (never while the pointer is down or media plays).
+        self._project_heap = ProjectHeapPolicy(self, busy=lambda: (
+            QApplication.mouseButtons() != Qt.MouseButton.NoButton
+            or not bool(getattr(getattr(self, 'video', None), '_paused', True))))
+        self.destroyed.connect(self._project_heap.close)
         self.setObjectName("subtitleStudio")
         self.setStyleSheet(build_studio_qss())
         self.session = StudioSession()
@@ -664,6 +685,7 @@ class SubtitleStudioPage(
             self._apply_startup_milestone_signal, Qt.ConnectionType.QueuedConnection
         )
         self.media_ingest_ready_signal.connect(self._media_ingest_ready)
+        self.danmaku_discovery_signal.connect(self._danmaku_discovery_ready)
         self.project_media_probe_ready_signal.connect(self._project_media_probe_ready)
         self.ai_ready_signal.connect(self._ai_ready)
         self.ai_failed_signal.connect(self._ai_failed)
@@ -1353,6 +1375,29 @@ class SubtitleStudioPage(
         self.select_cue(cue.id)
         if cue is not None:
             self._seek(cue.start_ms / 1000.0)
+        self._warm_review_neighbors(target_row)
+
+    def _warm_review_neighbors(self, row: int) -> None:
+        """Rasterise the next/previous review items' captions before Up/Down."""
+        scene = getattr(self, '_caption_scene', None)
+        if scene is None or not self.project:
+            return
+        from .caption_scene import active_cues
+        times, ids = [], []
+        for neighbor in (row + 1, row - 1):
+            if 0 <= neighbor < self.cue_model.rowCount():
+                cue = self.cue_model.cue_at(neighbor)
+                if cue is not None:
+                    times.append(cue.start_ms)
+                    ids.extend(item.id for item in active_cues(self, cue.start_ms))
+        cache = getattr(self, '_caption_playback_cache', None)
+        store = getattr(self, '_revision_store', None)
+        if cache is not None and store is not None and ids:
+            # Render snapshots first (added to, never replacing, the current
+            # request); the scene rasterises them once they are ready.
+            width, height = getattr(self, '_caption_tick_geometry', None) or self._advanced_preview_size()
+            cache.prepare(store.render, tuple(dict.fromkeys(ids)), width, height, merge=True)
+        scene.warm_times(times)
 
     def _editing_has_focus(self) -> bool:
         # Do not rely solely on QApplication.focusWidget(): native child
@@ -1610,7 +1655,7 @@ class SubtitleStudioPage(
         if self.project is None:
             return
         messages = {
-            "studio": "Space：播放 / 暂停    Q / W：播放头前 / 后波纹剪切（未锁视频轨）    双击时间轴字幕：直接编辑",
+            "studio": "Space：播放 / 暂停    Q / W：播放头处（或最近）字幕的起点 / 终点移到播放头；选中视频片段时为视频波纹剪切    双击时间轴字幕：直接编辑",
             "razor": "C：剃刀（移动鼠标看切分预览，点击切开，Esc 取消）    V：返回选择",
             "priority_review": "Enter：确认并继续    Space：重听    Ctrl+Shift+R：重新识别    E：编辑",
         }
@@ -2435,7 +2480,8 @@ class SubtitleStudioPage(
     def _apply_default_timeline_height(self) -> None:
         if not self.project:
             return
-        subtitle_tracks = len(self.timeline.speaker_ids())
+        # Rows actually shown (the collapsed secondary group is one row).
+        subtitle_tracks = len(self.timeline._display_rows())
         translations = self.project.generation_metadata.get("translations", {})
         if self.timeline.bilingual and isinstance(translations, dict) and translations:
             subtitle_tracks += 1
@@ -2447,6 +2493,9 @@ class SubtitleStudioPage(
             target = 430
         sizes = self.workspace_splitter.sizes()
         total = sum(sizes) or max(500, self.workspace_splitter.height())
+        # Show every row when that takes at most ~42% of the workspace (the
+        # widget minimum no longer grows with the speaker count).
+        target = max(target, min(self.timeline.preferred_height(), round(total * 0.42)))
         target = min(target, max(210, total - 240))
         self.workspace_splitter.setSizes([max(240, total - target), target])
 
@@ -2609,10 +2658,33 @@ class SubtitleStudioPage(
         menu.addAction(_icon("fa5s.cut"), "拆分当前字幕", self._split_current)
         menu.addAction(_icon("fa5s.link"), "与下一条合并", self._merge_next)
         menu.addAction(_icon("fa5s.trash-alt"), "删除当前字幕", self._delete_current)
+        current = cue_by_id(self.project, self.selected_cue_id) if self.project and self.selected_cue_id else None
+        if current is not None:
+            # Role of this line's speaker (the only entry point while the
+            # speaker sits in the collapsed secondary row).
+            from .studio_speaker_roles import role_menu
+            role_menu(self, menu, current.speaker_id)
         menu.addSeparator()
         menu.addAction(_icon("fa5s.magic"), "智能修轴", self._smart_align_current)
         if len(self.selected_cue_ids()) > 1:
             menu.addAction(_icon("fa5s.magic"), f"智能修轴选中字幕（{len(self.selected_cue_ids())}）", self._smart_align_selected)
+        from .language_rules import project_language
+        if self.project is not None and project_language(self.project) == "ja":
+            # Edited Japanese text: measure its word timing again on its own audio.
+            from .studio_realign import start_realign
+            targets = self.selected_cue_ids() or ([self.selected_cue_id] if self.selected_cue_id else [])
+            menu.addAction(_icon("fa5s.ruler-horizontal"), tr("重新对齐字词时间（日语，{count} 条）", count=len(targets)),
+                           lambda ids=list(targets): start_realign(self, ids))
+            from .studio_cut_refine import start_snap_cuts
+            menu.addAction(_icon("fa5s.cut"), tr("按停顿校正日语切点（整个工程）"),
+                           lambda: start_snap_cuts(self, None))
+            from .ctc_alignment import model_dir as ctc_model_dir
+            from .studio_ctc_refine import start_refine_starts
+            ctc_action = menu.addAction(_icon("fa5s.ruler-horizontal"), tr("按 CTC 对齐模型校正日语句首（整个工程）"),
+                                        lambda: start_refine_starts(self, None))
+            if not ctc_model_dir():
+                ctc_action.setEnabled(False)
+                ctc_action.setToolTip(tr("需要日语 CTC 对齐模型：在模型工坊“字幕时间轴”中下载"))
         loop_menu = menu.addMenu("当前字幕试听")
         loop_menu.addAction("播放一次", lambda: self._seek((cue_by_id(self.project, self.selected_cue_id).start_ms - 250) / 1000.0) if self.project and self.selected_cue_id else None)
         loop_menu.addAction("循环播放", self._toggle_loop_current)
@@ -2642,6 +2714,11 @@ class SubtitleStudioPage(
         return self.cue_controller.apply_timing_offset(cue_ids, offset_ms)
 
     def _set_bilingual_mode(self, enabled: bool) -> None:
+        """User toggle between original-only and bilingual display (undoable)."""
+        from .studio_bilingual import apply_display
+        if self.project:
+            apply_display(self, mode="bilingual" if enabled else "original")
+            return
         enabled = bool(enabled)
         self.mono_button.setChecked(not enabled)
         self.bilingual_button.setChecked(enabled)

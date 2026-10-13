@@ -20,20 +20,6 @@ const entryPoint = path.join(rendererRoot, 'src', 'index.ts');
 const configuredChrome = process.env.TWOBYTEASR_RENDERER_CHROME ||
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
-// Fonts live canonically in assets/fonts/; populate public/fonts/ at startup.
-const assetsRoot = path.resolve(rendererRoot, '..', 'assets', 'fonts');
-const publicFonts = path.join(rendererRoot, 'public', 'fonts');
-const BUNDLED_FONTS = [
-  'Cubic11.ttf', 'SmileySans-Oblique.woff2',
-  'SourceHanSansSC-Heavy.otf', 'SourceHanSansSC-Medium.otf',
-  'SourceHanSansSC-Medium.woff2', 'ZCOOLKuaiLe-Regular.ttf',
-  'ZCOOLQingKeHuangYou-Regular.ttf',
-];
-await fs.mkdir(publicFonts, {recursive: true});
-await Promise.all(BUNDLED_FONTS.map(f =>
-  fs.copyFile(path.join(assetsRoot, f), path.join(publicFonts, f)).catch(() => {})
-));
-
 let serveUrl = null;
 let browser = null;
 let rendererGeneration = 0;

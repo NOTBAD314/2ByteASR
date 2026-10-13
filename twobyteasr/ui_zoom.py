@@ -171,6 +171,21 @@ def set_size(widget: QWidget, **logical: int) -> None:
     _write_sizes(widget, values, current)
 
 
+def set_sheet(widget: QWidget, sheet: str) -> None:
+    """A widget's own style sheet written in logical px, applied at the
+    current zoom right away. The first zoom pass over a lazily built page then
+    finds nothing to change, instead of replacing (and re-polishing the whole
+    subtree under) a large page sheet a second time (2026-10-12)."""
+    factor = zoom_factor()
+    if abs(factor - 1.0) < 1e-6 and not _state["touched"]:
+        widget.setStyleSheet(sheet)
+        return
+    scaled = scale_qss(sheet, factor)
+    widget.setProperty("_uiZoomSheetBase", sheet)
+    widget.setProperty("_uiZoomSheetLast", scaled)
+    widget.setStyleSheet(scaled)
+
+
 def set_layout(layout, margins=None, spacing=None) -> None:
     """Layout margins/spacing set by code in logical px (see set_size)."""
     current_margins = layout.contentsMargins()
@@ -358,6 +373,27 @@ def apply_to(root: QWidget | None, factor: float | None = None) -> int:
             except Exception:
                 pass
         stack.extend(widget.findChildren(QWidget, options=Qt.FindChildOption.FindDirectChildrenOnly))
+    return visited
+
+
+def apply_to_changed(root: QWidget | None, factor: float | None = None) -> int:
+    """``apply_to`` for a page being switched to, skipped when nothing changed.
+
+    A page already scaled at this zoom whose widget count is the same as after
+    its last pass keeps its state; widgets added since (lazily built content)
+    or a zoom step trigger a full pass. Window resizes re-run ``apply_to`` on
+    the current page for responsive code that re-sets sizes (2026-10-12).
+    """
+    if root is None:
+        return 0
+    factor = zoom_factor() if factor is None else float(factor)
+    if abs(factor - 1.0) < 1e-6 and not _state["touched"] and root.property("_uiZoomApplied") is None:
+        return 0
+    count = len(root.findChildren(QWidget))
+    if root.property("_uiZoomApplied") == round(factor * 100) and root.property("_uiZoomCount") == count:
+        return 0
+    visited = apply_to(root, factor)
+    root.setProperty("_uiZoomCount", len(root.findChildren(QWidget)))
     return visited
 
 

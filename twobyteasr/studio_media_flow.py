@@ -338,6 +338,12 @@ class StudioMediaFlowMixin:
         self._sync_multitrack_preview_at(int(self.timeline.playhead_ms))
         self._generate_project_waveforms()
         bind_text(self.save_state, '素材已加入时间线')
+        dropped_xml = getattr(self, "_pending_drop_xml", "")
+        self._pending_drop_xml = ""
+        if first_media or dropped_xml:
+            # The first recording of a project: look for its same-name XML
+            # (a dropped XML counts as the user's explicit choice).
+            self._schedule_danmaku_discovery(manual_path=dropped_xml)
 
     def _reset_playhead_for_first_media(self, *, reason: str, position_ms: int = 0) -> None:
         """首次主媒体的确定起点：播放头=0、视口最左，并留结构化取证日志。"""
@@ -470,12 +476,6 @@ class StudioMediaFlowMixin:
             },
         }
         project.studio_state["media_ingest"] = ingest_metadata
-        project.studio_state["media_xml_candidates"] = list(result.xml_candidates)
-        project.studio_state["media_xml_match"] = (
-            "automatic"
-            if result.auto_xml_path
-            else "ambiguous" if len(result.xml_candidates) > 1 else "none"
-        )
         if pending_mode == "primary":
             first_media = not getattr(project, "media_pool", None) and not any(
                 getattr(track, "clips", None) for track in getattr(project, "video_tracks", ())
@@ -536,7 +536,6 @@ class StudioMediaFlowMixin:
                     source_path=result.source_path,
                 )
                 sequence = identity_sequence(media)
-                sequence.danmaku_path = str(result.auto_xml_path or "")
                 replace_runtime_sequence(project, sequence, validate=False)
                 project.validate()
         else:
@@ -652,11 +651,8 @@ class StudioMediaFlowMixin:
             self._sync_video_empty_state()
             return
         if hasattr(self, "highlight_panel"):
-            self.highlight_panel.set_xml_discovery(
-                result.xml_candidates,
-                sequence.danmaku_path,
-                automatic=bool(result.auto_xml_path),
-            )
+            # Same discovery as drag-drop and reopening: beside the original file.
+            self._schedule_danmaku_discovery()
         bind_text(self.save_state, '媒体可用 · 元数据 {value0:.0f} ms', value0=result.elapsed_ms)
         if result.has_audio:
             self._generate_project_waveforms()

@@ -58,6 +58,16 @@ class RuntimeContext:
     polishing_summary: dict[str, Any] = field(default_factory=dict)
     # Local glossaries never imply permission to perform optional web searches.
     enable_term_search: bool = False
+    # Recognition language: the user's request (auto/zh/ja), the language the
+    # task actually runs with once the primary transcript is known, and why.
+    requested_language: str = "auto"
+    task_language: str = ""
+    language_evidence: dict[str, Any] = field(default_factory=dict)
+    # Requested subtitle output (original/translation/bilingual) and Chinese script.
+    subtitle_output: str = "original"
+    translation_script: str = "zh-Hans"
+    # Japanese bunsetsu boundaries of this task's segment texts (line breaking).
+    japanese_phrases: Any | None = None
 
     def reset_for_media(self) -> None:
         """Clear output/report state while retaining queue-wide discovered terms."""
@@ -68,6 +78,9 @@ class RuntimeContext:
         self.terminology_status.clear()
         self.polishing_summary.clear()
         self.committed_result_ref.clear()
+        self.task_language = ""
+        self.language_evidence = {}
+        self.japanese_phrases = None
 
 
 _CONTEXT_LOCK = threading.RLock()

@@ -19,6 +19,9 @@ def summarize(root: Path) -> dict:
     archive=read('build/release-artifacts.mac.json').get('artifact')
     return dict(media=status(read('media/media-install.json')),app=app,
         archive=archive,relocation=('passed' if relocation.get('bytes_permissions_symlinks_match') else ('failed' if app=='passed' else 'not_executed')),
+        dmg=status(read('dmg/dmg-result.json')),
+        installer=read('dmg/dmg-result.json').get('artifact'),
+        blank_project=status(read('blank-project/blank-project-summary.json')),
         startup=status(validation.get('packaged_normal_entry_startup_smoke',{})),
         model_preparation=status(read('desktop-flow/workshop-result.json')),
         home_studio=status(read('desktop-flow/result.json')),
@@ -41,8 +44,11 @@ def main(argv=None):
     if not args.enforce:(args.qa_root/'ci-status.json').write_text(json.dumps(record,ensure_ascii=False,indent=2)+'\n','utf8')
     print(json.dumps(record,ensure_ascii=False))
     if args.enforce:
-        required=['runtime_identity','media','app','relocation','startup']+(['model_preparation','home_studio','restart_reuse','export_decode'] if record['model_requested'] else [])
-        return 0 if all(record[k]=='passed' for k in required) and record['test_step']=='success' else 1
+        required=['runtime_identity','media','app','relocation','startup','dmg','blank_project']+(['model_preparation','home_studio','restart_reuse','export_decode'] if record['model_requested'] else [])
+        selection_path=args.qa_root/'artifacts/receipts/artifact-selection.json'
+        selection=json.loads(selection_path.read_text('utf8')) if selection_path.is_file() else {}
+        delivered=any(row['path'].endswith('.dmg') for row in selection.get('files',[]))
+        return 0 if all(record.get(k)=='passed' for k in required) and record['test_step']=='success' and delivered else 1
     return 0
 
 

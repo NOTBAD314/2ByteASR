@@ -6,6 +6,7 @@ from .studio_track_header import ACTIONS, CONTROL_LEFT, action_at, button_rect, 
 from .playback_probe import ENABLED as PLAYBACK_PROBE_ENABLED, measured, mark as playback_mark
 
 from bisect import bisect_left, bisect_right
+from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -337,6 +338,12 @@ class WaveformTimeline(QWidget):
         self._cue_starts: list[int] = []
         self._cue_prefix_max_ends: list[int] = []
         self._speaker_ids: list[str] = []
+        # 2026-10-12 speaker roles: secondary speakers share one row
+        # (studio_speaker_roles); overlapping lines get sub-lanes there.
+        self._group_members: tuple[str, ...] = ()
+        self._group_expanded = False
+        self._group_lane_by_cue: dict[str, int] = {}
+        self._group_lane_count = 1
         self._project_duration_ms = 0
         self._text_layout_cache: dict[tuple, str] = {}
         self._visible_cue_window_key: tuple[int, int] | None = None
@@ -388,12 +395,12 @@ class WaveformTimeline(QWidget):
         subtitle lanes up (52/68/84/96); the rest stays below the last lane.
         Explicit heights (drag / reset) always win and stay independent.
         """
-        speakers = max(1, len(self.speaker_ids()))
+        speakers, group_fixed = self._row_units()
         audio_rows = 0
         if self.waveform_visible:
             audio_rows = len(self.project.audio_tracks) if self.project else 1
         video_rows = len(self.project.video_tracks) if self.project else 1
-        fixed = video_rows * self._video_track_height()
+        fixed = video_rows * self._video_track_height() + group_fixed
         if self._candidate_lane_visible():
             fixed += CANDIDATE_LANE_HEIGHT
         translation = 44 if self.bilingual else 0
@@ -605,6 +612,7 @@ class WaveformTimeline(QWidget):
                 self.project.studio_state["speaker_track_order"] = list(self._speaker_ids)
         else:
             self._speaker_ids = speaker_ids
+        self._rebuild_speaker_group(cues)
         sequence_duration = timeline_duration_ms(self.project) if self.project else 0
         media_duration = max(
             (
@@ -622,6 +630,97 @@ class WaveformTimeline(QWidget):
         self._visible_cue_window_key = None
         self._visible_cue_window = []
         self._dense_cue_span_cache.clear()
+
+    GROUP_HEADER_HEIGHT = 24
+    GROUP_LANE_MAX = 4
+
+    def _rebuild_speaker_group(self, cues) -> None:
+        """Secondary speakers sharing one row, and a sub-lane per line there.
+
+        Lines of the group that overlap in time go to separate sub-lanes
+        (greedy, earliest free lane) so simultaneous lines stay visible; more
+        than GROUP_LANE_MAX at once share the last lane.
+        """
+        members: tuple[str, ...] = ()
+        expanded = False
+        if self.project is not None:
+            from .speaker_roles import group_members, state_of
+            present = set(self._speaker_ids)
+            members = tuple(key for key in self._speaker_ids if key in set(group_members(self.project)) and key in present)
+            expanded = bool(state_of(self.project).get("expanded"))
+        self._group_members = members if len(members) >= 2 else ()
+        self._group_expanded = expanded
+        lanes: dict[str, int] = {}
+        ends: list[int] = []
+        member_set = set(self._group_members)
+        for cue in cues:
+            if cue.speaker_id not in member_set:
+                continue
+            lane = next((index for index, end in enumerate(ends) if end <= cue.start_ms), len(ends))
+            if lane == len(ends):
+                ends.append(cue.end_ms)
+            else:
+                ends[lane] = cue.end_ms
+            lanes[cue.id] = min(lane, self.GROUP_LANE_MAX - 1)
+        self._group_lane_by_cue = lanes
+        self._group_lane_count = max(1, min(self.GROUP_LANE_MAX, len(ends)))
+
+    def _group_collapsed(self) -> bool:
+        return bool(self._group_members) and not self._group_expanded
+
+    def _group_row_height(self, speaker_height: int) -> int:
+        lanes = self._group_lane_count
+        return speaker_height if lanes <= 1 else lanes * max(36, round(speaker_height * 0.7))
+
+    def _display_rows(self) -> list[tuple[str, str, int]]:
+        """Subtitle rows top-down as (kind, key, height).
+
+        kind is 'speaker' (one speaker), 'group' (the collapsed secondary
+        row, key GROUP_KEY) or 'group_header' (the expanded group's title).
+        The group sits on top, farthest from the waveform; main speakers
+        keep their order and own rows.
+        """
+        from .speaker_roles import GROUP_KEY
+        height = self._speaker_track_height()
+        members = set(self._group_members)
+        rows: list[tuple[str, str, int]] = []
+        if members:
+            if self._group_expanded:
+                rows.append(("group_header", GROUP_KEY, self.GROUP_HEADER_HEIGHT))
+                rows += [("speaker", key, height) for key in self._group_members]
+            else:
+                rows.append(("group", GROUP_KEY, self._group_row_height(height)))
+        rows += [("speaker", key, height) for key in self._speaker_ids if key not in members]
+        return rows
+
+    def _row_units(self) -> tuple[int, int]:
+        """(rows that take the shared subtitle height, extra fixed px) without
+        asking for the height itself (used by the automatic height)."""
+        if not self._group_members:
+            return max(1, len(self._speaker_ids)), 0
+        others = len(self._speaker_ids) - len(self._group_members)
+        if self._group_expanded:
+            return max(1, len(self._speaker_ids)), self.GROUP_HEADER_HEIGHT
+        return max(1, others + self._group_lane_count), 0
+
+    def _cue_band(self, cue, track: QRectF) -> QRectF:
+        """The part of ``track`` a line is drawn in: the whole row, or its
+        sub-lane inside the collapsed secondary row."""
+        lanes = self._group_lane_count
+        if lanes <= 1 or not self._group_collapsed() or cue.speaker_id not in self._group_members:
+            return track
+        band = track.height() / lanes
+        lane = self._group_lane_by_cue.get(cue.id, 0)
+        return QRectF(track.left(), track.top() + lane * band, track.width(), band)
+
+    def select_speakers(self, speaker_ids) -> None:
+        """Select every line of these speakers (one speaker or the whole group);
+        lines on locked tracks stay out, as with other bulk selections."""
+        from .studio_selection import ClipSelection
+        wanted = {str(key) for key in speaker_ids} - set(self.locked_speakers)
+        selection = ClipSelection()
+        selection.cue_ids.update(cue.id for cue in self._cues_by_start if cue.speaker_id in wanted)
+        self._publish_clip_selection(selection)
 
     def _cues_intersecting(self, start_ms: int, end_ms: int) -> list[StudioCue]:
         if not self._cues_by_start or end_ms <= start_ms:
@@ -723,7 +822,7 @@ class WaveformTimeline(QWidget):
 
     def _subtitle_content_height(self) -> int:
         speaker_height = self._speaker_track_height()
-        height = len(self.speaker_ids()) * speaker_height
+        height = sum(row[2] for row in self._display_rows())
         if self.bilingual:
             height += max(self.TRANSLATION_TRACK_HEIGHT, min(74, speaker_height))
         return height
@@ -741,9 +840,11 @@ class WaveformTimeline(QWidget):
         # Clamping each lane to the ruler made V2/V3 paint over S01/S02.
         # 字幕区自带纵向滚动，其最小高度不随用户调高的说话人行高增长
         # （否则大轨高会把整个时间轴 widget 的最小高度撑爆）。
+        # 2026-10-12: at most four rows count toward the minimum; with
+        # 20 speakers the old 20 x 52 px minimum pushed the preview out.
         subtitle_minimum = max(
             56,
-            max(1, len(self.speaker_ids())) * 52
+            min(4, max(1, len(self._display_rows()))) * 52
             + (44 if self.bilingual else 0),
         )
         minimum = (
@@ -752,6 +853,13 @@ class WaveformTimeline(QWidget):
             + subtitle_minimum
         )
         self.setMinimumHeight(max(180, minimum))
+
+    def preferred_height(self) -> int:
+        """Height that shows every subtitle row and the pinned media rows
+        without scrolling (base row heights; the default layout caps it)."""
+        scrollbar = self.horizontal_scrollbar.sizeHint().height()
+        return (self.RULER_HEIGHT + self._subtitle_content_height()
+                + self._pinned_bottom_height(minimum=True) + scrollbar)
 
     def _video_track_rects(self) -> dict[str, QRectF]:
         bottom = self._stack_bottom()
@@ -1049,9 +1157,7 @@ class WaveformTimeline(QWidget):
         self.horizontal_scrollbar.setVisible(maximum > 0)
         self.horizontal_scrollbar.blockSignals(False)
 
-        track_height = len(self.speaker_ids()) * self._speaker_track_height()
-        if self.bilingual:
-            track_height += self.TRANSLATION_TRACK_HEIGHT
+        track_height = self._subtitle_content_height()
         track_maximum = max(0, track_height - round(self._track_viewport().height()))
         self.vertical_scrollbar.setRange(0, track_maximum)
         self.vertical_scrollbar.setPageStep(max(1, round(self._track_viewport().height())))
@@ -1147,6 +1253,13 @@ class WaveformTimeline(QWidget):
         # seconds of stalled scrolling when zoomed out. Let Qt coalesce paints.
         if target_left == self.visible_start_ms:
             return False
+        # A playback tick moves the view by a fraction of a device pixel
+        # (0.3 px at a 120 s window, 0.08 px at 300 s), and every move rebuilt
+        # the whole timeline raster. Wait until the content would move by at
+        # least one device pixel; the cursor keeps moving on its own overlay.
+        content_pixels = (self._content_right() - self.TRACK_HEADER_WIDTH) * self.devicePixelRatioF()
+        if abs(target_left - self.visible_start_ms) * max(1.0, content_pixels) < self.visible_duration_ms:
+            return False
         self.set_visible_window(target_left, self.visible_duration_ms)
         return True
 
@@ -1210,6 +1323,7 @@ class WaveformTimeline(QWidget):
             self.waveform_caches.clear()
             self.waveform_clip_keys.clear()
             getattr(self, "_waveform_envelope_cache", {}).clear()
+            getattr(self, "_waveform_tile_cache", {}).clear()
             # 时间轴是跨工程常驻控件：上一工程的播放头绝不许漏进下一个
             # 工程（2026-09-20 新工程被残留位置污染的防线）。已存工程的
             # 保存位置由 open_project hydration 在其后 set_playhead 恢复。
@@ -1388,6 +1502,7 @@ class WaveformTimeline(QWidget):
         track = tracks.get(cue.speaker_id)
         if track is None:
             return QRectF()
+        track = self._cue_band(cue, track)
         left = max(self.TRACK_HEADER_WIDTH, self._time_to_x(cue.start_ms))
         right = min(self._content_right(), self._time_to_x(cue.end_ms))
         if right < left:
@@ -1435,12 +1550,18 @@ class WaveformTimeline(QWidget):
         return list(self._speaker_ids)
 
     def _track_layout(self) -> tuple[dict[str, QRectF], QRectF | None, QRectF]:
-        speakers = self.speaker_ids()
+        """Row rect per speaker (members of the collapsed secondary group all
+        map to the shared group row), the translation row, the waveform."""
+        speaker_rects, translation, waveform, _rows = self._row_layout()
+        return speaker_rects, translation, waveform
+
+    def _row_layout(self):
+        rows = self._display_rows()
         speaker_height = self._speaker_track_height()
         translation_height = 0
         if self.bilingual:
             translation_height = max(self.TRANSLATION_TRACK_HEIGHT, min(74, speaker_height))
-        content_height = len(speakers) * speaker_height + translation_height
+        content_height = sum(row[2] for row in rows) + translation_height
         viewport = self._track_viewport()
         if content_height < viewport.height():
             # Sit subtitle tracks immediately above V1/waveform (scheme A).
@@ -1448,16 +1569,30 @@ class WaveformTimeline(QWidget):
         else:
             top = viewport.top() - self.vertical_scrollbar.value()
         speaker_rects: dict[str, QRectF] = {}
-        for speaker_id in speakers:
-            speaker_rects[speaker_id] = QRectF(0, top, self.width(), speaker_height)
-            top += speaker_height
+        row_rects: list[tuple[str, str, QRectF]] = []
+        for kind, key, height in rows:
+            rect = QRectF(0, top, self.width(), height)
+            row_rects.append((kind, key, rect))
+            if kind == "speaker":
+                speaker_rects[key] = rect
+            elif kind == "group":
+                for member in self._group_members:
+                    speaker_rects[member] = rect
+            top += height
         translation = None
         if self.bilingual:
             translation = QRectF(0, top, self.width(), translation_height)
             top += translation_height
         # Audio rows are paired with V1/V2/... in the pinned media groups.
         waveform = QRectF()
-        return speaker_rects, translation, waveform
+        return speaker_rects, translation, waveform, row_rects
+
+    def _group_row_at(self, point) -> tuple[str, QRectF] | None:
+        """('group' | 'group_header', rect) when ``point`` is on the group's own row."""
+        for kind, _key, rect in self._row_layout()[3]:
+            if kind != "speaker" and rect.contains(point):
+                return kind, rect
+        return None
 
     def _waveform_track_height(self) -> int:
         return 0
@@ -1517,6 +1652,9 @@ class WaveformTimeline(QWidget):
         for cue in ordered:
             track = speaker_rects.get(cue.speaker_id)
             if not track or not track.contains(point):
+                continue
+            track = self._cue_band(cue, track)
+            if not track.contains(point):
                 continue
             left = self._time_to_x(cue.start_ms)
             right = self._time_to_x(cue.end_ms)
@@ -1731,12 +1869,31 @@ class WaveformTimeline(QWidget):
         return True
 
     def _speaker_at(self, point: QPoint) -> str:
-        speaker_rects, translation, _waveform = self._track_layout()
+        _speaker_rects, translation, _waveform, rows = self._row_layout()
         if translation is not None and translation.contains(point):
             return ""
-        for speaker_id, rect in speaker_rects.items():
-            if rect.contains(point):
-                return speaker_id
+        for kind, key, rect in rows:
+            if not rect.contains(point):
+                continue
+            if kind == "speaker":
+                return key
+            if kind == "group":
+                return self._group_speaker_at(point, rect)
+            return ""
+        return ""
+
+    def _group_speaker_at(self, point, rect: QRectF) -> str:
+        """Speaker under the pointer on the shared secondary row: the owner of
+        the line there. While a line is dragged, the dragged line's own
+        speaker if it is a member (a drag never hands a line to another
+        member), else no target (the line keeps its last real row)."""
+        if self._drag:
+            cue = self._timeline_cue_by_id.get(self._drag[0])
+            return cue.speaker_id if cue is not None and cue.speaker_id in self._group_members else ""
+        at = self._x_to_time(point.x())
+        for cue in self._cues_intersecting(at, at + 1):
+            if cue.speaker_id in self._group_members and self._cue_band(cue, rect).contains(point):
+                return cue.speaker_id
         return ""
 
     def _cue_interval_rect(
@@ -1769,7 +1926,8 @@ class WaveformTimeline(QWidget):
         elif owner.startswith("audio:"):
             track = self._audio_track_rects().get(owner.partition(":")[2], QRectF())
         else:
-            track = self._track_layout()[0].get(owner, QRectF())
+            # Speaker rows and the secondary group's own row (key GROUP_KEY).
+            track = next((rect for _kind, key, rect in self._row_layout()[3] if key == owner), QRectF())
         if track.isEmpty():
             return QRect()
         kind = 'audio' if owner.startswith('audio:') else 'video' if owner.startswith('video') else 'subtitle'
@@ -2076,6 +2234,96 @@ class WaveformTimeline(QWidget):
             paths.pop(next(iter(paths)))
         return QTransform.fromTranslate(left, rect.center().y()).map(envelope)
 
+    # Width of one cached waveform tile in device-independent pixels.
+    WAVEFORM_TILE_PX = 1024
+
+    def _waveform_envelope_tiles(self, cache, source_in, source_out, left, right, rect, clip_in, clip_out):
+        """Envelope pieces on a fixed time grid: [(path at origin, x), ...].
+
+        Playback follow scrolls the view every frame. Building the envelope
+        for "the visible part" re-read and re-bucketed the waveform and
+        created thousands of QPointF per paint (about a third of the GUI
+        thread at 4x). Tiles anchored to multiples of a fixed width in
+        source time stay valid while only the view moves; the bucket grid no
+        longer shifts with the scroll position either. Incomplete
+        (still-decoding) tiles are not cached.
+        """
+        span = float(source_out) - float(source_in)
+        width = float(right) - float(left)
+        if span <= 0 or width <= 0:
+            return []
+        ms_per_px = float(f"{span / width:.5g}")
+        if ms_per_px <= 0:
+            return []
+        tile_ms = self.WAVEFORM_TILE_PX * ms_per_px
+        tiles = getattr(self, "_waveform_tile_cache", None)
+        if tiles is None:
+            tiles = self._waveform_tile_cache = OrderedDict()
+        pieces = []
+        first = int(float(source_in) // tile_ms)
+        last = int(max(float(source_in), float(source_out) - 1e-6) // tile_ms)
+        for index in range(first, last + 1):
+            start = max(float(clip_in), index * tile_ms)
+            end = min(float(clip_out), (index + 1) * tile_ms)
+            if end <= start:
+                continue
+            key = (id(cache), index, round(start, 3), round(end, 3), ms_per_px, rect.height())
+            cached = tiles.get(key)
+            if cached is not None:
+                tiles.move_to_end(key)
+                self._paint_envelope_hits = getattr(self, '_paint_envelope_hits', 0) + 1
+                self._last_waveform_envelope_stats = cached[1]
+                path = cached[0]
+            else:
+                self._paint_envelope_misses = getattr(self, '_paint_envelope_misses', 0) + 1
+                built = self._build_waveform_envelope(cache, start, end, max(1, round((end - start) / ms_per_px)),
+                                                      (end - start) / ms_per_px, rect.height())
+                if built is None:
+                    continue
+                path, stats, complete = built
+                if complete:
+                    tiles[key] = (path, stats)
+                    while len(tiles) > 96:
+                        tiles.popitem(last=False)
+            pieces.append((path, float(left) + (start - float(source_in)) / ms_per_px))
+        return pieces
+
+    def _build_waveform_envelope(self, cache, source_in, source_out, pixels, width, height):
+        """Envelope polygon at x=0..width, y around 0 (same drawing as before)."""
+        envelope_started = perf_counter()
+        try:
+            _level, pairs = cache.read_window(source_in, source_out, pixels)
+        except (OSError, ValueError):
+            return None
+        if not len(pairs):
+            return None
+        import numpy as np
+        amplitude = height * 0.36
+        heights = waveform_db_heights
+        stride = max(1, int(np.ceil(len(pairs) / max(1, pixels / 2))))
+        expected_buckets = max(
+            1.0, (float(source_out) - float(source_in)) / _level.milliseconds_per_frame
+        )
+        x_scale = max(1.0, width) / expected_buckets
+        indices = np.arange(0, len(pairs), stride)
+        highs = heights(np.maximum.reduceat(pairs[:, 1], indices))
+        lows = heights(np.minimum.reduceat(pairs[:, 0], indices))
+        xs = (indices * x_scale).tolist()
+        upper = [QPointF(x, -v * amplitude) for x, v in zip(xs, highs.tolist())]
+        lower = [QPointF(x, v * amplitude) for x, v in zip(xs, lows.tolist())]
+        if not upper:
+            return None
+        envelope = QPainterPath()
+        envelope.addPolygon(QPolygonF(upper + list(reversed(lower))))
+        envelope.closeSubpath()
+        stats = dict(level=_level.level, milliseconds_per_bucket=_level.milliseconds_per_frame,
+                     buckets=len(pairs), vertices=len(upper) + len(lower),
+                     render_ms=round((perf_counter() - envelope_started) * 1000.0, 2))
+        self._last_waveform_envelope_stats = stats
+        self._trace_waveform_lod(_level, stats)
+        complete = len(pairs) >= expected_buckets * 0.98
+        return envelope, stats, complete
+
     def _trace_waveform_lod(self, level, stats: dict) -> None:
         """Log LOD selection only on change or slow rebuilds — zoom stays cheap to diagnose."""
         signature = (level.file, int(level.frames))
@@ -2198,9 +2446,10 @@ class WaveformTimeline(QWidget):
                 )
                 left = max(self.TRACK_HEADER_WIDTH, self._time_to_x(overlap_in))
                 right = min(self._content_right(), self._time_to_x(overlap_out))
-                pixels = max(1, round(right - left))
-                envelope = self._waveform_envelope(cache, source_in, source_out, pixels, left, right, rect)
-                if envelope is None:
+                pieces = self._waveform_envelope_tiles(
+                    cache, source_in, source_out, left, right, rect,
+                    int(clip.source_in_ms), int(clip.source_out_ms))
+                if not pieces:
                     continue
                 center = rect.center().y()
                 painter.setPen(Qt.PenStyle.NoPen)
@@ -2210,7 +2459,10 @@ class WaveformTimeline(QWidget):
                 # every zoom paint; keep pixel coverage exact for this raster.
                 antialias = painter.testRenderHint(QPainter.RenderHint.Antialiasing)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-                painter.drawPath(envelope)
+                for path, origin_x in pieces:
+                    painter.translate(origin_x, center)
+                    painter.drawPath(path)
+                    painter.translate(-origin_x, -center)
                 counted=self._count_paint_item('waveform_items', bounds=rect)
                 stats=getattr(self, '_paint_item_counts', None)
                 if stats is not None and counted:
@@ -2343,6 +2595,98 @@ class WaveformTimeline(QWidget):
             timeline_merge.paint(self, painter, palette, self._merge_preview_state())
         painter.end()
 
+    def set_group_expanded(self, expanded: bool) -> None:
+        """Expand/collapse the secondary group (a view choice saved with the
+        project like track visibility; not an undo step)."""
+        from .speaker_roles import KEY
+        state = self.project.studio_state.get(KEY) if self.project is not None else None
+        if not isinstance(state, dict) or bool(state.get("expanded")) == bool(expanded):
+            return
+        state["expanded"] = bool(expanded)
+        self.reindex_project()
+
+    def _group_header_clicked(self, point, rect: QRectF) -> None:
+        """Group buttons act on every member: eye, lock, expand/collapse.
+        A click on the title also expands or collapses."""
+        self.selected_track_header = None
+        action = action_at('subtitle', point.x(), point.y(), rect)
+        members = list(self._group_members)
+        hidden, locked = self._group_header_state()
+        if action == 'visibility':
+            for key in members:
+                if (key in self.hidden_speakers) == (not hidden):
+                    continue
+                (self.hidden_speakers.discard if hidden else self.hidden_speakers.add)(key)
+                self.subtitle_visibility_changed.emit(key, hidden)
+        elif action == 'lock':
+            (self.locked_speakers.difference_update if locked else self.locked_speakers.update)(members)
+            if self.project:
+                self.project.studio_state["locked_speakers"] = sorted(self.locked_speakers)
+            self.subtitle_lock_changed.emit()
+        else:
+            self.set_group_expanded(not self._group_expanded)
+        self.update()
+
+    def _group_header_state(self) -> tuple[bool, bool]:
+        """(every member hidden, every member locked) for the group's buttons."""
+        members = self._group_members
+        return (bool(members) and all(key in self.hidden_speakers for key in members),
+                bool(members) and all(key in self.locked_speakers for key in members))
+
+    def _paint_subtitle_header_buttons(self, painter, palette, kind, key, rect) -> None:
+        """Eye / lock / third button of a speaker row or the secondary group.
+
+        On the group's row the third button expands or collapses the group
+        (deleting is per speaker, from the expanded rows)."""
+        if kind == "speaker":
+            hidden, locked = key in self.hidden_speakers, key in self.locked_speakers
+            third = 'fa5s.trash-alt'
+        else:
+            hidden, locked = self._group_header_state()
+            third = 'fa5s.chevron-down' if self._group_expanded else 'fa5s.chevron-right'
+        visibility = "fa5s.eye-slash" if hidden else "fa5s.eye"
+        lock = "fa5s.lock" if locked else "fa5s.unlock"
+        for action, icon_name in (('visibility', visibility), ('lock', lock), ('more', third)):
+            paint_button(painter, palette, 'subtitle', action, rect, icon_name,
+                         active=self._hover_header_action == (key, action)
+                             or action == 'visibility' and hidden
+                             or action == 'lock' and locked,
+                         disabled=kind == "speaker" and action == 'more' and locked)
+
+    def _paint_group_header(self, painter, palette, kind, rect) -> None:
+        """Header of the secondary group: stacked member colours, name, count."""
+        from .speaker_roles import GROUP_KEY
+        members = self._group_members
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        middle = rect.center().y()
+        for position, key in enumerate(members[:3]):
+            painter.setBrush(_speaker_color(self.project, key, palette))
+            painter.drawEllipse(QRectF(10 + position * 6, middle - 5, 10, 10))
+        painter.setPen(QColor(palette.header_name))
+        font = painter.font()
+        title = tr("次要角色 · {count}", count=len(members))
+        font.setBold(True)
+        # The count must stay readable in the narrow header column.
+        for size in ((10, 9) if kind == "group_header" else (12, 11, 10, 9)):
+            font.setPointSize(size)
+            if QFontMetrics(font).horizontalAdvance(title) <= CONTROL_LEFT - 40:
+                break
+        painter.setFont(font)
+        painter.drawText(QRectF(34, rect.top(), CONTROL_LEFT - 40, rect.height()), Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(title, Qt.ElideRight, CONTROL_LEFT - 40))
+        if kind == "group" and rect.height() >= 52:
+            font.setBold(False)
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.setPen(QColor(palette.header_letter))
+            names = "、".join(_speaker_name(self.project, key) for key in members)
+            painter.drawText(QRectF(34, middle + 8, CONTROL_LEFT - 40, rect.bottom() - middle - 8),
+                             Qt.AlignmentFlag.AlignTop,
+                             painter.fontMetrics().elidedText(names, Qt.ElideRight, CONTROL_LEFT - 40))
+        painter.restore()
+        self._paint_subtitle_header_buttons(painter, palette, kind, GROUP_KEY, rect)
+
     def _paint_active_cues(self, painter, palette):
         painter.save()
         painter.setClipRect(self._track_viewport())
@@ -2367,6 +2711,7 @@ class WaveformTimeline(QWidget):
             rect = speaker_rects.get(speaker)
             if rect is None:
                 return
+            rect = self._cue_band(replace(cue, speaker_id=speaker), rect)
             value = (interval.start_ms if edge == "left" else interval.end_ms) if interval else (cue.start_ms if edge == "left" else cue.end_ms)
             x = round(self._time_to_x(value))
             painter.drawLine(x, round(rect.top()+7), x, round(rect.bottom()-7))
@@ -2414,7 +2759,7 @@ class WaveformTimeline(QWidget):
             QRectF(self.TRACK_HEADER_WIDTH, 0, self._content_right() - self.TRACK_HEADER_WIDTH, self.RULER_HEIGHT),
             QColor(palette.ruler),
         )
-        speaker_rects, translation_rect, waveform_rect = self._track_layout()
+        speaker_rects, translation_rect, waveform_rect, row_rects = self._row_layout()
         track_viewport = self._track_viewport()
         sequence = sequence_of(self.project) if self.project else None
         sequence_runtime = runtime_of(self.project) if self.project else None
@@ -2528,27 +2873,23 @@ class WaveformTimeline(QWidget):
             # 用户看到"划过图标就消失"。
             self._paint_linked_audio_tracks(painter, palette)
             self._paint_video_lane_headers(painter, palette, QRect(dirty_rect))
-            for speaker_id, rect in speaker_rects.items():
+            for kind, key, rect in row_rects:
                 if not rect.intersects(QRectF(dirty_rect)):
                     continue
-                visibility = "fa5s.eye-slash" if speaker_id in self.hidden_speakers else "fa5s.eye"
-                lock = "fa5s.lock" if speaker_id in self.locked_speakers else "fa5s.unlock"
-                for action, icon_name in (('visibility', visibility), ('lock', lock), ('more', 'fa5s.trash-alt')):
-                    paint_button(painter, palette, 'subtitle', action, rect, icon_name,
-                                 active=self._hover_header_action == (speaker_id, action)
-                                     or action == 'visibility' and speaker_id in self.hidden_speakers
-                                     or action == 'lock' and speaker_id in self.locked_speakers,
-                                 disabled=action == 'more' and speaker_id in self.locked_speakers)
+                self._paint_subtitle_header_buttons(painter, palette, kind, key, rect)
             painter.end()
             return
 
-        for index, rect in enumerate(speaker_rects.values()):
+        for index, (kind, _key, rect) in enumerate(row_rects):
             visible_rect = rect.intersected(track_viewport)
             if visible_rect.isEmpty():
                 continue
+            background = QColor(palette.track_background if index % 2 == 0 else palette.track_alternate)
+            if kind != "speaker":
+                background = mix(palette.track_alternate, palette.header_hover, 0.35)
             painter.fillRect(
                 QRectF(self.TRACK_HEADER_WIDTH, visible_rect.top(), self._content_right() - self.TRACK_HEADER_WIDTH, visible_rect.height()),
-                QColor(palette.track_background if index % 2 == 0 else palette.track_alternate),
+                background,
             )
         if translation_rect:
             visible_translation = translation_rect.intersected(track_viewport)
@@ -2599,7 +2940,7 @@ class WaveformTimeline(QWidget):
             tick += minor_ms
 
         painter.setPen(QPen(mix(palette.grid_minor, palette.background, 0.4), 1))
-        for rect in [*speaker_rects.values(), *([translation_rect] if translation_rect else []), waveform_rect]:
+        for rect in [*(row[2] for row in row_rects), *([translation_rect] if translation_rect else []), waveform_rect]:
             if 0 <= rect.bottom() <= self._canvas_bottom():
                 painter.drawLine(0, round(rect.bottom()), self._content_right(), round(rect.bottom()))
         painter.drawLine(self.TRACK_HEADER_WIDTH, 0, self.TRACK_HEADER_WIDTH, self._canvas_bottom())
@@ -2691,34 +3032,52 @@ class WaveformTimeline(QWidget):
                 )
                 visible_by_speaker.setdefault(speaker_id, []).append(cue)
         letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        for index, (speaker_id, rect) in enumerate(speaker_rects.items()):
+        # Per-paint constants for the cue loop. ``to_x`` is _time_to_x with
+        # the same arithmetic (identical floats), minus two Qt size calls per
+        # cue edge; fonts/metrics depend only on row height and a width bucket.
+        header_width = self.TRACK_HEADER_WIDTH
+        content_right = self._content_right()
+        view_start = self.visible_start_ms
+        view_duration = max(1, self.visible_duration_ms)
+        to_x = lambda ms: header_width + (ms - view_start) * content_width / view_duration
+        multi_border = QColor(palette.clip_multi_border)
+        selected_border = QColor(palette.clip_selected_border)
+        selected_glow = rgba_color(palette.clip_selected_glow)
+        clip_text = QColor(palette.clip_text)
+        text_fonts = {}
+        labels = self._text_layout_cache
+        collapsed_members = set(self._group_members) if self._group_collapsed() else set()
+        for kind, _key, rect in row_rects:
+            if kind != "speaker":
+                self._paint_group_header(painter, palette, kind, rect)
+        letter_index = {key: position for position, key in enumerate(self._speaker_ids)}
+        for speaker_id, rect in speaker_rects.items():
+            index = letter_index.get(speaker_id, 0)
             color = _speaker_color(self.project, speaker_id, palette)
             name = _speaker_name(self.project, speaker_id)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(QRectF(14, rect.center().y() - 5, 10, 10))
-            painter.setPen(QColor(palette.header_letter))
-            letter_font = painter.font()
-            letter_font.setPointSize(12 if rect.height() < 84 else 13)
-            painter.setFont(letter_font)
-            painter.drawText(QRectF(34, rect.top(), 24, rect.height()), Qt.AlignmentFlag.AlignVCenter, letters[index % len(letters)])
-            painter.setPen(QColor(palette.header_name))
-            name_font = painter.font()
-            name_font.setPointSize(14 if rect.height() < 84 else 16)
-            name_font.setBold(True)
-            painter.setFont(name_font)
-            painter.drawText(QRectF(55, rect.top(), CONTROL_LEFT - 61, rect.height()), Qt.AlignmentFlag.AlignVCenter,
-                             painter.fontMetrics().elidedText(name, Qt.ElideRight, CONTROL_LEFT - 61))
-            name_font.setBold(False)
-            painter.setFont(name_font)
-            visibility = "fa5s.eye-slash" if speaker_id in self.hidden_speakers else "fa5s.eye"
-            lock = "fa5s.lock" if speaker_id in self.locked_speakers else "fa5s.unlock"
-            for action, icon_name in (('visibility', visibility), ('lock', lock), ('more', 'fa5s.trash-alt')):
-                paint_button(painter, palette, 'subtitle', action, rect, icon_name,
-                             active=self._hover_header_action == (speaker_id, action)
-                                 or action == 'visibility' and speaker_id in self.hidden_speakers
-                                 or action == 'lock' and speaker_id in self.locked_speakers,
-                             disabled=action == 'more' and speaker_id in self.locked_speakers)
+            # Members of the collapsed secondary group share its row: no own
+            # header; their lines keep the speaker colour, sit in sub-lanes
+            # and carry the speaker name in the label.
+            grouped = speaker_id in collapsed_members
+            if not grouped:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(color)
+                painter.drawEllipse(QRectF(14, rect.center().y() - 5, 10, 10))
+                painter.setPen(QColor(palette.header_letter))
+                letter_font = painter.font()
+                letter_font.setPointSize(12 if rect.height() < 84 else 13)
+                painter.setFont(letter_font)
+                painter.drawText(QRectF(34, rect.top(), 24, rect.height()), Qt.AlignmentFlag.AlignVCenter, letters[index % len(letters)])
+                painter.setPen(QColor(palette.header_name))
+                name_font = painter.font()
+                name_font.setPointSize(14 if rect.height() < 84 else 16)
+                name_font.setBold(True)
+                painter.setFont(name_font)
+                painter.drawText(QRectF(55, rect.top(), CONTROL_LEFT - 61, rect.height()), Qt.AlignmentFlag.AlignVCenter,
+                                 painter.fontMetrics().elidedText(name, Qt.ElideRight, CONTROL_LEFT - 61))
+                name_font.setBold(False)
+                painter.setFont(name_font)
+                self._paint_subtitle_header_buttons(painter, palette, "speaker", speaker_id, rect)
             if speaker_id in self.hidden_speakers:
                 continue
             if dense_cue_overview:
@@ -2753,14 +3112,20 @@ class WaveformTimeline(QWidget):
                         )
                     )
                 continue
+            border = palette.clip_border(color)
+            fill_normal = palette.clip_fill(color, False)
+            fill_selected = palette.clip_fill(color, True)
+            stripe = color.darker(112)
+            aliased = False  # narrow cues are drawn as crisp rects, in runs
             for cue in visible_by_speaker.get(speaker_id, ()):
-                left = self._time_to_x(cue.start_ms)
-                right = self._time_to_x(cue.end_ms)
-                if right < self.TRACK_HEADER_WIDTH or left > self._content_right():
+                left = to_x(cue.start_ms)
+                right = to_x(cue.end_ms)
+                if right < header_width or left > content_right:
                     continue
-                clipped_left = max(self.TRACK_HEADER_WIDTH, left)
-                clipped_right = min(self._content_right(), right)
-                block = QRectF(clipped_left, rect.top() + 7, max(4, clipped_right - clipped_left), rect.height() - 14)
+                clipped_left = max(header_width, left)
+                clipped_right = min(content_right, right)
+                band = self._cue_band(cue, rect) if grouped else rect
+                block = QRectF(clipped_left, band.top() + 7, max(4, clipped_right - clipped_left), band.height() - 14)
                 self._count_paint_item('cue_items', bounds=block)
                 selected = cue.id == self.selected_id
                 multi_selected = self.selection_scope.contains(
@@ -2771,33 +3136,42 @@ class WaveformTimeline(QWidget):
                 # Text shaping, rounded corners and the inset stripe have no
                 # visible information at that size; hit testing stays indexed.
                 if block.width() < 24 and not selected:
-                    painter.setPen(QPen(QColor(palette.clip_multi_border) if multi_selected else palette.clip_border(color), 1))
-                    painter.setBrush(palette.clip_fill(color, False))
-                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                    painter.setPen(QPen(multi_border if multi_selected else border, 1))
+                    painter.setBrush(fill_normal)
+                    if not aliased:
+                        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                        aliased = True
                     painter.drawRect(block)
-                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
                     continue
-                fill = palette.clip_fill(color, selected)
+                if aliased:
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                    aliased = False
+                fill = fill_selected if selected else fill_normal
                 if selected:
-                    painter.setPen(QPen(QColor(palette.clip_selected_border), 3.0))
-                    painter.setBrush(rgba_color(palette.clip_selected_glow))
+                    painter.setPen(QPen(selected_border, 3.0))
+                    painter.setBrush(selected_glow)
                     painter.drawRoundedRect(block.adjusted(-2, -2, 2, 2), 6, 6)
                     painter.setBrush(fill)
                 else:
                     painter.setPen(QPen(
-                        QColor(palette.clip_multi_border) if multi_selected else palette.clip_border(color),
+                        multi_border if multi_selected else border,
                         1.6 if multi_selected else 1.2,
                     ))
                 painter.setBrush(fill)
                 painter.drawRoundedRect(block, 5, 5)
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(color.darker(112))
+                painter.setBrush(stripe)
                 painter.drawRoundedRect(QRectF(block.left() + 1, block.top() + 1, 3, block.height() - 2), 1.5, 1.5)
-                painter.setPen(QColor(palette.clip_text))
+                painter.setPen(clip_text)
                 available = max(8, int(block.width()) - 26)
                 inner = block.adjusted(11, 4, -8, -4)
-                row_height = rect.height()
-                font = self._timeline_text_font(round(row_height), block.width())
+                row_height = band.height()
+                text = f"{name}｜{cue.text}" if grouped else cue.text
+                font_key = (round(row_height), float(block.width()) >= 260)
+                if font_key not in text_fonts:
+                    font = self._timeline_text_font(round(row_height), block.width())
+                    text_fonts[font_key] = (font, QFontMetrics(font), font.key())
+                font, metrics, font_name = text_fonts[font_key]
                 painter.setFont(font)
                 if available < 36:
                     max_lines = 1
@@ -2807,27 +3181,38 @@ class WaveformTimeline(QWidget):
                     max_lines = 2
                 else:
                     max_lines = 3
-                metrics = QFontMetrics(font)
                 # Centred, so a cue reads the same wherever it sits on screen
                 # (2026-10-10 user feedback: left-aligned text drifted away).
                 flags = int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter | Qt.TextFlag.TextWordWrap)
                 if available < 28:
                     label = ""
                 else:
-                    bounds = metrics.boundingRect(inner.toRect(), flags, cue.text)
-                    label = cue.text
-                    if bounds.height() > inner.height() or max_lines == 1:
-                        label = metrics.elidedText(
-                            cue.text.replace("\n", " "),
-                            Qt.TextElideMode.ElideRight,
-                            available * max_lines,
-                        )
+                    # Shaping/eliding the same text in the same box gives the
+                    # same label; only edge cues change width while following.
+                    inner_box = inner.toRect()
+                    label_key = (cue.id, text, font_name, inner_box.width(), inner_box.height(),
+                                 inner.height(), max_lines, available)
+                    label = labels.get(label_key)
+                    if label is None:
+                        bounds = metrics.boundingRect(inner_box, flags, text)
+                        label = text
+                        if bounds.height() > inner.height() or max_lines == 1:
+                            label = metrics.elidedText(
+                                text.replace("\n", " "),
+                                Qt.TextElideMode.ElideRight,
+                                available * max_lines,
+                            )
+                        if len(labels) >= 4096:
+                            labels.clear()
+                        labels[label_key] = label
                 painter.drawText(inner, flags, label)
                 if selected and block.width() >= 32 and (self._resize_hover and self._resize_hover[0] == cue.id):
                     painter.setPen(QPen(QColor(palette.handle_dot_border), 1))
                     painter.setBrush(QColor(palette.handle_dot_fill))
                     for handle_x in (block.left(), block.right()):
                         painter.drawEllipse(QRectF(handle_x - 3, block.center().y() - 5, 6, 10))
+            if aliased:
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         translations = self.project.generation_metadata.get("translations", {}) if self.project else {}
         if translation_rect:
@@ -3059,6 +3444,7 @@ class WaveformTimeline(QWidget):
         for cue in self.visible_cues():
             row=rows.get(cue.speaker_id)
             if row is not None and cue.speaker_id not in self.locked_speakers:
+                row=self._cue_band(cue,row)
                 result.append(('subtitle',cue.id,QRectF(self._time_to_x(cue.start_ms),row.top()+5,max(1.,self._time_to_x(cue.end_ms)-self._time_to_x(cue.start_ms)),row.height()-10)))
         return result
 
@@ -3157,9 +3543,11 @@ class WaveformTimeline(QWidget):
         return rect.adjusted(.5,.5,-.5,-.5)
 
     def _paint_selection_feedback(self,painter,palette):
+        selection=self.clip_selection()
+        if not (selection.video_ids or selection.audio_ids or selection.cue_ids):
+            return  # building every visible item's rect only to draw none
         color=mix(QColor(palette.clip_selected_border),QColor('white'),.42)
         fill=QColor(color);fill.setAlpha(58)
-        selection=self.clip_selection()
         drag=self._group_drag
         delta=drag['delta'] if drag else 0
         offset=self._time_to_x(delta)-self._time_to_x(0)
@@ -3445,6 +3833,10 @@ class WaveformTimeline(QWidget):
             self.update()
             return
         if point.x() < self.TRACK_HEADER_WIDTH:
+            group_row = self._group_row_at(point)
+            if group_row is not None:
+                self._group_header_clicked(point, group_row[1])
+                return
             speaker_rects, _translation, _waveform = self._track_layout()
             for speaker_id, rect in speaker_rects.items():
                 if rect.contains(point):
@@ -3568,6 +3960,10 @@ class WaveformTimeline(QWidget):
             kind, track_id = '', ''
             if self._audio_track_at(event.pos()):kind,track_id='audio',self._audio_track_at(event.pos())
             elif self._video_track_at(event.pos()):kind,track_id='video',self._video_track_at(event.pos())
+            elif self._group_row_at(event.pos()) is not None:
+                from .speaker_roles import GROUP_KEY
+                self.track_menu_requested.emit('subtitle',GROUP_KEY,event.globalPos())
+                return
             else:
                 for key,rect in self._track_layout()[0].items():
                     if rect.contains(event.pos()):kind,track_id='subtitle',key;break
@@ -3635,6 +4031,8 @@ class WaveformTimeline(QWidget):
         track = translation_rect if translation else speaker_rects.get(cue.speaker_id)
         if not track:
             return
+        if not translation:
+            track = self._cue_band(cue, track)
         left = max(self.TRACK_HEADER_WIDTH + 2, self._time_to_x(cue.start_ms))
         right = min(self._content_right() - 2, self._time_to_x(cue.end_ms))
         # Keep the editor inside the visible cue block so wrapped text uses the
@@ -3927,6 +4325,16 @@ class WaveformTimeline(QWidget):
                     self.setCursor(Qt.CursorShape.OpenHandCursor)
                     bind_text(self, '按住上下拖动调整轨道层级（上层画面覆盖下层）；拖片段到另一条轨也能交换', property='toolTip')
                 speaker_rects, _translation, _waveform = self._track_layout()
+                group_row = self._group_row_at(point) if hovered is None else None
+                if group_row is not None:
+                    from .speaker_roles import GROUP_KEY
+                    action = action_at('subtitle', point.x(), point.y(), group_row[1])
+                    if action:
+                        hovered = (GROUP_KEY, action)
+                        bind_text(self, {'visibility': '显示或隐藏全部次要角色',
+                                         'lock': '锁定或解锁全部次要角色',
+                                         'more': '展开或收起次要角色'}[action], property='toolTip')
+                    speaker_rects = {}
                 for speaker_id, rect in speaker_rects.items() if hovered is None else ():
                     if not rect.contains(point):
                         continue
@@ -3954,6 +4362,10 @@ class WaveformTimeline(QWidget):
                 elif audio_track_id:
                     track = next(t for t in self.project.audio_tracks if t.id == audio_track_id)
                     bind_text(self, '{value0} · {audio_track_id} 波形', property='toolTip', value0=track.name, audio_track_id=audio_track_id)
+                elif self._group_row_at(point) is not None:
+                    names = '、'.join(_speaker_name(self.project, key) for key in self._group_members)
+                    bind_text(self, '次要角色：{names}（点击展开或收起；右键可整理或调整角色）',
+                              property='toolTip', names=names)
                 else:
                     speaker_id = self._speaker_at(point)
                     if speaker_id:self.setToolTip(_speaker_name(self.project, speaker_id))

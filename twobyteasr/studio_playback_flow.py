@@ -365,7 +365,10 @@ class StudioPlaybackFlowMixin:
         if callable(arm):arm(milliseconds)
         # Buffering/loading still has a paused observation while the user's
         # play request is pending. A rebind must preserve that request.
-        paused = bool(self.video._paused) and not getattr(self.video, '_buffered_play_pending', False)
+        intended = getattr(self.video, 'playback_intended', None)
+        if intended is None:
+            intended = not self.video._paused or bool(getattr(self.video, '_buffered_play_pending', False))
+        paused = not intended
         if getattr(self.video, '_startup_state', 'READY') != 'READY' and getattr(self.video, '_startup_play_requested', False):
             paused = False
         preview = self._activate_multitrack_preview(milliseconds)
@@ -553,7 +556,7 @@ class StudioPlaybackFlowMixin:
     @measured('active_cues')
     def _update_active_cues(self, milliseconds: int) -> None:
         from .studio_runtime_state import state_for
-        self.cue_controller.sync_playhead_target(milliseconds)
+        self.cue_controller.sync_playhead_target(milliseconds, rule=self._playhead_target_rule())
         sample=getattr(self,'_caption_sample_ms',None)
         if callable(sample):milliseconds=sample(milliseconds)
         session = self.session
@@ -603,7 +606,7 @@ class StudioPlaybackFlowMixin:
             return
         timeline_ms = round(seconds * 1000)
         self._invalidate_audio_tail()
-        self.cue_controller.sync_playhead_target(timeline_ms, force=True)
+        self.cue_controller.sync_playhead_target(timeline_ms, force=True, rule=self._playhead_target_rule())
         visual_expectation = self._prepare_visual_route_for_time(timeline_ms)
         try:
             from .clip_time_mapper import ClipTimeTrace, record_clip_time_trace
@@ -820,7 +823,9 @@ class StudioPlaybackFlowMixin:
     def _toggle_playback(self) -> None:
         if getattr(self, "_empty_playback_state", False) or not self.video.controller:
             return
-        if getattr(self.video, "_buffered_play_pending", False):
+        if (getattr(self.video, "_buffered_play_pending", False)
+                or getattr(self.video, "_seek_hold_active", False)):
+            # Still "playing" for the user while a seek waits for its audio.
             self.video.set_paused(True)
             self._sync_play_button(True)
             return
@@ -878,7 +883,29 @@ class StudioPlaybackFlowMixin:
                         return False
         return True
 
+    def _playhead_target_rule(self) -> str:
+        """'edit' while a paused user-placed playhead decides Q/W; else the clock rule."""
+        if getattr(self, '_review_mode', False):
+            return 'clock'
+        return 'edit' if bool(getattr(getattr(self, 'video', None), '_paused', True)) else 'clock'
+
     def _playback_state_changed(self, paused: bool) -> None:
+        if getattr(self.video, '_seek_hold_active', False):
+            # A seek during playback holds the picture until its audio is
+            # ready. The user is still playing: no Q/W retarget, full GC,
+            # thumbnail/governor switch or play-button flicker; the audio
+            # graph still follows the hold so both clocks stop and resume.
+            if self.project and hasattr(self, "timeline"):
+                self._sync_video_compositor(int(self.timeline.playhead_ms))
+            return
+        if (paused and self.project is not None and not getattr(self, '_review_mode', False)
+                and not getattr(self, '_manual_selection_hold', False)):
+            # Paused in a gap: show the caption Q/W would edit (nearest boundary).
+            # Inside a caption both rules agree; that selection is left alone.
+            playhead = int(self.timeline.playhead_ms)
+            runtime = getattr(self.session, 'runtime', None)
+            if runtime is not None and not runtime.cues_at(playhead):
+                self.cue_controller.sync_playhead_target(playhead, rule='edit')
         budget = getattr(self, '_playback_gc_budget', None)
         if budget is not None:
             budget.set_playing(not paused)

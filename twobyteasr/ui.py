@@ -143,7 +143,6 @@ from twobyteasr.recognition_plans import (
     plan_options,
     recognition_plan,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
 from twobyteasr.ui_navigation import NAVIGATION_QSS, WorkspaceNavigation, style_workspace_sidebar_heading
 from twobyteasr.settings import save_runtime_settings
 from twobyteasr.llm_config import (
@@ -206,6 +205,14 @@ from twobyteasr.updater import (
 from twobyteasr.startup_trace import mark as _startup_mark
 from twobyteasr import ui_zoom
 from twobyteasr.lazy_pages import existing_page
+
+# Work that must not delay the first window; run on the GUI thread about
+# 2.5 s after it is interactive (MainWindow._warm_studio_module).
+_STARTUP_IDLE_TASKS = []
+
+
+def after_startup_idle(task):
+    _STARTUP_IDLE_TASKS.append(task)
 
 
 from twobyteasr.main_ui_helpers import (
@@ -3911,6 +3918,18 @@ class MainWindow(QWidget):
         else:
             QTimer.singleShot(0, self, self._background_preload)
             QTimer.singleShot(0, self, self._restore_last_project_profile)
+        # Local MCP access (2026-10-12, off by default): one settings read;
+        # the pipe and its modules load only when the user turned it on.
+        QTimer.singleShot(0, self, self._start_mcp_bridge)
+
+    def _start_mcp_bridge(self):
+        try:
+            from .mcp_common import read_settings
+            if read_settings().get("enabled"):
+                from .mcp_bridge import start_if_enabled
+                start_if_enabled(self)
+        except Exception as exc:  # noqa: BLE001 - the editor must open regardless
+            print(f"[MCP] 本机访问未启动：{exc}", file=sys.stderr)
 
     def _set_brand_text(self):
         self.brand.setText(
@@ -3987,9 +4006,6 @@ class MainWindow(QWidget):
             page.api_preset_requested.connect(self._apply_asr_api_preset)
             page.api_configure_requested.connect(self._open_api_key_dialog_for_preset)
             page.backend_requested.connect(self._apply_workshop_backend)
-            preloaded = getattr(self, "_preloaded_installed_model_keys", None)
-            if preloaded is not None:
-                page._installed = set(preloaded)
             if self._density_comfortable is not None:
                 page.apply_density(self._density_comfortable)
         elif name == "history":
@@ -4008,6 +4024,9 @@ class MainWindow(QWidget):
             page.terms_requested.connect(self._open_terms_from_history)
             page.result_requested.connect(self._open_completion_from_history)
         elif name == "studio":
+            # Imported on first use (or by the idle warm-up after startup):
+            # the Studio module tree is ~0.5 s of the home page's start.
+            from twobyteasr.studio_ui import SubtitleStudioPage
             page = SubtitleStudioPage(self)
             self._studio_page_instance = page
             page.return_requested.connect(self._return_to_settings)
@@ -4378,7 +4397,7 @@ class MainWindow(QWidget):
             current.setProperty("_2b_language_applied", language)
         # Interface zoom: pages built or changed since the last zoom step
         # catch up here (no-op at 100%; Studio keeps its own size).
-        from .ui_zoom import apply_to as _apply_ui_zoom
+        from .ui_zoom import apply_to_changed as _apply_ui_zoom
         _apply_ui_zoom(current)
         self._update_bottom_bar_visibility(index)
 
@@ -4542,8 +4561,14 @@ class MainWindow(QWidget):
             studio._studio_trace(
                 "StudioSubtitleRefresh", retry=True, project_path=str(target)
             )
+        # A retry happens on a later Studio entry, after delivery: the user
+        # may have proofread this project meanwhile. Keep the strict identity
+        # (path, project, job, recognition stamp, media) but accept their
+        # edits, like every other reopen of a delivered result (ADR 0102).
+        from .recognition_result import working_reference
         self.open_studio_project(str(target), mode="edit", source="studio_recognition",
-            expected_result_ref=getattr(studio, '_pending_recognition_result_ref', None))
+            expected_result_ref=working_reference(
+                getattr(studio, '_pending_recognition_result_ref', None)) or None)
 
     def _open_subtitle_studio(self, project_path=None, *, mode="edit", skip_dirty_guard=False, on_ready=None, expected_result_ref=None):
         if expected_result_ref:
@@ -5060,6 +5085,23 @@ class MainWindow(QWidget):
         threading.Thread(target=cleanup_after_update, name='update-cleanup', daemon=True).start()
         if automatic_checks_allowed():
             QTimer.singleShot(automatic_check_delay_ms(), self, self._auto_check_updates)
+        QTimer.singleShot(2500, self, self._warm_studio_module)
+
+    def _warm_studio_module(self):
+        """Run the startup idle tasks, then load the Studio module tree.
+
+        Neither runs before the first window (~0.35 s of the start each).
+        Done on the GUI thread on purpose: a background import could race a
+        GUI-thread import of the same package cycle. Without this the first
+        click into Studio would pay for it."""
+        if QApplication.mouseButtons() != Qt.MouseButton.NoButton or QApplication.activePopupWidget():
+            QTimer.singleShot(1000, self, self._warm_studio_module)
+            return
+        while _STARTUP_IDLE_TASKS:
+            _STARTUP_IDLE_TASKS.pop(0)()
+        if self.built_page("studio") is not None or "twobyteasr.studio_ui" in sys.modules:
+            return
+        import twobyteasr.studio_ui  # noqa: F401
 
     def _auto_check_updates(self):
         if (self.update_check_worker and self.update_check_worker.isRunning()) or \
@@ -5505,6 +5547,7 @@ class MainWindow(QWidget):
         self.content_quick_picks = QuickPickRow("最近")
         self.content_quick_picks.picked.connect(self._pick_recent_content)
         content_choice.addWidget(self.content_quick_picks)
+        self._build_subtitle_language_row(content_choice)
         self.game_box.currentTextChanged.connect(self._sync_content_quick_picks)
         self.terms = SwitchControl("术语库校对")
         self.terms.setObjectName("homeSwitch")
@@ -8909,6 +8952,98 @@ class MainWindow(QWidget):
         current = self.legacy.canonicalize_runtime_game_name(self.game_box.currentText())
         picks.set_items(getattr(self, "_content_quick_names", []), current)
 
+    def _build_subtitle_language_row(self, layout):
+        """Spoken language and subtitle output, chosen before a task starts."""
+        label = QLabel("字幕语言与输出")
+        label.setObjectName("homeFieldLabel")
+        layout.addWidget(label)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        saved = dict((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {})
+        self.recognition_language = FramelessPopupCombo()
+        for text, value in (("自动识别语言", "auto"), ("中文", "zh"), ("日语", "ja")):
+            self.recognition_language.addItem(tr(text), value)
+        self.subtitle_output = FramelessPopupCombo()
+        for text, value in (("只要原文", "original"), ("只要中文译文", "translation"), ("日中双语", "bilingual")):
+            self.subtitle_output.addItem(tr(text), value)
+        self.translation_script = FramelessPopupCombo()
+        for text, value in (("简体中文", "zh-Hans"), ("繁體中文", "zh-Hant")):
+            self.translation_script.addItem(text, value)
+        for combo, key, default in ((self.recognition_language, "recognition_language", "auto"),
+                                    (self.subtitle_output, "output", "original"),
+                                    (self.translation_script, "translation_script", "zh-Hans")):
+            combo.setCurrentIndex(max(0, combo.findData(saved.get(key, default))))
+            combo.setObjectName("homeLanguageCombo")
+            row.addWidget(combo)
+        row.addStretch(1)
+        bind_text(self.recognition_language, '自动：按转写里的假名判断中文或日语（只有汉字不算日语证据）。日语改用 Qwen3-ForcedAligner 对齐字词时间，需在模型工坊下载。', property='toolTip')
+        bind_text(self.subtitle_output, '译文/双语：识别完成后用已配置的 AI 文字服务把日文翻成中文（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。', property='toolTip')
+        bind_text(self.translation_script, '译文使用的中文字形', property='toolTip')
+        layout.addLayout(row)
+        self.subtitle_language_hint = QLabel("")
+        self.subtitle_language_hint.setObjectName("homeTermState")
+        self.subtitle_language_hint.setWordWrap(True)
+        layout.addWidget(self.subtitle_language_hint)
+        self.aligner_download_button = AnimatedButton("去模型工坊下载 Qwen3-ForcedAligner（约 1.8 GB）")
+        self.aligner_download_button.setObjectName("homeHeaderAction")
+        self.aligner_download_button.clicked.connect(self._open_aligner_in_workshop)
+        self.aligner_download_button.hide()
+        layout.addWidget(self.aligner_download_button)
+        for combo in (self.recognition_language, self.subtitle_output, self.translation_script):
+            combo.currentIndexChanged.connect(self._subtitle_language_changed)
+        self._subtitle_language_changed(save=False)
+
+    def _subtitle_language_options(self):
+        if self.__dict__.get("recognition_language") is None:
+            saved = dict((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {})
+            return {"recognition_language": saved.get("recognition_language", "auto"),
+                    "subtitle_output": saved.get("output", "original"),
+                    "translation_script": saved.get("translation_script", "zh-Hans")}
+        return {"recognition_language": str(self.recognition_language.currentData() or "auto"),
+                "subtitle_output": str(self.subtitle_output.currentData() or "original"),
+                "translation_script": str(self.translation_script.currentData() or "zh-Hans")}
+
+    def _subtitle_language_changed(self, *_args, save=True):
+        options = self._subtitle_language_options()
+        translating = options["subtitle_output"] != "original"
+        self.translation_script.setEnabled(translating)
+        hints = []
+        aligner_missing = False
+        if options["recognition_language"] in ("ja", "auto"):
+            try:
+                from .asr import resolve_qwen_aligner_local_source
+                aligner_missing = not resolve_qwen_aligner_local_source()
+            except Exception:
+                aligner_missing = False
+        if options["recognition_language"] == "ja":
+            hints.append("日语：不送中文时间轴模型；字词时间由 Qwen3-ForcedAligner 对齐。")
+        if aligner_missing and options["recognition_language"] == "ja":
+            hints.append("还没有安装 Qwen3-ForcedAligner：日语字幕将没有字词时间（剃刀只能按估算切），不会悄悄改用估算冒充。")
+        self.aligner_download_button.setVisible(aligner_missing and options["recognition_language"] == "ja")
+        if translating:
+            hints.append("完成识别后翻译成中文，发送字幕文字到已配置的 AI 文字服务（可能产生费用）。"
+                         "中文素材不翻译。")
+        bind_text(self.subtitle_language_hint, " ".join(hints))
+        self.subtitle_language_hint.setVisible(bool(hints))
+        if save:
+            try:
+                section = self.legacy.RUNTIME_SETTINGS.setdefault("subtitle_language", {})
+                section.update(recognition_language=options["recognition_language"],
+                               output=options["subtitle_output"],
+                               translation_script=options["translation_script"])
+                save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
+            except Exception:
+                pass
+
+    def _open_aligner_in_workshop(self):
+        self._open_model_workshop()
+        view = getattr(self.workshop_page, "_view_model", None)
+        if callable(view):
+            try:
+                view("qwen_aligner")
+            except Exception:
+                pass
+
     def _pick_recent_content(self, name: str) -> None:
         index = self.game_box.findText(name)
         if index >= 0:
@@ -10661,7 +10796,9 @@ class MainWindow(QWidget):
             except Exception:
                 pass
             from .terminology import snapshot_glossaries
+            language_options = self._subtitle_language_options()
             options = RunOptions(
+                **language_options,
                 settings_snapshot_json=json.dumps(self.legacy.RUNTIME_SETTINGS, ensure_ascii=False),
                 glossary_snapshot_json=json.dumps(
                     snapshot_glossaries(self.legacy, enabled_glossary_ids if terms_enabled else ()).to_dict(),
@@ -11065,6 +11202,22 @@ class MainWindow(QWidget):
                 metrics.append((tr('最近输出'), tr('{seconds} 秒前', seconds=int(quiet))))
             else:
                 metrics.append((tr('最近输出'), tr('尚无输出')))
+            rate = payload.get('tokens_per_second')
+            if payload.get('phase') == 'generation' and payload.get('prefill_running') and rate is None:
+                # Before the first token the model reads the whole audio context;
+                # that wait is not a generation rate.
+                metrics.append((tr('生成速度'), tr('正在读取整段音频上下文…')))
+            if payload.get('phase') == 'generation' and isinstance(rate, (int, float)):
+                free, total = payload.get('vram_free_gb'), payload.get('vram_total_gb')
+                # Measured by the worker; a slow rate with nearly full VRAM is
+                # the "other programs hold the GPU" case, shown as such.
+                pressured = isinstance(free, (int, float)) and free < 1.0
+                metrics.append((tr('生成速度'), tr('{rate:.1f} tokens/秒 · 显存将满', rate=float(rate)) if pressured
+                                else tr('{rate:.1f} tokens/秒', rate=float(rate))))
+                if isinstance(free, (int, float)) and isinstance(total, (int, float)):
+                    metrics.append((tr('显存可用'), f"{float(free):.1f} / {float(total):.1f} GB"))
+                if isinstance(payload.get('context_tokens'), int):
+                    metrics.append((tr('上下文'), f"{int(payload['context_tokens']):,} tokens"))
         elif kind == 'asr_evidence_delta':
             metrics.append((tr('已完成批次'), f"{payload.get('completed_chunks', 0)} / {payload.get('total_chunks', 0)}"))
             metrics.append((tr('已处理音频'), clock(payload.get('processed_end', 0))))
@@ -11381,7 +11534,14 @@ class MainWindow(QWidget):
             richer = previous.get('kind') in {'asr_evidence_delta', 'asr_progress'} and event.kind == 'asr_worker_progress' and backend != 'moss'
             if stage is not None and not richer:
                 fresh = self._is_fresh_output(event.kind, payload, previous.get('payload') or {})
-                stage_live[stage] = {'kind': event.kind, 'payload': dict(payload), 'at': stage_at, 'backend': backend}
+                kept = dict(payload)
+                if backend == 'moss':
+                    # Token milestones carry no measurements; keep the last
+                    # measured rate and VRAM until the next heartbeat.
+                    for name in ('tokens_per_second', 'vram_free_gb', 'vram_total_gb', 'reserved_gb', 'context_tokens'):
+                        if name not in kept and name in (previous.get('payload') or {}):
+                            kept[name] = previous['payload'][name]
+                stage_live[stage] = {'kind': event.kind, 'payload': kept, 'at': stage_at, 'backend': backend}
                 fraction = self._live_fraction(event.kind, payload)
                 if fraction is not None:
                     self.__dict__.setdefault('_stage_partial', {})[stage] = fraction
@@ -12185,26 +12345,13 @@ class TermLibraryPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(12)
 
-        sidebar = QFrame()
-        sidebar.setObjectName("termWorkspaceSidebar")
-        sidebar.setMinimumWidth(180)
-        sidebar.setMaximumWidth(260)
-        sidebar.setSizePolicy(
-            QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Expanding,
-        )
-        side = QVBoxLayout(sidebar)
-        side.setContentsMargins(12, 12, 12, 12)
-        side.setSpacing(6)
-        heading = QLabel("工作台")
-        heading.setObjectName("termWorkspaceLabel")
-        style_workspace_sidebar_heading(heading)
-        side.addWidget(heading)
-        self.workspace_navigation = WorkspaceNavigation("terms")
+        from twobyteasr.ui_navigation import WorkspaceSidebar
+        sidebar = WorkspaceSidebar("terms", object_name="termWorkspaceSidebar")
+        side = sidebar.body
+        self.workspace_navigation = sidebar.navigation
         self.workspace_navigation.recognition_requested.connect(self.recognition_requested)
         self.workspace_navigation.workshop_requested.connect(self.workshop_requested)
         self.workspace_navigation.history_requested.connect(self.history_requested)
-        side.addWidget(self.workspace_navigation)
         side.addStretch(1)
         sync_status = QLabel("●  官方词库已同步")
         sync_status.setObjectName("termSyncStatus")
@@ -12321,7 +12468,12 @@ def run_desktop_app(
             instance_guard.release()
             return 0
     _startup_mark("SETTINGS_LOADED")
-    window = MainWindow([], legacy, pipeline, startup_self_test, startup_page=startup_page)
+    # The window's construction scans the model registry several times
+    # (ASR choices, summaries, language pass); nothing installs or removes a
+    # model meanwhile, so they share one scan's path/record memo.
+    from .runtime_paths import single_scan
+    with single_scan():
+        window = MainWindow([], legacy, pipeline, startup_self_test, startup_page=startup_page)
     from .desktop_intake import DesktopIntake
     window._desktop_intake = DesktopIntake(window)
     instance_guard.paths_received.connect(window._desktop_intake.receive_external)
@@ -12398,7 +12550,10 @@ def run_desktop_app(
 
                     QTimer.singleShot(9000, _leave_studio_for_audit)
 
-        QTimer.singleShot(250, _open_studio_for_audit)
+        # Audits can open Studio later, like a user who first looks at Home
+        # (the Studio module is preloaded while Home is idle).
+        QTimer.singleShot(int(os.environ.get('TWOBYTEASR_STARTUP_OPEN_STUDIO_DELAY_MS', '250') or 250),
+                          _open_studio_for_audit)
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_DIR'):
         from .studio_acceptance_audit import start_acceptance
         QTimer.singleShot(1500, lambda: start_acceptance(window))

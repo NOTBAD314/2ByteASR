@@ -113,7 +113,7 @@ def _download_spec(payload: bytes) -> dict:
     }
 
 
-def test_repository_adapter_auto_fails_over_to_hf_mirror_and_preserves_nested_path(tmp_path, monkeypatch):
+def test_repository_adapter_auto_fails_over_to_official_and_preserves_nested_path(tmp_path, monkeypatch):
     payload = b'{"model":"demo"}'
     attempts = []
 
@@ -136,8 +136,8 @@ def test_repository_adapter_auto_fails_over_to_hf_mirror_and_preserves_nested_pa
         staging_root=tmp_path / "staging",
     )
 
-    assert selected == "HF_MIRROR"
-    assert attempts == ["MODELSCOPE", "HF_MIRROR"]
+    assert selected == "HF_OFFICIAL"
+    assert attempts == ["MODELSCOPE", "HF_OFFICIAL"]
     assert (destination / "nested" / "config.json").read_bytes() == payload
 
 
@@ -164,7 +164,7 @@ def test_repository_adapter_auto_reaches_official_after_two_source_failures(tmp_
     )
 
     assert selected == "HF_OFFICIAL"
-    assert attempts == ["MODELSCOPE", "HF_MIRROR", "HF_OFFICIAL"]
+    assert attempts == ["MODELSCOPE", "HF_OFFICIAL"]
 
 
 def test_explicit_repository_source_never_falls_back(tmp_path, monkeypatch):

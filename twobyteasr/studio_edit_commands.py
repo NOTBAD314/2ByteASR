@@ -262,17 +262,106 @@ def delete_video_segments_command(
     return EditSequenceCommand(project, after, None, "删除视频片段", changed)
 
 
+def _primary_video_locked(project: SubtitleProject) -> bool:
+    """The editor's lock rule: the V1 track's own lock or the legacy sequence lock."""
+    from .studio_clip_edit import video_track_locked
+    from .studio_media_pool import primary_video_track_id, track_by_id
+
+    track_id = primary_video_track_id(project)
+    if not track_id:
+        return bool(sequence_of(project).video_track_locked)
+    return video_track_locked(project, track_by_id(project, track_id))
+
+
+def _inherit_clip_lineage(before: EditSequence, after: EditSequence) -> None:
+    """Name the old V1 piece each new segment cuts from (keeps its clip settings)."""
+    from .studio_project import _normalized_media_source
+
+    for segment in after.segments:
+        path = _normalized_media_source(segment.source_path or after.source_path)
+        same = [old for old in before.segments
+                if _normalized_media_source(old.source_path or before.source_path) == path]
+        origin = max(same, default=None, key=lambda old: (
+            old.source_in_ms <= segment.source_in_ms and segment.source_out_ms <= old.source_out_ms,
+            min(old.source_out_ms, segment.source_out_ms) - max(old.source_in_ms, segment.source_in_ms)))
+        if origin is not None and min(origin.source_out_ms, segment.source_out_ms) > max(
+                origin.source_in_ms, segment.source_in_ms):
+            after.segment_lineage[segment.id] = list(dict.fromkeys(
+                [origin.id, *before.segment_lineage.get(origin.id, [])]))
+
+
+def _replace_primary_sequence(project, after, label, *, page=None, locked_speakers=(),
+                              playhead_after=0, restore_stash=False):
+    """Independent captions: one atomic clip edit moving V1, linked audio and captions."""
+    from .studio_caption_timeline import (
+        locked_caption_speakers, remap_captions_to_sequence,
+        restore_generated_edit_captions, stash_generated_edit_captions)
+    from .studio_clip_edit import _finalize_edit, _working_copy
+    from .studio_media_pool import sync_primary_video_track_from_sequence
+
+    working = _working_copy(project)
+    sequence = sequence_of(working)
+    before = copy.deepcopy(sequence)
+    sequence.segments = copy.deepcopy(after.segments)
+    sequence.segment_lineage = copy.deepcopy(after.segment_lineage)
+    sequence.empty_timeline = not sequence.segments
+    sequence.selected_segment_id = ""
+    sequence.in_point_ms = sequence.out_point_ms = None
+    working._edit_sequence_runtime.reindex()
+    sync_primary_video_track_from_sequence(working, sequence)
+    locked = locked_caption_speakers(project, page, locked_speakers)
+    skipped, dropped = remap_captions_to_sequence(working, before, sequence, locked=locked)
+    if restore_stash:
+        restore_generated_edit_captions(working, project.media.path)
+    else:
+        stash_generated_edit_captions(working, dropped)
+    command = _finalize_edit(project, working, label, page=page, playhead_after=playhead_after,
+                             locked_speakers=locked_speakers)
+    command.skipped_caption_speakers = frozenset(skipped)
+    command.left_out_captions = len(dropped)
+    return command
+
+
 def generate_edit_command(
     project: SubtitleProject,
     candidates: list[HighlightCandidate] | None = None,
     changed: ChangedCallback | None = None,
-) -> EditSequenceCommand:
+    *,
+    page=None,
+    locked_speakers=(),
+):
+    """Cut V1 (and linked audio) to the bin's kept ranges, in bin order.
+
+    Returns ``None`` when the timeline already is exactly that edit, so a
+    repeated click never stacks a duplicate undo step. Raises ``ValueError``
+    with the reason when nothing can be generated.
+    """
+    from .studio_caption_timeline import independent_captions
+    from .studio_edit_sequence import MIN_SEGMENT_MS
+
     current = sequence_of(project)
     wanted = candidates if candidates is not None else accepted_candidates(current)
+    if not wanted:
+        raise ValueError("剪辑候选箱是空的：先在候选上点「加入剪辑」")
+    duration = int(project.media.duration_ms or 0)
+    usable = [item for item in wanted
+              if min(duration or item.source_out_ms, item.source_out_ms) - max(0, item.source_in_ms) >= MIN_SEGMENT_MS]
+    if len(usable) != len(wanted):
+        raise ValueError("候选箱里有超出录播时长或过短的区间，未生成；请移除后重试")
     after = sequence_from_candidates(project.media, wanted, locked=current.video_track_locked)
+    if _mapping_signature(after) == _mapping_signature(current):
+        return None
+    if _primary_video_locked(project):
+        raise ValueError("主视频轨已锁定，未生成剪辑；请先解锁视频轨")
+    _inherit_clip_lineage(current, after)
     after.clip_candidates = copy.deepcopy(current.clip_candidates)
     after.markers = copy.deepcopy(current.markers)
     after.danmaku_path = current.danmaku_path
+    if independent_captions(project) and not project.generation_metadata.get("timeline_recognition"):
+        # Captions live in project time here: they move with the cut through
+        # source time (word-exact) in the same undo step as V1 and its audio.
+        return _replace_primary_sequence(project, after, "根据候选生成剪辑", page=page,
+                                         locked_speakers=locked_speakers)
     # 2026-09-19 P0：非破坏式——project.cues 保持全集+源时间，剪辑只是
     # 视图投影（列表/时间轴/ASS/导出按活动序列派生）。此前 remap_cues
     # 物理丢弃区间外字幕，"返回完整录播"永远只能拿回幸存子集，且自动
@@ -283,15 +372,34 @@ def generate_edit_command(
 def restore_full_sequence_command(
     project: SubtitleProject,
     changed: ChangedCallback | None = None,
-) -> EditSequenceCommand:
+    *,
+    page=None,
+    locked_speakers=(),
+):
+    """Return to the full recording; ``None`` when it is already shown."""
+    from .studio_caption_timeline import STASH_KEY, independent_captions
+
     current = sequence_of(project)
     after = identity_sequence(project.media)
     after.video_track_locked = current.video_track_locked
     after.clip_candidates = copy.deepcopy(current.clip_candidates)
     after.markers = copy.deepcopy(current.markers)
     after.danmaku_path = current.danmaku_path
-    # 同上：非破坏式。全集从未离开 project.cues，恢复即切回 identity 视图。
+    if _mapping_signature(after) == _mapping_signature(current) and not project.studio_state.get(STASH_KEY):
+        return None
     info = project.generation_metadata.get("timeline_recognition")
+    if independent_captions(project) and not info:
+        if _primary_video_locked(project):
+            raise ValueError("主视频轨已锁定，未返回完整录播；请先解锁视频轨")
+        _inherit_clip_lineage(current, after)
+        mapped = None
+        if page is not None:
+            from .studio_sequence_mapper import timeline_to_source
+            mapped = timeline_to_source(current, int(page.timeline.playhead_ms))
+        return _replace_primary_sequence(project, after, "返回完整录播", page=page,
+                                         locked_speakers=locked_speakers, restore_stash=True,
+                                         playhead_after=mapped.source_ms if mapped is not None else 0)
+    # 同上：非破坏式。全集从未离开 project.cues，恢复即切回 identity 视图。
     original_cues = None
     if info:
         original_cues = [StudioCue(**row) for row in info.get("original_cues", [])]

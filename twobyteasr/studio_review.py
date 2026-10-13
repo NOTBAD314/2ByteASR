@@ -78,11 +78,17 @@ class CueReviewRisk:
     items: tuple[ReviewItem, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
-        payload["reasons"] = list(self.reasons)
-        payload["severity"] = self.severity.value
-        payload["items"] = [item.to_dict() for item in self.items]
-        return payload
+        # Same keys and order as asdict(); asdict first deep-copied every
+        # item's evidence only to replace "items" below (0.3 s GUI stall
+        # finishing the QC scan of a 156-cue project).
+        return {
+            "cue_id": self.cue_id,
+            "score": self.score,
+            "level": self.level,
+            "reasons": list(self.reasons),
+            "severity": self.severity.value,
+            "items": [item.to_dict() for item in self.items],
+        }
 
 
 @dataclass(frozen=True)

@@ -158,7 +158,7 @@ def test_windows_shortcut_defaults_are_unchanged(app,monkeypatch):
 def test_single_cue_uses_scene_only_for_raster_only_backend(app,native_supported,expected):
     from twobyteasr.caption_scene import CaptionScene
     page = QWidget()
-    page.project = object()
+    page.project = SimpleNamespace(render_settings={})
     calls = []
     page.video = SimpleNamespace(controller=SimpleNamespace(supports_native_subtitles=native_supported),
                                 clear_caption_boundaries=lambda:calls.append('clear'))

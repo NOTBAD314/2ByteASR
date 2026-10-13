@@ -63,8 +63,27 @@ class ExecutionProgress:
         self.started = time.monotonic()
         self.last_activity = self.started
         self.phase = "audio_preparation"
+        self.phase_started = self.started
+        self.phase_seconds = {}
         self.tokens = 0
+        self.first_token_seconds = None
+        self.prompt_tokens = 0
+        self.cuda_ready = False
+        self._rate_mark = (self.started, 0)
         self.stop = threading.Event()
+
+    def device_memory(self):
+        """Measured VRAM: device-wide free/total and this process's allocator."""
+        if not self.cuda_ready:
+            return {}
+        try:
+            import torch
+            free, total = torch.cuda.mem_get_info()
+            return {"vram_free_gb": round(free / 1024**3, 3), "vram_total_gb": round(total / 1024**3, 3),
+                    "allocated_gb": round(torch.cuda.memory_allocated() / 1024**3, 3),
+                    "reserved_gb": round(torch.cuda.memory_reserved() / 1024**3, 3)}
+        except Exception:
+            return {}
 
     def emit(self, *, activity=True, **fields):
         if activity:
@@ -75,12 +94,172 @@ class ExecutionProgress:
         print("MOSS_EVENT " + json.dumps(row, ensure_ascii=False), flush=True)
 
     def set_phase(self, phase):
-        self.phase = phase
-        self.emit()
+        now = time.monotonic()
+        self.phase_seconds[self.phase] = round(self.phase_seconds.get(self.phase, 0.0) + now - self.phase_started, 3)
+        self.phase, self.phase_started = phase, now
+        if phase == "generation":
+            self._rate_mark = (now, self.tokens)
+        self.emit(**self.device_memory())
 
     def heartbeat(self):
         while not self.stop.wait(10):
-            self.emit(activity=False, heartbeat=True)
+            now, tokens = time.monotonic(), self.tokens
+            fields = self.device_memory()
+            if self.phase == "generation" and self.first_token_seconds is not None:
+                mark_time, mark_tokens = self._rate_mark
+                # Measured decode throughput of the last interval, counted
+                # from the first generated token (prefill is reported apart).
+                fields["tokens_per_second"] = round((tokens - mark_tokens) / max(1e-6, now - mark_time), 2)
+                fields["context_tokens"] = self.prompt_tokens + tokens
+                self._rate_mark = (now, tokens)
+            elif self.phase == "generation":
+                fields["prefill_running"] = True
+            self.emit(activity=False, heartbeat=True, **fields)
+
+
+def install_prefill_attention_policy(model, dtype, receipt):
+    """Keep long prefills off PyTorch's quadratic MATH attention kernel.
+
+    Transformers passes ``enable_gqa=True`` to SDPA for grouped-query layers.
+    When neither FLASH nor EFFICIENT supports that on the device (measured on
+    an RTX 5070 Ti / sm_120 with torch 2.11: only MATH would run it), a 9k-token
+    prefill materialises a 16 x 9077 x 9077 score tensor (11.6 GB). Expanding
+    the KV heads for the prefill only lets the efficient causal kernel run the
+    identical attention; single-token decode steps are unchanged.
+    """
+    import torch
+    import torch.nn.functional as F
+    text = model.config.text_config
+    heads = int(text.num_attention_heads)
+    groups = heads // max(1, int(getattr(text, "num_key_value_heads", heads) or heads))
+    head_dim = int(getattr(text, "head_dim", 0) or text.hidden_size // heads)
+    policy = {"kv_groups": groups, "head_dim": head_dim, "fused_gqa_kernel": None, "prefill_kv_expanded": False}
+    receipt["attention_policy"] = policy
+    if groups <= 1:
+        return policy
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+        query = torch.zeros(1, groups * 2, 64, head_dim, device="cuda", dtype=dtype)
+        kv = torch.zeros(1, 2, 64, head_dim, device="cuda", dtype=dtype)
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+            F.scaled_dot_product_attention(query, kv, kv, is_causal=True, enable_gqa=True)
+        policy["fused_gqa_kernel"] = True
+        return policy
+    except RuntimeError:
+        policy["fused_gqa_kernel"] = False
+    try:
+        from transformers import AttentionInterface
+        import transformers.integrations.sdpa_attention as sdpa
+        original_use, original_forward = sdpa.use_gqa_in_sdpa, sdpa.sdpa_attention_forward
+    except (ImportError, AttributeError) as exc:
+        policy["unpatched_reason"] = f"{type(exc).__name__}: {exc}"
+        return policy
+    prefill = threading.local()
+
+    def use_gqa_in_sdpa(attention_mask, key, value):
+        return False if getattr(prefill, "active", False) else original_use(attention_mask, key, value)
+
+    def sdpa_attention_forward(module, query, key, value, attention_mask, **kwargs):
+        prefill.active = query.shape[2] > 1
+        try:
+            return original_forward(module, query, key, value, attention_mask, **kwargs)
+        finally:
+            prefill.active = False
+
+    sdpa.use_gqa_in_sdpa = use_gqa_in_sdpa
+    AttentionInterface.register("sdpa", sdpa_attention_forward)
+    policy["prefill_kv_expanded"] = True
+    return policy
+
+
+def install_decode_attention(model, receipt):
+    """Single-token decode steps without expanding the KV cache.
+
+    With ``enable_gqa=True`` SDPA has no FLASH/EFFICIENT kernel on sm_120 and
+    falls back to MATH, which repeats every layer's whole KV cache per token
+    (86% of decode GPU time at an 18.7k context, measured 2026-10-12). For
+    q_len=1 the two query heads of each KV group are folded into the query
+    length and attention is two batched matmuls with an fp32 softmax: the
+    arithmetic of Transformers' "eager" attention, minus the repeat_kv copy.
+    Prefill (q_len>1), masks and other calls keep the registered SDPA path.
+    """
+    import torch
+    from transformers import AttentionInterface
+    current = AttentionInterface._global_mapping["sdpa"]
+    counts = {"folded_decode_calls": 0, "sdpa_calls": 0}
+    policy = receipt.setdefault("attention_policy", {})
+    policy.update(decode="gqa_fold_bmm_fp32_softmax", decode_counts=counts)
+
+    def sdpa_attention_forward(module, query, key, value, attention_mask, dropout=0.0, scaling=None,
+                               is_causal=None, **kwargs):
+        groups = int(getattr(module, "num_key_value_groups", 1) or 1)
+        if (groups > 1 and query.shape[2] == 1 and attention_mask is None and not dropout
+                and kwargs.get("position_bias") is None and not kwargs.get("output_attentions")):
+            batch, heads, _, dim = query.shape
+            folded = query.reshape(batch, key.shape[1], groups, dim)
+            scale = scaling if scaling is not None else dim ** -0.5
+            scores = torch.matmul(folded, key.transpose(-1, -2)) * scale
+            probs = torch.softmax(scores, dim=-1, dtype=torch.float32).to(query.dtype)
+            counts["folded_decode_calls"] += 1
+            return torch.matmul(probs, value).reshape(batch, 1, heads, dim), None
+        counts["sdpa_calls"] += 1
+        return current(module, query, key, value, attention_mask, dropout=dropout, scaling=scaling,
+                       is_causal=is_causal, **kwargs)
+
+    AttentionInterface.register("sdpa", sdpa_attention_forward)
+    return policy
+
+
+def growing_kv_cache(model, capacity):
+    """DynamicCache whose layers write into preallocated buffers.
+
+    The default layer concatenates the whole cache on every token (O(context)
+    copies per step). Buffers grow by 25% only if the estimate is exceeded.
+    """
+    import torch
+    from transformers.cache_utils import DynamicCache, DynamicLayer
+
+    class GrowingLayer(DynamicLayer):
+        def __init__(self, capacity):
+            super().__init__()
+            self.capacity = int(capacity)
+            self.length = 0
+
+        def lazy_initialization(self, key_states, value_states):
+            self.dtype, self.device = key_states.dtype, key_states.device
+            batch, heads, _, dim = key_states.shape
+            self._keys = torch.empty(batch, heads, self.capacity, dim, dtype=self.dtype, device=self.device)
+            self._values = torch.empty(batch, heads, self.capacity, dim, dtype=self.dtype, device=self.device)
+            self.keys, self.values = self._keys[:, :, :0], self._values[:, :, :0]
+            self.is_initialized = True
+
+        def update(self, key_states, value_states, *args, **kwargs):
+            if not self.is_initialized:
+                self.lazy_initialization(key_states, value_states)
+            end = self.length + key_states.shape[-2]
+            if end > self.capacity:
+                self.capacity = max(end, int(self.capacity * 1.25))
+                batch, heads, _, dim = self._keys.shape
+                keys = torch.empty(batch, heads, self.capacity, dim, dtype=self.dtype, device=self.device)
+                values = torch.empty(batch, heads, self.capacity, dim, dtype=self.dtype, device=self.device)
+                keys[:, :, :self.length].copy_(self._keys[:, :, :self.length])
+                values[:, :, :self.length].copy_(self._values[:, :, :self.length])
+                self._keys, self._values = keys, values
+            self._keys[:, :, self.length:end].copy_(key_states)
+            self._values[:, :, self.length:end].copy_(value_states)
+            self.length = end
+            self.keys, self.values = self._keys[:, :, :end], self._values[:, :, :end]
+            return self.keys, self.values
+
+        def get_seq_length(self):
+            return self.length if self.is_initialized else 0
+
+    try:
+        cache = DynamicCache(config=model.config)
+    except (AttributeError, TypeError, ValueError):
+        return None          # unknown config shape: keep the library's default cache
+    cache.layers = [GrowingLayer(capacity) for _ in cache.layers]
+    return cache
 
 
 def install_encoder_batching(model, batch_size, progress):
@@ -126,26 +305,54 @@ def generate_full_context(model, processor, audio, messages, device, dtype, prog
     receipt.update(input_tokens=prompt_len, max_new_tokens=budget, requested_output_tokens=requested,
                    context_limit=context_limit, processor_feature_chunk_count=int(inputs["input_features"].shape[0]))
     progress.emit(input_tokens=prompt_len, max_new_tokens=budget, context_limit=context_limit)
+    progress.prompt_tokens = prompt_len
+    # KV buffers sized for the expected transcript (about 5-8 tokens per audio
+    # second measured); they grow only if a dense transcript needs more.
+    kv_capacity = prompt_len + min(budget, math.ceil(len(audio) / processor.feature_extractor.sampling_rate * 10) + 2048)
+    receipt["kv_cache"] = {"kind": "preallocated_growing", "initial_capacity_tokens": kv_capacity}
     config = copy.deepcopy(model.generation_config)
     config.max_new_tokens = budget
     config.do_sample = False
     config.num_beams = 1
     encoder_state = install_encoder_batching(model, GENERATION_POLICY["encoder_batch_size"], progress)
 
+    window = {"start": None, "rates": []}
+
     def token_callback(count):
         progress.tokens = count
         progress.last_activity = time.monotonic()
-        if count % 100 == 0:
+        if count and count % 500 == 0 and window["start"] is not None:
+            # Decode rate per 500 generated tokens: shows any slowdown as the context grows.
+            started_at, started_count = window["start"]
+            window["rates"].append(round((count - started_count) / max(1e-6, progress.last_activity - started_at), 2))
+            window["start"] = (progress.last_activity, count)
+        if progress.first_token_seconds is None and count > 0:
+            window["start"] = (progress.last_activity, count)
+            progress._rate_mark = (progress.last_activity, count)
+            # Prefill is over: report it, then return its transient blocks to
+            # the driver so decoding does not hold VRAM other programs need.
+            progress.first_token_seconds = round(progress.last_activity - progress.phase_started, 3)
+            receipt["first_token_seconds"] = progress.first_token_seconds
+            receipt["prefill_peak_allocated_gb"] = round(torch.cuda.max_memory_allocated() / 1024**3, 3)
+            torch.cuda.empty_cache()
+            progress.emit(first_token_seconds=progress.first_token_seconds,
+                          prefill_peak_allocated_gb=receipt["prefill_peak_allocated_gb"], **progress.device_memory())
+        elif count % 100 == 0:
             progress.emit()
 
     def attempt():
         receipt["generation_attempts"] += 1
         progress.tokens = 0
+        progress.first_token_seconds = None
         progress.set_phase("audio_encoding")
         progress.emit(generation_attempt=receipt["generation_attempts"], encoder_batch_size=encoder_state["batch_size"])
         # Real generate invocations are counted here, including failed attempts.
+        cache = growing_kv_cache(model, kv_capacity)
+        if cache is None:
+            receipt["kv_cache"] = {"kind": "default_dynamic", "reason": "config_without_layer_types"}
         with torch.inference_mode(), torch.amp.autocast("cuda", dtype=dtype):
-            return model.generate(**inputs, generation_config=config, streamer=ProgressStreamer(token_callback))
+            return model.generate(**inputs, generation_config=config, streamer=ProgressStreamer(token_callback),
+                                  **({"past_key_values": cache} if cache is not None else {}))
 
     try:
         outputs = attempt()
@@ -160,6 +367,10 @@ def generate_full_context(model, processor, audio, messages, device, dtype, prog
         outputs = attempt()  # One bounded retry; never independent audio requests.
     generated = outputs[0][prompt_len:]
     count = int(generated.numel())
+    decode_seconds = time.monotonic() - progress.phase_started - (progress.first_token_seconds or 0.0)
+    receipt["decode_tokens_per_second"] = round(max(0, count - 1) / max(1e-6, decode_seconds), 2)
+    receipt["decode_window_tokens_per_second"] = list(window["rates"])
+    receipt["final_context_tokens"] = prompt_len + count
     reason, complete = ending_assessment(count, budget, int(generated[-1].item()) if count else None, config.eos_token_id)
     receipt.update(generated_tokens=count, end_reason=reason, complete=complete,
                    encoder_batch_size=encoder_state["batch_size"],
@@ -435,8 +646,11 @@ def main():
             raise RuntimeError("MOSS 当前工作流要求 CUDA GPU。")
         device = torch.device("cuda:0")
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        progress.cuda_ready = True
         receipt.update(dtype=str(dtype), torch_version=torch.__version__,
-                       transformers_version=transformers.__version__, runtime=sys.executable)
+                       transformers_version=transformers.__version__, runtime=sys.executable,
+                       device_name=torch.cuda.get_device_name(device),
+                       device_capability=".".join(str(part) for part in torch.cuda.get_device_capability(device)))
         model_source = resolve_model(args.model, install_root)
         payload["model"] = model_source
         _vendored_verify_model_files("moss", model_source, install_root=install_root)
@@ -468,6 +682,8 @@ def main():
                        "text": model.config.text_config._attn_implementation,
                        "audio": model.config.audio_config._attn_implementation},
                        model_load_seconds=round(time.monotonic() - model_started, 3))
+        install_prefill_attention_policy(model, dtype, receipt)
+        progress.emit(attention_policy=install_decode_attention(model, receipt), **progress.device_memory())
         messages = build_transcription_messages(args.audio, prompt=DEFAULT_PROMPT)
         raw_text = generate_full_context(model, processor, audio, messages, device, dtype, progress, receipt)
         payload["raw_text"] = raw_text
@@ -511,13 +727,17 @@ def main():
         raise
     finally:
         receipt["elapsed_seconds"] = round(time.monotonic() - progress.started, 3)
+        receipt["phase_seconds"] = dict(progress.phase_seconds, **{
+            progress.phase: round(progress.phase_seconds.get(progress.phase, 0.0) + time.monotonic() - progress.phase_started, 3)})
         try:
             import torch
             receipt["peak_allocated_gb"] = round(torch.cuda.max_memory_allocated() / 1024**3, 3)
             receipt["peak_reserved_gb"] = round(torch.cuda.max_memory_reserved() / 1024**3, 3)
         except Exception:
             pass
-        payload["performance"] = {key: receipt.get(key) for key in ("model_load_seconds", "elapsed_seconds", "peak_allocated_gb", "peak_reserved_gb")}
+        payload["performance"] = {key: receipt.get(key) for key in (
+            "model_load_seconds", "elapsed_seconds", "phase_seconds", "first_token_seconds",
+            "decode_tokens_per_second", "prefill_peak_allocated_gb", "peak_allocated_gb", "peak_reserved_gb")}
         atomic_write_json(args.output, payload)
         progress.stop.set()
         heartbeat.join(timeout=1)
