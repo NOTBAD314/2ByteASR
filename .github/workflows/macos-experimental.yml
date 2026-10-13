@@ -30,7 +30,7 @@ jobs:
     # 2026-10-03. One bounded dispatch after the actual included quota and
     # existing stop-usage budgets were checked. No automatic retry or cache.
     runs-on: macos-15
-    timeout-minutes: 24
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -136,7 +136,8 @@ jobs:
         if: ${{ always() && inputs.run_model_smoke && steps.build.outcome == 'success' }}
         id: desktop
         continue-on-error: true
-        timeout-minutes: 20
+        # Above the smoke's own bounds (app 25 min + restart 10 min), so receipts still upload.
+        timeout-minutes: 40
         run: |
           set -euo pipefail
           python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/build/native-build-inputs.json")); s=r["native_validation"]["packaged_normal_entry_startup_smoke"]; assert s.get("passed") is True or s.get("direct",{}).get("passed") is True, "Relocated startup failed; GUI prerequisites absent"'
