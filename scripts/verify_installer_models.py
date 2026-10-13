@@ -18,18 +18,25 @@ def main():
     parser.add_argument('--native-ui',action='store_true')
     parser.add_argument('--project',action='store_true')
     parser.add_argument('--audio',type=Path)
+    parser.add_argument('--model-root',type=Path)
+    parser.add_argument('--cancel-retry',action='store_true')
+    parser.add_argument('--diagnostic-only',action='store_true')
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root))
     out=args.output.resolve()
     if not out.is_relative_to(root/'tmp'):raise ValueError('QA output must stay in repo tmp')
     out.mkdir(parents=True,exist_ok=True)
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
+    if args.model_root:
+        selected=args.model_root.resolve()
+        if not selected.is_relative_to(out):raise ValueError('Custom QA model directory must stay in output root')
+        os.environ['2BYTEASR_MODEL_ROOT']=str(selected)
     from twobyteasr.test_isolation import install
     install()
     from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
     project=out/'empty.2byteproj'
     if not project.is_file():save_project(SubtitleProject(media=StudioMedia(path='')),project)
-    (out/'installer-qa.json').write_text(json.dumps(dict(models=args.models.split(','),source='AUTO',timeout_s=7200,ui_only=args.ui,native_ui=args.native_ui,project_only=args.project)),'utf8')
+    (out/'installer-qa.json').write_text(json.dumps(dict(models=args.models.split(','),source='AUTO',timeout_s=7200,ui_only=args.ui,native_ui=args.native_ui,project_only=args.project,cancel_retry=args.cancel_retry,diagnostic_only=args.diagnostic_only)),'utf8')
     if args.audio:
         shutil.copy2(args.audio.resolve(),out/'sample.wav')
     env=os.environ.copy()

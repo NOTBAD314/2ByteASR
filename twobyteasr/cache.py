@@ -505,6 +505,11 @@ def cache_stage_signature(stage, extra=None, provider_snapshot=None):
     if stage in {"firered_primary", "firered_llm", "polished", "grouped", "grouped_local", "final_timing"}:
         base["primary_context_contract"] = "moss-full-context-v1"
         base["local_review_contract"] = "qwen-worker-shared-float32-v1-particle-safe-v1"
+        # Japanese tasks use different text rules and timing evidence. Chinese
+        # signatures stay byte-identical so existing caches remain valid.
+        if str(getattr(runtime_context, "task_language", "") or "") == "ja":
+            base["task_language"] = "ja"
+            base["japanese_rules"] = "ja-text-v2-bunsetsu"
     if stage == "audio":
         base.update({"sample_rate": AUDIO_SAMPLE_RATE, "format": "float32-mono"})
     elif stage == "qwen":
@@ -938,42 +943,15 @@ def store_cached_stage_value(
 
 
 def cleanup_old_cache():
-    if not os.path.isdir(CACHE_ROOT):
-        return
-    root = os.path.realpath(CACHE_ROOT)
-    cutoff = time.time() - CACHE_MAX_AGE_DAYS * 86400
-    removed = 0
-    retired_files = 0
-    retired_names = ("faster.json", "vad.json", "commentary.json", "forced_align.json")
-    for name in os.listdir(root):
-        candidate = os.path.realpath(os.path.join(root, name))
-        try:
-            if (
-                os.path.commonpath((root, candidate)) != root
-                or candidate == root
-                or os.path.islink(candidate)
-                or not os.path.isdir(candidate)
-            ):
-                continue
-            for retired_name in retired_names:
-                retired_path = os.path.realpath(os.path.join(candidate, retired_name))
-                if (
-                    os.path.commonpath((candidate, retired_path)) == candidate
-                    and os.path.isfile(retired_path)
-                    and not os.path.islink(retired_path)
-                ):
-                    os.remove(retired_path)
-                    retired_files += 1
-            if os.path.getmtime(candidate) >= cutoff:
-                continue
-            shutil.rmtree(candidate)
-            removed += 1
-        except OSError:
-            continue
-    if removed:
-        print(f"   [缓存清理] 删除 {removed} 个超过 {CACHE_MAX_AGE_DAYS} 天的旧缓存。")
-    if retired_files:
-        print(f"   [缓存清理] 删除 {retired_files} 个已退役识别/对齐阶段缓存。")
+    """Compatibility no-op; owned caches use the existing storage maintenance.
+
+    This hook runs inside recognition, after a timeline WAV may have been
+    reused. Directory mtimes and retired filenames cannot prove ownership,
+    last use or rebuildability, and recursive deletion bypasses active leases.
+    IdleStorageMaintenance and the storage settings UI already delegate to
+    StorageService, which rechecks those conditions for each registered file.
+    Keep this legacy entry callable without starting cleanup in an active job.
+    """
 
 
 import sys as _sys

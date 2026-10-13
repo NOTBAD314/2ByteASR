@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -48,7 +49,8 @@ class MediaIngestResult:
 
 
 def _normalized_stem(value: str) -> str:
-    stem = value.casefold().strip()
+    # NFC: the same name typed and copied may differ in composed/decomposed form.
+    stem = unicodedata.normalize("NFC", value).casefold().strip()
     stem = re.sub(r"[\s_-]+", "", stem)
     return stem
 

@@ -1,8 +1,7 @@
-"""Repository-level model downloader with explicit source failover.
+"""Repository download using the same bounded HTTP client for every source.
 
-Hugging Face mirror and official downloads share huggingface_hub. ModelScope
-uses its official SDK. Each source downloads into its own project-owned staging
-directory; files are only published after that source's manifest validates.
+Each source has separate staging. The product's lock authenticates all files
+before publication, and a pending marker prevents partial installs being ready.
 """
 
 from __future__ import annotations
@@ -15,6 +14,8 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
+import queue
 from contextlib import contextmanager
 from collections import deque
 from dataclasses import dataclass
@@ -23,9 +24,11 @@ from typing import Iterable
 from urllib.parse import quote
 
 from twobyteasr.processes import main_python_executable, run_hidden_subprocess
+from twobyteasr.download_diagnostics import redact, category, require_isolated_download_path
 
 
-SOURCE_ORDER = ("MODELSCOPE", "HF_MIRROR", "HF_OFFICIAL")
+SOURCE_ORDER = ("MODELSCOPE", "HF_OFFICIAL")
+SOURCE_MODES = ("MODELSCOPE", "HF_MIRROR", "HF_OFFICIAL")
 SOURCE_LABELS = {
     "MODELSCOPE": "ModelScope",
     "HF_MIRROR": "HF 镜像（可能回源官方）",
@@ -48,7 +51,9 @@ class SourceManifest:
 
 
 class SourceAttemptError(RuntimeError):
-    pass
+    def __init__(self, message, *, download_category=''):
+        super().__init__(message)
+        self.download_category=download_category
 
 
 @contextmanager
@@ -86,7 +91,7 @@ def preparation_lock(path: Path, *, timeout: float = 1800):
 
 
 def _emit(prefix: str, payload: dict) -> None:
-    print(f"{prefix} {json.dumps(payload, ensure_ascii=False)}", flush=True)
+    print(f"{prefix} {json.dumps(redact(payload), ensure_ascii=False)}", flush=True)
 
 
 def _sha256(path: Path) -> str:
@@ -98,8 +103,8 @@ def _sha256(path: Path) -> str:
 
 
 def _safe_relative(value: str) -> str:
-    normalized = str(value or "").replace("\\", "/").strip("/")
-    if not normalized or normalized.startswith("."):
+    normalized = str(value or "").replace("\\", "/")
+    if not normalized or normalized.startswith(('.', '/')) or ':' in normalized:
         raise ValueError(f"无效模型文件路径：{value!r}")
     path = Path(normalized)
     if path.is_absolute() or ".." in path.parts:
@@ -121,12 +126,14 @@ def source_manifest(spec: dict, mode: str) -> SourceManifest | None:
         revision = str(payload.get("revision") or spec.get("revision") or "main")
     if not repository:
         return None
-    files = payload.get("files") or spec.get("required_files") or ()
-    hash_source = payload.get("sha256")
-    if hash_source is None and key not in declared:
-        # Mirrors declared without source-specific manifests preserve the same
-        # artifacts, so verify them against the shared dependency lock.
-        hash_source = spec.get("sha256")
+    # An origin cannot weaken the product's file/identity contract. A different
+    # version must be explicitly rejected, never accepted using two config hashes.
+    files = tuple(dict.fromkeys([*(spec.get('required_files') or ()), *(payload.get('files') or ())]))
+    hash_source = dict(spec.get('sha256') or {})
+    for name, digest in (payload.get('sha256') or {}).items():
+        if name in hash_source and hash_source[name].lower() != str(digest).lower():
+            raise ValueError(f'{mode} 与产品锁定内容不一致：{name}')
+        hash_source[name] = digest
     hashes = {
         _safe_relative(name): str(value).lower()
         for name, value in dict(hash_source or {}).items()
@@ -142,12 +149,14 @@ def source_manifest(spec: dict, mode: str) -> SourceManifest | None:
 
 def planned_sources(spec: dict, mode: str) -> list[SourceManifest]:
     normalized = str(mode or "AUTO").upper()
+    if normalized not in ('AUTO', *SOURCE_MODES):
+        raise ValueError(f'不支持的下载来源：{normalized}')
     modes = SOURCE_ORDER if normalized == "AUTO" else (normalized,)
     manifests = [source_manifest(spec, item) for item in modes]
     return [item for item in manifests if item is not None]
 
 
-def validate_files(root: Path, manifest: SourceManifest) -> tuple[bool, str]:
+def validate_files(root: Path, manifest: SourceManifest, *, check_indexes=True) -> tuple[bool, str]:
     for relative in manifest.files:
         path = root / relative
         if not path.is_file():
@@ -162,6 +171,16 @@ def validate_files(root: Path, manifest: SourceManifest) -> tuple[bool, str]:
             actual = _sha256(path)
             if actual.lower() != expected.lower():
                 return False, f"SHA-256 不匹配：{relative}"
+        if check_indexes and relative.endswith('.index.json'):
+            try:
+                index = json.loads(path.read_text('utf-8'))
+                for shard in set((index.get('weight_map') or {}).values()):
+                    shard = _safe_relative(shard)
+                    member = (Path(relative).parent / shard).as_posix()
+                    if member not in manifest.files:
+                        return False, f'分片索引引用未声明文件：{member}'
+            except (ValueError, TypeError, AttributeError) as exc:
+                return False, f'分片索引无效：{relative} ({exc})'
     return True, "ok"
 
 
@@ -215,13 +234,34 @@ def _download_direct(manifest: SourceManifest, staging: Path, relative: str) -> 
         errors='replace',
     )
     recent = deque(maxlen=12)
-    for line in process.stdout:
-        print(line, end='', flush=True)
+    last_error={}
+    output = queue.Queue()
+    def read_output():
+        try:
+            for line in process.stdout: output.put(line)
+        finally: output.put(None)
+    reader=threading.Thread(target=read_output,daemon=True)
+    reader.start()
+    started=last_activity=time.monotonic()
+    while True:
+        now=time.monotonic()
+        if now-last_activity>150 or now-started>6*3600:
+            process.kill();process.wait(timeout=10)
+            raise SourceAttemptError('network_timeout: 下载进程超过 150 秒没有反馈或超过单文件 6 小时限制；分片已保留')
+        try: line=output.get(timeout=.5)
+        except queue.Empty: continue
+        if line is None: break
+        last_activity=time.monotonic()
+        print(redact(line), end='', flush=True)
+        if line.startswith('[2BYTEASR_ERROR] '):
+            try: last_error=json.loads(line.split(' ',1)[1])
+            except ValueError: pass
         if not line.startswith('[2BYTEASR_PROGRESS]'):
-            recent.append(line.rstrip())
+            recent.append(redact(line.rstrip()))
     if process.wait() != 0:
         raise SourceAttemptError(
-            f"{relative}（退出码 {process.returncode}）：" + '\n'.join(recent)
+            f"{relative}（退出码 {process.returncode}）：" + str(last_error.get('detail') or '\n'.join(recent)),
+            download_category=last_error.get('category','')
         )
     return target
 
@@ -250,7 +290,7 @@ def download_source(
         try:
             path = _download_direct(manifest, staging, relative)
         except Exception as exc:
-            raise SourceAttemptError(f"{relative}: {type(exc).__name__}: {exc}") from exc
+            raise SourceAttemptError(f"{relative}: {type(exc).__name__}: {exc}",download_category=category(exc)) from exc
         if not path.is_file() or path.stat().st_size <= 0:
             raise SourceAttemptError(f"来源没有返回有效模型文件：{relative}")
         expected = manifest.sha256.get(relative)
@@ -282,6 +322,8 @@ def download_model(
 ) -> str:
     if model_key in {'diarizen', 'diarizen_embedding', 'vibevoice_1_5b', 'vibevoice_7b'}:
         raise ValueError('DiariZen / VibeVoice models have been removed; no download was started.')
+    require_isolated_download_path(destination)
+    require_isolated_download_path(staging_root)
     with preparation_lock(staging_root / model_key / '.prepare.lock'):
         return _download_model_locked(model_key=model_key, spec=spec, destination=destination,
                                       mode=mode, staging_root=staging_root, only_files=only_files)
@@ -300,6 +342,7 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
         raise RuntimeError(f"{mode} 未提供当前锁定版本的兼容文件，请选择 AUTO 或其他已声明来源。")
     requested_only = tuple(only_files or ())
     failures: list[str] = []
+    last_category='unknown'
     for attempt, manifest in enumerate(candidates, start=1):
         _emit("[2BYTEASR_SOURCE]", {
             "mode": manifest.mode,
@@ -315,7 +358,7 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
         try:
             if not requested_only:
                 ready, _reason = validate_files(destination, manifest)
-                if ready:
+                if ready and not (destination / '.2byteasr-install-pending.json').exists():
                     _emit("[2BYTEASR_SOURCE]", {
                         "mode": manifest.mode,
                         "label": SOURCE_LABELS[manifest.mode],
@@ -344,9 +387,12 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
                 manifest.mode, manifest.repository, manifest.revision,
                 pending_files, {key: value for key, value in manifest.sha256.items() if key in pending_files},
             )
-            ok, reason = validate_files(staging, probe_manifest)
+            ok, reason = validate_files(staging, probe_manifest, check_indexes=False)
             if not ok:
                 raise SourceAttemptError(reason)
+            destination.mkdir(parents=True, exist_ok=True)
+            pending_marker = destination / '.2byteasr-install-pending.json'
+            pending_marker.write_text(json.dumps(dict(model=model_key, source=manifest.mode, started=time.time())), 'utf-8')
             publish_files(staging, destination, pending_files)
             installed_probe = SourceManifest(manifest.mode, manifest.repository, manifest.revision,
                 tuple(files), {key: value for key, value in manifest.sha256.items() if key in files})
@@ -366,10 +412,22 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
                 "source_mode": manifest.mode,
                 "repository": manifest.repository,
                 "revision": manifest.revision,
+                "completed_at": time.time(),
+                "files": [],
             }
-            (destination / ".2byteasr-source.json").write_text(
-                json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            for relative in files:
+                item = dict(file=relative, size=(destination / relative).stat().st_size,
+                    expected_sha256=manifest.sha256.get(relative), verification='locked_sha256' if manifest.sha256.get(relative) else 'size_only',
+                    reused_installed=relative in reused_installed)
+                measurement = staging / (relative + '.download.json')
+                if measurement.is_file():
+                    item['transfer'] = json.loads(measurement.read_text('utf-8'))
+                metadata['files'].append(item)
+            receipt = destination / '.2byteasr-source.json'
+            temporary = receipt.with_suffix('.pending')
+            temporary.write_text(json.dumps(redact(metadata), ensure_ascii=False, indent=2), encoding='utf-8')
+            os.replace(temporary, receipt)
+            pending_marker.unlink(missing_ok=True)
             write_transaction(staging, model_key=model_key, destination=destination,
                               files=files, state='published')
             cleanup = discard_published_staging(staging, staging_root=staging_root)
@@ -379,7 +437,8 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
             _emit('[2BYTEASR_STAGING_CLEANUP]', cleanup)
             return manifest.mode
         except Exception as exc:
-            detail = str(exc).replace("\r", " ").replace("\n", " ")
+            last_category=category(exc)
+            detail = redact(str(exc)).replace("\r", " ").replace("\n", " ")
             failures.append(f"{manifest.mode}: {detail}")
             if staging.exists():
                 write_transaction(staging, model_key=model_key, destination=destination,
@@ -391,18 +450,20 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
                 "attempt": attempt,
                 "total": len(candidates),
                 "status": "failed",
-                "category": "source_unavailable",
+                "category": category(exc),
                 "detail": detail[:500],
             })
             if str(mode).upper() != "AUTO":
                 break
+    _emit('[2BYTEASR_ERROR]',dict(model=model_key,phase='weights_downloading',category=last_category,
+        detail='；'.join(failures)))
     raise RuntimeError("所有候选来源均失败：\n" + "\n".join(failures))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--mode", default="AUTO", choices=("AUTO", *SOURCE_ORDER))
+    parser.add_argument("--mode", default="AUTO", choices=("AUTO", *SOURCE_MODES))
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--destination", type=Path)
     parser.add_argument("--staging-root", type=Path)

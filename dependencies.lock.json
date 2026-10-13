@@ -43,7 +43,7 @@
       "repository": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
       "revision": "e6d68cdfcddbdad1a7e8454f0cb859cad76e2502",
       "modelscope_repository": "openmoss/MOSS-Transcribe-Diarize",
-      "modelscope_revision": "master",
+      "modelscope_revision": "5999c187e773f139040f1147df8446b1e600c520",
       "path": "models/MOSS-Transcribe-Diarize",
       "required_files": [
         "added_tokens.json",
@@ -308,6 +308,55 @@
         }
       },
       "download_bytes": 4703055333
+    },
+    "ja_ctc_aligner": {
+      "repository": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
+      "revision": "cf031e020336460d15a417eba710bbc5bb43be9a",
+      "modelscope_repository": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
+      "modelscope_revision": "18a6b5970be543c1171a30e5f2889c63878acd2e",
+      "path": "models/wav2vec2-large-xlsr-53-japanese",
+      "required_files": [
+        "config.json",
+        "preprocessor_config.json",
+        "special_tokens_map.json",
+        "vocab.json",
+        "pytorch_model.bin"
+      ],
+      "sha256": {
+        "config.json": "552b8c8c85c54a761899eb94b5eb3d58166e769df8e26cf515ab9da695772cd7",
+        "preprocessor_config.json": "c403ce09975b90dff0dd8302c42d422e9de1f166cd7772df23490069893cb0cf",
+        "special_tokens_map.json": "bb7068de1150661a10b55f9e4b12a0e77af8bf91f5e45e1b58afaf1d0e17f675",
+        "vocab.json": "9ffedf9c2da2617b01c4227a4db875d2dfd4e8c31fb9a13182d03c3280679ffe",
+        "pytorch_model.bin": "4f6821dcd79770fcd4c11487c4ee5c040b3a7e1863425224014ba5ea8fbc1b67"
+      },
+      "license": "Apache-2.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/tree/cf031e020336460d15a417eba710bbc5bb43be9a?recursive=true",
+        "files": {
+          "config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "18458ce9324d1e48c3957285a718584b5def32a8"
+          },
+          "preprocessor_config.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "0886a48276922a77013d8aa4681192138ae90d90"
+          },
+          "special_tokens_map.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "25bc39604f72700b3b8e10bd69bb2f227157edd1"
+          },
+          "vocab.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "6987c9c0e3dca61b6158ceffdb70288a9d1393e6"
+          },
+          "pytorch_model.bin": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "4f6821dcd79770fcd4c11487c4ee5c040b3a7e1863425224014ba5ea8fbc1b67"
+          }
+        }
+      },
+      "download_bytes": 1271563035,
+      "purpose": "Japanese line-start refinement (CTC forced alignment, optional; 2026-10-13)"
     },
     "qwen_aligner": {
       "repository": "Qwen/Qwen3-ForcedAligner-0.6B",

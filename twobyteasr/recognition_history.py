@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -12,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import qtawesome as qta
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -32,8 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from twobyteasr.i18n import current_language, translate
-from twobyteasr.ui_navigation import (NAVIGATION_QSS, WorkspaceNavigation, style_workspace_page_title,
-                                      style_workspace_sidebar_heading)
+from twobyteasr.ui_navigation import NAVIGATION_QSS, style_workspace_page_title
 from twobyteasr.ui_theme import (
     AMBER,
     AMBER_SOFT,
@@ -188,8 +189,29 @@ def _severity_summary(payload: dict[str, Any]) -> tuple[dict[str, int], tuple[st
     return dict(outcome.severity_counts), outcome.problems, outcome.review_notes
 
 
+class _RecordFacts:
+    """Severity helpers shared by full report records and list summaries."""
+
+    def severity_count(self, severity: str) -> int:
+        return dict(self.severity_counts).get(severity, 0)
+
+    @property
+    def anomaly_count(self) -> int:
+        return self.severity_count("error") + self.severity_count("warning")
+
+    @property
+    def review_count(self) -> int:
+        return self.severity_count("review")
+
+    @property
+    def has_anomaly(self) -> bool:
+        return self.anomaly_count > 0 or self.status in {"failed", "cancelled", "skipped", "partial", "unknown"}
+
+
 @dataclass(frozen=True)
-class RecognitionRecord:
+class RecognitionRecord(_RecordFacts):
+    """One fully parsed report (detail view, opening a result, audits)."""
+
     path: Path
     payload: dict[str, Any]
     media_name: str
@@ -209,20 +231,9 @@ class RecognitionRecord:
     review_notes: tuple[str, ...]
     outcome: RecognitionOutcome
 
-    def severity_count(self, severity: str) -> int:
-        return dict(self.severity_counts).get(severity, 0)
-
     @property
-    def anomaly_count(self) -> int:
-        return self.severity_count("error") + self.severity_count("warning")
-
-    @property
-    def review_count(self) -> int:
-        return self.severity_count("review")
-
-    @property
-    def has_anomaly(self) -> bool:
-        return self.anomaly_count > 0 or self.status in {"failed", "cancelled", "skipped", "partial", "unknown"}
+    def cue_count(self) -> int:
+        return int(_dict(self.payload.get("result")).get("cue_count") or 0)
 
 
 _RecognitionRecordCache = dict[
@@ -477,6 +488,223 @@ def repair_recognition_history(
     return result
 
 
+# ---------------------------------------------------------------- list index
+# 2026-10-12: the history list shows light summaries only. A full report is
+# parsed once per (path, mtime_ns, size, outcome version) and its summary is
+# persisted in the cache folder (never inside the reports folder), so a later
+# start only stats the report files. The index is rebuildable: losing it
+# costs one background re-read of the reports.
+HISTORY_INDEX_SCHEMA = 1
+HISTORY_INDEX_NAME = "recognition-history-index.json"
+REPORT_GLOB = "*_字幕任务报告.json"
+_MAX_REPORT_BYTES = 12 * 1024 * 1024
+# Changed reports this small are read at once (a just-finished task shows up
+# without a second pass); larger or more of them go to a background thread.
+_INLINE_PARSE_BYTES = 192 * 1024
+_INLINE_PARSE_BUDGET_S = 0.04
+_INLINE_DETAIL_BYTES = 256 * 1024
+
+
+@dataclass(frozen=True)
+class RecognitionSummary(_RecordFacts):
+    """What one history card shows. Never holds the report payload."""
+
+    path: Path
+    media_name: str
+    completed_at: str
+    completed_sort: datetime
+    elapsed_seconds: float
+    media_seconds: float
+    cue_count: int
+    primary_model: str
+    timeline_model: str
+    review_model: str
+    ai_model: str
+    glossary_count: int
+    status: str
+    status_label: str
+    problems: tuple[str, ...]
+    severity_counts: tuple[tuple[str, int], ...]
+    identity: tuple[str, str, str]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "media_name": self.media_name, "completed_at": self.completed_at,
+            "completed_sort": self.completed_sort.isoformat(), "elapsed_seconds": self.elapsed_seconds,
+            "media_seconds": self.media_seconds, "cue_count": self.cue_count,
+            "primary_model": self.primary_model, "timeline_model": self.timeline_model,
+            "review_model": self.review_model, "ai_model": self.ai_model,
+            "glossary_count": self.glossary_count, "status": self.status, "status_label": self.status_label,
+            "problems": list(self.problems), "severity_counts": [list(item) for item in self.severity_counts],
+            "identity": list(self.identity),
+        }
+
+    @classmethod
+    def from_json(cls, path: Path, data: dict[str, Any]) -> "RecognitionSummary":
+        return cls(
+            path=Path(path), media_name=str(data["media_name"]), completed_at=str(data["completed_at"]),
+            completed_sort=datetime.fromisoformat(str(data["completed_sort"])),
+            elapsed_seconds=float(data["elapsed_seconds"]), media_seconds=float(data["media_seconds"]),
+            cue_count=int(data["cue_count"]), primary_model=str(data["primary_model"]),
+            timeline_model=str(data["timeline_model"]), review_model=str(data["review_model"]),
+            ai_model=str(data["ai_model"]), glossary_count=int(data["glossary_count"]),
+            status=str(data["status"]), status_label=str(data["status_label"]),
+            problems=tuple(str(item) for item in data["problems"]),
+            severity_counts=tuple((str(key), int(value)) for key, value in data["severity_counts"]),
+            identity=tuple(str(item) for item in data["identity"]),
+        )
+
+
+def summarize_record(record: RecognitionRecord) -> RecognitionSummary:
+    return RecognitionSummary(
+        path=record.path, media_name=record.media_name, completed_at=record.completed_at,
+        completed_sort=record.completed_sort, elapsed_seconds=record.elapsed_seconds,
+        media_seconds=record.media_seconds, cue_count=record.cue_count, primary_model=record.primary_model,
+        timeline_model=record.timeline_model, review_model=record.review_model, ai_model=record.ai_model,
+        glossary_count=record.glossary_count, status=record.status, status_label=record.status_label,
+        problems=tuple(record.problems), severity_counts=tuple(record.severity_counts),
+        identity=_record_identity(record),
+    )
+
+
+def summarize_report(path: Path) -> RecognitionSummary:
+    """Parse one report and keep only what the list shows (payload dropped)."""
+    return summarize_record(parse_recognition_report(path))
+
+
+def default_history_index_path() -> Path:
+    from .runtime_paths import user_data_root
+
+    return user_data_root() / "cache" / HISTORY_INDEX_NAME
+
+
+def list_report_files(roots) -> tuple[list[tuple[Path, int, int]], list[str]]:
+    """Report files with (mtime_ns, size): the only per-file I/O of a refresh."""
+    listing: list[tuple[Path, int, int]] = []
+    errors: list[str] = []
+    for root in roots:
+        root = Path(root)
+        try:
+            if not root.is_dir():
+                continue
+            paths = list(root.glob(REPORT_GLOB))
+        except OSError as exc:
+            errors.append(f"{root}: {exc}")
+            continue
+        for path in paths:
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                errors.append(f"{path.name}: {exc}")
+                continue
+            listing.append((path, int(stat.st_mtime_ns), int(stat.st_size)))
+    return listing, errors
+
+
+def parse_listed_report(path: Path, mtime_ns: int, size: int):
+    """(path, mtime_ns, size, summary, error, cacheable) for one listed file."""
+    try:
+        if size > _MAX_REPORT_BYTES:
+            raise ValueError("报告超过 12 MB")
+        return path, mtime_ns, size, summarize_report(path), None, True
+    except (UnicodeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        # Content errors stay cached until the file changes.
+        return path, mtime_ns, size, None, f"{path.name}: {exc}", True
+    except OSError as exc:
+        # Locked, still being written or gone: read again next time.
+        return path, mtime_ns, size, None, f"{path.name}: {exc}", False
+
+
+class RecognitionHistoryIndex:
+    """Persisted list summaries keyed by path + mtime_ns + size + OUTCOME_VERSION."""
+
+    def __init__(self, path: Path | None):
+        self.path = Path(path) if path is not None else None
+        self.entries: dict[str, tuple[int, int, RecognitionSummary | None, str | None]] = {}
+        self.dirty = False
+        self._loaded = False
+
+    def load(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        if self.path is None:
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if (not isinstance(payload, dict) or payload.get("schema") != HISTORY_INDEX_SCHEMA
+                or payload.get("outcome_version") != OUTCOME_VERSION):
+            return
+        rows = payload.get("entries")
+        for key, row in (rows.items() if isinstance(rows, dict) else ()):
+            try:
+                summary = RecognitionSummary.from_json(Path(key), row["summary"]) if row.get("summary") else None
+                error = str(row["error"]) if row.get("error") else None
+                if summary is None and error is None:
+                    continue
+                self.entries.setdefault(str(key), (int(row["mtime_ns"]), int(row["size"]), summary, error))
+            except (AttributeError, KeyError, TypeError, ValueError):
+                continue
+
+    def lookup(self, path: Path, mtime_ns: int, size: int):
+        row = self.entries.get(str(path))
+        return row if row is not None and row[0] == mtime_ns and row[1] == size else None
+
+    def put(self, path: Path, mtime_ns: int, size: int, summary, error) -> None:
+        self.entries[str(path)] = (int(mtime_ns), int(size), summary, error)
+        self.dirty = True
+
+    def payload(self, keep: set[str]) -> dict[str, Any]:
+        entries = {}
+        for key, (mtime_ns, size, summary, error) in self.entries.items():
+            if key not in keep:
+                continue
+            row: dict[str, Any] = {"mtime_ns": mtime_ns, "size": size}
+            if summary is not None:
+                row["summary"] = summary.to_json()
+            else:
+                row["error"] = error
+            entries[key] = row
+        return {"schema": HISTORY_INDEX_SCHEMA, "outcome_version": OUTCOME_VERSION, "entries": entries}
+
+    @staticmethod
+    def write(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def assemble_summaries(listing, index: RecognitionHistoryIndex):
+    """Records for a listing: the current summary, else the previous one of a
+    report that changed and is being re-read. Deduplicated like the loader."""
+    records: list[RecognitionSummary] = []
+    errors: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    for path, mtime_ns, size in listing:
+        row = index.entries.get(str(path))
+        if row is None:
+            continue
+        summary, error = row[2], row[3]
+        if summary is not None:
+            if summary.identity in seen:
+                continue
+            seen.add(summary.identity)
+            records.append(summary)
+        elif error and row[0] == mtime_ns and row[1] == size:
+            errors.append(error)
+    records.sort(key=lambda item: item.completed_sort, reverse=True)
+    return records, errors
+
+
 HISTORY_QSS = NAVIGATION_QSS + f"""
 QWidget#historyRoot {{ background: {BACKGROUND}; color: {INK}; }}
 QFrame#historySidebar {{ background: {SURFACE_MUTED}; border: 1px solid {BORDER}; border-radius: 16px; }}
@@ -641,7 +869,7 @@ class HistoryCard(QFrame):
         metrics.addWidget(HistoryMetric(translate("总耗时", language), _duration_label(record.elapsed_seconds)))
         if record.media_seconds:
             metrics.addWidget(HistoryMetric(translate("素材时长", language), _duration_label(record.media_seconds)))
-        cue_count = int(_dict(record.payload.get("result")).get("cue_count") or 0)
+        cue_count = int(getattr(record, "cue_count", 0) or 0)
         if cue_count:
             metrics.addWidget(HistoryMetric("字幕", f"{cue_count} 条"))
         metrics.addStretch(1)
@@ -704,6 +932,9 @@ class _ProportionalStageTable(QTableWidget):
         width = max(0, self.viewport().width())
         for column, ratio in enumerate(self._ratios):
             self.setColumnWidth(column, max(60, int(width * ratio)))
+
+
+_RAW_HIGHLIGHT_MAX_LINES = 20000
 
 
 class _JsonHighlighter(QSyntaxHighlighter):
@@ -960,20 +1191,25 @@ class RecognitionHistoryDetail(QWidget):
                 self.review_detail_button = QPushButton("展开分段详情")
                 self.review_detail_button.setObjectName("historySecondary")
                 review_box.addWidget(self.review_detail_button, 0, Qt.AlignmentFlag.AlignLeft)
-                review_details = QLabel("\n".join(
-                    f"• {item.get('category') or '待复核项'} · "
-                    f"{item.get('cue_id', item.get('segment_id', item.get('timestamp', '')))} · "
-                    f"{item.get('text') or item.get('message') or item.get('detail') or ''}"
-                    for item in segment_items
-                ))
+                review_details = QLabel()
                 review_details.setObjectName("historyMuted")
                 review_details.setWordWrap(True)
                 review_details.hide()
                 review_box.addWidget(review_details)
-                self.review_detail_button.clicked.connect(lambda: (
-                    review_details.setVisible(not review_details.isVisible()),
-                    (bind_text(self.review_detail_button, '收起分段详情') if review_details.isVisible() else bind_text(self.review_detail_button, '展开分段详情')),
-                ))
+
+                def toggle_review_details(_checked=False, items=segment_items, label=review_details):
+                    # Long evidence lists are only formatted when asked for.
+                    if not label.text():
+                        label.setText("\n".join(
+                            f"• {item.get('category') or '待复核项'} · "
+                            f"{item.get('cue_id', item.get('segment_id', item.get('timestamp', '')))} · "
+                            f"{item.get('text') or item.get('message') or item.get('detail') or ''}"
+                            for item in items
+                        ))
+                    label.setVisible(not label.isVisible())
+                    (bind_text(self.review_detail_button, '收起分段详情') if label.isVisible()
+                     else bind_text(self.review_detail_button, '展开分段详情'))
+                self.review_detail_button.clicked.connect(toggle_review_details)
             layout.addWidget(review)
 
         raw_actions = QHBoxLayout()
@@ -987,23 +1223,47 @@ class RecognitionHistoryDetail(QWidget):
         raw_actions.addStretch(1)
         layout.addLayout(raw_actions)
 
-        self.raw_text = json.dumps(redact_report_payload(record.payload), ensure_ascii=False, indent=2)
-        self.raw_view = QPlainTextEdit()
-        self.raw_view.setObjectName("historyRaw")
-        self.raw_view.setReadOnly(True)
-        self.raw_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.raw_view.setFont(QFont("Cascadia Mono", 10))
-        self.raw_view.setPlainText(self.raw_text)
-        self.raw_view.setMinimumHeight(300)
-        self.raw_view.hide()
-        self._raw_highlighter = _JsonHighlighter(self.raw_view.document())
-        layout.addWidget(self.raw_view)
+        # The redacted JSON text, its editor and the highlighter are built on
+        # the first "查看原始 JSON" (a 3 MB report is ~110k lines to format,
+        # load and highlight); opening the details only shows the summary.
+        self._raw_text: str | None = None
+        self._details_layout = layout
+        self.summary_ready = True
         self.raw_button.clicked.connect(self._toggle_raw)
         self.copy_button.clicked.connect(self._copy_raw)
 
+    @property
+    def raw_text(self) -> str:
+        if self._raw_text is None:
+            self._raw_text = json.dumps(redact_report_payload(self.record.payload), ensure_ascii=False, indent=2)
+        return self._raw_text
+
+    def _ensure_raw_view(self) -> QPlainTextEdit:
+        view = vars(self).get("raw_view")
+        if view is not None:
+            return view
+        view = QPlainTextEdit()
+        view.setObjectName("historyRaw")
+        view.setReadOnly(True)
+        view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        view.setFont(QFont("Cascadia Mono", 10))
+        view.setPlainText(self.raw_text)
+        view.setMinimumHeight(300)
+        view.hide()
+        if view.document().blockCount() <= _RAW_HIGHLIGHT_MAX_LINES:
+            # QSyntaxHighlighter re-highlights the whole document at once.
+            self._raw_highlighter = _JsonHighlighter(view.document())
+        self._details_layout.addWidget(view)
+        if self.window().property("_uiZoomApplied") is not None:
+            from .ui_zoom import apply_to
+            apply_to(view)
+        self.raw_view = view
+        return view
+
     def _toggle_raw(self):
-        visible = not self.raw_view.isVisible()
-        self.raw_view.setVisible(visible)
+        view = self._ensure_raw_view()
+        visible = not view.isVisible()
+        view.setVisible(visible)
         self.copy_button.setVisible(visible)
         (bind_text(self.raw_button, '</> 收起原始 JSON') if visible else bind_text(self.raw_button, '</> 查看原始 JSON'))
 
@@ -1017,19 +1277,57 @@ class RecognitionHistoryPage(QWidget):
     workshop_requested = Signal()
     terms_requested = Signal()
     result_requested = Signal(object)
+    # (generation, payload) from the background report reader.
+    _parsed = Signal(int, object)
+    _repaired = Signal(object)
+    # (request id, parsed record or None, error) from the detail reader.
+    _detail_loaded = Signal(int, object, object)
 
-    def __init__(self, report_root: Path, parent=None, *, extra_roots: tuple[Path, ...] | list[Path] = ()):
+    PAGE_SIZE = 20
+
+    def __init__(self, report_root: Path, parent=None, *, extra_roots: tuple[Path, ...] | list[Path] = (),
+                 index_path: Path | None = None):
         super().__init__(parent)
         self.report_root = Path(report_root)
         self.extra_roots = [Path(root) for root in extra_roots if Path(root) != self.report_root]
-        self.records: list[RecognitionRecord] = []
+        self.records: list[RecognitionSummary] = []
+        self._display: list[RecognitionSummary] = []
         self._cards: list[HistoryCard] = []
+        self._cards_by_path: dict[Path, HistoryCard] = {}
         self._card_rows: dict[HistoryCard, QWidget] = {}
-        self._record_cache: _RecognitionRecordCache = {}
+        self._index = RecognitionHistoryIndex(default_history_index_path() if index_path is None else index_path)
+        # Older audits clear this mapping to force a re-read of every report.
+        self._record_cache = self._index.entries
+        self._listing: list[tuple[Path, int, int]] = []
+        self._list_errors: list[str] = []
         self._errors: list[str] = []
         self._rendered_language = ""
+        self._generation = 0
+        self._jobs: set[object] = set()
+        self._inflight: set[tuple[str, int, int]] = set()
+        self._transient: dict[str, str] = {}
+        self._job_counter = 0
+        self._more_scheduled = False
+        self._render_pending = False
+        self._shown_once = False
+        self._built_limit = self.PAGE_SIZE
+        self._notice = ""
+        self._repairing = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self._save_index)
+        self._parsed.connect(self._on_parsed)
+        self._repaired.connect(self._on_repaired)
+        # Open detail dialogs waiting for their report, by request id. The
+        # worker thread only ever sees the page signal, the id and the path;
+        # it never holds the dialog or any of its children.
+        self._detail_requests: dict[int, object] = {}
+        self._detail_request_counter = 0
+        self._detail_loaded.connect(self._on_detail_loaded)
         self.setObjectName("historyRoot")
-        self.setStyleSheet(build_history_page_qss())
+        from .ui_zoom import set_sheet
+        set_sheet(self, build_history_page_qss())
         self._build()
         self.refresh()
 
@@ -1037,28 +1335,35 @@ class RecognitionHistoryPage(QWidget):
         self.nav.set_active("history")
 
     def refresh_theme_palette(self) -> None:
-        self.setStyleSheet(build_history_page_qss())
+        from .ui_zoom import set_sheet
+        set_sheet(self, build_history_page_qss())
+
+    def background_busy(self) -> bool:
+        """True while reports are being read or the index written."""
+        return bool(self._jobs) or self._save_timer.isActive()
+
+    def _roots(self) -> list[Path]:
+        roots = [Path(self.report_root)]
+        for extra in self.extra_roots:
+            if Path(extra) not in roots:
+                roots.append(Path(extra))
+        return roots
 
     def _build(self):
+        from .ui_navigation import WorkspaceSidebar
+
         language = current_language()
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(12)
-        sidebar = QFrame()
-        sidebar.setObjectName("historySidebar")
-        # P0/P2: bounded preferred; content area grows to use extra width for name+date | timings+chain | issues/status
-        sidebar.setMinimumWidth(180)
-        sidebar.setMaximumWidth(260)
-        sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        side = QVBoxLayout(sidebar)
-        side.setContentsMargins(12, 12, 12, 12)
-        side.addWidget(style_workspace_sidebar_heading(QLabel(translate("工作台", language))))
-        nav = WorkspaceNavigation("history")
+        sidebar = WorkspaceSidebar("history", object_name="historySidebar")
+        nav = sidebar.navigation
         nav.recognition_requested.connect(self.recognition_requested)
         nav.workshop_requested.connect(self.workshop_requested)
         nav.terms_requested.connect(self.terms_requested)
         self.nav = nav
-        side.addWidget(nav)
+        self.sidebar = sidebar
+        side = sidebar.body
         side.addStretch(1)
         self.summary = QLabel()
         self.summary.setObjectName("historyMuted")
@@ -1097,11 +1402,12 @@ class RecognitionHistoryPage(QWidget):
         self.search.setObjectName("historySearch")
         bind_text(self.search, translate('搜索素材、模型、AI 或状态', language), property='placeholderText')
         self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self._apply_filter)
+        self.search.textChanged.connect(self._search_changed)
         body.addWidget(self.search)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll = scroll
         host = QWidget()
         host.setObjectName("historyListHost")
         self.cards_layout = QVBoxLayout(host)
@@ -1131,74 +1437,211 @@ class RecognitionHistoryPage(QWidget):
         empty_layout.addWidget(self.empty_start, 0, Qt.AlignmentFlag.AlignHCenter)
         empty_layout.addStretch(1)
         self.cards_layout.addWidget(self.empty)
+        # Cards are built a page at a time as the list scrolls; search and the
+        # record count always cover every record (data-level filter).
+        self.more_button = QPushButton()
+        self.more_button.setObjectName("historySecondary")
+        self.more_button.clicked.connect(self._show_more)
+        self.more_button.hide()
+        self.cards_layout.addWidget(self.more_button, 0, Qt.AlignmentFlag.AlignHCenter)
         self.cards_layout.addStretch(1)
         scroll.setWidget(host)
+        scroll.verticalScrollBar().valueChanged.connect(self._maybe_show_more)
+        scroll.verticalScrollBar().rangeChanged.connect(lambda _low, _high: self._maybe_show_more())
         body.addWidget(scroll, 1)
         outer.addWidget(content, 1)
 
+    # ------------------------------------------------------------- loading
     def refresh(self):
+        """Re-read the report folders (explicit refresh, language change, task end).
+
+        Only reports whose path / mtime / size changed are parsed: small ones
+        at once within a short budget, the rest in a background thread.
+        """
+        self._reload(inline_budget=_INLINE_PARSE_BUDGET_S)
+
+    def _reload(self, *, inline_budget: float = 0.0, force: bool = False) -> None:
+        self._index.load()
+        self._generation += 1
+        generation = self._generation
+        listing, list_errors = list_report_files(self._roots())
+        self._listing, self._list_errors = listing, list_errors
+        pending: list[tuple[Path, int, int]] = []
+        deadline = time.perf_counter() + max(0.0, inline_budget)
+        for path, mtime_ns, size in listing:
+            if not force and self._index.lookup(path, mtime_ns, size) is not None:
+                continue
+            if (str(path), mtime_ns, size) in self._inflight:
+                continue
+            if not force and size <= _INLINE_PARSE_BYTES and time.perf_counter() < deadline:
+                self._store(parse_listed_report(path, mtime_ns, size))
+            else:
+                pending.append((path, mtime_ns, size))
+        if pending:
+            self._start_parse(generation, pending)
+        elif self._index.dirty:
+            self._save_timer.start()
+        self._render()
+
+    def _store(self, row) -> None:
+        path, mtime_ns, size, summary, error, cacheable = row
+        if cacheable:
+            self._index.put(path, mtime_ns, size, summary, error)
+            self._transient.pop(str(path), None)
+        else:
+            # A locked or vanished file is reported but never cached; the
+            # next refresh reads it again.
+            self._transient[str(path)] = error
+
+    def _new_job(self, kind: str):
+        self._job_counter += 1
+        job = (kind, self._job_counter)
+        self._jobs.add(job)
+        return job
+
+    def _start_parse(self, generation: int, pending) -> None:
+        job = self._new_job("parse")
+        for path, mtime_ns, size in pending:
+            self._inflight.add((str(path), mtime_ns, size))
+        signal = self._parsed
+
+        def work():
+            rows, last = [], time.perf_counter()
+            try:
+                for path, mtime_ns, size in pending:
+                    rows.append(parse_listed_report(path, mtime_ns, size))
+                    if time.perf_counter() - last > 0.25:
+                        signal.emit(generation, {"job": job, "rows": rows, "final": False})
+                        rows, last = [], time.perf_counter()
+            finally:
+                try:
+                    signal.emit(generation, {"job": job, "rows": rows, "final": True,
+                                             "pending": [(str(p), m, s) for p, m, s in pending]})
+                except RuntimeError:
+                    pass  # the page was closed meanwhile
+
+        threading.Thread(target=work, daemon=True, name="history-report-reader").start()
+
+    def _check_on_entry(self) -> None:
+        """Entering the page: stat the report folders off the GUI thread and
+        read only new or changed reports (a finished, failed or cancelled task
+        shows up without a full rescan)."""
+        if any(job[0] == "entry" for job in self._jobs):
+            return
+        generation = self._generation
+        job = self._new_job("entry")
+        known = {key: (row[0], row[1]) for key, row in self._index.entries.items()}
+        inflight = set(self._inflight)
+        roots = self._roots()
+        signal = self._parsed
+
+        def work():
+            listing, errors, rows = [], [], []
+            try:
+                listing, errors = list_report_files(roots)
+                for path, mtime_ns, size in listing:
+                    key = str(path)
+                    if known.get(key) == (mtime_ns, size) or (key, mtime_ns, size) in inflight:
+                        continue
+                    rows.append(parse_listed_report(path, mtime_ns, size))
+            finally:
+                try:
+                    signal.emit(generation, {"job": job, "rows": rows, "final": True,
+                                             "listing": listing, "list_errors": errors})
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True, name="history-entry-check").start()
+
+    def _on_parsed(self, generation: int, payload) -> None:
+        for row in payload.get("rows", ()):
+            self._store(row)
+        if payload.get("final"):
+            self._jobs.discard(payload.get("job"))
+            for key in payload.get("pending", ()):
+                self._inflight.discard(tuple(key))
+            if payload.get("save"):
+                return
+            if self._index.dirty:
+                self._save_timer.start()
+        if "listing" in payload:
+            if generation != self._generation:
+                return  # a newer reload owns the listing; its rows were kept
+            if payload["listing"] == self._listing and payload["list_errors"] == self._list_errors \
+                    and not payload.get("rows"):
+                return
+            self._listing, self._list_errors = payload["listing"], payload["list_errors"]
+        elif not payload.get("rows") and not payload.get("final"):
+            return
+        if self._shown_once and not self.isVisible():
+            # The user left the page: keep the data, build cards when shown.
+            self._render_pending = True
+            return
+        self._render()
+
+    def _save_index(self) -> None:
+        if self._jobs:
+            self._save_timer.start()
+            return
+        if not self._index.dirty or self._index.path is None:
+            return
+        self._index.dirty = False
+        payload = self._index.payload({str(path) for path, _mtime, _size in self._listing})
+        target = self._index.path
+        job = self._new_job("save")
+        signal = self._parsed
+
+        def work():
+            try:
+                RecognitionHistoryIndex.write(target, payload)
+            except OSError:
+                pass  # a cache: the next change writes it again
+            finally:
+                try:
+                    signal.emit(-1, {"job": job, "rows": [], "final": True, "save": True})
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=work, daemon=True, name="history-index-writer").start()
+
+    # ------------------------------------------------------------- display
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._shown_once:
+            QTimer.singleShot(0, self._check_on_entry)
+        self._shown_once = True
+        if self._render_pending:
+            QTimer.singleShot(0, self._render)
+
+    def _render(self) -> None:
+        self._render_pending = False
+        records, errors = assemble_summaries(self._listing, self._index)
+        listed = {str(path) for path, _mtime, _size in self._listing}
+        errors = [*self._list_errors, *errors,
+                  *(error for key, error in self._transient.items() if key in listed)]
         language = current_language()
-        records, errors = load_recognition_records(
-            self.report_root,
-            extra_roots=self.extra_roots,
-            cache=self._record_cache,
-        )
         if (
             records == self.records
             and errors == self._errors
             and language == self._rendered_language
         ):
+            self._update_summary()
             self._apply_filter()
             return
-
-        old_cards = {card.record.path: card for card in self._cards}
-        new_cards: list[HistoryCard] = []
-
-        def detach_card(card: HistoryCard) -> None:
-            row = self._card_rows.pop(card, card)
-            self.cards_layout.removeWidget(row)
-            row.hide()
-            row.setParent(None)
-            if row is not card:
-                card.setParent(None)
-            row.deleteLater()
-            card.deleteLater()
-
-        for index, record in enumerate(records):
-            card = old_cards.pop(record.path, None)
-            if (
-                card is None
-                or card.record != record
-                or language != self._rendered_language
-            ):
-                if card is not None:
-                    detach_card(card)
-                card = HistoryCard(record)
-                card.setMaximumWidth(16777215)
-                card.setMinimumWidth(520)
-                card.setSizePolicy(
-                    QSizePolicy.Policy.Expanding,
-                    QSizePolicy.Policy.Preferred,
-                )
-                card.requested.connect(self._show_detail)
-                row = QWidget()
-                row_layout = QHBoxLayout(row)
-                row_layout.setContentsMargins(0, 0, 0, 0)
-                row_layout.setSpacing(0)
-                row_layout.addWidget(card, 1)
-                self._card_rows[card] = row
-            row = self._card_rows[card]
-            if self.cards_layout.indexOf(row) != index:
-                self.cards_layout.insertWidget(index, row)
-            new_cards.append(card)
-
-        for card in old_cards.values():
-            detach_card(card)
-
+        present = {record.path: record for record in records}
+        for path, card in list(self._cards_by_path.items()):
+            if present.get(path) != card.record or language != self._rendered_language:
+                self._detach_card(card)
         self.records = records
-        self._cards = new_cards
         self._errors = errors
         self._rendered_language = language
+        self._update_summary()
+        self._apply_filter()
+
+    def _update_summary(self) -> None:
+        language = current_language()
+        loading = sum(1 for _key in self._inflight)
+        errors = self._errors
         if language == "en":
             summary = (
                 f"{len(self.records)} task records\n"
@@ -1211,29 +1654,98 @@ class RecognitionHistoryPage(QWidget):
                 f"{len(self.records)} 条任务记录\n"
                 f"{sum(record.has_anomaly for record in self.records)} 条含警告或异常"
             ) + (f"\n{len(errors)} 个文件无法读取" if errors else "")
+        if loading:
+            summary += "\n" + tr("正在读取 {count} 份报告…", count=loading)
+        if self._notice:
+            summary += "\n" + self._notice
         self.summary.setText(summary)
+        # Each unreadable file is named; the page itself stays usable.
+        self.summary.setToolTip("\n".join(errors[:12]) + ("\n…" if len(errors) > 12 else ""))
+
+    def _detach_card(self, card: HistoryCard) -> None:
+        row = self._card_rows.pop(card, card)
+        self._cards_by_path.pop(card.record.path, None)
+        self.cards_layout.removeWidget(row)
+        row.hide()
+        row.setParent(None)
+        if row is not card:
+            card.setParent(None)
+        row.deleteLater()
+        card.deleteLater()
+
+    def _make_card(self, record) -> HistoryCard:
+        card = HistoryCard(record)
+        card.setMaximumWidth(16777215)
+        card.setMinimumWidth(520)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        card.requested.connect(self._show_detail)
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(0)
+        row_layout.addWidget(card, 1)
+        self._card_rows[card] = row
+        self._cards_by_path[record.path] = card
+        if self.property("_uiZoomApplied") is not None:
+            # The page was scaled before this card existed.
+            from .ui_zoom import apply_to
+            apply_to(row)
+        return card
+
+    @staticmethod
+    def _haystack(record) -> str:
+        return " ".join(
+            (
+                record.media_name,
+                record.primary_model,
+                record.timeline_model,
+                record.review_model,
+                record.ai_model,
+                record.status_label,
+                *record.problems,
+            )
+        ).casefold()
+
+    def _search_changed(self, _text=""):
+        self._built_limit = self.PAGE_SIZE
         self._apply_filter()
 
     def _apply_filter(self, _text=""):
         query = self.search.text().strip().casefold()
-        visible = 0
-        for card in self._cards:
-            record = card.record
-            haystack = " ".join(
-                (
-                    record.media_name,
-                    record.primary_model,
-                    record.timeline_model,
-                    record.review_model,
-                    record.ai_model,
-                    record.status_label,
-                    *record.problems,
-                )
-            ).casefold()
-            show = not query or query in haystack
-            self._card_rows.get(card, card).setVisible(show)
-            visible += int(show)
-        if visible == 0 and self._cards:
+        display = [record for record in self.records if not query or query in self._haystack(record)]
+        self._display = display
+        wanted = display[:self._built_limit]
+        cards: list[HistoryCard] = []
+        for index, record in enumerate(wanted):
+            card = self._cards_by_path.get(record.path)
+            if card is not None and card.record != record:
+                self._detach_card(card)
+                card = None
+            if card is None:
+                card = self._make_card(record)
+            row = self._card_rows[card]
+            if self.cards_layout.indexOf(row) != index:
+                self.cards_layout.insertWidget(index, row)
+            if row.isHidden():
+                row.show()
+            cards.append(card)
+        wanted_paths = {record.path for record in wanted}
+        for path, card in self._cards_by_path.items():
+            if path not in wanted_paths:
+                row = self._card_rows.get(card, card)
+                if not row.isHidden():
+                    row.hide()
+        self._cards = cards
+        remaining = len(display) - len(wanted)
+        if remaining > 0:
+            self.more_button.setText(tr("显示更多（还有 {count} 条）", count=remaining))
+            self.more_button.show()
+        else:
+            self.more_button.hide()
+        if not display and self.records:
             bind_text(self.empty_title, translate('没有符合搜索条件的记录', current_language()))
             bind_text(self.empty_note, translate('换个关键词，或清空搜索查看全部任务记录。', current_language()))
             self.empty_start.hide()
@@ -1241,27 +1753,64 @@ class RecognitionHistoryPage(QWidget):
             bind_text(self.empty_title, translate('还没有识别记录', current_language()))
             bind_text(self.empty_note, translate('完成第一条字幕任务后，任务状态、模型组合和审核结果会出现在这里。', current_language()))
             self.empty_start.show()
-        self.empty.setVisible(visible == 0)
+        self.empty.setVisible(not display)
 
+    def _show_more(self) -> None:
+        self._more_scheduled = False
+        if len(self._display) <= self._built_limit:
+            return
+        self._built_limit += self.PAGE_SIZE
+        self._apply_filter()
+
+    def _maybe_show_more(self, _value=None) -> None:
+        if len(self._display) <= self._built_limit or not self.isVisible():
+            return
+        bar = self.scroll.verticalScrollBar()
+        if bar.maximum() - bar.value() <= self.scroll.viewport().height() and not self._more_scheduled:
+            self._more_scheduled = True
+            QTimer.singleShot(0, self._show_more)
+
+    # ------------------------------------------------------------- repair
     def _repair_records(self):
+        if self._repairing:
+            return
         language = current_language()
+        self._repairing = True
         self.repair_button.setEnabled(False)
         bind_text(self.repair_button, translate('正在扫描…', language))
-        try:
-            from . import reporting
+        from . import reporting
 
-            extra = [
-                *self.extra_roots,
-                *(
-                    reporting.REPORT_ROOT,
-                    *(reporting.LEGACY_REPORT_ROOTS or ()),
-                ),
-            ]
-            result = repair_recognition_history(self.report_root, extra_roots=extra)
-        finally:
-            self.repair_button.setEnabled(True)
-            bind_text(self.repair_button, translate('重新扫描 / 修复记录索引', language))
-        if current_language() == "en":
+        target = self.report_root
+        extra = [
+            *self.extra_roots,
+            *(
+                reporting.REPORT_ROOT,
+                *(reporting.LEGACY_REPORT_ROOTS or ()),
+            ),
+        ]
+        job = self._new_job("repair")
+        signal = self._repaired
+
+        def work():
+            try:
+                result = repair_recognition_history(target, extra_roots=extra)
+            except Exception as exc:  # noqa: BLE001 - shown to the user, never fatal
+                result = {"found": 0, "imported": 0, "duplicates": 0, "failed": 1, "failed_files": [str(exc)]}
+            result["job"] = job
+            try:
+                signal.emit(result)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="history-repair").start()
+
+    def _on_repaired(self, result) -> None:
+        self._jobs.discard(result.pop("job", None))
+        self._repairing = False
+        language = current_language()
+        self.repair_button.setEnabled(True)
+        bind_text(self.repair_button, translate('重新扫描 / 修复记录索引', language))
+        if language == "en":
             summary = (
                 f"Found {result['found']} legacy reports · imported {result['imported']}"
                 f" · duplicates {result['duplicates']} · failed {result['failed']}"
@@ -1273,11 +1822,13 @@ class RecognitionHistoryPage(QWidget):
             )
         if result.get("failed_files"):
             summary += "（" + "、".join(result["failed_files"][:3]) + "…）"
-        self.summary.setText(summary)
-        self._record_cache.clear()
-        self.refresh()
+        self._notice = summary
+        # Explicit repair rebuilds the summary index from every report, in the
+        # background; the current cards stay until fresh summaries arrive.
+        self._reload(force=True)
 
-    def _show_detail(self, record: RecognitionRecord):
+    # ------------------------------------------------------------- details
+    def _show_detail(self, record):
         from twobyteasr.ui import SpringDialog
 
         dialog = SpringDialog(self)
@@ -1288,12 +1839,81 @@ class RecognitionHistoryPage(QWidget):
         layout.setContentsMargins(18, 16, 18, 16)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        detail = RecognitionHistoryDetail(record)
-        detail.result_requested.connect(lambda selected: (dialog.accept(), self.result_requested.emit(selected)))
-        scroll.setWidget(detail)
+        placeholder = QLabel(tr("正在读取报告…"))
+        placeholder.setObjectName("historyMuted")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder.setWordWrap(True)
+        scroll.setWidget(placeholder)
         layout.addWidget(scroll, 1)
         close = QPushButton(translate("关闭", language))
         close.setObjectName("historyPrimary")
         close.clicked.connect(dialog.accept)
         layout.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+
+        def install(full, error):
+            from shiboken6 import isValid
+            if not isValid(dialog) or not isValid(scroll):
+                return
+            if full is None:
+                if isValid(placeholder):
+                    placeholder.setText(tr("无法读取这份报告：{error}", error=error or ""))
+                return
+            detail = RecognitionHistoryDetail(full)
+            detail.result_requested.connect(lambda selected: (dialog.accept(), self.result_requested.emit(selected)))
+            scroll.setWidget(detail)
+            if dialog.property("_uiZoomApplied") is not None:
+                from .ui_zoom import apply_to
+                apply_to(detail)
+
+        request = None
+        if isinstance(record, RecognitionRecord):
+            install(record, None)
+        else:
+            # Only the selected report is read; a large one off the GUI thread.
+            path = Path(record.path)
+            try:
+                size = path.stat().st_size
+            except OSError as exc:
+                size, early_error = -1, f"{path.name}: {exc}"
+            else:
+                early_error = None
+
+            def load():
+                try:
+                    if size > _MAX_REPORT_BYTES:
+                        raise ValueError("报告超过 12 MB")
+                    return parse_recognition_report(path), None
+                except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+                    return None, f"{path.name}: {exc}"
+
+            if early_error is not None:
+                install(None, early_error)
+            elif size <= _INLINE_DETAIL_BYTES:
+                install(*load())
+            else:
+                self._detail_request_counter += 1
+                request = self._detail_request_counter
+                self._detail_requests[request] = install
+                signal = self._detail_loaded
+
+                def work(request=request, signal=signal, load=load):
+                    full, error = load()
+                    try:
+                        signal.emit(request, full, error)
+                    except RuntimeError:
+                        pass  # the page itself is gone
+
+                threading.Thread(target=work, daemon=True, name="history-detail-reader").start()
         dialog.exec()
+        if request is not None:
+            # Closed before the report arrived: a late result is dropped.
+            self._detail_requests.pop(request, None)
+        # Each opened report used to stay alive as a hidden child dialog of the
+        # page (~150 widgets and the whole report text per opening).
+        dialog.deleteLater()
+
+    def _on_detail_loaded(self, request: int, full, error) -> None:
+        """Queued on the GUI thread; installs only into a dialog still open."""
+        install = self._detail_requests.pop(request, None)
+        if install is not None:
+            install(full, error)

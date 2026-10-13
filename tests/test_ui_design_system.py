@@ -57,7 +57,11 @@ def test_workshop_wide_density_uses_reference_proportions():
     page.apply_density(True);_app().processEvents()
     assert (page.sidebar.width(),page.detail.width()) == widths
     assert all(card.minimumHeight() == 176 for card in page._cards.values())
-    assert page.sidebar.minimumWidth() < page.sidebar.maximumWidth()
+    # 2026-10-12: the sidebar is the column shared with Recognition History and
+    # Term Library (one fixed width, zoom-scaled); the list and detail flex.
+    from twobyteasr.ui_navigation import SIDEBAR_WIDTH
+    from twobyteasr.ui_zoom import px
+    assert page.sidebar.minimumWidth() == page.sidebar.maximumWidth() == px(SIDEBAR_WIDTH)
     assert page.detail.minimumWidth() < page.detail.maximumWidth()
     page.deleteLater()
 

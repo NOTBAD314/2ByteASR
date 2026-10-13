@@ -57,6 +57,15 @@ def library_domain(library) -> tuple[str, str]:
 
 
 def resolve_content_scene(context, snapshot=None) -> ContentScene:
+    from dataclasses import replace
+    scene = _resolve_content_scene(context, snapshot)
+    # The spoken language of the task (resolved after the primary transcript).
+    if str(getattr(context, "task_language", "") or "") == "ja":
+        scene = replace(scene, language="ja-JP")
+    return scene
+
+
+def _resolve_content_scene(context, snapshot=None) -> ContentScene:
     snapshot = snapshot if snapshot is not None else getattr(context, "glossary_snapshot", None)
     libraries = tuple(getattr(snapshot, "libraries", ())) if getattr(context, "enable_domain_terms", False) else ()
     versions = tuple((library.id, library.revision) for library in libraries)

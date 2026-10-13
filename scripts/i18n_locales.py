@@ -1,0 +1,152 @@
+"""Maintain the UI translation catalogs in twobyteasr/locales/<language>.json.
+
+Each catalog is one flat JSON object: exact Chinese source text -> translation.
+Both catalogs carry the same keys. New keys are appended at the end; an
+existing key keeps its position (when two sources share one translation, the
+later one wins the reverse lookup used to recapture widgets after a language
+switch, so each catalog's order is behaviour).
+
+Usage:
+  python scripts/i18n_locales.py check
+      Validate both catalogs: readable, no duplicate keys, same keys, every
+      value a non-empty string, matching {placeholders}, canonical formatting.
+  python scripts/i18n_locales.py missing
+      List literal Chinese strings passed to tr()/translate()/bind_text() in
+      twobyteasr/*.py (audit modules excluded) that lack a translation.
+  python scripts/i18n_locales.py add BATCH.json
+      Merge {"<zh>": {"en": "...", "ja": "..."}, ...} into both catalogs and
+      rewrite them in canonical form. Every entry needs both languages.
+"""
+from __future__ import annotations
+
+import ast
+import json
+from pathlib import Path
+from string import Formatter
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCALE_DIR = ROOT / "twobyteasr" / "locales"
+LANGUAGES = ("en", "ja")
+
+
+def _pairs_without_duplicates(pairs):
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def load(language: str) -> dict[str, str]:
+    text = (LOCALE_DIR / f"{language}.json").read_text(encoding="utf-8")
+    return json.loads(text, object_pairs_hook=_pairs_without_duplicates)
+
+
+def canonical(table: dict[str, str]) -> str:
+    return json.dumps(table, ensure_ascii=False, indent=2) + "\n"
+
+
+def write(language: str, table: dict[str, str]) -> None:
+    with (LOCALE_DIR / f"{language}.json").open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(canonical(table))
+
+
+def fields(text: str):
+    return sorted((name, spec, conversion) for _literal, name, spec, conversion in Formatter().parse(text)
+                  if name is not None)
+
+
+def problems() -> list[str]:
+    found = []
+    tables = {}
+    for language in LANGUAGES:
+        try:
+            tables[language] = load(language)
+        except (OSError, ValueError) as exc:
+            found.append(f"{language}.json: {exc}")
+    if len(tables) != len(LANGUAGES):
+        return found
+    keys = [set(table) for table in tables.values()]
+    if any(names != keys[0] for names in keys[1:]):
+        found.append("catalogs do not carry the same keys")
+    for language, table in tables.items():
+        if (LOCALE_DIR / f"{language}.json").read_text(encoding="utf-8") != canonical(table):
+            found.append(f"{language}.json is not in canonical form (run add with an empty batch)")
+        for source, translated in table.items():
+            if not isinstance(translated, str) or not translated.strip():
+                found.append(f"{language}: empty translation for {source!r}")
+                continue
+            try:
+                if fields(source) != fields(translated):
+                    found.append(f"{language}: placeholders differ for {source!r}")
+            except ValueError as exc:
+                found.append(f"{language}: invalid format string for {source!r}: {exc}")
+    return found
+
+
+def missing() -> dict[str, list[str]]:
+    tables = {language: load(language) for language in LANGUAGES}
+    result: dict[str, list[str]] = {}
+    for path in sorted((ROOT / "twobyteasr").glob("*.py")):
+        if "audit" in path.stem:
+            continue
+        tree = ast.parse(path.read_text("utf-8-sig"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in ("bind_text", "tr", "translate")):
+                continue
+            index = 1 if node.func.id == "bind_text" else 0
+            if len(node.args) <= index or not isinstance(node.args[index], ast.Constant):
+                continue
+            key = node.args[index].value
+            if isinstance(key, str) and any("一" <= c <= "鿿" for c in key):
+                if any(key not in table for table in tables.values()):
+                    result.setdefault(key, []).append(f"{path.name}:{node.lineno}")
+    return result
+
+
+def add(batch_path: Path) -> int:
+    batch = json.loads(batch_path.read_text(encoding="utf-8"), object_pairs_hook=_pairs_without_duplicates)
+    tables = {language: load(language) for language in LANGUAGES}
+    for source, pair in batch.items():
+        if not isinstance(pair, dict) or set(pair) != set(LANGUAGES):
+            raise SystemExit(f"{source!r}: need exactly {LANGUAGES}")
+        for language in LANGUAGES:
+            value = pair[language]
+            if not isinstance(value, str) or not value.strip():
+                raise SystemExit(f"{source!r}: empty {language}")
+            if fields(source) != fields(value):
+                raise SystemExit(f"{source!r}: {language} placeholders differ")
+            tables[language][source] = value
+    for language, table in tables.items():
+        write(language, table)
+    return len(batch)
+
+
+def main(argv: list[str]) -> int:
+    sys.stdout.reconfigure(encoding="utf-8")
+    command = argv[1] if len(argv) > 1 else "check"
+    if command == "check":
+        found = problems()
+        for line in found:
+            print(line)
+        print("ok" if not found else f"{len(found)} problem(s)")
+        return 1 if found else 0
+    if command == "missing":
+        result = missing()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 1 if result else 0
+    if command == "add" and len(argv) == 3:
+        print(f"merged {add(Path(argv[2]))} entries")
+        found = problems()
+        for line in found:
+            print(line)
+        return 1 if found else 0
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

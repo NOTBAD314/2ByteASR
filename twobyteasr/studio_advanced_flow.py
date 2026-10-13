@@ -99,7 +99,9 @@ class StudioAdvancedFlowMixin:
         if key != revision_key(store.render, *self._advanced_preview_size()): return
         self._prepare_caption_pixels(cue_ids)
         scene=getattr(self,'_caption_scene',None)
-        if scene is not None and scene.active:scene.warm_current()
+        if scene is not None and scene.active:
+            scene.warm_current()
+            if scene.wanted_times:scene.warm_times(list(scene.wanted_times))
         worker = getattr(self, '_web_live_worker', None)
         if worker is not None:
             for cue_id in cue_ids:

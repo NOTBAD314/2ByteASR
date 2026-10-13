@@ -289,6 +289,7 @@ class StudioReviewMixin:
             cue = self._cue_lookup.get(self.selected_cue_id)
             if cue is not None:
                 self._seek(cue.start_ms / 1000.0)
+            self._warm_review_neighbors(self.cue_model.row_for_cue_id(self.selected_cue_id))
         self.timeline.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self._refresh_review_summary_strip()
 
@@ -353,6 +354,8 @@ class StudioReviewMixin:
 
 
     _QC_SCAN_CHUNK = 400
+    _QC_SCAN_MINI = 16
+    _QC_SCAN_BUDGET_S = 0.012
 
     def _start_chunked_qc_scan(self, *, sync: bool = False) -> None:
         """全量 QC 分片执行：每片 400 cue，QTimer 链让事件循环呼吸。
@@ -388,9 +391,16 @@ class StudioReviewMixin:
             nonlocal cursor
             if token != getattr(self, "_qc_scan_token", 0) or self.project is not project:
                 return
-            chunk = ordered[cursor:cursor + self._QC_SCAN_CHUNK]
-            cursor += self._QC_SCAN_CHUNK
-            collected.update(engine.evaluate_cues(context, chunk))
+            # A time budget, not a cue count: model-evidence rules cost very
+            # different amounts per cue (one 400-cue slice measured 0.3 s).
+            started = perf_counter()
+            limit = cursor + self._QC_SCAN_CHUNK
+            while cursor < min(limit, len(ordered)):
+                chunk = ordered[cursor:cursor + self._QC_SCAN_MINI]
+                cursor += len(chunk)
+                collected.update(engine.evaluate_cues(context, chunk))
+                if not sync and perf_counter() - started >= self._QC_SCAN_BUDGET_S:
+                    break
             if cursor < len(ordered):
                 timer.start(0)
                 return
@@ -553,6 +563,7 @@ class StudioReviewMixin:
             if not current():return
             self.cue_controller._select_cue_ui(cue_id,hydrate=True)
             self._refresh_cue_list_summary()
+            self._warm_review_neighbors(self.cue_model.row_for_cue_id(cue_id))
             if play or self.continuous_review_toggle.isChecked():self._play_review_context()
         QTimer.singleShot(0,locate)
         QTimer.singleShot(80,hydrate)

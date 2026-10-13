@@ -32,7 +32,8 @@ def _phonetic_text_cached(text: str) -> str:
     # Keep the distance layer dependency-light: importing text_rules here
     # before subtitle_core boots creates a partially initialized correction
     # module. This is the same content alphabet as content_only.
-    normalized = ''.join(re.findall(r'[\u3400-\u9fffA-Za-z0-9]+', str(text))).lower()
+    from twobyteasr.language_rules import CONTENT_CHAR_CLASS
+    normalized = ''.join(re.findall(f'[{CONTENT_CHAR_CLASS}]+', str(text))).lower()
     return "".join(
         lazy_pinyin(
             normalized,

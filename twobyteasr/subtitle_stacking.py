@@ -93,7 +93,8 @@ def _cue_stack_metrics(resolved) -> tuple[float, float]:
     return ink_height * scale_y + slab * 2, ink_width * float(getattr(style, 'scale_x', 100))/100
 
 
-def compute_stack_layout(cues, *, resolve_one, play_res_y, enabled=True, play_res_x=1920, effect_for=None, bounds_for=None):
+def compute_stack_layout(cues, *, resolve_one, play_res_y, enabled=True, play_res_x=1920, effect_for=None, bounds_for=None,
+                         extra_height=None):
     """Allocate stable spatial positions for each full cue lifetime.
 
     Only temporally overlapping rectangles reserve space. A cue keeps its
@@ -116,6 +117,8 @@ def compute_stack_layout(cues, *, resolve_one, play_res_y, enabled=True, play_re
                 if resolved is None:continue
                 style=resolved.style
                 height,ink_width=_cue_stack_metrics(resolved)
+                # A bilingual group (translation line) reserves its whole height.
+                if extra_height is not None:height+=float(extra_height(cue) or 0.)
                 gap=max(4.,_VISIBLE_GAP_AT_1080*float(play_res_y)/1080)
                 recipe=resolved.recipe
                 shadow=(getattr(recipe,'outline',{}) or {}).get('shadow',{}) or {}
@@ -209,6 +212,13 @@ def compute_stack_layout(cues, *, resolve_one, play_res_y, enabled=True, play_re
     return StackLayout(offsets,tuple(warnings))
 
 
+def _bilingual_extra(project, cue, width):
+    from .bilingual_layout import group_extra_for
+    from .studio_edit_sequence import source_cue_id_of
+    source = next((c for c in project.cues if c.id in (cue.id, source_cue_id_of(cue.id))), None)
+    return group_extra_for(project, source, width) if source is not None else 0.
+
+
 def project_stack_layout(project):
     """Compatibility diagnostics only; saved anchors require no extra offset."""
     receipt = project.studio_state.get('initial_subtitle_layout', {})
@@ -254,7 +264,8 @@ def initialize_project_layout(project, *, cue_ids=None, replace=False):
         play_res_y=height, play_res_x=width,
         enabled=project.studio_state.get('auto_subtitle_stacking', True),
         effect_for=lambda c: project.effects.get(c.effect_id, {}),
-        bounds_for=lambda c,r: measured_bounds(local,c,r,width,height))
+        bounds_for=lambda c,r: measured_bounds(local,c,r,width,height),
+        extra_height=lambda c: _bilingual_extra(local, c, width))
     positions = {}
     for c in rendered:
         source_id = c.id if c.id in targets else source_cue_id_of(c.id)

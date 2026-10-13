@@ -282,6 +282,9 @@ class WorkshopModel:
     # Optional override for future pure diarization / review / translation models.
     # Existing models derive their task from actual checkpoint capabilities.
     model_type: str = ""
+    # Models a pipeline step uses automatically once installed (no role to
+    # select): the installed state shows this text instead of "接入中".
+    auto_stage: str = ""
 
 
 MODELS = (
@@ -640,6 +643,28 @@ MODELS = (
         adapter_bindings=(("timeline", "qwen_aligner"),),
     ),
     WorkshopModel(
+        "ja_ctc_aligner",
+        "timeline",
+        "日语 CTC 对齐模型",
+        "Ja",
+        "日语 · 句首时间校正",
+        "本地 · ModelScope / Hugging Face",
+        "约 1.3 GB",
+        "日语识别自动使用 · 已接入",
+        "wav2vec2 日语字符 CTC 模型，用于强制对齐日语字幕的句首：只在它与 Qwen 对齐器的实测起点相差 80 毫秒内时采用，句尾不改。安装后识别日语时自动执行，也可在字幕工作台时间轴右键对整个工程校正。",
+        (("句首对齐", 80), ("日语", 85), ("运行速度", 80)),
+        (),
+        ("ja_ctc_aligner",),
+        "ja_ctc_aligner",
+        runtime_available=True,
+        icon_name="fa5s.ruler-horizontal",
+        icon_color="#ffffff",
+        icon_background="#5f7fbf",
+        languages=("日本語",),
+        asr_capabilities=("ALIGNMENT",),
+        auto_stage="已安装 · 日语识别时自动使用",
+    ),
+    WorkshopModel(
         "funasr_nano",
         "primary",
         "Fun-ASR Nano 2512",
@@ -753,6 +778,7 @@ CANONICAL_MODEL_ORDER = (
     "whisper",
     "funasr_nano",
     "qwen_aligner",
+    "ja_ctc_aligner",
     "groq_api",
     "openai_api",
     "mai_latest",
@@ -1510,6 +1536,40 @@ def _load_lock(root: Path) -> dict:
         return json.loads((root / "dependencies.lock.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return {"models": {}}
+
+
+_READINESS_STATUS: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+def _readiness_status(download_key: str) -> str:
+    """Status of a model's readiness receipt, re-read only when it changes."""
+    from .runtime_paths import user_data_root
+
+    receipt = user_data_root() / 'model-readiness' / (str(download_key) + '.json')
+    try:
+        stat = receipt.stat()
+    except OSError:
+        return ''
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _READINESS_STATUS.get(str(receipt))
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        readiness = json.loads(receipt.read_text('utf8'))
+    except (OSError, ValueError):
+        readiness = {}
+    status = str(readiness.get('status') or '') if isinstance(readiness, dict) else ''
+    _READINESS_STATUS[str(receipt)] = (stamp, status)
+    return status
+
+
+def _registry_fingerprint(registry) -> tuple:
+    """What a refresh shows from a registry scan (health and location)."""
+    if registry is None:
+        return ()
+    return (str(registry.error), tuple(sorted(
+        (key, record.health.value, str(record.installation_path), tuple(record.missing_files))
+        for key, record in registry.records.items())))
 
 
 def installed_model_keys(root: Path) -> set[str]:
@@ -2574,6 +2634,10 @@ class ModelCard(QFrame):
         self, role: str, scene: str | None = None, api_model: str | None = None
     ):
         # role 保留给卡片其它语义；评分随「比较场景 + 实际解析型号」变化。
+        signature = (role, scene, api_model, current_language())
+        if getattr(self, "_reference_signature", None) == signature:
+            return  # every filter / refresh pass re-applies the same values
+        self._reference_signature = signature
         scope = model_metric_scene(self.model, scene or _DEFAULT_BENCHMARK_SCENE)
         bind_text(self.reference_index_label, '2ByteASR 参考指数 · {value0}', value0=_benchmark_scene_label(scope, current_language()))
         self.accuracy_bar.set_evidence(
@@ -2640,6 +2704,7 @@ class _DownloadTitleBar(QFrame):
 
 
 class ModelDownloadDialog(QDialog):
+    diagnostic_finished = Signal(object)
     completed = Signal(bool, str)
 
     def refresh_theme_palette(self) -> None:
@@ -2722,6 +2787,18 @@ class ModelDownloadDialog(QDialog):
             self.source_combo.addItem(choice["label"], choice["mode"])
         self.source_combo.setCurrentIndex(0)
         source_row.addWidget(self.source_combo)
+        self.check_download_button = QPushButton('检查模型下载')
+        self.check_download_button.setObjectName('workshopSecondary')
+        self.check_download_button.clicked.connect(self._check_download)
+        source_row.addWidget(self.check_download_button)
+        self.copy_diagnostic_button = QPushButton('复制诊断')
+        self.copy_diagnostic_button.setObjectName('workshopSecondary')
+        self.copy_diagnostic_button.clicked.connect(self._copy_diagnostic)
+        self.copy_diagnostic_button.setEnabled(False)
+        source_row.addWidget(self.copy_diagnostic_button)
+        self._diagnostic_report = None
+        self._diagnostic_cancel = threading.Event()
+        self.diagnostic_finished.connect(self._diagnostic_complete)
         source_row.addStretch(1)
         layout.addLayout(source_row)
         self.progress = QProgressBar()
@@ -2783,6 +2860,53 @@ class ModelDownloadDialog(QDialog):
         layout.addLayout(actions)
         apply_ui_language(self, language)
 
+
+    def _copy_diagnostic(self):
+        from PySide6.QtWidgets import QApplication
+        if self._diagnostic_report is not None:
+            QApplication.clipboard().setText(json.dumps(self._diagnostic_report, ensure_ascii=False, indent=2))
+
+    def _check_download(self):
+        from .runtime_paths import get_runtime_paths
+        model_root = get_runtime_paths().model_root
+        mode = str(self.source_combo.currentData() or 'AUTO')
+        self._diagnostic_cancel.clear()
+        self.check_download_button.setEnabled(False)
+        self.check_download_button.setText('正在检查…')
+        def work():
+            try:
+                from .model_download_diagnostic import check_downloads
+                report = check_downloads(self.root, model_root, self.download_keys, mode, cancel=self._diagnostic_cancel)
+            except Exception as exc:
+                from .download_diagnostics import redact
+                report = dict(error=redact(str(exc)), upload=False)
+            self.diagnostic_finished.emit(report)
+        threading.Thread(target=work, name='model-download-diagnostic', daemon=True).start()
+
+    def _diagnostic_complete(self, report):
+        from .runtime_paths import user_data_root
+        self._diagnostic_report = report
+        self.check_download_button.setEnabled(True)
+        self.check_download_button.setText('检查模型下载')
+        self.copy_diagnostic_button.setEnabled(True)
+        directory = user_data_root() / 'diagnostics'
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / ('model-download-' + datetime.now().strftime('%Y%m%d-%H%M%S') + '.json')
+            path.write_text(json.dumps(report, ensure_ascii=False, indent=2), 'utf-8')
+            self.log.appendPlainText('诊断已保存：' + str(path))
+        except OSError as exc:
+            self.log.appendPlainText('诊断保存失败；仍可点击“复制诊断”：' + str(exc))
+        for model in report.get('models', []):
+            for source in model['sources']:
+                for probe in source['probes']:
+                    self.log.appendPlainText(f"{model['key']} · {source['mode']} · {probe['file']}：{probe['status']} " + str(probe.get('category','')))
+        for probe in report.get('bootstrap', []):
+            self.log.appendPlainText(f"环境准备 · {probe['stage']}：{probe['status']} " + str(probe.get('category','')))
+        if report.get('error'):
+            self.log.appendPlainText('自检未完成：' + report['error'])
+        self.log.appendPlainText('检查只读取受限大小的文件前缀，不代表完整下载、安装或推理通过；报告未上传。')
+        self.log_toggle.setChecked(True)
 
     def start(self):
         if self._finished_ok:
@@ -2908,10 +3032,13 @@ class ModelDownloadDialog(QDialog):
             self._output_buffer += decoded
             lines = self._output_buffer.split("\n")
             self._output_buffer = lines.pop()
-            for line in lines:
-                self._handle_progress_line(line.rstrip("\r"))
+            from .download_diagnostics import redact
+            clean_lines = [redact(line.rstrip('\r')) for line in lines]
+            for line in clean_lines:
+                self._handle_progress_line(line)
             self.log.moveCursor(QTextCursor.MoveOperation.End)
-            self.log.insertPlainText(decoded)
+            # Buffer whole lines before redaction: credentials can span pipe reads.
+            self.log.insertPlainText('\n'.join(clean_lines) + ('\n' if clean_lines else ''))
             # 下载 URL 行很长：ensureCursorVisible 会把无折行日志横向带到
             # 行尾（与运行日志同族问题）。光标停回行首后再 ensure，纵向
             # 依然追尾、横向落在第 0 列；再显式钉住左缘兜底。
@@ -3122,10 +3249,12 @@ class ModelDownloadDialog(QDialog):
         pct_part = f"{pct}%" if pct else ""
         spd_part = ""
         if self._speed and self._speed > 0:
-            if self._speed >= 1024 * 1024:
-                spd_part = f"{self._speed / (1024*1024):.1f} GB/s"
+            if self._speed >= 1024 ** 3:
+                spd_part = f"{self._speed / (1024**3):.1f} GiB/s"
+            elif self._speed >= 1024 ** 2:
+                spd_part = f"{self._speed / (1024**2):.1f} MiB/s"
             elif self._speed >= 1024:
-                spd_part = f"{self._speed / 1024:.1f} MB/s"
+                spd_part = f"{self._speed / 1024:.1f} KiB/s"
             else:
                 spd_part = f"{self._speed:.0f} B/s"
 
@@ -3169,24 +3298,46 @@ class ModelDownloadDialog(QDialog):
             return '任务已取消；已校验文件可复用。下次准备会检查文件并在来源支持时续传。'
         # Structured installer failures take precedence over normal log words
         # such as “Qwen 已存在，纳入校验”. Preserve the first failed stage.
+        sources=[]
+        failures=[]
         for line in output.splitlines():
+            if line.startswith('[2BYTEASR_SOURCE] '):
+                try:
+                    event=json.loads(line.split(' ',1)[1])
+                    if event.get('status')=='trying' and event.get('mode') not in sources:
+                        sources.append(event['mode'])
+                except (ValueError,TypeError): pass
             if line.startswith(('[2BYTEASR_INSTALL_ERROR] ', '[2BYTEASR_ERROR] ')):
                 try:
-                    failure = json.loads(line.split(' ', 1)[1])
+                    failures.append(json.loads(line.split(' ', 1)[1]))
                 except (ValueError, TypeError):
                     continue
+        if failures:
+                failure=failures[-1]
+                source_text=' → '.join(sources) if sources else '尚未请求权重源'
+                header=f"{self.model.name} · {source_text}（{'已尝试备援' if len(sources)>1 else '未尝试备援'}）\n"
                 detail=str(failure.get('message') or failure.get('detail') or '').partition('\n')[0][:220]
                 category=failure.get('category','')
                 summaries={'permission':'准备目录不可写或文件被占用，请检查日志中的具体路径后重试。',
                     'disk_space':'磁盘空间不足，请为应用数据目录释放空间后重试。',
+                    'http_access':'来源拒绝访问（401/403）。请检查该模型的授权要求或选择已验证来源。',
+                    'source_unavailable':'锁定版本或文件不存在（404）。请复制诊断反馈，不要反复重下。',
+                    'network_timeout':'来源连接或传输停滞超时。请重试或切换已验证来源。',
+                    'connection':'连接中断。已下载分片保留，请检查网络后重试。',
+                    'dns':'来源域名无法解析。请检查当前网络并复制诊断。',
+                    'proxy':'程序使用的代理无法连接。请检查下载诊断中的代理状态。',
+                    'tls_certificate':'TLS 证书验证失败。请检查系统时间与证书；程序不会关闭安全验证。',
+                    'rate_limited':'来源暂时限流（429）。请稍后重试。',
+                    'invalid_response':'来源返回了错误页或不正确的文件范围；文件没有安装。请切换已验证来源。',
+                    'checksum':'文件未通过锁定哈希校验，未标记安装完成。请重试或切换已验证来源。',
                     'hardware_unsupported':'当前硬件无法执行此模型，已校验权重和运行库会保留。',
                     'dependency_conflict':'依赖版本冲突，请保留包名与版本日志；更换模型下载源不能解决此问题。'}
                 if not category and ('no solution found' in lowered or 'unsatisfiable' in lowered):category='dependency_conflict'
-                if category in summaries:return summaries[category]+'\n'+detail
+                if category in summaries:return header+summaries[category]+'\n'+detail
                 stage = {'tools_preparing':'工具准备失败', 'interpreter_preparing':'解释器准备失败', 'dependencies_installing':'依赖安装失败',
                          'weights_downloading':'权重下载或校验失败', 'model_loading':'模型加载失败',
                          'model_forward':'设备/模型前向验证失败', 'inference_verifying':'真实样本推理失败'}.get(failure.get('phase'), '运行库安装失败')
-                return f"{stage}：{detail}\n已校验的文件会保留。请展开日志查看该阶段的具体错误后重试。"
+                return header+f"{stage}：{detail}\n已校验的文件会保留。请展开日志查看该阶段的具体错误后重试。"
         if 'no python available to start repair' in lowered:
             return '解释器准备失败：安装器未发现可用于启动修复的 Python。\n这不代表权重损坏；请使用支持私有 Python 自举的安装入口。'
         if "os error 5" in lowered or "拒绝访问" in output or "access is denied" in lowered:
@@ -3325,6 +3476,7 @@ class ModelDownloadDialog(QDialog):
         self.close()
 
     def closeEvent(self, event):
+        self._diagnostic_cancel.set()
         # P0-7: Closing the details window must NOT stop a running download.
         # The task continues in background. Re-opening the workshop/model page
         # will allow viewing progress by re-showing this dialog instance.
@@ -4090,12 +4242,23 @@ class ModelWorkshopPage(QWidget):
     removal_finished = Signal(object)
     removal_planned = Signal(object)
     mac_cpu_runtime_checked = Signal(object)
+    registry_checked = Signal(object)
 
     def __init__(self, root: Path, runtime_settings: dict, parent=None):
         super().__init__(parent)
         self.root = Path(root)
         self.runtime_settings = runtime_settings
         self._installed: set[str] = set()
+        # 2026-10-12: one refresh per real change. _state_memo holds each
+        # (model, role) state for the duration of one refresh pass; the
+        # signature lets entries skip a refresh whose inputs are unchanged.
+        self._state_memo: dict | None = None
+        self._last_refresh_signature = None
+        self._refresh_count = 0
+        self._registry = None
+        self._registry_check_running = False
+        self._shown_once = False
+        self.registry_checked.connect(self._registry_check_done)
         self._cards: dict[str, ModelCard] = {}
         self._removing: set[str] = set()
         self.removal_finished.connect(self._removal_finished)
@@ -4120,7 +4283,8 @@ class ModelWorkshopPage(QWidget):
             self._benchmark_scene = _DEFAULT_BENCHMARK_SCENE
         self._filter_chips = set(stored.value("filter_chips", []) or [])
         self.setObjectName("modelWorkshopRoot")
-        self.setStyleSheet(build_workshop_qss())
+        from .ui_zoom import set_sheet
+        set_sheet(self, build_workshop_qss())
         self._build()
         self._download_activity_timer = QTimer(self)
         self._download_activity_timer.setInterval(500)
@@ -4139,7 +4303,8 @@ class ModelWorkshopPage(QWidget):
         QTimer.singleShot(0, self._periodic_temp_cleanup)
 
     def refresh_theme_palette(self) -> None:
-        self.setStyleSheet(build_workshop_qss())
+        from .ui_zoom import set_sheet
+        set_sheet(self, build_workshop_qss())
 
 
     def _mac_cpu_runtime_checked(self, result):
@@ -4246,34 +4411,26 @@ class ModelWorkshopPage(QWidget):
         self._compact_detail_dialog=dialog
 
     def _build_sidebar(self) -> QFrame:
-        sidebar = QFrame()
-        sidebar.setObjectName("workshopSidebar")
-        # P0 Resize: bounded preferred width so middle list grows on wide windows; keeps usable min.
-        sidebar.setMinimumWidth(180)
-        sidebar.setMaximumWidth(280)
-        sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        # 2026-10-12: the shared sidebar column (same fixed width, heading and
+        # navigation as Recognition History and Term Library); the workshop's
+        # own sections below word-wrap inside it.
+        from .ui_navigation import WorkspaceSidebar
+
+        sidebar = WorkspaceSidebar("workshop", object_name="workshopSidebar")
         self.sidebar = sidebar
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(6)
+        layout = sidebar.body
 
-        sidebar_heading = QLabel("工作台")
-        sidebar_heading.setObjectName("workshopMuted")
-        style_workspace_sidebar_heading(sidebar_heading)
-        layout.addWidget(sidebar_heading)
-        layout.addSpacing(4)
-
-        self.workspace_navigation = WorkspaceNavigation("workshop")
+        self.workspace_navigation = sidebar.navigation
         self.workspace_navigation.recognition_requested.connect(self.return_requested)
         self.workspace_navigation.terms_requested.connect(self.terms_requested)
         self.workspace_navigation.history_requested.connect(self.history_requested)
         self.nav_group = self.workspace_navigation.group
         self.workshop_nav_button = self.workspace_navigation.buttons["workshop"]
-        layout.addWidget(self.workspace_navigation)
 
         layout.addSpacing(12)
         label = QLabel("当前组合")
         label.setObjectName("workshopMuted")
+        label.setWordWrap(True)
         layout.addWidget(label)
         combo = QFrame()
         combo.setObjectName("workshopComboCard")
@@ -4283,8 +4440,8 @@ class ModelWorkshopPage(QWidget):
         title_row = QHBoxLayout()
         self.combo_title = QLabel("质量优先")
         self.combo_title.setObjectName("workshopComboHeading")
-        title_row.addWidget(self.combo_title)
-        title_row.addStretch(1)
+        self.combo_title.setWordWrap(True)
+        title_row.addWidget(self.combo_title, 1)
         badge = QLabel("推荐")
         badge.setObjectName("workshopRecommendationBadge")
         title_row.addWidget(badge)
@@ -4316,6 +4473,7 @@ class ModelWorkshopPage(QWidget):
             row.addLayout(text_box, 1)
             status_label = QLabel()
             status_label.setObjectName("workshopComboStatus")
+            status_label.setWordWrap(True)
             status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             row.addWidget(status_label)
             combo_layout.addLayout(row)
@@ -4335,9 +4493,11 @@ class ModelWorkshopPage(QWidget):
         health_layout.setSpacing(6)
         health_title = QLabel("模型组合健康")
         health_title.setObjectName("workshopSection")
+        health_title.setWordWrap(True)
         health_layout.addWidget(health_title)
         self.health_summary = QLabel("已安装 0 · 未安装 0")
         self.health_summary.setObjectName("workshopTiny")
+        self.health_summary.setWordWrap(True)
         health_layout.addWidget(self.health_summary)
         self.storage_button = QPushButton("存储管理")
         self.storage_button.setObjectName("workshopSecondary")
@@ -4721,7 +4881,77 @@ class ModelWorkshopPage(QWidget):
 
     def update_runtime_settings(self, runtime_settings: dict):
         self.runtime_settings = runtime_settings
-        self.refresh()
+        # Entering the page or returning home used to rebuild every card's
+        # state (a second refresh right after construction). Refresh only
+        # when something it shows can differ; downloads, removals, storage
+        # changes and language switches call refresh() themselves.
+        if self._refresh_signature() != self._last_refresh_signature:
+            self.refresh()
+
+    def _refresh_signature(self) -> tuple:
+        from .environment import preflight_cache_token
+        from .llm_config import secrets_path
+        from .runtime_paths import user_data_root
+
+        def stamp(path: Path):
+            try:
+                stat = path.stat()
+                return stat.st_mtime_ns, stat.st_size
+            except OSError:
+                return None
+        try:
+            models = json.dumps(self.runtime_settings.get("models", {}), sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            models = repr(self.runtime_settings.get("models", {}))
+        downloads = []
+        for dialog in self._download_dialogs:
+            try:
+                if dialog.process.state() != QProcess.ProcessState.NotRunning:
+                    downloads.extend(str(key) for key in (dialog.download_keys or ()))
+            except RuntimeError:
+                continue
+        return (models, current_language(), stamp(secrets_path()),
+                stamp(user_data_root() / 'model-readiness'), preflight_cache_token(),
+                _registry_fingerprint(self._registry), tuple(sorted(downloads)),
+                tuple(sorted(self._removing)), id(self._mac_cpu_probe_result))
+
+    def background_busy(self) -> bool:
+        return self._registry_check_running
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._shown_once:
+            # Files may have changed outside the app since the last visit:
+            # re-check the registry off the GUI thread; refresh only on change.
+            QTimer.singleShot(0, self._check_registry_in_background)
+        self._shown_once = True
+
+    def _check_registry_in_background(self):
+        if self._registry_check_running:
+            return
+        self._registry_check_running = True
+        root = Path(self.root)
+        signal = self.registry_checked
+
+        def work():
+            try:
+                from .model_registry import scan_model_registry
+                registry = scan_model_registry(install_root=root)
+            except Exception:  # noqa: BLE001 - the visible state stays as it was
+                registry = None
+            try:
+                signal.emit(registry)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=work, daemon=True, name="workshop-registry-check").start()
+
+    def _registry_check_done(self, registry):
+        self._registry_check_running = False
+        if registry is None:
+            return
+        if _registry_fingerprint(registry) != _registry_fingerprint(self._registry):
+            self.refresh(registry=registry)
 
     def _active_download_dialog(
         self, download_key: str | None = None
@@ -4775,11 +5005,23 @@ class ModelWorkshopPage(QWidget):
             label += f" · {status}"
         self.download_activity_text.setText(label + percent_text)
 
-    def refresh(self):
+    def refresh(self, registry=None):
+        self._refresh_count += 1
+        self._state_memo = {}
+        try:
+            self._refresh(registry)
+        finally:
+            self._state_memo = None
+        self._last_refresh_signature = self._refresh_signature()
+        self.models_refreshed.emit()
+
+    def _refresh(self, registry=None):
         language = current_language()
         self._refresh_role_subtitle()
-        from .model_registry import scan_model_registry
-        self._registry = scan_model_registry(install_root=Path(self.root))
+        if registry is None:
+            from .model_registry import scan_model_registry
+            registry = scan_model_registry(install_root=Path(self.root))
+        self._registry = registry
         self._installed = self._registry.installed_keys()
         bind_text(self.available_badge, f'{self._available_count()} ' + ('models available' if language == 'en' else '个模型可用'))
         local_models = tuple(model for model in MODELS if model.install_keys)
@@ -4833,7 +5075,6 @@ class ModelWorkshopPage(QWidget):
                 )
         self._apply_filter()
         self._refresh_detail()
-        self.models_refreshed.emit()
 
 
     def _model_is_current(self, model: WorkshopModel) -> bool:
@@ -4893,6 +5134,15 @@ class ModelWorkshopPage(QWidget):
 
     def _model_state(self, model: WorkshopModel, role: str | None = None) -> str:
         role = role or self.browser_role
+        memo = self._state_memo
+        if memo is not None:
+            key = (model.key, role)
+            if key not in memo:
+                memo[key] = self._compute_model_state(model, role)
+            return memo[key]
+        return self._compute_model_state(model, role)
+
+    def _compute_model_state(self, model: WorkshopModel, role: str) -> str:
         models = self.runtime_settings.get("models", {})
         if sys.platform == 'darwin' and model.download_key and model.download_key != 'sensevoice':
             return 'platform_unavailable'
@@ -4972,13 +5222,10 @@ class ModelWorkshopPage(QWidget):
             if not runtime_check.ok:
                 return 'runtime_missing'
         if not _runtime_role_available(model, role):
+            if model.auto_stage and _readiness_status(model.download_key) in {'FAIL', 'BLOCKED'}:
+                return 'load_failed'
             return "downloaded"
-        from .runtime_paths import user_data_root
-        receipt=user_data_root()/'model-readiness'/(str(model.download_key)+'.json')
-        try:
-            readiness=json.loads(receipt.read_text('utf8')) if receipt.is_file() else {}
-        except (OSError,ValueError):readiness={}
-        if readiness.get('status') in {'FAIL','BLOCKED'}:
+        if _readiness_status(model.download_key) in {'FAIL','BLOCKED'}:
             return 'load_failed'
         setting_key = {
             "primary": "primary_asr_backend",
@@ -5011,7 +5258,7 @@ class ModelWorkshopPage(QWidget):
         if state == "downloading":
             return "查看进度", True
         if state == "downloaded":
-            return "已下载 · 接入中", False
+            return ("自动使用" if model.auto_stage else "已下载 · 接入中"), False
         if state == "configure":
             return "配置", True
         if state == "configured":
@@ -5369,9 +5616,12 @@ class ModelWorkshopPage(QWidget):
         }[state]
         if state == 'platform_unavailable':
             badge = self._action_text(model,state)[0]
+        auto_ready = state == "downloaded" and bool(model.auto_stage)
+        if auto_ready:
+            badge = model.auto_stage
         self.detail_badge.setText(translate(badge, language))
-        badge_tone = "ready" if state in {"selected", "installed", "configured"} else "missing"
-        if state in {"downloaded", "downloading", "planned"}:
+        badge_tone = "ready" if state in {"selected", "installed", "configured"} or auto_ready else "missing"
+        if state in {"downloaded", "downloading", "planned"} and not auto_ready:
             badge_tone = "muted"
         self.detail_badge.setProperty("tone", badge_tone)
         self.detail_badge.style().unpolish(self.detail_badge)
@@ -5412,8 +5662,10 @@ class ModelWorkshopPage(QWidget):
             bar.set_evidence(evidence)
         compatibility = translate(model.mode, language)
         if model.download_key:
-            compatibility += "\n" + translate("依次尝试 ModelScope、HF 镜像与官方源；HF 镜像可能回源官方，可断点续传。", language)
-            if not _runtime_role_available(model, self.browser_role):
+            compatibility += "\n" + translate("自动来源先试 ModelScope，再试 Hugging Face 官方；HF 镜像可在下载窗口手动选择（可能回源官方）；可断点续传。", language)
+            if model.auto_stage:
+                compatibility += f"\n{translate('安装后自动用于对应识别步骤，不需要选择，也不会替换现有后端。', language)}"
+            elif not _runtime_role_available(model, self.browser_role):
                 compatibility += f"\n{translate('模型文件可先下载；当前角色适配尚未完成，不会替换现有后端。', language)}"
         elif model.api_preset:
             compatibility += "\n" + translate("在设置页保存对应服务的模型、地址与 API Key。", language)

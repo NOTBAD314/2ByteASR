@@ -18,6 +18,8 @@ import sys
 import threading
 import time
 import shutil
+import builtins
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -30,6 +32,13 @@ if hasattr(sys.stdout, 'reconfigure'):
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from twobyteasr.download_diagnostics import AnonymousAuth, public_url, redact, category, retryable, require_isolated_download_path
+
+
+def print(*args, **kwargs):
+    """Never put signed URLs or credentials into the GUI's retained output."""
+    builtins.print(*(redact(value) if isinstance(value, str) else value for value in args), **kwargs)
 
 DEFAULT_THREADS = 4
 RETRIES = 2
@@ -50,21 +59,36 @@ _last_body_at = None
 _reused_bytes = 0
 _retry_count = 0
 _attempt_context = None
+_http_events = []
+_last_failure = None
 
 
 class MeasuredSession(requests.Session):
+    def rebuild_auth(self, prepared_request, response):
+        # These are public model assets; no origin credentials go to a CDN.
+        prepared_request.headers.pop('Authorization', None)
+
     def send(self, request, **kwargs):
         global _request_count, _first_request_at
         with _metrics_lock:
             _request_count += 1
             if _first_request_at is None:
                 _first_request_at = time.monotonic()
-        response = super().send(request, **kwargs)
+        started = time.monotonic()
+        try:
+            response = super().send(request, **kwargs)
+        except Exception as exc:
+            with _metrics_lock:
+                _http_events.append(dict(host=urlparse(request.url).hostname, stage='request', category=category(exc), elapsed_s=round(time.monotonic()-started, 3)))
+            raise
         with _metrics_lock:
             _actual_hosts.add(urlparse(response.url).hostname or '')
         if getattr(response, '_twobyte_measured', False):
             return response
         response._twobyte_measured = True
+        with _metrics_lock:
+            _http_events.append(dict(host=urlparse(request.url).hostname, final_host=urlparse(response.url).hostname,
+                status=response.status_code, headers_s=round(time.monotonic()-started, 3), range=request.headers.get('Range', '')))
         original = response.iter_content
         def measured(*args, **kw):
             global _network_bytes, _last_body_at
@@ -111,6 +135,8 @@ def _emit_file_start(name: str, total_bytes: int, index: int | None = None, tota
 
 def _session() -> requests.Session:
     session = MeasuredSession()
+    session.auth = AnonymousAuth()
+    session.headers['Accept-Encoding'] = 'identity'
     session.headers["User-Agent"] = "2ByteASR-downloader/1.1"
     return session
 
@@ -126,7 +152,7 @@ def _sha256(path: Path) -> str:
 def _valid_file(path: Path, size: int, expected_sha256: str | None) -> bool:
     if not path.is_file() or path.stat().st_size != size:
         return False
-    return not expected_sha256 or _sha256(path).lower() == expected_sha256.lower()
+    return bool(expected_sha256) and _sha256(path).lower() == expected_sha256.lower()
 
 
 def _validate_download_response(response, expected_name: str = "") -> None:
@@ -144,9 +170,20 @@ def _validate_download_response(response, expected_name: str = "") -> None:
 
 def fetch_size(
     url: str,
-    timeout: tuple[int, int] = (30, 60),
+    timeout: tuple[int, int] = (20, 45),
     expected_name: str = "",
 ) -> tuple[int, bool]:
+    global _retry_count
+    for attempt in range(RETRIES):
+        try:
+            return _fetch_size_once(url, timeout, expected_name)
+        except Exception as exc:
+            if attempt + 1 == RETRIES or not retryable(exc): raise
+            _retry_count += 1
+            time.sleep(.5 * (attempt + 1))
+
+
+def _fetch_size_once(url, timeout, expected_name):
     """Return (size, range_supported) without relying on HEAD.
 
     ModelScope's repository endpoint accepts GET but rejects HEAD, so probe
@@ -164,7 +201,11 @@ def fetch_size(
         # HTTP 200 on its public API gateway.  A valid Content-Range is therefore
         # a stronger signal than the status code here.
         match = CONTENT_RANGE.fullmatch(response.headers.get("Content-Range", "").strip())
-        if match and match.group(3) != "*":
+        if match and (int(match.group(1)) != 0 or int(match.group(2)) != 0 or match.group(3) == '*' or int(match.group(3)) <= 0):
+            raise RuntimeError('探测 Content-Range 与 bytes=0-0 不匹配')
+        if response.status_code == 206 and not match:
+            raise RuntimeError('206 响应缺少 Content-Range')
+        if match:
             return int(match.group(3)), True
         length = response.headers.get("Content-Length")
         if not length:
@@ -281,7 +322,7 @@ def _measurement_payload(*, host, source_mode, size, sha256, url):
         "host": host,
         "size": int(size),
         "sha256": sha256 or "",
-        "url": url,
+        "url": public_url(url),
         "network_payload_bytes": _network_bytes,
         "reused_bytes": _reused_bytes,
         "retry_count": _retry_count,
@@ -290,6 +331,7 @@ def _measurement_payload(*, host, source_mode, size, sha256, url):
         "network_mib_per_s": round(_network_bytes / max(.001,(_last_body_at or _process_started)-(_first_request_at or _process_started)) / 1024**2, 6),
         "http_requests": _request_count,
         "actual_hosts": sorted(_actual_hosts),
+        "http_events": list(_http_events),
         "measurement": "response payload bytes consumed including retries; network phase is first request to last body byte, excludes later verification and TLS/HTTP framing",
     }
 
@@ -299,7 +341,7 @@ def _record_attempt(status, *, checkpoint=False, detail=''):
         return
     out_file, context = _attempt_context
     payload = _measurement_payload(**context)
-    payload.update(status=status, detail=detail, recorded_at=time.time(),
+    payload.update(status=status, detail=redact(detail), recorded_at=time.time(),
                    complete_measurement=status != 'RUNNING')
     try:
         if checkpoint:
@@ -329,6 +371,7 @@ def _download_chunk(
     index: int,
     stop_event: threading.Event,
     expected_name: str = "",
+    total_size: int | None = None,
 ) -> None:
     global _retry_count
     if stop_event.is_set():
@@ -360,7 +403,8 @@ def _download_chunk(
             ) as response:
                 _validate_download_response(response, expected_name or part.name)
                 match = CONTENT_RANGE.fullmatch(response.headers.get("Content-Range", "").strip())
-                if not match or int(match.group(1)) != resume_start or int(match.group(2)) != end:
+                if (not match or int(match.group(1)) != resume_start or int(match.group(2)) != end
+                        or total_size is not None and match.group(3) != str(total_size)):
                     raise RuntimeError(
                         f"服务器未按范围返回数据（HTTP {response.status_code}，Content-Range 不匹配）"
                     )
@@ -369,6 +413,10 @@ def _download_chunk(
                         if stop_event.is_set():
                             raise RuntimeError("当前源已停止")
                         if block:
+                            if handle.tell() + len(block) > expected_length:
+                                raise RuntimeError('分片响应长度超过请求范围')
+                            if resume_start == 0 and handle.tell() == 0:
+                                _validate_body_prefix(block)
                             handle.write(block)
             if part.stat().st_size != expected_length:
                 raise RuntimeError(
@@ -378,12 +426,21 @@ def _download_chunk(
         except BaseException as exc:  # keep worker failures visible to the caller
             if stop_event.is_set():
                 return
-            if attempt == RETRIES:
+            if attempt == RETRIES or not retryable(exc):
                 errors[index] = exc
                 return
             print(f"  分片 {index + 1} 第 {attempt} 次失败，正在重试：{exc}", file=sys.stderr)
             with _metrics_lock:
                 _retry_count += 1
+            stop_event.wait(min(2, attempt * .5))
+
+
+def _validate_body_prefix(block):
+    prefix = block[:256].lstrip().lower()
+    if prefix.startswith((b'<!doctype html', b'<html', b'<head', b'<body')):
+        raise RuntimeError('来源返回伪装成模型的 HTML 错误页')
+    if prefix.startswith(b'version https://git-lfs.github.com/spec/'):
+        raise RuntimeError('来源返回 Git LFS 指针，不是实际权重')
 
 
 def _effective_threads(threads_requested: int, size: int, source_mode: str) -> int:
@@ -432,7 +489,7 @@ def stream_download(
     expected_sha256: str | None,
     host: str = "",
 ) -> int:
-    global _reused_bytes, _retry_count
+    global _reused_bytes, _retry_count, _last_failure
     """Single-stream downloader with a resumable ``.part`` file."""
     partial = _stream_part_path(out_file, host)
     for attempt in range(1, RETRIES + 1):
@@ -450,12 +507,18 @@ def stream_download(
                 headers=headers,
                 stream=True,
                 allow_redirects=True,
-                timeout=(30, 300),
+                timeout=(20, 45),
             ) as response:
                 _validate_download_response(response, out_file.name)
                 content_range = CONTENT_RANGE.fullmatch(
                     response.headers.get("Content-Range", "").strip()
                 )
+                if content_range:
+                    if (int(content_range.group(1)) != offset or int(content_range.group(2)) != size - 1
+                            or content_range.group(3) != str(size)):
+                        raise RuntimeError('续传 Content-Range 与请求范围或总大小不匹配')
+                elif response.status_code == 206:
+                    raise RuntimeError('206 响应缺少 Content-Range')
                 resumed = bool(
                     offset
                     and content_range
@@ -472,6 +535,10 @@ def stream_download(
                 with partial.open(mode) as handle:
                     for block in response.iter_content(BLOCK_SIZE):
                         if block:
+                            if handle.tell() + len(block) > size:
+                                raise RuntimeError('响应长度超过声明的文件大小')
+                            if handle.tell() == 0:
+                                _validate_body_prefix(block)
                             handle.write(block)
                             current = handle.tell()
                             now = time.monotonic()
@@ -497,11 +564,13 @@ def stream_download(
             emit_progress(percent=100, downloaded=size, total=size, speed=0, phase="verify")
             return 0
         except BaseException as exc:
-            if attempt == RETRIES:
+            _last_failure = exc
+            if attempt == RETRIES or not retryable(exc):
                 print(f"下载失败：{exc}", file=sys.stderr)
                 return 1
             print(f"第 {attempt} 次失败，保留断点后重试：{exc}", file=sys.stderr)
             _retry_count += 1
+            time.sleep(min(2, attempt * .5))
     return 1
 
 
@@ -527,6 +596,9 @@ def download_from_source(
     # A changed revision, hash, range layout or origin never reuses old bytes.
     # Keep old partials for diagnosis; identity separates them without deletion.
     identity = hashlib.sha256(json.dumps([url,size,expected_sha256,threads_requested],sort_keys=True).encode()).hexdigest()[:12]
+    if not expected_sha256:
+        # URL, size and ETag alone do not prove byte identity after restart.
+        identity += uuid.uuid4().hex[:8]
     part_host = host + '-' + identity
     reuse_matching_parts(out_file, part_host, resume_root, expected_sha256)
     if shutil.disk_usage(out_file.parent).free < size * 2 + 256 * 1024**2:
@@ -572,7 +644,7 @@ def download_from_source(
     pool = [
         threading.Thread(
             target=_download_chunk,
-            args=(url, parts[index], start, end, errors, index, stop_event, out_file.name),
+            args=(url, parts[index], start, end, errors, index, stop_event, out_file.name, size),
             daemon=True,
         )
         for index, start, end in ranges
@@ -637,6 +709,8 @@ def download_from_source(
     )
 
     if errors:
+        global _last_failure
+        _last_failure = next(iter(errors.values()))
         for index, exc in sorted(errors.items()):
             print(f"分片 {index + 1} 下载失败：{exc}", file=sys.stderr)
         print("已完成的分片会保留；正在尝试下一个源。", file=sys.stderr)
@@ -649,6 +723,7 @@ def download_from_source(
             sha256=expected_sha256, url=url,
         )
     except BaseException as exc:
+        _last_failure = exc
         print(f"文件合并或校验失败：{exc}", file=sys.stderr)
         return 1
     print(f"[完成] {out_file}（{size} 字节）")
@@ -714,6 +789,7 @@ def _report_source_failure(exc: BaseException, url: str, source_mode: str) -> st
 def main() -> int:
     global _network_bytes, _request_count, _actual_hosts, _process_started
     global _first_request_at, _last_body_at, _reused_bytes, _retry_count, _attempt_context
+    global _http_events, _last_failure
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", action="append", required=True)
     parser.add_argument("--out", required=True)
@@ -743,6 +819,7 @@ def main() -> int:
         parser.error("--sha256 必须是 64 位十六进制字符串")
 
     out_file = Path(args.out).resolve()
+    require_isolated_download_path(out_file)
     if not out_file.parent.is_dir():
         print(f"输出目录不存在：{out_file.parent}", file=sys.stderr)
         return 1
@@ -758,6 +835,8 @@ def main() -> int:
         host = urlparse(url).hostname or ""
         _network_bytes=_request_count=_reused_bytes=_retry_count=0
         _actual_hosts=set()
+        _http_events=[]
+        _last_failure=None
         _process_started=time.monotonic()
         _first_request_at=_last_body_at=None
         context=dict(host=host,source_mode=source_mode or 'AUTO',size=0,sha256=args.sha256,url=url)
@@ -768,6 +847,8 @@ def main() -> int:
             context['size']=size
         except BaseException as exc:
             _record_attempt('FAIL',detail=str(exc))
+            print('[2BYTEASR_ERROR] '+json.dumps(dict(category=category(exc),phase='weights_downloading',host=host,
+                source=source_mode,detail=redact(str(exc))),ensure_ascii=False),flush=True)
             last_category = _report_source_failure(exc, url, source_mode or "AUTO")
             if not allow_fallback:
                 print("当前指定源不可用，不会自动改用其他源。", file=sys.stderr)
@@ -785,18 +866,21 @@ def main() -> int:
         except Exception as exc:
             if isinstance(exc,PermissionError) or '磁盘空间不足' in str(exc):
                 _record_attempt('FAIL',detail=str(exc))
-                category='permission' if isinstance(exc,PermissionError) else 'disk_space'
-                print('[2BYTEASR_ERROR] '+json.dumps(dict(category=category,phase='weights_downloading',detail=str(exc)),ensure_ascii=False),flush=True)
+                failure_category='permission' if isinstance(exc,PermissionError) else 'disk_space'
+                print('[2BYTEASR_ERROR] '+json.dumps(dict(category=failure_category,phase='weights_downloading',detail=str(exc)),ensure_ascii=False),flush=True)
                 return 1
             _report_source_failure(exc,url,source_mode or 'AUTO')
+            _last_failure=exc
             result=1
-        _record_attempt('PASS' if result==0 else 'FAIL',detail='' if result==0 else 'See downloader stderr for artifact failure')
+        _record_attempt('PASS' if result==0 else 'FAIL',detail='' if result==0 else str(_last_failure or 'See downloader stderr'))
         if result == 0:
             _emit_source_line(url, source_mode or "AUTO", index, len(urls), "selected")
             return 0
-        last_category = _report_source_failure(
-            RuntimeError("下载未完成"), url, source_mode or "AUTO"
-        )
+        failure = _last_failure or RuntimeError('下载未完成')
+        last_category = category(failure)
+        print('[2BYTEASR_ERROR] '+json.dumps(dict(category=last_category,phase='weights_downloading',host=host,
+            source=source_mode,detail=redact(str(failure))),ensure_ascii=False),flush=True)
+        _report_source_failure(failure, url, source_mode or 'AUTO')
         if not allow_fallback:
             print("当前指定源下载失败，不会自动改用其他源。", file=sys.stderr)
             print("请更换下载源后重试；已完成分片会保留。", flush=True)

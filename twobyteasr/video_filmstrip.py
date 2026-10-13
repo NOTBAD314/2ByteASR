@@ -1,4 +1,5 @@
 """Progressive viewport filmstrips, fair across clips and independent of playback."""
+from bisect import bisect_left
 from collections import OrderedDict
 from dataclasses import dataclass
 import hashlib
@@ -68,6 +69,9 @@ class FilmstripCache(QObject):
         self.trace=[];self.started=time.perf_counter();self.view_changed=self.started
         self.views=();self.refined=set();self.idle_cursor={};self.last_idle=0.;self.interacting=False
         self.samples={}
+        # Sorted per-source index over ``samples`` for nearest-cell lookups;
+        # rebuilt after ``_samples_version`` changes (paint never rescans).
+        self._samples_version={};self._sample_index={}
         self.metrics=dict(decoded=0,disk_hits=0,memory_hits=0,cancelled=0,batches=0,errors=0,opens=0,source_frames=0,refined=0,idle_generated=0)
         self._ready.connect(self._accept)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(16)
@@ -106,21 +110,42 @@ class FilmstripCache(QObject):
         return f'{self.identity(source)}-t{max(0,int(source_ms))}-{width}x72-lod{int(lod_ms)}-srgb3'
 
     def get(self,source,source_ms,width=128,*,request_missing=True,lod_ms=1000):
-        key=self.key(source,source_ms,width,lod_ms)
+        identity=self.identity(source)
+        key=f'{identity}-t{max(0,int(source_ms))}-{width}x72-lod{int(lod_ms)}-srgb3'
         image=self.memory.get(key)
         if image is None:
             # Keep old coarse cells visible while the current LOD is filled.
             # This lookup never starts jobs and never reads the disk on paint.
-            candidates=[(abs(ms-source_ms),k) for (ms,lod,k) in self.samples.get(self.identity(source),())
-                        if k in self.memory and abs(ms-source_ms)<=max(lod,lod_ms)]
-            if candidates:
-                _distance,key=min(candidates)
+            nearest=self._nearest_sample(identity,source_ms,lod_ms)
+            if nearest is not None:
+                key=nearest
                 image=self.memory.get(key)
         if image is not None:
             self.memory.move_to_end(key);self.metrics['memory_hits']+=1
         # paint is a consumer only. The complete viewport demand is published
         # before drawing either track; V1 paint order cannot steal V2's turn.
         return image
+
+    def _nearest_sample(self,identity,source_ms,lod_ms):
+        """Closest decoded cell within its LOD window (bisect, not a full scan:
+        at 4x every missing cell of every paint scanned all samples)."""
+        entries=self.samples.get(identity)
+        if not entries:return None
+        version=self._samples_version.get(identity,0)
+        index=self._sample_index.get(identity)
+        if index is None or index[0]!=version or index[1]!=len(entries):
+            ordered=sorted(entries,key=lambda sample:sample[0])
+            index=(version,len(entries),[sample[0] for sample in ordered],ordered)
+            self._sample_index[identity]=index
+        times,ordered=index[2],index[3]
+        position=bisect_left(times,source_ms)
+        best=None
+        for offset in range(max(0,position-8),min(len(ordered),position+8)):
+            ms,lod,candidate=ordered[offset]
+            distance=abs(ms-source_ms)
+            if candidate in self.memory and distance<=max(lod,lod_ms) and (best is None or distance<best[0]):
+                best=(distance,candidate)
+        return best[1] if best is not None else None
 
     def set_view(self,views):
         # Compatibility for callers with explicit short source spans. Production
@@ -210,11 +235,14 @@ class FilmstripCache(QObject):
         if job:
             identity=key.split('-')[0]
             self.samples.setdefault(identity,set()).add((job[2],job[6],key))
+            self._samples_version[identity]=self._samples_version.get(identity,0)+1
         while self.bytes>self.limit and len(self.memory)>1:
             previous,value=self.memory.popitem(last=False);self.bytes-=value.width()*value.height()*4
             self.completed.discard(previous)
             identity=previous.split('-')[0]
-            if identity in self.samples:self.samples[identity]={sample for sample in self.samples[identity] if sample[2]!=previous}
+            if identity in self.samples:
+                self.samples[identity]={sample for sample in self.samples[identity] if sample[2]!=previous}
+                self._samples_version[identity]=self._samples_version.get(identity,0)+1
         if not self.paused and not self.timer.isActive():self.timer.start()
 
     def close(self):

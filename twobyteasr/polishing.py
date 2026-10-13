@@ -26,6 +26,13 @@ from twobyteasr.correction import (
     split_items_for_api,
 )
 from twobyteasr.runtime import get_runtime_context
+from twobyteasr.language_rules import CONTENT_CHAR_CLASS
+
+JAPANESE_POLISH_RULE = (
+    "【语言】本批字幕是日语语音的日文转写（content_scene.language=ja-JP）。primary_text 必须保持日语："
+    "汉字、平假名、片假名、长音与英文照原样书写；不得翻译成中文，不得把日文汉字改成简体或繁体中文字形，"
+    "不得套用中文同音字、中文语气词、中文数字或抽卡/电竞中文规则。只在 ASR 来源支持时修正明显的日语识别错误"
+    "（同音异字、助词误识、漏字），否则不改。下面的通用规则若与本段冲突，以本段为准。")
 from .asr_provider_snapshot import POLISH_PROMPT_VERSION
 
 
@@ -758,8 +765,14 @@ def call_correction_api(
 先结合邻句理解疑似词是选手、战队、角色、技能、物品、位置还是动作。合法中文也可能是谐音；电竞口语不书面不等于错误。实体类别/语义流畅/近音任一项单独均不证明修改。再比较ASR和候选：来源码查asr_sources，asr每项为[来源码列表,原文]；asr_equal_primary列出逐字等于主稿的来源。primary_source取cue内或cue_defaults；缺来源不计票，派生文本不算独立来源。matches的cue_ids限定作用范围；overlap表示重叠说话人须冻结跨人替换。
 优先适用且无歧义的confirmed别名→规范名称，这是用户名称统一，不要求另一ASR直接写出英文ID，不受字符变长限制；普通动画/电影等话题不能机械套选手昵称。规范词逐字使用canonical，包括大小写和数字，不按记忆换成其他拼写。reference/ambiguous/context-only只提供候选，近音或英文错拼修改仍需局部来源与语境证据；非音近昵称必须有明确别名关联。完整Latin ID允许有据有限拼写修正，两字母普通英文/单字音译不能仅凭词表改名。approved_global_term_mappings保持。
 只改目标词或必要错断词跨度，保留语气、重复、代词、原意及数字事件顺序；不把‘一个’改为‘1个’，不合并重复数字。编辑给from/to、原文start/end（左闭右开）、candidate_id（适用时）、type=alias_normalization|phonetic_correction|id_spelling|asr_correction及简短evidence；basis用真实输入来源+context，别名用glossary+context。不声称听过未提供音频。疑似词suspects每项必须在suspect_results给suspect_id、disposition=replace|keep|review|missing_candidate和短evidence；空edits不代表已经审查。两个候选合理、证据冲突或缺项时保留并待确认；新疑似词用new_suspects(id,start,end,surface,evidence)，不编造candidate_id。固定规则：{editorial_rule}"""
-    from .number_fidelity import NUMBER_POLICY_PROMPT
-    prompt += '\n' + NUMBER_POLICY_PROMPT
+    from twobyteasr.language_rules import is_japanese
+    if is_japanese():
+        # Japanese subtitles: same edit contract, but never translate, never
+        # convert kanji to simplified Chinese forms, no Chinese numeral rules.
+        prompt = JAPANESE_POLISH_RULE + '\n' + prompt
+    else:
+        from .number_fidelity import NUMBER_POLICY_PROMPT
+        prompt += '\n' + NUMBER_POLICY_PROMPT
     prepared = _prepared_correction_request(segment_batch, glossary, context_before, context_after,
         media_title, project_context, stable_term_candidates, approved_global_mappings, verified_terms,
         glossary_evidence, prompt)
@@ -1225,7 +1238,7 @@ def boundary_overlap_length(left, right, limit=3):
 def trim_content_suffix(text, count):
     positions = [
         match.start()
-        for match in re.finditer(r"[\u3400-\u9fffA-Za-z0-9]", str(text or ""))
+        for match in re.finditer(f"[{CONTENT_CHAR_CLASS}]", str(text or ""))
     ]
     if count <= 0 or count > len(positions):
         return clean_subtitle_text(text)
@@ -1235,7 +1248,7 @@ def trim_content_suffix(text, count):
 def trim_content_prefix(text, count):
     positions = [
         match.start()
-        for match in re.finditer(r"[\u3400-\u9fffA-Za-z0-9]", str(text or ""))
+        for match in re.finditer(f"[{CONTENT_CHAR_CLASS}]", str(text or ""))
     ]
     if count <= 0 or count > len(positions):
         return clean_subtitle_text(text)

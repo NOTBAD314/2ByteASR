@@ -203,42 +203,107 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
                            on_line: Callable[[str], None] | None = None,
                            cancelled: Callable[[], bool] | None = None,
                            stall_timeout: float | None = None) -> tuple[int, str]:
+    import queue
+
     process = popen_hidden_subprocess(
         command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
         purpose="advanced preview/render child",
+        own_process_tree=True,
         env=renderer_child_environment() if command and Path(command[0]).name.lower() in {'node.exe','node'} else None,
     )
     tail: list[str] = []
     state = {"last_line": time.monotonic(), "stall_killed": False, "cancelled": False}
     finished = threading.Event()
+    cleanup_lock = threading.Lock()
+    cleanup_done = False
+    cleanup_error = None
+
+    def cleanup() -> None:
+        nonlocal cleanup_done, cleanup_error
+        with cleanup_lock:
+            if cleanup_error is not None:
+                raise cleanup_error
+            if cleanup_done:
+                return
+            try:
+                job = getattr(process, "_request_job", None)
+                if job is not None:
+                    # A parent exit does not release ownership of descendants.
+                    job.close(timeout=3)
+                else:
+                    from .processes import stop_process_tree
+                    stop_process_tree(process)
+            except BaseException as exc:
+                cleanup_error = exc
+                raise
+            cleanup_done = True
 
     def stall_watchdog() -> None:
         # Remotion 正常时每帧都打 "Rendered N/M"（行级心跳）；静默超过
         # stall_timeout 且进程仍存活 = 真挂死，主动终止让导出给出明确
         # 报错而不是永远停在"高级字幕渲染"。
-        from .processes import stop_process_tree
-        while not finished.wait(.05) and process.poll() is None:
-            if cancelled and cancelled():
-                state['cancelled'] = True
-                stop_process_tree(process)
-                return
-            if stall_timeout and time.monotonic() - state["last_line"] > float(stall_timeout):
-                state["stall_killed"] = True
-                tail.append(f"[2ByteASR] 渲染进程超过 {stall_timeout:.0f}s 无输出，已终止（疑似挂死）。")
-                try:
-                    stop_process_tree(process)
-                except OSError:
-                    pass
-                return
+        try:
+            while not finished.wait(.05):
+                if cancelled and cancelled():
+                    state['cancelled'] = True
+                    cleanup()
+                    return
+                if process.poll() is not None:
+                    # Descendants can still hold stdout after the root exits.
+                    cleanup()
+                    return
+                if stall_timeout and time.monotonic() - state["last_line"] > float(stall_timeout):
+                    state["stall_killed"] = True
+                    cleanup()
+                    return
+        except BaseException as exc:
+            # The consumer must observe failure even if a child holds the pipe.
+            state["watchdog_error"] = exc
 
-    if stall_timeout or cancelled:
-        threading.Thread(
-            target=stall_watchdog, daemon=True, name="advanced-render-stall-watchdog"
-        ).start()
+    watchdog = threading.Thread(
+        target=stall_watchdog, daemon=True, name="advanced-render-stall-watchdog"
+    )
     assert process.stdout is not None
+    lines = queue.Queue(maxsize=256)
+    eof = object()
+
+    def enqueue(value) -> None:
+        while not finished.is_set():
+            try:
+                lines.put(value, timeout=.05)
+                return
+            except queue.Full:
+                continue
+
+    def read_lines() -> None:
+        try:
+            for raw in iter(process.stdout.readline, ""):
+                enqueue(raw)
+                if finished.is_set():
+                    return
+        except BaseException as exc:
+            enqueue(exc)
+        finally:
+            enqueue(eof)
+
+    reader = threading.Thread(target=read_lines, daemon=True, name="advanced-render-output")
+    reader.start()
+    watchdog.start()
     try:
-        for raw in iter(process.stdout.readline, ""):
+        while True:
+            if cleanup_error is not None:
+                raise cleanup_error
+            if "watchdog_error" in state:
+                raise state["watchdog_error"]
+            try:
+                raw = lines.get(timeout=.05)
+            except queue.Empty:
+                continue
+            if raw is eof:
+                break
+            if isinstance(raw, BaseException):
+                raise raw
             line = raw.strip()
             state["last_line"] = time.monotonic()
             if line:
@@ -246,15 +311,27 @@ def _run_streaming_process(command: list[str], *, cwd: Path | None = None,
                 del tail[:-120]
                 if on_line:
                     on_line(line)
-        code = process.wait()
+        while True:
+            if cleanup_error is not None:
+                raise cleanup_error
+            if "watchdog_error" in state:
+                raise state["watchdog_error"]
+            try:
+                code = process.wait(timeout=.05)
+                break
+            except subprocess.TimeoutExpired:
+                continue
     finally:
         finished.set()
-        if process.poll() is None:
-            from .processes import stop_process_tree
-            stop_process_tree(process)
+        try:
+            cleanup()
+        finally:
+            watchdog.join(timeout=3.5)
+            reader.join(timeout=.2)
     if state['cancelled'] or (cancelled and cancelled()):
         raise InterruptedError("render cancelled")
     if state["stall_killed"]:
+        tail.append(f"[2ByteASR] 渲染进程超过 {stall_timeout:.0f}s 无输出，已终止（疑似挂死）。")
         raise RuntimeError("\n".join(tail[-12:]))
     return code, "\n".join(tail)
 

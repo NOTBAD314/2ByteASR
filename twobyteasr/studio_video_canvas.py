@@ -36,6 +36,10 @@ from .live_web_preview import _decode_frame  # noqa: E402  (import order: const 
 
 from .i18n import bind_text
 
+# Snapshot sources of an ordinary running/idle clock (not seeks or rebinds).
+_STEADY_CLOCK_SOURCES = frozenset(
+    {"heartbeat", "visual_tick", "cached_video_frame", "audio_engine_clock"})
+
 class MpvCanvas(QFrame):
     VIDEO_OVERLAY_ID = VIDEO_OVERLAY_ID
     ADVANCED_OVERLAY_ID = ADVANCED_OVERLAY_ID
@@ -86,6 +90,7 @@ class MpvCanvas(QFrame):
         self._position_trace_samples: deque[float] = deque(maxlen=96)
         self._position_trace_last_loop_key: tuple[int, int] | None = None
         self._position_trace_last_loop_at = 0.0
+        self._position_mutation_logged_at = 0.0
         self._clock = QElapsedTimer()
         self._clock.start()
         self._tick_clock = QElapsedTimer()
@@ -125,6 +130,11 @@ class MpvCanvas(QFrame):
         self.playback_prepare = None
         self.playback_ready = None
         self._buffered_play_pending = False
+        # Internal pause while a seek during playback waits for its audio.
+        self._seek_hold_active = False
+        self._seek_hold_entering = False
+        self._seek_hold_token = 0
+        self._embed_hwnd = 0
         self._buffered_play_timer = QTimer(self)
         self._buffered_play_timer.setInterval(10)
         self._buffered_play_timer.timeout.connect(lambda: self.set_paused(False))
@@ -238,6 +248,8 @@ class MpvCanvas(QFrame):
         # promotes the canvas (and ancestors) to native windows, changing
         # the widget stack that owns decoded video and caption overlays.
         window_id = 0 if getattr(self.controller, 'backend', '') == 'qt-video-sink' else int(self.winId())
+        # Plain int for the stall watchdog's native probe (no Qt off-thread).
+        self._embed_hwnd = int(window_id)
         self.controller.start(window_id, log_path=str(log_path))
         self._native_subtitle_visibility_controller = None
         self._playback_source_dead = False
@@ -765,8 +777,8 @@ class MpvCanvas(QFrame):
             # Windows rejects it with EINVAL while the mapping is alive.
             path = self._compositor_overlay_dir / f"overlay-{int(overlay_id)}-sync-{slot}.rgba"
             path.write_bytes(cropped.constBits())
-            from .overlay_session import lease_overlay
-            lease = lease_overlay(path, 'mpv_sync_overlay')
+            from .overlay_session import lease_overlay_deferred
+            lease = lease_overlay_deferred(path, 'mpv_sync_overlay')
             self._sync_overlay_busy.add((int(overlay_id), slot))
             released = threading.Event()
             def consumed(ok, oid=int(overlay_id), buffer_slot=slot, target=path, held=lease, frame_identity=identity, gen=generation):
@@ -1547,8 +1559,12 @@ class MpvCanvas(QFrame):
                 or owner_changed
                 or source_changed
             )
+            # The steady playback ticks (visual tick, cached frame, audio
+            # clock) are a heartbeat too: ~70 two-line records a second grew
+            # studio-open.log to over a gigabyte. Seeks keep full records.
             heartbeat_gated = (
-                str(snapshot.source) == "heartbeat"
+                str(snapshot.source) in _STEADY_CLOCK_SOURCES
+                and not getattr(snapshot, "seeking", False)
                 and not state_changed
                 and now_mono - getattr(self, "_media_clock_log_at", 0.0) < 1.0
             )
@@ -1621,8 +1637,17 @@ class MpvCanvas(QFrame):
         delta = float(new_ms) - float(old_ms)
         if abs(delta) < 0.01:
             return
-        page = self._studio_page()
         raw_reason = str(getattr(snapshot, "source", "unknown") or "unknown")
+        if (raw_reason in _STEADY_CLOCK_SOURCES and not snapshot.seeking
+                and not snapshot.paused and 0.0 < delta < 500.0):
+            # Ordinary forward playback steps: keep the loop detector's
+            # samples, write one diagnostic record per second.
+            now = time.monotonic()
+            if now - self._position_mutation_logged_at < 1.0:
+                self._position_trace_samples.append(float(new_ms))
+                return
+            self._position_mutation_logged_at = now
+        page = self._studio_page()
         lowered = raw_reason.casefold()
         if "seek" in lowered:
             source = "USER_SEEK"
@@ -2414,6 +2439,100 @@ class MpvCanvas(QFrame):
         accurate: bool = True,
         project_ms: int | None = None,
     ) -> None:
+        """Seek; while playing, hold the picture until the new audio is ready.
+
+        The audio engine restarts its decoder at the new position. On an
+        unindexed FLV that takes 0.3–1.5 s before the first PCM, while mpv
+        resumed at once: audio then trailed the picture by the whole startup
+        time (3.6 s of media at 4x) until the next pause or rate change. The
+        hold reuses the buffered-play gate that already protects play start
+        and rate changes, so both clocks resume from the same anchor.
+        """
+        hold = self._should_hold_for_seek()
+        if hold:
+            self._seek_hold_token += 1
+            self._seek_hold_active = True
+            self._seek_hold_started = time.monotonic()
+            self._trace_playback_gate("SEEK_HOLD_BEGIN", target_s=round(float(seconds), 3))
+            self._seek_hold_entering = True
+            try:
+                self.set_paused(True)
+            finally:
+                self._seek_hold_entering = False
+        self._seek_now(seconds, accurate=accurate, project_ms=project_ms)
+        if hold and self._seek_hold_active:
+            token = self._seek_hold_token
+            # The page moves its playhead and sends the new audio request
+            # right after this call; resume (through the gate) after that.
+            QTimer.singleShot(0, lambda: self._resume_after_seek_hold(token))
+
+    def _playback_gate_detail(self) -> dict:
+        page = self._studio_page()
+        engine = getattr(page, "audio_engine", None)
+        request = dict(getattr(engine, "_last_payload", {}) or {})
+        state = dict(getattr(engine, "_telemetry", {}) or {})
+        return {"audio_ready": bool(engine.ready_for_playback()) if engine is not None else None,
+                "request_generation": request.get("transport_generation"),
+                "telemetry_generation": state.get("transport_generation"),
+                "telemetry_state": state.get("state"), "buffer_bytes": state.get("buffer_bytes"),
+                "request_paused": request.get("paused"), "sync_inflight": getattr(engine, "_sync_inflight", None)}
+
+    @property
+    def playback_intended(self) -> bool:
+        """The user's play/pause intent, not the momentary transport state.
+
+        Buffering at play start and the seek hold pause the transport while
+        the user is still "playing"; code that re-asserts the current state
+        must not turn those internal pauses into a user pause.
+        """
+        return bool(not self._paused or self._buffered_play_pending or self._seek_hold_active)
+
+    def _should_hold_for_seek(self) -> bool:
+        return bool(
+            not self._clock_only
+            and self.controller is not None
+            and self.controller.running
+            and not self._playback_source_dead
+            and self._startup_state == "READY"
+            and callable(self.playback_ready)
+            and (not self._paused or self._buffered_play_pending)
+        )
+
+    def _resume_after_seek_hold(self, token: int) -> None:
+        if not self._seek_hold_active or token != self._seek_hold_token:
+            return
+        self.set_paused(False)
+
+    def _trace_playback_gate(self, event: str, **fields) -> None:
+        page = self._studio_page()
+        trace = getattr(page, "_studio_trace", None)
+        if callable(trace):
+            trace(event, generation=int(self._playback_clock.generation), **fields)
+
+    def _end_seek_hold(self, *, resumed: bool) -> None:
+        if not self._seek_hold_active:
+            return
+        self._seek_hold_active = False
+        fields = {}
+        if not resumed:
+            fields["caller"] = [f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}"
+                                for frame in traceback.extract_stack(limit=9)[:-2]]
+        self._trace_playback_gate(
+            "SEEK_HOLD_END", resumed=bool(resumed),
+            held_ms=round((time.monotonic() - getattr(self, "_seek_hold_started", time.monotonic())) * 1000, 1),
+            **fields)
+        if not resumed:
+            # The page skipped its pause side effects for the internal hold;
+            # run them now that the pause is real (user pause or timeout).
+            self.playback_state_changed.emit(True)
+
+    def _seek_now(
+        self,
+        seconds: float,
+        *,
+        accurate: bool = True,
+        project_ms: int | None = None,
+    ) -> None:
         if self._clock_only:
             target_ms = max(0, int(project_ms if project_ms is not None else seconds * 1000))
             snapshot = self._playback_clock.begin_unattached_position(target_ms, paused=self._paused)
@@ -2534,6 +2653,9 @@ class MpvCanvas(QFrame):
         if paused:
             self._buffered_play_pending = False
             self._buffered_play_timer.stop()
+            if self._seek_hold_active and not self._seek_hold_entering:
+                # A pause from anyone else ends the internal seek hold.
+                self._end_seek_hold(resumed=False)
         if not self.controller:
             return
         if self._playback_source_dead:
@@ -2560,7 +2682,14 @@ class MpvCanvas(QFrame):
                 self._buffered_play_pending = False
                 self._buffered_play_timer.stop()
                 bind_text(self, '音频准备超时，请重试播放或检查素材。', property='toolTip')
+                self._trace_playback_gate("PLAYBACK_GATE_TIMEOUT", waited_ms=round((time.monotonic()-self._buffered_play_started)*1000, 1),
+                                          detail=self._playback_gate_detail())
+                self._end_seek_hold(resumed=False)
                 return
+        if not paused and self._paused and callable(self.playback_ready) and getattr(self, "_buffered_play_started", 0.0):
+            waited = (time.monotonic() - self._buffered_play_started) * 1000
+            if waited >= 300:
+                self._trace_playback_gate("PLAYBACK_GATE_WAIT", waited_ms=round(waited, 1))
         self._buffered_play_pending = False
         self._buffered_play_timer.stop()
         current = self.visual_position()
@@ -2588,6 +2717,8 @@ class MpvCanvas(QFrame):
             reason="local_pause_state",
         )
         self._adopt_playback_snapshot(snapshot)
+        if not paused:
+            self._end_seek_hold(resumed=True)
 
     def set_speed(self, value: float) -> None:
         if not self.controller:

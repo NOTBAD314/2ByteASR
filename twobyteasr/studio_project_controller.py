@@ -641,7 +641,10 @@ class StudioProjectController:
         mark_hydration("models_timeline_speakers")
         yield '恢复工作区'
         studio_state = project.studio_state if page._studio_preferences().get("restore_layout", True) is not False else {}
-        page._set_bilingual_mode(bool(studio_state.get("bilingual_mode", False)))
+        # Opening a project only reflects its saved display; no undo entry.
+        from .studio_bilingual import sync_controls
+        from .bilingual_layout import settings_from_state
+        sync_controls(page, settings_from_state(project.studio_state))
         page.continuous_review_toggle.blockSignals(True)
         page.continuous_review_toggle.setChecked(bool(studio_state.get("continuous_review", False)))
         page.continuous_review_toggle.blockSignals(False)
@@ -917,13 +920,9 @@ class StudioProjectController:
         if hasattr(page, 'media_availability'):
             page.media_availability.refresh()
         if hasattr(page, "highlight_panel"):
-            from .studio_edit_sequence import sequence_of
-            sequence = sequence_of(project)
-            page.highlight_panel.set_xml_discovery(
-                tuple(project.studio_state.get("media_xml_candidates", ())),
-                sequence.danmaku_path,
-                automatic=project.studio_state.get("media_xml_match") == "automatic",
-            )
+            # Bind the clip assistant to THIS project now, then find/validate
+            # the same-name XML beside the original source in the background.
+            page._schedule_danmaku_discovery()
         if stale_preview:
             single_shot_fn(1_000, lambda stale=stale_preview: stale.unlink(missing_ok=True))
         profile["窗口打开总计"] = perf_counter() - profile_started

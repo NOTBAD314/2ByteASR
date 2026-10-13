@@ -351,8 +351,9 @@ def test_safe_fix_preserves_interjection_rhythm_spaces():
 
     assert normalize_safe_text("对 对 很不错啊 嗯") == "对 对 很不错啊 嗯"
     assert normalize_safe_text("啊 我很喜欢这个角色") == "啊 我很喜欢这个角色"
-    # 非节奏位的中文间空格仍被清洗（豁免不扩大到一切空格）。
-    assert normalize_safe_text("你 好呀") == "你好呀"
+    # 2026-10-12（用户要求）：中文字间的单个半角空格一律是有意的停顿排版，
+    # 安全修复不再删除（旧断言为 "你好呀"）。
+    assert normalize_safe_text("你 好呀") == "你 好呀"
     # 连续空格仍收敛为单个。
     assert normalize_safe_text("对  对") == "对 对"
 

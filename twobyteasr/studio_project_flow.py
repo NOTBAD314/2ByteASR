@@ -246,7 +246,7 @@ class StudioProjectFlowMixin:
 
     def dragEnterEvent(self, event) -> None:
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
-        if any(path.suffix.lower() in STUDIO_MEDIA_SUFFIXES | {PROJECT_SUFFIX, ".srt", ".ass"} for path in paths):
+        if any(path.suffix.lower() in STUDIO_MEDIA_SUFFIXES | {PROJECT_SUFFIX, ".srt", ".ass", ".xml"} for path in paths):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -256,6 +256,11 @@ class StudioProjectFlowMixin:
         projects = [path for path in paths if path.suffix.lower() == PROJECT_SUFFIX]
         media = [path for path in paths if path.suffix.lower() in STUDIO_MEDIA_SUFFIXES]
         subtitles = [path for path in paths if path.suffix.lower() in {".srt", ".ass"}]
+        # A danmaku XML dropped with (or after) the recording is an explicit choice.
+        danmaku = [path for path in paths if path.suffix.lower() == ".xml"]
+        self._pending_drop_xml = str(danmaku[0]) if danmaku and media else ""
+        if danmaku and not media and not projects and self.project is not None:
+            self._import_danmaku_xml(str(danmaku[0]))
         if projects:
             self.open_project(projects[0])
         elif media:

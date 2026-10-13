@@ -1,6 +1,6 @@
 # 模型、代码、词表和下载许可对应表
 
-这些16项工坊资源属于C，当前Setup没有其主权重；模型卡/条款sidecar现补到源码树。运行代码和离线轮子另见组件目录，nagisa自带词法模型属于B。不要将“首次运行下载”视为免除条件。
+这些17项工坊资源属于C（2026-10-13 加日语 CTC 对齐模型），当前Setup没有其主权重；模型卡/条款sidecar现补到源码树。运行代码和离线轮子另见组件目录，nagisa自带词法模型属于B。不要将“首次运行下载”视为免除条件。
 
 下表原文与模型卡保持原样。卡片许可声明不等于所有基础模型、远程代码、数据来源和附加权利已核实；无法取得独立LICENSE时明确保留缺口。下载器本轮未修改，仍未自动随每次模型下载生成这些许可回执。
 
@@ -137,3 +137,11 @@
 Fun-ASR-Nano固定卡为Apache-2.0而lock仍写Research License；Canary Qwen tokenizer项漏license字段。SenseVoice卡链接的FunASR条款现固定到58830eca4012644aac0c3218c3ccc7d98f003fda，只消除本轮材料的漂移，不自动证明历史适用性。FireRedLLM的Qwen子模型LICENSE、Canary LICENSES、OpenMDW1.1及CC-BY署名规则均须保留。
 
 本轮只整理材料，不修改dependencies.lock.json、下载器或运行注册表。正式发布前应在匹配的代码任务中更正字段、把适用许可/模型卡随取得方式交付并记录回执，不更改现有权重目录、用户模型或工程。
+
+## jonatasgrosman/wav2vec2-large-xlsr-53-japanese
+
+- 范围/版本：C；`cf031e020336460d15a417eba710bbc5bb43be9a`。模型目录：`models/wav2vec2-large-xlsr-53-japanese`。2026-10-13 起可在模型工坊下载。
+- 条款依据：apache-2.0；[固定来源](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/tree/cf031e020336460d15a417eba710bbc5bb43be9a)；国内来源 ModelScope `jonatasgrosman/wav2vec2-large-xlsr-53-japanese` 固定提交 `18a6b5970be543c1171a30e5f2889c63878acd2e`，5 个必需文件与锁定 SHA-256 逐个相同。
+- 已附：[model-ja_ctc_aligner-README_md.txt](materials/models/ja_ctc_aligner/model-ja_ctc_aligner-README_md.txt)；[apache-2.0.txt](materials/common/apache-2.0.txt)。
+- 代码/资源边界：通过工坊注册表、download_models.ps1 和主运行环境的 `ctc_aligner_worker.py` 运行，只用于日语字幕句首校正；required_files/逐文件SHA及镜像repository/revision保留于component-index.json。权重是 `pytorch_model.bin`（上游没有 safetensors），加载前按锁定哈希校验。
+- 条件与未完成：模型卡写明由 facebook/wav2vec2-large-xlsr-53 在 Common Voice 6.1、CSS10、JSUT 上微调；基础模型与这三份数据的条款未逐项核实，模型卡的 Apache-2.0 不自动覆盖数据集条件。

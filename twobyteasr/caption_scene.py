@@ -18,6 +18,18 @@ from .i18n import bind_text
 from .i18n import tr
 
 
+# Wall-clock bound for keeping the previous raster while the next cue set's
+# raster is still being drawn during ordinary playback.
+HOLD_PREVIOUS_MS = 300
+# How often a long-lived cue set re-checks that the coming boundaries are warm.
+PREHEAT_INTERVAL_S = 0.25
+# Look-ahead in WALL seconds; media look-ahead scales with the preview rate.
+PREHEAT_AHEAD_WALL_S = 1.5
+PREHEAT_MIN_BOUNDARIES = 2
+PREHEAT_MAX_BOUNDARIES = 6
+FRAME_CACHE_BYTES = 64 * 1024 * 1024
+
+
 def active_cues(page, milliseconds):
     project = page.project
     if project is None:
@@ -238,11 +250,19 @@ class CaptionScene(QObject):
         self.token = None
         self.pending = None
         self.warm_pending = OrderedDict()
+        self.wanted_times = []
         self.frames = OrderedDict()
         self.last_request = None
         self.published = None
         self.failures = {}
         self.metrics = []
+        self._hold = None
+        self._cleared_token = None
+        self._last_preheat = 0.0
+        from PySide6.QtCore import QTimer
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.timeout.connect(self._hold_expired)
         self.lock = threading.Lock()
         self.wake = threading.Event()
         self.ready.connect(self.accept)
@@ -284,32 +304,78 @@ class CaptionScene(QObject):
         generation = page.video.playback_position_snapshot().playback_generation
         token = self.scene_token(cues,rect,generation)
         if token != self.token:
-            self.token = token
+            previous, self.token = self.token, token
             self.published = None
+            # A chain of holds (a short cue whose raster was never shown) keeps
+            # one deadline: the time the bitmap on screen first went stale.
+            stale_since = self._hold[1] if self._hold is not None else None
+            self._hold = None
             # In-flight uploads from the preceding active set are no longer valid.
             page.video._web_live_epoch += 1
+            if previous is not None and self.shows_other_content(previous, token):
+                with self.lock:
+                    ready = self.frames.get(self.frame_key(token))
+                if ready is None and cues and self.continuous_handoff(previous, token):
+                    # 2026-10-12: ordinary playback reached the next cue set
+                    # before its raster was ready. Withdrawing the old bitmap
+                    # first showed an empty frame between back-to-back cues;
+                    # the next raster replaces it in one overlay update. The
+                    # hold is bounded: a late raster retires the old one.
+                    now = time.perf_counter()
+                    self._hold = (token, stale_since if stale_since is not None else now)
+                    remaining = HOLD_PREVIOUS_MS - (now - self._hold[1]) * 1000.0
+                    self._arm_hold_deadline(max(1, int(remaining)))
+                    page._studio_trace('CAPTION_SCENE_HELD', previous_cue_ids=list(previous[4]),
+                                       cue_ids=list(token[4]))
+                elif ready is None:
+                    self._hold_timer.stop()
+                    # 2026-10-11: the published bitmap belongs to other cues or
+                    # to the old video geometry. Leaving it up until the new
+                    # raster is ready showed cue A over cue B's frame (review
+                    # Up/Down, E/R). Withdraw it now; the new one follows.
+                    page.video.remove_compositor_overlay(page.video.ADVANCED_OVERLAY_ID, force=True)
+                    page._studio_trace('CAPTION_SCENE_RETIRED', previous_cue_ids=list(previous[4]),
+                                       cue_ids=list(token[4]), geometry_changed=previous[-4:] != token[-4:])
+                    self._cleared_token = token
         if self.failures.get(token, 0) > 1:
             page.video.set_native_subtitle_visible(not independent)
             return True
         page.video.set_native_subtitle_visible(False)
         if not cues:
-            page.video.remove_compositor_overlay(page.video.ADVANCED_OVERLAY_ID, force=True)
+            # A gap is presented on every tick. One withdrawal per active set
+            # is the state change; repeating it flooded mpv's IPC queue and
+            # the trace with ~126 overlay-remove commands per second.
+            if self._cleared_token != token:
+                self._cleared_token = token
+                page.video.remove_compositor_overlay(page.video.ADVANCED_OVERLAY_ID, force=True)
             return True
-        prepared = tuple((cue.id, self.prepare(cue)) for cue in cues)
+        self._cleared_token = None
+        prepared = self.scene_items(cues)
         from .caption_playback_cache import FailedCaption
         if any(item is None for _,item in prepared):
             # Model/style edits create a new render revision even when paused.
             # A lookup alone cannot start preparation for that revision.
             page._prepare_caption_window(milliseconds, prepare_pixels=False)
+            # 2026-10-12 (night): a scene is drawn only once every caption in
+            # it is prepared, including a bilingual cue's translation. A frame
+            # drawn without the translation was cached under the same scene key
+            # and reused: 34 of 50 frames of a 24 min Japanese episode showed no
+            # Chinese line. The cache's ready signal presents the scene again.
+            self.last_request = None
+            return True
         complete = tuple(p.error if isinstance(p,FailedCaption) else p.snapshot_hash if p else None for _, p in prepared)
         animated = any(animated_caption(p) for _,p in prepared)
         request_key = (token, complete, milliseconds if animated else None)
         if request_key == self.last_request:
+            # Keep the next boundaries warm while one long cue stays on screen.
+            if time.perf_counter() - self._last_preheat >= PREHEAT_INTERVAL_S:
+                width, height = self.pixel_size(rect)
+                self.preheat(milliseconds, rect, generation, width, height)
             return True
         self.last_request = request_key
         width,height=self.pixel_size(rect)
         with self.lock:
-            cached=self.frames.get(token) if not animated else None
+            cached=self.frames.get(self.frame_key(token)) if not animated else None
             if cached is None:
                 self.pending = (token, prepared, milliseconds, width, height)
                 self.wake.set()
@@ -330,6 +396,87 @@ class CaptionScene(QObject):
             self.preheat(self.page._caption_sample_ms(),rect,
                 self.page.video.playback_position_snapshot().playback_generation,*self.pixel_size(rect))
 
+    @staticmethod
+    def frame_key(token):
+        """Raster identity: a static scene does not depend on the playback generation."""
+        return token[:3] + token[4:]
+
+    @staticmethod
+    def shows_other_content(previous, token):
+        """The published raster would show other cues, or sit at the old geometry."""
+        return previous[4] != token[4] or tuple(previous[-4:]) != tuple(token[-4:])
+
+    def continuous_handoff(self, previous, token):
+        """Playback advanced into the next cue set: same project, revisions,
+        clock generation (no seek/navigation) and video geometry."""
+        video = self.page.video
+        return (not bool(getattr(video, '_paused', True))
+                and tuple(previous[:4]) == tuple(token[:4])
+                and tuple(previous[-4:]) == tuple(token[-4:]))
+
+    def _arm_hold_deadline(self, milliseconds=HOLD_PREVIOUS_MS):
+        self._hold_timer.start(int(milliseconds))
+
+    def _hold_expired(self):
+        hold, self._hold = self._hold, None
+        if self.closed or hold is None or hold[0] != self.token or self.published is not None:
+            return
+        page = self.page
+        page.video.remove_compositor_overlay(page.video.ADVANCED_OVERLAY_ID, force=True)
+        page._studio_trace('CAPTION_SCENE_RETIRED', cue_ids=list(hold[0][4]), reason='hold_timeout',
+                           held_ms=round((time.perf_counter() - hold[1]) * 1000, 1))
+
+    def warm_times(self, times):
+        """Rasterise the scenes at ``times`` ahead of a jump there (review navigation)."""
+        if self.closed or self.page.project is not self.project:
+            return
+        rect = self.page.position_overlay._content_rect().toRect()
+        if rect.isEmpty():
+            return
+        generation = self.page.video.playback_position_snapshot().playback_generation
+        width, height = self.pixel_size(rect)
+        waiting = []
+        for at in times:
+            cues = active_cues(self.page, int(at))
+            if not cues:
+                continue
+            token = self.scene_token(cues, rect, generation)
+            with self.lock:
+                if self.frame_key(token) in self.frames or token in self.warm_pending:
+                    continue
+            prepared = self.scene_items(cues)
+            if any(p is None for _, p in prepared):
+                waiting.append(int(at))  # retried when the caption cache is ready
+                continue
+            if any(animated_caption(p) for _, p in prepared):
+                continue
+            with self.lock:
+                self.warm_pending[token] = (token, prepared, int(at), width, height)
+                while len(self.warm_pending) > 12:
+                    self.warm_pending.popitem(last=False)
+                self.wake.set()
+        self.wanted_times = waiting[-6:]
+
+    def scene_items(self, cues):
+        """Prepared captions of one scene: every cue, then (bilingual display)
+        the translation companion of every translated cue. ``None`` marks a
+        caption that is not prepared yet; such a scene is not drawn or cached."""
+        items = [(cue.id, self.prepare(cue)) for cue in cues]
+        page = self.page
+        from .bilingual_layout import companion_id, settings_from_state, translations_of
+        if settings_from_state(page.project.studio_state).mode == "bilingual":
+            translated = translations_of(page.project.generation_metadata)
+            cache = getattr(page, '_caption_playback_cache', None)
+            for cue in cues:
+                if not str(translated.get(cue.id, '') or '').strip():
+                    continue
+                key = companion_id(cue.id)
+                prepared = page._prepared_caption(key)
+                if prepared is None and cache is not None:
+                    prepared = cache.failure(page._revision_store.render, key, *page._advanced_preview_size())
+                items.append((key, prepared))
+        return tuple(items)
+
     def scene_token(self,cues,rect,generation):
         page=self.page;revision=page._revision_store.render
         return (id(self.project),revision.mapping_revision,revision.visual_revision,generation,tuple(c.id for c in cues),
@@ -339,19 +486,27 @@ class CaptionScene(QObject):
     def preheat(self,milliseconds,rect,generation,width,height):
         """Prepare upcoming static active sets before their first visible tick."""
         from bisect import bisect_right
+        self._last_preheat=time.perf_counter()
         runtime=self.page.session.runtime
         if runtime is None:return
         following=bisect_right(runtime._cue_starts,int(milliseconds))
         upcoming=[runtime.cue_by_id[key] for key in runtime._cue_order[following:following+12]]
-        boundaries=sorted({t for cue in [*runtime.cues_at(milliseconds),*upcoming]
-                           for t in (cue.start_ms,cue.end_ms) if milliseconds<t<=milliseconds+1000})[:12]
+        # The window is media time: at 4x one wall second covers four media
+        # seconds, so a fixed 1000 ms window left 250 ms of real time to draw
+        # the next set. Always include the next boundaries, however far.
+        rate=max(1.,float(getattr(self.page.video,'_playback_rate',1.) or 1.))
+        ahead=max(1000.,PREHEAT_AHEAD_WALL_S*1000.*rate)
+        future=sorted({t for cue in [*runtime.cues_at(milliseconds),*upcoming]
+                       for t in (cue.start_ms,cue.end_ms) if t>milliseconds})
+        boundaries=[t for index,t in enumerate(future)
+                    if index<PREHEAT_MIN_BOUNDARIES or t<=milliseconds+ahead][:PREHEAT_MAX_BOUNDARIES]
         for at in boundaries:
             cues=active_cues(self.page,at)
             if not cues:continue
             token=self.scene_token(cues,rect,generation)
             with self.lock:
-                if token in self.frames or token in self.warm_pending:continue
-            prepared=tuple((c.id,self.prepare(c)) for c in cues)
+                if self.frame_key(token) in self.frames or token in self.warm_pending:continue
+            prepared=self.scene_items(cues)
             if any(p is None or animated_caption(p) for _,p in prepared):continue
             with self.lock:
                 self.warm_pending[token]=(token,prepared,at,width,height)
@@ -412,9 +567,10 @@ class CaptionScene(QObject):
                              sample_ms=float(milliseconds), duration_ms=(time.perf_counter()-started)*1000)
                 if all(row['status']!='pending' for row in rows) and not any(animated_caption(p) for _,p in cues):
                     with self.lock:
-                        self.frames[token]=(pixels,trace)
-                        self.frames.move_to_end(token)
-                        while len(self.frames)>1 and (len(self.frames)>32 or sum(v[0].image.sizeInBytes() for v in self.frames.values())>48*1024*1024):
+                        key=self.frame_key(token)
+                        self.frames[key]=(pixels,trace)
+                        self.frames.move_to_end(key)
+                        while len(self.frames)>1 and (len(self.frames)>32 or sum(v[0].image.sizeInBytes() for v in self.frames.values())>FRAME_CACHE_BYTES):
                             self.frames.popitem(last=False)
                 if not self.closed:
                     try: self.ready.emit(token, pixels, trace)
@@ -449,6 +605,11 @@ class CaptionScene(QObject):
         accepted = page.video.publish_compositor_overlay(page.video.ADVANCED_OVERLAY_ID,
             pixels.image, QRect(*token[-4:]), prepared_pixels=pixels, context=context)
         self.published = pixels if accepted else None
+        hold = self._hold
+        if hold is not None and hold[0] == token:
+            self._hold = None
+            self._hold_timer.stop()
+            trace = dict(trace, held_previous_ms=round((time.perf_counter() - hold[1]) * 1000, 1))
         from .visual_runtime import VisualOwner
         page._visual_ownership.commit(VisualOwner.ADVANCED_LIVE if accepted else VisualOwner.NONE,
                                      cue_id=context['cue_id'] if accepted else '')
@@ -486,6 +647,11 @@ class CaptionScene(QObject):
 
     def close(self, *_):
         self.active = False
+        self._hold = None
+        try:
+            self._hold_timer.stop()
+        except RuntimeError:
+            pass
         self.web_cache.close()
         with self.lock:
             self.closed = True

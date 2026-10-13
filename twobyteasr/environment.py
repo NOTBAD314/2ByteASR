@@ -146,13 +146,32 @@ def _enforce_hf_hub_range(role, version):
         )
 
 
+_HASH_CACHE = {}  # lock path -> ((mtime_ns, size), environments hash)
+
+
 def environments_hash():
-    """Deterministic hash of the environments section (fingerprint validity key)."""
-    with open(lock_path(), "r", encoding="utf-8") as stream:
+    """Deterministic hash of the environments section (fingerprint validity key).
+
+    Cached per lock-file (mtime_ns, size): fast_preflight runs on every Model
+    Workshop refresh and used to re-read and parse the 55 KB lock each time.
+    """
+    path = lock_path()
+    try:
+        stat = os.stat(path)
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = None
+    cached = _HASH_CACHE.get(path)
+    if stamp is not None and cached is not None and cached[0] == stamp:
+        return cached[1]
+    with open(path, "r", encoding="utf-8") as stream:
         payload = json.load(stream)
     section = payload.get(_ENVIRONMENTS_LOCK_KEY) or {}
     encoded = json.dumps(section, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    digest = hashlib.sha256(encoded).hexdigest()
+    if stamp is not None:
+        _HASH_CACHE[path] = (stamp, digest)
+    return digest
 
 
 def environment_interpreter(role):
@@ -368,16 +387,24 @@ def _cache_valid(role, current_hash):
 def fast_preflight(role):
     """Cheap check: interpreter exists + cached deep result matches lock hash."""
     current_hash = environments_hash()
-    if not os.path.isfile(environment_interpreter(role)):
+    interpreter = environment_interpreter(role)
+    if not os.path.isfile(interpreter):
         return PreflightResult(
             role=role,
             ok=False,
-            interpreter=environment_interpreter(role),
-            problems=[f"{role} 解释器缺失：{environment_interpreter(role)}"],
+            interpreter=interpreter,
+            problems=[f"{role} 解释器缺失：{interpreter}"],
         )
     if _cache_valid(role, current_hash):
         return _CACHE[role][1]
     return None  # fast check inconclusive -> deep needed
+
+
+def preflight_cache_token():
+    """Changes whenever a cached deep-preflight result is stored or dropped
+    (lets a page skip re-rendering environment status that cannot differ)."""
+    with _LOCK:
+        return tuple(sorted((role, entry[0], id(entry[1])) for role, entry in _CACHE.items()))
 
 
 def deep_preflight(role, *, interpreter=None, use_cache=True):

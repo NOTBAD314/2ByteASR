@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Mapping
 
 
+# studio-open.log is rotated to studio-open.previous.log at this size.
+TRACE_LOG_MAX_BYTES = 16 * 1024 * 1024
+
+
 class RuntimeTraceWriter:
     """Write diagnostics off the caller thread while retaining a bounded ring."""
 
@@ -167,6 +171,20 @@ class RuntimeTraceWriter:
         )
         return f"[{record.get('stamp', '')}] {rendered}\n"
 
+    @staticmethod
+    def _open_bounded(path: Path):
+        """Append to ``path``; first move a full log to ``*.previous.log``.
+
+        The file used to grow forever (1.27 GB on a daily machine). Like the
+        child-process log, keep the current file plus one previous file."""
+        try:
+            if path.stat().st_size >= TRACE_LOG_MAX_BYTES:
+                path.replace(path.with_name(path.stem + ".previous" + path.suffix))
+        except OSError:
+            pass
+        stream = path.open("a", encoding="utf-8", buffering=1)
+        return stream, stream.tell()
+
     def _run(self) -> None:
         local_appdata = Path(
             os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
@@ -178,14 +196,19 @@ class RuntimeTraceWriter:
         debug_stream = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            stream = path.open("a", encoding="utf-8", buffering=1)
+            stream, written = self._open_bounded(path)
             if debug_enabled:
                 debug_path.parent.mkdir(parents=True, exist_ok=True)
                 debug_stream = debug_path.open("a", encoding="utf-8", buffering=1)
             while True:
                 record = self._queue.get()
                 try:
-                    stream.write(self._render(record))
+                    line = self._render(record)
+                    if written >= TRACE_LOG_MAX_BYTES:
+                        stream.close()
+                        stream, written = self._open_bounded(path)
+                    stream.write(line)
+                    written += len(line.encode("utf-8"))
                     if debug_stream is not None:
                         payload = {
                             key: value for key, value in record.items() if key != "stamp"
