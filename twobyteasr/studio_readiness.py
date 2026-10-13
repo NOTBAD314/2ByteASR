@@ -99,6 +99,11 @@ class StudioReadiness(QObject):
     player_loaded = Signal(int, object, str)
     finished = Signal()
     TASKS = ('读取工程', '建立时间轴', '准备播放器', '准备音频', '准备字幕', '首屏绘制')
+    # The audio engine rebuilds a failed endpoint at the current position by
+    # itself. While opening, a failure only fails the gate if it is not
+    # recovered within this time (macOS reopen, 2026-10-14: the endpoint
+    # dropped once and was back about 1 s later, but Studio reported 准备音频).
+    AUDIO_RECOVERY_GRACE_S = 8.0
 
     def __init__(self, page):
         super().__init__(page)
@@ -234,6 +239,7 @@ class StudioReadiness(QObject):
         self.profile = {'kind': 'warm' if getattr(self, '_ever_ready', False) else 'cold',
                         'stages_ms': {}, 'gui_gaps_ms': []}
         self.completed = set()
+        self._audio_failed_since = None
         self.painted = False
         self.steps = None
         self.next_stage = ''
@@ -380,8 +386,14 @@ class StudioReadiness(QObject):
             page = self.page
             audio_state = page.audio_engine.telemetry_snapshot()
             if audio_state.get('state') == 'ENDPOINT_FAILED':
-                self.fail('准备音频', str(audio_state.get('decoder_error') or '音频进程已退出'))
-                return
+                now = time.monotonic()
+                if getattr(self, '_audio_failed_since', None) is None:
+                    self._audio_failed_since = now
+                if now - self._audio_failed_since >= self.AUDIO_RECOVERY_GRACE_S:
+                    self.fail('准备音频', str(audio_state.get('decoder_error') or '音频进程已退出'))
+                    return
+            else:
+                self._audio_failed_since = None
             from .media_availability import media_available
             has_media = bool(page.project.media.path and
                              media_available(page.project, page.project.media.path))
