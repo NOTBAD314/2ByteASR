@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,8 +113,22 @@ def main(argv=None) -> int:
         receipt['bundle_inventory'] = dict(file=manifest.name, sha256=sha256(manifest),
                                            entries=len(expected))
         dmg = output/f'2ByteASR-{product_version()}-macos-arm64-Setup.dmg'
-        execute(['/usr/bin/hdiutil', 'create', '-volname', f'2ByteASR {product_version()}',
-                 '-srcfolder', staging, '-fs', 'HFS+', '-format', 'UDZO', dmg], timeout=600)
+        # hdiutil create can fail with "Resource busy" while the system still
+        # scans the freshly copied app (2026-10-14 CI run 38525301867, same
+        # source built fine in the run before): retry a few times, nothing else.
+        for attempt in range(4):
+            try:
+                execute(['/usr/bin/hdiutil', 'create', '-volname', f'2ByteASR {product_version()}',
+                         '-srcfolder', staging, '-fs', 'HFS+', '-format', 'UDZO', dmg], timeout=600)
+                break
+            except RuntimeError:
+                busy = b'Resource busy' in log.read_bytes()[-4096:]
+                if attempt == 3 or not busy:
+                    raise
+                dmg.unlink(missing_ok=True)
+                receipt.setdefault('validation', {}).setdefault('hdiutil_busy_retries', 0)
+                receipt['validation']['hdiutil_busy_retries'] += 1
+                time.sleep(15 * (attempt + 1))
         receipt['artifact'] = dict(file=dmg.name, bytes=dmg.stat().st_size, sha256=sha256(dmg))
         execute(['/usr/bin/hdiutil', 'verify', dmg], timeout=180)
         receipt['validation']['dmg_verified'] = True
