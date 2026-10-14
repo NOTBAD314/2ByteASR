@@ -81,6 +81,10 @@ def main() -> None:
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--device', default=os.environ.get('TWOBYTEASR_FIRERED_DEVICE', 'auto'),
                         choices=('auto', 'cuda', 'mps', 'cpu'))
+    # Apple GPU precision (2026-10-14): float32 by default; float16 is the CUDA
+    # path's precision and is being measured on Macs before it becomes a default.
+    parser.add_argument('--mps-dtype', default=os.environ.get('TWOBYTEASR_FIRERED_MPS_DTYPE', 'float32'),
+                        choices=('float32', 'float16'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
     if root.name == 'workers':
@@ -141,6 +145,8 @@ def main() -> None:
         model = FireRedAsr2.from_pretrained("aed", str(args.model_dir), config)
         _emit("device", kind=kind, requested=args.device)
         if kind == "mps":
+            if args.mps_dtype == "float16":
+                model.model.half()
             model.model.to("mps")
         try:
             parameter = next(model.model.parameters())
@@ -164,7 +170,9 @@ def main() -> None:
                     out=extractor(*args,**kwargs)
                     if kind=='mps' and isinstance(out,tuple) and len(out)>=2 and out[0] is not None:
                         moved=time.perf_counter()
-                        out=(out[0].to('mps'),out[1].to('mps'))+tuple(out[2:])
+                        feats=out[0].to('mps')
+                        if args.mps_dtype=='float16':feats=feats.half()
+                        out=(feats,out[1].to('mps'))+tuple(out[2:])
                         telemetry['cpu_to_gpu_ms']+=(time.perf_counter()-moved)*1000
                     return out
                 finally:telemetry['features_ms']+=(time.perf_counter()-tick)*1000-(telemetry['audio_read_ms']-reading)

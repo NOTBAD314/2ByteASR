@@ -222,7 +222,7 @@ def run_moss(runtime: dict, model: dict, clip: dict, device: str, work: Path, ti
 
 
 def run_firered(runtime: dict, model: dict, clip: dict, device: str, work: Path, timeout: int,
-                chunk_seconds: float = 30.0) -> dict:
+                chunk_seconds: float = 30.0, dtype: str = "auto") -> dict:
     stem = Path(clip["path"]).stem
     chunk_dir = work / f"firered-chunks-{stem}"
     chunk_dir.mkdir(exist_ok=True)
@@ -244,15 +244,20 @@ def run_firered(runtime: dict, model: dict, clip: dict, device: str, work: Path,
                          "duration": len(frames) / 2 / 16000})
     manifest = work / f"firered-{stem}.manifest.json"
     manifest.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
-    out = work / f"firered-{device}-{stem}.json"
+    suffix = "" if dtype == "auto" else f"-{dtype}"
+    out = work / f"firered-{device}{suffix}-{stem}.json"
     env = dict(os.environ, PYTORCH_ENABLE_MPS_FALLBACK="0")
     command = [runtime["python"], str(ROOT / "firered_aed_worker.py"), "--manifest", str(manifest),
                "--output", str(out), "--model-dir", model["path"], "--device", device]
+    if dtype != "auto":
+        command += ["--mps-dtype", dtype]
     try:
         done, seconds, peak = timed(command, env=env, log=out.with_suffix(".log"), timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {"model": "firered", "device": device, "clip_seconds": clip["seconds"], "ok": False, "error": "timeout"}
-    record = {"model": "firered", "device": device, "clip_seconds": clip["seconds"], "exit": done.returncode,
+        return {"model": "firered", "device": device, "requested_dtype": dtype, "clip_seconds": clip["seconds"],
+                "ok": False, "error": "timeout"}
+    record = {"model": "firered", "device": device, "requested_dtype": dtype, "clip_seconds": clip["seconds"],
+              "exit": done.returncode,
               "wall_seconds": seconds, "peak_rss_gb": peak, "realtime_factor": round(seconds / clip["seconds"], 3),
               "chunks": len(jobs)}
     try:
@@ -281,6 +286,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=2400)
     parser.add_argument("--moss-dtypes", default="auto",
                         help="MOSS --dtype values to compare on each device, e.g. auto,bfloat16,float16")
+    parser.add_argument("--firered-dtypes", default="auto",
+                        help="FireRed Apple GPU precision to compare: auto,float16 (auto = the worker default)")
     parser.add_argument("--clips", default="short,long")
     args = parser.parse_args()
     work = args.work.resolve()
@@ -323,7 +330,7 @@ def main() -> int:
         runtime, model = result["runtimes"].get(name, {}), result["models"].get(name, {})
         if not (runtime.get("ok") and model.get("ok")):
             continue
-        dtypes = [d.strip() for d in args.moss_dtypes.split(",") if d.strip()] if name == "moss" else ["auto"]
+        dtypes = [d.strip() for d in (args.moss_dtypes if name == "moss" else args.firered_dtypes).split(",") if d.strip()]
         clips = [c.strip() for c in args.clips.split(",") if c.strip()]
         for device in devices:
             if device == "mps" and not runtime.get("torch", {}).get("mps_available"):
@@ -337,7 +344,8 @@ def main() -> int:
                         record = run_moss(runtime, model, result["clips"][clip_name], device, work, args.timeout,
                                           dtype=dtype)
                     else:
-                        record = run_firered(runtime, model, result["clips"][clip_name], device, work, args.timeout)
+                        record = run_firered(runtime, model, result["clips"][clip_name], device, work, args.timeout,
+                                             dtype=dtype if device == "mps" else "auto")
                     record["clip"] = clip_name
                     result["runs"].append(record)
                     save()
