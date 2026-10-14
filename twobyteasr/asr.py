@@ -178,6 +178,9 @@ try:
     result["cuda_available"] = bool(torch.cuda.is_available())
     if result["cuda_available"]:
         result["gpu_name"] = str(torch.cuda.get_device_name(0))
+    mps = getattr(torch.backends, "mps", None)
+    result["platform"] = sys.platform
+    result["mps_available"] = bool(sys.platform == "darwin" and mps is not None and mps.is_available())
 except Exception as exc:
     result["error"] = f"torch:{type(exc).__name__}: {exc}"
 try:
@@ -228,12 +231,18 @@ print("__2BYTEASR_MODEL_PROBE__" + json.dumps(result, ensure_ascii=False))
                     "gpu_name": str(payload.get("gpu_name") or ""),
                     "torch_version": str(payload.get("torch_version") or ""),
                     "torch_cuda_version": str(payload.get("torch_cuda_version") or ""),
+                    "mps_available": bool(payload.get("mps_available")),
+                    "platform": str(payload.get("platform") or ""),
                 })
                 details["error"] = str(payload.get("error") or "")
                 break
         else:
             details["error"] = details["stderr"] or "model_probe_no_result"
-        details["ready"] = bool(completed.returncode == 0 and not details["error"] and details["cuda_available"])
+        # 2026-10-14: on a Mac FireRed runs on the Apple GPU (MPS), or the CPU when PyTorch
+        # cannot use it (the worker picks); there is no CUDA to require there.
+        device_ok = details["cuda_available"] or (
+            details.get("model_id") == "firered" and details.get("platform") == "darwin")
+        details["ready"] = bool(completed.returncode == 0 and not details["error"] and device_ok)
     except Exception as exc:
         details["error"] = f"{type(exc).__name__}: {exc}"
     return details
@@ -3020,7 +3029,9 @@ def transcribe_firered_reference(audio_source, audio_seconds, *, beam_size=3, fo
         raise RuntimeError(
             f"FireRed-AED runtime missing: source={FIRERED_SOURCE_DIR!r}, model={firered_dir!r}"
         )
-    if getattr(sys, "frozen", False) or str(_legacy_runtime_value('PRIMARY_ASR_BACKEND','')) == 'api':
+    # The worker also serves a Mac run from source: it picks the Apple GPU (2026-10-14).
+    if (getattr(sys, "frozen", False) or str(_legacy_runtime_value('PRIMARY_ASR_BACKEND','')) == 'api'
+            or sys.platform == 'darwin'):
         audio = audio_source if not isinstance(audio_source, (str, bytes, os.PathLike)) else decode_audio_to_array(audio_source)
         try:
             return _transcribe_firered_worker(audio, min(float(audio_seconds), len(audio) / AUDIO_SAMPLE_RATE), firered_dir)

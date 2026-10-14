@@ -422,3 +422,17 @@ def test_moss_role_uses_the_apple_gpu_probe_on_apple_silicon(monkeypatch):
     calls.clear()
     probe.run('moss', {'python': '3.12', 'torch': '2.11.0', 'packages': {}})
     assert calls == [('cuda', 'moss')]
+
+
+@pytest.mark.parametrize('model_id,platform_name,ready', [('firered', 'darwin', True), ('qwen3-asr', 'darwin', False),
+                                                          ('firered', 'win32', False)])
+def test_firered_stage_probe_is_ready_on_a_mac_without_cuda(monkeypatch, model_id, platform_name, ready):
+    # The first in-app Mac run skipped FireRed: "environment_not_ready:probe_failed" (no CUDA).
+    from twobyteasr import asr
+    payload = {'imports': ['torch', 'fireredasr2s.fireredasr2'], 'cuda_available': False, 'error': '',
+               'platform': platform_name, 'mps_available': platform_name == 'darwin'}
+    monkeypatch.setattr(asr.subprocess, 'run', lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout='__2BYTEASR_MODEL_PROBE__' + json.dumps(payload), stderr=''))
+    details = asr._spawn_model_runtime_probe({'model_id': model_id}, 'python', '', 'fireredasr2s.fireredasr2')
+    assert details['ready'] is ready
+    assert details['mps_available'] is (platform_name == 'darwin')
