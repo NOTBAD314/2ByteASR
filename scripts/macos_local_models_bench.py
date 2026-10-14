@@ -190,16 +190,20 @@ def timed(command, *, env, log: Path, timeout: int):
     return done, seconds, peak
 
 
-def run_moss(runtime: dict, model: dict, clip: dict, device: str, work: Path, timeout: int) -> dict:
-    out = work / f"moss-{device}-{Path(clip['path']).stem}.json"
+def run_moss(runtime: dict, model: dict, clip: dict, device: str, work: Path, timeout: int,
+             dtype: str = "auto") -> dict:
+    suffix = "" if dtype == "auto" else f"-{dtype}"
+    out = work / f"moss-{device}{suffix}-{Path(clip['path']).stem}.json"
     env = dict(os.environ, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", PYTORCH_ENABLE_MPS_FALLBACK="0")
     command = [runtime["python"], "-I", str(ROOT / "moss_worker.py"), "--audio", clip["path"], "--output", str(out),
-               "--model", model["path"], "--device", device]
+               "--model", model["path"], "--device", device, "--dtype", dtype]
     try:
         done, seconds, peak = timed(command, env=env, log=out.with_suffix(".log"), timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {"model": "moss", "device": device, "clip_seconds": clip["seconds"], "ok": False, "error": "timeout"}
-    record = {"model": "moss", "device": device, "clip_seconds": clip["seconds"], "exit": done.returncode,
+        return {"model": "moss", "device": device, "requested_dtype": dtype, "clip_seconds": clip["seconds"],
+                "ok": False, "error": "timeout"}
+    record = {"model": "moss", "device": device, "requested_dtype": dtype, "clip_seconds": clip["seconds"],
+              "exit": done.returncode,
               "wall_seconds": seconds, "peak_rss_gb": peak, "realtime_factor": round(seconds / clip["seconds"], 3)}
     try:
         payload = json.loads(out.read_text(encoding="utf-8"))
@@ -275,6 +279,9 @@ def main() -> int:
     parser.add_argument("--models", default="moss,firered")
     parser.add_argument("--long-repeats", type=int, default=8, help="long clip = the script repeated N times")
     parser.add_argument("--timeout", type=int, default=2400)
+    parser.add_argument("--moss-dtypes", default="auto",
+                        help="MOSS --dtype values to compare on each device, e.g. auto,bfloat16,float16")
+    parser.add_argument("--clips", default="short,long")
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -316,24 +323,30 @@ def main() -> int:
         runtime, model = result["runtimes"].get(name, {}), result["models"].get(name, {})
         if not (runtime.get("ok") and model.get("ok")):
             continue
-        runner = run_moss if name == "moss" else run_firered
+        dtypes = [d.strip() for d in args.moss_dtypes.split(",") if d.strip()] if name == "moss" else ["auto"]
+        clips = [c.strip() for c in args.clips.split(",") if c.strip()]
         for device in devices:
             if device == "mps" and not runtime.get("torch", {}).get("mps_available"):
                 result["runs"].append({"model": name, "device": "mps", "ok": False, "skipped": True,
                                        "error": "PyTorch reports MPS unavailable on this machine"})
                 save()
                 continue
-            for clip_name in ("short", "long"):
-                record = runner(runtime, model, result["clips"][clip_name], device, work, args.timeout)
-                record["clip"] = clip_name
-                result["runs"].append(record)
-                save()
-                if not record.get("ok") and clip_name == "short":
-                    break
+            for dtype in dtypes:
+                for clip_name in clips:
+                    if name == "moss":
+                        record = run_moss(runtime, model, result["clips"][clip_name], device, work, args.timeout,
+                                          dtype=dtype)
+                    else:
+                        record = run_firered(runtime, model, result["clips"][clip_name], device, work, args.timeout)
+                    record["clip"] = clip_name
+                    result["runs"].append(record)
+                    save()
+                    if not record.get("ok") and clip_name == "short":
+                        break
     result["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     save()
     print(json.dumps({"machine": result["machine"].get("hw.model"),
-                      "runs": [{k: r.get(k) for k in ("model", "device", "clip", "ok", "wall_seconds",
+                      "runs": [{k: r.get(k) for k in ("model", "device", "requested_dtype", "clip", "ok", "wall_seconds",
                                                        "realtime_factor", "peak_rss_gb", "cer", "error")}
                                for r in result["runs"]]}, ensure_ascii=False, indent=1))
     return 0

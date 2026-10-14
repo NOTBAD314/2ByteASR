@@ -130,9 +130,12 @@ def plan_windows(duration, prompt_tokens, context_limit, usable_bytes, kv_bytes,
         middle = (low + high) / 2
         low, high = (middle, high) if fits(middle) else (low, middle)
     plan["max_window_seconds"] = round(low, 1)
-    if low < policy["minimum_window_seconds"]:
-        plan.update(mode="insufficient", count=0, needed_bytes=window_estimate(
-            policy["minimum_window_seconds"], rate, context_limit, kv_bytes)["bytes"] + policy["safety_bytes"])
+    # Audio shorter than the minimum window needs only its own length (2026-10-14).
+    minimum = min(policy["minimum_window_seconds"], float(duration))
+    if low < minimum:
+        plan.update(mode="insufficient", count=0, minimum_window_seconds=round(minimum, 3),
+                    needed_bytes=window_estimate(minimum, rate, context_limit, kv_bytes)["bytes"]
+                    + policy["safety_bytes"])
         return plan
     # Cuts move by up to cut_search_seconds and each window gains the overlap.
     step = low - policy["overlap_seconds"] - 2 * policy["cut_search_seconds"]
@@ -779,14 +782,18 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
     progress.emit(window_plan=plan, **progress.device_memory())
     if plan["mode"] == "insufficient":
         have, need = usable / 2**30, plan['needed_bytes'] / 2**30
-        minutes = policy['minimum_window_seconds'] / 60
+        minimum = float(plan.get("minimum_window_seconds", policy['minimum_window_seconds']))
+        if minimum < policy['minimum_window_seconds']:
+            window = f"这段 {minimum:.0f} 秒的音频"
+        else:
+            window = f"MOSS 最短 {minimum / 60:.0f} 分钟的识别窗口"
         if ops.kind == "cuda":
-            message = (f"显存不足：本机现在可用约 {have:.1f} GiB，MOSS 最短 {minutes:.0f} 分钟的"
-                       f"识别窗口也需要约 {need:.1f} GiB。请关闭占用显卡的程序后重试，或改用其他主力转写模型。")
+            message = (f"显存不足：本机现在可用约 {have:.1f} GiB，{window}"
+                       f"也需要约 {need:.1f} GiB。请关闭占用显卡的程序后重试，或改用其他主力转写模型。")
         else:
             # Apple GPU (MPS) and CPU use system memory, not a graphics card (2026-10-14).
             where = "这台 Mac 的内存（Apple 芯片的显卡与内存共用）" if ops.kind == "mps" else "本机内存"
-            message = (f"可用内存不足：{where}现在约剩 {have:.1f} GiB，MOSS 最短 {minutes:.0f} 分钟的识别窗口"
+            message = (f"可用内存不足：{where}现在约剩 {have:.1f} GiB，{window}"
                        f"还需要约 {need:.1f} GiB。请关闭其他占用内存的程序后重试，或改用云端识别等其他主力转写方式。")
         raise WindowCapacityError(message)
     queue = window_bounds(audio, duration, plan["count"], rate)

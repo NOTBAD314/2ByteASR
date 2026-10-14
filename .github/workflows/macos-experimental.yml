@@ -48,6 +48,11 @@ on:
         default: macos-15
         type: choice
         options: [macos-15, macos-15-xlarge, macos-14-xlarge]
+      local_models_args:
+        description: 'Arguments for scripts/macos_local_models_bench.py (devices, models, MOSS dtypes, clips)'
+        required: false
+        default: '--devices mps,cpu --models moss,firered --long-repeats 8'
+        type: string
       run_studio_perf:
         description: 'Installed app: Studio editing smoothness on a synthetic 10-minute 1080p 1000-cue project and 60 s export speed'
         required: false
@@ -326,10 +331,15 @@ jobs:
           df -h "$HOME" | tail -1
       - name: MOSS and FireRed on MPS and CPU
         timeout-minutes: 140
+        env:
+          BENCH_ARGS: ${{ inputs.local_models_args || '--devices mps,cpu --models moss,firered --long-repeats 8' }}
         run: |
           set -euo pipefail
+          # Word-split on purpose: the input is a plain argument list (no quotes or shell syntax).
+          [[ "$BENCH_ARGS" =~ ^[A-Za-z0-9_,.\ =-]*$ ]] || { echo 'local_models_args: letters, digits, , . - = and spaces only'; exit 2; }
+          # shellcheck disable=SC2086
           python scripts/macos_local_models_bench.py --work "$RUNNER_TEMP/bench" \
-            --output "$RUNNER_TEMP/receipts/local-models.json" --devices mps,cpu --models moss,firered --long-repeats 8
+            --output "$RUNNER_TEMP/receipts/local-models.json" $BENCH_ARGS
       - name: Collect logs (no models, no audio)
         if: always()
         run: |
