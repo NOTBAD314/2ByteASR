@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "verified_at": "2026-10-14",
+  "note": "Alternate sources for model weights. This file can only say WHERE a model's locked files can also be fetched (repository + fixed commit); it can never add, remove or re-hash files: every file is still checked against dependencies.lock.json before install. Kept out of the lock because update_manifest.model_contracts digests each models.<key> entry. Each ModelScope commit below was checked on 2026-10-14: all required files' SHA-256 equal the lock. A pin in the lock itself (moss, ja_ctc_aligner, MLX) takes precedence. Re-check with: python scripts/verify_model_download_sources.py --allow-network",
+  "hf_mirror": {
+    "host": "hf-mirror.com",
+    "official": false,
+    "note": "Third-party Hugging Face mirror, used by AUTO only after ModelScope and huggingface.co have failed. On 2026-10-14 it answered resolve requests with a 302 to Hugging Face's own signed CDN (cas-bridge.xethub.hf.co); the bytes are accepted only when they match the locked SHA-256."
+  },
+  "modelscope": {
+    "firered_vad": {"repository": "FireRedTeam/FireRedVAD", "revision": "7e8b908179326819d9605f9b94ca6e692e8f6790"},
+    "firered_aed": {"repository": "FireRedTeam/FireRedASR2-AED", "revision": "5a2c0d35f22fb4816a322754e2e230bd686ec158"},
+    "qwen_asr": {"repository": "Qwen/Qwen3-ASR-1.7B", "revision": "a04930dbe5419bfee073f7cade734f572689a3a8"},
+    "qwen_aligner": {"repository": "Qwen/Qwen3-ForcedAligner-0.6B", "revision": "cf1c50164ea3ac48240d12bef5ead74aee0720cc"},
+    "whisper_turbo": {"repository": "openai-mirror/whisper-large-v3-turbo", "revision": "b2fa57d6c5f9fd17c994540a6c28a83d6aae7e28"},
+    "sensevoice": {"repository": "iic/SenseVoiceSmall", "revision": "7bf452403abd7353a300cd760f7adae7701c92c1"},
+    "paraformer": {"repository": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch", "revision": "6059253cbfda9ea43d6c6f198d38854f09adb298"},
+    "firered_llm": {"repository": "xukaituo/FireRedASR2-LLM", "revision": "518cfa85d9ed0768559c88269b54b05c6b61c92d"},
+    "glm_asr_nano": {"repository": "ZhipuAI/GLM-ASR-Nano-2512", "revision": "d17ac1a44329454bbb989fe0c1a4ef88eb028689"},
+    "canary_qwen": {"repository": "nv-community/canary-qwen-2.5b", "revision": "33b66a4c0eb4edf1a3105d76dc2f8a8c9ed08cb2"},
+    "omni_asr_llm_7b": {"repository": "facebook/omniASR-LLM-7B", "revision": "e8a44b04141d2c1a0c341ceccc386e503604aed3"},
+    "speaker_embedding": {"repository": "speechbrain/spkrec-ecapa-voxceleb", "revision": "ac4bd1ce07f3d746b5761342e4116232d2402dc4"},
+    "canary_qwen_tokenizer": {"repository": "Qwen/Qwen3-1.7B", "revision": "4855588ea1a12789f2e965e5f52a9e4a24c94b2a"}
+  },
+  "modelscope_partial": {
+    "funasr_nano": {
+      "repository": "FunAudioLLM/Fun-ASR-Nano-2512",
+      "revision": "05201c46f1c38592b1567f857c0d56eab3d0d8ef",
+      "files": ["Qwen3-0.6B/config.json", "Qwen3-0.6B/generation_config.json", "Qwen3-0.6B/merges.txt", "Qwen3-0.6B/tokenizer.json", "Qwen3-0.6B/tokenizer_config.json", "Qwen3-0.6B/vocab.json", "config.yaml", "configuration.json", "multilingual.tiktoken"]
+    }
+  }
+}

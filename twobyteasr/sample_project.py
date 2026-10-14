@@ -114,6 +114,130 @@ def ensure_sample_project(*, rebuild: bool = False) -> Path:
     return save_project(project, path)
 
 
+# ---- the tutorial project (2026-10-14) ----------------------------------------------------
+# What the first-run tutorial works on: the same silent video, with lines that
+# have something to teach. Three 原神 spellings the built-in library confirms
+# (至东→至冬, 凯瑞亚→坎瑞亚, 阿雷奇诺→阿蕾奇诺), a name only the (pretend) AI
+# check finds (派门→派蒙, twice, also good for batch replace), and a first line
+# on which the three recognizers disagree, so review mode shows three choices.
+TUTORIAL_VERSION = 1
+TUTORIAL_NAME = '兔白字幕教学'
+TUTORIAL_LIBRARY = '原神'
+TUTORIAL_AI_FIXES = (('派门', '派蒙'),)
+
+
+def tutorial_root() -> Path:
+    from .runtime_paths import user_data_root
+    return Path(user_data_root()) / 'samples' / f'tutorial-v{TUTORIAL_VERSION}'
+
+
+def tutorial_project_path() -> Path:
+    from .studio_project import PROJECT_SUFFIX
+    return tutorial_root() / f'{TUTORIAL_NAME}{PROJECT_SUFFIX}'
+
+
+def _tutorial_rows() -> list[tuple[float, float, str, str, str, str]]:
+    """(start, end, speaker, MOSS text, FireRed text, Qwen text); the MOSS text is the subtitle."""
+    same = lambda text: (text, text, text)  # noqa: E731
+    return [
+        (0.4, 3.0, 'S00', '虚迷的风景真好看', '须弥的风景真好看', '须迷的风景真好看'),
+        (3.2, 6.0, 'S01', *same('听说至东那边下了很大的雪')),
+        (6.2, 9.0, 'S00', *same('凯瑞亚的故事我还没看完')),
+        (9.2, 12.0, 'S01', *same('阿雷奇诺这次登场好帅')),
+        (12.2, 15.0, 'S00', *same('派门又在旁边说个不停')),
+        (15.2, 18.0, 'S01', *same('这期纪行的奖励还挺划算')),
+        (18.2, 21.0, 'S00', *same('下次带派门一起去探险')),
+        (21.2, 23.6, 'S01', *same('好啊，记得叫上我')),
+    ]
+
+
+def ensure_tutorial_project() -> Path:
+    """A fresh tutorial project every time (what the last tutorial changed never sticks)."""
+    from .studio_project import project_from_runtime_cues, save_project
+    root = tutorial_root()
+    root.mkdir(parents=True, exist_ok=True)
+    media = root / '教学影片.mp4'
+    if not media.is_file():
+        example = sample_root() / '范例影片.mp4'
+        if example.is_file():
+            import shutil
+            shutil.copyfile(example, media)
+        else:
+            _make_video(media)
+    rows = _tutorial_rows()
+    cues = [SimpleNamespace(cue_id=f'tutorial-{index}', start=start, end=end, speaker=speaker, text=moss)
+            for index, (start, end, speaker, moss, _firered, _qwen) in enumerate(rows, 1)]
+    evidence = {f'segment:{index}': {
+        'start_ms': round(start * 1000), 'end_ms': round(end * 1000), 'text': moss, 'speaker_id': speaker,
+        'primary_source': 'moss', 'moss_text': moss, 'firered_text': firered, 'qwen_asr_text': qwen, 'qwen_text': qwen,
+        'final_text': moss, 'final_text_owner': 'MOSS', 'final_timing_owner': 'MOSS',
+    } for index, (start, end, speaker, moss, firered, qwen) in enumerate(rows, 1)}
+    project = project_from_runtime_cues(media, cues, asr_evidence=evidence, generation_metadata={
+        'sample_project': {'version': TUTORIAL_VERSION, 'tutorial': True,
+                           'note': '新手教学用的示意工程：没有真实对白，三份识别结果是为演示写好的。'},
+        'language': {'code': 'zh', 'requested': 'zh', 'evidence': {}},
+    })
+    names = {'S00': '主播', 'S01': '嘉宾'}
+    for speaker in project.speakers:
+        speaker.name = names.get(speaker.id, speaker.name)
+    project.media.display_name = TUTORIAL_NAME
+    if not project.media.duration_ms:
+        project.media.duration_ms = SAMPLE_SECONDS * 1000
+    project.validate()
+    path = tutorial_project_path()
+    discard_tutorial_autosave()   # an autosave of the last tutorial would offer to "recover" demo edits
+    for file in (path, path.with_name(path.name + '.bak')):
+        try:
+            file.unlink()
+        except FileNotFoundError:
+            pass
+    return save_project(project, path)
+
+
+def discard_tutorial_autosave() -> int:
+    """Remove the workbench's autosaves of the tutorial project (demo edits are never recovered)."""
+    removed = 0
+    try:
+        from .studio_project import _autosave_path_for_identity
+        autosave = _autosave_path_for_identity('', tutorial_project_path())
+        for file in autosave.parent.glob(autosave.stem + '*'):
+            try:
+                file.unlink()
+                removed += 1
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return removed
+
+
+def tutorial_ai_preview(project, cue_ids, snapshot, settings, *, cancel_token=None, progress=None):
+    """'AI 校对' in the tutorial: the real offline check plus the names an AI would catch.
+
+    Nothing is sent anywhere; the extra suggestions are marked as AI results so
+    the page shows them the way a real AI answer looks.
+    """
+    import time
+    from .studio_glossary_service import GlossaryReviewPreview, preview_glossary_correction
+    from .studio_text_tools import TextOccurrence
+    local = preview_glossary_correction(project, cue_ids, snapshot, settings, cancel_token=cancel_token, use_ai=False)
+    wanted = set(cue_ids or ())
+    extra = []
+    for cue in project.cues:
+        if wanted and cue.id not in wanted:
+            continue
+        for wrong, right in TUTORIAL_AI_FIXES:
+            at = cue.text.find(wrong)
+            if at >= 0:
+                extra.append(TextOccurrence(cue.id, cue.start_ms, wrong, right, (at, at + len(wrong)),
+                                            reason='AI 校对建议（新手教学演示）', confidence=0.9,
+                                            default_selected=True, source='ai_accepted'))
+    time.sleep(0.6)  # the moment a real request would take; nothing is uploaded
+    receipt = dict(local.receipt)
+    receipt.update(successful_cues=len(wanted or project.cues), fallback_cues=0, tutorial=True)
+    return GlossaryReviewPreview(tuple(local.hits) + tuple(extra), receipt)
+
+
 def is_sample_project(project) -> bool:
     metadata = getattr(project, 'generation_metadata', None) or {}
     return isinstance(metadata, dict) and isinstance(metadata.get('sample_project'), dict)

@@ -135,9 +135,12 @@ def test_crashed_publication_remains_partial_and_retry_finishes(tmp_path,monkeyp
     assert json.loads((target/'.2byteasr-source.json').read_text())['files'][0]['reused_installed']
 
 
-def test_auto_does_not_silently_select_third_party_mirror():
+def test_auto_tries_third_party_mirror_only_after_official_host():
+    # 2026-10-14: huggingface.co is unreachable from mainland China without a
+    # proxy, so AUTO ends with the third-party mirror; it is never tried first
+    # and its files still have to match the locked hashes.
     sources=repo.planned_sources(dict(repository='official/model',revision='rev'), 'AUTO')
-    assert [s.mode for s in sources]==['HF_OFFICIAL']
+    assert [s.mode for s in sources]==['HF_OFFICIAL','HF_MIRROR']
 
 
 @pytest.fixture

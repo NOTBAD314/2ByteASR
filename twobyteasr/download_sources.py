@@ -1,8 +1,9 @@
 """Download source registry and resolver (Change Group 2).
 
 Four user-facing modes map to concrete hosts/URLs used by the real
-downloader.  AUTO is sequential and skips ModelScope when the lock does not
-declare a repository.  Explicit modes never silently add another source.
+downloader.  AUTO is sequential (ModelScope when declared, Hugging Face
+official, then the third-party HF mirror).  Explicit modes never silently add
+another source.
 """
 
 from __future__ import annotations
@@ -165,10 +166,12 @@ def resolve_artifact(model_key, relative, spec, mode):
     spec = spec or {}
     mode = normalize_source_mode(mode)
     if mode == "AUTO":
+        # Same order as repository_download.SOURCE_ORDER; the third-party
+        # mirror is the last resort and still has to match the locked hashes.
         planned = []
         if modelscope_declared(spec):
             planned.append("MODELSCOPE")
-        planned.append("HF_OFFICIAL")
+        planned.extend(("HF_OFFICIAL", "HF_MIRROR"))
         return [item for item in (_one_source(spec, relative, name) for name in planned) if item]
 
     resolved = _one_source(spec, relative, mode)
@@ -229,6 +232,76 @@ def resolve_from_lock(model_key, relative, mode, *, lock_path=None):
             detail=f"依赖清单没有模型 {model_key}",
         )
     return resolve_artifact(model_key, relative, spec, mode)
+
+
+# Runtime bootstrap fallbacks shared with the macOS preparer.  Measured from a
+# mainland China line without proxy on 2026-10-14: GitHub release assets were
+# very slow (uv: 64 KiB in 45 s), releases.astral.sh / npmmirror / PyPI mirrors
+# answered within ~1 s.  Every candidate serves the identical file, so callers
+# keep checking the SHA-256 they already lock.
+_RUNTIME_SOURCES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                     "scripts", "runtime_sources.json")
+_DEFAULT_PYPI_MIRRORS = (
+    ("阿里云 PyPI 镜像", "https://mirrors.aliyun.com/pypi/simple"),
+    ("清华 PyPI 镜像", "https://pypi.tuna.tsinghua.edu.cn/simple"),
+    ("腾讯云 PyPI 镜像", "https://mirrors.cloud.tencent.com/pypi/simple"),
+    ("中科大 PyPI 镜像", "https://mirrors.ustc.edu.cn/pypi/simple"),
+)
+_DEFAULT_PYTHON_MIRRORS = (
+    ("npmmirror", "https://registry.npmmirror.com/-/binary/python-build-standalone"),
+    ("中科大镜像", "https://mirrors.ustc.edu.cn/github-release/astral-sh/python-build-standalone"),
+)
+
+
+def _runtime_sources():
+    try:
+        with open(_RUNTIME_SOURCES_FILE, "r", encoding="utf-8") as stream:
+            payload = json.load(stream)
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def pip_index_urls():
+    """PyPI index URLs in trial order: official first, then the domestic mirrors.
+
+    Only for installs that pin every file by hash (``--require-hashes`` or a
+    hashed constraint file); a mirror lagging behind PyPI then fails instead of
+    installing a different build.
+    """
+    mirrors = [(m.get("label", ""), m.get("url", "")) for m in _runtime_sources().get("pypi_mirrors") or []]
+    urls = ["https://pypi.org/simple"]
+    for _label, url in mirrors or _DEFAULT_PYPI_MIRRORS:
+        url = str(url).rstrip("/")
+        if url.startswith("https://") and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def bootstrap_urls(url):
+    """Ordered URLs serving the same bootstrap archive as ``url`` (official first).
+
+    Covers the three bootstrap files: uv release archives and
+    python-build-standalone archives on GitHub, and wheels on
+    files.pythonhosted.org.  Anything else is returned unchanged.
+    """
+    url = str(url or "")
+    parsed = urlparse(url)
+    path = parsed.path
+    candidates = [url]
+    if parsed.hostname == "github.com" and path.startswith("/astral-sh/uv/releases/download/"):
+        candidates.append("https://releases.astral.sh/github/uv/releases/download/"
+                          + path[len("/astral-sh/uv/releases/download/"):])
+    elif parsed.hostname == "github.com" and path.startswith("/astral-sh/python-build-standalone/releases/download/"):
+        tail = path[len("/astral-sh/python-build-standalone/releases/download/"):]
+        candidates.append("https://releases.astral.sh/github/python-build-standalone/releases/download/" + tail)
+        mirrors = [(m.get("label", ""), m.get("url", "")) for m in _runtime_sources().get("python_mirrors") or []]
+        for _label, base in mirrors or _DEFAULT_PYTHON_MIRRORS:
+            candidates.append(str(base).rstrip("/") + "/" + tail)
+    elif parsed.hostname == "files.pythonhosted.org" and path.startswith("/packages/"):
+        for index in pip_index_urls()[1:]:
+            candidates.append(index[: -len("/simple")] + path if index.endswith("/simple") else index)
+    return list(dict.fromkeys(item for item in candidates if item.startswith("https://")))
 
 
 def host_token(host):

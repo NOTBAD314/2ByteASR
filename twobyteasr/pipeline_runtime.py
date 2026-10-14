@@ -141,6 +141,9 @@ def finalize_cues(    cues,
     _streaming_partition=False,
 ):
     """Finalize display timing, then recheck content and numeric events."""
+    from .language_rules import is_english
+    if is_english() and not any(str(getattr(s, 'primary_source', '')).startswith('vibevoice_') for s in segments):
+        return finalize_english_cues(cues, segments, speech_regions, audio_seconds, timeline_fps, legacy)
     if not _streaming_partition and any(str(getattr(s,'primary_source','')).startswith('vibevoice_') for s in segments):
         from .optional_timing import finalize_streaming
         return finalize_streaming(cues,segments,firered_tokens,speech_regions,audio_seconds,timeline_fps,legacy,finalize_cues)
@@ -235,6 +238,60 @@ def finalize_cues(    cues,
         finalized.sort(key=lambda c:(c.start,c.end,c.speaker))
         for index,cue in enumerate(finalized,1):cue.cue_id=index
     boundary_phase('final_half_open_display', finalized)
+    return finalized
+
+
+def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timeline_fps, legacy):
+    """English display timing (2026-10-14): the cues are already cut between words.
+
+    The Chinese finalize re-splits any cue over 16 letters, merges single
+    characters and repeated short cues and measures reading time in Chinese
+    characters; none of that applies to English. Here: frame quantizing, a
+    reading-time floor in English characters per second, at most 6 seconds,
+    no overlap inside one speaker, then the shared text-free steps (start at
+    the voice onset, reading tail, short-gap bridge, display-tail protection).
+    Text is never changed.
+    """
+    from .display_timing import protect_runtime_display_tails
+    from .english_text import RULES, display_length
+    fps = float(timeline_fps or 30)
+    frame = 1.0 / fps
+    finalized = [cue for cue in sorted(cues, key=lambda c: (c.start, c.end, c.speaker)) if str(cue.text or "").strip()]
+    if not finalized:
+        raise RuntimeError("断句后没有可用字幕。")
+    for cue in finalized:
+        start = max(0.0, float(cue.start))
+        floor = max(RULES.min_seconds, display_length(cue.text) / RULES.warning_cps)
+        end = min(max(float(cue.end), start + floor), start + RULES.max_seconds)
+        if audio_seconds:
+            end = min(end, float(audio_seconds))
+        cue.start = round(start * fps) / fps
+        cue.end = max(round(end * fps) / fps, cue.start + frame)
+    last_by_speaker = {}
+    for cue in finalized:
+        previous = last_by_speaker.get(cue.speaker)
+        if previous is not None and previous.end > cue.start:
+            previous.end = max(previous.start + frame, cue.start)
+        last_by_speaker[cue.speaker] = cue
+    finalized = legacy.snap_cue_starts_to_vad_onsets(finalized, speech_regions, timeline_fps)
+    finalized = legacy.extend_cue_tails_by_speaker(finalized, audio_seconds, timeline_fps)
+    finalized = legacy.bridge_short_display_gaps(finalized, audio_seconds, timeline_fps)
+    for cue in finalized:
+        if cue.end - cue.start > RULES.max_seconds:
+            cue.end = cue.start + RULES.max_seconds
+        if cue.end <= cue.start:
+            cue.end = cue.start + frame
+    overlap_audit = protect_runtime_display_tails(finalized, segments)
+    legacy.record_run_event('display_overlap_protection', policy_version=4, pairs=overlap_audit)
+    finalized.sort(key=lambda c: (c.start, c.end, c.speaker))
+    for index, cue in enumerate(finalized, 1):
+        cue.cue_id = index
+    lengths = sorted(display_length(cue.text) for cue in finalized)
+    within = sum(length <= RULES.max_chars for length in lengths) / len(lengths)
+    print(f"[完成] 英文断句：{len(finalized)} 条，中位 {lengths[len(lengths) // 2]} 字符，"
+          f"{within:.0%} 不超过 {RULES.max_chars} 字符（按单词断开，单词完整）。")
+    legacy.record_run_event('english_cues_finalized', count=len(finalized), median_chars=lengths[len(lengths) // 2],
+                            within_max=round(within, 4))
     return finalized
 
 

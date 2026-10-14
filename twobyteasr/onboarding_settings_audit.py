@@ -48,7 +48,7 @@ def _offline_dns() -> None:
 
 
 def start(window, output: Path):
-    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtCore import QRectF, QTimer, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMessageBox
     from .blank_project_audit import _capture
@@ -148,34 +148,93 @@ def start(window, output: Path):
               quick.get('cards') == ['local', 'cloud', 'light'] and onboarding.load_state().get('setup_offered') is True,
               quick)
         check('after "稍后再说" no other dialog is open', not visible_dialogs(), visible_dialogs())
-        # The tutorial follows once: demo video, language, the three cards, AI key,
-        # glossary, a pretend result, proofreading, export, the workbench.
+        # The tutorial follows once: demo video, language, the three cards, AI key, glossary,
+        # a pretend result, proofreading step by step, export, the workbench (edit, review,
+        # speakers, batch replace, timeline, punctuation, export). Interactive steps are done
+        # with "帮我做", which drives the same page methods a click or key would.
         from .home_tour import GuidedTour
         yield lambda: window.findChild(GuidedTour) is not None and window.findChild(GuidedTour).isVisible()
         tour = window.findChild(GuidedTour)
         seen = []
-        for _ in range(40):
+        ai_suggested = False
+        bubble_beside = []
+        review_cards = []
+        for _ in range(60):
             yield lambda: window.findChild(GuidedTour) is None or tour.bubble.isVisible()
             if window.findChild(GuidedTour) is None:
                 break
             yield 0.7  # the outline glides to the next part
             page = window.pages.currentWidget()
+            part = tour._target(tour.index)
             seen.append(dict(index=tour.index, page=page.objectName() if page is not None else '',
-                             text=tour.text.text()[:80], hole=[round(v) for v in tour.hole.getRect()]))
+                             text=tour.text.text()[:80], hole=[round(v) for v in tour.hole.getRect()],
+                             part=[round(v) for v in tour._rect_of(part).getRect()] if part is not None else None,
+                             fits=tour.bubble.height() >= tour.bubble.sizeHint().height(),
+                             anim=tour.anim.name if tour.anim.isVisible() else '', expect_anim=bool(tour.steps[tour.index].anim),
+                             interactive=tour.steps[tour.index].interactive))
+            studio_page = window.built_page('studio') if hasattr(window, 'built_page') else None
+            if tour.steps[tour.index].anim == 'review' and getattr(studio_page, '_review_mode', False):
+                review_cards.append(len(getattr(studio_page, '_review_candidates', None) or ()))
+            proof = window.__dict__.get('glossary_proofread_page')
+            ai_suggested = ai_suggested or any(issue.get('kind') == 'ai' for row in (getattr(proof, '_by_id', None) or {}).values()
+                                               for issue in row.get('issues') or ())
+            if part is not None and tour.pointer is not None:
+                bubble_beside.append(not QRectF(tour.bubble.geometry()).intersects(tour.hole))
             capture(f'T{tour.index + 1:02d}-tutorial')
-            # Do what the step offers (demo video, pretend result, open proofreading / workbench).
-            actions = tour.steps[tour.index].actions
-            moving = next((i for i, a in enumerate(actions) if a.advance), None)
-            button = tour.action_buttons[moving] if moving is not None else tour.next
+            # Do what the step offers: an advancing action (demo video, pretend result), "帮我做" on an
+            # interactive step (the step then moves on by itself once it sees the result), else 下一步.
+            step = tour.steps[tour.index]
+            moving = next((i for i, a in enumerate(step.actions) if a.advance), None)
+            if moving is not None:
+                button = tour.action_buttons[moving]
+            elif step.interactive and tour.action_buttons:
+                button = tour.action_buttons[0]
+            else:
+                button = tour.next
+            before = tour.index
             QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+            if step.interactive:
+                yield lambda: window.findChild(GuidedTour) is None or tour.index != before
         yield lambda: window.findChild(GuidedTour) is None
         yield 1.0
         state = onboarding.load_state()
-        check('first launch: the tutorial walks all 20 steps with demo data, then closes',
-              [s['index'] for s in seen] == list(range(20)) and state.get('tour_done') is True, seen)
-        check('tutorial: the demo result page and the workbench were really shown',
-              any(s['page'] == 'completionScroll' for s in seen)
-              and any(s['index'] >= 15 and s['hole'][2] > 20 for s in seen), [s['page'] for s in seen])
+        total = len(tour.steps)
+        check(f'first launch: the tutorial walks all {total} steps with demo data, then closes',
+              total >= 30 and [s['index'] for s in seen] == list(range(total)) and state.get('tour_done') is True, seen)
+        check('tutorial: every step that shows a tool or gesture plays its animation',
+              sum(1 for s in seen if s['expect_anim']) >= 20 and all(s['anim'] for s in seen if s['expect_anim']),
+              [(s['index'], s['anim']) for s in seen if s['expect_anim']])
+        check('tutorial: bubbles sit beside their target with a pointer, not on top of it',
+              len(bubble_beside) >= 20 and all(bubble_beside), bubble_beside)
+        check('tutorial: review mode opens on the line where the three recognizers disagree (keys 1/2/3)',
+              review_cards and review_cards[0] == 3, review_cards)
+        from .sample_project import tutorial_project_path
+        from .studio_project import load_project as _load
+        proof = window.__dict__.get('glossary_proofread_page')
+        fixed_text = next((cue.text for cue in _load(tutorial_project_path()).cues if cue.id == 'tutorial-2'), '')
+        check('tutorial: 原神 ticked, the offline "AI 校对" added its suggestions, 至东 was fixed and saved; '
+              'the stand-in is gone afterwards',
+              ai_suggested and '至冬' in fixed_text and getattr(proof, 'ai_stand_in', 'x') is None,
+              dict(ai=ai_suggested, text=fixed_text))
+        check('tutorial: every bubble is tall enough for its text and buttons (nothing hidden)',
+              all(s['fits'] for s in seen), [s['index'] for s in seen if not s['fits']])
+        check('tutorial: every outline sits on its part when the step is read (pages that settle late too)',
+              all(s['part'] is None or all(abs(a - b) <= 3 for a, b in zip(s['hole'], s['part'])) for s in seen),
+              [(s['index'], s['hole'], s['part']) for s in seen if s['part'] is not None])
+        recent_names = []
+        try:
+            from .studio_project import studio_settings_path
+            recent_names = [str(item.get('path', '')) for item in json.loads(
+                studio_settings_path().read_text(encoding='utf-8')).get('recent_projects', [])]
+        except (OSError, ValueError):
+            pass
+        check('tutorial: the demo project is not left in recent projects and leaves no autosave',
+              not any('tutorial-v' in name for name in recent_names)
+              and not list((studio_settings_path().parent / 'autosaves').glob('*.2byteproj')),
+              recent_names)
+        check('tutorial: the result page, proofreading page and workbench were really shown',
+              {'completionScroll', 'glossaryProofreadPage', 'subtitleStudio'} <= {s['page'] for s in seen},
+              [s['page'] for s in seen])
         check('tutorial: the pretend result is not a first task, pops no completion alert; demo media removed; '
               'back on the home page',
               not state.get('first_task_done') and not getattr(window, 'media_paths', None) and not visible_dialogs()
@@ -237,6 +296,31 @@ def start(window, output: Path):
         check('a plan this computer cannot run is never offered as "use"',
               cuda_ok or 'use_plan:windows_cuda' not in offered, offered)
         capture('A3-home-plan-step')
+        # 2026-10-14: English on the home language row; the bilingual item names the pair.
+        language_combo, output_combo = window.recognition_language, window.subtitle_output
+        before = (language_combo.currentIndex(), output_combo.currentIndex())
+        language_combo.setCurrentIndex(language_combo.findData('en'))
+        output_combo.setCurrentIndex(output_combo.findData('bilingual'))
+        yield 0.3
+        window.home_scroll.ensureWidgetVisible(output_combo) if hasattr(window, 'home_scroll') else None
+        scroll = window.__dict__.get('settings_scroll')
+        if scroll is not None:
+            scroll.ensureWidgetVisible(output_combo, 40, 160)
+        yield 0.4
+        capture('A3b-english-language-row')
+        label = output_combo.itemText(output_combo.findData('bilingual'))
+        hint = window.subtitle_language_hint.text()
+        saved = dict(window.legacy.RUNTIME_SETTINGS.get('subtitle_language') or {})
+        language_combo.setCurrentIndex(language_combo.findData('ja'))
+        yield 0.2
+        ja_label = output_combo.itemText(output_combo.findData('bilingual'))
+        check('home: 英语 can be chosen; the bilingual item reads 英中双语 (日中双语 for Japanese); the choice is saved',
+              language_combo.findData('en') >= 0 and label == '英中双语' and ja_label == '日中双语'
+              and '英语' in hint and saved.get('recognition_language') == 'en' and saved.get('output') == 'bilingual',
+              dict(label=label, ja_label=ja_label, hint=hint[:120], saved=saved))
+        language_combo.setCurrentIndex(before[0])
+        output_combo.setCurrentIndex(before[1])
+        yield 0.2
         # Feature search on the home page.
         def search(dialog):
             from PySide6.QtWidgets import QLineEdit, QListWidget

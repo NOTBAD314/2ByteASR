@@ -94,8 +94,8 @@ class RunOptions:
             raise ValueError("overwrite_policy 只能是 overwrite、skip 或 error")
         if self.recognition_purpose not in {"final", "analysis"}:
             raise ValueError("recognition_purpose 只能是 final 或 analysis")
-        if self.recognition_language not in {"auto", "zh", "ja"}:
-            raise ValueError("recognition_language 只能是 auto、zh 或 ja")
+        if self.recognition_language not in {"auto", "zh", "ja", "en"}:
+            raise ValueError("recognition_language 只能是 auto、zh、ja 或 en")
         if self.subtitle_output not in {"original", "translation", "bilingual"}:
             raise ValueError("subtitle_output 只能是 original、translation 或 bilingual")
         if self.translation_script not in {"zh-Hans", "zh-Hant"}:

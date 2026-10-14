@@ -60,8 +60,11 @@ def resolve_content_scene(context, snapshot=None) -> ContentScene:
     from dataclasses import replace
     scene = _resolve_content_scene(context, snapshot)
     # The spoken language of the task (resolved after the primary transcript).
-    if str(getattr(context, "task_language", "") or "") == "ja":
+    language = str(getattr(context, "task_language", "") or "")
+    if language == "ja":
         scene = replace(scene, language="ja-JP")
+    elif language == "en":
+        scene = replace(scene, language="en-US")
     return scene
 
 

@@ -36,8 +36,8 @@ def test_auto_used_model_shows_its_own_installed_text_instead_of_integrating():
 
 def test_auto_source_tries_the_pinned_modelscope_copy_then_hugging_face():
     plans = repository_download.planned_sources(SPEC, "AUTO")
-    assert [plan.mode for plan in plans] == ["MODELSCOPE", "HF_OFFICIAL"]
-    modelscope, official = plans
+    assert [plan.mode for plan in plans] == ["MODELSCOPE", "HF_OFFICIAL", "HF_MIRROR"]
+    modelscope, official, _mirror = plans
     # The ModelScope commit whose five files were checked against the locked SHA-256.
     assert modelscope.revision == "18a6b5970be543c1171a30e5f2889c63878acd2e"
     assert official.revision == SPEC["revision"]

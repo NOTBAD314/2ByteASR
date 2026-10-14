@@ -51,10 +51,10 @@ def main() -> None:
     sample_rate = int(policy.get("sample_rate", 0))
     if not 1 <= batch_size <= 12 or not 1 <= max_new_tokens <= 4096 or sample_rate != 16000:
         raise RuntimeError("Invalid Qwen worker generation policy")
-    # Spoken language for every window: "Chinese", "Japanese", or None to let
-    # Qwen3-ASR identify it. Policies without the key keep the Chinese default.
+    # Spoken language for every window: "Chinese", "Japanese", "English", or None
+    # to let Qwen3-ASR identify it. Policies without the key keep the Chinese default.
     language = policy.get("language", "Chinese")
-    if language not in {None, "Chinese", "Japanese"}:
+    if language not in {None, "Chinese", "Japanese", "English"}:
         raise RuntimeError("Invalid Qwen worker language")
     if not jobs:
         raise RuntimeError("Qwen3-ASR manifest is empty")

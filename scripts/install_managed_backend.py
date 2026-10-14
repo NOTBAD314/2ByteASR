@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from urllib.parse import quote
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -32,6 +33,12 @@ class SourcesExhausted(RuntimeError):
 
 
 SOURCES_EXHAUSTED = 75
+# CUDA PyTorch is ~3 GB. Measured 2026-10-14 on a mainland line without proxy:
+# download.pytorch.org answered at ~1 MB/s (the GUI run spent 30+ minutes on it)
+# while the SJTU/NJU mirrors gave 17-22 MB/s for the same file. uv only falls
+# back on failure, so a slow-but-working official host is measured first.
+SPEED_PROBE_BYTES = 8 << 20
+SLOW_OFFICIAL_BYTES_PER_SECOND = 2 << 20
 
 
 def save(path, value):
@@ -95,6 +102,48 @@ def hashed_environment(root, role, version, tag, pins):
         if not item or item['version'] != version_pin:
             return None, f'锁定哈希表与当前依赖版本不一致（{pin}）'
     return entry, ''
+
+
+def probe_rate(url, limit_s=10.0):
+    """Bytes/s over the first SPEED_PROBE_BYTES of ``url``; 0.0 when it cannot be read."""
+    import urllib.request
+    request = urllib.request.Request(url, headers={'Range': f'bytes=0-{SPEED_PROBE_BYTES - 1}',
+                                                   'User-Agent': '2ByteASR-runtime-probe'})
+    started = time.monotonic()
+    received = 0
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            while received < SPEED_PROBE_BYTES and time.monotonic() - started < limit_s:
+                block = response.read(1 << 16)
+                if not block:
+                    break
+                received += len(block)
+    except Exception:  # noqa: BLE001 - unreachable counts as 0
+        return 0.0
+    return received / max(time.monotonic() - started, 1e-3)
+
+
+def slow_official_pytorch(root, tag, version, torch_pins):
+    """Reason to skip download.pytorch.org for this environment, or None.
+
+    Only for CUDA builds (the CPU build ships in wheels/), and only when the
+    official host is both slow in absolute terms and far slower than the first
+    domestic mirror; overseas users keep the official source.
+    """
+    mirrors = mirror_list(root, 'pytorch_mirrors')
+    if tag == 'cpu' or not torch_pins or not mirrors:
+        return None
+    cpython = 'cp' + version.replace('.', '')[:3]
+    name = f"torch-{quote(torch_pins[0].split('==', 1)[1], safe='')}-{cpython}-{cpython}-win_amd64.whl"
+    official = probe_rate(f'https://download.pytorch.org/whl/{tag}/{name}')
+    if official >= SLOW_OFFICIAL_BYTES_PER_SECOND:
+        return None
+    mirror = probe_rate(mirrors[0]['url'].format(tag=tag).rstrip('/') + '/' + name)
+    print(f"[运行库] PyTorch 下载测速：官方 {official / 2**20:.1f} MB/s，{mirrors[0]['label']} {mirror / 2**20:.1f} MB/s", flush=True)
+    if mirror > 3 * official:
+        state = f"只有 {official / 2**20:.1f} MB/s" if official else "连不上"
+        return f"官方 PyTorch 来源{state}，{mirrors[0]['label']} {mirror / 2**20:.1f} MB/s"
+    return None
 
 
 def mirror_list(root, key):
@@ -211,7 +260,7 @@ def main():
         source = root / contract['sources']['moss']['path'] if role == 'moss' else None
         mirror = {'entry': None, 'used': False}
         build = runtime/'mirror-build-constraints.txt'
-        def install_from_mirrors(failure):
+        def install_from_mirrors(failure, why='官方来源未成功'):
             # Once an official source fails, the whole environment (PyTorch,
             # packages, MOSS dependencies) is installed from mirrors in one
             # resolution. Every package of the closure is pinned with its
@@ -239,13 +288,24 @@ def main():
                         base_url = torch_mirror['url'].format(tag=tag).rstrip('/')
                         torch_links = ['--find-links', base_url+'/torch/', '--find-links', base_url+'/torchaudio/']
                     label = pypi['label'] + (' + ' + torch_mirror['label'] if torch_mirror else '')
-                    print(f'[运行库] 官方来源未成功，改用 {label}；每个包都按锁定 SHA-256 校验', flush=True)
+                    print(f'[运行库] {why}，改用 {label}；每个包都按锁定 SHA-256 校验', flush=True)
+                    # USTC answers uv's default parallel downloads with HTTP 429
+                    # (measured 2026-10-14); its entry lowers the concurrency.
+                    limit = str(pypi.get('concurrent_downloads') or '')
+                    saved = os.environ.get('UV_CONCURRENT_DOWNLOADS')
+                    if limit:
+                        os.environ['UV_CONCURRENT_DOWNLOADS'] = limit
                     try:
                         uv('pip', 'install', '--python', python, '--index-url', pypi['url'], *torch_links, *links,
                            '--constraint', str(hashed.relative_to(managed)),
                            '--build-constraint', str(build.relative_to(managed)), *requirements)
                     except subprocess.CalledProcessError:
                         continue
+                    finally:
+                        if limit and saved is None:
+                            os.environ.pop('UV_CONCURRENT_DOWNLOADS', None)
+                        elif limit:
+                            os.environ['UV_CONCURRENT_DOWNLOADS'] = saved
                     mirror.update(entry=entry, used=True, index=pypi['url'], constraints=str(hashed.relative_to(managed)))
                     return
             raise SourcesExhausted('运行库下载失败：官方来源与国内镜像都没有成功') from failure
@@ -258,6 +318,10 @@ def main():
                 install_from_mirrors(error)
         if source is not None and not (source/'pyproject.toml').is_file():
             raise RuntimeError('安装包缺少已锁定的 MOSS 源码，请修复安装包；不需要系统 Git')
+        if models and hashed_environment(root, role, version, tag, pins)[0]:
+            slow = slow_official_pytorch(root, tag, version, torch_pins)
+            if slow:
+                install_from_mirrors(RuntimeError(slow), why=slow)
         if models:
             official_or_mirror(['--index-url', f'https://download.pytorch.org/whl/{tag}', *links], torch_pins)
         official_or_mirror(['--index-url', 'https://pypi.org/simple', *links, '--constraint', constraint_arg], package_pins)

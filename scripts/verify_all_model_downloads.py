@@ -44,7 +44,7 @@ def main():
                      'TRANSFORMERS_CACHE':'hf-cache/transformers','XDG_CACHE_HOME':'xdg','HOME':'profile','NETRC':'empty-netrc'}.items():
         os.environ[key]=str(out/part)
     require_isolated_paths('full-model-download')
-    from twobyteasr.repository_download import download_model,planned_sources,validate_files
+    from twobyteasr.repository_download import download_model,effective_spec,planned_sources,validate_files
     from twobyteasr.model_download_diagnostic import network_facts
     from twobyteasr.download_diagnostics import redact
     lock=json.loads((root/'dependencies.lock.json').read_text('utf-8-sig'))
@@ -67,7 +67,7 @@ def main():
             from contextlib import redirect_stdout,redirect_stderr
             with (out/(key+'.log')).open('w',encoding='utf8') as log,redirect_stdout(log),redirect_stderr(log):
                 selected=download_model(model_key=key,spec=spec,destination=destination,mode=args.mode,staging_root=out/'models/.downloads')
-                manifest=next(x for x in planned_sources(spec,args.mode) if x.mode==selected)
+                manifest=next(x for x in planned_sources(effective_spec(key,spec),args.mode) if x.mode==selected)
                 ok,reason=validate_files(destination,manifest)
                 if not ok:raise RuntimeError(reason)
             receipt=json.loads((destination/'.2byteasr-source.json').read_text('utf8'))

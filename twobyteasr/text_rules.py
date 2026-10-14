@@ -50,6 +50,12 @@ __all__ = [
 
 def clean_subtitle_text(text):
     """保留问号、叹号、数字分隔符和省略号，去掉普通句读。"""
+    from twobyteasr.language_rules import is_english
+    if is_english():
+        # 2026-10-14: English keeps commas, periods, apostrophes (don't) and one
+        # space between words; the Chinese rules below would strip them.
+        from twobyteasr.english_text import clean as english_clean
+        return english_clean(str(text).replace("\r", " ").replace("\n", " "))
     forbidden = """《》〈〉【】[]（）(){}“”‘’\"`·・•、，。；：:;,—~～"""
     text = str(text).replace("\r", " ").replace("\n", " ")
     # Deleting a comma between spoken numbers concatenated independent events
@@ -593,10 +599,10 @@ def collapse_excessive_adjacent_repetitions(text):
 
 def normalize_output_text(text):
     """执行文字清理；数字拼写只交给共用且可关闭的显式阶段。"""
-    from twobyteasr.language_rules import is_japanese
-    if is_japanese():
+    from twobyteasr.language_rules import is_english, is_japanese
+    if is_japanese() or is_english():
         # Japanese kanji are not traditional Chinese; Chinese fillers, phrase
-        # fixes and Chinese canonical spellings never rewrite Japanese text.
+        # fixes and Chinese canonical spellings never rewrite Japanese or English text.
         return clean_subtitle_text(text)
     text = simplify_chinese(clean_subtitle_text(text)).replace("呃", "")
     # “上舰”是直播会员语境中的固定动作。仅修正带倒计时的完整短语，
@@ -712,10 +718,20 @@ def apply_editorial_segment_rules(segments):
     canonical_applied = Counter()
     collapsed_repeat_count = 0
     dropped_count = 0
-    from twobyteasr.language_rules import is_japanese
+    from twobyteasr.language_rules import is_english, is_japanese
     japanese = is_japanese()
+    english = is_english()
     for segment in segments:
         original = clean_subtitle_text(segment.text)
+        if english:
+            # No Chinese suppressed phrases, canonical spellings or numeral formatting.
+            segment.text = original
+            if not re.search(r"[A-Za-z0-9]", segment.text):
+                dropped_count += 1
+                continue
+            segment.segment_id = len(normalized) + 1
+            normalized.append(segment)
+            continue
         if japanese:
             # No Chinese stutter collapse (ねえねえ is ordinary Japanese), no
             # Chinese canonical spellings and no Chinese numeral formatting.

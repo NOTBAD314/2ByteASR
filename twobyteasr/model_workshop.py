@@ -2817,6 +2817,18 @@ class _DownloadTitleBar(QFrame):
         super().mouseReleaseEvent(event)
 
 
+# Display names for download sources when an event carries only the internal mode.
+_SOURCE_NAMES = {'MODELSCOPE': 'ModelScope', 'HF_OFFICIAL': 'Hugging Face 官方', 'HF_MIRROR': 'HF 镜像（可能回源官方）'}
+
+# Plain-language reason shown when AUTO moves on to the next download source.
+_SOURCE_FAILURE_REASONS = {
+    'network_timeout': '连接超时', 'dns': '域名无法解析', 'connection': '连接中断', 'proxy': '代理无法连接',
+    'tls_certificate': '证书验证失败', 'http_access': '拒绝访问', 'source_unavailable': '没有该文件',
+    'rate_limited': '暂时限流', 'checksum': '文件校验未通过', 'invalid_response': '返回内容不正确',
+    'revision_incompatible': '版本与锁定不同', 'disk_space': '磁盘空间不足', 'permission': '没有写入权限',
+}
+
+
 class ModelDownloadDialog(QDialog):
     diagnostic_finished = Signal(object)
     completed = Signal(bool, str)
@@ -3244,6 +3256,27 @@ class ModelDownloadDialog(QDialog):
         bind_text(self.activity_status, '{state} · 已用 {value1} 秒 · 最后日志：{age}', state=state, value1=int(now - self._started_at), age=age)
 
     def _handle_progress_line(self, line: str):
+        state = self._download_state()
+        if line.startswith("[2BYTEASR_CACHE] "):
+            try:
+                payload = json.loads(line[len("[2BYTEASR_CACHE] "):])
+            except json.JSONDecodeError:
+                return
+            name = str(payload.get("file") or "")
+            state['done'][(state['model_seq'], name)] = int(payload.get("bytes") or 0)
+            state['note'] = tr('已沿用校验过的文件：{name}（不重新下载）', name=name)
+            state['note_kind'] = 'cache'
+            self.progress_status.setText("\n".join(item for item in (self._overall_progress_line(), self._source_detail_line()) if item))
+            return
+        if '次中断（已有进展' in line or line.lstrip().startswith('[恢复分片]'):
+            state['resumes'] += 1
+            state['note'] = tr('网络中断，已从断点续传（第 {count} 次），已下载的部分不会重下', count=state['resumes'])
+            return
+        if line.startswith('[重试] '):
+            state['resumes'] += 1
+            state['note'] = tr('来源暂时没有响应，稍后自动重试（第 {count} 次），已下载的部分保留', count=state['resumes'])
+            self.progress_status.setText("\n".join(item for item in (self._overall_progress_line(), self._source_detail_line()) if item))
+            return
         # Structured file marker emitted by downloaders: reveals the real filename immediately
         if line.startswith("[2BYTEASR_FILE] "):
             try:
@@ -3254,18 +3287,24 @@ class ModelDownloadDialog(QDialog):
             fsize = int(payload.get("size") or 0)
             idx = payload.get("index")
             tot = payload.get("total")
+            if fname and isinstance(idx, int):
+                state['file_key'] = (state['model_seq'], fname)
+                if state.get('note_kind') == 'cache':
+                    state.update(note='', note_kind='')  # the reuse note belonged to an earlier file
             if fname:
                 if not self._files_seen or self._files_seen[-1] != fname:
                     self._files_seen.append(fname)
                 self._current_file = fname
                 self._total_bytes_hint = fsize
+                # The downloader repeats each file with only name and size; the
+                # repository marker before it already set "file i / n".
                 if isinstance(idx, int) and idx > 0:
                     self._overall_file_index = idx
-                else:
+                elif 'size' not in payload:
                     self._overall_file_index = max(1, len(self._files_seen))
                 if isinstance(tot, int) and tot > 0:
                     self._overall_file_total = tot
-                else:
+                elif 'size' not in payload:
                     self._overall_file_total = max(self._overall_file_total, len(self._files_seen))
                 # Emit a log line for visibility
                 self.log.appendPlainText(f"正在下载：{fname}")
@@ -3279,11 +3318,34 @@ class ModelDownloadDialog(QDialog):
                 payload = json.loads(line[len(source_marker):])
             except json.JSONDecodeError:
                 return
-            label = payload.get("label") or payload.get("mode") or "下载源"
+            label = (payload.get("label") or _SOURCE_NAMES.get(str(payload.get("mode") or ""))
+                     or payload.get("mode") or "下载源")
             host = payload.get("host") or ""
             status = payload.get("status") or ""
             attempt = payload.get("attempt")
             total = payload.get("total")
+            # Events carrying a URL are the downloader's per-file attempts; only the
+            # repository-level events (no URL) say which source the model uses.
+            per_file = bool(payload.get('url'))
+            if per_file:
+                pass
+            elif status == 'trying':
+                if attempt == 1:
+                    state['model_seq'] += 1
+                state.update(source=str(label), host=str(host), attempt=int(attempt or 0), total=int(total or 0), note='')
+            elif status == 'failed':
+                state['failed'].append((str(label), str(payload.get('category') or '')))
+            elif status == 'selected':
+                state.update(source=str(label), host=str(host), verified=True,
+                             note=tr('全部文件已通过 SHA-256 校验，与锁定版本一致'))
+            if not per_file and status == 'trying' and attempt and int(attempt) > 1 and state['failed']:
+                previous, category = state['failed'][-1]
+                language = current_language()
+                reason = tr(_SOURCE_FAILURE_REASONS.get(category, '未完成'))
+                bind_text(self.progress_status, '{previous} 没有完成（{reason}），自动改试 {label}{host} · 第 {attempt}/{total} 个来源',
+                          previous=tr(previous), reason=reason, label=tr(str(label)),
+                          host=(f' ({host})' if language == 'en' else f'（{host}）') if host else '', attempt=attempt, total=total)
+                return
             host_bit = f"（{host}）" if host else ""
             language = current_language()
             if language == "en":
@@ -3348,7 +3410,14 @@ class ModelDownloadDialog(QDialog):
                 self.progress_status.setText(
                     "Downloading..." if language == "en" else line
                 )
-            elif "SHA-256" in line or "校验" in line:
+            elif line.startswith(('[工具] ', '[运行库] ', '[网络] ')):
+                # Runtime preparation (uv, private Python, packages) reports which
+                # source it is trying and why it moved on; those lines are written
+                # for people, so show them (Chinese UI) instead of a generic label.
+                if str(language).startswith('zh'):
+                    self.progress_status.setText(ui_literal(line.split('] ', 1)[1], language))
+            elif ("SHA-256" in line or "校验" in line) and self._phase in {
+                    'weights_downloading', 'downloading', 'files_verifying', 'weights_ready'}:
                 bind_text(self.progress_status, translate('正在校验模型文件完整性…', language))
             return
         try:
@@ -3367,6 +3436,9 @@ class ModelDownloadDialog(QDialog):
                 self._overall_file_total = int(payload["file_total"]) or self._overall_file_total
         except (TypeError, ValueError, json.JSONDecodeError):
             return
+        if state['file_key'] is not None:
+            done = total if payload.get('phase') == 'verify' and total else downloaded
+            state['done'][state['file_key']] = max(int(done), state['done'].get(state['file_key'], 0))
         self._update_real_progress_ui(downloaded, total, speed, phase=str(payload.get("phase", "download")), percent_hint=percent)
 
     def _update_real_progress_ui(self, downloaded: float, total: float, speed: float, *, phase: str, percent_hint: int | None = None):
@@ -3420,6 +3492,8 @@ class ModelDownloadDialog(QDialog):
         if phase == "verify":
             bind_text(self.progress_status, translate('下载完成，正在校验 SHA-256 与固定版本…', language))
             return
+        overall_line = self._overall_progress_line()
+        detail_line = self._source_detail_line()
 
         size_part = ""
         if total and total > 0:
@@ -3467,14 +3541,62 @@ class ModelDownloadDialog(QDialog):
                     else ui_literal("预计剩余 {s} 秒", language).format(s=secs)
                 )
 
+        if overall_line:
+            eta = ""  # the overall line carries the estimate for the whole model
         line = "  ·  ".join([p for p in [size_part, pct_part, spd_part, eta] if p])
         prefix = "  ".join(parts) if parts else (
             "Downloading" if language == "en" else ui_literal("下载中", language)
         )
         if line:
-            self.progress_status.setText(f"{prefix}\n{line}")
+            self.progress_status.setText("\n".join(item for item in (prefix, line, overall_line, detail_line) if item))
         else:
             bind_text(self.progress_status, prefix or translate('下载中…', language))
+
+    def _download_state(self) -> dict:
+        """Per-run download facts parsed from the installer's structured lines."""
+        state = getattr(self, '_dl', None)
+        if state is None or state.get('run') != self._started_at:
+            total = 0
+            try:
+                models = _load_lock(self.root).get('models', {})
+                total = sum(int((models.get(key) or {}).get('download_bytes') or 0) for key in self.download_keys)
+            except Exception:
+                total = 0
+            state = self._dl = dict(run=self._started_at, model_total=total, model_seq=0, file_key=None, done={},
+                                    source='', host='', attempt=0, total=0, failed=[], resumes=0,
+                                    verified=False, note='')
+        return state
+
+    def _overall_progress_line(self) -> str:
+        state = self._download_state()
+        total = state['model_total']
+        done = min(sum(state['done'].values()), total) if total else 0
+        if not total or not done:
+            return ''
+        percent = int(done * 100 / total)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(min(99, percent))
+        remain = ''
+        if self._speed and self._speed > 0 and total > done:
+            seconds = int((total - done) / self._speed)
+            remain = tr('剩余约 {h} 小时 {m} 分', h=seconds // 3600, m=(seconds % 3600) // 60) if seconds >= 3600 else (
+                tr('剩余约 {m} 分 {s} 秒', m=seconds // 60, s=seconds % 60) if seconds >= 60 else tr('剩余约 {s} 秒', s=seconds))
+        gib = 1024 ** 3
+        size = f'{done / gib:.2f} / {total / gib:.2f} GiB' if total >= gib else f'{done / 1024**2:.0f} / {total / 1024**2:.0f} MiB'
+        text = tr('整个模型 {size}（{percent}%）', size=size, percent=percent)
+        return f'{text}  ·  {remain}' if remain else text
+
+    def _source_detail_line(self) -> str:
+        state = self._download_state()
+        if not state['source']:
+            return state['note']
+        host = f" ({state['host']})" if state['host'] else ''
+        parts = [tr('来源：{label}', label=tr(state['source'])) + host]
+        if state['total'] > 1:
+            parts.append(tr('第 {attempt}/{total} 个来源', attempt=state['attempt'], total=state['total']))
+        if state['note']:
+            parts.append(state['note'])
+        return '  ·  '.join(parts)
 
     def _actionable_failure_message(self, exit_code: int) -> str:
         output = self.log.toPlainText()
@@ -3500,7 +3622,8 @@ class ModelDownloadDialog(QDialog):
         if failures:
                 failure=failures[-1]
                 if sources:
-                    header=f"{self.model.name} · {' → '.join(sources)}（{'已尝试备援' if len(sources)>1 else '未尝试备援'}）\n"
+                    tried=' → '.join(tr(_SOURCE_NAMES.get(mode, mode)) for mode in sources)
+                    header=f"{self.model.name} · {tried}（{'已尝试备援' if len(sources)>1 else '未尝试备援'}）\n"
                 elif failure.get('phase') in {'tools_preparing', 'interpreter_preparing', 'dependencies_installing'}:
                     header=f"{self.model.name} · 运行环境准备阶段（尚未开始下载权重）\n"
                 else:
@@ -3528,6 +3651,11 @@ class ModelDownloadDialog(QDialog):
                     'hardware_unsupported':'当前硬件无法执行此模型，已校验权重和运行库会保留。',
                     'dependency_conflict':'依赖版本冲突，请保留包名与版本日志；更换模型下载源不能解决此问题。'}
                 if not category and ('no solution found' in lowered or 'unsatisfiable' in lowered):category='dependency_conflict'
+                if (len(sources) > 1 and failure.get('phase') == 'weights_downloading'
+                        and category in {'network_timeout', 'connection', 'dns', 'proxy', 'tls_certificate', 'rate_limited'}):
+                    # AUTO already tried every source; "switch source" is not advice the user can act on.
+                    return header+tr('所有下载来源都没有连通。已下载并校验的部分会保留，稍后点“继续重试”会从断点继续。'
+                                     '如果一直失败：先确认这台电脑能正常打开网页再重试；仍不行时可开启代理工具的 TUN（虚拟网卡）模式后重试。')+'\n'+detail
                 if category in summaries:return header+summaries[category]+'\n'+detail
                 stage = {'tools_preparing':'工具准备失败', 'interpreter_preparing':'解释器准备失败', 'dependencies_installing':'依赖安装失败',
                          'weights_downloading':'权重下载或校验失败', 'model_loading':'模型加载失败',

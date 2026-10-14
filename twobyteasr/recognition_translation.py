@@ -58,9 +58,10 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
     mode = str(getattr(runtime_context, "subtitle_output", "original") or "original")
     if mode == "original":
         return {}
-    if str(getattr(runtime_context, "task_language", "") or "") != "ja":
-        legacy.record_run_event("subtitle_translation_skipped", reason="source_not_japanese",
-                                language=getattr(runtime_context, "task_language", ""))
+    language = str(getattr(runtime_context, "task_language", "") or "")
+    if language not in ("ja", "en"):
+        legacy.record_run_event("subtitle_translation_skipped", reason="source_not_japanese_or_english",
+                                language=language)
         print("   [翻译] 本任务按中文处理，不做中文翻译。")
         return {}
     from .studio_project import StudioCue
@@ -70,7 +71,7 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
                                            end_ms=round(float(cue.end) * 1000), text=str(cue.text or ""),
                                            speaker_id=str(getattr(cue, "speaker", "S00") or "S00"))
                                  for cue_id, cue in zip(project_cue_ids(cues), cues)],
-                           generation_metadata={"language": {"code": "ja"}}, studio_state={}, speakers=[])
+                           generation_metadata={"language": {"code": language}}, studio_state={}, speakers=[])
     target = str(getattr(runtime_context, "translation_script", "zh-Hans") or "zh-Hans")
     if provider is None:
         from .ai_providers import provider_for_stage
@@ -81,7 +82,7 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
         provider = provider_for_stage(snapshot.execution_settings(), "polish", sender=post_chat_completion)
     token = getattr(runtime_context, "cancellation_token", None)
     cache = load_cache()
-    print(f"   [翻译] 日文 → {'繁体' if target == 'zh-Hant' else '简体'}中文：{len(fake.cues)} 条，按批发送字幕文字到已配置的 AI 服务…")
+    print(f"   [翻译] {'英文' if language == 'en' else '日文'} → {'繁体' if target == 'zh-Hant' else '简体'}中文：{len(fake.cues)} 条，按批发送字幕文字到已配置的 AI 服务…")
 
     def progress(done, total, message=""):
         print(f"   [翻译] {done}/{total} {message}".rstrip())

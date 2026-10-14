@@ -2506,15 +2506,21 @@ class _ReviewThread(QThread):
     failed = Signal(str)
     progress = Signal(int, int)
 
-    def __init__(self, project, cue_ids, snapshot, settings, use_ai, parent):
+    def __init__(self, project, cue_ids, snapshot, settings, use_ai, parent, stand_in=None):
         super().__init__(parent)
         from .service import CancellationToken
         self.token = CancellationToken()
         self.inputs = (project, cue_ids, snapshot, settings)
         self.use_ai = use_ai
+        self.stand_in = stand_in
 
     def run(self):
         try:
+            if self.stand_in is not None:  # the tutorial's offline stand-in for the AI request
+                result = self.stand_in(*self.inputs, cancel_token=self.token)
+                self.token.raise_if_cancelled()
+                self.ready.emit(result)
+                return
             from .studio_glossary_service import preview_glossary_correction
             result = preview_glossary_correction(*self.inputs, cancel_token=self.token, use_ai=self.use_ai,
                                                  progress=lambda done, total: self.progress.emit(done, total))
@@ -2843,6 +2849,9 @@ def group_pair(row, group):
 class GlossaryProofreadPage(QWidget):
     back_requested = Signal()
     applied = Signal(str)
+    # Set by the first-run tutorial while it runs: "AI 校对" then uses this offline
+    # stand-in (same arguments as preview_glossary_correction) instead of a request.
+    ai_stand_in = None
 
     def __init__(self, window):
         super().__init__()
@@ -4979,7 +4988,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         settings = copy.deepcopy(getattr(legacy, "RUNTIME_SETTINGS", {}) or {})
         self._review_choices = self._active_choices()
         review_snapshot = prefer_spellings(self._snapshot, self._review_choices)
-        worker = _ReviewThread(_review_copy(live), wanted, review_snapshot, settings, bool(use_ai), self)
+        worker = _ReviewThread(_review_copy(live), wanted, review_snapshot, settings, bool(use_ai), self,
+                               stand_in=self.ai_stand_in if use_ai else None)
         self._worker, self._worker_ai, self._worker_scope_all = worker, bool(use_ai), scope is None
         self._set_busy(True)
         self._set_status(tr("正在请求 AI 校对…") if use_ai else tr("正在按词库匹配（本地）…"))

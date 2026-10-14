@@ -319,7 +319,7 @@ def _merge_known_settings(defaults, payload):
             warnings.append(
                 f"models.{key} must be one of {sorted(allowed)}; default was used"
             )
-    allowed_language = {"recognition_language": {"auto", "zh", "ja"},
+    allowed_language = {"recognition_language": {"auto", "zh", "ja", "en"},
                         "output": {"original", "translation", "bilingual"},
                         "translation_script": {"zh-Hans", "zh-Hant"}}
     for key, allowed in allowed_language.items():

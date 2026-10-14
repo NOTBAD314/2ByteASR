@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import queue
+import random
 import re
 import sys
 import threading
@@ -41,12 +42,25 @@ def print(*args, **kwargs):
     builtins.print(*(redact(value) if isinstance(value, str) else value for value in args), **kwargs)
 
 DEFAULT_THREADS = 4
+# Attempts that make no progress (blocked host, DNS poisoning, refused range)
+# get one retry so AUTO can move to the next source quickly.  An interruption
+# after real progress resumes from the break point instead, a bounded number of
+# times, so a multi-GB file survives a flaky line without switching origin.
 RETRIES = 2
+PROGRESS_RESUMES = 8
+MAX_RETRY_AFTER = 30
 MODELSCOPE_LARGE_FILE_THREADS = 4
 MODELSCOPE_LARGE_FILE_THRESHOLD = 2 * 1024**3
 BLOCK_SIZE = 1 << 20
 DEFAULT_MIN_PARALLEL_SIZE = 8 << 20
 DEFAULT_STALL_TIMEOUT = 90
+# More pieces than connections: connections take the next piece when done, so a
+# slow connection near the end holds back one small piece, not a quarter of a
+# multi-GB file (measured 2026-10-14: the last of 4 static chunks ran alone at
+# 3-23 MB/s while 4 connections had made 60-70 MB/s).
+PIECES_PER_CONNECTION = 8
+MIN_PIECE_BYTES = 64 << 20
+PIECE_LAYOUT = 2  # part of the resume identity: old partials never meet a new layout
 CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.IGNORECASE)
 
 _metrics_lock = threading.Lock()
@@ -61,6 +75,17 @@ _retry_count = 0
 _attempt_context = None
 _http_events = []
 _last_failure = None
+# Hugging Face / hf-mirror / ModelScope answer a file URL with a redirect to a
+# signed CDN URL. Pieces reuse the CDN URL found while probing, so 32 pieces do
+# not each wait on the redirector (hf-mirror.com took 3-20 s per answer from a
+# mainland line on 2026-10-14 and one slow answer failed a 2 GB file). An
+# expired or refused signed URL falls back to the original URL once.
+_resolved_urls: dict[str, str] = {}
+_REFRESH_STATUSES = (401, 403, 404, 410)
+# Once a piece of this file has received data the source is known to work, so a
+# piece gets more no-progress retries before the file is given up.
+_file_progress = threading.Event()
+RETRIES_AFTER_FILE_PROGRESS = 5
 
 
 class MeasuredSession(requests.Session):
@@ -197,6 +222,8 @@ def _fetch_size_once(url, timeout, expected_name):
         timeout=timeout,
     ) as response:
         _validate_download_response(response, expected_name)
+        if response.history and response.url and response.url != url:
+            _resolved_urls[url] = response.url
         # ModelScope currently preserves Content-Range but rewrites HTTP 206 to
         # HTTP 200 on its public API gateway.  A valid Content-Range is therefore
         # a stronger signal than the status code here.
@@ -209,6 +236,17 @@ def _fetch_size_once(url, timeout, expected_name):
             return int(match.group(3)), True
         length = response.headers.get("Content-Length")
         if not length:
+            # Hugging Face hosts (and hf-mirror.com) answer a small git-stored
+            # file with a redirect that states the size, then stream the body
+            # chunked without a length or range support. Take the size from the
+            # redirect and download in one stream; the locked SHA still decides.
+            for hop in reversed(response.history):
+                stated = CONTENT_RANGE.fullmatch(hop.headers.get("Content-Range", "").strip())
+                if stated and stated.group(3) != '*' and int(stated.group(3)) > 0:
+                    return int(stated.group(3)), False
+                linked = str(hop.headers.get("X-Linked-Size", "")).strip()
+                if linked.isdigit() and int(linked) > 0:
+                    return int(linked), False
             raise RuntimeError("服务器未返回文件大小")
         return int(length), False
 
@@ -384,9 +422,11 @@ def _download_chunk(
     if existing_length > expected_length:
         part.unlink(missing_ok=True)
 
-    for attempt in range(1, RETRIES + 1):
+    failures = resumes = attempt = 0
+    while True:
+        attempt += 1
+        existing_length = part.stat().st_size if part.is_file() else 0
         try:
-            existing_length = part.stat().st_size if part.is_file() else 0
             if existing_length == expected_length:
                 print(f"  [续传完成] {index + 1}")
                 return
@@ -394,7 +434,7 @@ def _download_chunk(
                 part.unlink(missing_ok=True)
                 existing_length = 0
             resume_start = start + existing_length
-            with _session().get(
+            with _get_with_resolved(
                 url,
                 headers={"Range": f"bytes={resume_start}-{end}"},
                 stream=True,
@@ -418,6 +458,7 @@ def _download_chunk(
                             if resume_start == 0 and handle.tell() == 0:
                                 _validate_body_prefix(block)
                             handle.write(block)
+                            _file_progress.set()
             if part.stat().st_size != expected_length:
                 raise RuntimeError(
                     f"分片长度不正确：{part.stat().st_size}/{expected_length} 字节"
@@ -426,13 +467,45 @@ def _download_chunk(
         except BaseException as exc:  # keep worker failures visible to the caller
             if stop_event.is_set():
                 return
-            if attempt == RETRIES or not retryable(exc):
+            progressed = (part.stat().st_size if part.is_file() else 0) > existing_length
+            if progressed:
+                resumes += 1
+            else:
+                failures += 1
+            budget = RETRIES_AFTER_FILE_PROGRESS if _file_progress.is_set() else RETRIES
+            if failures >= budget or resumes > PROGRESS_RESUMES or not retryable(exc):
                 errors[index] = exc
                 return
-            print(f"  分片 {index + 1} 第 {attempt} 次失败，正在重试：{exc}", file=sys.stderr)
+            delay = _retry_delay(exc, failures + resumes)
+            state = "已有进展，从断点续传" if progressed else "没有进展"
+            print(f"  分片 {index + 1} 第 {attempt} 次中断（{state}），{delay:.1f} 秒后重试：{exc}", file=sys.stderr)
             with _metrics_lock:
                 _retry_count += 1
-            stop_event.wait(min(2, attempt * .5))
+            stop_event.wait(delay)
+
+
+def _retry_delay(exc, retry_number: int) -> float:
+    """Exponential backoff with jitter; honour a short Retry-After on 429/503."""
+    response = getattr(exc, 'response', None)
+    if getattr(response, 'status_code', None) in (429, 503):
+        try:
+            return min(MAX_RETRY_AFTER, max(1.0, float(response.headers.get('Retry-After', ''))))
+        except (TypeError, ValueError):
+            pass
+    return min(8.0, 0.5 * 2 ** max(0, retry_number - 1)) + random.uniform(0, 0.5)
+
+
+def _get_with_resolved(url, **kwargs):
+    """GET the cached CDN URL for ``url``; re-resolve once if it was refused or expired."""
+    target = _resolved_urls.get(url, url)
+    response = _session().get(target, **kwargs)
+    if target != url and response.status_code in _REFRESH_STATUSES:
+        response.close()
+        _resolved_urls.pop(url, None)
+        response = _session().get(url, **kwargs)
+    if response.history and response.url and response.url != url:
+        _resolved_urls[url] = response.url
+    return response
 
 
 def _validate_body_prefix(block):
@@ -492,7 +565,9 @@ def stream_download(
     global _reused_bytes, _retry_count, _last_failure
     """Single-stream downloader with a resumable ``.part`` file."""
     partial = _stream_part_path(out_file, host)
-    for attempt in range(1, RETRIES + 1):
+    failures = resumes = attempt = 0
+    while True:
+        attempt += 1
         offset = partial.stat().st_size if partial.is_file() else 0
         if offset > size:
             partial.unlink(missing_ok=True)
@@ -502,7 +577,7 @@ def stream_download(
             started_at = time.monotonic()
             last_report_at = started_at
             last_reported_bytes = offset
-            with _session().get(
+            with _get_with_resolved(
                 url,
                 headers=headers,
                 stream=True,
@@ -565,13 +640,19 @@ def stream_download(
             return 0
         except BaseException as exc:
             _last_failure = exc
-            if attempt == RETRIES or not retryable(exc):
+            progressed = (partial.stat().st_size if partial.is_file() else 0) > offset
+            if progressed:
+                resumes += 1
+            else:
+                failures += 1
+            if failures >= RETRIES or resumes > PROGRESS_RESUMES or not retryable(exc):
                 print(f"下载失败：{exc}", file=sys.stderr)
                 return 1
-            print(f"第 {attempt} 次失败，保留断点后重试：{exc}", file=sys.stderr)
+            delay = _retry_delay(exc, failures + resumes)
+            state = "已有进展，保留断点续传" if progressed else "没有进展"
+            print(f"第 {attempt} 次中断（{state}），{delay:.1f} 秒后重试：{exc}", file=sys.stderr)
             _retry_count += 1
-            time.sleep(min(2, attempt * .5))
-    return 1
+            time.sleep(delay)
 
 
 def download_from_source(
@@ -595,7 +676,7 @@ def download_from_source(
         return 0
     # A changed revision, hash, range layout or origin never reuses old bytes.
     # Keep old partials for diagnosis; identity separates them without deletion.
-    identity = hashlib.sha256(json.dumps([url,size,expected_sha256,threads_requested],sort_keys=True).encode()).hexdigest()[:12]
+    identity = hashlib.sha256(json.dumps([url,size,expected_sha256,threads_requested,PIECE_LAYOUT],sort_keys=True).encode()).hexdigest()[:12]
     if not expected_sha256:
         # URL, size and ETag alone do not prove byte identity after restart.
         identity += uuid.uuid4().hex[:8]
@@ -629,26 +710,35 @@ def download_from_source(
         return result
 
     threads = _effective_threads(threads_requested, size, source_mode)
-    print(f"       {threads} 线程分片；中断后会复用已完成分片")
-    chunk_size = (size + threads - 1) // threads
+    pieces = max(threads, min(threads * PIECES_PER_CONNECTION, -(-size // MIN_PIECE_BYTES)))
+    print(f"       {threads} 线程、{pieces} 个分片；中断后会复用已完成分片")
+    chunk_size = (size + pieces - 1) // pieces
     ranges = [
         (index, index * chunk_size, min(size - 1, (index + 1) * chunk_size - 1))
-        for index in range(threads)
+        for index in range(pieces)
         if index * chunk_size < size
     ]
     parts = [_part_path(out_file, index, part_host) for index, _, _ in ranges]
+    _file_progress.clear()
+    if any(part.is_file() and part.stat().st_size for part in parts):
+        _file_progress.set()  # resuming pieces this source already served
     _reused_bytes = sum(min(p.stat().st_size, end-start+1) if p.is_file() else 0
                         for p, (_, start, end) in zip(parts, ranges))
     errors: dict[int, BaseException] = {}
     stop_event = threading.Event()
-    pool = [
-        threading.Thread(
-            target=_download_chunk,
-            args=(url, parts[index], start, end, errors, index, stop_event, out_file.name, size),
-            daemon=True,
-        )
-        for index, start, end in ranges
-    ]
+    work: queue.Queue = queue.Queue()
+    for item in ranges:
+        work.put(item)
+
+    def connection() -> None:
+        while not stop_event.is_set() and not errors:
+            try:
+                index, start, end = work.get_nowait()
+            except queue.Empty:
+                return
+            _download_chunk(url, parts[index], start, end, errors, index, stop_event, out_file.name, size)
+
+    pool = [threading.Thread(target=connection, daemon=True) for _ in range(min(threads, len(ranges)))]
     started_at = time.monotonic()
     last_report_at = started_at
     last_reported_bytes = sum(p.stat().st_size if p.is_file() else 0 for p in parts)
@@ -733,15 +823,15 @@ def download_from_source(
 def _emit_source_line(url: str, source_mode: str, attempt: int, total: int, status: str) -> None:
     host = urlparse(url).hostname or ""
     try:
+        from types import SimpleNamespace
         from twobyteasr.download_sources import SOURCE_LABELS, emit_source_event
 
-        class _Resolved:
-            mode = source_mode or "AUTO"
-            host = host
-            label = SOURCE_LABELS.get(source_mode or "AUTO", source_mode or "自动")
-            url = url
-
-        print(emit_source_event(_Resolved(), attempt=attempt, total=total, status=status), flush=True)
+        # A class body cannot read this function's ``host``/``url`` when it
+        # assigns names of the same name; that silently fell back to the
+        # label-less line below. SimpleNamespace carries the label.
+        resolved = SimpleNamespace(mode=source_mode or "AUTO", host=host, url=url,
+                                   label=SOURCE_LABELS.get(source_mode or "AUTO", source_mode or "自动"))
+        print(emit_source_event(resolved, attempt=attempt, total=total, status=status), flush=True)
     except Exception:
         print(
             "[2BYTEASR_SOURCE] "

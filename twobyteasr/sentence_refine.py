@@ -72,7 +72,25 @@ JAPANESE_REFINE_SYSTEM_PROMPT = """你是日语字幕（日文原文）的断句
 split_after_chars 与 space_after_chars 都是原文的 0 基字符索引，空格也计数。每个输入 cue_id 恰好返回一次。"""
 
 
+ENGLISH_REFINE_SYSTEM_PROMPT = """You re-break English subtitle cues (game streams) for reading rhythm. For every cue decide:
+- keep: leave it as it is (the default; when unsure, keep).
+- split: start a new cue after character index N, where N is the index of the LAST letter (or punctuation) of a
+  word, so the cut falls on a space. Never cut inside a word, a name, a number with its unit (10 minutes, 50%),
+  "not" from its verb, or a phrasal verb (pick up, log in).
+Prefer cutting after . ! ? , ; : and before and/but/or/so/because/when/which/who; never leave a piece ending with
+an article or determiner (a, an, the, this, my…), a preposition, a conjunction, an auxiliary (is, was, can, will…)
+or a subject pronoun waiting for its verb. Each piece should be at least two words and at least about 1.2 s; a piece
+may be up to 42 characters. pause_hints (after_chars, gap_ms) are real pauses between words: a long pause is good
+evidence for a split; with no evidence decide by meaning or keep. There is no "space" action for English.
+Return only character indexes; never rewrite, add, remove or reorder any character. Return only JSON with a results
+array, every input cue_id exactly once:
+{"results":[{"cue_id":"<id>","action":"keep","split_after_chars":[],"space_after_chars":[],"reason":"short reason"}]}
+split_after_chars are 0-based character indexes into the original text; spaces count."""
+
+
 def refine_system_prompt(language: str = "") -> str:
+    if language == "en":
+        return ENGLISH_REFINE_SYSTEM_PROMPT
     return JAPANESE_REFINE_SYSTEM_PROMPT if language == "ja" else REFINE_SYSTEM_PROMPT
 
 
@@ -153,7 +171,19 @@ def validate_action(text: str, raw: Mapping[str, Any]) -> CueRefineAction | None
         return None
     if action == "keep":
         return CueRefineAction(cue_id=str(raw.get("cue_id") or ""), action="keep")
-    from .language_rules import is_japanese
+    from .language_rules import is_english, is_japanese
+    if is_english():
+        # English: cut only where a space separates two words; no rhythm spaces.
+        if action == "space":
+            return CueRefineAction(cue_id=str(raw.get("cue_id") or ""), action="keep")
+        if not splits or any(not (text[index] != " " and index + 1 < length and text[index + 1] == " ")
+                             for index in splits):
+            return None
+        bounds = [0, *(index + 1 for index in splits), length]
+        if any(len(text[left:right].split()) < 2 and not text[left:right].strip().endswith(("!", "?", "."))
+               for left, right in zip(bounds, bounds[1:])):
+            return None
+        return CueRefineAction(cue_id=str(raw.get("cue_id") or ""), action="split", split_after_chars=splits)
     if is_japanese():
         # Japanese: cuts and rhythm spaces only between phrases, never inside a word.
         allowed = _japanese_boundaries(text)

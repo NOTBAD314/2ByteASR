@@ -898,26 +898,37 @@ class TimelineRule:
 class ReadabilityRule:
     def evaluate(self, cue: StudioCue, context: _QCContext) -> Iterable[QCIssue]:
         duration = max(1, cue.end_ms - cue.start_ms)
-        characters = _visible_characters(cue.text)
+        from .language_rules import project_language
+        english = project_language(context.project) == "en"
+        if english:
+            # 2026-10-14: English reads in characters including spaces (~17/s comfortable, 42 per line).
+            from .english_text import RULES as english_rules, display_length as english_length
+            characters = english_length(_visible_text(cue.text))
+            warning, critical = english_rules.warning_cps, english_rules.critical_cps
+            max_line, unit = english_rules.max_chars, "字符"
+        else:
+            characters = _visible_characters(cue.text)
+            warning, critical = context.config.max_cps_warning, context.config.max_cps_critical
+            max_line, unit = context.config.max_line_length, "字"
         cps = characters / (duration / 1000)
-        if cps > context.config.max_cps_critical:
+        if cps > critical:
             severity = QCSeverity.CRITICAL
-        elif cps > context.config.max_cps_warning:
+        elif cps > warning:
             severity = QCSeverity.WARNING
         else:
             severity = None
         if severity:
             yield QCIssue(
                 "high_cps", severity, QCCategory.READABILITY, cue.id,
-                "读速过快", f"约 {cps:.1f} 字/秒，建议延长时间或精简文本。",
+                "读速过快", f"约 {cps:.1f} {unit}/秒，建议延长时间或精简文本。",
                 (QCEvidence("CPS", f"{cps:.1f}"),), source="readability_rule",
             )
         lines = _visible_text(cue.text).splitlines() or [""]
         longest = max((len(line) for line in lines), default=0)
-        if longest > context.config.max_line_length:
+        if longest > max_line:
             yield QCIssue(
                 "line_too_long", QCSeverity.WARNING, QCCategory.READABILITY, cue.id,
-                "单行过长", f"最长一行 {longest} 字，建议重新断行。",
+                "单行过长", f"最长一行 {longest} {unit}，建议重新断行。",
                 source="readability_rule",
             )
         if len(lines) == 2:

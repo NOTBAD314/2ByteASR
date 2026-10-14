@@ -68,7 +68,9 @@ class SubtitleTranslationDialog(QDialog):
         self.language_note.setWordWrap(True)
         bind_text(self.language_note, ("原文：日语（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
                                        if language == "ja" else
-                                       "这个工程没有记录为日语素材；翻译仍按“日文 → 中文”处理，请确认原文是日语。"))
+                                       "原文：英语（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
+                                       if language == "en" else
+                                       "这个工程没有记录为日语或英语素材；翻译仍按“日文 → 中文”处理，请确认原文是日语。"))
         layout.addWidget(self.language_note)
         self.scope_group = QButtonGroup(self)
         selected = list(getattr(page, "selected_cue_ids", lambda: [])() or [])
@@ -99,7 +101,8 @@ class SubtitleTranslationDialog(QDialog):
         layout.addWidget(self.context)
         self.glossary = QPlainTextEdit()
         self.glossary.setMaximumHeight(90)
-        bind_text(self.glossary, '术语对照（可选，每行一条）：日文 = 中文，例如 ゆっこ = 由子', property='placeholderText')
+        bind_text(self.glossary, ('术语对照（可选，每行一条）：英文 = 中文，例如 Paimon = 派蒙' if language == "en" else
+                                  '术语对照（可选，每行一条）：日文 = 中文，例如 ゆっこ = 由子'), property='placeholderText')
         pairs = self.project.generation_metadata.get("translation_glossary") or []
         self.glossary.setPlainText("\n".join(f"{a} = {b}" for a, b in pairs if a and b))
         layout.addWidget(self.glossary)

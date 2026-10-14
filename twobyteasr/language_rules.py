@@ -23,30 +23,37 @@ import unicodedata
 CONTENT_CHAR_CLASS = (r"\u3400-\u9fff\u3005\u3041-\u3096\u309d-\u309f\u30a1-\u30fa\u30fc-\u30ff"
                       r"\u31f0-\u31ff\uff66-\uff9fA-Za-z0-9")
 
-AUTO, ZH, JA = "auto", "zh", "ja"
-SUPPORTED_REQUESTS = (AUTO, ZH, JA)
-QWEN_LANGUAGE_NAMES = {ZH: "Chinese", JA: "Japanese"}
+AUTO, ZH, JA, EN = "auto", "zh", "ja", "en"
+SUPPORTED_REQUESTS = (AUTO, ZH, JA, EN)
+TASK_LANGUAGES = (ZH, JA, EN)
+QWEN_LANGUAGE_NAMES = {ZH: "Chinese", JA: "Japanese", EN: "English"}
 _ALIASES = {"": AUTO, "auto": AUTO, "zh": ZH, "zh-cn": ZH, "zh-hans": ZH, "zh-hant": ZH, "chinese": ZH, "cn": ZH,
-            "ja": JA, "ja-jp": JA, "jp": JA, "japanese": JA}
+            "ja": JA, "ja-jp": JA, "jp": JA, "japanese": JA,
+            "en": EN, "en-us": EN, "en-gb": EN, "eng": EN, "english": EN}
 
 # Kana share of (kana + kanji) above which a transcript is Japanese.
 KANA_SHARE_JA = 0.12
 MIN_KANA_JA = 4
+# 2026-10-14: a transcript is English when Latin letters clearly dominate: at
+# least this many letters, and CJK letters under this share of all letters
+# (a Chinese stream with English words stays Chinese).
+MIN_LATIN_EN = 20
+CJK_SHARE_EN = 0.10
 
 # Which roles each local model fills for each language. "transcribe" is
 # speech-to-text; "align" is forced alignment of a given text; "speakers" is
 # diarization; "language_id" is spoken-language identification.
 MODEL_LANGUAGE_ROLES = {
-    "moss": {"transcribe": {ZH, JA}, "speakers": {ZH, JA}, "align": set(), "language_id": set()},
-    "qwen3_asr": {"transcribe": {ZH, JA}, "language_id": {ZH, JA}, "align": set(), "speakers": set()},
-    "qwen_aligner": {"align": {ZH, JA}, "transcribe": set(), "speakers": set(), "language_id": set()},
-    "mlx_qwen3_asr": {"transcribe": {ZH, JA}, "language_id": {ZH, JA}, "align": set(), "speakers": set()},
-    "mlx_qwen3_asr_1_7b": {"transcribe": {ZH, JA}, "language_id": {ZH, JA}, "align": set(), "speakers": set()},
-    "mlx_qwen_aligner": {"align": {ZH, JA}, "transcribe": set(), "speakers": set(), "language_id": set()},
+    "moss": {"transcribe": {ZH, JA, EN}, "speakers": {ZH, JA, EN}, "align": set(), "language_id": set()},
+    "qwen3_asr": {"transcribe": {ZH, JA, EN}, "language_id": {ZH, JA, EN}, "align": set(), "speakers": set()},
+    "qwen_aligner": {"align": {ZH, JA, EN}, "transcribe": set(), "speakers": set(), "language_id": set()},
+    "mlx_qwen3_asr": {"transcribe": {ZH, JA, EN}, "language_id": {ZH, JA, EN}, "align": set(), "speakers": set()},
+    "mlx_qwen3_asr_1_7b": {"transcribe": {ZH, JA, EN}, "language_id": {ZH, JA, EN}, "align": set(), "speakers": set()},
+    "mlx_qwen_aligner": {"align": {ZH, JA, EN}, "transcribe": set(), "speakers": set(), "language_id": set()},
     "firered_aed": {"transcribe": {ZH}, "align": {ZH}, "speakers": set(), "language_id": set()},
     "firered_llm": {"transcribe": {ZH}, "align": set(), "speakers": set(), "language_id": set()},
     "paraformer": {"transcribe": {ZH}, "align": {ZH}, "speakers": set(), "language_id": set()},
-    "firered_vad": {"vad": {ZH, JA}},
+    "firered_vad": {"vad": {ZH, JA, EN}},
 }
 
 
@@ -65,7 +72,7 @@ def qwen_language_name(language: str):
 
 
 def language_from_qwen_name(name) -> str:
-    return {"chinese": ZH, "japanese": JA}.get(str(name or "").strip().lower(), "")
+    return {"chinese": ZH, "japanese": JA, "english": EN}.get(str(name or "").strip().lower(), "")
 
 
 def _is_kana(code: int) -> bool:
@@ -94,9 +101,15 @@ def detect_language(texts) -> tuple[str, dict]:
     counts = script_counts(texts)
     cjk = counts["kana"] + counts["han"]
     share = counts["kana"] / cjk if cjk else 0.0
-    evidence = dict(counts, kana_share=round(share, 4), rule=f"kana/(kana+han) >= {KANA_SHARE_JA} and kana >= {MIN_KANA_JA}")
+    letters = cjk + counts["latin"]
+    cjk_share = cjk / letters if letters else 0.0
+    evidence = dict(counts, kana_share=round(share, 4), cjk_share=round(cjk_share, 4),
+                    rule=f"kana/(kana+han) >= {KANA_SHARE_JA} and kana >= {MIN_KANA_JA}; "
+                         f"latin >= {MIN_LATIN_EN} and cjk/(cjk+latin) < {CJK_SHARE_EN} = en")
     if counts["kana"] >= MIN_KANA_JA and share >= KANA_SHARE_JA:
         return JA, evidence
+    if counts["latin"] >= MIN_LATIN_EN and cjk_share < CJK_SHARE_EN:
+        return EN, evidence
     if counts["han"]:
         return ZH, evidence
     return "", evidence
@@ -112,7 +125,7 @@ def resolve_task_language(requested, texts, *, asr_detected=None) -> tuple[str, 
     requested = normalize_language(requested)
     detected, evidence = detect_language(texts)
     evidence = dict(evidence, requested=requested, asr_detected=asr_detected or "")
-    if requested in (ZH, JA):
+    if requested in TASK_LANGUAGES:
         evidence["decided_by"] = "manual"
         if detected and detected != requested:
             evidence["disagrees_with_transcript"] = detected
@@ -121,7 +134,7 @@ def resolve_task_language(requested, texts, *, asr_detected=None) -> tuple[str, 
         evidence["decided_by"] = "transcript_scripts"
         return detected, evidence
     from_asr = language_from_qwen_name(asr_detected) or normalize_language(asr_detected)
-    if from_asr in (ZH, JA):
+    if from_asr in TASK_LANGUAGES:
         evidence["decided_by"] = "asr_language_id"
         return from_asr, evidence
     evidence["decided_by"] = "default_chinese"
@@ -145,7 +158,7 @@ def language_scope(language):
 def active_task_language() -> str:
     """Language for text rules: a scoped project language, else the running task's."""
     scoped = getattr(_SCOPE, "language", None)
-    if scoped in (ZH, JA):
+    if scoped in TASK_LANGUAGES:
         return scoped
     try:
         from .runtime import get_runtime_context
@@ -160,11 +173,15 @@ def project_language(project) -> str:
     value = (metadata.get("language") or {}) if isinstance(metadata, dict) else {}
     code = value.get("code") if isinstance(value, dict) else value
     code = normalize_language(code)
-    return code if code in (ZH, JA) else ""
+    return code if code in TASK_LANGUAGES else ""
 
 
 def is_japanese(language=None) -> bool:
     return (active_task_language() if language is None else normalize_language(language)) == JA
+
+
+def is_english(language=None) -> bool:
+    return (active_task_language() if language is None else normalize_language(language)) == EN
 
 
 _JA_PAUSE_PUNCTUATION = re.compile(r"[、。，．,]+")

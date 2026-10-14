@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from .main_ui_branding import _icon
 from .ui_motion import MOTION_STANDARD_MS, motion_duration
+from .widget_teardown import delete_tree_before_collection
 
 from .i18n import bind_text
 
@@ -243,6 +244,10 @@ class FramelessPopupCombo(QComboBox):
     - Click outside → close (handled by popup's eventFilter)
     - Click another trigger → previous is closed immediately without animation replay
     """
+
+    # Without a parent the combo and its popup form a reference cycle; the
+    # collector must not tear the popup's list (and its scroll bar) apart.
+    __del__ = delete_tree_before_collection
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -4,7 +4,7 @@
 - 仅四个用户源：AUTO / MODELSCOPE / HF_MIRROR / HF_OFFICIAL
 - 解析器产出真实 URL 与 hostname，而不是只改标签
 - AUTO：仅当 lock 声明 ModelScope 仓库时才试 ModelScope；否则确定性跳过
-- AUTO 顺序：ModelScope → HF 国内镜像 → HF 官方
+- AUTO 顺序：ModelScope → HF 官方 → HF 第三方镜像（最后备用，仍按锁定哈希校验）
 - 显式源不得静默换源
 - 续传同一产物；换源不得把残缺/错源当分片复用；不删可续传分片
 - 用户错误含源/主机、失败类别、下一步；版本 URL 只进详情
@@ -107,7 +107,7 @@ def test_auto_sequence_prefers_modelscope_when_declared(lock):
         lock["models"]["whisper_turbo"],
         "AUTO",
     )
-    assert [item.mode for item in whisper] == ["MODELSCOPE", "HF_OFFICIAL"]
+    assert [item.mode for item in whisper] == ["MODELSCOPE", "HF_OFFICIAL", "HF_MIRROR"]
     assert whisper[0].host == "modelscope.cn"
 
     moss = sources.resolve_artifact(
@@ -116,7 +116,7 @@ def test_auto_sequence_prefers_modelscope_when_declared(lock):
         lock["models"]["moss"],
         "AUTO",
     )
-    assert [item.mode for item in moss] == ["MODELSCOPE", "HF_OFFICIAL"]
+    assert [item.mode for item in moss] == ["MODELSCOPE", "HF_OFFICIAL", "HF_MIRROR"]
     assert moss[0].host == "modelscope.cn"
 
 

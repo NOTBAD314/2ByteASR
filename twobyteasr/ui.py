@@ -5491,33 +5491,35 @@ class MainWindow(QWidget):
 
     # ---- tutorial demo data (2026-10-14): the bundled example, nothing uploaded --------
     def _tutorial_prepare_demo(self):
-        """Make sure the example project and its video exist (first time ~2 s, off the GUI thread)."""
+        """Make sure the tutorial project and its video exist (first time ~2 s, off the GUI thread)."""
         def work():
             try:
-                from .sample_project import ensure_sample_project
-                self._tutorial_sample = ensure_sample_project()
+                from .sample_project import ensure_tutorial_project
+                self._tutorial_sample = ensure_tutorial_project()
             except Exception:  # noqa: BLE001 - the media step reports it
                 traceback.print_exc()
         threading.Thread(target=work, name="tutorial-sample", daemon=True).start()
 
     def _tutorial_demo_media(self):
-        from .sample_project import ensure_sample_project, sample_root
-        ensure_sample_project()
-        return sample_root() / "范例影片.mp4"
+        from .sample_project import ensure_tutorial_project, tutorial_root
+        media = tutorial_root() / "教学影片.mp4"
+        if not media.is_file():
+            ensure_tutorial_project()
+        return media
 
     def _tutorial_add_demo_media(self):
         self._tutorial_media = str(self._tutorial_demo_media())
         self.import_media([self._tutorial_media], replace=True)
 
     def _tutorial_demo_completion(self):
-        """The result page of a pretend recognition: the example project, saved as it is."""
-        from .sample_project import ensure_sample_project, sample_root
+        """The result page of a pretend recognition: a fresh copy of the tutorial project."""
+        from .sample_project import ensure_tutorial_project, tutorial_root
         from .service import MediaResult, QueueResult
         from .studio_project import load_project
         from .studio_subtitle_export import compile_srt
-        project_path = ensure_sample_project()
-        root = sample_root()
-        srt = root / "兔白字幕范例.srt"
+        project_path = ensure_tutorial_project()
+        root = tutorial_root()
+        srt = root / "兔白字幕教学.srt"
         srt.write_text(compile_srt(load_project(project_path).cues), encoding="utf-8")
         report = root / "demo-report.json"
         media = str(self._tutorial_demo_media())
@@ -5539,6 +5541,27 @@ class MainWindow(QWidget):
         demo = getattr(self, "_tutorial_media", "")
         if demo and [str(p) for p in (getattr(self, "media_paths", None) or [])] == [demo]:
             self._clear_media_paths()
+        proofread = self.__dict__.get("glossary_proofread_page")
+        if proofread is not None:
+            proofread.ai_stand_in = None  # "AI 校对" asks the real service again
+        try:
+            from .sample_project import tutorial_project_path
+            studio = self.built_page("studio")
+            if studio is not None and studio.project is not None and str(studio.project_path or "") and \
+                    os.path.normcase(os.path.abspath(str(studio.project_path))) == \
+                    os.path.normcase(os.path.abspath(str(tutorial_project_path()))):
+                # Demo data: put it away without a "save changes?" question later.
+                studio.undo_stack.setClean()
+                studio._close_project_session("tutorial-finished")
+            from .sample_project import discard_tutorial_autosave
+            discard_tutorial_autosave()   # and no "recover autosave" for it on the next start
+            # The demo project is not one of the user's projects: keep it out of "最近工程".
+            remove = getattr(studio, "_remove_recent_project_metadata_batch", None) if studio is not None else None
+            if callable(remove):
+                remove({str(tutorial_project_path())})
+            self._refresh_studio_entry_card()
+        except Exception:  # noqa: BLE001 - leaving the tutorial must never fail
+            traceback.print_exc()
         if completed and self.pages.currentWidget() is not self.__dict__.get("settings_scroll"):
             self._return_to_settings()
         self.activateWindow()
@@ -9566,7 +9589,7 @@ class MainWindow(QWidget):
         row.setSpacing(8)
         saved = dict((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {})
         self.recognition_language = FramelessPopupCombo()
-        for text, value in (("自动识别语言", "auto"), ("中文", "zh"), ("日语", "ja")):
+        for text, value in (("自动识别语言", "auto"), ("中文", "zh"), ("日语", "ja"), ("英语", "en")):
             self.recognition_language.addItem(tr(text), value)
         self.subtitle_output = FramelessPopupCombo()
         for text, value in (("只要原文", "original"), ("只要中文译文", "translation"), ("日中双语", "bilingual")):
@@ -9591,8 +9614,8 @@ class MainWindow(QWidget):
         bind_text(self.subtitle_punctuation, '新任务的字幕标点；文稿不变，工作台里随时能换', property='toolTip')
         row.addWidget(self.subtitle_punctuation)
         row.addStretch(1)
-        bind_text(self.recognition_language, '自动：按转写里的假名判断中文或日语（只有汉字不算日语证据）。日语改用 Qwen3-ForcedAligner 对齐字词时间，需在模型工坊下载。', property='toolTip')
-        bind_text(self.subtitle_output, '译文/双语：识别完成后用已配置的 AI 文字服务把日文翻成中文（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。', property='toolTip')
+        bind_text(self.recognition_language, '自动：按转写里的文字判断中文、日语或英语（只有汉字不算日语证据）。日语和英语改用 Qwen3-ForcedAligner 对齐字词时间，需在模型工坊下载。', property='toolTip')
+        bind_text(self.subtitle_output, '译文/双语：识别完成后用已配置的 AI 文字服务把日文或英文翻成中文（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。', property='toolTip')
         bind_text(self.translation_script, '译文使用的中文字形', property='toolTip')
         layout.addLayout(row)
         self.subtitle_language_hint = QLabel("")
@@ -9622,9 +9645,14 @@ class MainWindow(QWidget):
         options = self._subtitle_language_options()
         translating = options["subtitle_output"] != "original"
         self.translation_script.setEnabled(translating)
+        # The bilingual item names the pair: 日中双语 / 英中双语 (2026-10-14).
+        bilingual = self.subtitle_output.findData("bilingual")
+        if bilingual >= 0:
+            pair = {"ja": "日中双语", "en": "英中双语"}.get(options["recognition_language"], "原文 + 中文双语")
+            self.subtitle_output.setItemText(bilingual, tr(pair))
         hints = []
         aligner_missing = False
-        if options["recognition_language"] in ("ja", "auto"):
+        if options["recognition_language"] in ("ja", "en", "auto"):
             try:
                 from .asr import resolve_qwen_aligner_local_source
                 aligner_missing = not resolve_qwen_aligner_local_source()
@@ -9632,9 +9660,13 @@ class MainWindow(QWidget):
                 aligner_missing = False
         if options["recognition_language"] == "ja":
             hints.append("日语：不送中文时间轴模型；字词时间由 Qwen3-ForcedAligner 对齐。")
+        if options["recognition_language"] == "en":
+            hints.append("英语：按单词断句，单词之间保留空格；单词时间由 Qwen3-ForcedAligner 对齐。")
         if aligner_missing and options["recognition_language"] == "ja":
             hints.append("还没有安装 Qwen3-ForcedAligner：日语字幕将没有字词时间（剃刀只能按估算切），不会悄悄改用估算冒充。")
-        self.aligner_download_button.setVisible(aligner_missing and options["recognition_language"] == "ja")
+        if aligner_missing and options["recognition_language"] == "en":
+            hints.append("还没有安装 Qwen3-ForcedAligner：英文字幕将没有单词时间（剃刀只能按估算切），不会悄悄改用估算冒充。")
+        self.aligner_download_button.setVisible(aligner_missing and options["recognition_language"] in ("ja", "en"))
         if translating:
             hints.append("完成识别后翻译成中文，发送字幕文字到已配置的 AI 文字服务（可能产生费用）。"
                          "中文素材不翻译。")

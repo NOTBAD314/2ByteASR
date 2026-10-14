@@ -141,3 +141,136 @@ def test_home_role_cards_recognize_every_host_limit():
     assert unavailable_on_host("review", "local", no_gpu) in _HOST_LIMIT_STATUSES
     assert unavailable_on_host("timeline", "mlx_qwen_aligner", no_gpu) in _HOST_LIMIT_STATUSES
     assert unavailable_on_host("primary", "sensevoice", no_gpu) == ""
+
+
+def test_quick_chooser_gpu_check_never_keeps_the_dialog_alive_on_its_thread(monkeypatch):
+    import gc
+    import threading
+    import time
+    from PySide6.QtWidgets import QApplication
+    from twobyteasr import hardware
+    from twobyteasr.quick_setup import QuickSetupDialog
+
+    app = QApplication.instance() or QApplication([])
+    release = threading.Event()
+
+    def slow_check():
+        release.wait(timeout=5)
+        return SimpleNamespace(ready=True, code='ok', gpu_name='NVIDIA RTX')
+
+    monkeypatch.setattr(hardware, 'detect_cuda_runtime', slow_check)
+    dialog = QuickSetupDialog(plan_keys=['local', 'cloud', 'light'], size_of=lambda _backends: 1.0)
+    thread = next(t for t in threading.enumerate() if t.name == 'quick-setup-cuda')
+    dialog.close()
+    dialog.deleteLater()
+    app.processEvents()
+    del dialog
+    gc.collect()
+    release.set()          # the late result has nowhere to go and is dropped
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    app.processEvents()
+
+    release.clear()
+    release.set()
+    dialog = QuickSetupDialog(plan_keys=['local', 'cloud', 'light'], size_of=lambda _backends: 1.0)
+    deadline = time.monotonic() + 5
+    while dialog._cuda is None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert getattr(dialog._cuda, 'gpu_name', '') == 'NVIDIA RTX' and dialog.cards['local'].isEnabled()
+    dialog.close()
+
+
+def test_tutorial_bubble_is_measured_with_its_new_buttons():
+    from PySide6.QtWidgets import QApplication, QWidget
+    from twobyteasr.home_tour import GuidedTour, TourAction, TourStep
+
+    app = QApplication.instance() or QApplication([])
+    window = QWidget()
+    window.resize(1600, 1000)
+    target = QWidget(window)
+    target.setGeometry(10, 100, 1500, 120)
+    window.show()
+    text = '**放入影音**：把视频或音频拖进来，一次可以放好几个。先放一段演示视频'
+    tour = GuidedTour(window, [TourStep('先看一眼'), TourStep(text, lambda: target, [
+        TourAction('放入演示视频', lambda: None, advance=True)], show_next=False)])
+    tour.start()
+    app.processEvents()
+    tour.go(1)                      # the action button is created while the bubble is visible
+    button = tour.action_buttons[0]
+    assert button.isVisible()
+    assert tour.bubble.height() >= tour.bubble.sizeHint().height()
+    assert tour.text.geometry().bottom() < button.geometry().top()
+    tour.close_tour(False)
+    window.close()
+
+
+def test_tutorial_project_has_something_to_teach_on_every_step():
+    import subtitle_core
+    from twobyteasr.sample_project import ensure_tutorial_project, tutorial_ai_preview, TUTORIAL_LIBRARY
+    from twobyteasr.studio_glossary_service import preview_glossary_correction
+    from twobyteasr.studio_project import load_project
+    from twobyteasr.studio_qc import review_candidates
+    from twobyteasr.terminology import snapshot_glossaries
+
+    project = load_project(ensure_tutorial_project())
+    # Review mode: the three recognizers disagree on the first line → three choices (keys 1/2/3).
+    first = project.cues[0]
+    assert len(review_candidates(project, first)) == 3
+    assert all(len(review_candidates(project, cue)) == 1 for cue in project.cues[1:])
+    # The built-in 原神 library fixes three spellings offline; the stand-in "AI" adds 派门→派蒙 twice.
+    snapshot = snapshot_glossaries(subtitle_core, [subtitle_core.runtime_game_identity(TUTORIAL_LIBRARY)])
+    ids = [cue.id for cue in project.cues]
+    local = preview_glossary_correction(project, ids, snapshot, {}, use_ai=False)
+    texts = {cue.id: cue.text for cue in project.cues}
+    fixed = {texts[hit.cue_id][:hit.span[0]] + hit.replacement + texts[hit.cue_id][hit.span[1]:]
+             for hit in local.hits if hit.source == 'local_confirmed'}
+    assert {'听说至冬那边下了很大的雪', '坎瑞亚的故事我还没看完', '阿蕾奇诺这次登场好帅'} <= fixed
+    assert not local.receipt.get('pending_rows')  # nothing unrelated to explain
+    pretend = tutorial_ai_preview(project, ids, snapshot, {})
+    ai = [hit for hit in pretend.hits if hit.source == 'ai_accepted']
+    assert [(hit.original, hit.replacement) for hit in ai] == [('派门', '派蒙')] * 2
+    assert len(pretend.hits) == len(local.hits) + 2 and pretend.receipt['tutorial'] is True
+    # A new tutorial starts from a clean copy.
+    assert load_project(ensure_tutorial_project()).cues[1].text == '听说至东那边下了很大的雪'
+
+
+def test_tutorial_steps_let_clicks_through_the_outline_and_move_on_when_done():
+    import time
+    from PySide6.QtCore import QPoint, QRectF
+    from PySide6.QtWidgets import QApplication, QPushButton, QWidget
+    from twobyteasr.home_tour import GuidedTour, TourAction, TourStep
+
+    app = QApplication.instance() or QApplication([])
+    window = QWidget()
+    window.resize(1400, 900)
+    button = QPushButton('目标', window)
+    button.setGeometry(60, 380, 160, 44)
+    video = QWidget(window)          # stands for the native video window the bubble must not cover
+    video.setGeometry(600, 150, 700, 500)    # right of the target: the bubble goes below instead
+    window.show()
+    clicked = []
+    button.clicked.connect(lambda: clicked.append(True))
+    tour = GuidedTour(window, [
+        TourStep('点目标', lambda: button, [TourAction('帮我做', button.click)], show_next=False,
+                 interactive=True, done=lambda: bool(clicked)),
+        TourStep('完成'),
+    ], avoid=lambda: [QRectF(video.geometry())])
+    tour.start()
+    app.processEvents()
+    hole_center = tour.hole.center().toPoint()
+    assert not tour.mask().contains(hole_center)                 # clicks there reach the page
+    assert tour.mask().contains(QPoint(1300, 50))                # elsewhere the page waits
+    assert tour.mask().contains(tour.bubble.geometry().center())
+    bubble = QRectF(tour.bubble.geometry())
+    assert not bubble.intersects(tour.hole) and not bubble.intersects(QRectF(video.geometry()))
+    assert tour.pointer is not None
+    button.click()                                               # as if the user clicked through the hole
+    deadline = time.monotonic() + 3
+    while tour.index == 0 and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert tour.index == 1 and tour.mask().isEmpty()             # moved on by itself; centred card, no hole
+    tour.close_tour(True)
+    window.close()

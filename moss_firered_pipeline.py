@@ -4141,28 +4141,32 @@ def process_media(
         if timeline_backend == "mlx_qwen_aligner":
             # Same aligner and receipts; run_qwen_aligner_worker routes it to MLX.
             timeline_backend = "qwen_aligner"
-        from twobyteasr.language_rules import JA as _JA, supports as _supports
-        japanese = getattr(runtime_context, "task_language", "") == _JA
-        if japanese and timeline_backend != "off":
-            # FireRed/Paraformer/Whisper-as-timeline are Chinese timing tools
-            # here; Japanese audio is aligned to its own transcript instead.
+        from twobyteasr.language_rules import EN as _EN, JA as _JA, supports as _supports
+        task_language = getattr(runtime_context, "task_language", "")
+        # Japanese and (2026-10-14) English audio is aligned to its own transcript.
+        aligned = {_JA: ("Japanese", "japanese_audio", "日语", "日文转写", "日语字词时间轴"),
+                   _EN: ("English", "english_audio", "英语", "英文转写", "英语单词时间轴")}.get(task_language)
+        if aligned and timeline_backend != "off":
+            # FireRed/Paraformer/Whisper-as-timeline are Chinese timing tools here.
+            language_name, reason, spoken, transcript, stage_label = aligned
             if timeline_backend != "qwen_aligner":
+                supported = _supports({"local": "firered_aed"}.get(timeline_backend, timeline_backend), "align", task_language)
                 legacy.record_run_event("timeline_backend_rerouted", requested=timeline_backend,
-                                        selected="qwen_aligner", reason="japanese_audio",
-                                        requested_supports_japanese=_supports(
-                                            {"local": "firered_aed"}.get(timeline_backend, timeline_backend), "align", _JA))
-                print(f"   [语言] 日语音频不送 {timeline_backend}，改用 Qwen3-ForcedAligner 对齐日文转写。")
+                                        selected="qwen_aligner", reason=reason,
+                                        **({"requested_supports_japanese": supported} if task_language == _JA
+                                           else {"requested_supports_language": supported}))
+                print(f"   [语言] {spoken}音频不送 {timeline_backend}，改用 Qwen3-ForcedAligner 对齐{transcript}。")
             timeline_backend = "qwen_aligner"
             return _run_audited_model_stage(
                 legacy, model_id="qwen_aligner", role="timeline_alignment", backend=timeline_backend,
                 media_path=media_path, worker="qwen_aligner_worker.py", runtime=paths["main_python"],
                 runner=lambda: legacy.run_timed_stage(
-                    4, stage_total, "Qwen3 ForcedAligner 日语字词时间轴", "GPU",
+                    4, stage_total, f"Qwen3 ForcedAligner {stage_label}", "GPU",
                     lambda: canonical_result_from_segments(
                         legacy.transcribe_qwen_aligner_reference(
-                            shared_audio, moss_payload.get("segments", []), language="Japanese"),
+                            shared_audio, moss_payload.get("segments", []), language=language_name),
                         producer="qwen_aligner_worker", consumer="firered_stage", backend="qwen_aligner",
-                        language="ja", allow_empty=True)),
+                        language=task_language, allow_empty=True)),
                 selected=True, allow_failure=True)
         if timeline_backend == "off":
             print("   [分析稿] 未选择独立时间轴模型，沿用主力 ASR 粗时间。")
@@ -4360,11 +4364,12 @@ def process_media(
     runtime_context.language_evidence = language_evidence
     legacy.TASK_LANGUAGE = task_language
     legacy.record_run_event("TASK_LANGUAGE", language=task_language, **language_evidence)
-    print(f"   [语言] 本任务按{'日语' if task_language == _JA else '中文'}处理"
+    print(f"   [语言] 本任务按{ {'ja': '日语', 'en': '英语'}.get(task_language, '中文') }处理"
           f"（{language_evidence.get('decided_by')}，假名占比 {language_evidence.get('kana_share', 0):.0%}）。")
-    if task_language == _JA and firered_early is not None:
+    if task_language in (_JA, "en") and firered_early is not None:
         # The overlapped FireRed run started before the language was known.
-        legacy.record_run_event("timeline_result_discarded", backend="firered", reason="japanese_audio")
+        legacy.record_run_event("timeline_result_discarded", backend="firered",
+                                reason="japanese_audio" if task_language == _JA else "english_audio")
         firered_early = None
 
     from twobyteasr.speaker_evidence import needs_moss_speakers
@@ -4852,12 +4857,14 @@ def process_media(
 
     save_speaker_evidence(speaker_audit_root, "aligned", legacy.serialize_segments(segments))
     japanese_task = getattr(runtime_context, "task_language", "") == _JA
-    if japanese_task and not analysis_transcript:
-        # FireRedASR2-LLM is a Chinese recognizer: never a vote on Japanese text.
+    english_task = getattr(runtime_context, "task_language", "") == "en"
+    if (japanese_task or english_task) and not analysis_transcript:
+        # FireRedASR2-LLM is a Chinese recognizer: never a vote on Japanese or English text.
         stage_index += 1
         legacy.record_run_event('stage_skipped', index=stage_index, total=stage_total,
-            label='FireRedASR2-LLM 争议片段复核', resource='未启用', reason='japanese_audio')
-    if not analysis_transcript and not japanese_task:
+            label='FireRedASR2-LLM 争议片段复核', resource='未启用',
+            reason='japanese_audio' if japanese_task else 'english_audio')
+    if not analysis_transcript and not japanese_task and not english_task:
         stage_index += 1
         segments = legacy.run_timed_stage(
             stage_index,
@@ -4883,10 +4890,11 @@ def process_media(
 
     from twobyteasr.terminology import apply_to_segments, runtime_snapshot
     term_snapshot = runtime_snapshot(legacy)
-    if japanese_task:
+    if japanese_task or english_task:
         # Glossaries hold Chinese alias -> canonical spellings; applying them
-        # would rewrite Japanese words that merely share kanji.
-        legacy.record_run_event("terminology_skipped", reason="japanese_audio",
+        # would rewrite Japanese words that merely share kanji (or a Latin alias
+        # inside an English word).
+        legacy.record_run_event("terminology_skipped", reason="japanese_audio" if japanese_task else "english_audio",
                                 libraries=[library.id for library in term_snapshot.libraries])
     else:
         segments = apply_to_segments(segments, term_snapshot, legacy)
@@ -4920,7 +4928,8 @@ def process_media(
     segments = legacy.apply_editorial_segment_rules(segments)
     # Cloud/cached polishing and editorial formatting may alter casing. The
     # authoritative local pass runs before grouping and its word alignment.
-    segments = apply_to_segments(segments, term_snapshot, legacy)
+    if not english_task:
+        segments = apply_to_segments(segments, term_snapshot, legacy)
     save_speaker_evidence(speaker_audit_root, "polished", legacy.serialize_segments(segments))
     if getattr(runtime_context, "task_language", "") == "ja":
         # Japanese line breaks follow bunsetsu boundaries of these exact texts
@@ -4949,7 +4958,33 @@ def process_media(
         runtime_context.provider_snapshot = task_provider_snapshot('group')
         legacy.record_run_event("asr_provider_snapshot", job_id=runtime_context.job_id,
                                 stage="grouped", **runtime_context.provider_snapshot.public_identity())
-    cues = legacy.run_timed_stage(
+    if english_task and not primary_backend.startswith('vibevoice_'):
+        # 2026-10-14: English lines are cut between words by the English rules
+        # (twobyteasr/english_segmentation.py); the AI only picks break positions.
+        from twobyteasr import english_segmentation
+        cues = legacy.run_timed_stage(
+            stage_index, stage_total,
+            "云端模型英文断句" if grouping_uses_ai else "本地规则英文断句",
+            "按单词断句：句末/逗号/连词优先，不在单词中间切" + ("（AI 只给断点）" if grouping_uses_ai else ""),
+            lambda: legacy.run_cached_stage(
+                "grouped" if grouping_uses_ai else "grouped_local",
+                cache_context,
+                lambda: (english_segmentation.group_english_with_ai(
+                    segments, firered_tokens, runtime_context.provider_snapshot) if grouping_uses_ai
+                    else english_segmentation.group_english(segments, firered_tokens)),
+                encoder=legacy.serialize_cues,
+                decoder=legacy.deserialize_cues,
+                extra_signature={
+                    **alternate_coverage_signature,
+                    "segments": legacy.serialize_segments(segments),
+                    "firered_tokens": firered_tokens,
+                    "use_ai": grouping_uses_ai,
+                    "english_rules": english_segmentation.ENGLISH_GROUPING_PROMPT_VERSION,
+                },
+            ),
+        )
+    else:
+        cues = legacy.run_timed_stage(
         stage_index,
         stage_total,
         "云端模型全文智能断句" if grouping_uses_ai else "本地规则全文断句",
@@ -5030,19 +5065,22 @@ def process_media(
     # editorial tails across a different speaker's source onset.
     from twobyteasr.display_timing import protect_runtime_display_tails
     overlap_audit = protect_runtime_display_tails(cues, segments)
-    if japanese_task and not analysis_transcript and str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) != "off":
+    if (japanese_task or english_task) and not analysis_transcript and str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) != "off":
         # Word timing must belong to the text the user will edit: align each
         # final caption's current text (adjacent same-speaker captions together).
         from twobyteasr.cue_forced_alignment import align_final_cues
-        print("   [日语字级时间] 按最终字幕文字对齐（同说话人相邻字幕成段对齐）…")
-        aligned_cues = align_final_cues(cues, shared_audio, legacy, speech_regions=speech_regions)
+        print("   [英语单词时间] 按最终字幕文字对齐（同说话人相邻字幕成段对齐）…" if english_task
+              else "   [日语字级时间] 按最终字幕文字对齐（同说话人相邻字幕成段对齐）…")
+        aligned_cues = align_final_cues(cues, shared_audio, legacy, speech_regions=speech_regions,
+                                        language="English" if english_task else "Japanese")
         measured = sum(1 for cue in cues if any(
             piece.get("start_basis") == "model" and piece.get("end_basis") == "model"
             for piece in (getattr(cue, "forced_alignment", None) or {}).get("segments") or ()))
-        print(f"   [日语字级时间] {measured}/{len(cues)} 条字幕有模型实测的字词片段"
+        print(f"   [{'英语单词时间' if english_task else '日语字级时间'}] {measured}/{len(cues)} 条字幕有模型实测的字词片段"
               + (f"；{len(cues) - measured} 条只有估算（边界不可靠或整段被压缩），工作台会标出。"
                  if measured < len(cues) else "。"))
         legacy.record_run_event("japanese_word_timing_summary", cues=len(cues), attached=aligned_cues,
+                                language="en" if english_task else "ja",
                                 measured=measured)
         # Cuts inside one speaker's utterance that the aligner did not measure
         # were estimated by line breaking; move them to the pause in the audio
@@ -5050,13 +5088,13 @@ def process_media(
         from twobyteasr.cue_boundary_refine import apply_to_runtime_cues
         snapped = apply_to_runtime_cues(cues, shared_audio, legacy)
         if snapped:
-            print(f"   [日语切点] {len(snapped)} 个未实测的切点移到了前面的停顿处（中位 "
+            print(f"   [{'英语切点' if english_task else '日语切点'}] {len(snapped)} 个未实测的切点移到了前面的停顿处（中位 "
                   f"{sorted(c['old_ms'] - c['new_ms'] for c in snapped)[len(snapped) // 2]} ms）。")
         # Line starts placed by the optional CTC aligner when they agree within
         # 80 ms with an independent reference (aligner-measured start, else the
         # current start). Ends are never taken from it.
         from twobyteasr.ctc_alignment import apply_to_runtime_cues as refine_starts
-        refined = refine_starts(cues, shared_audio, legacy)
+        refined = refine_starts(cues, shared_audio, legacy) if japanese_task else []  # the CTC model is Japanese-only
         if refined:
             print(f"   [日语句首] {len(refined)} 条字幕的开头按 CTC 对齐模型校正（与参考相差 80 ms 内）。")
     save_speaker_evidence(speaker_audit_root, "final", legacy.serialize_cues(cues))

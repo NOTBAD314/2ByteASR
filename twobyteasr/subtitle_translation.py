@@ -32,6 +32,11 @@ RECORDS_KEY = "translation_records"
 RENDER_KEY = "translations"
 RECORDS_VERSION = 1
 PROMPT_VERSION = "ja-zh-subtitle-v1"
+EN_PROMPT_VERSION = "en-zh-subtitle-v1"   # 2026-10-14: English sources
+
+
+def prompt_version_for(language: str = "") -> str:
+    return EN_PROMPT_VERSION if language == "en" else PROMPT_VERSION
 DEFAULT_TARGET = "zh-Hans"
 TARGET_LABELS = {"zh-Hans": "简体中文", "zh-Hant": "繁體中文"}
 MAX_PREVIOUS = 5
@@ -753,21 +758,36 @@ _SYSTEM_PROMPT = """你是日语游戏实况视频的字幕翻译。把日语口
 7. 带 reference 的行是由一条已翻译字幕拆分或合并而来：reference 给出原来那条（或几条）的日文与译文，只用于保持用词一致；只翻译本行原文的意思，不要照抄整句译文。
 只输出 JSON：{{"items":[{{"id":"<原样的 id>","translation":"<译文>"}}]}}"""
 
+_EN_SYSTEM_PROMPT = """你是英语游戏实况视频的字幕翻译。把英语口语字幕翻译成自然、地道的{label}字幕。
+规则：
+1. 只翻译 lines 里 translate 为 true 的行：每个这样的 id 必须输出且只输出一条译文，按 output_ids 的顺序输出。translate 为 false 的行只是上下文（可能附已有译文 translation），不要输出它们。
+2. 不要合并、拆分或调换字幕。一句英文被拆成几条时，每条只翻译它自己的原文对应的部分，语序可以按中文习惯在本条内调整。
+3. 不要输出时间码、序号、注释、解释或英文原文，只输出译文本身。
+4. 人名、角色名、技能名、道具名等专有名词按 glossary（英文 → 中文）统一译法。glossary 只用于翻译，不表示英文原文有错，不要改写或纠正英文。没有对照的游戏名、角色名用通行中文译名，没有通行译名时保留英文。
+5. 保留说话人的语气和情绪（惊叹、吐槽、口头禅、梗），用简短的字幕口吻；俚语、脏话按语气意译，不逐词直译。
+6. 译文必须是{label}，不要输出英文整句；GG、OK、HP、DPS 之类缩写和专有名词可以保留。{script_rule}
+7. 带 reference 的行是由一条已翻译字幕拆分或合并而来：reference 给出原来那条（或几条）的英文与译文，只用于保持用词一致；只翻译本行原文的意思，不要照抄整句译文。
+只输出 JSON：{{"items":[{{"id":"<原样的 id>","translation":"<译文>"}}]}}"""
+
 _SCRIPT_RULES = {
     "zh-Hans": "使用简体字。",
     "zh-Hant": "直接用繁體字書寫（不要先寫簡體再轉換），用詞符合繁體中文讀者習慣。",
 }
 
 
-def _batch_glossary(batch: TranslationBatch, pairs: Sequence[tuple[str, str]]) -> list[dict]:
+def _batch_glossary(batch: TranslationBatch, pairs: Sequence[tuple[str, str]], source_language: str = "") -> list[dict]:
     text = "\n".join(line.text for line in batch.lines)
-    relevant = [{"ja": ja, "zh": zh} for ja, zh in pairs if ja in text]
+    if source_language == "en":
+        lowered = text.casefold()
+        relevant = [{"en": term, "zh": zh} for term, zh in pairs if term.casefold() in lowered]
+    else:
+        relevant = [{"ja": ja, "zh": zh} for ja, zh in pairs if ja in text]
     return relevant[:MAX_GLOSSARY_PAIRS_PER_BATCH]
 
 
 def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, game_context: str = "",
-                   glossary_pairs: Any = (), speaker_names: Mapping[str, str] | None = None
-                   ) -> list[dict[str, str]]:
+                   glossary_pairs: Any = (), speaker_names: Mapping[str, str] | None = None,
+                   source_language: str = "") -> list[dict[str, str]]:
     """System + user messages for one batch (JSON user payload)."""
     target = normalize_target(target)
     label = TARGET_LABELS[target]
@@ -787,20 +807,21 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
             row["reference"] = [{"text": item.get("source_text", ""), "translation": item.get("translation", "")}
                                 for item in line.reference]
         lines.append(row)
+    english = source_language == "en"
     payload: dict[str, Any] = {
-        "task": f"日语字幕 → {label}字幕",
+        "task": f"{'英语' if english else '日语'}字幕 → {label}字幕",
         "target_language": label,
         "target": target,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version_for(source_language),
     }
     if str(game_context or "").strip():
         payload["game_context"] = str(game_context).strip()
-    glossary = _batch_glossary(batch, pairs)
+    glossary = _batch_glossary(batch, pairs, source_language)
     if glossary:
         payload["glossary"] = glossary
     payload["lines"] = lines
     payload["output_ids"] = list(batch.target_ids)
-    system = _SYSTEM_PROMPT.format(label=label, script_rule=_SCRIPT_RULES[target])
+    system = (_EN_SYSTEM_PROMPT if english else _SYSTEM_PROMPT).format(label=label, script_rule=_SCRIPT_RULES[target])
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -828,7 +849,18 @@ def validate_translation(source_text: str, text: str) -> str | None:
     src = script_counts(source)
     src_kana = src["hiragana"] + src["katakana"]
     if not src_kana and not src["han"]:
-        return None  # Latin / digits / symbols only: nothing to translate.
+        # Latin / digits / symbols only. A short token (GG, OK, a name) may stay
+        # as it is; an English sentence (2026-10-14) must come back as Chinese.
+        latin = sum(1 for char in source if char.isascii() and char.isalpha())
+        if latin < 12 or len(source.split()) < 3:
+            return None
+        out = script_counts(output)
+        if not out["han"]:
+            return "echo_source" if _content(output) == _content(source) else "no_chinese"
+        out_latin = sum(1 for char in output if char.isascii() and char.isalpha())
+        if out_latin > 2 * out["han"] and out_latin >= 12:
+            return "english_output"
+        return None
     katakana_name = src["katakana"] > 0 and not src["hiragana"] and not src["han"]
     # A kanji-only word is often the same word in Chinese (期待, 反省, 注意).
     kanji_word = src["han"] > 0 and not src_kana
@@ -1077,6 +1109,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
 
     source = _as_source(project)
     target = normalize_target(target)
+    source_language = str(getattr(source, "language", "") or "")
+    prompt_version = prompt_version_for(source_language)
     check = cancel_check or (lambda: False)
     pairs = normalize_glossary(glossary_pairs)
     digest = glossary_digest(pairs)
@@ -1113,13 +1147,13 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             result.cache_hits.append(cue_id)
         elif cache is not None:
             cache[keys[cue_id]] = {"text": text, "target": target, "model": model, "provider": provider_id,
-                                   "prompt_version": PROMPT_VERSION, "at": _now()}
+                                   "prompt_version": prompt_version, "at": _now()}
 
     for cue_id in work:
         window = context_texts(source, cue_id, context_cues)
         contexts[cue_id] = _digest(window)
         keys[cue_id] = cache_key(result.sources[cue_id], window, target=target, model=model,
-                                 provider=provider_id, glossary_digest=digest,
+                                 provider=provider_id, glossary_digest=digest, prompt_version=prompt_version,
                                  extra=_cache_extra(source, cue_id, game_context))
         hit = cache_lookup(cache, keys[cue_id])
         if hit and validate_translation(result.sources[cue_id], hit) is None:
@@ -1144,7 +1178,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             return
         ids = list(batch.target_ids)
         messages = build_messages(batch, target=target, game_context=game_context, glossary_pairs=pairs,
-                                  speaker_names=speaker_names)
+                                  speaker_names=speaker_names, source_language=source_language)
         max_tokens = _max_tokens(batch)
         try:
             prepare_input(messages, schema=RESPONSE_SCHEMA, max_tokens=max_tokens, operation=BUDGET_OPERATION)

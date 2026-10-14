@@ -27,7 +27,10 @@ from twobyteasr.processes import main_python_executable, run_hidden_subprocess
 from twobyteasr.download_diagnostics import redact, category, require_isolated_download_path
 
 
-SOURCE_ORDER = ("MODELSCOPE", "HF_OFFICIAL")
+# AUTO: verified ModelScope copy, then the official host, then the third-party
+# hf-mirror.com as the last resort (huggingface.co is unreachable from mainland
+# China without a proxy). Every source must still deliver the locked SHA-256.
+SOURCE_ORDER = ("MODELSCOPE", "HF_OFFICIAL", "HF_MIRROR")
 SOURCE_MODES = ("MODELSCOPE", "HF_MIRROR", "HF_OFFICIAL")
 SOURCE_LABELS = {
     "MODELSCOPE": "ModelScope",
@@ -39,6 +42,46 @@ SOURCE_HOSTS = {
     "HF_MIRROR": "hf-mirror.com",
     "HF_OFFICIAL": "huggingface.co",
 }
+MODEL_SOURCES_FILE = Path(__file__).resolve().parents[1] / "scripts" / "model_download_sources.json"
+
+
+def load_model_sources(path: Path | None = None) -> dict:
+    """Alternate-source pins (repository + commit); never files or hashes."""
+    try:
+        payload = json.loads((path or MODEL_SOURCES_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) and payload.get("schema") == 1 else {}
+
+
+def effective_spec(model_key: str, spec: dict, sources: dict | None = None) -> dict:
+    """Lock entry plus the verified ModelScope pin from ``model_download_sources.json``.
+
+    The lock stays authoritative: an explicit incompatibility or an already
+    pinned commit wins, a different repository is ignored, and files/hashes
+    always come from the lock.
+    """
+    merged = dict(spec or {})
+    pin = ((sources if sources is not None else load_model_sources()).get("modelscope") or {}).get(model_key) or {}
+    repository = str(pin.get("repository") or "").strip()
+    revision = str(pin.get("revision") or "").strip()
+    if not repository or not revision:
+        return merged
+    declared = dict((merged.get("source_manifests") or {}).get("modelscope") or {})
+    if declared.get("compatible") is False:
+        return merged
+    locked_repository = str(declared.get("repository") or merged.get("modelscope_repository") or "").strip()
+    locked_revision = str(declared.get("revision") or merged.get("modelscope_revision") or "").strip()
+    if locked_repository and locked_repository != repository:
+        return merged
+    if locked_revision and locked_revision != "master":
+        return merged
+    merged["modelscope_repository"] = repository
+    merged["modelscope_revision"] = revision
+    if declared:
+        declared.update(repository=repository, revision=revision)
+        merged["source_manifests"] = {**(merged.get("source_manifests") or {}), "modelscope": declared}
+    return merged
 
 
 @dataclass(frozen=True)
@@ -266,6 +309,12 @@ def _download_direct(manifest: SourceManifest, staging: Path, relative: str) -> 
     return target
 
 
+# Failures that say "the line is unreliable right now", not "this source is
+# blocked / wrong": worth another try once the source has proven reachable.
+TRANSIENT_CATEGORIES = frozenset({'network_timeout', 'connection', 'rate_limited'})
+FILE_RETRIES_ONCE_REACHABLE = 3
+
+
 def download_source(
     manifest: SourceManifest,
     staging: Path,
@@ -274,6 +323,7 @@ def download_source(
 ) -> None:
     staging.mkdir(parents=True, exist_ok=True)
     requested = tuple(_safe_relative(item) for item in (only_files or manifest.files))
+    delivered = 0  # files this source actually served in this attempt
     for index, relative in enumerate(requested, start=1):
         cached=staging/relative
         expected=manifest.sha256.get(relative)
@@ -287,10 +337,25 @@ def download_source(
             "total": len(requested),
             "phase": "downloading",
         })
-        try:
-            path = _download_direct(manifest, staging, relative)
-        except Exception as exc:
-            raise SourceAttemptError(f"{relative}: {type(exc).__name__}: {exc}",download_category=category(exc)) from exc
+        retries = 0
+        while True:
+            try:
+                path = _download_direct(manifest, staging, relative)
+                break
+            except Exception as exc:
+                kind = category(exc)
+                # A blocked source fails on its first file and moves on quickly;
+                # one that already served files only hiccupped (e.g. hf-mirror.com
+                # answering slowly from mainland China), so wait and try again.
+                if delivered and kind in TRANSIENT_CATEGORIES and retries < FILE_RETRIES_ONCE_REACHABLE:
+                    retries += 1
+                    delay = min(30, 2 ** (retries + 1))
+                    print(f'[重试] {relative}：来源暂时没有响应（{kind}），{delay} 秒后第 {retries} 次重试；已下载部分保留',
+                          flush=True)
+                    time.sleep(delay)
+                    continue
+                raise SourceAttemptError(f"{relative}: {type(exc).__name__}: {exc}",download_category=kind) from exc
+        delivered += 1
         if not path.is_file() or path.stat().st_size <= 0:
             raise SourceAttemptError(f"来源没有返回有效模型文件：{relative}")
         expected = manifest.sha256.get(relative)
@@ -324,9 +389,100 @@ def download_model(
         raise ValueError('DiariZen / VibeVoice models have been removed; no download was started.')
     require_isolated_download_path(destination)
     require_isolated_download_path(staging_root)
+    spec = effective_spec(model_key, spec)
     with preparation_lock(staging_root / model_key / '.prepare.lock'):
         return _download_model_locked(model_key=model_key, spec=spec, destination=destination,
                                       mode=mode, staging_root=staging_root, only_files=only_files)
+
+
+def partial_source_manifest(model_key: str, spec: dict, sources: dict | None = None) -> SourceManifest | None:
+    """A ModelScope copy that carries only some of the locked files unchanged.
+
+    Fun-ASR Nano on ModelScope differs from the lock only in ``model.pt``; its
+    other nine files are byte-identical. ``modelscope_partial`` in
+    ``model_download_sources.json`` names those files, and only files that the
+    lock also lists with a SHA-256 are taken.
+    """
+    pin = ((sources if sources is not None else load_model_sources()).get('modelscope_partial') or {}).get(model_key) or {}
+    repository = str(pin.get('repository') or '').strip()
+    revision = str(pin.get('revision') or '').strip()
+    hashes = {_safe_relative(k): str(v).lower() for k, v in (spec.get('sha256') or {}).items()}
+    required = {_safe_relative(item) for item in spec.get('required_files') or ()}
+    files = tuple(item for item in (_safe_relative(f) for f in pin.get('files') or ()) if item in required and item in hashes)
+    if not repository or not revision or not files:
+        return None
+    return SourceManifest('MODELSCOPE', repository, revision, files, {f: hashes[f] for f in files})
+
+
+def prefetch_partial_source(model_key: str, spec: dict, destination: Path, staging_root: Path,
+                            only_files: Iterable[str] | None = None) -> None:
+    """AUTO only: fetch the files a partial ModelScope copy shares with the lock first.
+
+    The full sources that follow reuse them (``reuse_verified_from_other_sources``),
+    so on a line where Hugging Face is blocked or slow only the differing file has
+    to come from there. Failures here are not fatal.
+    """
+    manifest = partial_source_manifest(model_key, spec)
+    if manifest is None:
+        return
+    wanted = [f for f in manifest.files if (not only_files or f in set(only_files))
+              and not ((destination / f).is_file() and _sha256(destination / f) == manifest.sha256[f])]
+    if not wanted:
+        return
+    identity = hashlib.sha256(json.dumps([manifest.repository, manifest.revision, manifest.sha256],
+                                         sort_keys=True).encode()).hexdigest()[:16]
+    staging = staging_root / model_key / 'modelscope_partial' / identity
+    print(f'[自动] ModelScope 上这个模型有 {len(manifest.files)} 个文件与锁定版本完全相同，先从 ModelScope 取得；'
+          f'其余文件再按顺序从其他来源下载', flush=True)
+    try:
+        download_source(manifest, staging, only_files=wanted)
+    except Exception as exc:  # noqa: BLE001 - the full sources still follow
+        print(f'[自动] ModelScope 部分文件没有取得（{category(exc)}），改由其他来源下载', flush=True)
+
+
+def reuse_verified_from_other_sources(staging_root: Path, model_key: str, staging: Path,
+                                      files: Iterable[str], sha256: dict[str, str]) -> list[str]:
+    """Bring complete, hash-verified files from another source's staging into ``staging``.
+
+    Switching from a failed source must not download again what that source
+    already delivered intact. Only whole files whose SHA-256 equals the locked
+    value are taken; partial files of another origin are never combined.
+    """
+    reused = []
+    model_root = staging_root / model_key
+    if not model_root.is_dir():
+        return reused
+    others = [path for path in model_root.glob('*/*') if path.is_dir() and path.resolve() != staging.resolve()]
+    for relative in files:
+        expected = (sha256.get(relative) or '').lower()
+        target = staging / relative
+        if not expected or target.is_file():
+            continue  # download_source verifies (or replaces) what is already staged
+        for other in others:
+            candidate = other / relative
+            try:
+                if not candidate.is_file() or candidate.is_symlink() or candidate.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+            if _sha256(candidate) != expected:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(target.name + '.reusing')
+            temporary.unlink(missing_ok=True)
+            try:
+                os.link(candidate, temporary)
+            except OSError:
+                shutil.copy2(candidate, temporary)
+            os.replace(temporary, target)
+            measurement = Path(str(candidate) + '.download.json')
+            if measurement.is_file():
+                shutil.copy2(measurement, Path(str(target) + '.download.json'))
+            _emit('[2BYTEASR_CACHE]', dict(file=relative, bytes=target.stat().st_size,
+                origin='verified file from ' + other.parent.name, network_bytes=0))
+            reused.append(relative)
+            break
+    return reused
 
 
 def _download_model_locked(*, model_key, spec, destination, mode, staging_root, only_files=None):
@@ -340,16 +496,25 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
     candidates = planned_sources(spec, mode)
     if not candidates:
         raise RuntimeError(f"{mode} 未提供当前锁定版本的兼容文件，请选择 AUTO 或其他已声明来源。")
+    if str(mode).upper() == 'AUTO':
+        prefetch_partial_source(model_key, spec, destination, staging_root, only_files)
     requested_only = tuple(only_files or ())
     failures: list[str] = []
     last_category='unknown'
-    for attempt, manifest in enumerate(candidates, start=1):
+    # AUTO: every source once; then sources that failed only because the line was
+    # unreliable get one more round, continuing from their verified files/parts.
+    schedule = list(candidates)
+    second_round: list[SourceManifest] = []
+    attempt = 0
+    while attempt < len(schedule):
+        manifest = schedule[attempt]
+        attempt += 1
         _emit("[2BYTEASR_SOURCE]", {
             "mode": manifest.mode,
             "label": SOURCE_LABELS[manifest.mode],
             "host": SOURCE_HOSTS[manifest.mode],
             "attempt": attempt,
-            "total": len(candidates),
+            "total": len(schedule),
             "status": "trying",
         })
         identity = hashlib.sha256(json.dumps([manifest.repository,manifest.revision,manifest.sha256],sort_keys=True).encode()).hexdigest()[:16]
@@ -364,7 +529,7 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
                         "label": SOURCE_LABELS[manifest.mode],
                         "host": SOURCE_HOSTS[manifest.mode],
                         "attempt": attempt,
-                        "total": len(candidates),
+                        "total": len(schedule),
                         "status": "selected",
                     })
                     return manifest.mode
@@ -382,6 +547,7 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
                         origin='verified installed file',network_bytes=0))
             pending_files = tuple(relative for relative in files if relative not in reused_installed)
             if pending_files:
+                reuse_verified_from_other_sources(staging_root, model_key, staging, pending_files, manifest.sha256)
                 download_source(manifest, staging, only_files=pending_files)
             probe_manifest = SourceManifest(
                 manifest.mode, manifest.repository, manifest.revision,
@@ -404,7 +570,7 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
                 "label": SOURCE_LABELS[manifest.mode],
                 "host": SOURCE_HOSTS[manifest.mode],
                 "attempt": attempt,
-                "total": len(candidates),
+                "total": len(schedule),
                 "status": "selected",
             })
             metadata = {
@@ -448,13 +614,18 @@ def _download_model_locked(*, model_key, spec, destination, mode, staging_root, 
                 "label": SOURCE_LABELS[manifest.mode],
                 "host": SOURCE_HOSTS[manifest.mode],
                 "attempt": attempt,
-                "total": len(candidates),
+                "total": len(schedule),
                 "status": "failed",
                 "category": category(exc),
                 "detail": detail[:500],
             })
             if str(mode).upper() != "AUTO":
                 break
+            if attempt <= len(candidates) and category(exc) in TRANSIENT_CATEGORIES:
+                second_round.append(manifest)
+        if attempt == len(candidates) == len(schedule) and second_round:
+            print('[自动] 每个来源都试过一次；网络暂时异常的来源再试一轮，已校验的文件不会重下', flush=True)
+            schedule.extend(second_round)
     _emit('[2BYTEASR_ERROR]',dict(model=model_key,phase='weights_downloading',category=last_category,
         detail='；'.join(failures)))
     raise RuntimeError("所有候选来源均失败：\n" + "\n".join(failures))

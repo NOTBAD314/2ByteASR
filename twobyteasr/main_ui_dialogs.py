@@ -24,6 +24,7 @@ from .studio_theme import build_secondary_surface_qss
 from .theme_manager import theme_key
 from .ui_theme import ThemeDefinition, theme_definition
 from .ui_motion import MOTION_FAST_MS, MOTION_STANDARD_MS, motion_duration
+from .widget_teardown import delete_tree_before_collection
 
 from .i18n import bind_text
 
@@ -138,6 +139,10 @@ class SpringDialog(QDialog):
     # 入场滑动+渐入动画开关：应用设置等"高频即开"入口置 False，
     # 用户反馈弹窗动画带来约 1 秒等待感（2026-09-19 轮）。
     ENTRY_ANIMATED = True
+
+    # A parentless dialog always sits in a reference cycle (WindowBounds);
+    # left to the cycle collector it must not be torn down wrapper by wrapper.
+    __del__ = delete_tree_before_collection
 
     def __init__(self, parent=None, *, backdrop=True):
         super().__init__(parent)

@@ -15,7 +15,7 @@ import sys
 import threading
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import QEasingCurve, QObject, QPointF, QRectF, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
@@ -505,6 +505,24 @@ def card_qss(theme) -> str:
     return '\n'.join(css)
 
 
+def _probe_cuda(relay: '_CudaRelay') -> None:
+    try:
+        from .hardware import detect_cuda_runtime
+        status = detect_cuda_runtime()
+    except Exception:  # noqa: BLE001 - shown as "could not check"
+        status = None
+    try:
+        relay.finished.emit(status)
+    except RuntimeError:
+        pass  # dialog already closed
+
+
+class _CudaRelay(QObject):
+    """Carries the background CUDA check to the GUI thread (the thread never holds the dialog)."""
+
+    finished = Signal(object)
+
+
 class QuickSetupDialog(SpringDialog):
     """Pick one way of working. ``choice`` is the plan key, 'custom', or None."""
 
@@ -585,7 +603,9 @@ class QuickSetupDialog(SpringDialog):
         if 'local' in self.cards:
             self.cards['local'].set_status(tr('正在检查显卡…') + '  ·  ' +
                                            tr('下载约 {size:.1f} GB', size=self._size_of(PLANS['local'].backends)))
-            threading.Thread(target=self._probe_cuda, name='quick-setup-cuda', daemon=True).start()
+            relay = _CudaRelay(self)   # dies with the dialog; a late result is simply dropped
+            relay.finished.connect(self._cuda_checked)
+            threading.Thread(target=_probe_cuda, args=(relay,), name='quick-setup-cuda', daemon=True).start()
         first = 'local' if 'local' in self.cards else next(iter(self.cards))
         self.select('apple' if 'apple' in self.cards else first)
         self.resize(940, self.sizeHint().height())
@@ -601,17 +621,6 @@ class QuickSetupDialog(SpringDialog):
             bind_text(self.go_button, '去设置 API Key')
         else:
             bind_text(self.go_button, '下载并开始（约 {size:.1f} GB）', size=self._size_of(PLANS[key].backends))
-
-    def _probe_cuda(self) -> None:
-        try:
-            from .hardware import detect_cuda_runtime
-            status = detect_cuda_runtime()
-        except Exception:  # noqa: BLE001 - shown as "could not check"
-            status = None
-        try:
-            self.cuda_ready.emit(status)
-        except RuntimeError:
-            pass  # dialog already closed
 
     def _cuda_checked(self, status) -> None:
         self._cuda = status

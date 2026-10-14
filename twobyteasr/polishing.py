@@ -33,6 +33,18 @@ JAPANESE_POLISH_RULE = (
     "汉字、平假名、片假名、长音与英文照原样书写；不得翻译成中文，不得把日文汉字改成简体或繁体中文字形，"
     "不得套用中文同音字、中文语气词、中文数字或抽卡/电竞中文规则。只在 ASR 来源支持时修正明显的日语识别错误"
     "（同音异字、助词误识、漏字），否则不改。下面的通用规则若与本段冲突，以本段为准。")
+# 2026-10-14: English proofreading rules (also listed in docs/architecture/recognition.md).
+ENGLISH_POLISH_RULE = (
+    "【语言】本批字幕是英语语音的英文转写（content_scene.language=en-US）。primary_text 必须保持英文："
+    "不得翻译成中文，不得润色、改写、换同义词、补主语或改时态。只在 ASR 来源或语境支持时修正明显的识别错误："
+    "同音/近音词（their/there/they're、your/you're、its/it's、to/too/two、then/than、whose/who's、"
+    "lose/loose、weather/whether）、被识别器拆开或粘连的单词、专有名词与游戏术语拼写"
+    "（有词库时逐字使用 canonical，包括大小写）。"
+    "保留口语与真实说出的内容：gonna/wanna/gotta、语气词（uh、um、like、you know）、俚语与脏话、重复、"
+    "不完整的句子都不改；不把 three 改成 3，也不反向。缩写保留撇号（don't、it's、I'm、players'），"
+    "代词 I 一律大写，句首字母大写；只在句末或明显停顿处修正标点，不新增引号。"
+    "edits 的 start/end 按原文字符位置计算（空格也计数），from 必须逐字等于原文该段。"
+    "下面的通用规则若与本段冲突，以本段为准；其中的中文数字与中文语气词规则不适用于英文。")
 from .asr_provider_snapshot import POLISH_PROMPT_VERSION
 
 
@@ -765,11 +777,14 @@ def call_correction_api(
 先结合邻句理解疑似词是选手、战队、角色、技能、物品、位置还是动作。合法中文也可能是谐音；电竞口语不书面不等于错误。实体类别/语义流畅/近音任一项单独均不证明修改。再比较ASR和候选：来源码查asr_sources，asr每项为[来源码列表,原文]；asr_equal_primary列出逐字等于主稿的来源。primary_source取cue内或cue_defaults；缺来源不计票，派生文本不算独立来源。matches的cue_ids限定作用范围；overlap表示重叠说话人须冻结跨人替换。
 优先适用且无歧义的confirmed别名→规范名称，这是用户名称统一，不要求另一ASR直接写出英文ID，不受字符变长限制；普通动画/电影等话题不能机械套选手昵称。规范词逐字使用canonical，包括大小写和数字，不按记忆换成其他拼写。reference/ambiguous/context-only只提供候选，近音或英文错拼修改仍需局部来源与语境证据；非音近昵称必须有明确别名关联。完整Latin ID允许有据有限拼写修正，两字母普通英文/单字音译不能仅凭词表改名。approved_global_term_mappings保持。
 只改目标词或必要错断词跨度，保留语气、重复、代词、原意及数字事件顺序；不把‘一个’改为‘1个’，不合并重复数字。编辑给from/to、原文start/end（左闭右开）、candidate_id（适用时）、type=alias_normalization|phonetic_correction|id_spelling|asr_correction及简短evidence；basis用真实输入来源+context，别名用glossary+context。不声称听过未提供音频。疑似词suspects每项必须在suspect_results给suspect_id、disposition=replace|keep|review|missing_candidate和短evidence；空edits不代表已经审查。两个候选合理、证据冲突或缺项时保留并待确认；新疑似词用new_suspects(id,start,end,surface,evidence)，不编造candidate_id。固定规则：{editorial_rule}"""
-    from twobyteasr.language_rules import is_japanese
+    from twobyteasr.language_rules import is_english, is_japanese
     if is_japanese():
         # Japanese subtitles: same edit contract, but never translate, never
         # convert kanji to simplified Chinese forms, no Chinese numeral rules.
         prompt = JAPANESE_POLISH_RULE + '\n' + prompt
+    elif is_english():
+        # English subtitles: same edit contract, English rules, no Chinese numerals.
+        prompt = ENGLISH_POLISH_RULE + '\n' + prompt
     else:
         from .number_fidelity import NUMBER_POLICY_PROMPT
         prompt += '\n' + NUMBER_POLICY_PROMPT

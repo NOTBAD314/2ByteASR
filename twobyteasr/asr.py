@@ -2895,16 +2895,16 @@ def _transcribe_qwen_worker(audio, chunks, model_path, *, context, evidence_root
     worker = os.path.join(os.path.abspath(SCRIPT_DIR), "qwen_asr_worker.py")
     if not os.path.isfile(runtime) or not os.path.isfile(worker):
         raise RuntimeError(f"Qwen worker runtime missing: python={runtime}, worker={worker}")
-    from twobyteasr.language_rules import qwen_language_name, active_task_language, JA
+    from twobyteasr.language_rules import qwen_language_name, active_task_language, EN, JA
     task_language = active_task_language() or getattr(get_runtime_context(), "requested_language", "zh")
     policy = {"version": "qwen-worker-shared-float32-v1",
         "batch_size": max(1, min(12, int(_legacy_runtime_value("QWEN_ASR_BATCH_SIZE", QWEN_ASR_BATCH_SIZE)))),
         "max_new_tokens": int(_legacy_runtime_value("QWEN_ASR_MAX_NEW_TOKENS", QWEN_ASR_MAX_NEW_TOKENS)),
         "sample_rate": AUDIO_SAMPLE_RATE, "audio_format": "float32-mono-npy-v1",
-        # Chinese for Chinese tasks (unchanged), Japanese for Japanese, None = identify.
+        # Chinese for Chinese tasks (unchanged), Japanese / English for those, None = identify.
         "language": qwen_language_name(task_language)}
-    if task_language == JA:
-        # The context is a Chinese terminology hint; it must not steer Japanese.
+    if task_language in (JA, EN):
+        # The context is a Chinese terminology hint; it must not steer Japanese or English.
         context = ""
     record_run_event("asr_terminology_input", backend="qwen3_worker", model="Qwen3-ASR",
         method="context_hint", native_hotwords=False, context_sent=bool(context),

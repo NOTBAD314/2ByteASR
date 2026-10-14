@@ -612,8 +612,15 @@ def _splice_merge_adjacent(
     merged = copy.deepcopy(earlier)
     merged.start_ms = min(first.start_ms, second.start_ms)
     merged.end_ms = max(first.end_ms, second.end_ms)
-    merged.text = earlier.text + later.text
-    merged.original_text = earlier.original_text + later.original_text
+    from .language_rules import project_language
+    if project_language(project) == "en":
+        # English words keep a space where two subtitles meet (2026-10-14).
+        from .english_text import join as english_join
+        merged.text = english_join([earlier.text, later.text])
+        merged.original_text = english_join([earlier.original_text, later.original_text])
+    else:
+        merged.text = earlier.text + later.text
+        merged.original_text = earlier.original_text + later.original_text
     merged.evidence_refs = list(
         dict.fromkeys([*first.evidence_refs, *second.evidence_refs])
     )
@@ -1223,8 +1230,14 @@ def merge_cues_command(
     merged = copy.deepcopy(matches[0])
     merged.start_ms = min(item.start_ms for item in matches)
     merged.end_ms = max(item.end_ms for item in matches)
-    merged.text = "".join(item.text for item in matches)
-    merged.original_text = "".join(item.original_text for item in matches)
+    from .language_rules import project_language
+    if project_language(project) == "en":
+        from .english_text import join as english_join
+        merged.text = english_join(item.text for item in matches)
+        merged.original_text = english_join(item.original_text for item in matches)
+    else:
+        merged.text = "".join(item.text for item in matches)
+        merged.original_text = "".join(item.original_text for item in matches)
     merged.evidence_refs = list(
         dict.fromkeys(ref for item in matches for ref in item.evidence_refs)
     )
