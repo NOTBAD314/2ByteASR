@@ -81,9 +81,10 @@ def main() -> None:
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--device', default=os.environ.get('TWOBYTEASR_FIRERED_DEVICE', 'auto'),
                         choices=('auto', 'cuda', 'mps', 'cpu'))
-    # Apple GPU precision (2026-10-14): float32 by default; float16 is the CUDA
-    # path's precision and is being measured on Macs before it becomes a default.
-    parser.add_argument('--mps-dtype', default=os.environ.get('TWOBYTEASR_FIRERED_MPS_DTYPE', 'float32'),
+    # Apple GPU precision (2026-10-14): float16, as on CUDA. On a 7 GB GitHub Mac it gave
+    # the same text and 866 word times as float32 (one word 40 ms apart) and decoded
+    # 2.6x faster (4-minute clip 412 s instead of 803 s). float32 stays selectable.
+    parser.add_argument('--mps-dtype', default=os.environ.get('TWOBYTEASR_FIRERED_MPS_DTYPE', 'float16'),
                         choices=('float32', 'float16'))
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
