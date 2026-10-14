@@ -874,12 +874,12 @@ class StudioExportWorkspace(QWidget):
         column.addLayout(format_row)
 
         # Language layers (shown when the project has translations): original,
-        # Chinese translation, and both in one cue (two lines).
+        # translation (any target language), and both in one cue (two lines).
         language_row = QHBoxLayout()
         self.subtitle_language_label = QLabel("语言")
         language_row.addWidget(self.subtitle_language_label)
         self.subtitle_language_checks = {}
-        for label, layer, checked in (("原文", "original", True), ("中文译文", "translation", True),
+        for label, layer, checked in (("原文", "original", True), ("译文", "translation", True),
                                       ("双语（同一条两行）", "bilingual", True)):
             check = QCheckBox()
             check.setChecked(checked)
@@ -887,7 +887,7 @@ class StudioExportWorkspace(QWidget):
             self.subtitle_language_checks[layer] = check
             language_row.addWidget(check)
         self.subtitle_translation_first = QCheckBox()
-        bind_text(self.subtitle_translation_first, "双语中文在上")
+        bind_text(self.subtitle_translation_first, "双语译文在上")
         self.subtitle_translation_first.setChecked(True)
         language_row.addWidget(self.subtitle_translation_first)
         language_row.addStretch(1)

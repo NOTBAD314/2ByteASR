@@ -63,7 +63,8 @@ class RuntimeContext:
     requested_language: str = "auto"
     task_language: str = ""
     language_evidence: dict[str, Any] = field(default_factory=dict)
-    # Requested subtitle output (original/translation/bilingual) and Chinese script.
+    # Requested subtitle output (original/translation/bilingual) and translation
+    # target (zh-Hans / zh-Hant / en / ja / ko; the name predates non-Chinese targets).
     subtitle_output: str = "original"
     translation_script: str = "zh-Hans"
     # Japanese bunsetsu boundaries of this task's segment texts (line breaking).

@@ -98,8 +98,9 @@ class RunOptions:
             raise ValueError("recognition_language 只能是 auto、zh、ja 或 en")
         if self.subtitle_output not in {"original", "translation", "bilingual"}:
             raise ValueError("subtitle_output 只能是 original、translation 或 bilingual")
-        if self.translation_script not in {"zh-Hans", "zh-Hant"}:
-            raise ValueError("translation_script 只能是 zh-Hans 或 zh-Hant")
+        from .subtitle_translation import TARGETS
+        if self.translation_script not in TARGETS:
+            raise ValueError("translation_script 只能是 " + "、".join(TARGETS))
 
     @classmethod
     def from_legacy(cls, legacy: Any, *, overwrite_policy: str = "overwrite") -> "RunOptions":

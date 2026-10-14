@@ -31,6 +31,11 @@ class CompletionExportDialog(QDialog):
         self.artifacts = ()
         lang = {"zh": 0, "en": 1, "ja": 2}.get(language, 0)
         self.t = lambda zh, en, ja: (zh, en, ja)[lang]
+        if language == "ko":
+            # bind_text shows the Korean of a known key; otherwise English.
+            from .i18n import language_table
+            korean = language_table("ko")
+            self.t = lambda zh, en, ja: zh if zh in korean else en
         t = self.t
         bind_text(self, t('导出字幕', 'Export subtitles', '字幕を書き出す'), property='windowTitle')
         self.setMinimumWidth(480)

@@ -27,8 +27,12 @@ def configure_macos_paths(resource_root: Path, *, home: Path | None = None,
 
 
 def macos_copy(zh: str, en: str, ja: str) -> str:
-    from .i18n import current_language
-    return {'en': en, 'ja': ja}.get(current_language(), zh)
+    from .i18n import current_language, language_table
+    language = current_language()
+    if language == 'ko':
+        # Korean has no third argument here: its table, else English.
+        return language_table('ko').get(zh, en)
+    return {'en': en, 'ja': ja}.get(language, zh)
 
 
 def cpu_factory_settings(defaults: dict) -> dict:

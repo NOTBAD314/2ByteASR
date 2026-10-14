@@ -15,11 +15,16 @@ from .studio_commands import AdoptReviewCandidateCommand
 from .studio_project import StudioCue
 from .studio_qc import QCResult, QCSeverity, review_candidates
 from .studio_review import (
+    REVIEW_NEXT_GUARD_MS,
+    REVIEW_TAIL_MS,
     ReviewEvidenceAggregator,
+    ReviewPlayback,
     cached_qc_result,
     cached_review_risks,
+    review_playback_window,
     review_risks_from_qc,
 )
+from .studio_runtime_state import state_for
 from .studio_theme import create_studio_menu
 from .design.components import format_model_evidence_coverage
 
@@ -44,7 +49,7 @@ class StudioReviewMixin:
 
     def _toggle_review_dock(self, collapsed: bool) -> None:
         for widget in (
-            getattr(self, "review_dock_candidates", None),
+            getattr(self, "review_dock_scroll", None) or getattr(self, "review_dock_candidates", None),
             getattr(self, "review_legend", None),
         ):
             if widget is not None:
@@ -179,15 +184,34 @@ class StudioReviewMixin:
             reason = "当前没有需要人工处理的问题"
         self.review_reason_label.setText(reason)
         if hasattr(self, "review_dock_candidate_layout"):
+            speaker_only = bool(aggregate.speaker_only and aggregate.models_agree_text)
+            card_mode = (not speaker_only and len(candidates) > 1
+                         and not (aggregate.boundary_only and not aggregate.requires_review))
+            # The row has a fixed height (studio_workspace.REVIEW_DOCK_ROW_HEIGHT):
+            # up to four cards share it when there is room, the rest scrolls.
+            width = max(self.review_summary_strip.width(), self.review_dock_candidates.width())
+            columns = max(1, min(4, len(candidates[:4]), width // 260)) if card_mode else 1
+            signature = (cue.id, cue.text, cue.speaker_id, speaker_only, card_mode, columns,
+                         bool(aggregate.requires_review),
+                         tuple((c.text, tuple(c.sources or ()), bool(c.context_only)) for c in candidates[:5]),
+                         tuple(sorted(str(row.get("speaker_id") or row.get("speaker") or "")
+                                      for row in aggregate.hypotheses)) if speaker_only else (),
+                         format_model_evidence_coverage(aggregate.hypotheses)['display'] if not card_mode else "")
+            if signature == getattr(self, "_review_cards_signature", None) and self.review_dock_candidate_layout.count():
+                # Same caption, same width bucket: keep the cards (resize events
+                # and repeated hydration of one caption used to rebuild them).
+                return
+            self._review_cards_signature = signature
             while self.review_dock_candidate_layout.count():
                 item = self.review_dock_candidate_layout.takeAt(0)
                 if item.widget() is not None:
                     item.widget().deleteLater()
-            columns = 2 if max(self.width(), self.review_dock_candidates.width()) >= 900 else 1
-            for column in range(columns):
-                self.review_dock_candidate_layout.setColumnStretch(column, 1)
+            for column in range(4):
+                self.review_dock_candidate_layout.setColumnStretch(column, 1 if column < columns else 0)
+            scroll = getattr(self, "review_dock_scroll", None)
+            if scroll is not None:
+                scroll.verticalScrollBar().setValue(0)
 
-            speaker_only = bool(aggregate.speaker_only and aggregate.models_agree_text)
             if speaker_only:
                 speaker_ids = sorted({
                     str(row.get("speaker_id") or row.get("speaker") or "").strip()
@@ -232,7 +256,7 @@ class StudioReviewMixin:
                 if len(candidates) > 4:
                     more = QLabel("其余证据已保存在字幕来源记录中")
                     more.setObjectName("cardMeta")
-                    self.review_dock_candidate_layout.addWidget(more, 2, 0, 1, columns)
+                    self.review_dock_candidate_layout.addWidget(more, (3 // columns) + 1, 0, 1, columns)
             else:
                 # Consistent banner
                 coverage = format_model_evidence_coverage(aggregate.hypotheses)
@@ -249,6 +273,8 @@ class StudioReviewMixin:
     def _set_review_mode(self, enabled: bool) -> None:
         entering = bool(enabled) and not self._review_mode
         leaving = not bool(enabled) and self._review_mode
+        if entering or leaving:
+            self._release_review_playback()
         if entering:
             from .studio_review import ReviewScopeSnapshot, ReviewSession
 
@@ -458,7 +484,11 @@ class StudioReviewMixin:
     def _play_review_context(self) -> None:
         if not self.project or not self.selected_cue_id or not self.video.controller:
             return
-        cue = self._cue_lookup.get(self.selected_cue_id)
+        cue_id = self.selected_cue_id
+        runtime = state_for(self.project)
+        # Timeline time: _cue_lookup resolves an edited project's derived ids
+        # back to source captions, and _seek takes timeline seconds.
+        cue = runtime.view_cue(cue_id) or self._cue_lookup.get(cue_id)
         if cue is None:
             return
         try:
@@ -471,22 +501,95 @@ class StudioReviewMixin:
                 self._sync_play_button(True)
                 self._review_space_playing = False
                 self._review_play_generation = getattr(self, "_review_play_generation", 0) + 1
+                self._park_review_playback()
                 return
         except (RuntimeError, AttributeError):
             pass
-        start = max(0, cue.start_ms - 250)
-        duration = cue.end_ms - start + 300
+        start, stop = review_playback_window(
+            cue, runtime.visible_cues(cue.end_ms, cue.end_ms + REVIEW_TAIL_MS + REVIEW_NEXT_GUARD_MS + 1))
+        generation = getattr(self, "_review_play_generation", 0) + 1
+        self._review_play_generation = generation
+        # Set before the seek: the lead-in and tail cross neighbouring
+        # captions, and the playhead-follow selection must stay on this one.
+        self._review_playback = ReviewPlayback(str(cue_id), start, stop, generation)
+        self._review_fallback_playhead = None
+        self._review_seeking = True
         try:
-            self.video.seek(start / 1000.0, accurate=True)
+            self._seek(start / 1000.0)
+        finally:
+            self._review_seeking = False
+        try:
             self.video.set_paused(False)
             self._sync_play_button(False)
             self._review_space_playing = True
         except RuntimeError as exc:
+            self._release_review_playback()
             self._show_video_error(str(exc))
             return
-        generation = getattr(self, "_review_play_generation", 0) + 1
-        self._review_play_generation = generation
-        QTimer.singleShot(duration, lambda token=generation: self._pause_review_context(token))
+        self._arm_review_fallback(generation)
+
+    def _arm_review_fallback(self, generation: int) -> None:
+        """Safety stop if the playhead never reports the end (stalled source)."""
+        review = getattr(self, "_review_playback", None)
+        if review is None or review.generation != generation:
+            return
+        rate = max(0.25, float(getattr(self.video, "_playback_rate", 1.0) or 1.0))
+        remaining = max(0, review.stop_ms - int(getattr(self.timeline, "playhead_ms", review.start_ms)))
+        QTimer.singleShot(int(remaining / rate) + 1500,
+                          lambda token=generation: self._review_fallback_due(token))
+
+    def _review_fallback_due(self, generation: int) -> None:
+        review = getattr(self, "_review_playback", None)
+        if review is None or review.generation != generation or review.finished:
+            return
+        playhead = int(getattr(self.timeline, "playhead_ms", 0))
+        if (not bool(getattr(self.video, "_paused", True)) and review.start_ms <= playhead < review.stop_ms
+                and playhead != getattr(self, "_review_fallback_playhead", None)):
+            # Still advancing towards the stop (a slow seek delayed the start).
+            self._review_fallback_playhead = playhead
+            self._arm_review_fallback(generation)
+            return
+        self._pause_review_context(generation)
+
+    def _review_playback_tick(self, milliseconds: int) -> None:
+        """Stop a review replay on media time, before the next caption."""
+        review = getattr(self, "_review_playback", None)
+        if review is None:
+            return
+        if review.finished:
+            # Jumps, frame steps or ordinary playback that leave the replayed
+            # stretch end the hold; until then the reviewed caption stays.
+            if not review.start_ms - 1 <= int(milliseconds) <= review.stop_ms + 250:
+                self._release_review_playback()
+            return
+        if bool(getattr(self.video, "_paused", True)):
+            return
+        clock = getattr(self.video, "_playback_clock", None)
+        if clock is not None and getattr(clock, "exact_seek_pending", False):
+            return
+        remaining = review.stop_ms - int(milliseconds)
+        if remaining <= 0:
+            self._pause_review_context(review.generation)
+            return
+        rate = max(0.25, float(getattr(self.video, "_playback_rate", 1.0) or 1.0))
+        wall = remaining / rate
+        if wall <= 40:
+            # The next 16 ms UI sample may already be past the stop at 2x.
+            timer = getattr(self, "_review_stop_timer", None)
+            if timer is None:
+                timer = self._review_stop_timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.setTimerType(Qt.TimerType.PreciseTimer)
+                timer.timeout.connect(lambda: self._review_stop_due())
+            if not timer.isActive():
+                self._review_stop_generation = review.generation
+                timer.start(max(1, int(wall)))
+
+    def _review_stop_due(self) -> None:
+        generation = getattr(self, "_review_stop_generation", None)
+        review = getattr(self, "_review_playback", None)
+        if review is not None and review.generation == generation:
+            self._pause_review_context(generation)
 
     def _pause_review_context(self, generation: int) -> None:
         if generation != getattr(self, "_review_play_generation", 0) or not self.video.controller:
@@ -497,6 +600,25 @@ class StudioReviewMixin:
             self._review_space_playing = False
         except RuntimeError as exc:
             self._show_video_error(str(exc))
+        self._park_review_playback()
+
+    def _park_review_playback(self) -> None:
+        """Keep the reviewed caption selected after its replay stops."""
+        review = getattr(self, "_review_playback", None)
+        if review is not None and not review.finished:
+            from dataclasses import replace
+            self._review_playback = replace(review, finished=True)
+
+    def _release_review_playback(self) -> None:
+        """The user moved on (seek, transport play, new selection, left Review)."""
+        self._review_playback = None
+        timer = getattr(self, "_review_stop_timer", None)
+        if timer is not None:
+            timer.stop()
+
+    def _review_held_cue_id(self) -> str:
+        review = getattr(self, "_review_playback", None)
+        return review.cue_id if review is not None else ""
 
     def _confirm_current_review(self, play_next: bool = False) -> None:
         if not self.project or not self.selected_cue_id:

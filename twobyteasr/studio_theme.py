@@ -203,7 +203,7 @@ QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background: {theme
 QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background: {theme.text_muted}; }}
 QPushButton {{ background: {theme.surface_elevated}; color: {theme.text}; border-color: {theme.border}; }}
 QPushButton:hover {{ background: {theme.selected}; border-color: {theme.accent}; }}
-QPushButton[studioPrimary="true"] {{ background: {theme.accent}; color: #ffffff; border-color: {theme.accent}; }}
+QPushButton[studioPrimary="true"] {{ background: {theme.accent}; color: {theme.text_on_accent}; border-color: {theme.accent}; }}
 QDialog#toolDialog {{ background: {theme.surface}; color: {theme.text}; border-radius: 4px; }}
 QDialog#toolDialog QGroupBox, QDialog#toolDialog QFrame#findResultFrame {{
     background: {theme.surface_elevated}; color: {theme.text};
@@ -258,7 +258,7 @@ QPushButton#motionFilter {{
     border-radius: 12px; padding: 3px 14px; font-weight: 650;
 }}
 QPushButton#motionFilter:hover {{ border-color: {theme.accent}; color: {theme.text}; }}
-QPushButton#motionFilter:checked {{ background: {theme.accent}; color: #ffffff; border-color: {theme.accent}; }}
+QPushButton#motionFilter:checked {{ background: {theme.accent}; color: {theme.text_on_accent}; border-color: {theme.accent}; }}
 """
 
 

@@ -44,10 +44,22 @@ def test_locale_files_load_with_identical_keys():
             for language in i18n.TRANSLATED_LANGUAGES}
     assert tables['en'].keys()==tables['ja'].keys() and len(tables['en'])>4000
     assert all(isinstance(value,str) and value.strip() for table in tables.values() for value in table.values())
-    # zh-Hant (with its code-literal table) loads on first use (2026-10-14).
-    eager={language:table for language,table in tables.items() if language!='zh-Hant'}
+    # zh-Hant (with its code-literal table) and ko load on first use (2026-10-14).
+    eager={language:table for language,table in tables.items() if language not in i18n._LAZY_LANGUAGES}
+    assert set(eager)=={'en','ja'}
     assert {language:i18n._TRANSLATIONS[language] for language in eager}==eager
     assert tables['zh-Hant'].items() <= i18n.language_table('zh-Hant').items()
+    # Korean may lag behind en/ja (English is shown), never carries other keys.
+    assert tables['ko']==i18n.language_table('ko') and tables['ko'].keys() <= tables['en'].keys()
+
+
+def test_korean_falls_back_to_english_not_chinese(monkeypatch):
+    table=i18n.language_table('ko')
+    assert i18n.translate('取消','ko')==table['取消'] and i18n.translate('取消','ko')!='取消'
+    monkeypatch.delitem(table,'取消')
+    assert i18n.translate('取消','ko')==i18n._TRANSLATIONS['en']['取消']
+    assert i18n.ui_literal('取消','ko')==i18n._TRANSLATIONS['en']['取消']
+    assert i18n.translate('用户自己的文字','ko')=='用户自己的文字'
 
 
 def test_dynamic_status_replaces_previous_capture(app):

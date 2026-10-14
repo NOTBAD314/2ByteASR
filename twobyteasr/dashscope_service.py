@@ -207,7 +207,7 @@ class TemporaryObject:
 class _MultipartBody(io.RawIOBase):
     """Form fields then the file, with a known length and a progress callback."""
 
-    def __init__(self, fields, filename, payload: bytes, progress=None):
+    def __init__(self, fields, filename, payload: bytes, progress=None, file_type='application/octet-stream'):
         super().__init__()
         self.boundary = '----2ByteASR' + uuid.uuid4().hex
         head = io.BytesIO()
@@ -215,7 +215,7 @@ class _MultipartBody(io.RawIOBase):
             head.write(f'--{self.boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
                        f'{value}\r\n'.encode('utf-8'))
         head.write(f'--{self.boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-                   'Content-Type: application/octet-stream\r\n\r\n'.encode('utf-8'))
+                   f'Content-Type: {file_type}\r\n\r\n'.encode('utf-8'))
         self._parts = [head.getvalue(), memoryview(payload), f'\r\n--{self.boundary}--\r\n'.encode('ascii')]
         self._total = sum(len(p) for p in self._parts)
         self._index = 0

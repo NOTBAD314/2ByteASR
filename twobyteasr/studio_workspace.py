@@ -60,6 +60,9 @@ from .i18n import bind_text
 
 from .i18n import tr
 
+# Candidate row of the review strip: one ReviewCandidateCard (min 86 px).
+REVIEW_DOCK_ROW_HEIGHT = 92
+
 
 class ResponsiveCueTableView(QTableView):
     first_selected_rows_painted = Signal(int)
@@ -643,7 +646,17 @@ class StudioWorkspaceBuilder:
         page.review_dock_candidate_layout.setContentsMargins(0, 0, 0, 0)
         page.review_dock_candidate_layout.setHorizontalSpacing(8)
         page.review_dock_candidate_layout.setVerticalSpacing(6)
-        strip_layout.addWidget(page.review_dock_candidates)
+        # 2026-10-15: one fixed-height row. Rebuilt cards used to change the
+        # strip between 125 and 255 px per caption, so the video above it
+        # (mpv, captions, overlays) re-laid out on every review step.
+        page.review_dock_scroll = QScrollArea()
+        page.review_dock_scroll.setObjectName("reviewDockScroll")
+        page.review_dock_scroll.setWidgetResizable(True)
+        page.review_dock_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        page.review_dock_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page.review_dock_scroll.setFixedHeight(REVIEW_DOCK_ROW_HEIGHT)
+        page.review_dock_scroll.setWidget(page.review_dock_candidates)
+        strip_layout.addWidget(page.review_dock_scroll)
         page.review_legend = QLabel("[1–4] 采用并下一条   [↑↓] 切换   [Space] 重听   [E] 编辑   [R] 退出审核   [Enter] 当前正确")
         page.review_legend.setObjectName("reviewLegend")
         page.review_legend.setTextFormat(Qt.TextFormat.RichText)

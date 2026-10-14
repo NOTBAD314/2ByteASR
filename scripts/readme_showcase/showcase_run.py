@@ -52,7 +52,7 @@ def outer(args):
     media_dir = out / 'media'
     media_dir.mkdir()
     media = media_dir / args.media_name
-    shutil.copy2(BASE / 'media' / args.media_file, media)
+    shutil.copy2(BASE / 'media' / 'forest-run.mp4', media)
     spec = dict(media=str(media), size=args.size, theme=args.theme, lang=args.lang, scale=args.scale,
                 interval=args.interval, started=time.strftime('%Y-%m-%dT%H:%M:%S'))
     (out / 'spec.json').write_text(json.dumps(spec, ensure_ascii=False, indent=2), 'utf8')
@@ -259,7 +259,6 @@ def main():
     parser.add_argument('--lang', default='zh')
     parser.add_argument('--interval', default='1.5')
     parser.add_argument('--media-name', default='林间小径·双人实况.mp4')
-    parser.add_argument('--media-file', default='test-card.mp4', help='file under media/ (forest-run.mp4 for the 2026-10-09 art)')
     parser.add_argument('--timeout', type=int, default=1800)
     return outer(parser.parse_args())
 

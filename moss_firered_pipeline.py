@@ -2775,6 +2775,8 @@ def build_moss_host_primary_segments(
     japanese = getattr(runtime_context, "task_language", "") == _JA
     result = []
     dropped_no_speech = 0
+    unchecked_other = []
+    from types import SimpleNamespace
     for index, moss in enumerate(moss_segments):
         speaker = str(moss.get("speaker") or "S00")
         if speaker not in included_speakers:
@@ -2829,7 +2831,12 @@ def build_moss_host_primary_segments(
             and speaker not in host_speakers
             and firered_similarity < 0.64
         ):
-            continue
+            if tokens or aligner_mode:
+                continue
+            # FireRed did not run: nothing to check against, keep (see
+            # apply_alternate_dialogue_coverage). Aligner tasks keep their
+            # own Qwen-supported restore of other roles.
+            unchecked_other.append(SimpleNamespace(start=start, speaker=speaker, text=moss_text))
         confidence = 0.78 if firered_similarity >= 0.78 else (0.64 if firered_similarity >= 0.55 else 0.50)
         if aligner_mode:
             # No second recognizer text here (the aligner reuses this text):
@@ -2908,6 +2915,8 @@ def build_moss_host_primary_segments(
     )
     if dropped_no_speech:
         print(f"   [VAD拒绝] {dropped_no_speech} 个 MOSS 段缺少实际人声覆盖。")
+    if unchecked_other:
+        _note_unchecked_other_speakers(unchecked_other, legacy)
     return result
 
 
@@ -3184,6 +3193,16 @@ def alternate_dialogue_coverage_signature(backend, speaker_mode, runtime_context
             "alternate_expected_speakers": int(getattr(runtime_context, "expected_speakers", 0) or 0)}
 
 
+def _note_unchecked_other_speakers(segments, legacy):
+    """One review item: other speakers kept by 主播优先 without a second recognizer."""
+    speakers = sorted({str(segment.speaker) for segment in segments})
+    legacy.add_review_item(
+        float(segments[0].start), "其他说话人未核对",
+        f"主播优先：本次没有第二套识别（FireRed 未运行）可核对，{len(segments)} 条其他说话人的字幕"
+        f"（{'、'.join(speakers)}）已保留、未经核对；若混入背景声或游戏音效，请在工作台删除。",
+        str(segments[0].text or ""), priority=2, severity="review")
+
+
 def apply_alternate_dialogue_coverage(
     segments, references, timeline_tokens, speech_regions, audio_seconds,
     legacy, backend, runtime_context=None,
@@ -3217,7 +3236,13 @@ def apply_alternate_dialogue_coverage(
         [row for _segment, row in pairs], audio_seconds, legacy,
         runtime_context=runtime_context, label_source=label_source,
     ) if mode != "all_dialogue" else []
-    kept, decisions = [], []
+    # host_priority keeps another speaker only when a second recognizer heard
+    # the same words. Without one (cloud-only, FireRed off; aligner tokens are
+    # this transcript's own words) there is nothing to check against, so those
+    # lines are kept and listed for review instead of silently dropped: the
+    # mode used to become "host only" there (2026-10-15, MOSS Pro).
+    independent = any(str(token.get("source") or "") != "qwen-forced-aligner" for token in timeline_tokens or [])
+    kept, decisions, unchecked = [], [], []
     for segment, row in pairs:
         reason, similarity = "all_dialogue", None
         retain = True
@@ -3230,6 +3255,9 @@ def apply_alternate_dialogue_coverage(
             if retain and segment.speaker not in selected:
                 if mode == "host_only":
                     retain, reason = False, "outside_selected_candidates"
+                elif not independent:
+                    reason = "kept_without_second_recognizer"
+                    unchecked.append(segment)
                 else:
                     nearby = [token for token in timeline_tokens or []
                               if float(token.get("end", 0)) >= segment.start - MOSS_SPEAKER_PAD_SECONDS
@@ -3251,9 +3279,12 @@ def apply_alternate_dialogue_coverage(
                                     for speaker in candidates},
                    executed=True, identity_confirmed=False,
                    selection_source="anonymous_timeline_persistence_and_text_amount",
-                   needs_confirmation=mode != "all_dialogue", decisions=decisions)
+                   needs_confirmation=mode != "all_dialogue", decisions=decisions,
+                   second_recognizer=independent, kept_unchecked=len(unchecked))
     # Execute outside the cached conversion so every job records its own policy.
     legacy.record_run_event("host_filter_summary", **summary)
+    if unchecked:
+        _note_unchecked_other_speakers(unchecked, legacy)
     if runtime_context is not None:
         recovery = getattr(runtime_context, "speaker_recovery", None)
         if isinstance(recovery, dict):

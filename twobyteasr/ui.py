@@ -761,21 +761,12 @@ class WindowTitleBar(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             global_pos = event.globalPosition().toPoint()
             if self._window.isMaximized():
-                ratio = event.position().x() / max(1, self.width())
-                normal = self._window.normalGeometry()
-                self._window.showNormal()
-                self._drag_offset = QPoint(
-                    int(normal.width() * ratio),
-                    max(8, int(event.position().y())),
-                )
-                target = global_pos - self._drag_offset
-                # 2026-09-19：DPI/显示器变更后 normalGeometry 可宽于当前屏幕，
-                # 换算 x 可为负（窗口出屏=内容左移、左侧固定区"消失"），钳回可用区。
-                screen = self._window.screen().availableGeometry()
-                self._window.move(
-                    min(max(target.x(), screen.left()), screen.right() - normal.width()),
-                    min(max(target.y(), screen.top()), screen.bottom() - 40),
-                )
+                # 2026-10-15: a click (or the first click of a double-click)
+                # no longer restores the window; dragging past the drag
+                # distance does, under the cursor (window_constraints).
+                from .window_constraints import begin_title_drag
+                self._drag_offset = None
+                begin_title_drag(self._window, global_pos, event.position().y())
             else:
                 self._drag_offset = global_pos - self._window.frameGeometry().topLeft()
             event.accept()
@@ -915,12 +906,22 @@ class CompletionDialog(SpringDialog):
         self.details_label = QLabel(details)
         self.details_label.setWordWrap(True)
         self.details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.details_label.setVisible(bool(details))
         self.details_label.setStyleSheet(
             f"color: {theme.text}; background: {self.tint}; border: 1px solid {theme.border}; border-radius: 12px; "
             "padding: 10px 12px; font-size: 13px;"
         )
-        card_layout.addWidget(self.details_label)
+        # 2026-10-15: a long failure (worker stderr, traceback) scrolls inside
+        # the card instead of stretching the dialog to the full screen height.
+        self.details_scroll = QScrollArea()
+        self.details_scroll.setObjectName("completionDetailsScroll")
+        self.details_scroll.setWidgetResizable(True)
+        self.details_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.details_scroll.setStyleSheet("QScrollArea#completionDetailsScroll { background: transparent; border: 0; }")
+        self.details_scroll.setWidget(self.details_label)
+        self.details_scroll.setMaximumHeight(240)
+        self.details_scroll.setVisible(bool(details))
+        card_layout.addWidget(self.details_scroll)
 
         footer = self.card.footer_layout
         footer.setSpacing(12)
@@ -3158,6 +3159,7 @@ class GuidedSetupDialog(SpringDialog):
         self.lang_combo.addItem("繁體中文", "zh-Hant")
         self.lang_combo.addItem("English", "en")
         self.lang_combo.addItem("日本語", "ja")
+        self.lang_combo.addItem("한국어", "ko")
         self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(current_language())))
         self.lang_combo.currentIndexChanged.connect(self._change_lang)
         header.addWidget(self.lang_combo)
@@ -3961,8 +3963,12 @@ class MainWindow(QWidget):
         self.setAcceptDrops(True)
         self.setObjectName("appRoot")
         # Frameless but fully resizable (P0). Custom titlebar + edge resize.
+        # 2026-10-15: the system menu and min/max styles keep the native
+        # fallbacks a frameless popup lacked (taskbar click minimizes,
+        # Win+Up/Down, Alt+Space) for when the title buttons are out of reach.
         self.setWindowFlags(
             Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         bind_text(self, tr('2ByteASR  兔白字幕') + ('【隔离测试】' if os.environ.get('TWOBYTEASR_TEST_ROOT') else ''), property='windowTitle')
@@ -4461,6 +4467,7 @@ class MainWindow(QWidget):
         self.language_combo.addItem("繁體中文", "zh-Hant")
         self.language_combo.addItem("English", "en")
         self.language_combo.addItem("日本語", "ja")
+        self.language_combo.addItem("한국어", "ko")
         self.language_combo.setCurrentIndex(
             max(0, self.language_combo.findData(current_language()))
         )
@@ -9620,9 +9627,12 @@ class MainWindow(QWidget):
         self.subtitle_output = FramelessPopupCombo()
         for text, value in (("只要原文", "original"), ("只要中文译文", "translation"), ("日中双语", "bilingual")):
             self.subtitle_output.addItem(tr(text), value)
-        self.translation_script = FramelessPopupCombo()
-        for text, value in (("简体中文", "zh-Hans"), ("繁體中文", "zh-Hant")):
-            self.translation_script.addItem(text, value)
+        # Translation target (any language other than the source, 2026-10-14);
+        # native names like the UI language menu. Refilled by _sync_translation_targets.
+        self.translation_script = user_text(FramelessPopupCombo())
+        from .subtitle_translation import TARGET_LABELS, TARGETS
+        for value in TARGETS:
+            self.translation_script.addItem(TARGET_LABELS[value], value)
         for combo, key, default in ((self.recognition_language, "recognition_language", "auto"),
                                     (self.subtitle_output, "output", "original"),
                                     (self.translation_script, "translation_script", "zh-Hans")):
@@ -9641,8 +9651,8 @@ class MainWindow(QWidget):
         row.addWidget(self.subtitle_punctuation)
         row.addStretch(1)
         bind_text(self.recognition_language, '自动：按转写里的文字判断中文、日语或英语（只有汉字不算日语证据）。日语和英语改用 Qwen3-ForcedAligner 对齐字词时间，需在模型工坊下载。', property='toolTip')
-        bind_text(self.subtitle_output, '译文/双语：识别完成后用已配置的 AI 文字服务把日文或英文翻成中文（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。', property='toolTip')
-        bind_text(self.translation_script, '译文使用的中文字形', property='toolTip')
+        bind_text(self.subtitle_output, '译文/双语：识别完成后用已配置的 AI 文字服务把字幕翻成所选语言（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。', property='toolTip')
+        bind_text(self.translation_script, '译文语言', property='toolTip')
         layout.addLayout(row)
         self.subtitle_language_hint = QLabel("")
         self.subtitle_language_hint.setObjectName("homeTermState")
@@ -9667,17 +9677,43 @@ class MainWindow(QWidget):
                 "subtitle_output": str(self.subtitle_output.currentData() or "original"),
                 "translation_script": str(self.translation_script.currentData() or "zh-Hans")}
 
+    def _sync_translation_targets(self, recognition_language):
+        """Offer only targets in another language than a chosen source (all for auto)."""
+        from .subtitle_translation import TARGET_LABELS, TARGETS, targets_for
+        combo = self.translation_script
+        wanted = TARGETS if recognition_language == "auto" else targets_for(recognition_language)
+        if tuple(combo.itemData(index) for index in range(combo.count())) == tuple(wanted):
+            return
+        current = str(combo.currentData() or "zh-Hans")
+        blocked = combo.blockSignals(True)
+        try:
+            combo.clear()
+            for value in wanted:
+                combo.addItem(TARGET_LABELS[value], value)
+            combo.setCurrentIndex(max(0, combo.findData(current)))
+        finally:
+            combo.blockSignals(blocked)
+
     def _subtitle_language_changed(self, *_args, save=True):
+        if self.__dict__.get("recognition_language") is not None:
+            self._sync_translation_targets(str(self.recognition_language.currentData() or "auto"))
         options = self._subtitle_language_options()
         if save and hasattr(self, "recognition_plan_hint"):
             self._refresh_recognition_recommendation()  # 日语/英语推荐 follow the language
         translating = options["subtitle_output"] != "original"
         self.translation_script.setEnabled(translating)
-        # The bilingual item names the pair: 日中双语 / 英中双语 (2026-10-14).
+        # The bilingual item names the pair: 日中双语 / 英中双语 (2026-10-14);
+        # other targets read "原文 + 译文双语" / "只要译文".
+        chinese_target = options["translation_script"] in ("zh-Hans", "zh-Hant")
         bilingual = self.subtitle_output.findData("bilingual")
         if bilingual >= 0:
-            pair = {"ja": "日中双语", "en": "英中双语"}.get(options["recognition_language"], "原文 + 中文双语")
+            pair = ({"ja": "日中双语", "en": "英中双语"}.get(options["recognition_language"], "原文 + 中文双语")
+                    if chinese_target else "原文 + 译文双语")
             self.subtitle_output.setItemText(bilingual, tr(pair))
+        translation_only = self.subtitle_output.findData("translation")
+        if translation_only >= 0:
+            self.subtitle_output.setItemText(translation_only,
+                                             tr("只要中文译文" if chinese_target else "只要译文"))
         hints = []
         aligner_missing = False
         if options["recognition_language"] in ("ja", "en", "auto"):
@@ -9696,8 +9732,10 @@ class MainWindow(QWidget):
             hints.append("还没有安装 Qwen3-ForcedAligner：英文字幕将没有单词时间（剃刀只能按估算切），不会悄悄改用估算冒充。")
         self.aligner_download_button.setVisible(aligner_missing and options["recognition_language"] in ("ja", "en"))
         if translating:
-            hints.append("完成识别后翻译成中文，发送字幕文字到已配置的 AI 文字服务（可能产生费用）。"
-                         "中文素材不翻译。")
+            from .subtitle_translation import TARGET_LABELS
+            hints.append(tr("完成识别后翻译成{value0}，发送字幕文字到已配置的 AI 文字服务（可能产生费用）。"
+                            "译文语言与识别语言相同时不翻译。",
+                            value0=TARGET_LABELS.get(options["translation_script"], "")))
         punctuation = str(self.subtitle_punctuation.currentData() or "original") \
             if self.__dict__.get("subtitle_punctuation") is not None else "original"
         if punctuation != "original":
@@ -10174,7 +10212,7 @@ class MainWindow(QWidget):
                 pending = ", ".join(translate(item, language) for item in dict.fromkeys(problems))
                 if language == "en":
                     text = "⚠ Before starting:"
-                elif language in ("ja", "zh-Hant"):
+                elif language in ("ja", "zh-Hant", "ko"):
                     text = "⚠ " + translate("开始前还需处理：", language)
                 else:
                     text = "⚠ 开始前还需处理："
@@ -10183,7 +10221,7 @@ class MainWindow(QWidget):
                 self.action_status.setObjectName("statusGood")
                 if language == "en":
                     text = f"✔ Recognition plan and {glossary_count} term libraries are ready"
-                elif language in ("ja", "zh-Hant"):
+                elif language in ("ja", "zh-Hant", "ko"):
                     text = "✔ " + translate("识别方案与 {n} 个词库已就绪", language).replace("{n}", str(glossary_count))
                 else:
                     text = f"✔ 识别方案与 {glossary_count} 个词库已就绪"

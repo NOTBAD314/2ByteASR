@@ -52,6 +52,8 @@ MAX_KEYTERM_CHARS = 30
 PRICE_CNY_PER_HOUR = 2.00
 PRICE_CHECKED = '2026-10-13'
 STATUSES = {'PENDING', 'PROCESSING', 'SUCCESS', 'FAILED'}
+# (connect, read): the connect value also bounds each upload block.
+UPLOAD_TIMEOUT = (15, 900)
 
 
 def normalize_api_base(value: str) -> str:
@@ -255,9 +257,16 @@ def result_rows(payload, *, offset: float, duration: float) -> list:
 
 
 def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lambda: None) -> dict:
-    """Upload one request's audio as multipart and create an async task."""
+    """Upload one request's audio as multipart and create an async task.
+
+    The body is streamed in blocks. requests sends a request body under the
+    *connect* timeout, and one HTTPS write of a whole in-memory body must
+    finish within it: a 1-hour WAV (110 MB) died after 15 s on a home uplink
+    (2026-10-14). Streaming applies that timeout to each block instead.
+    """
     import requests
     from .asr import _pcm16_wav_bytes
+    from .dashscope_service import ServiceProblem, _MultipartBody
     wav = _pcm16_wav_bytes(audio)
     if len(wav) > MAX_UPLOAD_BYTES:
         raise ASRProtocolError('本段音频超过 MOSI 512 MB 上传限制。', 'too_large')
@@ -265,14 +274,30 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
     terms = list(endpoint.get('mosi_keyterms') or [])
     if terms:
         fields['keyterms'] = json.dumps(terms, ensure_ascii=False)
+    form = _MultipartBody(list(fields.items()), 'audio.wav', wav, file_type='audio/wav')
     check()
     state.update(status='SUBMITTING', bytes=len(wav), created_at=time.time())
     _save(state_path, state)
     try:
-        response = client.post(transcriptions_url(endpoint['url']), headers=_auth(endpoint), data=fields,
-                               files={'file': ('audio.wav', wav, 'audio/wav')},
-                               timeout=(15, 900), allow_redirects=False)
+        response = client.post(transcriptions_url(endpoint['url']),
+                               headers={**_auth(endpoint), 'Content-Type': form.content_type,
+                                        'Content-Length': str(len(form))},
+                               data=form, timeout=UPLOAD_TIMEOUT, allow_redirects=False)
     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+        sent = form.tell()
+        if sent < len(form):
+            # The closing boundary never left this process, so MOSI has no
+            # complete request: nothing was accepted or billed. The next
+            # attempt uploads again without asking.
+            state.update(status='UPLOAD_INCOMPLETE', transport_error=type(exc).__name__,
+                         sent_bytes=sent, body_bytes=len(form))
+            _save(state_path, state)
+            message = (f'上传到 MOSI 时网络中断（已送出 {sent / 1048576:.0f} / {len(form) / 1048576:.0f} MB），'
+                       'MOSI 没有收到完整音频，不会受理也不会计费。')
+            error = ASRProtocolError(message, 'upload_interrupted')
+            error.problem = ServiceProblem('network', message, '检查网络后直接重新开始识别即可。',
+                                           code='upload_interrupted')
+            raise error from exc
         state.update(status='SUBMITTING', transport_error=type(exc).__name__)
         _save(state_path, state)
         raise ASRProtocolError('上传时网络中断，无法确认 MOSI 是否已受理（可能已计费）。'
@@ -360,6 +385,12 @@ def _chunk(audio, endpoint, root: Path, *, client, check, progress, sleep, max_w
         _save(root / ('previous-task-' + uuid.uuid4().hex + '.json'), state)
         state = {}
         progress('explicit_restart_uncertain', 0, 1)
+    if state.get('status') == 'UPLOAD_INCOMPLETE' and not state.get('task_id'):
+        # MOSI never received the whole file (see submit); upload again.
+        import uuid
+        _save(root / ('previous-task-' + uuid.uuid4().hex + '.json'), state)
+        state = {}
+        progress('retry_incomplete_upload', 0, 1)
     if state.get('status') in {'FAILED', 'UNKNOWN'}:
         if not restart_terminal:
             raise ASRProtocolError('已保存远端终态 ' + state['status'] + '；请显式重新开始识别。', 'remote_terminal')

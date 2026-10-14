@@ -544,7 +544,8 @@ def layer_cues(
 
 
 def _translation_suffix(target: str) -> str:
-    return "zh-Hant" if target == "zh-Hant" else "zh"
+    from .subtitle_translation import TARGET_SUFFIX
+    return TARGET_SUFFIX.get(target, "zh")
 
 
 def _layer_filename(scope_stem: str, layer: str, original_suffix: str, translation_suffix: str,
@@ -578,7 +579,8 @@ def export_language_layers(
 ) -> LanguageLayerExport:
     """Export original / translation / bilingual SRT (and optional JSON).
 
-    Names: ``{stem}.ja.srt``, ``{stem}.zh.srt`` (``.zh-Hant.srt``),
+    Names: ``{stem}.<source>.srt`` (``.ja`` / ``.zh`` / ``.en``),
+    ``{stem}.<target>.srt`` (``.zh`` / ``.zh-Hant`` / ``.en`` / ``.ja`` / ``.ko``),
     ``{stem}.bilingual.srt``, ``{stem}.json``. Existing files are never
     replaced: when any planned name exists the whole set moves to
     ``{stem} (2).ja.srt`` etc. Every candidate is parsed back before

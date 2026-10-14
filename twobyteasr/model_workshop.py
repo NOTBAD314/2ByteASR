@@ -1501,16 +1501,34 @@ def _install_size_label(size: str) -> str:
     return text
 
 
-_SCORE_TRACK_COLOR = WORKSHOP_TOKENS["score_track"]
 _SCORE_TRACK_HEIGHT = 7
 _SCORE_TRACK_MIN_WIDTH = 54
 
 
+def _active_accent_text() -> str:
+    from .theme_manager import theme_key
+    from .ui_theme import theme_definition
+    return theme_definition(theme_key()).accent_text
+
+
+def _score_palette() -> tuple[str, str, str, str]:
+    """(track, low, mid, high) for the active theme (2026-10-14).
+
+    The warm cream track and fills were fixed literals and drew a bright
+    beige stripe on every dark theme; now track and fills come from tokens.
+    """
+    from .theme_manager import theme_key
+    from .ui_theme import blend_hex, theme_definition
+    theme = theme_definition(theme_key())
+    track = blend_hex(theme.surface, theme.border_strong, 0.45 if theme.is_light else 0.55)
+    soften = 0.12 if theme.is_light else 0.18
+    return (track, blend_hex(theme.danger, theme.surface, soften), blend_hex(theme.warning, theme.surface, soften),
+            blend_hex(theme.success, theme.surface, soften))
+
+
 def _score_color(score: int) -> QColor:
     score = max(10, min(100, int(score)))
-    low = QColor(WORKSHOP_TOKENS["score_low"])
-    mid = QColor(WORKSHOP_TOKENS["score_mid"])
-    high = QColor(WORKSHOP_TOKENS["score_high"])
+    _track, low, mid, high = (QColor(value) for value in _score_palette())
     left, right, ratio = (
         (low, mid, (score - 10) / 40.0)
         if score <= 50
@@ -1546,7 +1564,7 @@ class _EvidenceTrack(QWidget):
             0.0, (self.height() - track_h) / 2.0, max(1.0, float(self.width())), track_h
         )
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(_SCORE_TRACK_COLOR))
+        painter.setBrush(QColor(_score_palette()[0]))
         painter.drawRoundedRect(track, radius, radius)
         if self._score is not None:
             marker = QRectF(track)
@@ -4909,7 +4927,7 @@ class ModelWorkshopPage(QWidget):
         activity_layout.setSpacing(9)
         activity_icon = QLabel()
         activity_icon.setPixmap(
-            _icon("fa5s.download", WORKSHOP_TOKENS["green"]).pixmap(18, 18)
+            _icon("fa5s.download", _active_accent_text()).pixmap(18, 18)
         )
         activity_layout.addWidget(activity_icon)
         self.download_activity_text = QLabel("模型正在后台下载")

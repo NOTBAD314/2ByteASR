@@ -59,10 +59,17 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
     if mode == "original":
         return {}
     language = str(getattr(runtime_context, "task_language", "") or "")
-    if language not in ("ja", "en"):
-        legacy.record_run_event("subtitle_translation_skipped", reason="source_not_japanese_or_english",
-                                language=language)
-        print("   [翻译] 本任务按中文处理，不做中文翻译。")
+    from .subtitle_translation import (SOURCE_LANGUAGES, TARGET_LABELS, normalize_target, same_language)
+    try:
+        target = normalize_target(getattr(runtime_context, "translation_script", "zh-Hans") or "zh-Hans")
+    except ValueError:
+        target = "zh-Hans"
+    # Any direction since 2026-10-14; only "translate into the same language" is skipped.
+    if language not in SOURCE_LANGUAGES or same_language(language, target):
+        legacy.record_run_event("subtitle_translation_skipped",
+                                reason="unknown_source_language" if language not in SOURCE_LANGUAGES
+                                else "target_is_source_language", language=language, target=target)
+        print(f"   [翻译] 译文语言（{TARGET_LABELS[target]}）与识别语言相同，不翻译。")
         return {}
     from .studio_project import StudioCue
     from .subtitle_translation import apply_translation_result, status_counts, translate, translation_source
@@ -72,7 +79,6 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
                                            speaker_id=str(getattr(cue, "speaker", "S00") or "S00"))
                                  for cue_id, cue in zip(project_cue_ids(cues), cues)],
                            generation_metadata={"language": {"code": language}}, studio_state={}, speakers=[])
-    target = str(getattr(runtime_context, "translation_script", "zh-Hans") or "zh-Hans")
     if provider is None:
         from .ai_providers import provider_for_stage
         from .asr_provider_snapshot import resolve_provider_snapshot
@@ -82,7 +88,8 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
         provider = provider_for_stage(snapshot.execution_settings(), "polish", sender=post_chat_completion)
     token = getattr(runtime_context, "cancellation_token", None)
     cache = load_cache()
-    print(f"   [翻译] {'英文' if language == 'en' else '日文'} → {'繁体' if target == 'zh-Hant' else '简体'}中文：{len(fake.cues)} 条，按批发送字幕文字到已配置的 AI 服务…")
+    source_label = {"zh": "中文", "ja": "日文", "en": "英文"}[language]
+    print(f"   [翻译] {source_label} → {TARGET_LABELS[target]}：{len(fake.cues)} 条，按批发送字幕文字到已配置的 AI 服务…")
 
     def progress(done, total, message=""):
         print(f"   [翻译] {done}/{total} {message}".rstrip())

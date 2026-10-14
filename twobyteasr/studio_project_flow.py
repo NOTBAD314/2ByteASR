@@ -70,6 +70,9 @@ class StudioProjectFlowMixin:
         if getattr(self, '_canvas_editor', None) is not None:
             self._cancel_canvas_inline_edit()
         self._review_edit_lock = None
+        release_review = getattr(self, '_release_review_playback', None)
+        if callable(release_review):
+            release_review()
         self._qc_scan_token = getattr(self, '_qc_scan_token', 0) + 1
         scan = getattr(self, '_qc_scan_timer', None)
         if scan is not None:

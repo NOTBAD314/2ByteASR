@@ -104,3 +104,19 @@ def test_user_summary_aggregates_fallbacks_and_keeps_all_json_items(capsys):
         "info": 1,
     }
     subtitle_core.reset_review_items()
+
+
+def test_split_batch_fallbacks_are_counted_per_original_batch(capsys):
+    """2026-10-14 user report: a 2-hour Japanese job finished every stage, then
+    failed with ``invalid literal for int() with base 10: '2.1.2'`` because a
+    batch split twice (truncated model output) had fallen back."""
+    from twobyteasr import reporting
+    subtitle_core.reset_review_items()
+    for index in ("2.1.2", "2.2", 4):
+        subtitle_core.add_review_item(1, "校对回退", "fixture", f"batch {index}", priority=3,
+                                      batch_index=index, batch_total=19)
+    items = output.print_review_summary()
+    assert "AI 校对部分降级：2 / 19 个批次使用本地结果" in capsys.readouterr().out
+    summary = reporting._build_review_summary(items)
+    assert summary[0]["message"] == "AI 校对部分降级：2 / 19 个批次使用本地结果。"
+    subtitle_core.reset_review_items()

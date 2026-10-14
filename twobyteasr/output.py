@@ -85,8 +85,9 @@ def print_review_summary():
             (int(item.get("batch_total") or 0) for item in matching),
             default=0,
         )
+        # A split batch is numbered "2.1.2"; count each original batch once.
         count = len({
-            int(item.get("batch_index") or index + 1)
+            str(item.get("batch_index") or index + 1).split(".")[0]
             for index, item in enumerate(matching)
         })
         denominator = total or count

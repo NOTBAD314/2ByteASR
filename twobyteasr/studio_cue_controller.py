@@ -137,6 +137,12 @@ class StudioCueController:
         if not force and cue_id == session.observed_playhead_target_id:
             return cue
         session.observed_playhead_target_id = cue_id
+        held = getattr(self.page, '_review_held_cue_id', None)
+        if callable(held) and held():
+            # A review replay owns the selection: its lead-in and tail cross
+            # neighbouring captions. Observed above, so releasing the hold
+            # does not retarget to where the replay happened to stop.
+            return cue
         session.playhead_target_id = cue_id
         self._mirror_clock_selection(cue_id)
         return cue

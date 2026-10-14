@@ -346,6 +346,25 @@ def test_failed_worker_reports_the_explained_cause_first():
     assert detail.startswith('real cause') and 'sk-ws-abcdefghijklmnop' not in detail
 
 
+def test_retry_page_finds_the_resubmit_request_in_a_one_line_failure():
+    """2026-10-15: a failed media result stores its error with whitespace
+    collapsed (service._exception_message); the completion page then never
+    asked to resubmit and every "retry failed items" was refused again."""
+    from twobyteasr.cloud_api_worker import ERROR_MARKER, failure_from_text
+    from twobyteasr.service import _exception_message
+    marker = ERROR_MARKER + json.dumps({'category': 'resubmit_needed', 'message': '上次提交时连线中断。',
+                                        'action': '确认后重新提交。', 'link': '', 'code': 'submission_uncertain',
+                                        'resubmit': True}, ensure_ascii=False)
+    error = RuntimeError('上次提交时连线中断。 确认后重新提交。\n\nPRIMARY_API worker failed (exit 1):\nstdout:\n\n'
+                         'stderr:\n' + marker + '\n上次上传是否被 MOSI 受理无法确认。\n')
+    stored = _exception_message(error, '处理失败')
+    assert '\n' not in stored
+    problem = failure_from_text(stored)
+    assert problem['resubmit'] is True and problem['code'] == 'submission_uncertain'
+    assert failure_from_text('PRIMARY_API worker failed: plain error') is None
+    assert failure_from_text(ERROR_MARKER + '{broken') is None
+
+
 def test_redaction_covers_groq_and_alibaba_access_keys():
     from twobyteasr.provider_diagnostics import redact_diagnostics
     text = redact_diagnostics('gsk_abcdefghijklmnopqrstuv LTAI5tABCDEFGHIJKLMN https://b.oss.aliyuncs.com/a?OSSAccessKeyId=LTAIx&Signature=abc')

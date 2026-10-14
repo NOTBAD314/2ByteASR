@@ -354,6 +354,8 @@ class StudioPlaybackFlowMixin:
 
     def _apply_project_playhead_frame(self, milliseconds: int, *, defer_follow: bool = False) -> None:
         milliseconds = max(0, int(milliseconds))
+        if getattr(self, '_review_playback', None) is not None:
+            self._review_playback_tick(milliseconds)
         duration = timeline_duration_ms(self.project) if self.project else 0
         if duration and milliseconds >= duration and not self.video._paused and not self._loop_enabled:
             milliseconds = duration
@@ -606,6 +608,8 @@ class StudioPlaybackFlowMixin:
             return
         timeline_ms = round(seconds * 1000)
         self._invalidate_audio_tail()
+        if getattr(self, '_review_playback', None) is not None and not getattr(self, '_review_seeking', False):
+            self._release_review_playback()
         self.cue_controller.sync_playhead_target(timeline_ms, force=True, rule=self._playhead_target_rule())
         visual_expectation = self._prepare_visual_route_for_time(timeline_ms)
         try:
@@ -823,6 +827,11 @@ class StudioPlaybackFlowMixin:
     def _toggle_playback(self) -> None:
         if getattr(self, "_empty_playback_state", False) or not self.video.controller:
             return
+        if getattr(self, '_review_playback', None) is not None:
+            # Transport play/pause is ordinary playback: the selection follows
+            # the clock again (a review replay is Space / 重听 in Review).
+            self._release_review_playback()
+            self._review_space_playing = False
         if (getattr(self.video, "_buffered_play_pending", False)
                 or getattr(self.video, "_seek_hold_active", False)):
             # Still "playing" for the user while a seek waits for its audio.

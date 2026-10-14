@@ -16,6 +16,7 @@ Cue timing, speaker and the original text are never changed.
 from __future__ import annotations
 
 import copy
+import functools
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -155,6 +156,39 @@ def group_extra(original_block, companion_block, gap_px: float, translation_on_t
     return companion_block[0] + top[2] + top[3] + gap_px + bottom[2]
 
 
+# A translation line in another script than the original needs glyphs the
+# subtitle face may lack: the usual faces (YaHei, ZCOOL, Cubic) have no Hangul
+# and some have no kana, so Korean/Japanese lines would draw boxes and the PIL
+# measuring of line breaks would be wrong. The bundled Source Han Sans covers
+# Hangul, kana, Han and Latin (2026-10-14). Only used without a translation font.
+SCRIPT_FALLBACK_FONT = "Source Han Sans SC"
+# One character stands for each script block: a face with one carries the block.
+_SCRIPT_SAMPLES = (("\uac00", "\ud7a3", "\uac00"),    # Hangul syllables
+                   ("\u3041", "\u309f", "\u3042"),    # hiragana
+                   ("\u30a1", "\u30fa", "\u30a2"))    # katakana
+
+
+@functools.lru_cache(maxsize=128)
+def _face_has(family: str, weight: int, bold: bool, character: str) -> bool:
+    try:
+        from .font_metadata import has_character, resolve_local_face
+        face, _warning = resolve_local_face(family, weight, bold=bold)
+        return has_character(face.file, face.index, character)
+    except Exception:  # noqa: BLE001 - a font that cannot be read keeps the style font
+        return True
+
+
+def _translation_font(settings: BilingualSettings, text: str, style) -> str:
+    if settings.translation_font:
+        return settings.translation_font
+    for low, high, sample in _SCRIPT_SAMPLES:
+        if any(low <= char <= high for char in text) and not _face_has(
+                str(style.font_family), int(getattr(style, "font_weight", 0) or 0),
+                bool(getattr(style, "bold", False)), sample):
+            return SCRIPT_FALLBACK_FONT
+    return ""
+
+
 def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settings: BilingualSettings,
                  styles, speakers, style_recipes, play_res_x: int = 1920, play_res_y: int = 1080) -> list:
     """Cues to draw for ``settings`` (originals possibly adjusted, plus companions)."""
@@ -174,8 +208,9 @@ def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settin
             shown = copy.deepcopy(cue)
             shown.text = text
             shown = _with_transform(shown, font_size=round(base.font_size * settings.translation_scale, 2))
-            if settings.translation_font:
-                shown.appearance_override = dict(shown.appearance_override or {}, font_family=settings.translation_font)
+            font = _translation_font(settings, text, base)
+            if font:
+                shown.appearance_override = dict(shown.appearance_override or {}, font_family=font)
             out.append(shown)
             continue
         original = cue if settings.legacy else _with_transform(
@@ -189,8 +224,9 @@ def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settin
         companion.raw_ass_override = ""
         companion.transform = {k: v for k, v in dict(cue.transform or {}).items() if k not in ("initial_layout",)}
         companion.transform["font_size"] = round(base.font_size * settings.translation_scale, 2)
-        if settings.translation_font:
-            companion.appearance_override = dict(cue.appearance_override or {}, font_family=settings.translation_font)
+        font = _translation_font(settings, text, base)
+        if font:
+            companion.appearance_override = dict(cue.appearance_override or {}, font_family=font)
         companion_caption = resolve_caption_style(styles, speakers, companion, style_recipes, play_res_x)
         x, y = _anchor(original_caption.style, play_res_x, play_res_y)
         row = (int(base.alignment) - 1) // 3          # 0 bottom, 1 middle, 2 top
@@ -257,8 +293,9 @@ def group_extra_for(project, cue, play_res_x: int = 1920) -> float:
     companion.text = text
     companion.transform = {k: v for k, v in dict(cue.transform or {}).items() if k != "initial_layout"}
     companion.transform["font_size"] = round(base.font_size * settings.translation_scale, 2)
-    if settings.translation_font:
-        companion.appearance_override = dict(cue.appearance_override or {}, font_family=settings.translation_font)
+    font = _translation_font(settings, text, base)
+    if font:
+        companion.appearance_override = dict(cue.appearance_override or {}, font_family=font)
     original_caption = resolve_caption_style(project.styles, project.speakers, original, project.style_recipes, play_res_x)
     companion_caption = resolve_caption_style(project.styles, project.speakers, companion, project.style_recipes, play_res_x)
     em = max(float(original_caption.style.font_size), float(companion_caption.style.font_size))

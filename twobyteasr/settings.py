@@ -102,6 +102,8 @@ DEFAULT_SETTINGS = {
     "subtitle_language": {
         "recognition_language": "auto",
         "output": "original",
+        # Translation target (kept under its old name): zh-Hans, zh-Hant, en, ja
+        # or ko since 2026-10-14; before only the two Chinese scripts.
         "translation_script": "zh-Hans",
     },
     "performance": {
@@ -324,7 +326,7 @@ def _merge_known_settings(defaults, payload):
             )
     allowed_language = {"recognition_language": {"auto", "zh", "ja", "en"},
                         "output": {"original", "translation", "bilingual"},
-                        "translation_script": {"zh-Hans", "zh-Hant"}}
+                        "translation_script": {"zh-Hans", "zh-Hant", "en", "ja", "ko"}}
     for key, allowed in allowed_language.items():
         if result["subtitle_language"].get(key) not in allowed:
             result["subtitle_language"][key] = defaults["subtitle_language"][key]

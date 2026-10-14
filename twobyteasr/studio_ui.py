@@ -635,6 +635,9 @@ class SubtitleStudioPage(
         self._review_space_pending = False
         self._review_space_generation = 0
         self._review_space_playing = False
+        # Active or just-finished review replay (studio_review.ReviewPlayback).
+        self._review_playback = None
+        self._review_seeking = False
         self._review_edit_lock: dict[str, str] | None = None
         self._event_filter_installed = False
         self._focus_signal_connected = False
@@ -1122,18 +1125,13 @@ class SubtitleStudioPage(
                     window = self.window()
                     global_pos = event.globalPosition().toPoint()
                     if window.isMaximized():
-                        ratio = global_pos.x() / max(1, window.screen().geometry().width())
-                        normal = window.normalGeometry()
-                        window.showNormal()
-                        target = global_pos - QPoint(round(normal.width() * ratio), 18)
-                        # 2026-09-19：DPI 变更/拔显示器后 normalGeometry 可能宽于当前
-                        # 屏幕，按比例换算出的 x 可为负——窗口左移出屏表现为"轨头列
-                        # 消失、标尺贴死可见左缘"。把结果钳回当前屏幕可用区。
-                        screen = window.screen().availableGeometry()
-                        window.move(
-                            min(max(target.x(), screen.left()), screen.right() - normal.width()),
-                            min(max(target.y(), screen.top()), screen.bottom() - 40),
-                        )
+                        # 2026-10-15: clicking the toolbar of a maximized
+                        # window no longer restores it; a drag does (the
+                        # helper also clamps to the screen, see 2026-09-19).
+                        from .window_constraints import begin_title_drag
+                        begin_title_drag(window, global_pos, 18)
+                        event.accept()
+                        return True
                     handle = window.windowHandle()
                     if handle is not None and handle.startSystemMove():
                         event.accept()

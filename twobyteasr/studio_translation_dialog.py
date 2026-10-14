@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
                                QProgressBar, QPushButton, QRadioButton, QVBoxLayout)
 
-from .i18n import bind_text, tr
+from .i18n import bind_text, tr, user_text
 
 from .recognition_translation import load_cache, save_cache  # noqa: E402
 
@@ -66,32 +66,38 @@ class SubtitleTranslationDialog(QDialog):
         language = project_language(self.project)
         self.language_note = QLabel()
         self.language_note.setWordWrap(True)
+        self._language = language
         bind_text(self.language_note, ("原文：日语（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
                                        if language == "ja" else
                                        "原文：英语（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
                                        if language == "en" else
-                                       "这个工程没有记录为日语或英语素材；翻译仍按“日文 → 中文”处理，请确认原文是日语。"))
+                                       "原文：中文（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。"
+                                       if language == "zh" else
+                                       "这个工程没有记录识别语言，按日语原文处理；请确认原文是日语。"))
         layout.addWidget(self.language_note)
         self.scope_group = QButtonGroup(self)
         selected = list(getattr(page, "selected_cue_ids", lambda: [])() or [])
         self._selected = selected
-        scopes = (("pending", "只处理未翻译、失败和需要更新的字幕"), ("all", "全部字幕（人工译文保留）"),
-                  ("selected", f"选中的 {len(selected)} 条字幕"))
+        scopes = (("pending", tr("只处理未翻译、失败和需要更新的字幕")), ("all", tr("全部字幕（人工译文保留）")),
+                  ("selected", tr("选中的 {count} 条字幕", count=len(selected))))
         self.scope_buttons = {}
         for key, label in scopes:
-            button = QRadioButton(tr(label))
+            button = QRadioButton(label)
             self.scope_group.addButton(button)
             self.scope_buttons[key] = button
             layout.addWidget(button)
         self.scope_buttons["selected"].setEnabled(bool(selected))
         self.scope_buttons["pending"].setChecked(True)
         row = QHBoxLayout()
-        row.addWidget(QLabel(tr("中文字形")))
-        self.script = QComboBox()
-        self.script.addItem("简体中文", "zh-Hans")
-        self.script.addItem("繁體中文", "zh-Hant")
-        stored = ((self.project.generation_metadata.get("subtitle_output") or {}).get("translation_script")
-                  or (self.project.generation_metadata.get("translation_records") or {}).get("target") or "zh-Hans")
+        row.addWidget(QLabel(tr("译文语言")))
+        # Any target in another language than the source (2026-10-14); native names.
+        from .subtitle_translation import TARGET_LABELS, targets_for
+        self.script = user_text(QComboBox())
+        for target in targets_for(language):
+            self.script.addItem(TARGET_LABELS[target], target)
+        stored = ((self.project.generation_metadata.get("translation_records") or {}).get("target")
+                  or (self.project.generation_metadata.get("subtitle_output") or {}).get("translation_script")
+                  or "zh-Hans")
         self.script.setCurrentIndex(max(0, self.script.findData(stored)))
         row.addWidget(self.script, 1)
         layout.addLayout(row)
@@ -101,8 +107,7 @@ class SubtitleTranslationDialog(QDialog):
         layout.addWidget(self.context)
         self.glossary = QPlainTextEdit()
         self.glossary.setMaximumHeight(90)
-        bind_text(self.glossary, ('术语对照（可选，每行一条）：英文 = 中文，例如 Paimon = 派蒙' if language == "en" else
-                                  '术语对照（可选，每行一条）：日文 = 中文，例如 ゆっこ = 由子'), property='placeholderText')
+        self._glossary_hint()
         pairs = self.project.generation_metadata.get("translation_glossary") or []
         self.glossary.setPlainText("\n".join(f"{a} = {b}" for a, b in pairs if a and b))
         layout.addWidget(self.glossary)
@@ -135,10 +140,25 @@ class SubtitleTranslationDialog(QDialog):
         layout.addLayout(buttons)
         self._provider_ready = self._describe_service()
         self._refresh_counts()
+        self.script.currentIndexChanged.connect(self._target_changed)
 
     # -- state -------------------------------------------------------------
     def _target(self) -> str:
         return str(self.script.currentData() or "zh-Hans")
+
+    def _target_changed(self, _index: int) -> None:
+        self._glossary_hint()
+        self._refresh_counts()
+
+    def _glossary_hint(self) -> None:
+        chinese_target = self._target() in ("zh-Hans", "zh-Hant")
+        if chinese_target and self._language == "en":
+            hint = '术语对照（可选，每行一条）：英文 = 中文，例如 Paimon = 派蒙'
+        elif chinese_target:
+            hint = '术语对照（可选，每行一条）：日文 = 中文，例如 ゆっこ = 由子'
+        else:
+            hint = '术语对照（可选，每行一条）：原文 = 译文，例如 派蒙 = Paimon'
+        bind_text(self.glossary, hint, property='placeholderText')
 
     def _refresh_counts(self) -> None:
         from .subtitle_translation import status_counts

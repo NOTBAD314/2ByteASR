@@ -24,4 +24,4 @@
 | xAI Grok API | [教程](xai.zh-Hant.md) |
 | 進階：自定義相容服務、賬號登入類 CLI | [自定義](custom-text.zh-Hant.md)、[賬號登入類](cli-accounts.zh-Hant.md) |
 
-各平台能做什麼、哪些已實測，見使用指南的[選擇識別方式](../product-guide.zh-CN.md#选择识别方式)（簡體中文）。
+各平台能做什麼、哪些已實測，見[沒有 NVIDIA 顯示卡時能做什麼](../architecture/platform-support.md)。

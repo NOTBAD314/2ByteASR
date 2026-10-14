@@ -14,8 +14,10 @@ Usage:
       List literal Chinese strings passed to tr()/translate()/bind_text() in
       twobyteasr/*.py (audit modules excluded) that lack a translation.
   python scripts/i18n_locales.py add BATCH.json
-      Merge {"<zh>": {"en": "...", "ja": "..."}, ...} into both catalogs and
-      rewrite them in canonical form. Every entry needs both languages.
+      Merge {"<zh>": {"en": "...", "ja": "...", "ko": "..."}, ...} into the
+      catalogs and rewrite them in canonical form. Every entry needs en and ja;
+      ko (한국어, 2026-10-14) is optional: a string without it shows the
+      English at runtime and `check` counts it as waiting.
 """
 from __future__ import annotations
 
@@ -28,6 +30,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 LOCALE_DIR = ROOT / "twobyteasr" / "locales"
 LANGUAGES = ("en", "ja")
+# Optional catalogs: may lag behind en/ja, never carry unknown keys.
+OPTIONAL_LANGUAGES = ("ko",)
 
 
 def _pairs_without_duplicates(pairs):
@@ -84,6 +88,38 @@ def problems() -> list[str]:
             except ValueError as exc:
                 found.append(f"{language}: invalid format string for {source!r}: {exc}")
     found.extend(hant_problems(keys[0]))
+    for language in OPTIONAL_LANGUAGES:
+        found.extend(optional_problems(language, keys[0]))
+    return found
+
+
+def optional_problems(language: str, source_keys) -> list[str]:
+    """ko.json may lag behind en/ja (missing keys show English at runtime)."""
+    path = LOCALE_DIR / f"{language}.json"
+    if not path.is_file():
+        return [f"{language}.json missing"]
+    try:
+        table = load(language)
+    except (OSError, ValueError) as exc:
+        return [f"{language}.json: {exc}"]
+    found = []
+    if path.read_text(encoding="utf-8") != canonical(table):
+        found.append(f"{language}.json is not in canonical form (run add with an empty batch)")
+    extra = sorted(set(table) - set(source_keys))
+    if extra:
+        found.append(f"{language}: {len(extra)} keys not in en/ja, e.g. {extra[0]!r}")
+    for source, value in table.items():
+        if not isinstance(value, str) or not value.strip():
+            found.append(f"{language}: empty translation for {source!r}")
+            continue
+        try:
+            if fields(source) != fields(value):
+                found.append(f"{language}: placeholders differ for {source!r}")
+        except ValueError as exc:
+            found.append(f"{language}: invalid format string for {source!r}: {exc}")
+    lagging = len(set(source_keys) - set(table))
+    if lagging:
+        print(f"note: {lagging} UI strings not yet in {language}.json (English shown at runtime)")
     return found
 
 
@@ -140,11 +176,12 @@ def missing() -> dict[str, list[str]]:
 
 def add(batch_path: Path) -> int:
     batch = json.loads(batch_path.read_text(encoding="utf-8"), object_pairs_hook=_pairs_without_duplicates)
-    tables = {language: load(language) for language in LANGUAGES}
+    tables = {language: load(language) for language in LANGUAGES + OPTIONAL_LANGUAGES}
     for source, pair in batch.items():
-        if not isinstance(pair, dict) or set(pair) != set(LANGUAGES):
-            raise SystemExit(f"{source!r}: need exactly {LANGUAGES}")
-        for language in LANGUAGES:
+        if (not isinstance(pair, dict) or not set(LANGUAGES) <= set(pair)
+                or not set(pair) <= set(LANGUAGES + OPTIONAL_LANGUAGES)):
+            raise SystemExit(f"{source!r}: need {LANGUAGES}, optionally {OPTIONAL_LANGUAGES}")
+        for language in pair:
             value = pair[language]
             if not isinstance(value, str) or not value.strip():
                 raise SystemExit(f"{source!r}: empty {language}")

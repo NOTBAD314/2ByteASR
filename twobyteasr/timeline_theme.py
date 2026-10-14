@@ -3,6 +3,11 @@
 The WaveformTimeline paints everything with QPainter, so it cannot follow
 QSS theming. This module gives every painted surface an explicit token per
 theme (warm cream / plum + coral / lavender workspace / slate editorial).
+
+2026-10-14: the original five keep their hand-tuned palettes; every other
+theme gets one derived from its ui_theme tokens (derive_timeline_palette)
+plus a small per-theme tuning (playhead, waveform, speaker hues), so adding a
+theme never falls back to the light warm palette on a dark window.
 """
 
 from __future__ import annotations
@@ -299,7 +304,113 @@ GRAPE_TIMELINE = TimelinePalette(
     video_accent="#7f97c2", video_clip="#4a536b", video_clip_border="#7f97c2",
 )
 
-TIMELINE_PALETTES: dict[str, TimelinePalette] = {
+def _rgba(color: str, alpha: int) -> str:
+    value = QColor(color)
+    return f"rgba({value.red()},{value.green()},{value.blue()},{int(alpha)})"
+
+
+def _blend(first: str, second: str, ratio: float) -> str:
+    return mix(first, second, ratio).name()
+
+
+# Per-theme painting character for derived palettes: playhead (must stand
+# apart from the selection colour), waveform hue, main video lane and five
+# speaker fallbacks (a project's own speaker colours always win).
+TIMELINE_TUNING: dict[str, dict] = {
+    "frost": dict(playhead="#e5484d", waveform="#3d5f8f", video="#3a6fd0",
+                  speakers=("#6f8fb8", "#5f9a93", "#8f80b5", "#a8906a", "#a87a8c")),
+    "sand": dict(playhead="#2f63b0", waveform="#7a5c43", video="#3a6fb2",
+                 speakers=("#7f9a86", "#b08a62", "#7d8fb0", "#a37b86", "#8f9a64")),
+    "paper": dict(playhead="#c62828", waveform="#3a3a3a", video="#0a5bd3",
+                  speakers=("#6d8fb3", "#6c9a7e", "#a3876a", "#9479a6", "#a57272")),
+    "obsidian": dict(playhead="#ffd24f", waveform="#a9b4bf", video="#6fb3c9",
+                     speakers=("#d9b45a", "#6fb3c9", "#c98f6d", "#9ec27a", "#b49ad6")),
+    "midnight": dict(playhead="#ff8f6b", waveform="#6fb7e8", video="#7dd3fc",
+                     speakers=("#7aa8ff", "#5fd0b5", "#c6a0ff", "#f0b46b", "#ef8fb0")),
+    "verdant": dict(playhead="#ff9a6b", waveform="#7fc8b4", video="#7cc4ea",
+                    speakers=("#5fc7a8", "#8fb8e0", "#d8b26a", "#c99ad6", "#e08f86")),
+    "neon": dict(playhead="#4fd8ff", waveform="#a98cf0", video="#7f8cff",
+                 speakers=("#a57cff", "#4fd8ff", "#ff7fb0", "#3fdcae", "#ffc56b")),
+    "cinema": dict(playhead="#ff6b57", waveform="#d6a08a", video="#8fb4ea",
+                   speakers=("#e0875a", "#d9b66b", "#8fb4ea", "#b98ac9", "#7fcb9b")),
+    "graphite": dict(playhead="#8ab4f8", waveform="#a8a8ad", video="#9fb4d1",
+                     speakers=("#9fb4d1", "#a9c4a1", "#d1b38a", "#c49fb6", "#9fc7c4")),
+    "contrast": dict(playhead="#ffd23f", waveform="#3cd0ff", video="#3cd0ff", fill_mix=0.45,
+                     speakers=("#3cd0ff", "#52f29e", "#ffb02e", "#ff7ad9", "#b4a7ff")),
+}
+
+
+def _ink_on(color: str, theme) -> str:
+    from .ui_theme import contrast_ratio
+
+    dark_ink = theme.text if theme.is_light else theme.app_background
+    return "#ffffff" if contrast_ratio("#ffffff", color) >= contrast_ratio(dark_ink, color) else dark_ink
+
+
+def derive_timeline_palette(theme, tuning: dict | None = None) -> TimelinePalette:
+    """A full timeline palette from ui_theme tokens (light or dark rules)."""
+    tune = dict(TIMELINE_TUNING.get(theme.key, {}), **(tuning or {}))
+    accent = theme.accent_text
+    playhead = tune.get("playhead") or accent
+    waveform = tune.get("waveform") or theme.text_muted
+    video = tune.get("video") or theme.info
+    speakers = tuple(tune.get("speakers") or ("#638d85", "#9a7f62", "#687f9c", "#7e8363", "#906c76"))
+    if theme.is_light:
+        return TimelinePalette(
+            key=theme.key, dark=False,
+            background=theme.timeline, header=theme.panel,
+            ruler=_blend(theme.border, theme.border_strong, 0.35),
+            grid_major=_blend(theme.border, theme.border_strong, 0.55), grid_minor=theme.border,
+            track_background=theme.surface, track_alternate=_blend(theme.surface, theme.panel, 0.6),
+            track_header=theme.panel,
+            playhead=playhead, playhead_label_text=_ink_on(playhead, theme),
+            time_label=theme.text_secondary, clip_text=theme.text,
+            clip_selected_border=theme.accent_pressed, clip_selected_glow=_rgba(theme.accent_soft, 235),
+            clip_multi_border=_blend(theme.accent, theme.surface, 0.4),
+            clip_border_shade=0.0, clip_fill_mix=float(tune.get("fill_mix", 0.0)), clip_fill_lighten=135,
+            handle_dot_fill=theme.surface_elevated, handle_dot_border=theme.accent,
+            waveform=_rgba(waveform, 165), waveform_edge=waveform, waveform_center=theme.border_strong,
+            waveform_background=_blend(theme.panel, theme.border, 0.35),
+            waveform_header_text=theme.text_secondary, waveform_db_text=theme.text_muted,
+            header_letter=theme.text_muted, header_name=theme.text, header_icon=theme.text_muted,
+            header_hover=theme.selected,
+            translation_clip=_blend(theme.surface, theme.warning, 0.22),
+            translation_clip_border=_blend(theme.warning, theme.surface, 0.25),
+            translation_clip_text=theme.text_secondary, translation_dot=theme.warning,
+            selection_rect=theme.accent, selection_fill=_rgba(theme.accent, 38),
+            inline_editor_bg=theme.surface_elevated, inline_editor_border=theme.accent,
+            inline_editor_text=theme.text,
+            speaker_accents=speakers,
+            video_accent=video, video_clip=_blend(theme.surface, video, 0.28), video_clip_border=video,
+        )
+    return TimelinePalette(
+        key=theme.key, dark=True,
+        background=theme.timeline, header=theme.panel, ruler=theme.shell,
+        grid_major=_blend(theme.border, theme.border_strong, 0.5), grid_minor=theme.border,
+        track_background=_blend(theme.panel, theme.surface, 0.5),
+        track_alternate=_blend(theme.panel, theme.surface, 0.9), track_header=theme.panel,
+        playhead=playhead, playhead_label_text=_ink_on(playhead, theme),
+        time_label=_blend(theme.text_secondary, theme.text_muted, 0.4), clip_text=theme.text,
+        clip_selected_border=_blend(accent, theme.text, 0.55), clip_selected_glow=_rgba(accent, 60),
+        clip_multi_border=_blend(theme.text_muted, accent, 0.35),
+        clip_border_shade=0.22, clip_fill_mix=float(tune.get("fill_mix", 0.55)), clip_fill_lighten=102,
+        handle_dot_fill=theme.text, handle_dot_border=accent,
+        waveform=_rgba(waveform, 150), waveform_edge=waveform,
+        waveform_center=_blend(theme.timeline, waveform, 0.3), waveform_background=theme.input_surface,
+        waveform_header_text=theme.text_secondary, waveform_db_text=theme.text_muted,
+        header_letter=theme.text_muted, header_name=theme.text,
+        header_icon=_blend(theme.text_secondary, theme.text_muted, 0.4), header_hover=theme.surface_elevated,
+        translation_clip=theme.surface_elevated,
+        translation_clip_border=_blend(theme.border_strong, theme.text_muted, 0.3),
+        translation_clip_text=theme.text, translation_dot=accent,
+        selection_rect=accent, selection_fill=_rgba(accent, 32),
+        inline_editor_bg=theme.surface, inline_editor_border=theme.focus, inline_editor_text=theme.text,
+        speaker_accents=speakers,
+        video_accent=video, video_clip=_blend(theme.surface, video, 0.3), video_clip_border=video,
+    )
+
+
+_HAND_TUNED: dict[str, TimelinePalette] = {
     GRAPE_TIMELINE.key: GRAPE_TIMELINE,
     WARM_TIMELINE.key: WARM_TIMELINE,
     PLUM_TIMELINE.key: PLUM_TIMELINE,
@@ -308,9 +419,23 @@ TIMELINE_PALETTES: dict[str, TimelinePalette] = {
 }
 
 
+def _all_palettes() -> dict[str, TimelinePalette]:
+    from .ui_theme import THEMES
+
+    return {key: _HAND_TUNED.get(key) or derive_timeline_palette(theme) for key, theme in THEMES.items()}
+
+
+TIMELINE_PALETTES: dict[str, TimelinePalette] = _all_palettes()
+
+
 def timeline_palette(key: str | None = None) -> TimelinePalette:
     if key is None:
         from .theme_manager import theme_key
 
         key = theme_key()
-    return TIMELINE_PALETTES.get(str(key), WARM_TIMELINE)
+    palette = TIMELINE_PALETTES.get(str(key))
+    if palette is None:
+        from .ui_theme import theme_definition
+
+        palette = TIMELINE_PALETTES.get(theme_definition(key).key) or derive_timeline_palette(theme_definition(key))
+    return palette

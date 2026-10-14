@@ -14,7 +14,7 @@ from PySide6.QtGui import QUndoCommand
 from .bilingual_layout import BilingualSettings, COMPACT_GAP_EM, MODES, compact_defaults, settings_from_state
 from .i18n import bind_text, tr
 
-MODE_LABELS = {"original": "显示原文", "translation": "显示中文译文", "bilingual": "显示双语（原文 + 译文）"}
+MODE_LABELS = {"original": "显示原文", "translation": "显示译文", "bilingual": "显示双语（原文 + 译文）"}
 
 
 class SetBilingualDisplayCommand(QUndoCommand):
@@ -128,7 +128,7 @@ def build_menu(page, menu) -> None:
         menu.addAction(action)
         page.bilingual_mode_actions[mode] = action
     menu.addSeparator()
-    order = QAction(tr("双语时原文在上（默认中文在上）"), menu)
+    order = QAction(tr("双语时原文在上（默认译文在上）"), menu)
     order.setCheckable(True)
     order.triggered.connect(lambda checked: apply_display(
         page, order="original_first" if checked else "translation_first"))

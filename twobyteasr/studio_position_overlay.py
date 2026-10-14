@@ -224,7 +224,7 @@ class SubtitlePositionOverlay(QWidget):
         from .theme_manager import theme_key
 
         theme = theme_definition(theme_key())
-        accent = QColor(theme.accent)
+        accent = QColor(theme.media_accent)  # readable over the video in every theme
         accent_dark = QColor(theme.accent_hover)
         if self._inline_editing or (self._requires_measured_bounds and self._measured_bounds is None):
             return
@@ -255,7 +255,7 @@ class SubtitlePositionOverlay(QWidget):
             painter.setBrush(
                 QColor(theme.accent_soft)
                 if hovered
-                else QColor(theme.accent)
+                else accent
             )
             painter.drawRoundedRect(handle, 2.0, 2.0)
 

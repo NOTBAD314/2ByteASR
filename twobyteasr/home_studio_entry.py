@@ -15,21 +15,9 @@ from .i18n import bind_text
 
 def studio_paper_colors(theme):
     """The entrance shares the active theme, including its painted motif."""
-    if theme.key == "plum":
-        return "#554537", "#66523F", "#B89970", "#FFF0D1", "#E0C8A5"
-    if theme.key == "warm":
-        return "#F2E3C4", "#F8EBD2", "#BE9A60", "#46351F", "#78603F"
-    if theme.key == "grape":
-        # 2026-10-07: a quiet brand wash over the card surface instead of a
-        # saturated pink slab; ink and secondary text follow the theme.
-        from .ui_theme import blend_hex
-        return (blend_hex(theme.surface, theme.accent, 0.13), blend_hex(theme.surface, theme.accent, 0.2),
-                theme.border_strong, theme.text, theme.text_secondary)
-    if theme.key == "lavender":
-        return "#494361", "#5A5274", "#A79BC4", "#FAF3FF", "#D9CEE9"
-    if theme.key == "slate":
-        return "#3B5558", "#49676A", "#8CB7B5", "#F0FCF7", "#C5DEDA"
-    return theme.surface_elevated, theme.selected, theme.border_strong, theme.text, theme.text_secondary
+    # 2026-10-14: each theme states its card colors in ui_theme.THEME_TRAITS
+    # (studio_paper); themes that do not get a quiet brand wash over the card.
+    return theme.studio_paper
 
 
 def latest_studio_entry(records):

@@ -23,6 +23,14 @@ REVIEW_METHODS = (
     "_mark_review_resolved",
     "_pause_review_context",
     "_play_review_context",
+    # 2026-10-15 review replay stops on media time and holds the selection
+    "_arm_review_fallback",
+    "_review_fallback_due",
+    "_review_playback_tick",
+    "_review_stop_due",
+    "_park_review_playback",
+    "_release_review_playback",
+    "_review_held_cue_id",
     "_refresh_review_risks",
     # 2026-09-18 分片 QC 扫描（进入路径无阻塞）
     "_QC_SCAN_CHUNK",

@@ -76,8 +76,10 @@ def _build_review_summary(items):
         ]
         if not matching:
             continue
+        # A split batch is numbered "2.1.2"; count each original batch once
+        # (int() of it failed whole tasks at the very end, 2026-10-14).
         count = len({
-            int(item.get("batch_index") or index + 1)
+            str(item.get("batch_index") or index + 1).split(".")[0]
             for index, item in enumerate(matching)
         })
         total = max(

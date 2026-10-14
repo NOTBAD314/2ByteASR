@@ -209,6 +209,11 @@ class ProjectStateRuntime:
     def cue_by_id(self) -> dict[str, "StudioCue"]:
         return self._cue_by_id
 
+    def view_cue(self, cue_id: str):
+        """The timeline-domain caption for ``cue_id`` (``cue_by_id`` resolves
+        derived ids back to source captions, whose times are source time)."""
+        return getattr(self, "_view_by_id", {}).get(str(cue_id))
+
     def cues_at(self, milliseconds: int) -> tuple["StudioCue", ...]:
         value = int(milliseconds)
         index = bisect.bisect_right(self._cue_starts, value) - 1

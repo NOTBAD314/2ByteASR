@@ -12,7 +12,7 @@ from ..typography import UI_FONT_STACK
 
 def build_home_qss(t):
     from ..ui_theme import blend_hex
-    light = t.key == "warm"
+    light = t.is_light
     rest, edge_amount, chip_amount = (0.07, 0.36, 0.2) if light else (0.08, 0.3, 0.22)
     zones = t.zone_colors
     tint = {name: blend_hex(t.surface, color, rest) for name, color in zones.items()}

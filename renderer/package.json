@@ -1,6 +1,6 @@
 {
   "name": "2byteasr-advanced-renderer",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "scripts": {
     "preflight": "node populate-fonts.mjs",

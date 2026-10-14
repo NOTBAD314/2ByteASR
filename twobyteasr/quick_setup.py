@@ -559,7 +559,8 @@ class QuickSetupDialog(SpringDialog):
         words.addWidget(subtitle)
         header.addLayout(words, 1)
         self.lang_combo = FramelessPopupCombo()
-        for label, code in (('简体中文', 'zh'), ('繁體中文', 'zh-Hant'), ('English', 'en'), ('日本語', 'ja')):
+        for label, code in (('简体中文', 'zh'), ('繁體中文', 'zh-Hant'), ('English', 'en'), ('日本語', 'ja'),
+                            ('한국어', 'ko')):
             self.lang_combo.addItem(label, code)
         self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(current_language())))
         self.lang_combo.currentIndexChanged.connect(lambda index: save_language(self.lang_combo.itemData(index) or 'zh'))

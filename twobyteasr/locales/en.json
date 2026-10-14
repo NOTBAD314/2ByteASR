@@ -5886,5 +5886,19 @@
   "MOSS 主稿 + Qwen3 对齐字词时间、日语 CTC 校正句首 + Qwen3-ASR 1.7B 复核": "MOSS draft + Qwen3 aligner word times with Japanese CTC line-start correction + Qwen3-ASR 1.7B review",
   "MOSS 主稿 + Qwen3-ForcedAligner 0.6B 单词时间 + Qwen3-ASR 1.7B 复核": "MOSS draft + Qwen3-ForcedAligner 0.6B word times + Qwen3-ASR 1.7B review",
   "已安装 · 已停用": "Installed · turned off",
-  "安装后默认用于对应识别步骤；点「取消使用」停用，点「使用」恢复。不会替换现有后端。": "Used by its recognition step once installed. Click “Stop using” to turn it off and “Use” to turn it back on. It does not replace existing backends."
+  "安装后默认用于对应识别步骤；点「取消使用」停用，点「使用」恢复。不会替换现有后端。": "Used by its recognition step once installed. Click “Stop using” to turn it off and “Use” to turn it back on. It does not replace existing backends.",
+  "点选主题即可预览整个界面，保存后保留。": "Click a theme to preview the whole app; Save keeps it.",
+  "正在预览「{name}」：保存后保留，取消则恢复「{original}」。": "Previewing “{name}”: Save keeps it, Cancel returns to “{original}”.",
+  "只要译文": "Translation only",
+  "原文 + 译文双语": "Original + translation",
+  "译文语言": "Translation language",
+  "译文/双语：识别完成后用已配置的 AI 文字服务把字幕翻成所选语言（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。": "Translation/bilingual: after recognition, the configured AI text service translates the subtitles into the chosen language (only subtitle text is sent, never audio); the original, speakers and timing stay unchanged.",
+  "完成识别后翻译成{value0}，发送字幕文字到已配置的 AI 文字服务（可能产生费用）。译文语言与识别语言相同时不翻译。": "After recognition the subtitles are translated into {value0}; subtitle text is sent to the configured AI text service (may cost money). Nothing is translated when the translation language is the recognized language.",
+  "原文：中文（识别时判定）。译文与原文分开保存，原文、说话人和时间不变。": "Original: Chinese (detected during recognition). Translations are stored separately; the original, speakers and timing do not change.",
+  "这个工程没有记录识别语言，按日语原文处理；请确认原文是日语。": "This project has no recorded recognition language, so the original is treated as Japanese; please make sure it is Japanese.",
+  "术语对照（可选，每行一条）：原文 = 译文，例如 派蒙 = Paimon": "Term pairs (optional, one per line): original = translation, e.g. 派蒙 = Paimon",
+  "显示译文": "Show translation",
+  "双语时原文在上（默认译文在上）": "Original on top in bilingual mode (default: translation on top)",
+  "双语译文在上": "Translation on top in bilingual",
+  "选中的 {count} 条字幕": "{count} selected subtitles"
 }

@@ -270,15 +270,14 @@ def start(window, output):
                     self.result['dialog_capture_states'][-1]['after_printwindow']=widget_paint_state(dialog)
                     self.result["screenshots"].append(str(path))
                     if theme:
-                        combo = dialog.theme_combo
-                        target = combo.findData(theme)
+                        # 2026-10-14: the theme combo became a card gallery.
+                        gallery = dialog.theme_gallery
+                        target = gallery.findData(theme)
                         self.check("requested theme exists in settings", target >= 0, theme)
-                        QTest.mouseClick(combo, Qt.LeftButton)
-                        QTest.keyClick(combo, Qt.Key_Home)
-                        for _ in range(target):
-                            QTest.keyClick(combo, Qt.Key_Down)
-                        QTest.keyClick(combo, Qt.Key_Return)
-                        self.check("theme selected through actual combo keyboard", combo.currentData() == theme)
+                        card = gallery.card(theme)
+                        card.setFocus()
+                        QTest.keyClick(card, Qt.Key_Space)
+                        self.check("theme selected through actual card keyboard", gallery.currentData() == theme)
                         self.click(dialog.buttons.button(QDialogButtonBox.StandardButton.Save))
                     else:
                         close = next((w for w in dialog.findChildren(QPushButton) if w.isVisible()

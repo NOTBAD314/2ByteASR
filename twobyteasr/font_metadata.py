@@ -89,6 +89,61 @@ def read_faces(filename: str) -> tuple[FontMetadata, ...]:
     return tuple(faces)
 
 
+@lru_cache(maxsize=512)
+def has_character(filename: str, index: int, character: str) -> bool:
+    """Whether a face maps ``character`` in its Unicode cmap (formats 4 and 12).
+
+    Reads only the table directory and ``cmap``; any unreadable font counts as
+    not having it (2026-10-14: Korean translation lines need Hangul).
+    """
+    code = ord(character)
+    try:
+        with open(filename, 'rb') as stream:
+            def read(offset, length):
+                stream.seek(offset)
+                return stream.read(length)
+            u16 = lambda buffer, at: struct.unpack_from('>H', buffer, at)[0]
+            u32 = lambda buffer, at: struct.unpack_from('>I', buffer, at)[0]
+            offset = u32(read(12 + 4 * index, 4), 0) if read(0, 4) == b'ttcf' else 0
+            table_count = u16(read(offset + 4, 2), 0)
+            directory = read(offset + 12, table_count * 16)
+            location = next(((u32(directory, i * 16 + 8), u32(directory, i * 16 + 12))
+                             for i in range(table_count) if directory[i * 16:i * 16 + 4] == b'cmap'), None)
+            if location is None:
+                return False
+            data = read(*location)
+            subtables = {struct.unpack_from('>HH', data, 4 + i * 8): u32(data, 8 + i * 8)
+                         for i in range(u16(data, 2))}
+            for key in ((3, 10), (0, 4), (0, 6), (3, 1), (0, 3), (0, 2), (0, 1), (0, 0)):
+                if key not in subtables:
+                    continue
+                at = subtables[key]
+                kind = u16(data, at)
+                if kind == 12:
+                    return any(start <= code <= end for start, end, _glyph in
+                               (struct.unpack_from('>III', data, at + 16 + g * 12) for g in range(u32(data, at + 12))))
+                if kind == 4:
+                    if code > 0xFFFF:
+                        return False
+                    segments = u16(data, at + 6) // 2
+                    ends, starts = at + 14, at + 16 + segments * 2
+                    deltas, ranges = starts + segments * 2, starts + segments * 4
+                    for s in range(segments):
+                        if code > u16(data, ends + 2 * s):
+                            continue
+                        start = u16(data, starts + 2 * s)
+                        if code < start:
+                            return False
+                        range_offset = u16(data, ranges + 2 * s)
+                        if range_offset == 0:
+                            return (code + struct.unpack_from('>h', data, deltas + 2 * s)[0]) & 0xFFFF != 0
+                        return u16(data, ranges + 2 * s + range_offset + 2 * (code - start)) != 0
+                    return False
+            return False
+    except (OSError, struct.error, IndexError):
+        return False
+
+
 def local_font_paths():
     """Read app, system and per-user font locations; never install fonts."""
     import os

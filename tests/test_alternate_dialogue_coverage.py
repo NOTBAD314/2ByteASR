@@ -4,7 +4,7 @@ from types import SimpleNamespace
 BASE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(BASE))
 text=(BASE/'moss_firered_pipeline.py').read_text('utf8')
-names={'apply_alternate_dialogue_coverage','select_host_speakers','_dialogue_coverage_mode','_trustworthy_dialogue_text','_time_overlap','alternate_dialogue_coverage_signature'}
+names={'apply_alternate_dialogue_coverage','_note_unchecked_other_speakers','select_host_speakers','_dialogue_coverage_mode','_trustworthy_dialogue_text','_time_overlap','alternate_dialogue_coverage_signature'}
 nodes=[n for n in ast.parse(text).body if isinstance(n,ast.FunctionDef) and n.name in names]
 constants={'_NON_SPEECH_ONLY_RE','MOSS_SPEAKER_PAD_SECONDS','MOSS_AUTO_MAX_HOST_SPEAKERS','MOSS_HOST_MIN_SPAN_RATIO','MOSS_HOST_MIN_ACTIVE_BIN_RATIO'}
 constant_nodes=[n for n in ast.parse(text).body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in constants for t in n.targets)]
@@ -24,7 +24,8 @@ class Guards(unittest.TestCase):
         l=Legacy();context=SimpleNamespace(dialogue_coverage_mode=mode,expected_speakers=1,speaker_recovery={'candidates':['D01','D02']})
         rows=[dict(start=0.,end=2.,text='持续对白甲',speaker='D01',confidence=None),dict(start=3.,end=5.,text='持续对白乙',speaker='D01',confidence=None),dict(start=6.,end=7.,text='短句角色',speaker='D02',confidence=None)]
         segments=[SimpleNamespace(segment_id=i+1,start=r['start'],end=r['end'],text=r['text'],speaker=r['speaker'],words=[{'text':r['text'],'start':r['start'],'end':r['end']}],caption_arbitration={'native_model_probability':None,'speaker_evidence':{'assignment':'DiariZen'}},primary_source='vibevoice_1_5b-primary',final_timing_owner='FireRed acoustic word alignment',timing_locked=False,confidence=0.) for i,r in enumerate(rows)]
-        return segments,rows,[],[{'start':0,'end':7}],l,context
+        # One independent FireRed word: a second recognizer ran (2026-10-15).
+        return segments,rows,[{'start':0,'end':2,'text':'持续对白甲'}],[{'start':0,'end':7}],l,context
     def run_filter(self,fixture,backend='vibevoice_1_5b'):
         s,r,t,v,l,c=fixture;return apply(s,r,t,v,10.,l,backend,c)
     def test_all_dialogue_objects_and_all_fields_unchanged(self):
@@ -39,6 +40,16 @@ class Guards(unittest.TestCase):
     def test_nonhost_independent_support_retained(self):
         f=self.fixture();f[2].append({'start':6,'end':7,'text':'短句角色'});out=self.run_filter(f)
         self.assertEqual(len(out),3);self.assertEqual(f[4].events[-1]['decisions'][-1]['reason'],'independent_firered_support')
+    def test_host_priority_without_second_recognizer_keeps_and_lists_other_speakers(self):
+        # 2026-10-15 MOSS Pro cloud-only: no FireRed, every other speaker was dropped.
+        for tokens in ([], [{'start':6,'end':7,'text':'别的','source':'qwen-forced-aligner'}]):
+            f=self.fixture();f[2][:]=tokens;out=self.run_filter(f)
+            self.assertEqual([s.text for s in out],['持续对白甲','持续对白乙','短句角色'])
+            receipt=f[4].events[-1]
+            self.assertFalse(receipt['second_recognizer']);self.assertEqual(receipt['kept_unchecked'],1)
+            self.assertEqual(receipt['decisions'][-1]['reason'],'kept_without_second_recognizer')
+            self.assertIn('其他说话人未核对',[item[0][1] for item in f[4].review])
+        f=self.fixture('host_only');f[2][:]=[];self.assertEqual(len(self.run_filter(f)),2)
     def test_host_only_does_not_keep_supported_nonhost(self):
         f=self.fixture('host_only');f[2].append({'start':6,'end':7,'text':'短句角色'});self.assertEqual(len(self.run_filter(f)),2)
     def test_same_trustworthy_rule_drops_vad_empty_or_known_low_confidence(self):

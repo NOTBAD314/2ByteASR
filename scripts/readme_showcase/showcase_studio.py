@@ -18,9 +18,6 @@ import time
 import traceback
 
 REPO = Path(__file__).resolve().parents[2]
-# Names typed into the speaker manager per UI language (2026-10-14: neutral
-# host/teammate names to match the test-card sample).
-SPEAKER_NAMES = {'zh': ('主播', '队友'), 'en': ('Host', 'Teammate'), 'ja': ('配信者', '相方')}
 BASE = Path(os.environ.get('README_SHOWCASE_DIR') or Path(__file__).resolve().parents[2] / 'tmp' / 'readme-showcase').resolve()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -393,8 +390,7 @@ def inner(out: Path):
             if tabs:
                 tabs[0].setCurrentIndex(min(1, tabs[0].count() - 1))
                 yield 0.6
-            ordered = [s.id for s in sorted(p.project.speakers, key=lambda s: s.id)]
-            for speaker_id, name in zip(ordered, SPEAKER_NAMES.get(spec['lang'], SPEAKER_NAMES['zh'])):
+            for speaker_id, name in (('S01', '河边探险家'), ('S02', '白兔')):
                 mark(f'refresh {speaker_id}')
                 dialog.refresh(speaker_id)
                 yield 0.4

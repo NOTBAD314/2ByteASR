@@ -1,9 +1,7 @@
-"""Build the self-made README demo clip: two TTS voices over a quiet test card.
+"""Build the self-made README demo clip: flat side-scroller art + two TTS voices.
 
-Everything here is generated locally (shapes drawn with PIL, OFL fonts,
-Windows OneCore voices). Output: media/test-card.mp4 and media/timeline.json.
-`build_demo_media.py forest` renders the earlier side-scroller art instead
-(media/forest-run.mp4, used by the 2026-10-09 screenshots).
+Everything here is generated locally (shapes drawn with PIL, OFL pixel font,
+Windows OneCore voices). Output: media/forest-run.mp4 and media/timeline.json.
 """
 from __future__ import annotations
 
@@ -55,7 +53,7 @@ def tone(freq: float, dur: float, decay: float = 18.0, gain: float = 0.05) -> np
     return (np.sin(2 * math.pi * freq * t) * np.exp(-decay * t) * gain).astype(np.float32)
 
 
-def build_audio(sfx=True):
+def build_audio():
     dialogue = json.loads((HERE / 'dialogue.json').read_text('utf8'))
     clips = sorted((MEDIA / 'tts').glob('line*.wav'))
     cursor = LEAD
@@ -74,11 +72,11 @@ def build_audio(sfx=True):
         mix[i:i + len(signal)] += signal * 0.92
     events = plan_events(lines, total)
     # Small, quiet game sounds so the clip feels alive; kept far below speech.
-    for at in events['coins'] if sfx else ():
+    for at in events['coins']:
         i = int(at * SR)
         blip = np.concatenate([tone(988, 0.07, 30, 0.035), tone(1319, 0.16, 22, 0.035)])
         mix[i:i + len(blip)] += blip
-    for at in events['hits'] if sfx else ():
+    for at in events['hits']:
         i = int(at * SR)
         thump = tone(140, 0.18, 26, 0.06) + tone(90, 0.18, 20, 0.04)
         mix[i:i + len(thump)] += thump
@@ -353,105 +351,11 @@ def render(lines, events, total):
     return proc.returncode
 
 
-# ------------------------------------------------------------ test card
-# A quiet test-card picture for README screenshots (2026-10-14): the software
-# is the subject, so the video area shows a restrained placeholder instead of
-# drawn game art. Muted bars, a timecode and a level meter that follows the
-# real speech track; the bottom third stays dark for the subtitles.
-CARD_BG = (21, 18, 26)
-CARD_PANEL = (30, 26, 36)
-CARD_BARS = [(188, 186, 192), (190, 178, 98), (96, 170, 178), (104, 164, 98),
-             (164, 98, 160), (168, 90, 92), (92, 98, 168)]
-CARD_TEXT = (226, 222, 230)
-CARD_DIM = (150, 144, 158)
-FONT_MEDIUM = REPO / 'assets/fonts/SourceHanSansSC-Medium.otf'
-FONT_MONO = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Fonts' / 'consola.ttf'
-
-
-def testcard_base():
-    img = Image.new('RGBA', (W, H), CARD_BG + (255,))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((360, 120, 1560, 740), radius=22, fill=CARD_PANEL)
-    left, top, width = 400, 160, 1120
-    step = width // len(CARD_BARS)
-    for k, color in enumerate(CARD_BARS):
-        d.rectangle((left + k * step, top, left + (k + 1) * step - 1, top + 340), fill=color)
-    reverse = [CARD_BARS[6], CARD_PANEL, CARD_BARS[4], CARD_PANEL, CARD_BARS[2], CARD_PANEL, CARD_BARS[0]]
-    for k, color in enumerate(reverse):
-        d.rectangle((left + k * step, top + 340, left + (k + 1) * step - 1, top + 380), fill=color)
-    ramp = 8
-    for k in range(ramp):
-        level = int(26 + (200 - 26) * k / (ramp - 1))
-        x0 = left + k * width // ramp
-        d.rectangle((x0, top + 380, left + (k + 1) * width // ramp - 1, top + 470), fill=(level, level - 2, level + 4))
-    overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-    o = ImageDraw.Draw(overlay)
-    cx, cy = 960, 395
-    o.ellipse((cx - 250, cy - 250, cx + 250, cy + 250), outline=(255, 255, 255, 80), width=3)
-    o.line((cx, top, cx, top + 470), fill=(255, 255, 255, 46), width=2)
-    o.line((left, cy, left + width, cy), fill=(255, 255, 255, 46), width=2)
-    o.rounded_rectangle((cx - 250, cy - 58, cx + 250, cy + 58), radius=14, fill=(20, 17, 24, 236))
-    img.alpha_composite(overlay)
-    big = ImageFont.truetype(str(FONT_MEDIUM), 40)
-    small = ImageFont.truetype(str(FONT_MEDIUM), 22)
-    d = ImageDraw.Draw(img)
-    d.text((cx, cy - 14), 'SAMPLE MEDIA', font=big, fill=CARD_TEXT, anchor='mm')
-    d.text((cx, cy + 30), '2ByteASR test card', font=small, fill=CARD_DIM, anchor='mm')
-    d.text((left, 676), 'CH 1-2  48 kHz', font=small, fill=CARD_DIM, anchor='ls')
-    return img
-
-
-def speech_levels(total):
-    with wave.open(str(MEDIA / 'forest-run.wav'), 'rb') as handle:
-        data = np.frombuffer(handle.readframes(handle.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
-    mono = data[0::2]
-    hop = SR // FPS
-    levels = []
-    for f in range(int(total * FPS)):
-        chunk = mono[f * hop:(f + 1) * hop]
-        rms = float(np.sqrt(np.mean(chunk ** 2))) if len(chunk) else 0.0
-        levels.append(min(1.0, rms * 6.0))
-    return levels
-
-
-def render_testcard(total):
-    frames = int(total * FPS)
-    base = testcard_base()
-    mono = ImageFont.truetype(str(FONT_MONO), 30) if FONT_MONO.is_file() else ImageFont.truetype(str(FONT_MEDIUM), 30)
-    levels = speech_levels(total)
-    shown = 0.0
-    ffmpeg = [
-        'ffmpeg', '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}', '-r', str(FPS), '-i', '-',
-        '-i', str(MEDIA / 'forest-run.wav'), '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '160k', '-shortest', '-movflags', '+faststart', str(MEDIA / 'test-card.mp4')]
-    proc = subprocess.Popen(ffmpeg, stdin=subprocess.PIPE)
-    for f in range(frames):
-        frame = base.copy()
-        d = ImageDraw.Draw(frame)
-        seconds, sub = divmod(f, FPS)
-        d.text((960, 676), f'00:00:{seconds:02d}:{sub:02d}', font=mono, fill=CARD_DIM, anchor='ms')
-        # Meter eases down so it reads as a level, not a flicker.
-        shown = max(levels[f], shown * 0.82)
-        for row, y in enumerate((656, 670)):
-            d.rounded_rectangle((1280, y, 1520, y + 8), radius=4, fill=(48, 42, 56))
-            if shown > 0.02:
-                d.rounded_rectangle((1280, y, 1280 + int(240 * shown), y + 8), radius=4, fill=(132, 172, 124))
-        proc.stdin.write(frame.convert('RGB').tobytes())
-        if f % 150 == 0:
-            print(f'frame {f}/{frames}', flush=True)
-    proc.stdin.close()
-    proc.wait()
-    return proc.returncode
-
-
 def main():
-    visual = sys.argv[1] if len(sys.argv) > 1 else 'testcard'
-    if visual not in ('testcard', 'forest'):
-        raise SystemExit('usage: build_demo_media.py [testcard|forest]')
-    lines, total, events = build_audio(sfx=visual == 'forest')
+    lines, total, events = build_audio()
     (MEDIA / 'timeline.json').write_text(json.dumps(dict(lines=lines, events=events), ensure_ascii=False, indent=2), 'utf8')
     print(json.dumps(lines, ensure_ascii=False, indent=1))
-    code = render(lines, events, total) if visual == 'forest' else render_testcard(total)
+    code = render(lines, events, total)
     print('ffmpeg exit', code)
     return code
 

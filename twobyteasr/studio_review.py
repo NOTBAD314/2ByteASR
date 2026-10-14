@@ -131,6 +131,46 @@ class ReviewSession:
         return next((cue_id for cue_id in ordered if cue_id not in self.resolved_ids), "")
 
 
+# Review replay (2026-10-15): a short lead-in, the caption itself and a tail
+# that never reaches the next caption. Before, a wall-clock timer stopped
+# playback 300 ms after the end at 1x only, so close captions (and any 2x
+# replay) ran into the next one and the playhead-follow selection moved there.
+REVIEW_PREROLL_MS = 250
+REVIEW_TAIL_MS = 300
+REVIEW_NEXT_GUARD_MS = 20
+
+
+@dataclass(frozen=True)
+class ReviewPlayback:
+    """The caption a review replay belongs to and where it must stop.
+
+    While one exists the playhead-follow selection is held on ``cue_id``;
+    ``finished`` keeps that hold after the stop until the user moves on.
+    """
+
+    cue_id: str
+    start_ms: int
+    stop_ms: int
+    generation: int
+    finished: bool = False
+
+
+def review_playback_window(cue, following: Iterable[Any] = ()) -> tuple[int, int]:
+    """``(start_ms, stop_ms)`` in the caption's own (timeline) time.
+
+    ``following`` are captions near the end; one that starts at or after this
+    caption's end caps the tail just before it. Captions that start inside
+    this one (an overlapping speaker) do not cut it short.
+    """
+    start_ms, end_ms = int(cue.start_ms), int(cue.end_ms)
+    stop = end_ms + REVIEW_TAIL_MS
+    for other in following:
+        other_start = int(other.start_ms)
+        if str(other.id) != str(cue.id) and other_start >= end_ms:
+            stop = min(stop, other_start - REVIEW_NEXT_GUARD_MS)
+    return max(0, start_ms - REVIEW_PREROLL_MS), max(start_ms + 1, stop)
+
+
 class ReviewRiskType(str, Enum):
     """Dimensions of disagreement shown by the Review queue."""
 

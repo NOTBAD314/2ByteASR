@@ -141,7 +141,7 @@ def start(window, output):
                     dialog = next(w for w in app.allWidgets() if w.isVisible() and hasattr(w, 'theme_combo'))
                     dialog.navigation.setCurrentRow(2)
                     self.check('appearance selector agrees with palette', dialog.theme_combo.currentData() == 'grape')
-                    self.check('appearance name says deep grape', '深葡萄紫' in dialog.theme_combo.currentText())
+                    self.check('appearance name says grape nocturne', '葡萄夜幕' in dialog.theme_combo.currentText())
                     dialog.grab().save(str(output/'appearance.png'))
                     QDialog.done(dialog, QDialog.DialogCode.Rejected)
                 except Exception:

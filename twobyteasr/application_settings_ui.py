@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialogButtonBox, QFrame, QHBoxLayout,
     QLineEdit, QListWidget, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 from .main_ui_dialogs import SpringDialog
 from .studio_theme import StudioComboBox, apply_secondary_surface_theme
-from .theme_manager import available_themes, theme_key
+from .theme_manager import theme_key
 from .ui_theme import theme_display_label
 from .design.presentation import button_role, field_width
 from .build_identity import about_build_text, load_build_identity
@@ -162,10 +162,20 @@ class ApplicationSettingsDialog(SpringDialog):
 
         appearance=page('外观','选择适合你的工作环境的主题与动态反馈。')
         appearance_rows=section(appearance)
-        self.theme_combo=field_width(StudioComboBox(),'preferred')
-        for theme in available_themes():self.theme_combo.addItem(theme_display_label(theme),theme.key)
-        self.theme_combo.setCurrentIndex(max(0,self.theme_combo.findData(theme_key())))
-        row(appearance_rows,'界面主题',self.theme_combo)
+        # 2026-10-14: grouped theme cards with a painted miniature each; a
+        # click previews the whole app at once, Cancel restores the theme the
+        # dialog opened with (done()), Save keeps it.
+        from .theme_gallery import ThemeGallery
+        self._theme_on_open=theme_key()
+        theme_title=bind_text(QLabel(),'界面主题');theme_title.setObjectName('settingsRowTitle');appearance_rows.addWidget(theme_title)
+        self.theme_gallery=ThemeGallery(self._theme_on_open)
+        self.theme_gallery.themeChosen.connect(self._preview_theme)
+        self.theme_gallery.languageRefreshed.connect(self._update_theme_hint)
+        appearance_rows.addWidget(self.theme_gallery)
+        self.theme_preview_hint=QLabel();self.theme_preview_hint.setObjectName('settingsDescription')
+        self.theme_preview_hint.setWordWrap(True);self.theme_preview_hint.setProperty('i18nUserText',True)
+        appearance_rows.addWidget(self.theme_preview_hint)
+        self._update_theme_hint()
         self.reduce_motion_box=toggle(preferences.get('reduce_motion',False));bind_text(self.reduce_motion_box, '减少界面动画', property='accessibleName')
         row(appearance_rows,'减少动态效果',self.reduce_motion_box,'保留状态反馈，关闭进入与展开动画')
         appearance.addStretch()
@@ -563,6 +573,36 @@ class ApplicationSettingsDialog(SpringDialog):
             QMessageBox.information(self, tr('工程文件关联'), tr('已注册工程打开入口：\n{path}', path=str(result)))
         except Exception as exc:
             QMessageBox.warning(self, tr('工程文件关联'), str(exc))
+
+    @property
+    def theme_combo(self):
+        """Pre-2026-10-14 name of the theme selector (settings save and audits)."""
+        return self.theme_gallery
+
+    def _preview_theme(self, key):
+        from PySide6.QtWidgets import QApplication
+        from .theme_manager import apply_theme
+        apply_theme(str(key), QApplication.instance())
+        self._update_theme_hint()
+
+    def _update_theme_hint(self):
+        from .ui_theme import theme_definition
+        chosen = self.theme_gallery.currentData() or self._theme_on_open
+        if chosen == self._theme_on_open:
+            text = tr('点选主题即可预览整个界面，保存后保留。')
+        else:
+            text = tr('正在预览「{name}」：保存后保留，取消则恢复「{original}」。',
+                      name=theme_display_label(theme_definition(chosen)),
+                      original=theme_display_label(theme_definition(self._theme_on_open)))
+        self.theme_preview_hint.setText(str(text))
+
+    def done(self, result):
+        # A previewed theme that was not saved goes back to the opening one.
+        from PySide6.QtWidgets import QApplication, QDialog
+        if result != QDialog.DialogCode.Accepted and theme_key() != getattr(self, '_theme_on_open', theme_key()):
+            from .theme_manager import apply_theme
+            apply_theme(self._theme_on_open, QApplication.instance())
+        super().done(result)
 
     def reject(self):
         if hasattr(self, '_saved_values') and self._values() != self._saved_values:

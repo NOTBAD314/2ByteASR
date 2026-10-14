@@ -38,10 +38,10 @@ def build_control_qss(theme: ThemeDefinition) -> str:
     accent = theme.accent
     accent_soft = theme.accent_soft
     ring = theme.focus
-    border_hover = theme.border_strong if theme.key == 'warm' else theme.text_muted
+    border_hover = theme.control_border_hover
     assets = Path(__file__).resolve().parents[2] / 'assets' / 'controls'
-    foreground = 'dark' if theme.key == 'warm' else 'light'
-    on_accent = 'light' if theme.key in {'warm', 'grape'} else 'dark'
+    foreground = 'dark' if theme.is_light else 'light'
+    on_accent = 'light' if theme.on_accent_is_light else 'dark'
     arrow = (assets / f'chevron-{foreground}.svg').as_posix()
     submenu_arrow = (assets / f'right-{foreground}.svg').as_posix()
     check = (assets / f'check-{on_accent}.svg').as_posix()

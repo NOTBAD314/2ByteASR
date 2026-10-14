@@ -136,7 +136,7 @@ def open_application_settings(
     )
     root_edit, auto_save, interval = dialog.root_edit, dialog.auto_save, dialog.interval
     cover, restore_layout_box = dialog.cover, dialog.restore_layout_box
-    recovery_policy, theme_combo = dialog.recovery_policy, dialog.theme_combo
+    recovery_policy, theme_combo = dialog.recovery_policy, dialog.theme_gallery
     reduce_motion_box = dialog.reduce_motion_box
     if isinstance(initial_section, str):
         from .i18n import tr
@@ -144,6 +144,9 @@ def open_application_settings(
                    or dialog.navigation.findItems(str(tr(initial_section)), Qt.MatchFlag.MatchExactly))
         if matches: dialog.navigation.setCurrentItem(matches[0])
     if dialog.exec() != QDialog.DialogCode.Accepted:
+        # 2026-10-14: each opening used to stay alive (~770 widgets) and every
+        # later theme switch restyled all of them; the theme preview made that visible.
+        dialog.deleteLater()
         return False
     dialog.storage_panel.save_policy()
     # Local MCP access (additive "mcp" settings key; off by default).
@@ -189,6 +192,7 @@ def open_application_settings(
         if callable(refresh_library):
             refresh_library()
     apply_theme(str(theme_combo.currentData() or DEFAULT_THEME_KEY), QApplication.instance())
+    dialog.deleteLater()
     return True
 
 

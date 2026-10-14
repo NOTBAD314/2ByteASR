@@ -123,6 +123,7 @@ class StudioProjectController:
         bind_text(page.save_state, translate('未打开项目', current_language()))
         page._recovered_autosave_pending = False
         page._review_mode = False
+        page._review_playback = None
         page.review_summary_strip.hide()
         page.cue_model.set_project(None)
         page.timeline.set_project(None)

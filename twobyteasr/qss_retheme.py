@@ -306,6 +306,49 @@ _BACKGROUND_WHITE = re.compile(r"(background(?:-color)?):\s*(?:#ffffff|white)\b"
 _KEEP_WHITE = {"#fff2ed": "#ffffff"}
 
 
+_RULE = re.compile(r"\{([^{}]*)\}")
+_WHITE_TEXT = re.compile(r"(?<![-\w])(color):\s*(?:#ffffff|white)\b", re.IGNORECASE)
+_WHITE_SELECTION = re.compile(r"(selection-color):\s*(?:#ffffff|white)\b", re.IGNORECASE)
+_FILL = re.compile(r"(?<![-\w])background(?:-color)?:\s*(#[0-9a-fA-F]{6})\b")
+_SELECTION_FILL = re.compile(r"selection-background-color:\s*(#[0-9a-fA-F]{6})\b")
+_ACCENT_TOKENS = ("accent", "accent_hover", "accent_pressed")
+_VIVID_TOKENS = ("success", "warning", "danger")
+
+
+def _ink_on_fills(qss: str, theme: ThemeDefinition) -> str:
+    """White text inside a rule filled with the accent or a status colour.
+
+    The warm sheets were authored with white on their dark green. Themes with
+    light accents (yellow, white, cyan, peach) need their own ink there:
+    ``text_on_accent`` on accent fills, ``on_vivid`` on status fills
+    (2026-10-14; both are white for the light themes, so they look the same).
+    """
+    accent = {getattr(theme, token).lower() for token in _ACCENT_TOKENS}
+    vivid = {getattr(theme, token).lower() for token in _VIVID_TOKENS} - accent
+
+    def ink_for(fills):
+        values = {value.lower() for value in fills}
+        if values & accent:
+            return theme.text_on_accent
+        if values & vivid:
+            return theme.on_vivid
+        return None
+
+    def rule(match):
+        body = match.group(1)
+        if "white" not in body.lower() and "#ffffff" not in body.lower():
+            return match.group(0)
+        ink = ink_for(_FILL.findall(body))
+        if ink:
+            body = _WHITE_TEXT.sub(lambda m: f"{m.group(1)}: {ink}", body)
+        selection_ink = ink_for(_SELECTION_FILL.findall(body))
+        if selection_ink:
+            body = _WHITE_SELECTION.sub(lambda m: f"{m.group(1)}: {selection_ink}", body)
+        return "{" + body + "}"
+
+    return _RULE.sub(rule, qss)
+
+
 def retheme_qss(qss: str, theme: ThemeDefinition | None = None) -> str:
     """Rewrite warm/plum color literals in ``qss`` into ``theme`` tokens."""
     active = theme or theme_definition()
@@ -320,4 +363,4 @@ def retheme_qss(qss: str, theme: ThemeDefinition | None = None) -> str:
         upper = hexvalue.upper()
         if upper != hexvalue:
             result = result.replace(upper, color)
-    return result
+    return _ink_on_fills(result, active)

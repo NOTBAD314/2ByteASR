@@ -129,7 +129,22 @@ def write_results(request: dict, results: list) -> None:
 
 def _ensure_stdio() -> None:
     """A windowed (GUI-subsystem) packaged app starts children with no
-    sys.stdin/stdout even though the parent attached pipes; bind them."""
+    sys.stdin/stdout even though the parent attached pipes; bind them.
+
+    Streams that do exist are switched to UTF-8: the parent always writes
+    UTF-8, but the frozen app ignores ``PYTHONIOENCODING`` and opens real
+    pipes in the ANSI code page. On a 936 (GBK) Windows a Chinese folder name
+    then swallowed a path backslash and the request failed to parse with
+    ``Invalid \\escape`` before anything was uploaded (2026-10-14).
+    """
+    _bind_missing_stdio()
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is not None:
+            reconfigure(encoding='utf-8')
+
+
+def _bind_missing_stdio() -> None:
     if sys.stdin is not None and sys.stdout is not None and sys.stderr is not None:
         return
     import io
@@ -192,13 +207,19 @@ RESUBMIT_CATEGORIES = {
 
 
 def failure_from_text(text: str) -> dict | None:
-    """The explained provider problem a failed worker reported, if any."""
-    for line in str(text or '').splitlines():
-        line = line.strip()
-        if line.startswith(ERROR_MARKER):
-            try:
-                value = json.loads(line[len(ERROR_MARKER):])
-            except ValueError:
-                return None
-            return value if isinstance(value, dict) else None
-    return None
+    """The explained provider problem a failed worker reported, if any.
+
+    The marker is found anywhere, not only at a line start: a failed media
+    result stores its error with whitespace collapsed to one line, so the
+    completion page's "retry failed items" never saw a resubmit request and
+    every retry was refused again (2026-10-15).
+    """
+    text = str(text or '')
+    start = text.find(ERROR_MARKER)
+    if start < 0:
+        return None
+    try:
+        value, _end = json.JSONDecoder().raw_decode(text, start + len(ERROR_MARKER))
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None

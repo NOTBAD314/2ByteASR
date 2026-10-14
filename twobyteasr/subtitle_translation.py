@@ -1,4 +1,9 @@
-"""Japanese -> Chinese subtitle translation: records, batching, validation.
+"""Subtitle translation: records, batching, validation.
+
+Sources are the recognised languages (Chinese, Japanese, English); targets are
+Simplified/Traditional Chinese, English, Japanese and Korean, any target whose
+language differs from the source (2026-10-14; before: Japanese/English ->
+Chinese only).
 
 Pure logic (no Qt). The project stores one translation record per cue id in
 ``generation_metadata["translation_records"]``; the old
@@ -33,12 +38,38 @@ RENDER_KEY = "translations"
 RECORDS_VERSION = 1
 PROMPT_VERSION = "ja-zh-subtitle-v1"
 EN_PROMPT_VERSION = "en-zh-subtitle-v1"   # 2026-10-14: English sources
-
-
-def prompt_version_for(language: str = "") -> str:
-    return EN_PROMPT_VERSION if language == "en" else PROMPT_VERSION
 DEFAULT_TARGET = "zh-Hans"
-TARGET_LABELS = {"zh-Hans": "简体中文", "zh-Hant": "繁體中文"}
+TARGETS = ("zh-Hans", "zh-Hant", "en", "ja", "ko")
+# Native names: shown as they are in every UI language, like the UI language menu.
+TARGET_LABELS = {"zh-Hans": "简体中文", "zh-Hant": "繁體中文", "en": "English", "ja": "日本語", "ko": "한국어"}
+TARGET_LANGUAGE = {"zh-Hans": "zh", "zh-Hant": "zh", "en": "en", "ja": "ja", "ko": "ko"}
+SOURCE_LANGUAGES = ("zh", "ja", "en")
+LANGUAGE_NAMES = {"zh": "Chinese", "ja": "Japanese", "en": "English", "ko": "Korean"}
+# File-name suffix of a translation layer (``stem.<suffix>.srt``).
+TARGET_SUFFIX = {"zh-Hans": "zh", "zh-Hant": "zh-Hant", "en": "en", "ja": "ja", "ko": "ko"}
+
+
+def source_language_of(language: str = "") -> str:
+    """The translation source language; projects without a record count as Japanese (the first pair)."""
+    return language if language in SOURCE_LANGUAGES else "ja"
+
+
+def targets_for(language: str = "") -> tuple[str, ...]:
+    """Targets offered for a source: every target in another language."""
+    source = source_language_of(language)
+    return tuple(target for target in TARGETS if TARGET_LANGUAGE[target] != source)
+
+
+def same_language(language: str, target: str) -> bool:
+    """True when ``target`` is the source language itself (nothing to translate)."""
+    return TARGET_LANGUAGE.get(normalize_target(target)) == source_language_of(language)
+
+
+def prompt_version_for(language: str = "", target: str = DEFAULT_TARGET) -> str:
+    """Japanese/English -> Chinese keep their prompts; other pairs share one generic prompt."""
+    if TARGET_LANGUAGE.get(normalize_target(target)) == "zh":
+        return EN_PROMPT_VERSION if language == "en" else PROMPT_VERSION
+    return f"{source_language_of(language)}-{normalize_target(target)}-subtitle-v1"
 MAX_PREVIOUS = 5
 MAX_HISTORY = 50
 BATCH_PROBLEM_KEY = "*"
@@ -85,6 +116,9 @@ _TARGET_ALIASES = {
     "hans": "zh-Hans", "simplified": "zh-Hans", "简体中文": "zh-Hans",
     "zh-hant": "zh-Hant", "zh-tw": "zh-Hant", "zh-hk": "zh-Hant", "zh-mo": "zh-Hant",
     "hant": "zh-Hant", "traditional": "zh-Hant", "繁體中文": "zh-Hant", "繁体中文": "zh-Hant",
+    "en": "en", "en-us": "en", "en-gb": "en", "english": "en", "英语": "en", "英文": "en",
+    "ja": "ja", "ja-jp": "ja", "jp": "ja", "japanese": "ja", "日语": "ja", "日文": "ja", "日本語": "ja",
+    "ko": "ko", "ko-kr": "ko", "kr": "ko", "korean": "ko", "韩语": "ko", "韩文": "ko", "한국어": "ko",
 }
 
 
@@ -127,7 +161,7 @@ def normalize_target(target: Any) -> str:
 
 
 def normalize_glossary(pairs: Any) -> tuple[tuple[str, str], ...]:
-    """(Japanese term, Chinese term) pairs; accepts tuples or mappings."""
+    """(source term, target term) pairs; accepts tuples or mappings."""
     if isinstance(pairs, Mapping):
         pairs = list(pairs.items())
     result: dict[str, str] = {}
@@ -774,14 +808,37 @@ _SCRIPT_RULES = {
     "zh-Hant": "直接用繁體字書寫（不要先寫簡體再轉換），用詞符合繁體中文讀者習慣。",
 }
 
+# Pairs without a Chinese target (2026-10-14): one prompt, written in English
+# so every model reads the rules the same way whatever the two languages are.
+_GENERIC_SYSTEM_PROMPT = """You translate the subtitles of {source_name} game live-stream videos into natural, idiomatic {target_name} subtitles.
+The original subtitles come from automatic speech recognition and may contain small mistakes; translate the most likely intended meaning.
+Rules:
+1. Translate only the lines whose "translate" is true: output exactly one translation for each such id, in the order of output_ids. Lines with "translate": false are context only (they may carry an existing "translation"); do not output them.
+2. Do not merge, split or reorder subtitles. When one sentence is split over several lines, translate only the part in each line's own text; word order may be adjusted inside a line.
+3. Output only the translation: no timecodes, numbers, notes, explanations, romanization or original text.
+4. Use the glossary ({source_name} -> {target_name}) for names of people, characters, skills and items. It is only for translation; it does not mean the original is wrong, so never rewrite or correct the original. Without a glossary entry use the established {target_name} name; if there is none, keep the original name or transliterate it.
+5. Keep the speaker's tone and emotion (exclamations, banter, catchphrases, memes) in short, spoken subtitle style; translate slang by meaning, not word for word.
+6. Write the translation in {target_name}. {target_rule} Abbreviations such as GG, OK, HP, DPS may stay as they are.
+7. A line with "reference" was split from or merged with already translated subtitles: the reference gives the original line(s) and their translation only to keep the wording consistent. Translate only this line's own text; do not copy the whole reference translation.
+Output JSON only: {{"items":[{{"id":"<id unchanged>","translation":"<translation>"}}]}}"""
 
-def _batch_glossary(batch: TranslationBatch, pairs: Sequence[tuple[str, str]], source_language: str = "") -> list[dict]:
+_TARGET_RULES = {
+    "en": "Do not leave Chinese, Japanese or Korean sentences untranslated.",
+    "ja": "Write natural Japanese with kana as a Japanese viewer expects; never copy a Chinese sentence as it is.",
+    "ko": "Write in Hangul; do not leave Chinese characters or Japanese kana untranslated.",
+}
+
+
+def _batch_glossary(batch: TranslationBatch, pairs: Sequence[tuple[str, str]], source_language: str = "",
+                    target: str = DEFAULT_TARGET) -> list[dict]:
     text = "\n".join(line.text for line in batch.lines)
-    if source_language == "en":
+    source_key = source_language_of(source_language)
+    target_key = TARGET_LANGUAGE.get(normalize_target(target), "zh")
+    if source_key == "en":
         lowered = text.casefold()
-        relevant = [{"en": term, "zh": zh} for term, zh in pairs if term.casefold() in lowered]
+        relevant = [{"en": term, target_key: value} for term, value in pairs if term.casefold() in lowered]
     else:
-        relevant = [{"ja": ja, "zh": zh} for ja, zh in pairs if ja in text]
+        relevant = [{source_key: term, target_key: value} for term, value in pairs if term in text]
     return relevant[:MAX_GLOSSARY_PAIRS_PER_BATCH]
 
 
@@ -808,20 +865,29 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
                                 for item in line.reference]
         lines.append(row)
     english = source_language == "en"
+    chinese_target = TARGET_LANGUAGE[target] == "zh"
+    source_name = LANGUAGE_NAMES[source_language_of(source_language)]
+    target_name = LANGUAGE_NAMES[TARGET_LANGUAGE[target]]
     payload: dict[str, Any] = {
-        "task": f"{'英语' if english else '日语'}字幕 → {label}字幕",
-        "target_language": label,
+        "task": (f"{'英语' if english else '日语'}字幕 → {label}字幕" if chinese_target
+                 else f"{source_name} subtitles -> {target_name} subtitles"),
+        "target_language": label if chinese_target else target_name,
         "target": target,
-        "prompt_version": prompt_version_for(source_language),
+        "prompt_version": prompt_version_for(source_language, target),
     }
     if str(game_context or "").strip():
         payload["game_context"] = str(game_context).strip()
-    glossary = _batch_glossary(batch, pairs, source_language)
+    glossary = _batch_glossary(batch, pairs, source_language, target)
     if glossary:
         payload["glossary"] = glossary
     payload["lines"] = lines
     payload["output_ids"] = list(batch.target_ids)
-    system = (_EN_SYSTEM_PROMPT if english else _SYSTEM_PROMPT).format(label=label, script_rule=_SCRIPT_RULES[target])
+    if chinese_target:
+        system = (_EN_SYSTEM_PROMPT if english else _SYSTEM_PROMPT).format(label=label,
+                                                                          script_rule=_SCRIPT_RULES[target])
+    else:
+        system = _GENERIC_SYSTEM_PROMPT.format(source_name=source_name, target_name=target_name,
+                                               target_rule=_TARGET_RULES[TARGET_LANGUAGE[target]])
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -836,7 +902,17 @@ def _max_tokens(batch: TranslationBatch) -> int:
 # Validation
 
 
-def validate_translation(source_text: str, text: str) -> str | None:
+def _letters(text: str) -> dict[str, int]:
+    """Script counts plus Hangul syllables/jamo and ASCII letters."""
+    counts = script_counts(text)
+    counts["hangul"] = sum(1 for char in text if 0xAC00 <= ord(char) <= 0xD7A3 or 0x1100 <= ord(char) <= 0x11FF
+                           or 0x3130 <= ord(char) <= 0x318F)
+    counts["latin"] = sum(1 for char in text if char.isascii() and char.isalpha())
+    return counts
+
+
+def validate_translation(source_text: str, text: str, target: str = DEFAULT_TARGET,
+                         source_language: str = "") -> str | None:
     """Reason a single translation is unusable, or None when acceptable."""
     output = clean_translation(text)
     if not output:
@@ -844,6 +920,9 @@ def validate_translation(source_text: str, text: str) -> str | None:
     if _TIMESTAMP.search(output):
         return "timestamp"
     source = normalize_source(source_text)
+    target_language = TARGET_LANGUAGE.get(normalize_target(target), "zh")
+    if target_language != "zh":
+        return _validate_foreign(source, output, target_language, source_language_of(source_language))
     if len(output) > 4 * len(source) + 20:
         return "too_long"
     src = script_counts(source)
@@ -877,6 +956,50 @@ def validate_translation(source_text: str, text: str) -> str | None:
         return "japanese_output" if out_kana else "no_chinese"
     if out["hiragana"] >= 2 or out_kana / max(1, out_kana + out["han"]) > 0.5:
         return "japanese_output"
+    return None
+
+
+def _validate_foreign(source: str, output: str, target_language: str, source_language: str) -> str | None:
+    """English / Japanese / Korean targets (2026-10-14)."""
+    src, out = _letters(source), _letters(output)
+    src_cjk = src["han"] + src["hiragana"] + src["katakana"] + src["hangul"]
+    # Chinese/Japanese -> English grows about three times in characters.
+    factor = 8 if target_language == "en" and src_cjk else 4
+    if len(output) > factor * len(source) + 30:
+        return "too_long"
+    out_kana = out["hiragana"] + out["katakana"]
+    # A short Latin token (GG, OK, a name) may stay as it is.
+    latin_token = not src_cjk and (src["latin"] < 12 or len(source.split()) < 3)
+    if _content(output) == _content(source):
+        if latin_token:
+            return None
+        # A short kanji word is often the same word in Japanese (注意, 期待).
+        if target_language == "ja" and source_language == "zh" and src["han"] <= 4 and not src["latin"]:
+            return None
+        return "echo_source"
+    if target_language == "en":
+        # A kept name (I love 原神) is fine; untranslated phrases are not.
+        cjk = out["han"] + out_kana + out["hangul"]
+        if cjk > out["latin"] or (cjk >= 3 and cjk >= 0.3 * (cjk + out["latin"])):
+            return "not_english"
+        return None
+    if target_language == "ko":
+        if not out["hangul"]:
+            return None if latin_token or not (src_cjk or src["latin"]) else "not_korean"
+        if out["han"] + out_kana > out["hangul"]:
+            return "not_korean"
+        return None
+    # Japanese
+    if out["hangul"] > out_kana + out["han"]:
+        return "not_japanese"
+    if not out_kana and not out["han"]:
+        if latin_token or not (src_cjk or src["latin"]):
+            return None
+        return "not_japanese"
+    if out["latin"] > 2 * (out_kana + out["han"]) and out["latin"] >= 12:
+        return "not_japanese"
+    if source_language == "zh" and not out_kana and out["han"] >= 8:
+        return "chinese_output"
     return None
 
 
@@ -914,7 +1037,8 @@ def _payload_items(payload: Any) -> list | None:
     return None
 
 
-def validate_response(batch: TranslationBatch, payload: Any) -> tuple[dict[str, str], dict[str, str]]:
+def validate_response(batch: TranslationBatch, payload: Any, target: str = DEFAULT_TARGET,
+                      source_language: str = "") -> tuple[dict[str, str], dict[str, str]]:
     """``(accepted {id: text}, problems {id: reason})`` for one batch.
 
     Unknown ids are reported under their own id; batch-level notes (order,
@@ -956,7 +1080,7 @@ def validate_response(batch: TranslationBatch, payload: Any) -> tuple[dict[str, 
         elif cue_id not in seen:
             problems[cue_id] = "missing"
         else:
-            reason = validate_translation(batch.source_text(cue_id), seen[cue_id])
+            reason = validate_translation(batch.source_text(cue_id), seen[cue_id], target, source_language)
             if reason:
                 problems[cue_id] = reason
             else:
@@ -1110,7 +1234,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     source = _as_source(project)
     target = normalize_target(target)
     source_language = str(getattr(source, "language", "") or "")
-    prompt_version = prompt_version_for(source_language)
+    prompt_version = prompt_version_for(source_language, target)
     check = cancel_check or (lambda: False)
     pairs = normalize_glossary(glossary_pairs)
     digest = glossary_digest(pairs)
@@ -1120,6 +1244,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     wanted = None if cue_ids is None else {str(item) for item in cue_ids}
     requested = [cue.id for cue in source.cues if wanted is None or cue.id in wanted]
     result = TranslationResult(target=target, model=model, provider=provider_id, glossary_digest=digest,
+                               prompt_version=prompt_version,
                                overwrite_manual=bool(overwrite_manual), overwrite_legacy=bool(overwrite_legacy),
                                requested=tuple(requested))
     result.sources = {cue_id: source.cue(cue_id).text for cue_id in requested}
@@ -1156,7 +1281,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                                  provider=provider_id, glossary_digest=digest, prompt_version=prompt_version,
                                  extra=_cache_extra(source, cue_id, game_context))
         hit = cache_lookup(cache, keys[cue_id])
-        if hit and validate_translation(result.sources[cue_id], hit) is None:
+        if hit and validate_translation(result.sources[cue_id], hit, target, source_language) is None:
             succeed(cue_id, clean_translation(hit), True)
     if result.cache_hits:
         report(f"缓存命中 {len(result.cache_hits)} 条")
@@ -1211,7 +1336,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             accepted, problems = {}, {cue_id: reason for cue_id in ids}
             delay = retry_delay(exc, 1)
         else:
-            accepted, problems = validate_response(batch, payload)
+            accepted, problems = validate_response(batch, payload, target, source_language)
         for cue_id, text in accepted.items():
             succeed(cue_id, text, False)
         note(batch_no, problems)

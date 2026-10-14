@@ -3223,7 +3223,7 @@ class WaveformTimeline(QWidget):
             translation_font = painter.font()
             translation_font.setBold(True)
             painter.setFont(translation_font)
-            painter.drawText(QRectF(34, translation_rect.top(), 170, translation_rect.height()), Qt.AlignmentFlag.AlignVCenter, "翻译")
+            painter.drawText(QRectF(34, translation_rect.top(), 170, translation_rect.height()), Qt.AlignmentFlag.AlignVCenter, str(tr("翻译")))
             translation_font.setBold(False)
             painter.setFont(translation_font)
             if isinstance(translations, dict) and translations:

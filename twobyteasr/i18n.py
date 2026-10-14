@@ -1,4 +1,4 @@
-"""UI language overlay (zh / zh-Hant / en / ja).
+"""UI language overlay (zh / zh-Hant / en / ja / ko).
 
 The application's built-in strings are Chinese. This module overlays English
 or Japanese translations at runtime by walking the widget tree, so the UI
@@ -27,8 +27,11 @@ from twobyteasr.settings import load_runtime_settings, save_runtime_settings
 LOCALE_DIR = Path(__file__).resolve().parent / "locales"
 # 2026-10-14: 繁體中文 (zh-Hant) is generated from the Simplified sources by
 # scripts/make_zh_hant.py; "zh" stays the Simplified source text.
-TRANSLATED_LANGUAGES = ("en", "ja", "zh-Hant")
-SUPPORTED_LANGUAGES = ("zh", "zh-Hant", "en", "ja")
+# 2026-10-14: 한국어 (ko) has its own ko.json with the same keys as en/ja.
+TRANSLATED_LANGUAGES = ("en", "ja", "zh-Hant", "ko")
+SUPPORTED_LANGUAGES = ("zh", "zh-Hant", "en", "ja", "ko")
+# Loaded on first use, so other starts do not parse them.
+_LAZY_LANGUAGES = frozenset({"zh-Hant", "ko"})
 # language -> reason, for a locale file that could not be read. The UI then
 # keeps the Chinese source text for that language instead of failing to start.
 LOCALE_LOAD_ERRORS: dict[str, str] = {}
@@ -49,10 +52,10 @@ def _load_locale(language: str) -> dict[str, str]:
     return table
 
 
-# en / ja load at import; zh-Hant (about 1 MB with the code literals) only
-# when it is first used, so Simplified, English and Japanese starts pay nothing.
+# en / ja load at import; zh-Hant (about 1 MB with the code literals) and ko
+# only when first used, so Simplified, English and Japanese starts pay nothing.
 _TRANSLATIONS: dict[str, dict[str, str]] = {
-    language: _load_locale(language) for language in TRANSLATED_LANGUAGES if language != "zh-Hant"
+    language: _load_locale(language) for language in TRANSLATED_LANGUAGES if language not in _LAZY_LANGUAGES
 }
 
 _KNOWN_KEYS = frozenset().union(*(table.keys() for table in _TRANSLATIONS.values()))
@@ -81,13 +84,13 @@ def _load_hant() -> dict[str, str]:
 
 
 def language_table(language: str) -> dict[str, str]:
-    """The translation table of ``language`` (loads zh-Hant on first use)."""
+    """The translation table of ``language`` (loads zh-Hant / ko on first use)."""
     global _KNOWN_KEYS
     table = _TRANSLATIONS.get(language)
     if table is None:
-        if language != "zh-Hant":
+        if language not in _LAZY_LANGUAGES:
             return {}
-        table = _TRANSLATIONS[language] = _load_hant()
+        table = _TRANSLATIONS[language] = _load_hant() if language == "zh-Hant" else _load_locale(language)
         _KNOWN_KEYS = _KNOWN_KEYS | frozenset(table)
     return table
 
@@ -142,6 +145,9 @@ def translate(text: str, language: str | None = None) -> str:
     if language == "zh-Hant" and text not in table and text in _KNOWN_KEYS:
         # Only known UI source strings are converted; user content never is.
         return _hant_fallback(text)
+    if language == "ko" and text not in table:
+        # A UI string added without Korean yet: English reads better than Chinese.
+        return _TRANSLATIONS["en"].get(text, text)
     return table.get(text, text)
 
 
@@ -157,6 +163,8 @@ def ui_literal(text: str, language: str | None = None) -> str:
     table = language_table(language)
     if text in table:
         return table[text]
+    if language == "ko":
+        return _TRANSLATIONS["en"].get(text, text)
     return _hant_fallback(text) if language == "zh-Hant" else text
 
 
