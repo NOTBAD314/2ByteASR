@@ -252,3 +252,29 @@ def test_stage_probes_are_absent_for_non_local_backends():
         assert not (isinstance(value, ast.Lambda) and isinstance(value.body, ast.IfExp)), ast.unparse(value)
         if isinstance(value, ast.IfExp):
             assert isinstance(value.body, ast.Lambda) and isinstance(value.orelse, ast.Constant), ast.unparse(value)
+
+
+def test_timeline_stage_gate_never_borrows_firered_paths():
+    """2026-10-14: the Qwen3 aligner (CPU or Mac MLX) stage was gated on
+    FireRed's source and model folders, so without FireRed installed (the
+    no-NVIDIA computer) it failed as environment_missing and no word timing
+    was produced. The timeline stage's ``worker=``/``runtime=`` must not name
+    FIRERED_SOURCE_DIR / FIRERED_MODEL_DIR."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse(Path(__file__).resolve().parents[1].joinpath('moss_firered_pipeline.py').read_text('utf-8'))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and getattr(node.func, 'id', '') == '_run_audited_model_stage'
+             and any(kw.arg == 'role' and isinstance(kw.value, ast.Constant) and kw.value.value == 'timeline_alignment'
+                     for kw in node.keywords)]
+    assert calls
+    for call in calls:
+        model = next(kw.value for kw in call.keywords if kw.arg == 'model_id')
+        if isinstance(model, ast.Constant) and model.value == 'firered':
+            continue  # FireRed itself is the timeline: its own folders are the right gate
+        for kw in call.keywords:
+            if kw.arg in ('worker', 'runtime'):
+                text = ast.unparse(kw.value)
+                assert 'FIRERED_SOURCE_DIR' not in text and 'FIRERED_MODEL_DIR' not in text, text
+    source = Path(__file__).resolve().parents[1].joinpath('moss_firered_pipeline.py').read_text('utf-8')
+    assert 'resolve_qwen_aligner_local_source() or ""' in source and '_mlx_model_dir(_MLX_ALIGNER)' in source

@@ -4243,14 +4243,30 @@ def process_media(
         )
         if timeline_backend == "local":
             legacy.record_run_event("CACHE_REJECTED", stage="firered", reason="real_execution_required")
+        # The environment gate checks the selected backend's own files. Before
+        # 2026-10-14 every non-FireRed timeline was gated on FireRed's source
+        # and model folders, so a computer without FireRed (no NVIDIA GPU, or a
+        # Mac with MLX) never ran the Qwen3 aligner: no word timing at all.
+        if timeline_backend == "local":
+            gate_worker, gate_runtime = paths["firered_worker"], paths["main_python"]
+        elif timeline_backend == "qwen_aligner":
+            if str(getattr(legacy, "FIRERED_ASR_BACKEND", "")) == "mlx_qwen_aligner":
+                from twobyteasr.mlx_backend import ALIGNER_KEY as _MLX_ALIGNER, model_dir as _mlx_model_dir
+                gate_runtime = str(_mlx_model_dir(_MLX_ALIGNER) or "")
+            else:
+                gate_runtime = str(legacy.resolve_qwen_aligner_local_source() or "")
+            # Empty when not installed: the runner then reports 缺少对齐模型.
+            gate_worker = ""
+        else:
+            gate_worker = gate_runtime = ""
         return _run_audited_model_stage(
             legacy,
             model_id="firered" if timeline_backend == "local" else timeline_backend,
             role="timeline_alignment",
             backend=timeline_backend,
             media_path=media_path,
-            worker=(paths["firered_worker"] if timeline_backend == "local" else str(getattr(legacy, "FIRERED_SOURCE_DIR", "") or "")),
-            runtime=(paths["main_python"] if timeline_backend == "local" else str(getattr(legacy, "FIRERED_MODEL_DIR", "") or "")),
+            worker=gate_worker,
+            runtime=gate_runtime,
             runner=lambda: legacy.run_timed_stage(
                 4,
                 stage_total,
