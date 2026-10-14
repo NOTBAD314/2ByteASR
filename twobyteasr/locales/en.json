@@ -5769,5 +5769,22 @@
   "**字幕时间轴**（推荐 FireRedASR2）：给**每个字**定时间，并独立再识别一遍做对照（中文）": "**Subtitle timeline** (FireRedASR2 recommended): times **every character** and recognizes once more on its own to compare (Chinese)",
   "**字幕时间轴**（日语用 CTC 对齐模型）：给**每个字**定时间（FireRedASR2 只认中文）": "**Subtitle timeline** (CTC alignment for Japanese): times **every character** (FireRedASR2 only knows Chinese)",
   "**文字复核**（推荐 Qwen3-ASR）：第三次识别。三份结果互相比对，留下最可靠的文字和**精确到字的时间**": "**Text review** (Qwen3-ASR recommended): a third recognition. The three results are compared to keep the most reliable text and **character-exact timing**",
-  "左边**勾选词库**，再点**按词库匹配**或 **AI 校对**；右边逐条采用，随时能撤销": "Tick a **glossary** on the left, then click **Match glossary** or **AI proofread**; accept fixes one by one on the right — undo any time"
+  "左边**勾选词库**，再点**按词库匹配**或 **AI 校对**；右边逐条采用，随时能撤销": "Tick a **glossary** on the left, then click **Match glossary** or **AI proofread**; accept fixes one by one on the right — undo any time",
+  "MOSS 与 FireRed 需要 Apple 芯片（M 系列）Mac 的 GPU；这台 Mac 没有，没有开始下载。": "MOSS and FireRed need the GPU of an Apple silicon (M-series) Mac. This Mac has none, so nothing was downloaded.",
+  "[模型工坊] 准备 Apple 芯片 GPU（MPS）运行库与模型：": "[Model Workshop] Preparing the Apple GPU (MPS) runtime and models: ",
+  "；首次需要联网下载运行库（约 1–3 GB）和模型，完成后会在这台 Mac 上实际试跑一次。": ". The first run downloads the runtime (about 1–3 GB) and the models, then does a real test run on this Mac.",
+  "无法启动 Mac 准备进程；已有运行库和模型文件保持。": "Could not start the Mac preparation process. Existing runtimes and model files are kept.",
+  "本地 · Apple 芯片 GPU（MPS）· 建议 16 GB 以上内存": "Local · Apple GPU (MPS) · 16 GB of memory or more recommended",
+  "Apple 芯片 GPU（MPS）：首次准备会联网下载 PyTorch 运行库与模型，完成后在这台 Mac 上用自带样本实际跑一次，通过才启用。MOSS 与 FireRed 用的是共享内存，建议 16 GB 以上；内存较小时请先关闭其他程序。": "Apple GPU (MPS): the first preparation downloads the PyTorch runtime and the models, then runs the bundled sample on this Mac; the model is enabled only if that run passes. MOSS and FireRed use shared memory, so 16 GB or more is recommended; on smaller Macs, close other apps first.",
+  "Apple 芯片本地高质量（MOSS + FireRed）": "Apple silicon local, high quality (MOSS + FireRed)",
+  "在本机 Apple 芯片 GPU（MPS）上运行 MOSS（文字与说话人）和 FireRed（字级时间），不上传音频；建议 16 GB 以上内存，速度比 NVIDIA 显卡慢。": "Runs MOSS (text and speakers) and FireRed (word timing) on this Mac's Apple GPU (MPS) without uploading audio. 16 GB of memory or more recommended; slower than an NVIDIA GPU.",
+  "Intel Mac 没有 Apple 芯片 GPU。": "Intel Macs have no Apple GPU.",
+  "需要在模型工坊准备 MOSS 与 FireRed（Apple 芯片 GPU）。": "Prepare MOSS and FireRed (Apple GPU) in the Model Workshop first.",
+  "FireRed 字幕时间轴还没有在模型工坊准备好（Apple 芯片 GPU）；已改为": "FireRed subtitle timing is not prepared in the Model Workshop yet (Apple GPU); switched to ",
+  "MOSS（Apple 芯片 GPU）": "MOSS (Apple GPU)",
+  "FireRed 字级时间轴（Apple 芯片 GPU）": "FireRed word timing (Apple GPU)",
+  "Mac 本机高质量（MOSS + FireRed）": "High quality on this Mac (MOSS + FireRed)",
+  "使用本机 Apple 芯片 GPU，不上传影音；需要在模型工坊准备 MOSS 与 FireRed，建议 16 GB 以上内存。": "Uses this Mac's Apple GPU and uploads no media. Prepare MOSS and FireRed in the Model Workshop; 16 GB of memory or more recommended.",
+  "当前方案只能在 Apple 芯片 Mac 上运行。": "The current plan only runs on an Apple silicon Mac.",
+  "本次 macOS 实验支持 SenseVoice CPU、MLX、MOSS 与 FireRed；其他本地模型尚未完成原生适配。": "This macOS build supports SenseVoice CPU, MLX, MOSS and FireRed. Other local models are not yet adapted."
 }

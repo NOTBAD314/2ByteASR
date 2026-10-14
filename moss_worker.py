@@ -190,9 +190,10 @@ def window_bounds(audio, duration, count, sample_rate=16000):
 class DeviceOps:
     """CUDA, Apple MPS and CPU differences in one place (2026-10-14).
 
-    The CUDA path calls exactly what the worker always called. MPS and CPU run
-    float32 (as the upstream MOSS example does off CUDA), have no allocator
-    fraction to set, and report memory from the MPS driver or the process.
+    The CUDA path calls exactly what the worker always called. MPS runs
+    bfloat16 and the CPU float32 (as the upstream MOSS example does off CUDA);
+    neither has an allocator fraction to set, and they report memory from the
+    MPS driver or the process.
     """
 
     def __init__(self, torch, kind, device):
@@ -359,7 +360,10 @@ def resolve_device(torch, requested):
         raise RuntimeError("MOSS 当前工作流要求 CUDA GPU。")
     mps = getattr(torch.backends, "mps", None)
     if requested in ("auto", "mps") and mps is not None and mps.is_available():
-        return "mps", torch.device("mps"), torch.float32
+        # bfloat16 like the CUDA path (2026-10-14): on a 7 GB GitHub Mac float32
+        # left ~0.8 GiB and was refused; bfloat16 ran with the same text and
+        # speakers (CER 0.93 % on the 4-minute two-speaker clip, 1.8x real time).
+        return "mps", torch.device("mps"), torch.bfloat16
     if requested == "mps":
         raise RuntimeError("这台电脑的 PyTorch 不能使用 Apple GPU（MPS 不可用）。")
     return "cpu", torch.device("cpu"), torch.float32

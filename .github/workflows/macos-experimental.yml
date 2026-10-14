@@ -12,6 +12,12 @@ on:
         required: false
         default: false
         type: boolean
+      desktop_model_set:
+        description: 'Models the desktop flow prepares in the workshop: SenseVoice CPU, or MOSS + FireRed on the Apple GPU (MPS)'
+        required: false
+        default: sensevoice
+        type: choice
+        options: [sensevoice, mac-gpu]
       run_cloud_mlx_smoke:
         description: 'Cloud-only flow via the installed app worker (loopback), real Keychain round trip, MLX prepare + timed recognition/alignment (downloads ~2.3 GB of models)'
         required: false
@@ -149,7 +155,7 @@ jobs:
         run: |
           set -euo pipefail
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_doctor.py --require-host --probe-torch --output "$MAC_QA_ROOT/doctor.json"
-          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_macos_platform.py tests/test_macos_build_contract.py tests/test_macos_gui_prepare.py tests/test_macos_delivery_boundary.py tests/test_macos_media_installation.py tests/test_studio_qt_preview.py tests/test_python_runtime_identity.py tests/test_macos_desktop_evidence.py tests/test_macos_setup_delivery.py tests/test_blank_project_projection.py tests/test_razor_caption_conservation.py tests/test_playhead_edit_target.py tests/test_static_caption_long_command.py::test_file_graph_keeps_external_relative_inputs_and_callbacks tests/test_no_cuda_cloud_asr.py tests/test_api_setup_guide.py tests/test_macos_keychain_store.py tests/test_mlx_backend.py --deselect tests/test_playhead_edit_target.py::test_overlap_priority_stable_with_reorder_visibility_locks_and_track_choice --basetemp "$MAC_QA_ROOT/pytest" --junitxml "$MAC_QA_ROOT/tests.xml"
+          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_macos_platform.py tests/test_macos_build_contract.py tests/test_macos_gui_prepare.py tests/test_macos_delivery_boundary.py tests/test_macos_media_installation.py tests/test_studio_qt_preview.py tests/test_python_runtime_identity.py tests/test_macos_desktop_evidence.py tests/test_macos_setup_delivery.py tests/test_blank_project_projection.py tests/test_razor_caption_conservation.py tests/test_playhead_edit_target.py tests/test_static_caption_long_command.py::test_file_graph_keeps_external_relative_inputs_and_callbacks tests/test_no_cuda_cloud_asr.py tests/test_api_setup_guide.py tests/test_macos_keychain_store.py tests/test_mlx_backend.py tests/test_mac_gpu_workshop.py --deselect tests/test_playhead_edit_target.py::test_overlap_priority_stable_with_reorder_visibility_locks_and_track_choice --basetemp "$MAC_QA_ROOT/pytest" --junitxml "$MAC_QA_ROOT/tests.xml"
       - name: Build real DMG and verify drag-install Unicode copy
         if: ${{ always() && steps.build.outcome == 'success' }}
         id: dmg
@@ -235,7 +241,10 @@ jobs:
         if: ${{ always() && inputs.run_model_smoke && steps.build.outcome == 'success' }}
         id: desktop
         continue-on-error: true
-        timeout-minutes: 20
+        # MOSS + FireRed (2026-10-14): two PyTorch runtimes, ~6.3 GB of models and GPU readiness runs.
+        timeout-minutes: ${{ inputs.desktop_model_set == 'mac-gpu' && 75 || 20 }}
+        env:
+          DESKTOP_MODEL_SET: ${{ inputs.desktop_model_set || 'sensevoice' }}
         run: |
           set -euo pipefail
           python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/build/native-build-inputs.json")); s=r["native_validation"]["packaged_normal_entry_startup_smoke"]; assert s.get("passed") is True or s.get("direct",{}).get("passed") is True, "Relocated startup failed; GUI prerequisites absent"'
@@ -249,7 +258,7 @@ jobs:
             origin='repository assets/diagnostics/speech_en.wav (no Chinese voice on this runner)'
           fi
           python -c 'import json,sys,hashlib; p=sys.argv[1]; json.dump(dict(audio=p,origin=sys.argv[2],text=sys.argv[3],sha256=hashlib.sha256(open(p,"rb").read()).hexdigest()),open(sys.argv[4],"w",encoding="utf8"),ensure_ascii=False,indent=2)' "$audio" "$origin" "$text" "$MAC_QA_ROOT/fixture-origin.json"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$MAC_QA_ROOT/build/relocated/兔白 字幕・移動テスト/2ByteASR.app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio "$audio" --output "$MAC_QA_ROOT/desktop-flow"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$MAC_QA_ROOT/build/relocated/兔白 字幕・移動テスト/2ByteASR.app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio "$audio" --output "$MAC_QA_ROOT/desktop-flow" --model-set "$DESKTOP_MODEL_SET"
       - name: Studio editing smoothness and export speed (installed app, synthetic project)
         if: ${{ always() && inputs.run_studio_perf && steps.dmg.outcome == 'success' }}
         id: studio_perf

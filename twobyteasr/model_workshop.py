@@ -800,6 +800,18 @@ def _adapter_backend(model: WorkshopModel, role: str) -> str | None:
 
 
 MLX_DOWNLOAD_KEYS = frozenset({"mlx_qwen3_asr_0_6b", "mlx_qwen3_asr_1_7b", "mlx_qwen_aligner"})
+# MOSS / FireRed on the Apple GPU (2026-10-14): prepared by
+# macos_model_prepare.prepare_local; an Intel Mac has no Apple GPU.
+MAC_GPU_DOWNLOAD_KEYS = frozenset({"moss", "firered_aed"})
+MAC_GPU_INSTALL_KEYS = frozenset({"moss", "firered_vad", "speaker_embedding", "firered_aed"})
+MAC_GPU_MODE = "本地 · Apple 芯片 GPU（MPS）· 建议 16 GB 以上内存"
+
+
+def model_mode_text(model: WorkshopModel) -> str:
+    """How the model runs on this computer (the Windows text stays as written)."""
+    if sys.platform == 'darwin' and model.download_key in MAC_GPU_DOWNLOAD_KEYS:
+        return MAC_GPU_MODE
+    return model.mode
 
 
 def _host_platform_tag() -> str:
@@ -2873,6 +2885,10 @@ class ModelDownloadDialog(QDialog):
             note.setText('Apple Silicon 本地模型（MLX）：首次准备会联网下载私有运行库（不含 PyTorch）与模型，'
                          '完成后用自带的英文样本实际跑一次推理。社区 MLX 实现，兔白尚未在真机完成验收。')
             note.setWordWrap(True)
+        elif sys.platform == 'darwin' and set(self.download_keys) <= MAC_GPU_INSTALL_KEYS:
+            note.setText('Apple 芯片 GPU（MPS）：首次准备会联网下载 PyTorch 运行库与模型，完成后在这台 Mac 上用自带样本实际跑一次，'
+                         '通过才启用。MOSS 与 FireRed 用的是共享内存，建议 16 GB 以上；内存较小时请先关闭其他程序。')
+            note.setWordWrap(True)
         elif sys.platform == 'darwin':
             from .platform_macos import macos_copy
             note.setText(macos_copy(
@@ -2949,6 +2965,8 @@ class ModelDownloadDialog(QDialog):
         self.start_button = QPushButton("开始下载")
         if sys.platform == 'darwin' and self.download_keys == ('sensevoice',):
             self.start_button.setProperty('platformPrepare', 'sensevoice-cpu')
+        elif sys.platform == 'darwin' and set(self.download_keys) <= MAC_GPU_INSTALL_KEYS:
+            self.start_button.setProperty('platformPrepare', 'mac-gpu')
         self.start_button.setObjectName("workshopPrimary")
         self.start_button.clicked.connect(self.start)
         actions.addWidget(self.start_button)
@@ -3033,12 +3051,17 @@ class ModelDownloadDialog(QDialog):
             self._finish_with_error(tr('MLX 模型只能在 Apple Silicon（M 系列芯片）的 Mac 上使用；没有开始下载。'))
             return
         if sys.platform == 'darwin':
-            if self.download_keys != ('sensevoice',) and not set(self.download_keys) <= MLX_DOWNLOAD_KEYS:
+            mac_gpu = bool(self.download_keys) and set(self.download_keys) <= MAC_GPU_INSTALL_KEYS
+            if mac_gpu and _host_platform_tag() != 'darwin-arm64':
+                self._finish_with_error(tr('MOSS 与 FireRed 需要 Apple 芯片（M 系列）Mac 的 GPU；这台 Mac 没有，没有开始下载。'))
+                return
+            if (self.download_keys != ('sensevoice',) and not set(self.download_keys) <= MLX_DOWNLOAD_KEYS
+                    and not mac_gpu):
                 from .platform_macos import macos_copy
                 self._finish_with_error(macos_copy(
-                    '本次 macOS 实验仅支持 SenseVoice CPU；其他本地模型尚未完成原生适配。',
-                    'This macOS experiment supports SenseVoice CPU. Other local models are not yet adapted.',
-                    '今回の macOS 実験版は SenseVoice CPU のみ対応しています。他のローカルモデルは未対応です。'))
+                    '本次 macOS 实验支持 SenseVoice CPU、MLX、MOSS 与 FireRed；其他本地模型尚未完成原生适配。',
+                    'This macOS build supports SenseVoice CPU, MLX, MOSS and FireRed. Other local models are not yet adapted.',
+                    '今回の macOS 版は SenseVoice CPU・MLX・MOSS・FireRed に対応しています。他のローカルモデルは未対応です。'))
                 return
         elif os.name != "nt":
             self.log.appendPlainText(
@@ -3071,6 +3094,8 @@ class ModelDownloadDialog(QDialog):
         if sys.platform == 'darwin':
             if set(self.download_keys) <= MLX_DOWNLOAD_KEYS:
                 self._start_macos_mlx()
+            elif set(self.download_keys) <= MAC_GPU_INSTALL_KEYS:
+                self._start_macos_local()
             else:
                 self._start_macos_cpu()
             return
@@ -3129,6 +3154,31 @@ class ModelDownloadDialog(QDialog):
         self.process.start(program, arguments)
         if not self.process.waitForStarted(5000):
             self._finish_with_error('无法启动 MLX 准备进程；已有运行库和模型文件保持。')
+
+    def _start_macos_local(self):
+        """MOSS / FireRed: private PyTorch runtimes + locked models, checked on the Apple GPU."""
+        from twobyteasr.runtime_paths import get_runtime_paths, user_data_root
+        from twobyteasr.processes import sanitized_child_environment
+        arguments = ['--macos-prepare-local', '--root', str(self.root), '--models',
+                     str(get_runtime_paths().model_root), '--keys', ','.join(self.download_keys),
+                     '--source', str(self.source_combo.currentData() or 'AUTO')]
+        program = sys.executable
+        if not getattr(sys, 'frozen', False):
+            arguments.insert(0, str(self.root / 'scripts/macos_launch.py'))
+        environment = QProcessEnvironment()
+        for key, value in sanitized_child_environment().items():
+            environment.insert(key, value)
+        environment.insert('PYTHONUTF8', '1')
+        environment.insert('PYTHONIOENCODING', 'utf-8')
+        environment.insert('_PYI_RESET_ENVIRONMENT', '1')
+        self.process.setProcessEnvironment(environment)
+        user_data_root().mkdir(parents=True, exist_ok=True)
+        self.process.setWorkingDirectory(str(user_data_root()))
+        self.log.appendPlainText(tr('[模型工坊] 准备 Apple 芯片 GPU（MPS）运行库与模型：') + '、'.join(self.download_keys)
+                                 + tr('；首次需要联网下载运行库（约 1–3 GB）和模型，完成后会在这台 Mac 上实际试跑一次。'))
+        self.process.start(program, arguments)
+        if not self.process.waitForStarted(5000):
+            self._finish_with_error(tr('无法启动 Mac 准备进程；已有运行库和模型文件保持。'))
 
     def _start_macos_cpu(self):
         from twobyteasr.runtime_paths import get_runtime_paths, user_data_root
@@ -5212,7 +5262,8 @@ class ModelWorkshopPage(QWidget):
                 if state=='partial':badge_text='权重不完整'
                 if state=='unreadable':badge_text='目录无法读取'
                 if state=='platform_unverified':badge_text='当前平台未验证'
-                if state=='platform_unavailable' and model.platforms:badge_text='仅限 Apple Silicon Mac'
+                if state=='platform_unavailable' and (model.platforms or model.download_key in MAC_GPU_DOWNLOAD_KEYS):
+                    badge_text='仅限 Apple Silicon Mac'
                 card.set_state_badge(
                     translate(badge_text, language),
                     "ready"
@@ -5292,8 +5343,11 @@ class ModelWorkshopPage(QWidget):
         models = self.runtime_settings.get("models", {})
         if model.platforms and _host_platform_tag() not in model.platforms:
             return 'platform_unavailable'
+        mac_gpu = sys.platform == 'darwin' and model.download_key in MAC_GPU_DOWNLOAD_KEYS
+        if mac_gpu and _host_platform_tag() != 'darwin-arm64':
+            return 'platform_unavailable'
         if (sys.platform == 'darwin' and model.download_key and model.download_key != 'sensevoice'
-                and not model.platforms):
+                and not model.platforms and not mac_gpu):
             return 'platform_unavailable'
         if not model.available:
             return "planned"
@@ -5353,6 +5407,12 @@ class ModelWorkshopPage(QWidget):
             from .mlx_backend import runtime_python as mlx_runtime_python
             if not mlx_runtime_python():
                 return 'runtime_missing'
+        if mac_gpu:
+            # Registered only after the readiness check ran on this Mac (prepare_local).
+            from .runtime_registry import resolve_runtime_python
+            roles = ('main', 'moss') if model.download_key == 'moss' else ('main',)
+            if not all(resolve_runtime_python(name, register=False) for name in roles):
+                return 'runtime_missing'
         if sys.platform == 'darwin' and model.download_key == 'sensevoice':
             from .environment import fast_preflight
             runtime_check = fast_preflight('main')
@@ -5397,7 +5457,7 @@ class ModelWorkshopPage(QWidget):
         if state=='platform_unverified':return '当前平台未验证',False
         if model.key in self._removing: return '正在永久删除…', False
         if state == 'platform_unavailable':
-            if model.platforms:
+            if model.platforms or model.download_key in MAC_GPU_DOWNLOAD_KEYS:
                 return '仅限 Apple Silicon Mac', False
             from .platform_macos import macos_copy
             return macos_copy('尚未适配 macOS', 'Not yet adapted to macOS', 'macOS 未対応'), False
@@ -5816,7 +5876,7 @@ class ModelWorkshopPage(QWidget):
         bind_text(self.detail_metric_section, translate('2ByteASR 参考指数', language) + ' · ' + _benchmark_scene_label(model_metric_scene(model, self._benchmark_scene), language))
         for bar, evidence in zip(self.capability_rows, detail_evidence):
             bar.set_evidence(evidence)
-        compatibility = translate(model.mode, language)
+        compatibility = translate(model_mode_text(model), language)
         if model.download_key:
             compatibility += "\n" + translate("自动来源先试 ModelScope，再试 Hugging Face 官方；HF 镜像可在下载窗口手动选择（可能回源官方）；可断点续传。", language)
             if model.auto_stage:
@@ -6227,7 +6287,7 @@ class ModelWorkshopPage(QWidget):
             f"输入与输出\n{profile.get('io', '输入音频；输出字幕流程所需的文字或时间信息。')}\n\n"
             f"主要优点\n{profile.get('strengths', model.description)}\n\n"
             f"主要限制\n{profile.get('limits', '实际效果会受音频质量、语言和硬件配置影响。')}\n\n"
-            f"技术说明\n使用方式：{model.mode}\n"
+            f"技术说明\n使用方式：{model_mode_text(model)}\n"
             f"同组证据：{accuracy.get('caption', '准确度')} {accuracy['value']}"
             f"（{accuracy['note']}） / "
             f"速度 {speed['value']}（{speed['note']}）\n"

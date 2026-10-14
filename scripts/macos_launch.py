@@ -131,6 +131,14 @@ def main() -> int:
             sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
         from twobyteasr.macos_model_prepare import main_mlx as prepare_mlx
         return prepare_mlx(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-local':
+        # MOSS / FireRed runtimes + models for the Apple GPU (2026-10-14); never opens a GUI.
+        if sys.stdout is None:
+            sys.stdout = os.fdopen(os.dup(1), 'w', encoding='utf8', buffering=1)
+        if sys.stderr is None:
+            sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
+        from twobyteasr.macos_model_prepare import main_local as prepare_local
+        return prepare_local(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-cpu':
         # A windowed .app may replace Python streams with None even though
         # the workshop owns real pipes. This child never opens a GUI.

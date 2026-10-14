@@ -230,7 +230,9 @@ def test_unavailable_on_host_names_the_limit():
     no_gpu = HostProfile('win32', 'amd64', nvidia_tool=False, main_runtime=True, mlx_runtime=False)
     mac = HostProfile('darwin', 'arm64', nvidia_tool=False, main_runtime=False, mlx_runtime=True)
     assert unavailable_on_host('timeline', 'local', no_gpu) == '需要 NVIDIA 显卡'
-    assert unavailable_on_host('primary', 'moss', mac) == '需要 NVIDIA 显卡'
+    # 2026-10-14: MOSS runs on the Apple GPU of an Apple Silicon Mac; Qwen3-ASR local does not.
+    assert unavailable_on_host('primary', 'moss', mac) == ''
+    assert unavailable_on_host('primary', 'qwen_local', mac) == '需要 NVIDIA 显卡'
     assert unavailable_on_host('timeline', 'qwen_aligner', no_gpu) == ''
     assert unavailable_on_host('primary', 'mlx_qwen3_asr', no_gpu) == '只能在 Apple Silicon Mac 上运行'
     assert unavailable_on_host('primary', 'mlx_qwen3_asr', mac) == ''

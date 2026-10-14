@@ -179,7 +179,9 @@ def test_macos_unsupported_model_detail_constructs_without_startup_keyerror(monk
     app=QApplication.instance() or QApplication([])
     monkeypatch.setattr(workshop,'sys',SimpleNamespace(platform='darwin'))
     page=workshop.ModelWorkshopPage(tmp_path,{'models':{'primary_asr_backend':'sensevoice','qwen_asr_backend':'off'}})
-    unavailable=next(m for m in workshop.MODELS if m.download_key and m.download_key!='sensevoice')
+    # MOSS / FireRed run on Apple Silicon since 2026-10-14; pick a model that has no Mac route.
+    unavailable=next(m for m in workshop.MODELS if m.download_key and m.download_key!='sensevoice'
+                     and m.download_key not in workshop.MAC_GPU_DOWNLOAD_KEYS and not m.platforms)
     page._view_model(unavailable.key)
     assert page._model_state(unavailable)=='platform_unavailable'
     assert page.detail_badge.text()

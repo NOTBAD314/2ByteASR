@@ -1878,7 +1878,12 @@ def transcribe_moss_global(media_path, shared_audio, legacy, cache_context):
     # MOSS 转写必须在主进程预检 CUDA：子进程内报错只会显示为“MOSS 子进程失败”，
     # 无法给出明确原因。打包（frozen）运行没有进程内 torch——改用主运行环境
     # 的子进程探测（hardware._probe_torch_runtime），结果等价。
-    if not getattr(sys, "frozen", False):
+    # 2026-10-14：Apple 芯片 Mac 上 MOSS 在自己的运行库里用 Apple GPU（MPS），
+    # 没有 CUDA 可查；设备与内存由 moss_worker 自己判断并给出明确原因。
+    from twobyteasr.hardware import _apple_silicon_host
+    if _apple_silicon_host():
+        pass
+    elif not getattr(sys, "frozen", False):
         try:
             import torch
 

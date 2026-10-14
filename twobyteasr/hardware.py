@@ -501,6 +501,14 @@ CUDA_REQUIRED_PRIMARY = {"moss", "firered", "qwen_local", "firered_llm"}
 # Qwen3-ForcedAligner runs on CPU without CUDA since 2026-10-13 (slower).
 CUDA_REQUIRED_TIMELINE = {"local"}
 CUDA_REQUIRED_REVIEW = {"local", "firered_llm"}
+# 2026-10-14: on an Apple Silicon Mac these run on the Apple GPU (MPS) instead.
+APPLE_GPU_PRIMARY = {"moss", "firered"}
+APPLE_GPU_TIMELINE = {"local"}
+
+
+def _apple_silicon_host() -> bool:
+    import platform
+    return sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}
 
 LOCAL_PRIMARY = {
     "moss", "firered", "qwen_local", "firered_llm", "whisper_turbo",
@@ -550,14 +558,15 @@ def selected_cuda_components(settings: dict) -> list[str]:
     primary = str(models.get("primary_asr_backend", "moss"))
     timeline = str(models.get("firered_asr_backend", "local"))
     review = str(models.get("qwen_asr_backend", "api"))
-    if primary in CUDA_REQUIRED_PRIMARY:
+    apple_gpu = _apple_silicon_host()
+    if primary in CUDA_REQUIRED_PRIMARY and not (apple_gpu and primary in APPLE_GPU_PRIMARY):
         selected.append({
             "moss": "MOSS 主力转写",
             "firered": "FireRed 主力转写",
             "qwen_local": "Qwen3-ASR 本地主力转写",
             "firered_llm": "FireRedASR2-LLM 主力转写",
         }[primary])
-    if timeline in CUDA_REQUIRED_TIMELINE:
+    if timeline in CUDA_REQUIRED_TIMELINE and not (apple_gpu and timeline in APPLE_GPU_TIMELINE):
         label = "FireRed 字级时间轴" if timeline == "local" else "Qwen3 ForcedAligner 时间轴"
         if label not in selected:
             selected.append(label)

@@ -99,7 +99,8 @@ def start(window, out):
             window.ai_polish.setChecked(False)
             window.ai_grouping.setChecked(False); window.unified_glm.setChecked(False)
             window.legacy.RUNTIME_SETTINGS['glossary']['enabled_glossary_ids'] = []
-            window.legacy.RUNTIME_SETTINGS['models']['speaker_source'] = 'single'
+            # One-voice fixtures use a single speaker; a MOSS run keeps MOSS's own speakers (2026-10-14).
+            window.legacy.RUNTIME_SETTINGS['models']['speaker_source'] = config.get('speaker_source', 'single')
             check('save local ASR configuration', window._save_asr_configuration(show_feedback=False))
             check('save local-only AI configuration', window._save_ai_configuration(show_feedback=False))
             source = str(Path(config['media']).resolve())
@@ -134,6 +135,19 @@ def start(window, out):
             result['owned_project'] = preserve_owned_project(target, out.parent if config.get('recognition_only') else out,
                                                              'restart' if config.get('recognition_only') else 'recognized')
             check('actual ASR text is nonempty', bool(project.cues and any(c.text.strip() for c in project.cues)))
+            # Which evidence the result really carries: speakers and cues with measured word times.
+            from .cue_word_alignment import cue_words
+            measured = 0
+            for cue in project.cues:
+                try:
+                    measured += bool(cue_words(project, cue)[0])
+                except Exception:
+                    pass
+            result['speakers'] = sorted({str(cue.speaker_id) for cue in project.cues})
+            result['cues_with_measured_words'] = measured
+            result['cue_count'] = len(project.cues)
+            if config.get('require_measured_words'):
+                check('local word timeline measured word times', measured > 0)
             if config.get('recognition_only'):
                 result['restart_short_task']=True
                 result['saved_project']=str(target)

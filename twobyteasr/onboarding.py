@@ -31,6 +31,8 @@ PLAN_WORDS = {
     'cloud_plus_align': ('云端识别 + 本机精细对齐', '文字由云端识别，字词时间在本机对齐（可用 CPU）；音频会上传给服务商。'),
     'windows_cuda': ('本机识别（NVIDIA 显卡）', '使用本机，不上传影音；需要 NVIDIA 显卡并下载模型。'),
     'apple_local': ('Mac 本机识别（Apple Silicon）', '使用本机，不上传影音；需要在模型工坊下载 MLX 模型。'),
+    'apple_gpu_local': ('Mac 本机高质量（MOSS + FireRed）',
+                        '使用本机 Apple 芯片 GPU，不上传影音；需要在模型工坊准备 MOSS 与 FireRed，建议 16 GB 以上内存。'),
     'cpu_local': ('本机识别（不需要显卡）', '使用本机，不上传影音；速度较慢，没有说话人区分。'),
 }
 
@@ -184,7 +186,13 @@ def current_plan_status(models: dict, facts: Facts, cloud_reason: str = '') -> t
     if primary == 'api':
         return (True, '') if facts.cloud_ready else (False, cloud_reason or '还没有设置云端识别服务。')
     if primary in CUDA_PRIMARY and host is not None and not host.cuda_possible:
-        return False, '当前方案需要 NVIDIA 显卡，这台电脑没有检测到。'
+        # MOSS / FireRed run on the Apple GPU of an Apple Silicon Mac (2026-10-14).
+        from .recognition_choices import unavailable_on_host
+        limit = unavailable_on_host('primary', primary, host)
+        if limit == '只能在 Apple Silicon Mac 上运行':
+            return False, '当前方案只能在 Apple 芯片 Mac 上运行。'
+        if limit:
+            return False, '当前方案需要 NVIDIA 显卡，这台电脑没有检测到。'
     if primary.startswith('mlx') and host is not None and not host.apple_silicon:
         return False, 'MLX 本机识别只能在 Apple Silicon Mac 上运行。'
     needed = REQUIRED_MODELS.get(primary, set())
@@ -231,7 +239,7 @@ def _hardware_blocked(option, host) -> bool:
         return False
     if option.key == 'windows_cuda':
         return not host.cuda_possible
-    if option.key == 'apple_local':
+    if option.key in {'apple_local', 'apple_gpu_local'}:
         return not host.apple_silicon
     return False
 

@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 CUDA_TIMELINE = {'local'}             # FireRed AED
 CUDA_REVIEW = {'local', 'firered_llm'}
 CPU_TIMELINE = {'qwen_aligner', 'whisper_turbo', 'paraformer'}
+# 2026-10-14: on an Apple Silicon Mac MOSS and FireRed AED run on the Apple GPU
+# (MPS) once the model workshop prepared them (macos_model_prepare.prepare_local).
+APPLE_GPU_PRIMARY = {'moss', 'firered'}
+APPLE_GPU_TIMELINE = {'local'}
+APPLE_GPU_PLAN_MODELS = frozenset({'moss', 'firered_vad', 'speaker_embedding', 'firered_aed'})
 MLX_PRIMARY = {'mlx_qwen3_asr': 'Apple Silicon 本地 Qwen3-ASR 0.6B（MLX）',
                'mlx_qwen3_asr_1_7b': 'Apple Silicon 本地 Qwen3-ASR 1.7B（MLX）'}
 REVIEW_LABELS = {'api': '云端识别服务', 'whisper_turbo': 'Whisper', 'sensevoice': 'SenseVoice',
@@ -31,6 +36,7 @@ class HostProfile:
     nvidia_tool: bool
     main_runtime: bool
     mlx_runtime: bool
+    moss_runtime: bool = False
 
     @property
     def apple_silicon(self) -> bool:
@@ -57,7 +63,7 @@ def host_profile() -> HostProfile:
         return bool(python) and os.path.isfile(python)
 
     return HostProfile(sys.platform, platform.machine().lower(), bool(shutil.which('nvidia-smi')),
-                       exists('main'), exists('mlx') if _role_known('mlx') else False)
+                       exists('main'), exists('mlx') if _role_known('mlx') else False, exists('moss'))
 
 
 def _role_known(role):
@@ -80,6 +86,9 @@ def unavailable_on_host(role: str, backend: str, host: HostProfile | None = None
     host = host or host_profile()
     needs_cuda = {'primary': CUDA_PRIMARY, 'timeline': CUDA_TIMELINE, 'review': CUDA_REVIEW}.get(role, set())
     if backend in needs_cuda and not host.cuda_possible:
+        if host.system == 'darwin' and backend in {'primary': APPLE_GPU_PRIMARY,
+                                                   'timeline': APPLE_GPU_TIMELINE}.get(role, set()):
+            return '' if host.apple_silicon else '只能在 Apple Silicon Mac 上运行'
         return '需要 NVIDIA 显卡'
     if backend in {'mlx_qwen3_asr', 'mlx_qwen3_asr_1_7b', 'mlx_qwen_aligner'} and not host.apple_silicon:
         return '只能在 Apple Silicon Mac 上运行'
@@ -99,10 +108,12 @@ def cloud_followups(models: dict, installed: set, host: HostProfile) -> tuple[di
              'paraformer': 'paraformer', 'mlx_qwen_aligner': 'mlx_qwen_aligner'}
     mlx_aligner_ready = 'mlx_qwen_aligner' in installed and host.apple_silicon and host.mlx_runtime
     aligner_ready = 'qwen_aligner' in installed and host.main_runtime
-    if timeline in CUDA_TIMELINE and not host.cuda_possible:
+    firered_on_mac = host.apple_silicon and 'firered_aed' in installed and host.main_runtime
+    if timeline in CUDA_TIMELINE and not host.cuda_possible and not firered_on_mac:
         fallback = 'mlx_qwen_aligner' if mlx_aligner_ready else 'qwen_aligner' if aligner_ready else 'off'
         patch['firered_asr_backend'] = fallback
-        notes.append('这台电脑没有 NVIDIA 显卡，FireRed 字幕时间轴不能运行；已改为'
+        notes.append(('FireRed 字幕时间轴还没有在模型工坊准备好（Apple 芯片 GPU）；已改为' if host.apple_silicon
+                      else '这台电脑没有 NVIDIA 显卡，FireRed 字幕时间轴不能运行；已改为')
                      + {'mlx_qwen_aligner': '本地 Qwen3 对齐（Apple Silicon）。',
                         'qwen_aligner': '本地 Qwen3 对齐（CPU）。'}.get(fallback, '只用云端返回的时间。'))
     elif timeline == 'mlx_qwen_aligner' and not host.apple_silicon:
@@ -185,6 +196,15 @@ def plan_options(settings: dict, installed: set, host: HostProfile, cloud_ready:
             {'primary_asr_backend': 'mlx_qwen3_asr' if mlx_models[:1] != ['mlx_qwen3_asr_1_7b']
              else 'mlx_qwen3_asr_1_7b', 'firered_asr_backend': 'mlx_qwen_aligner'
              if 'mlx_qwen_aligner' in installed else 'off', 'qwen_asr_backend': 'off'}))
+        gpu_ok = (host.apple_silicon and host.main_runtime and host.moss_runtime
+                  and APPLE_GPU_PLAN_MODELS <= set(installed))
+        options.append(PlanOption(
+            'apple_gpu_local', 'Apple 芯片本地高质量（MOSS + FireRed）',
+            '在本机 Apple 芯片 GPU（MPS）上运行 MOSS（文字与说话人）和 FireRed（字级时间），不上传音频；'
+            '建议 16 GB 以上内存，速度比 NVIDIA 显卡慢。',
+            gpu_ok, '' if gpu_ok else ('Intel Mac 没有 Apple 芯片 GPU。' if host.intel_mac
+                                     else '需要在模型工坊准备 MOSS 与 FireRed（Apple 芯片 GPU）。'),
+            {'primary_asr_backend': 'moss', 'firered_asr_backend': 'local', 'qwen_asr_backend': 'off'}))
     else:
         cuda_ok = host.cuda_possible and {'moss', 'firered_aed'} <= installed
         options.append(PlanOption(
@@ -245,7 +265,7 @@ def run_disclosure(settings: dict) -> dict:
         info['engine'] = '本地 MOSS'
         info['speakers'] = 'MOSS 原生说话人'
         native = 'MOSS 句段时间'
-        info['local'].append('MOSS（需要 NVIDIA 显卡）')
+        info['local'].append('MOSS（Apple 芯片 GPU）' if sys.platform == 'darwin' else 'MOSS（需要 NVIDIA 显卡）')
     elif primary in MLX_PRIMARY:
         info['engine'] = MLX_PRIMARY[primary]
         info['speakers'] = '没有说话人区分（单轨）'
@@ -261,7 +281,8 @@ def run_disclosure(settings: dict) -> dict:
         info['local'].append('Qwen3 对齐模型（Apple Silicon 用 MLX）' if timeline == 'mlx_qwen_aligner'
                              else 'Qwen3 对齐模型（无 NVIDIA 显卡时用 CPU）')
     elif timeline == 'local':
-        info['timestamps'] = 'FireRed 字级时间轴（需要 NVIDIA 显卡）'
+        info['timestamps'] = ('FireRed 字级时间轴（Apple 芯片 GPU）' if sys.platform == 'darwin'
+                              else 'FireRed 字级时间轴（需要 NVIDIA 显卡）')
         info['local'].append('FireRed')
     elif timeline == 'off':
         info['timestamps'] = native

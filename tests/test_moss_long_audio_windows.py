@@ -58,6 +58,17 @@ def test_too_little_memory_fails_with_the_needed_amount():
     assert plan["needed_bytes"] > 2 * GIB
 
 
+def test_short_audio_asks_only_for_its_own_length():
+    # A 30 s clip that does not fit reports what 30 s needs, not a 3-minute window (2026-10-14).
+    plan = worker.plan_windows(30.0, 600, 131072, int(0.6 * GIB), KV)
+    assert plan["mode"] == "insufficient" and plan["minimum_window_seconds"] == 30.0
+    rate = plan["prompt_tokens_per_second"]   # rounded in the plan, so compare to within 1 KiB
+    expected = worker.window_estimate(30.0, rate, 131072, KV)["bytes"] + worker.WINDOW_POLICY["safety_bytes"]
+    assert abs(plan["needed_bytes"] - expected) < 1024
+    three_minutes = worker.window_estimate(180.0, rate, 131072, KV)["bytes"] + worker.WINDOW_POLICY["safety_bytes"]
+    assert plan["needed_bytes"] < three_minutes
+
+
 def noisy(seconds, quiet=()):
     audio = (np.random.default_rng(1).standard_normal(int(seconds * 16000)) * 0.2).astype(np.float32)
     for start, end in quiet:

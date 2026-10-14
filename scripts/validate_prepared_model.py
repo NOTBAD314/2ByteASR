@@ -51,7 +51,10 @@ def main():
     duration=len(audio)/rate
     role={'moss':'moss','firered_llm':'firered_llm','glm_asr_nano':'glm_asr','canary_qwen':'canary'}.get(model,'main')
     cuda=torch.cuda.is_available() and not os.environ.get('2BYTEASR_CPU_ONLY')
-    device=torch.cuda.get_device_name(0) if cuda else 'cpu'
+    # 2026-10-14: on an Apple Silicon Mac MOSS and FireRed AED run on the Apple GPU (MPS).
+    mps_backend=getattr(torch.backends,'mps',None)
+    apple_gpu=sys.platform=='darwin' and not cuda and mps_backend is not None and mps_backend.is_available()
+    device=torch.cuda.get_device_name(0) if cuda else ('Apple GPU (MPS)' if apple_gpu else 'cpu')
     code_hash=hashlib.sha256()
     for path in [Path(__file__),root/'twobyteasr/asr.py',sample,*sorted(root.glob('*_worker.py'))]:
         code_hash.update(path.read_bytes())
@@ -70,7 +73,9 @@ def main():
         sample=str(sample),sample_kind='bundled offline synthetic speech; readiness only, not accuracy benchmark')
     try:
         print('[2BYTEASR_PHASE] '+json.dumps(dict(phase='model_loading',model=model)),flush=True)
-        if model in {'moss','qwen_asr','qwen_aligner','firered_aed','firered_llm'} and not cuda:
+        if model in {'moss','firered_aed'} and not cuda and sys.platform=='darwin':
+            pass  # Apple GPU (MPS), or the CPU when PyTorch cannot use it; the workers pick the device
+        elif model in {'moss','qwen_asr','qwen_aligner','firered_aed','firered_llm'} and not cuda:
             raise RuntimeError('hardware_unsupported: 此模型的当前正式适配需要可用的 NVIDIA CUDA；权重与运行库已保留。')
         chunks=[dict(audio=(audio,rate),start=0.,end=duration)]
         if model in {'sensevoice','paraformer','funasr_nano'}:

@@ -13,22 +13,39 @@ import sys
 from pathlib import Path
 
 
-def cache_snapshot(profile: Path) -> dict:
+# Model sets (2026-10-14): SenseVoice on the CPU, or MOSS + FireRed on the Apple GPU.
+MODEL_SETS={
+    "sensevoice":dict(folders=("SenseVoiceSmall",),roles=("main",),app_timeout=1500,restart_timeout=600,
+                      home=dict(timeout=360)),
+    "mac-gpu":dict(folders=("MOSS-Transcribe-Diarize","FireRedVAD","spkrec-ecapa-voxceleb","FireRedASR2-AED"),
+                   roles=("main","moss"),app_timeout=4200,restart_timeout=1500,
+                   home=dict(timeout=1500,speaker_source="moss",require_measured_words=True,
+                             asr=dict(primary_asr_backend="moss",firered_asr_backend="local",qwen_asr_backend="off"))),
+}
+
+
+def cache_snapshot(profile: Path, model_set=MODEL_SETS["sensevoice"]) -> dict:
     data=profile/"local/2ByteASR"
-    registration=json.loads((data/"runtimes/registry.json").read_text("utf8"))["runtimes"]["main"]
-    runtime=Path(registration["root"])
+    registry=json.loads((data/"runtimes/registry.json").read_text("utf8"))["runtimes"]
+    registration={role:registry[role] for role in model_set["roles"]}
     models=json.loads((data/"runtime_paths.json").read_text("utf8"))["model_root"]
-    files=[runtime/"pyvenv.cfg",runtime/"pip-install.json",runtime/"managed-runtime.json"]
-    folder=Path(models)/"SenseVoiceSmall"
-    files.extend(path for path in folder.iterdir() if path.is_file() and not path.name.startswith("."))
+    files=[]
+    for entry in registration.values():
+        runtime=Path(entry["root"])
+        files.extend(runtime/name for name in ("pyvenv.cfg","pip-install.json","managed-runtime.json"))
+    for name in model_set["folders"]:
+        files.extend(path for path in (Path(models)/name).rglob("*") if path.is_file()
+                     and not any(part.startswith(".") for part in path.relative_to(Path(models)/name).parts))
     rows=[]
     for path in sorted(files):
-        digest=hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda:stream.read(4*1024*1024),b""):digest.update(block)
-        rows.append(dict(path=str(path),sha256=digest.hexdigest(),bytes=path.stat().st_size,
-                         mtime_ns=path.stat().st_mtime_ns))
-    return dict(registration=registration,files=rows)
+        row=dict(path=str(path),bytes=path.stat().st_size,mtime_ns=path.stat().st_mtime_ns)
+        if row["bytes"]<=256*1024*1024:   # large weights: size + mtime (hashing GBs twice costs minutes)
+            digest=hashlib.sha256()
+            with path.open("rb") as stream:
+                for block in iter(lambda:stream.read(4*1024*1024),b""):digest.update(block)
+            row["sha256"]=digest.hexdigest()
+        rows.append(row)
+    return dict(registration=registration["main"] if list(registration)==["main"] else registration,files=rows)
 
 def preserve_diagnostics(profile: Path) -> None:
     data=profile/"local/2ByteASR"
@@ -52,7 +69,7 @@ def preserve_diagnostics(profile: Path) -> None:
             if path.is_file():shutil.copy2(path,target/name)
     # Failed attempts can precede registration. Select only small named
     # installer receipts from the known versioned main directory, never caches.
-    for folder in (data/"runtimes/main").glob("macos-cpu-*"):
+    for folder in [*(data/"runtimes/main").glob("macos-cpu-*"),*(data/"runtimes/moss").glob("macos-moss-*")]:
         for name in ("pyvenv.cfg","pip-install.json","managed-runtime.json","mac-native-wheels.json"):
             path=folder/name
             if path.is_file():shutil.copy2(path,target/(folder.name+"-"+name))
@@ -64,7 +81,9 @@ def main(argv=None):
     parser.add_argument("--fresh-runtime",action="store_true",help="Exercise ordinary GUI uv/Python bootstrap, not the CI build venv")
     parser.add_argument("--audio",type=Path,required=True)
     parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--model-set",choices=sorted(MODEL_SETS),default="sensevoice")
     args=parser.parse_args(argv)
+    model_set=MODEL_SETS[args.model_set]
     if sys.platform!="darwin" or platform.machine()!="arm64":
         raise SystemExit("Native Apple Silicon desktop is required")
     output=args.output.resolve()
@@ -83,7 +102,7 @@ def main(argv=None):
     # The Mac CPU route is one model (SenseVoice) with the lightweight energy VAD
     # (no FireRedVAD): the queue rates that degraded_success by design (2026-10-14).
     accept=["success","degraded_success"]
-    (output/"home-flow.json").write_text(json.dumps({"media":str(media),"timeout":360,"accept_status":accept},ensure_ascii=False),encoding="utf8")
+    (output/"home-flow.json").write_text(json.dumps(dict(model_set["home"],media=str(media),accept_status=accept),ensure_ascii=False),encoding="utf8")
     guard=output/"guard.2byteproj";guard.write_text("{}",encoding="utf8")
     invoker=output.parents[2]
     # Establish the existing acceptance guard without touching a CI user's
@@ -97,14 +116,15 @@ def main(argv=None):
                TWOBYTEASR_TEST_ROOT=str(output),
                TWOBYTEASR_INVOKER_CWD=str(invoker),TWOBYTEASR_ACCEPTANCE_DIR=str(output),
                TWOBYTEASR_ACCEPTANCE_SCENARIO="macos-desktop",TWOBYTEASR_STARTUP_PROJECT=str(guard),
-               LOCALAPPDATA=str(output/"local"),APPDATA=str(output/"roaming"))
+               LOCALAPPDATA=str(output/"local"),APPDATA=str(output/"roaming"),
+               TWOBYTEASR_MACOS_MODEL_SET=args.model_set)
     if not args.fresh_runtime:env["TWOBYTEASR_MAIN_PYTHON"]=str(args.runtime.resolve()/"bin/python")
     for folder in ("local","roaming","temp"):(output/folder).mkdir()
     env.update(TEMP=str(output/"temp"),TMP=str(output/"temp"))
     with (output/"desktop.log").open("wb") as log:
         try:
             result=subprocess.run([str(app/"Contents/MacOS/2ByteASR")],env=env,cwd=invoker,
-                                  stdout=log,stderr=subprocess.STDOUT,timeout=1500)
+                                  stdout=log,stderr=subprocess.STDOUT,timeout=model_set["app_timeout"])
         finally:
             preserve_diagnostics(output)
     workshop=json.loads((output/"workshop-result.json").read_text(encoding="utf8")) if (output/"workshop-result.json").is_file() else {}
@@ -154,16 +174,16 @@ def main(argv=None):
         second_media=output/'再起動・第二任务.mp4'
         subprocess.run([str(ffmpeg),'-v','error','-i',str(media),'-t','10',
                         '-c:v','copy','-c:a','aac',str(second_media)],check=True,timeout=60)
-        (restart_dir/"home-flow.json").write_text(json.dumps(dict(media=str(second_media),timeout=360,recognition_only=True,accept_status=accept)),encoding="utf8")
-        before=cache_snapshot(output)
+        (restart_dir/"home-flow.json").write_text(json.dumps(dict(model_set["home"],media=str(second_media),recognition_only=True,accept_status=accept)),encoding="utf8")
+        before=cache_snapshot(output,model_set)
         reuse_env=dict(env,TWOBYTEASR_MACOS_REUSE="1")
         reuse_env.pop("TWOBYTEASR_MAIN_PYTHON",None)
         try:
             with (restart_dir/"desktop.log").open("wb") as log:
                 second=subprocess.run([str(app/"Contents/MacOS/2ByteASR")],env=reuse_env,cwd=invoker,
-                    stdout=log,stderr=subprocess.STDOUT,timeout=600)
+                    stdout=log,stderr=subprocess.STDOUT,timeout=model_set["restart_timeout"])
             second_home=json.loads((restart_dir/"result.json").read_text("utf8")) if (restart_dir/"result.json").is_file() else {}
-            after=cache_snapshot(output)
+            after=cache_snapshot(output,model_set)
             unchanged=before==after
             restart=dict(passed=second.returncode==0 and second_home.get("passed") is True and unchanged,
                          status="executed",exit_code=second.returncode,second_task=second_home,
@@ -174,6 +194,8 @@ def main(argv=None):
     preserve_diagnostics(output)
     passed=result.returncode==0 and workshop.get("passed") is True and home.get("passed") is True and restart["passed"] and video["passed"]
     (output/"desktop-summary.json").write_text(json.dumps({"passed":passed,"exit_code":result.returncode,
+        "model_set":args.model_set,"readiness":workshop.get("readiness"),
+        "recognition_evidence":{key:home.get(key) for key in ("task_status","speakers","cue_count","cues_with_measured_words")},
         "restart_reuse":restart,"export_validation":video,
         "C_gui_model_preparation":workshop.get("passed",False),"D_real_home_studio_flow":home.get("passed",False),
         "E_embedded_audio_effects":False,"F_human_and_hardware":False,
