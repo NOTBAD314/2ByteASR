@@ -360,3 +360,65 @@ def test_hashed_pip_install_tries_the_next_index_only_on_failure(monkeypatch, tm
     assert seen == ['https://pypi.org/simple', 'https://mirror.invalid/simple']
     with pytest.raises(AssertionError):
         prepare.run_hashed_pip_install(['python', '-m', 'pip', 'install', '-r', 'r.txt'], cwd=tmp_path, environment={})
+
+
+def test_moss_runtime_check_does_not_import_speechbrain(tmp_path, monkeypatch):
+    # speechbrain 1.0.3 calls torchaudio.list_audio_backends (gone in 2.11) on import; the app
+    # patches it before use and moss_worker never imports it. The first Mac run failed here.
+    python = tmp_path / 'bin/python'
+    python.parent.mkdir()
+    python.write_text('interpreter')
+    seen = {}
+    def run(command, **kwargs):
+        seen['probe'] = command[-1]
+        return SimpleNamespace(returncode=0, stdout='{"python": "3.12.13", "mps": true}', stderr='')
+    monkeypatch.setattr(prepare.subprocess, 'run', run)
+    assert prepare.check_moss_runtime(python, tmp_path)
+    assert 'speechbrain' not in seen['probe'] and 'moss_transcribe_diarize' in seen['probe']
+
+
+def test_firered_feature_wrapper_does_not_read_the_shadowed_args():
+    # Inside TimedFeatures.__call__(self, *args) the name ``args`` is the call's tuple, not argparse.
+    import ast
+    tree = ast.parse((Path(__file__).resolve().parents[1] / 'firered_aed_worker.py').read_text(encoding='utf8'))
+    wrapper = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == 'TimedFeatures')
+    call = next(node for node in wrapper.body if isinstance(node, ast.FunctionDef) and node.name == '__call__')
+    reads = [node for node in ast.walk(call) if isinstance(node, ast.Attribute)
+             and isinstance(node.value, ast.Name) and node.value.id == 'args']
+    assert reads == []
+
+
+@pytest.mark.parametrize('apple,mps,expect_errors', [(True, True, []), (True, False, []), (False, True, ['cuda'])])
+def test_moss_runtime_probe_checks_the_apple_gpu_on_a_mac(monkeypatch, apple, mps, expect_errors):
+    # The queue preflight refused MOSS on the Mac: "torch.version.cuda is None" (2026-10-14 run).
+    import sys
+    from twobyteasr import environment_probe as probe
+    fake_torch = SimpleNamespace(
+        __version__='2.11.0', version=SimpleNamespace(cuda=None),
+        cuda=SimpleNamespace(is_available=lambda: False, device_count=lambda: 0),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)),
+        zeros=lambda size, device: SimpleNamespace(device=device, is_cuda=False))
+    monkeypatch.setitem(sys.modules, 'torch', fake_torch)
+    monkeypatch.setattr(probe, '_apple_silicon', lambda: apple)
+    result = {'errors': [], 'cuda': {}}
+    if apple:
+        probe._apple_gpu_probe(result, 'moss')
+        assert result['mps'] == ({'available': True, 'tensor_test_passed': True} if mps else {'available': False})
+    else:
+        probe._strict_cuda_probe(result, 'moss')
+    assert [kind for kind in expect_errors if any(kind in error.lower() for error in result['errors'])] == expect_errors
+    assert bool(result['errors']) == bool(expect_errors)
+
+
+def test_moss_role_uses_the_apple_gpu_probe_on_apple_silicon(monkeypatch):
+    from twobyteasr import environment_probe as probe
+    calls = []
+    monkeypatch.setattr(probe, '_apple_silicon', lambda: True)
+    monkeypatch.setattr(probe, '_apple_gpu_probe', lambda result, label: calls.append(('apple', label)))
+    monkeypatch.setattr(probe, '_strict_cuda_probe', lambda result, label: calls.append(('cuda', label)))
+    probe.run('moss', {'python': '3.12', 'torch': '2.11.0', 'packages': {}})
+    assert calls == [('apple', 'moss')]
+    monkeypatch.setattr(probe, '_apple_silicon', lambda: False)
+    calls.clear()
+    probe.run('moss', {'python': '3.12', 'torch': '2.11.0', 'packages': {}})
+    assert calls == [('cuda', 'moss')]
