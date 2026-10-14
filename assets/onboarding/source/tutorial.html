@@ -1,0 +1,527 @@
+<!doctype html>
+<!--
+  兔白字幕 tutorial gestures (2026-10-14): one short looping animation per
+  tutorial step — where to click, what to double-click, which key to press.
+  ?op=<name>&theme=dark|light. Every animation is a Web Animation that spans the
+  whole loop, so window.seek(ms) can show any moment; the renderer
+  (scripts/render_onboarding_frames.mjs) captures them and
+  scripts/render_onboarding_scenes.py packs transparent animated WebP files
+  into assets/onboarding/tutorial/. UI words are avoided on purpose (icons and
+  key caps work in every interface language); sample subtitles are content.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg: #252028; --el: #2f2935; --el2: #3a3342; --line: #463d4f; --text: #f4eee9; --muted: #a69ba6;
+    --pink: #E77FA8; --accent: #c1517d; --green: #3FBF8F; --red: #F3866B; --yellow: #F2B33D; --blue: #5B9DF0; --lilac: #A98BF2;
+    --shadow: 0 6px 16px rgba(0,0,0,.32); --cursor: #ffffff; --cursor-edge: #19151c;
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f1ea; --el: #fffdf8; --el2: #efe8de; --line: #ddd3c6; --text: #2b2630; --muted: #857b86;
+    --pink: #c94f80; --accent: #b34470; --shadow: 0 6px 14px rgba(70,50,60,.14); --cursor: #2b2630; --cursor-edge: #ffffff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; width: 400px; height: 170px; overflow: hidden; }
+  body { font-family: "Source Han Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif; color: var(--text); }
+  .stage { position: absolute; inset: 0; border-radius: 18px; overflow: hidden; background: var(--bg); }
+  .stage::after { content: ""; position: absolute; inset: 0; border-radius: 18px; pointer-events: none;
+                  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent); }
+  .abs { position: absolute; }
+  .box { position: absolute; border-radius: 12px; background: var(--el); box-shadow: var(--shadow); }
+  .pill { position: absolute; border-radius: 999px; display: flex; align-items: center; justify-content: center;
+          font-weight: 700; font-size: 13px; line-height: 1; background: var(--el2); color: var(--text); }
+  .t { position: absolute; font-weight: 600; font-size: 14px; line-height: 1; white-space: nowrap; letter-spacing: .5px; }
+  .muted { color: var(--muted); }
+  .accent { color: var(--pink); }
+  .ok { color: var(--green); }
+  .bad { color: var(--red); }
+  .bar { position: absolute; border-radius: 999px; background: var(--el2); }
+  .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--pink); transform-origin: left center; }
+  /* cursor + click */
+  .cursor { position: absolute; left: 0; top: 0; width: 22px; height: 26px; z-index: 30; transform-origin: 3px 3px;
+            filter: drop-shadow(0 2px 3px rgba(0,0,0,.35)); }
+  .ripple { position: absolute; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; z-index: 29;
+            border: 3px solid var(--pink); opacity: 0; }
+  /* key caps */
+  .key { position: absolute; width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+         font-weight: 800; font-size: 17px; line-height: 1; color: var(--text); background: var(--el);
+         box-shadow: 0 4px 0 var(--line), var(--shadow); border: 1.5px solid var(--line); z-index: 20; }
+  .key.wide { width: 58px; font-size: 13px; }
+  .or { position: absolute; font-size: 12px; font-weight: 700; color: var(--muted); }
+  .check { position: absolute; width: 18px; height: 18px; border-radius: 6px; border: 2px solid var(--muted); }
+  .check i { position: absolute; inset: -2px; border-radius: 6px; background: var(--pink); display: grid; place-items: center;
+             color: #fff; font-style: normal; font-weight: 900; font-size: 12px; opacity: 0; }
+  .badge { position: absolute; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+           font-weight: 800; font-size: 11px; line-height: 1; color: #fff; }
+  .wave { position: absolute; display: flex; align-items: center; gap: 3px; }
+  .wave i { display: block; width: 3px; border-radius: 2px; background: var(--muted); opacity: .7; }
+  .block { position: absolute; height: 26px; border-radius: 8px; display: flex; align-items: center; padding: 0 9px;
+           font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; }
+  .caret { position: absolute; width: 2px; height: 16px; background: var(--pink); }
+  .dash { position: absolute; border-radius: 14px; border: 2px dashed var(--line); }
+  .swap { position: absolute; display: inline-block; }
+  .swap span { position: absolute; left: 0; top: 0; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const q = new URLSearchParams(location.search);
+const op = q.get('op') || 'drop';
+document.documentElement.dataset.theme = q.get('theme') === 'light' ? 'light' : 'dark';
+const root = document.getElementById('root');
+const EASE = 'cubic-bezier(.2,.8,.2,1)';
+let TOTAL = 3200;
+
+// ---- tiny engine: absolute-time tracks on looping Web Animations ------------------------
+function el(html) { const d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstElementChild; }
+function add(html, parent) { const node = el(html); (parent || root.firstElementChild).appendChild(node); return node; }
+function track(node, frames, easing) {
+  // frames: [[ms, {props}], ...] in absolute time; held flat before the first and after the last.
+  frames = frames.slice().sort((a, b) => a[0] - b[0]);
+  const keys = [];
+  if (frames[0][0] > 0) keys.push({...frames[0][1], offset: 0});
+  for (const [t, props] of frames) keys.push({easing: easing || EASE, ...props, offset: Math.min(1, t / TOTAL)});
+  if (frames[frames.length - 1][0] < TOTAL) keys.push({...frames[frames.length - 1][1], offset: 1});
+  node.animate(keys, {duration: TOTAL, iterations: Infinity, fill: 'both'});
+  return node;
+}
+function show(node, tIn, tOut, from) {
+  const hidden = {opacity: 0, transform: from || 'translateY(6px)'};
+  const frames = [[0, hidden], [tIn, hidden], [tIn + 260, {opacity: 1, transform: 'none'}]];
+  if (tOut != null) frames.push([tOut, {opacity: 1, transform: 'none'}], [tOut + 220, {opacity: 0, transform: 'none'}]);
+  return track(node, frames);
+}
+function hide(node, tOut) {
+  return track(node, [[0, {opacity: 1, transform: 'none'}], [tOut, {opacity: 1, transform: 'none'}],
+                      [tOut + 240, {opacity: 0, transform: 'scale(.92)'}]]);
+}
+const CURSOR_SVG = `<svg class="cursor" viewBox="0 0 22 26"><path d="M3 2 L3 21 L8 16.5 L11.5 24 L14.6 22.6 L11.2 15.2 L18 15.2 Z"
+  fill="var(--cursor)" stroke="var(--cursor-edge)" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+function cursor(path, clicks) {
+  // path: [[ms, x, y], ...]  clicks: [ms, ...] (a double click = two close times)
+  const c = add(CURSOR_SVG);
+  const frames = path.map(([t, x, y]) => [t, {transform: `translate(${x}px, ${y}px) scale(1)`, opacity: 1}]);
+  const at = (t) => { // position at time t (linear between path points; good enough for a click)
+    let p = path[0];
+    for (const s of path) if (s[0] <= t) p = s;
+    return p;
+  };
+  for (const t of clicks || []) {
+    const [, x, y] = at(t);
+    frames.push([t, {transform: `translate(${x}px, ${y}px) scale(1)`, opacity: 1}],
+                [t + 90, {transform: `translate(${x}px, ${y}px) scale(.82)`, opacity: 1}],
+                [t + 200, {transform: `translate(${x}px, ${y}px) scale(1)`, opacity: 1}]);
+    const r = add(`<div class="ripple" style="left:${x + 3}px; top:${y + 3}px"></div>`);
+    track(r, [[0, {opacity: 0, transform: 'scale(.3)'}], [t, {opacity: 0, transform: 'scale(.3)'}],
+              [t + 40, {opacity: .95, transform: 'scale(.45)'}], [t + 520, {opacity: 0, transform: 'scale(1.5)'}]]);
+  }
+  track(c, frames.sort((a, b) => a[0] - b[0]));
+  return c;
+}
+function key(label, x, y, presses, cls) {
+  const k = add(`<div class="key ${cls || ''}" style="left:${x}px; top:${y}px">${label}</div>`);
+  const up = {transform: 'translateY(0)', backgroundColor: 'var(--el)', color: 'var(--text)', boxShadow: '0 4px 0 var(--line)'};
+  const down = {transform: 'translateY(3px)', backgroundColor: 'var(--pink)', color: '#fff', boxShadow: '0 1px 0 var(--line)'};
+  const frames = [[0, up]];
+  for (const t of presses) frames.push([t, up], [t + 70, down], [t + 260, down], [t + 380, up]);
+  track(k, frames, 'ease-out');
+  return k;
+}
+function swapText(x, y, before, after, t, cls, size) {
+  const s = add(`<div class="swap t" style="left:${x}px; top:${y}px; ${size ? 'font-size:' + size + 'px' : ''}">
+    <span class="a ${cls?.[0] || ''}">${before}</span><span class="b ${cls?.[1] || ''}">${after}</span></div>`);
+  track(s.querySelector('.a'), [[0, {opacity: 1, transform: 'none'}], [t, {opacity: 1, transform: 'none'}],
+                                [t + 220, {opacity: 0, transform: 'translateY(-8px)'}]]);
+  track(s.querySelector('.b'), [[0, {opacity: 0, transform: 'translateY(8px)'}], [t, {opacity: 0, transform: 'translateY(8px)'}],
+                                [t + 260, {opacity: 1, transform: 'none'}]]);
+  return s;
+}
+function typeIn(x, y, text, t0, step, cls) {
+  const line = add(`<div class="t ${cls || ''}" style="left:${x}px; top:${y}px">${[...text].map(c => `<b style="font-weight:inherit">${c}</b>`).join('')}</div>`);
+  [...line.children].forEach((ch, i) => track(ch, [[0, {opacity: 0}], [t0 + i * step, {opacity: 0}], [t0 + i * step + 40, {opacity: 1}]], 'linear'));
+  return line;
+}
+function wave(x, y, n, color) {
+  const w = add(`<div class="wave" style="left:${x}px; top:${y}px">${Array.from({length: n}, (_, i) =>
+    `<i style="height:${6 + Math.round(Math.abs(Math.sin(i * 1.7) * 18 + Math.sin(i * .6) * 6))}px; ${color ? 'background:' + color : ''}"></i>`).join('')}</div>`);
+  return w;
+}
+function stage() { root.innerHTML = '<div class="stage"></div>'; return root.firstElementChild; }
+
+// ---- scenes ------------------------------------------------------------------------------
+const VIDEO_ICON = `<svg viewBox="0 0 24 24" width="22" height="22"><rect x="2" y="5" width="15" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M17 10l5-3v10l-5-3z" fill="currentColor"/></svg>`;
+const FOLDER_ICON = `<svg viewBox="0 0 24 24" width="30" height="30"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2"/></svg>`;
+const SCENES = {
+  drop() {
+    TOTAL = 3200; stage();
+    const zone = add(`<div class="dash" style="left:150px; top:26px; width:220px; height:118px"></div>`);
+    track(zone, [[0, {borderColor: 'var(--line)', backgroundColor: 'transparent'}], [1000, {borderColor: 'var(--line)', backgroundColor: 'transparent'}],
+                 [1300, {borderColor: 'var(--pink)', backgroundColor: 'color-mix(in srgb, var(--pink) 10%, transparent)'}],
+                 [2000, {borderColor: 'var(--pink)', backgroundColor: 'color-mix(in srgb, var(--pink) 10%, transparent)'}],
+                 [2400, {borderColor: 'var(--line)', backgroundColor: 'transparent'}]]);
+    const file = add(`<div class="box" style="left:0; top:0; width:58px; height:46px; display:grid; place-items:center; color:var(--pink)">${VIDEO_ICON}</div>`);
+    track(file, [[0, {transform: 'translate(36px, 62px)', opacity: 1}], [350, {transform: 'translate(36px, 62px)', opacity: 1}],
+                 [1600, {transform: 'translate(230px, 62px) scale(.9)', opacity: 1}], [1800, {transform: 'translate(230px, 66px) scale(.6)', opacity: 0}],
+                 [3000, {transform: 'translate(230px, 66px) scale(.6)', opacity: 0}], [3150, {transform: 'translate(36px, 62px)', opacity: 0}]]);
+    const chip = add(`<div class="pill" style="left:178px; top:70px; width:164px; height:32px; gap:8px; background:var(--el)">
+      <span class="ok">✓</span><span style="color:var(--pink)">${VIDEO_ICON}</span><span class="muted" style="font-size:12px">clip.mp4</span></div>`);
+    show(chip, 1800, 2950, 'scale(.85)');
+    cursor([[0, 70, 92], [350, 70, 92], [1600, 262, 92], [2200, 300, 128], [3000, 300, 128], [3150, 70, 92]], []);
+  },
+  remove() {
+    TOTAL = 2800; stage();
+    add(`<div class="dash" style="left:40px; top:26px; width:320px; height:118px"></div>`);
+    const chip = add(`<div class="box" style="left:66px; top:62px; width:268px; height:46px; display:flex; align-items:center; gap:10px; padding:0 14px">
+      <span class="ok" style="font-weight:800">✓</span><span style="color:var(--pink)">${VIDEO_ICON}</span>
+      <span class="muted" style="font-size:13px; font-weight:600; flex:1">clip.mp4</span>
+      <span style="width:26px; height:26px; border-radius:50%; display:grid; place-items:center; background:var(--el2); font-weight:800">×</span></div>`);
+    track(chip, [[0, {opacity: 1, transform: 'none'}], [1500, {opacity: 1, transform: 'none'}], [1800, {opacity: 0, transform: 'scale(.9)'}],
+                 [2500, {opacity: 0, transform: 'scale(.9)'}], [2750, {opacity: 1, transform: 'none'}]]);
+    cursor([[0, 180, 140], [300, 180, 140], [1150, 302, 76], [1900, 302, 76], [2300, 230, 140]], [1300]);
+  },
+  language() {
+    TOTAL = 3600; stage();
+    const pill = add(`<div class="pill" style="left:40px; top:30px; width:118px; height:36px; background:var(--el); box-shadow:var(--shadow)"></div>`);
+    swapText(64, 41, '中文', '日本語', 1800, null, 15);
+    add(`<div class="t muted" style="left:134px; top:42px; font-size:12px">▾</div>`);
+    const menu = add(`<div class="box" style="left:40px; top:72px; width:118px; height:76px; padding:8px">
+      <div class="t" style="left:24px; top:14px">中文</div><div class="t" style="left:24px; top:46px">日本語</div></div>`);
+    show(menu, 700, 1700, 'translateY(-6px)');
+    const hl = add(`<div class="abs" style="left:46px; top:110px; width:106px; height:30px; border-radius:9px; background:color-mix(in srgb, var(--pink) 22%, transparent)"></div>`);
+    show(hl, 1300, 1700, 'none');
+    add(`<div class="t muted" style="left:206px; top:38px; font-size:12px">⏱</div>`);
+    const chip = add(`<div class="pill" style="left:228px; top:30px; width:136px; height:36px; background:var(--el2)"></div>`);
+    swapText(246, 41, 'FireRedASR2', 'CTC', 1900, ['accent', 'accent'], 14);
+    add(`<div class="t" style="left:206px; top:96px; font-size:15px">わたしたち</div>`);
+    const ticks = add(`<div class="abs" style="left:206px; top:120px; display:flex; gap:9px"></div>`);
+    for (let i = 0; i < 5; i += 1) {
+      const tick = add(`<i style="display:block; width:6px; height:6px; border-radius:50%; background:var(--muted)"></i>`, ticks);
+      track(tick, [[0, {backgroundColor: 'var(--muted)', transform: 'none'}], [2200 + i * 160, {backgroundColor: 'var(--muted)', transform: 'none'}],
+                   [2260 + i * 160, {backgroundColor: 'var(--pink)', transform: 'scale(1.6)'}], [2420 + i * 160, {backgroundColor: 'var(--pink)', transform: 'none'}]]);
+    }
+    cursor([[0, 120, 120], [300, 120, 120], [600, 100, 48], [1050, 100, 48], [1250, 100, 122], [1900, 100, 122], [2500, 150, 150]], [700, 1350]);
+  },
+  moss() {
+    TOTAL = 3600; stage();
+    const w = wave(30, 70, 34);
+    track(w, [[0, {opacity: 1, transform: 'none'}], [700, {opacity: 1, transform: 'none'}], [1000, {opacity: 0, transform: 'scaleY(.6)'}],
+              [3300, {opacity: 0}], [3550, {opacity: 1, transform: 'none'}]]);
+    const a = add(`<div class="badge" style="left:28px; top:36px; background:var(--green)">A</div>`);
+    const b = add(`<div class="badge" style="left:28px; top:102px; background:var(--pink)">B</div>`);
+    show(a, 900, 3200, 'scale(.6)'); show(b, 1100, 3200, 'scale(.6)');
+    const wa = wave(62, 36, 12, 'var(--green)'); const wb = wave(62, 102, 12, 'var(--pink)');
+    show(wa, 900, 3200, 'translateX(-10px)'); show(wb, 1100, 3200, 'translateX(-10px)');
+    const la = add(`<div class="box" style="left:170px; top:30px; width:200px; height:34px; display:flex; align-items:center; padding:0 12px; font-weight:700; font-size:13px; border-left:4px solid var(--green)">大家好，今天开新档</div>`);
+    const lb = add(`<div class="box" style="left:170px; top:96px; width:200px; height:34px; display:flex; align-items:center; padding:0 12px; font-weight:700; font-size:13px; border-left:4px solid var(--pink)">好耶！终于等到了</div>`);
+    show(la, 1500, 3200, 'translateX(-10px)'); show(lb, 1900, 3200, 'translateX(-10px)');
+  },
+  firered() { timingScene('FireRedASR2', '我们一起去须弥'); },
+  ctc() { timingScene('CTC', 'きょうはロドスへ'); },
+  qwen() {
+    TOTAL = 4000; stage();
+    const rows = [['M', 'var(--green)', '我们一起去须迷'], ['F', 'var(--blue)', '我们一起去须弥'], ['Q', 'var(--lilac)', '我们一起去须弥']];
+    rows.forEach(([b, c, text], i) => {
+      const y = 18 + i * 38;
+      const row = add(`<div class="box" style="left:24px; top:${y}px; width:232px; height:30px; box-shadow:none; background:var(--el2)"></div>`);
+      show(row, 200 + i * 220, 3700, 'translateX(-8px)');
+      const badge = add(`<div class="badge" style="left:30px; top:${y + 4}px; background:${c}">${b}</div>`);
+      show(badge, 200 + i * 220, 3700, 'scale(.6)');
+      const line = add(`<div class="t" style="left:62px; top:${y + 8}px; font-size:13px">${[...text].map((ch, k) => `<b style="font-weight:inherit" class="${i === 0 && k === 6 ? 'odd' : ''}">${ch}</b>`).join('')}</div>`);
+      show(line, 200 + i * 220, 3700, 'translateX(-8px)');
+    });
+    const odd = root.querySelector('.odd');
+    track(odd, [[0, {color: 'var(--text)'}], [1300, {color: 'var(--text)'}], [1500, {color: 'var(--red)'}], [3700, {color: 'var(--red)'}]]);
+    const strike = add(`<div class="abs" style="left:146px; top:33px; width:16px; height:2px; background:var(--red); transform-origin:left"></div>`);
+    track(strike, [[0, {transform: 'scaleX(0)', opacity: 1}], [1550, {transform: 'scaleX(0)', opacity: 1}], [1750, {transform: 'scaleX(1)', opacity: 1}], [3700, {opacity: 1}], [3900, {opacity: 0}]]);
+    const arrow = add(`<div class="t muted" style="left:266px; top:66px; font-size:20px">→</div>`);
+    show(arrow, 1900, 3700, 'translateX(-6px)');
+    const out = add(`<div class="box" style="left:294px; top:52px; width:92px; height:50px; display:grid; place-items:center; font-weight:800; font-size:13px; border:2px solid var(--green)">须弥 <span class="ok" style="position:absolute; right:-7px; top:-9px; width:20px; height:20px; border-radius:50%; background:var(--green); color:#fff; display:grid; place-items:center; font-size:12px">✓</span></div>`);
+    show(out, 2200, 3700, 'scale(.8)');
+    const ticks = add(`<div class="abs" style="left:300px; top:112px; display:flex; gap:10px"></div>`);
+    for (let i = 0; i < 3; i += 1) {
+      const tk = add(`<i style="display:block; width:4px; height:14px; border-radius:2px; background:var(--pink)"></i>`, ticks);
+      show(tk, 2600 + i * 150, 3700, 'scaleY(.2)');
+    }
+  },
+  apikey() {
+    TOTAL = 3400; stage();
+    add(`<div class="t muted" style="left:40px; top:44px; font-size:18px">🔑</div>`);
+    const field = add(`<div class="box" style="left:72px; top:34px; width:220px; height:40px; box-shadow:none; background:var(--el2); border:2px solid transparent"></div>`);
+    track(field, [[0, {borderColor: 'transparent'}], [700, {borderColor: 'transparent'}], [850, {borderColor: 'var(--pink)'}], [2600, {borderColor: 'var(--pink)'}], [2800, {borderColor: 'transparent'}]]);
+    typeIn(88, 47, 'sk-••••••••••', 1000, 70, '');
+    const btn = add(`<div class="pill" style="left:304px; top:34px; width:62px; height:40px; background:var(--el)">✓?</div>`);
+    const ok = add(`<div class="pill" style="left:120px; top:100px; width:160px; height:34px; gap:8px; background:color-mix(in srgb, var(--green) 18%, transparent)"><span class="ok">✓</span><span class="ok" style="font-size:12px">OK</span></div>`);
+    show(ok, 2500, 3200, 'scale(.85)');
+    cursor([[0, 170, 140], [300, 170, 140], [700, 150, 52], [1000, 150, 52], [2100, 330, 52], [2700, 330, 52], [3100, 250, 140]], [760, 2250]);
+  },
+  glossary() {
+    TOTAL = 3600; stage();
+    const field = add(`<div class="box" style="left:28px; top:26px; width:200px; height:40px; box-shadow:none; background:var(--el2)"></div>`);
+    typeIn(44, 39, '原神', 300, 220, '');
+    const sw = add(`<div class="abs" style="left:250px; top:32px; width:52px; height:28px; border-radius:14px; background:var(--el2)"></div>`);
+    track(sw, [[0, {backgroundColor: 'var(--el2)'}], [1300, {backgroundColor: 'var(--el2)'}], [1450, {backgroundColor: 'var(--pink)'}]]);
+    const knob = add(`<div class="abs" style="left:254px; top:36px; width:20px; height:20px; border-radius:50%; background:#fff; box-shadow:var(--shadow)"></div>`);
+    track(knob, [[0, {transform: 'none'}], [1300, {transform: 'none'}], [1480, {transform: 'translateX(24px)'}]]);
+    add(`<div class="box" style="left:28px; top:96px; width:344px; height:44px"></div>`);
+    add(`<div class="t" style="left:46px; top:111px; font-size:15px">听说</div>`);
+    swapText(84, 111, '至东', '至冬', 2200, ['bad', 'ok'], 15);
+    add(`<div class="t" style="left:120px; top:111px; font-size:15px">下雪了</div>`);
+    const ul = add(`<div class="abs" style="left:84px; top:132px; width:32px; height:3px; border-radius:2px; background:var(--green); transform-origin:left"></div>`);
+    track(ul, [[0, {transform: 'scaleX(0)'}], [2400, {transform: 'scaleX(0)'}], [2650, {transform: 'scaleX(1)'}]]);
+    cursor([[0, 200, 150], [900, 200, 150], [1250, 276, 46], [1700, 276, 46], [2200, 330, 150]], [1320]);
+  },
+  start() {
+    TOTAL = 3000; stage();
+    const btn = add(`<div class="pill" style="left:110px; top:28px; width:180px; height:48px; background:var(--accent); color:#fff; font-size:20px; box-shadow:var(--shadow)">▶</div>`);
+    const bar = add(`<div class="bar" style="left:80px; top:104px; width:240px; height:10px"></div>`);
+    const fill = add(`<div class="fill"></div>`, bar);
+    track(fill, [[0, {transform: 'scaleX(0)'}], [900, {transform: 'scaleX(0)'}], [2100, {transform: 'scaleX(1)'}], [2800, {transform: 'scaleX(1)'}]], 'ease-in-out');
+    const done = add(`<div class="abs ok" style="left:186px; top:124px; width:28px; height:28px; border-radius:50%; background:var(--green); color:#fff; display:grid; place-items:center; font-weight:900">✓</div>`);
+    show(done, 2150, 2800, 'scale(.5)');
+    cursor([[0, 260, 140], [300, 260, 140], [700, 206, 56], [1200, 206, 56], [1600, 300, 140]], [760]);
+  },
+  gl_check() {
+    TOTAL = 3000; stage();
+    const names = ['明日方舟', '原神', '洛克王国'];
+    add(`<div class="box" style="left:60px; top:16px; width:280px; height:138px"></div>`);
+    names.forEach((n, i) => {
+      const y = 34 + i * 38;
+      const c = add(`<div class="check" style="left:84px; top:${y}px"><i>✓</i></div>`);
+      add(`<div class="t" style="left:116px; top:${y + 2}px; font-size:14px">${n}</div>`);
+      if (i === 1) {
+        track(c.querySelector('i'), [[0, {opacity: 0, transform: 'scale(.4)'}], [1150, {opacity: 0, transform: 'scale(.4)'}], [1300, {opacity: 1, transform: 'scale(1.15)'}], [1450, {opacity: 1, transform: 'none'}], [2700, {opacity: 1}], [2900, {opacity: 0}]]);
+        const hl = add(`<div class="abs" style="left:72px; top:${y - 9}px; width:256px; height:36px; border-radius:10px; background:color-mix(in srgb, var(--pink) 14%, transparent)"></div>`);
+        show(hl, 1200, 2700, 'none');
+      }
+    });
+    cursor([[0, 260, 150], [300, 260, 150], [1000, 92, 79], [1700, 92, 79], [2300, 250, 150]], [1100]);
+  },
+  gl_ai() {
+    TOTAL = 3400; stage();
+    const btn = add(`<div class="pill" style="left:288px; top:14px; width:90px; height:34px; background:var(--el); border:2px solid var(--pink); color:var(--pink)">✦ AI</div>`);
+    const rows = [['听说', '至东', '下雪了'], ['又在吵的', '派门', ''], ['这关好难啊', '', '']];
+    rows.forEach(([a, wrong, c], i) => {
+      const y = 60 + i * 34;
+      add(`<div class="box" style="left:22px; top:${y}px; width:356px; height:28px; box-shadow:none; background:var(--el2)"></div>`);
+      add(`<div class="t" style="left:36px; top:${y + 7}px; font-size:13px">${a}<span class="w${i}">${wrong}</span>${c}</div>`);
+      if (wrong) {
+        const span = root.querySelector('.w' + i);
+        track(span, [[0, {color: 'var(--text)', textDecorationColor: 'transparent'}], [1300 + i * 250, {color: 'var(--text)'}],
+                     [1450 + i * 250, {color: 'var(--red)'}]]);
+        span.style.textDecoration = 'underline wavy'; span.style.textUnderlineOffset = '4px';
+        const sug = add(`<div class="pill" style="left:248px; top:${y + 3}px; height:22px; padding:0 10px; background:color-mix(in srgb, var(--green) 20%, transparent); color:var(--green); font-size:12px">→ ${i === 0 ? '至冬' : '派蒙'}</div>`);
+        show(sug, 1500 + i * 250, 3200, 'translateX(10px)');
+      }
+    });
+    cursor([[0, 220, 150], [300, 220, 150], [800, 330, 26], [1300, 330, 26], [1800, 360, 150]], [900]);
+  },
+  gl_fix() {
+    TOTAL = 3400; stage();
+    add(`<div class="box" style="left:22px; top:36px; width:356px; height:44px"></div>`);
+    add(`<div class="t" style="left:40px; top:51px; font-size:15px">听说</div>`);
+    swapText(78, 51, '<span style="text-decoration:underline wavy; text-underline-offset:4px">至东</span>', '至冬', 1450, ['bad', 'ok'], 15);
+    add(`<div class="t" style="left:114px; top:51px; font-size:15px">下了很大的雪</div>`);
+    const sug = add(`<div class="pill" style="left:268px; top:46px; height:26px; padding:0 12px; background:color-mix(in srgb, var(--green) 20%, transparent); color:var(--green); font-size:13px">→ 至冬</div>`);
+    track(sug, [[0, {opacity: 1, transform: 'none'}], [1400, {opacity: 1, transform: 'scale(1.06)'}], [1600, {opacity: 0, transform: 'scale(.8)'}], [3100, {opacity: 0}], [3300, {opacity: 1, transform: 'none'}]]);
+    const flash = add(`<div class="abs" style="left:70px; top:42px; width:46px; height:32px; border-radius:10px; background:color-mix(in srgb, var(--green) 25%, transparent)"></div>`);
+    track(flash, [[0, {opacity: 0}], [1450, {opacity: 0}], [1600, {opacity: 1}], [2300, {opacity: 0}]]);
+    const count = add(`<div class="pill" style="left:150px; top:108px; width:100px; height:30px; gap:6px; background:var(--el2)"><span class="ok">✓</span><span>1</span></div>`);
+    show(count, 1700, 3100, 'scale(.8)');
+    add(`<div class="key wide" style="left:318px; top:110px; font-size:12px">Ctrl+Z</div>`).style.opacity = .55;
+    cursor([[0, 200, 150], [300, 200, 150], [1000, 296, 56], [1500, 296, 56], [2100, 240, 150]], [1250]);
+  },
+  gl_back() {
+    TOTAL = 2600; stage();
+    const page = add(`<div class="box" style="left:20px; top:16px; width:360px; height:138px"></div>`);
+    add(`<div class="pill" style="left:32px; top:26px; width:52px; height:30px; background:var(--el2); font-size:16px">←</div>`, page.parentElement);
+    track(page, [[0, {transform: 'none', opacity: 1}], [1150, {transform: 'none', opacity: 1}], [1550, {transform: 'translateX(60px)', opacity: 0}], [2300, {opacity: 0}], [2550, {transform: 'none', opacity: 1}]]);
+    const result = add(`<div class="box" style="left:96px; top:46px; width:208px; height:78px; display:grid; place-items:center; font-weight:800; font-size:20px"><span class="ok">✓</span></div>`);
+    show(result, 1450, 2300, 'scale(.9)');
+    cursor([[0, 200, 150], [300, 200, 150], [800, 54, 38], [1300, 54, 38], [1800, 200, 150]], [950]);
+  },
+  export() {
+    TOTAL = 3400; stage();
+    const btn = add(`<div class="pill" style="left:30px; top:24px; width:92px; height:40px; background:var(--el); box-shadow:var(--shadow); font-size:18px">⤓</div>`);
+    ['SRT', 'ASS', 'TXT'].forEach((f, i) => {
+      const chip = add(`<div class="pill" style="left:${150 + i * 74}px; top:28px; width:62px; height:32px; background:color-mix(in srgb, var(--pink) 18%, transparent); color:var(--pink)">${f}</div>`);
+      show(chip, 900 + i * 150, 2300, 'translateY(-8px)');
+      const fly = add(`<div class="pill" style="left:${150 + i * 74}px; top:28px; width:62px; height:32px; background:color-mix(in srgb, var(--pink) 18%, transparent); color:var(--pink)">${f}</div>`);
+      track(fly, [[0, {opacity: 0, transform: 'none'}], [2300, {opacity: 1, transform: 'none'}], [2800, {opacity: 0, transform: `translate(${170 - (150 + i * 74)}px, 80px) scale(.4)`}]]);
+    });
+    add(`<div class="abs muted" style="left:182px; top:100px; color:var(--yellow)">${FOLDER_ICON}</div>`);
+    cursor([[0, 220, 150], [300, 220, 150], [600, 70, 40], [1000, 70, 40], [1500, 260, 150]], [700]);
+  },
+  studio_open() {
+    TOTAL = 3000; stage();
+    const card = add(`<div class="box" style="left:120px; top:40px; width:160px; height:72px; display:flex; align-items:center; gap:10px; padding:0 18px"><span class="pill" style="position:static; width:36px; height:36px; background:color-mix(in srgb, var(--pink) 22%, transparent); color:var(--pink)">CC</span><span class="muted" style="font-weight:700">· · ·</span></div>`);
+    track(card, [[0, {opacity: 1, transform: 'none'}], [1100, {opacity: 1, transform: 'scale(.97)'}], [1450, {opacity: 0, transform: 'scale(1.3)'}], [2700, {opacity: 0}], [2950, {opacity: 1, transform: 'none'}]]);
+    const ws = add(`<div class="abs" style="left:20px; top:16px; width:360px; height:138px"></div>`);
+    add(`<div class="box" style="left:0; top:0; width:92px; height:94px; box-shadow:none; background:var(--el2)"></div>`, ws);
+    add(`<div class="box" style="left:100px; top:0; width:260px; height:94px; box-shadow:none; background:#000"></div>`, ws);
+    add(`<div class="box" style="left:0; top:102px; width:360px; height:36px; box-shadow:none; background:var(--el2)"></div>`, ws);
+    show(ws, 1350, 2700, 'scale(.8)');
+    cursor([[0, 260, 150], [300, 260, 150], [800, 160, 74], [1250, 160, 74], [1700, 300, 150]], [950]);
+  },
+  edit() {
+    TOTAL = 4400; stage();
+    add(`<div class="box" style="left:14px; top:100px; width:372px; height:56px; box-shadow:none; background:var(--el2)"></div>`);
+    const blk = add(`<div class="block" style="left:40px; top:115px; width:150px; background:color-mix(in srgb, var(--pink) 30%, var(--el)); color:var(--text)"></div>`);
+    const blkText = swapText(49, 122, '听说至东下雪了', '听说至冬下雪了', 3550, null, 12);
+    add(`<div class="block" style="left:200px; top:115px; width:120px; background:var(--el); color:var(--muted)">派门又在吵</div>`);
+    const editor = add(`<div class="abs" style="left:40px; top:26px; width:226px; height:46px"></div>`);
+    add(`<div class="box" style="left:0; top:0; width:226px; height:46px; border:2px solid var(--pink)"></div>`, editor);
+    add(`<div class="t" style="left:16px; top:16px; font-size:15px">听说</div>`, editor);
+    const word = add(`<div class="swap t" style="left:48px; top:16px; font-size:15px"><span class="a bad">至东</span><span class="b ok">至冬</span></div>`, editor);
+    track(word.querySelector('.a'), [[0, {opacity: 1}], [2300, {opacity: 1}], [2450, {opacity: 0}]]);
+    track(word.querySelector('.b'), [[0, {opacity: 0}], [2450, {opacity: 0}], [2650, {opacity: 1}]]);
+    add(`<div class="t" style="left:80px; top:16px; font-size:15px">下雪了</div>`, editor);
+    const sel = add(`<div class="abs" style="left:46px; top:12px; width:34px; height:24px; border-radius:6px; background:color-mix(in srgb, var(--pink) 30%, transparent)"></div>`, editor);
+    track(sel, [[0, {opacity: 0}], [1900, {opacity: 0}], [2000, {opacity: 1}], [2400, {opacity: 1}], [2450, {opacity: 0}]], 'step-end');
+    show(editor, 1300, 3500, 'translateY(8px)');
+    const enter = key('⏎', 280, 30, [3250], 'wide');
+    show(enter, 2800, 3700, 'scale(.85)');
+    add(`<div class="or" style="left:338px; top:44px">/</div>`);
+    key('E', 350, 30, [500]);
+    cursor([[0, 230, 158], [300, 230, 158], [900, 110, 124], [1300, 110, 124], [1700, 230, 165], [4200, 230, 165]], [1000, 1160]);
+  },
+  review() {
+    TOTAL = 4800; stage();
+    key('R', 20, 18, [300]);
+    const panel = add(`<div class="box" style="left:72px; top:12px; width:310px; height:146px"></div>`);
+    show(panel, 600, 4500, 'translateX(10px)');
+    const opts = [['1', 'var(--green)', 'M', '虚迷的风景真好看'], ['2', 'var(--blue)', 'F', '须弥的风景真好看'], ['3', 'var(--lilac)', 'Q', '须迷的风景真好看']];
+    opts.forEach(([n, c, m, text], i) => {
+      const y = 22 + i * 42;
+      const row = add(`<div class="box" style="left:84px; top:${y}px; width:286px; height:34px; box-shadow:none; background:var(--el2); border:2px solid transparent"></div>`);
+      show(row, 800 + i * 160, 4500, 'translateX(10px)');
+      if (i === 1) track(row, [[0, {borderColor: 'transparent', opacity: 0}], [800 + i * 160, {opacity: 0, borderColor: 'transparent'}], [1060 + i * 160, {opacity: 1, borderColor: 'transparent'}],
+                               [2150, {opacity: 1, borderColor: 'transparent'}], [2300, {opacity: 1, borderColor: 'var(--pink)'}], [4500, {opacity: 1, borderColor: 'var(--pink)'}], [4700, {opacity: 0}]]);
+      const num = add(`<div class="badge" style="left:92px; top:${y + 6}px; background:var(--el); color:var(--text); border:1.5px solid var(--line)">${n}</div>`);
+      show(num, 800 + i * 160, 4500, 'scale(.6)');
+      const badge = add(`<div class="badge" style="left:120px; top:${y + 6}px; background:${c}">${m}</div>`);
+      show(badge, 800 + i * 160, 4500, 'scale(.6)');
+      const line = add(`<div class="t" style="left:152px; top:${y + 10}px; font-size:13px">${text}</div>`);
+      show(line, 800 + i * 160, 4500, 'translateX(10px)');
+      if (i === 1) {
+        const tick = add(`<div class="abs" style="left:344px; top:${y + 7}px; width:20px; height:20px; border-radius:50%; background:var(--green); color:#fff; display:grid; place-items:center; font-weight:900; font-size:12px">✓</div>`);
+        show(tick, 2300, 4500, 'scale(.5)');
+        const caret = add(`<div class="caret" style="left:${152 + 8 * 13 + 4}px; top:${y + 9}px"></div>`);
+        track(caret, [[0, {opacity: 0}], [3500, {opacity: 0}], [3600, {opacity: 1}], [3850, {opacity: 0}], [4100, {opacity: 1}], [4400, {opacity: 0}]], 'step-end');
+      }
+    });
+    key('2', 20, 66, [2100]);
+    key('E', 20, 114, [3300]);
+  },
+  speakers() {
+    TOTAL = 3800; stage();
+    add(`<div class="box" style="left:20px; top:16px; width:170px; height:138px"></div>`);
+    const dotA = add(`<div class="abs" style="left:38px; top:42px; width:16px; height:16px; border-radius:50%; background:var(--green)"></div>`);
+    track(dotA, [[0, {backgroundColor: 'var(--green)'}], [2600, {backgroundColor: 'var(--green)'}], [2800, {backgroundColor: 'var(--yellow)'}], [3600, {backgroundColor: 'var(--yellow)'}], [3780, {backgroundColor: 'var(--green)'}]]);
+    swapText(64, 43, '说话人 A', '主播', 1700, null, 14);
+    const field = add(`<div class="abs" style="left:58px; top:32px; width:118px; height:34px; border-radius:9px; border:2px solid var(--pink)"></div>`);
+    show(field, 1100, 2300, 'none');
+    add(`<div class="abs" style="left:38px; top:96px; width:16px; height:16px; border-radius:50%; background:var(--pink)"></div>`);
+    add(`<div class="t" style="left:64px; top:97px; font-size:14px">说话人 B</div>`);
+    add(`<div class="box" style="left:206px; top:44px; width:176px; height:40px; box-shadow:none; background:var(--el2)"></div>`);
+    const tag = add(`<div class="pill" style="left:216px; top:52px; height:24px; padding:0 10px; font-size:12px; background:var(--el)"></div>`);
+    swapText(226, 58, 'A', '主播', 1800, null, 12);
+    add(`<div class="t" style="left:272px; top:58px; font-size:13px">大家好</div>`);
+    const tagDot = add(`<div class="abs" style="left:208px; top:56px; width:4px; height:16px; border-radius:2px; background:var(--green)"></div>`);
+    track(tagDot, [[0, {backgroundColor: 'var(--green)'}], [2600, {backgroundColor: 'var(--green)'}], [2800, {backgroundColor: 'var(--yellow)'}], [3600, {backgroundColor: 'var(--yellow)'}], [3780, {backgroundColor: 'var(--green)'}]]);
+    cursor([[0, 120, 150], [300, 120, 150], [800, 100, 50], [1300, 100, 50], [2300, 46, 50], [2900, 46, 50], [3400, 140, 150]], [900, 1040, 2450]);
+  },
+  replace() {
+    TOTAL = 3800; stage();
+    add(`<div class="box" style="left:20px; top:14px; width:150px; height:34px; box-shadow:none; background:var(--el2)"></div>`);
+    add(`<div class="t bad" style="left:36px; top:24px; font-size:14px">派门</div>`);
+    add(`<div class="t muted" style="left:178px; top:22px; font-size:16px">→</div>`);
+    add(`<div class="box" style="left:204px; top:14px; width:110px; height:34px; box-shadow:none; background:var(--el2)"></div>`);
+    typeIn(220, 24, '派蒙', 400, 220, 'ok');
+    add(`<div class="pill" style="left:322px; top:14px; width:58px; height:34px; background:var(--el); border:2px solid var(--pink); color:var(--pink)">⇄</div>`);
+    for (let i = 0; i < 3; i += 1) {
+      const y = 62 + i * 31;
+      add(`<div class="box" style="left:20px; top:${y}px; width:300px; height:25px; box-shadow:none; background:var(--el2)"></div>`);
+      add(`<div class="t" style="left:34px; top:${y + 6}px; font-size:12.5px">${['又是', '带上', '还好有'][i]}</div>`);
+      swapText([62, 62, 76][i], y + 6, '派门', '派蒙', 1700 + i * 160, ['bad', 'ok'], 12.5);
+    }
+    const count = add(`<div class="pill" style="left:330px; top:90px; width:52px; height:30px; background:color-mix(in srgb, var(--green) 20%, transparent); color:var(--green)">×3</div>`);
+    show(count, 2300, 3500, 'scale(.7)');
+    cursor([[0, 250, 150], [1100, 250, 150], [1450, 350, 26], [1900, 350, 26], [2400, 360, 150]], [1550]);
+  },
+  qw() {
+    TOTAL = 4400; stage();
+    add(`<div class="box" style="left:14px; top:40px; width:372px; height:90px; box-shadow:none; background:var(--el2)"></div>`);
+    const blk = add(`<div class="block" style="left:120px; top:72px; width:150px; background:color-mix(in srgb, var(--pink) 30%, var(--el))">大家好今天开新档</div>`);
+    track(blk, [[0, {left: '120px', width: '150px'}], [1100, {left: '120px', width: '150px'}], [1300, {left: '90px', width: '180px'}],
+                [2800, {left: '90px', width: '180px'}], [3000, {left: '90px', width: '220px'}], [4100, {left: '90px', width: '220px'}], [4350, {left: '120px', width: '150px'}]]);
+    const head = add(`<div class="abs" style="left:0; top:46px; width:2px; height:78px; background:var(--pink)"></div>`);
+    track(head, [[0, {transform: 'translateX(90px)'}], [1300, {transform: 'translateX(90px)'}], [2300, {transform: 'translateX(310px)'}], [4100, {transform: 'translateX(310px)'}], [4350, {transform: 'translateX(90px)'}]], 'ease-in-out');
+    key('Q', 40, 136 - 120, [900]);
+    key('W', 330, 136 - 120, [2600]);
+  },
+  punct() {
+    TOTAL = 4200; stage();
+    add(`<div class="abs" style="left:100px; top:20px; width:200px; height:34px; border-radius:17px; background:var(--el2)"></div>`);
+    const knob = add(`<div class="abs" style="left:104px; top:24px; width:62px; height:26px; border-radius:13px; background:var(--accent)"></div>`);
+    track(knob, [[0, {transform: 'none'}], [1000, {transform: 'none'}], [1250, {transform: 'translateX(66px)'}], [2600, {transform: 'translateX(66px)'}], [2850, {transform: 'translateX(130px)'}], [4000, {transform: 'translateX(130px)'}], [4180, {transform: 'none'}]]);
+    const labels = ['原文', '，。', '无'];
+    labels.forEach((s, i) => {
+      const lab = add(`<div class="t" style="left:${120 + i * 66}px; top:30px; width:30px; text-align:center; font-size:13px"><span>${s}</span></div>`);
+      const on = [[0, 1000], [1250, 2600], [2850, 4000]][i];
+      const frames = [[0, {color: i === 0 ? '#ffffff' : 'var(--muted)'}]];
+      if (i === 0) frames.push([1000, {color: '#ffffff'}], [1150, {color: 'var(--muted)'}], [4000, {color: 'var(--muted)'}], [4150, {color: '#ffffff'}]);
+      else frames.push([on[0] - 100, {color: 'var(--muted)'}], [on[0], {color: '#ffffff'}], [on[1], {color: '#ffffff'}], [on[1] + 150, {color: 'var(--muted)'}]);
+      track(lab.querySelector('span'), frames, 'linear');
+    });
+    add(`<div class="box" style="left:40px; top:78px; width:320px; height:56px"></div>`);
+    const lines = ['大家好 今天我们来看看', '大家好<b class="accent">，</b>今天我们来看看<b class="accent">。</b>', '大家好今天我们来看看'];
+    const spans = [[0, 1150, 4050], [1150, 2750], [2750, 4050]];
+    lines.forEach((text, i) => {
+      const line = add(`<div class="t" style="left:62px; top:96px; font-size:18px">${text}</div>`);
+      const [a, b, c] = spans[i];
+      const frames = i === 0
+        ? [[0, {opacity: 1}], [b, {opacity: 1}], [b + 150, {opacity: 0}], [c, {opacity: 0}], [c + 150, {opacity: 1}]]
+        : [[0, {opacity: 0}], [a, {opacity: 0}], [a + 150, {opacity: 1}], [b, {opacity: 1}], [b + 150, {opacity: 0}]];
+      track(line, frames, 'linear');
+    });
+    cursor([[0, 230, 150], [700, 230, 150], [950, 200, 40], [1300, 200, 40], [2400, 264, 40], [3000, 264, 40], [3500, 300, 150]], [1050, 2650]);
+  },
+  burn() {
+    TOTAL = 3400; stage();
+    const frame = add(`<div class="box" style="left:60px; top:18px; width:200px; height:122px; background:linear-gradient(135deg, #3a2f45, #1e2a3a)"></div>`);
+    const sub = add(`<div class="t" style="left:96px; top:110px; font-size:13px; color:#fff; text-shadow:0 2px 4px #000">大家好今天开新档</div>`);
+    track(sub, [[0, {opacity: .35, transform: 'translateY(-14px)'}], [700, {opacity: .35, transform: 'translateY(-14px)'}], [1300, {opacity: 1, transform: 'none'}]]);
+    const ring = add(`<svg class="abs" style="left:288px; top:46px" width="70" height="70" viewBox="0 0 70 70"><circle cx="35" cy="35" r="28" fill="none" stroke="var(--el2)" stroke-width="7"/><circle class="arc" cx="35" cy="35" r="28" fill="none" stroke="var(--pink)" stroke-width="7" stroke-linecap="round" stroke-dasharray="176" transform="rotate(-90 35 35)"/></svg>`);
+    track(ring.querySelector('.arc'), [[0, {strokeDashoffset: 176}], [800, {strokeDashoffset: 176}], [2400, {strokeDashoffset: 0}]], 'ease-in-out');
+    const ok = add(`<div class="abs" style="left:309px; top:67px; width:28px; height:28px; border-radius:50%; background:var(--green); color:#fff; display:grid; place-items:center; font-weight:900">✓</div>`);
+    show(ok, 2450, 3200, 'scale(.4)');
+  },
+};
+function timingScene(model, text) {
+  TOTAL = 3600; stage();
+  const chip = add(`<div class="pill" style="left:24px; top:18px; height:28px; padding:0 12px; background:color-mix(in srgb, var(--pink) 18%, transparent); color:var(--pink); font-size:12px">${model}</div>`);
+  const chars = [...text];
+  const x0 = 40, step = 40;
+  chars.forEach((ch, i) => {
+    const c = add(`<div class="t" style="left:${x0 + i * step}px; top:70px; font-size:20px; color:var(--muted)">${ch}</div>`);
+    const at = 600 + i * 260;
+    track(c, [[0, {color: 'var(--muted)', transform: 'none'}], [at, {color: 'var(--muted)', transform: 'none'}], [at + 80, {color: 'var(--pink)', transform: 'translateY(-5px) scale(1.15)'}], [at + 260, {color: 'var(--text)', transform: 'none'}]]);
+    const tick = add(`<div class="abs" style="left:${x0 + i * step + 8}px; top:104px; width:4px; height:14px; border-radius:2px; background:var(--muted)"></div>`);
+    track(tick, [[0, {backgroundColor: 'var(--muted)', opacity: .4}], [at, {backgroundColor: 'var(--muted)', opacity: .4}], [at + 80, {backgroundColor: 'var(--pink)', opacity: 1}]]);
+  });
+  const head = add(`<div class="abs" style="left:0; top:60px; width:2px; height:64px; background:var(--pink)"></div>`);
+  track(head, [[0, {transform: `translateX(${x0 - 6}px)`}], [600, {transform: `translateX(${x0 - 6}px)`}], [600 + chars.length * 260, {transform: `translateX(${x0 + chars.length * step}px)`}], [3400, {transform: `translateX(${x0 + chars.length * step}px)`}]], 'linear');
+  const again = add(`<div class="pill" style="left:24px; top:132px; height:24px; padding:0 10px; background:var(--el2); color:var(--muted); font-size:12px">↻ ${text}</div>`);
+  show(again, 2700, 3400, 'translateY(6px)');
+}
+(SCENES[op] || SCENES.drop)();
+window.SCENES = Object.keys(SCENES);
+window.SCENE_MS = TOTAL;
+window.SIZE = [400, 170];
+window.seek = (ms) => { for (const a of document.getAnimations()) { a.pause(); a.currentTime = ms; } };
+</script>
+</body>
+</html>

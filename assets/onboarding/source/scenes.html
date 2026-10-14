@@ -1,0 +1,249 @@
+<!doctype html>
+<!--
+  兔白字幕 first-run chooser animations (2026-10-14).
+  One scene per card, chosen with ?scene=local|cloud|light|apple&theme=dark|light.
+  Every animation runs on the scene's own loop length so a renderer can seek
+  any moment with document.getAnimations(); scripts/render_onboarding_scenes.py
+  turns them into the transparent animated WebP files next to this folder.
+  Captions are drawn by the app (translatable); the sample subtitles here are
+  illustration content.
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --green: #3FBF8F; --pink: #E77FA8; --yellow: #F2B33D; --blue: #5B9DF0; --lilac: #A98BF2; --red: #F3866B;
+    --text: #F6F1F8; --muted: #A79FB0; --panel: rgba(255,255,255,.07); --panel-strong: rgba(255,255,255,.12);
+    --shadow: 0 6px 18px rgba(0,0,0,.28);
+  }
+  :root[data-theme="light"] {
+    --text: #2B2630; --muted: #7C7383; --panel: rgba(40,30,50,.06); --panel-strong: rgba(40,30,50,.10);
+    --shadow: 0 6px 16px rgba(60,40,70,.14);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; width: 260px; height: 124px; overflow: hidden; }
+  body { font-family: "Source Han Sans SC", "Microsoft YaHei UI", "PingFang SC", sans-serif; color: var(--text); }
+  .stage { position: relative; width: 260px; height: 124px; border-radius: 18px; overflow: hidden;
+           background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--c) 22%, transparent), transparent 60%),
+                       color-mix(in srgb, var(--c) 9%, transparent); }
+  .act { position: absolute; inset: 0; opacity: 0; }
+  .glow { position: absolute; width: 140px; height: 140px; border-radius: 50%; filter: blur(30px);
+          background: color-mix(in srgb, var(--c) 30%, transparent); }
+
+  /* ---------- local: 9.6 s = speakers | review | words ---------- */
+  .local { --c: var(--green); }
+  .local .a1 { animation: act1 9.6s infinite; }
+  .local .a2 { animation: act2 9.6s infinite; }
+  .local .a3 { animation: act3 9.6s infinite; }
+  @keyframes act1 { 0% {opacity:0} 3% {opacity:1} 31% {opacity:1} 34% {opacity:0} 100% {opacity:0} }
+  @keyframes act2 { 0%,32% {opacity:0} 35% {opacity:1} 64% {opacity:1} 67% {opacity:0} 100% {opacity:0} }
+  @keyframes act3 { 0%,65% {opacity:0} 68% {opacity:1} 97% {opacity:1} 100% {opacity:0} }
+
+  /* act 1: who spoke */
+  .speaker { position: absolute; left: 18px; width: 34px; height: 34px; border-radius: 50%;
+             display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 15px; line-height: 1; box-shadow: var(--shadow); }
+  .speaker.A { top: 36px; background: var(--green); }
+  .speaker.B { top: 80px; background: var(--pink); }
+  .ring { position: absolute; inset: -6px; border-radius: 50%; border: 2px solid currentColor; opacity: 0; }
+  .speaker.A .ring { color: var(--green); animation: ringA 9.6s infinite; }
+  .speaker.B .ring { color: var(--pink); animation: ringB 9.6s infinite; }
+  .speaker .ring.r2 { animation-delay: -.35s; }
+  @keyframes ringA { 0% {opacity:0; transform: scale(.9)} 3% {opacity:.9} 6% {opacity:0; transform: scale(1.35)}
+                     6.1% {opacity:.9; transform: scale(.9)} 9% {opacity:0; transform: scale(1.35)}
+                     9.1% {opacity:.9; transform: scale(.9)} 12% {opacity:0; transform: scale(1.35)} 100% {opacity:0} }
+  @keyframes ringB { 0%,15% {opacity:0; transform: scale(.9)} 15.1% {opacity:.9} 18% {opacity:0; transform: scale(1.35)}
+                     18.1% {opacity:.9; transform: scale(.9)} 21% {opacity:0; transform: scale(1.35)}
+                     21.1% {opacity:.9; transform: scale(.9)} 24% {opacity:0; transform: scale(1.35)} 100% {opacity:0} }
+  .bubble { position: absolute; left: 66px; right: 14px; height: 30px; border-radius: 15px; padding: 0 14px;
+            display: flex; align-items: center; font-weight: 600; font-size: 13px; line-height: 1; background: var(--panel-strong);
+            box-shadow: var(--shadow); opacity: 0; }
+  .bubble::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 4px; border-radius: 2px; }
+  .bubble.A { top: 38px; animation: bubbleA 9.6s cubic-bezier(.2,.8,.2,1) infinite; }
+  .bubble.A::before { background: var(--green); }
+  .bubble.B { top: 82px; animation: bubbleB 9.6s cubic-bezier(.2,.8,.2,1) infinite; }
+  .bubble.B::before { background: var(--pink); }
+  @keyframes bubbleA { 0%,4% {opacity:0; transform: translateX(-10px)} 8% {opacity:1; transform: none} 31% {opacity:1} 34% {opacity:0} 100% {opacity:0} }
+  @keyframes bubbleB { 0%,16% {opacity:0; transform: translateX(-10px)} 20% {opacity:1; transform: none} 31% {opacity:1} 34% {opacity:0} 100% {opacity:0} }
+
+  /* act 2: three models, keep what agrees */
+  .row { position: absolute; left: 14px; right: 14px; height: 24px; border-radius: 12px; padding: 0 10px 0 6px;
+         display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1.5px solid transparent; opacity: 0; }
+  .row .model { min-width: 58px; height: 18px; border-radius: 9px; padding: 0 8px; display: grid; place-items: center;
+                font-weight: 700; font-size: 10.5px; line-height: 1; color: var(--muted); background: var(--panel-strong); }
+  .row .txt { font-weight: 600; font-size: 13px; line-height: 1; letter-spacing: .5px; flex: 1; }
+  .row .mark { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; color: #fff;
+               font-weight: 800; font-size: 11px; line-height: 1; opacity: 0; }
+  .row.r1 { top: 36px; animation: row1 9.6s cubic-bezier(.2,.8,.2,1) infinite; }
+  .row.r2 { top: 63px; animation: row2 9.6s cubic-bezier(.2,.8,.2,1) infinite; }
+  .row.r3 { top: 90px; animation: row3 9.6s cubic-bezier(.2,.8,.2,1) infinite; }
+  @keyframes row1 { 0%,35% {opacity:0; transform: translateY(6px)} 38% {opacity:1; transform:none} 100% {opacity:1} }
+  @keyframes row2 { 0%,38% {opacity:0; transform: translateY(6px)} 41% {opacity:1; transform:none} 100% {opacity:1} }
+  @keyframes row3 { 0%,41% {opacity:0; transform: translateY(6px)} 44% {opacity:1; transform:none} 100% {opacity:1} }
+  .row.ok { animation-name: row1, agree; animation-duration: 9.6s, 9.6s; animation-iteration-count: infinite, infinite; }
+  .row.r2.ok { animation-name: row2, agree; }
+  @keyframes agree { 0%,50% {border-color: transparent; background: var(--panel)}
+                     53%,100% {border-color: var(--green); background: color-mix(in srgb, var(--green) 16%, transparent)} }
+  .row.ok .model { animation: okModel 9.6s infinite; }
+  @keyframes okModel { 0%,50% {color: var(--muted)} 53%,100% {color: var(--green)} }
+  .row.ok .mark { background: var(--green); animation: markIn 9.6s cubic-bezier(.3,1.6,.5,1) infinite; }
+  .row.bad .mark { background: var(--red); animation: markIn 9.6s cubic-bezier(.3,1.6,.5,1) infinite; }
+  @keyframes markIn { 0%,51% {opacity:0; transform: scale(.4)} 55%,100% {opacity:1; transform: none} }
+  .row.bad { animation-name: row3, dim; animation-duration: 9.6s, 9.6s; animation-iteration-count: infinite, infinite; }
+  @keyframes dim { 0%,50% {background: var(--panel)} 53%,100% {background: color-mix(in srgb, var(--red) 10%, transparent)} }
+  .wrong { position: relative; animation: wrong 9.6s infinite; }
+  @keyframes wrong { 0%,50% {color: inherit} 53%,100% {color: var(--red)} }
+  .wrong::after { content: ""; position: absolute; left: -1px; right: -1px; top: 52%; height: 2px; border-radius: 1px;
+                  background: var(--red); transform: scaleX(0); animation: strike 9.6s infinite; }
+  @keyframes strike { 0%,52% {transform: scaleX(0)} 56%,100% {transform: scaleX(1)} }
+
+  /* act 3: every character has its own time */
+  .words { position: absolute; left: 22px; right: 22px; top: 34px; display: flex; justify-content: space-between; }
+  .ch { width: 30px; text-align: center; font-weight: 800; font-size: 22px; line-height: 30px; color: var(--muted); opacity: .55;
+        transform-origin: 50% 80%; }
+  .ticks { position: absolute; left: 22px; right: 22px; top: 68px; height: 32px; display: flex; justify-content: space-between; }
+  .tick { width: 30px; display: flex; flex-direction: column; align-items: center; }
+  .tick i { width: 0; height: 20px; border-left: 1.5px dashed var(--muted); opacity: .5; }
+  .tick b { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: .6; margin-top: 2px; }
+  .ruler { position: absolute; left: 14px; right: 14px; top: 100px; height: 3px; border-radius: 2px; background: var(--panel-strong); }
+  .ruler-fill { position: absolute; left: 14px; top: 100px; height: 3px; border-radius: 2px; background: var(--green);
+                animation: fill 9.6s linear infinite; }
+  .head { position: absolute; top: 32px; width: 2px; height: 76px; border-radius: 1px; background: var(--green);
+          box-shadow: 0 0 10px var(--green); animation: head 9.6s linear infinite; }
+  @keyframes fill { 0%,68% {width: 0} 92% {width: 232px} 100% {width: 232px} }
+  @keyframes head { 0%,68% {left: 14px} 92% {left: 246px} 100% {left: 246px} }
+
+  /* ---------- cloud: 1.6 s, quick ---------- */
+  .cloudscene { --c: var(--yellow); }
+  .bars { position: absolute; display: flex; align-items: center; gap: 4px; }
+  .bars span { width: 4.5px; border-radius: 3px; background: var(--c); }
+  .cloudscene .bars { left: 16px; top: 62px; height: 40px; }
+  .cloudscene .bars span { animation: eq 0.4s ease-in-out infinite alternate; }
+  @keyframes eq { from {height: 8px} to {height: 34px} }
+  .bars span:nth-child(2) { animation-delay: -.1s } .bars span:nth-child(3) { animation-delay: -.25s }
+  .bars span:nth-child(4) { animation-delay: -.05s } .bars span:nth-child(5) { animation-delay: -.3s }
+  .bars span:nth-child(6) { animation-delay: -.15s }
+  .cloud { position: absolute; left: 102px; top: 36px; width: 56px; height: 36px; animation: puff 1.6s ease-in-out infinite; }
+  .cloud svg { width: 100%; height: 100%; overflow: visible; }
+  @keyframes puff { 0%,100% {transform: scale(1)} 45% {transform: scale(1.07)} }
+  .streak { position: absolute; height: 3px; border-radius: 2px; transform-origin: 0 50%;
+            background: linear-gradient(90deg, transparent, var(--c)); }
+  .up { left: 58px; top: 80px; width: 48px; transform: rotate(-24deg); animation: zip 1.6s cubic-bezier(.5,0,.2,1) infinite; }
+  .up.u2 { animation-delay: -.12s; top: 86px; }
+  .down { left: 154px; top: 60px; width: 42px; transform: rotate(34deg); animation: zip2 1.6s cubic-bezier(.5,0,.2,1) infinite; }
+  .down.d2 { animation-delay: -.12s; left: 150px; top: 66px; }
+  @keyframes zip { 0% {clip-path: inset(0 100% 0 0); opacity: 0} 8% {opacity: 1} 30% {clip-path: inset(0 0 0 0)} 42% {clip-path: inset(0 0 0 100%); opacity: 1} 43%,100% {opacity: 0} }
+  @keyframes zip2 { 0%,40% {clip-path: inset(0 100% 0 0); opacity: 0} 45% {opacity: 1} 62% {clip-path: inset(0 0 0 0)} 74% {clip-path: inset(0 0 0 100%); opacity: 1} 75%,100% {opacity: 0} }
+  .subs { position: absolute; left: 192px; right: 14px; top: 76px; }
+  .subs i { display: block; height: 7px; border-radius: 4px; background: var(--c); margin-bottom: 7px; transform-origin: 0 50%;
+            animation: snap 1.6s cubic-bezier(.2,1.3,.4,1) infinite; }
+  .subs i:nth-child(2) { width: 78%; animation-delay: .03s; } .subs i:nth-child(3) { width: 56%; animation-delay: .06s; }
+  @keyframes snap { 0%,58% {transform: scaleX(0); opacity: 0} 66% {transform: scaleX(1); opacity: 1} 94% {opacity: 1} 100% {opacity: 0} }
+  .flash { position: absolute; left: 182px; top: 66px; width: 60px; height: 40px; border-radius: 12px;
+           background: radial-gradient(closest-side, color-mix(in srgb, var(--c) 45%, transparent), transparent);
+           animation: flash 1.6s ease-out infinite; }
+  @keyframes flash { 0%,58% {opacity: 0} 64% {opacity: 1} 85%,100% {opacity: 0} }
+
+  /* ---------- light: 5.6 s, calm ---------- */
+  .lightscene { --c: var(--blue); }
+  .lightscene .bars { left: 18px; top: 54px; height: 40px; }
+  .lightscene .bars span { animation: eqslow 1.8s ease-in-out infinite alternate; }
+  @keyframes eqslow { from {height: 10px} to {height: 26px} }
+  .chip { position: absolute; left: 66px; top: 50px; width: 40px; height: 40px; border-radius: 11px;
+          border: 2px solid var(--c); background: color-mix(in srgb, var(--c) 18%, transparent);
+          animation: breathe 5.6s ease-in-out infinite; }
+  .chip::before, .chip::after { content: ""; position: absolute; left: 8px; right: 8px; height: 6px;
+          background: repeating-linear-gradient(90deg, var(--c) 0 2px, transparent 2px 7px); }
+  .chip::before { top: -8px; } .chip::after { bottom: -8px; }
+  @keyframes breathe { 0%,100% {box-shadow: 0 0 0 0 color-mix(in srgb, var(--c) 0%, transparent)}
+                       50% {box-shadow: 0 0 18px 2px color-mix(in srgb, var(--c) 45%, transparent)} }
+  .flow { position: absolute; left: 112px; right: 12px; top: 52px; display: flex; gap: 1px; }
+  .flow b { font-weight: 700; font-size: 19px; line-height: 36px; color: var(--c); opacity: 0; filter: blur(4px); }
+  .flow b:nth-child(1) { animation: soft1 5.6s ease-out infinite; } .flow b:nth-child(2) { animation: soft2 5.6s ease-out infinite; }
+  .flow b:nth-child(3) { animation: soft3 5.6s ease-out infinite; } .flow b:nth-child(4) { animation: soft4 5.6s ease-out infinite; }
+  .flow b:nth-child(5) { animation: soft5 5.6s ease-out infinite; } .flow b:nth-child(6) { animation: soft6 5.6s ease-out infinite; }
+  @keyframes soft1 { 0%,6% {opacity:0; filter: blur(4px)} 16%,88% {opacity:1; filter: none} 98%,100% {opacity:0} }
+  @keyframes soft2 { 0%,18% {opacity:0; filter: blur(4px)} 28%,88% {opacity:1; filter: none} 98%,100% {opacity:0} }
+  @keyframes soft3 { 0%,30% {opacity:0; filter: blur(4px)} 40%,88% {opacity:1; filter: none} 98%,100% {opacity:0} }
+  @keyframes soft4 { 0%,42% {opacity:0; filter: blur(4px)} 52%,88% {opacity:1; filter: none} 98%,100% {opacity:0} }
+  @keyframes soft5 { 0%,54% {opacity:0; filter: blur(4px)} 64%,88% {opacity:1; filter: none} 98%,100% {opacity:0} }
+  @keyframes soft6 { 0%,66% {opacity:0; filter: blur(4px)} 76%,88% {opacity:1; filter: none} 98%,100% {opacity:0} }
+  .stream { position: absolute; left: 12px; right: 12px; top: 98px; height: 14px; opacity: .55; }
+  .stream svg { width: 100%; height: 100%; }
+  .stream path { stroke: var(--c); stroke-width: 2; fill: none; stroke-dasharray: 6 8; animation: drift 5.6s linear infinite; }
+  @keyframes drift { to { stroke-dashoffset: -56; } }
+
+  /* ---------- apple: 3.4 s, character timing ---------- */
+  .apple { --c: var(--lilac); }
+  .apple .ruler-fill, .apple .head { background: var(--lilac); box-shadow: 0 0 10px var(--lilac); }
+  .apple .ruler-fill { animation: afill 3.4s linear infinite; } .apple .head { animation: ahead 3.4s linear infinite; }
+  @keyframes afill { 0%,8% {width: 0} 80% {width: 232px} 100% {width: 232px} }
+  @keyframes ahead { 0%,8% {left: 14px} 80% {left: 246px} 100% {left: 246px} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  const q = new URLSearchParams(location.search);
+  const scene = q.get('scene') || 'local';
+  document.documentElement.dataset.theme = q.get('theme') || 'dark';
+  const words = '今天我们来玩';
+  const wordAct = (cls) => `
+      <div class="words">${[...words].map((c, i) => `<div class="ch c${i}">${c}</div>`).join('')}</div>
+      <div class="ticks">${[...words].map((c, i) => `<div class="tick c${i}"><i></i><b></b></div>`).join('')}</div>
+      <div class="ruler"></div><div class="ruler-fill"></div><div class="head"></div>`;
+  const html = {
+    local: `<div class="stage local"><div class="glow" style="left:-40px;top:-60px"></div>
+      <div class="act a1">
+        <div class="speaker A">A<span class="ring"></span><span class="ring r2"></span></div>
+        <div class="speaker B">B<span class="ring"></span><span class="ring r2"></span></div>
+        <div class="bubble A">大家好，今天来玩</div>
+        <div class="bubble B">欢迎回来！</div>
+      </div>
+      <div class="act a2">
+        <div class="row r1 ok"><span class="model">MOSS</span><span class="txt">今天来玩新版本</span><span class="mark">✓</span></div>
+        <div class="row r2 ok"><span class="model">FireRed</span><span class="txt">今天来玩新版本</span><span class="mark">✓</span></div>
+        <div class="row r3 bad"><span class="model">Qwen3</span><span class="txt">今天来<span class="wrong">完</span>新版本</span><span class="mark">✕</span></div>
+      </div>
+      <div class="act a3">${wordAct()}</div></div>`,
+    cloud: `<div class="stage cloudscene"><div class="glow" style="left:70px;top:-70px"></div>
+      <div class="bars"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+      <div class="streak up"></div><div class="streak up u2"></div>
+      <div class="cloud"><svg viewBox="0 0 56 36"><path d="M14 33h30a10 10 0 0 0 1-20 14 14 0 0 0-26-3A10 10 0 0 0 14 33z"
+        fill="color-mix(in srgb, #F2B33D 30%, transparent)" stroke="#F2B33D" stroke-width="2.4" stroke-linejoin="round"/></svg></div>
+      <div class="streak down"></div><div class="streak down d2"></div>
+      <div class="flash"></div><div class="subs"><i></i><i></i><i></i></div></div>`,
+    light: `<div class="stage lightscene"><div class="glow" style="left:-30px;top:-70px"></div>
+      <div class="bars"><span></span><span></span><span></span><span></span><span></span></div>
+      <div class="chip"></div>
+      <div class="flow">${[...'我们去看看吧'].map(c => `<b>${c}</b>`).join('')}</div>
+      <div class="stream"><svg viewBox="0 0 236 14" preserveAspectRatio="none"><path d="M0 7 Q 30 1 59 7 T 118 7 T 177 7 T 236 7"/></svg></div></div>`,
+    apple: `<div class="stage apple"><div class="glow" style="left:-40px;top:-60px"></div><div class="act" style="opacity:1">${wordAct()}</div></div>`,
+  };
+  document.getElementById('root').innerHTML = html[scene];
+  // Character timing: each character lights up when the playhead reaches it.
+  const timing = scene === 'apple'
+    ? {color: 'var(--lilac)', duration: 3400, steps: [0.15, 0.27, 0.39, 0.51, 0.63, 0.75]}
+    : {color: 'var(--green)', duration: 9600, steps: [0.705, 0.742, 0.779, 0.816, 0.853, 0.89]};
+  if (scene === 'local' || scene === 'apple') {
+    const off = 'var(--muted)';
+    timing.steps.forEach((at, i) => {
+      const hold = (props) => [{...props.off, offset: 0}, {...props.off, offset: at}, ...props.pop(at),
+                               {...props.on, offset: Math.min(1, at + 0.025)}, {...props.on, offset: 1}];
+      const options = {duration: timing.duration, iterations: Infinity};
+      document.querySelector(`.ch.c${i}`).animate(hold({
+        off: {color: off, opacity: .5, transform: 'none'}, on: {color: timing.color, opacity: 1, transform: 'none'},
+        pop: (t) => [{color: timing.color, opacity: 1, transform: 'translateY(-5px) scale(1.2)', offset: t + 0.008}]}), options);
+      document.querySelector(`.tick.c${i} i`).animate(hold({
+        off: {borderLeftColor: off, opacity: .45}, on: {borderLeftColor: timing.color, opacity: 1}, pop: () => []}), options);
+      document.querySelector(`.tick.c${i} b`).animate(hold({
+        off: {backgroundColor: off, opacity: .5, transform: 'none'}, on: {backgroundColor: timing.color, opacity: 1, transform: 'none'},
+        pop: (t) => [{backgroundColor: timing.color, opacity: 1, transform: 'scale(1.6)', offset: t + 0.008}]}), options);
+    });
+  }
+  // Loop length per scene, for the renderer and for a quick look in a browser.
+  window.SCENE_MS = {local: 9600, cloud: 1600, light: 5600, apple: 3400}[scene];
+  window.seek = (ms) => { for (const a of document.getAnimations()) { a.pause(); a.currentTime = ms; } };
+</script>
+</body>
+</html>
