@@ -404,7 +404,9 @@ def check_moss_runtime(python: Path, root: Path) -> bool:
     if not python.is_file():
         return False
     probe = (
-        'import sys,platform,json; import torch,torchaudio,transformers,speechbrain,librosa,av,soundfile; '
+        # No speechbrain here: it needs torchaudio.list_audio_backends (gone in 2.11), which the
+        # app patches before using it; moss_worker itself never imports it (2026-10-14 Mac run).
+        'import sys,platform,json; import torch,torchaudio,transformers,librosa,av,soundfile; '
         'from moss_transcribe_diarize import parse_transcript; '
         'from moss_transcribe_diarize.inference_utils import build_transcription_messages; '
         'assert sys.platform=="darwin" and platform.machine()=="arm64"; '
