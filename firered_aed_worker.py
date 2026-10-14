@@ -163,6 +163,7 @@ def main() -> None:
         if cuda:
             measure(torch.Tensor,'cuda','cpu_to_gpu_ms',cuda=True)
         extractor=model.feat_extractor
+        half_on_mps=kind=='mps' and args.mps_dtype=='float16'   # read here: __call__'s *args shadows args
         class TimedFeatures:
             def __call__(self,*args,**kwargs):
                 tick=time.perf_counter();reading=telemetry['audio_read_ms']
@@ -171,7 +172,7 @@ def main() -> None:
                     if kind=='mps' and isinstance(out,tuple) and len(out)>=2 and out[0] is not None:
                         moved=time.perf_counter()
                         feats=out[0].to('mps')
-                        if args.mps_dtype=='float16':feats=feats.half()
+                        if half_on_mps:feats=feats.half()
                         out=(feats,out[1].to('mps'))+tuple(out[2:])
                         telemetry['cpu_to_gpu_ms']+=(time.perf_counter()-moved)*1000
                     return out
