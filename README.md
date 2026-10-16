@@ -15,14 +15,14 @@
 
 ## 下载
 
-当前版本 **0.7.4**（2026-10-16）。按你的电脑选一个安装程序：
+当前版本 **0.7.5**（2026-10-17）。按你的电脑选一个安装程序：
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| **Windows 10 22H2 或更新（64 位）**<br>正式版 | **[2ByteASR-Setup-0.7.4.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.4/2ByteASR-Setup-0.7.4.exe)**（约 1 GB）<br>安装程序没有代码签名，Windows 可能提示“未知发布者”，见 [Windows 安装](docs/product-guide.zh-CN.md#windows-安装)。 |
-| **Mac：Apple 芯片（M1 及以后），macOS 15 或更新**<br>**实验版** | **[2ByteASR-0.7.4-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.4/2ByteASR-0.7.4-macos-arm64-Setup.dmg)**（约 0.5 GB）<br>只在 GitHub 的虚拟 Mac 上验证过，**不支持 Intel Mac**；没有经过 Apple 公证，第一次打开见 [Mac 安装](docs/product-guide.zh-CN.md#mac-安装实验版)。 |
+| **Windows 10 22H2 或更新（64 位）**<br>正式版 | **[2ByteASR-Setup-0.7.5.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-Setup-0.7.5.exe)**（约 1 GB）<br>安装程序没有代码签名，Windows 可能提示“未知发布者”，见 [Windows 安装](docs/product-guide.zh-CN.md#windows-安装)。 |
+| **Mac：Apple 芯片（M1 及以后），macOS 15 或更新**<br>**实验版** | **[2ByteASR-0.7.5-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-0.7.5-macos-arm64-Setup.dmg)**（约 0.5 GB）<br>只在 GitHub 的虚拟 Mac 上验证过，**不支持 Intel Mac**；没有经过 Apple 公证，第一次打开见 [Mac 安装](docs/product-guide.zh-CN.md#mac-安装实验版)。 |
 
-- **已经装了 0.6.5、0.7.0、0.7.1、0.7.2 或 0.7.3：** 在程序右上角“检查更新”，只下载有变化的部分。0.6.0 及更早版本：直接运行新的安装程序覆盖安装，不要先卸载。
+- **已经装了 0.6.5、0.7.0、0.7.1、0.7.2、0.7.3 或 0.7.4：** 在程序右上角“检查更新”，只下载有变化的部分。0.6.0 及更早版本：直接运行新的安装程序覆盖安装，不要先卸载。
 - **其他附件不用下载。** [Releases 页面](https://github.com/NOTBAD314/2ByteASR/releases/latest)里的 `Source`、`ThirdParty`、`update`、`.sig` 等文件是给源码、许可材料和程序内更新用的。下载后可用 `SHA256SUMS.txt` 核对文件是否完整。
 
 <img src="docs/assets/readme/hero.png" width="100%" alt="兔白字幕 0.7.1 的字幕工作台：左边是字幕列表，中间是视频预览和字幕，右边是样式面板，下方时间轴按“主播”“队友”分成两条字幕轨，并有视频轨和音频波形；后方是首页窗口，显示识别方案一栏">
@@ -152,7 +152,7 @@
 - [使用指南](docs/product-guide.zh-CN.md)：安装、第一次启动、选择识别方式、费用与隐私、更新、常见问题、从源码运行
 - [界面一览](docs/product-demo.zh-CN.md)：识别进度、完成页、模型工坊、导出、主题等更多截图（0.7.1 界面）
 - [申请与设置 API](docs/api-setup/README.md)：各家云端识别和文字 AI 的申请步骤与费用说明
-- [Mac 实验版说明](docs/deployment/macos-experimental.zh-CN.md) · [更新方式](UPDATING.md) · [0.7.4 发布说明](docs/releases/0.7.4.md) · [更新日志](CHANGELOG.md) · [参与贡献](CONTRIBUTING.md)
+- [Mac 实验版说明](docs/deployment/macos-experimental.zh-CN.md) · [更新方式](UPDATING.md) · [0.7.5 发布说明](docs/releases/0.7.5.md) · [更新日志](CHANGELOG.md) · [参与贡献](CONTRIBUTING.md)
 
 ## 反馈、许可与第三方组件
 
@@ -160,4 +160,4 @@
 
 项目自有代码采用 **GPL-3.0-only**（[标准英文全文](LICENSE) / [适用范围](PROJECT_LICENSE.md)）。官方版本免费提供；允许依 GPL 商用、修改和收费分发，分发时须履行对应源码等条件。私人修改无需公开，普通字幕、视频和图片不会仅因使用本软件生成而自动适用 GPL。第三方组件保留各自许可：高保真渲染用到的 Remotion 对个人和员工不超过 3 人的营利组织免费，更大的营利组织需另购其 Company License；GSAP 采用其标准条款。详见[第三方说明](THIRD_PARTY_NOTICES.md)与[模型许可表](licenses/MODELS.md)，完整安装包的分发材料仍在整理中（[分发状态](licenses/DISTRIBUTION-STATUS.md)）。
 
-源码：`main` 分支是程序源码；与 0.7.4 安装包对应的构建来源是 tag `v0.7.4`，完整构建输入在 Release 的 `2ByteASR-Source-0.7.4.zip`（说明见 [0.7.4 发布说明的“源码与校验”](docs/releases/0.7.4.md#源码与校验)）。[源码交付记录](SOURCE_DELIVERY.md)写于 0.5.0 阶段，尚未按 0.7.4 更新。
+源码：`main` 分支是程序源码；与 0.7.5 安装包对应的构建来源是 tag `v0.7.5`，完整构建输入在 Release 的 `2ByteASR-Source-0.7.5.zip`（说明见 [0.7.5 发布说明的“源码与校验”](docs/releases/0.7.5.md#源码与校验)）。[源码交付记录](SOURCE_DELIVERY.md)写于 0.5.0 阶段，尚未按 0.7.5 更新。
