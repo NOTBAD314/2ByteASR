@@ -1,0 +1,26 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: jieba (flags ordinary-word rules)
+        run: pip install jieba==0.42.1
+      - name: libraries
+        if: github.event_name == 'pull_request'
+        run: python tools/hub_check.py --libraries-only
+      - name: libraries and catalog
+        if: github.event_name == 'push'
+        run: python tools/hub_check.py

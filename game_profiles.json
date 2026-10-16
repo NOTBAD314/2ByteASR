@@ -493,7 +493,7 @@
     },
     "绝区零": {
       "identity": "绝区零",
-      "updated": "2026-07-26",
+      "updated": "2026-10-17",
       "terms": [
         {
           "canonical": "绝区零",
@@ -504,11 +504,16 @@
         },
         {
           "canonical": "绳匠",
-          "aliases": [
-            "法厄同"
-          ],
+          "aliases": [],
           "category": "game_term",
           "source": "wiki_biligame_character_list_2026-07",
+          "confirmed": true
+        },
+        {
+          "canonical": "法厄同",
+          "aliases": [],
+          "category": "game_term",
+          "source": "moegirl_zzz_2026-10-17",
           "confirmed": true
         },
         {

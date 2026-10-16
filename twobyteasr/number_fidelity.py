@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass, asdict
 from difflib import SequenceMatcher
 
-RULE_VERSION = 'numeric-events-conservative-v2'
+RULE_VERSION = 'numeric-events-conservative-v3'
 NUMBER_POLICY_PROMPT = (
     '数字策略：保留原话数字事件的顺序和每次重复，不求和、不拼接、不去重。'
     '普通整数1～9保留源文汉字，例如一个、两个办法、一技能、二技能；'
@@ -25,10 +25,36 @@ RATIO = re.compile(rf'(?:\d+(?:\.\d+)?|[{CN}]+(?:点[零〇一二两三四五六
 IDENTIFIER_PREFIX = re.compile(r'(?:编号|号码|版本|序号|型号|ID|id)\s*$')
 NUMBER_PREFIX = re.compile(r'(?:第|只有|一共|还剩|仅有|编号|号码|版本|序号|概率|伤害|威力|生命值|能量|攻击|防御|回复|恢复|加|减|乘|除|等于|到|至)\s*$')
 NUMBER_SUFFIX = re.compile(rf'(?:[{COUNTERS}]|伤害|威力|生命值|血量|能量|攻击|防御|金币|连|届|成|%|％)')
+# 2026-10-16 (found with a Japanese user's log; Chinese since 0.7.1): a lone
+# 十 before 分 was always ten points, so 十分感谢 became 10分感谢. Usually it is
+# the adverb (十分重要, 感到十分高兴, 打得十分精彩). It is a number only after a
+# scoring word, before 钟/制/以上/以下/左右, or alone between clause edges.
+SHIFEN = re.compile(rf'(?<![{CN}0-9])十分')
+SHIFEN_SCORE_PREFIX = re.compile(
+    r'(?:打了?|得了|考了?|拿了?|扣了?|加了?|减了?|差了?|满分?|领先|落后|赢了?|输了?'
+    r'|超过|一共|只有|还剩|还差|总共)\s*$')
+SHIFEN_NUMBER_SUFFIX = re.compile(r'钟|制|以上|以下|左右')
+CLAUSE_EDGE = '，,、。.！!？?；;'
+
+
+def _adverb_shifen_spans(text):
+    spans = []
+    for match in SHIFEN.finditer(text):
+        start, end = match.span()
+        before, after = text[start-1:start], text[end:end+1]
+        number = (bool(SHIFEN_SCORE_PREFIX.search(text[:start]))
+                  or bool(SHIFEN_NUMBER_SUFFIX.match(text, end))
+                  or ((not before or before in CLAUSE_EDGE) and (not after or after in CLAUSE_EDGE)))
+        if not number:
+            spans.append((start, end))
+    return spans
 
 
 def _protected_spans(text, terms=()):
+    # Adverb 十分 is protected like a fixed phrase, so formatting, the AI-edit
+    # restore, safe cuts and the final check all read it the same way.
     spans = [m.span() for pattern in (FIXED, CLOCK) for m in pattern.finditer(text)]
+    spans.extend(_adverb_shifen_spans(text))
     for match in APPROXIMATE.finditer(text):
         # Digits following 点 or an explicit code are not approximate speech.
         numeric = next((m for m in TOKEN.finditer(text)
@@ -328,7 +354,9 @@ def mapped_content_timeline(segment):
     if content(''.join(w.text for w in words)) == content(output):
         from .models import WordUnit
         return [WordUnit(w.start,w.end,ch,w.probability) for w in words for ch in content(w.text)]
-    if receipt.get('version') == RULE_VERSION:
+    # Conservative receipts (v2 on) all rewrite words with the text; only
+    # older receipts fall through to the source mapping below.
+    if str(receipt.get('version', '')).startswith('numeric-events-conservative-'):
         return None
     if content(''.join(w.text for w in words))!=content(source):return None
     anchors=[]

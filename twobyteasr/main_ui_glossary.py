@@ -983,6 +983,12 @@ class TermLibraryDialog(QWidget):
         self.rename_game_button.setObjectName("flat")
         self.rename_game_button.clicked.connect(self.rename_current_game)
         selected_row.addWidget(self.rename_game_button)
+        # 2026-10-16 (ADR 0124): the user's own note sent to AI with this library.
+        self.ai_note_button = AnimatedButton("给 AI 的说明")
+        self.ai_note_button.setObjectName("flat")
+        bind_text(self.ai_note_button, 'AI 校对时，把你写的这段说明和这个术语库一起发给 AI', property='toolTip')
+        self.ai_note_button.clicked.connect(self.edit_ai_note)
+        selected_row.addWidget(self.ai_note_button)
         selected_row.addWidget(self.delete_game_button)
         content_header_layout.addLayout(selected_row)
 
@@ -1163,6 +1169,16 @@ class TermLibraryDialog(QWidget):
         self.export_terms.setObjectName("flat")
         self.export_terms.clicked.connect(self.export_current_library)
         term_tools.addWidget(self.export_terms)
+        # 2026-10-17 online glossary hub (glossary_hub_ui.py): browse/install and submit.
+        self.hub_button = AnimatedButton("线上词库")
+        self.hub_button.setObjectName("outline")
+        self.hub_button.setIcon(_icon("fa5s.cloud-download-alt"))
+        self.hub_button.clicked.connect(self.open_glossary_hub)
+        term_tools.addWidget(self.hub_button)
+        self.submit_terms = AnimatedButton("投稿")
+        self.submit_terms.setObjectName("flat")
+        self.submit_terms.clicked.connect(self.open_glossary_submit)
+        term_tools.addWidget(self.submit_terms)
         term_tools.addStretch(1)
         content_body_layout.addLayout(term_tools)
 
@@ -1948,6 +1964,7 @@ class TermLibraryDialog(QWidget):
         _t0 = _t.perf_counter()
         game_name = self.state["game"]
         library_id = self._library_key(game_name)
+        self._sync_ai_note_button()
         type_labels = self._type_labels()
         selected_type = (
             getattr(self.legacy, "learned_content_type", lambda _name: "game")(game_name)
@@ -2194,6 +2211,104 @@ class TermLibraryDialog(QWidget):
         cancel.clicked.connect(sheet.deleteLater)
         save.clicked.connect(apply)
         editor.returnPressed.connect(apply)
+
+    AI_NOTE_TEMPLATES = (
+        ('数学 / 理科科普', '这是数学科普内容。字幕里用 $…$ 写的是 LaTeX 数学公式（如 $x^2$、$\\frac{1}{2}$），'
+                          '保持原样，不要改成中文读法；也不要把口语里的“x 的平方”擅自改写成公式。'
+                          '数学名词按本术语库的写法统一，例如“谢尔宾斯基三角形”“帕斯卡三角形”。'),
+        ('游戏实况', '这是游戏实况。选手、角色、技能名按本术语库统一；直播口语、语气词和玩笑保持原样，'
+                   '不要改成书面语。不认识的外号先保留，不要硬套术语库里的名字。'),
+    )
+
+    def _sync_ai_note_button(self):
+        button = getattr(self, 'ai_note_button', None)
+        if button is None:
+            return
+        game = self.state.get("game", "")
+        button.setEnabled(bool(game))
+        note = getattr(self.legacy, "learned_content_note", lambda _id: "")(self._library_key()) if game else ""
+        bind_text(button, '给 AI 的说明（已写）' if note else '给 AI 的说明')
+
+    def edit_ai_note(self):
+        """An in-page sheet: the note sent to AI with this library (ADR 0124)."""
+        game = self.state.get("game", "")
+        if not game:
+            return
+        from .terminology import AI_NOTE_LIMIT
+        library_id = self._library_key()
+        sheet = QFrame(self)
+        sheet.setObjectName('termAiNoteSheet')
+        theme = _sheet_theme()
+        sheet.setStyleSheet(f'QFrame#termAiNoteSheet {{ background:{theme.surface}; border:1px solid {theme.border}; border-radius:12px; }}')
+        layout = QVBoxLayout(sheet)
+        layout.setContentsMargins(16, 14, 16, 14)
+        label = QLabel(tr('给 AI 的说明 · {value0}', value0=game))
+        label.setObjectName('termQuickAddTitle')
+        layout.addWidget(label)
+        hint = QLabel(tr('AI 校对用这个术语库时，会把这段话当作你的说明一起发给 AI：写清这是什么内容、哪些写法要保持、名字怎么统一。'
+                         'AI 仍只改错字，不会因此改写整句。'))
+        hint.setWordWrap(True)
+        hint.setObjectName('muted')
+        layout.addWidget(hint)
+        editor = QPlainTextEdit()
+        editor.setObjectName('termAiNoteEditor')
+        editor.setPlainText(getattr(self.legacy, "learned_content_note", lambda _id: "")(library_id))
+        editor.setPlaceholderText(tr('例如：这是数学科普，字幕里 $…$ 是公式，保持原样；人名按术语库统一。'))
+        layout.addWidget(editor, 1)
+        actions = QHBoxLayout()
+        examples = QComboBox()
+        examples.setObjectName('termAiNoteExamples')
+        examples.addItem(tr('插入范例…'), '')
+        for title, text in self.AI_NOTE_TEMPLATES:
+            examples.addItem(tr(title), text)
+
+        def insert_example(index):
+            text = examples.itemData(index)
+            if text:
+                current = editor.toPlainText().strip()
+                editor.setPlainText((current + '\n' if current else '') + str(tr(text)))
+                examples.setCurrentIndex(0)
+        examples.currentIndexChanged.connect(insert_example)
+        actions.addWidget(examples)
+        count = QLabel()
+        count.setObjectName('muted')
+        actions.addWidget(count)
+        actions.addStretch(1)
+        cancel = QPushButton(tr('取消'))
+        save = QPushButton(tr('保存'))
+        actions.addWidget(cancel)
+        actions.addWidget(save)
+        layout.addLayout(actions)
+
+        def update_count():
+            used = len(editor.toPlainText().strip())
+            count.setText(f'{used} / {AI_NOTE_LIMIT}')
+            save.setEnabled(used <= AI_NOTE_LIMIT)
+        editor.textChanged.connect(update_count)
+        update_count()
+        width, height = min(620, max(420, self.width() - 48)), 340
+        sheet.setGeometry(max(12, (self.width() - width) // 2), max(32, (self.height() - height) // 2), width, height)
+        sheet.show()
+        sheet.raise_()
+        editor.setFocus()
+        self._ai_note_sheet = sheet
+
+        def apply():
+            if self._save_ai_note(game, library_id, editor.toPlainText()):
+                sheet.deleteLater()
+                self._ai_note_sheet = None
+        cancel.clicked.connect(sheet.deleteLater)
+        save.clicked.connect(apply)
+
+    @glossary_write_errors
+    def _save_ai_note(self, game, library_id, text):
+        if not getattr(self.legacy, "set_learned_content_note", lambda *_args: False)(game, library_id, text):
+            self._show_toast("说明没有保存，请检查文件写入权限。", 5000)
+            return False
+        self._notify_library_changed()
+        self._sync_ai_note_button()
+        self._show_toast("已保存；AI 校对用这个术语库时会带上这段说明" if text.strip() else "已清空给 AI 的说明", 2600)
+        return True
 
     @glossary_write_errors
     def _rename_library(self, library_id, name):
@@ -2960,6 +3075,14 @@ class TermLibraryDialog(QWidget):
         self._import_cleanup = _cleanup
         self._import_pending = lambda: bool(editor.toPlainText().strip())
         self._import_submit = _save
+
+    def open_glossary_hub(self):
+        from .glossary_hub_ui import open_hub_sheet
+        open_hub_sheet(self)
+
+    def open_glossary_submit(self):
+        from .glossary_hub_ui import open_submit_sheet
+        open_submit_sheet(self)
 
     def export_current_library(self):
         from PySide6.QtWidgets import QFileDialog

@@ -1,0 +1,13 @@
+The glossary libraries in this repository (libraries/*.json and index.json)
+are dedicated to the public domain under Creative Commons CC0 1.0 Universal.
+
+SPDX-License-Identifier: CC0-1.0
+Legal code: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+To the extent possible under law, the contributors have waived all copyright
+and related or neighboring rights to these libraries. You can copy, modify,
+distribute and use them, even for commercial purposes, without asking
+permission.
+
+The checking tools in tools/ come from 2ByteASR and are licensed under
+GPL-3.0-only, like the program itself.

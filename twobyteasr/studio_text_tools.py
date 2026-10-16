@@ -466,11 +466,17 @@ def request_text_cleanup(
         loaded = load_runtime_settings()
         settings = loaded[0] if isinstance(loaded, tuple) else loaded
     option_labels = [label for key, label in AI_CLEANUP_OPTIONS if key in set(options)]
+    # 2026-10-16 (ADR 0124): formulas travel as ⟦Fn⟧ placeholders when the
+    # project's math switch is on; a suggestion that loses one is dropped.
+    from .math_text import FORMULA_RULE, mask_formulas, project_enabled
+    masks = {cue.id: mask_formulas(cue.text) for cue in wanted[:80]} if project_enabled(project) else {}
     user_payload = {
         "tasks": option_labels or ["清理口癖", "删除无意义重复"],
-        "cues": [{"cue_id": cue.id, "text": cue.text} for cue in wanted[:80]],
+        "cues": [{"cue_id": cue.id, "text": masks[cue.id][0] if cue.id in masks else cue.text}
+                 for cue in wanted[:80]],
         "rule": "不要改变原意。只返回 JSON。",
     }
+    system = _AI_CLEANUP_SYSTEM + (FORMULA_RULE if any(formulas for _text, formulas in masks.values()) else "")
     schema = {
         "type": "object",
         "properties": {
@@ -494,7 +500,7 @@ def request_text_cleanup(
     provider = provider_for_stage(settings, "polish", sender=post)
     content = provider.complete(
         [
-            {"role": "system", "content": _AI_CLEANUP_SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ],
         max_tokens=2200,
@@ -503,8 +509,33 @@ def request_text_cleanup(
         enable_thinking=False,
         response_format={"type": "json_object"},
         stage="studio_text_cleanup",
-        structured_retry_system_prompt=_AI_CLEANUP_SYSTEM,
+        structured_retry_system_prompt=system,
         json_schema=schema,
         cancel_check=cancel_check,
     )
+    if masks:
+        content = _unmask_cleanup_payload(content, masks)
     return parse_cleanup_payload(content, project)
+
+
+def _unmask_cleanup_payload(raw: object, masks: Mapping[str, tuple[str, tuple[str, ...]]]) -> object:
+    """Put formulas back into each change; changes that lost a placeholder are dropped."""
+    from .math_text import unmask_formulas
+    payload = json.loads(raw) if isinstance(raw, str) else raw
+    items = payload.get("changes") if isinstance(payload, Mapping) else payload
+    if not isinstance(items, list):
+        return raw  # parse_cleanup_payload reports the malformed answer
+    kept = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        masked, formulas = masks.get(str(item.get("cue_id") or ""), ("", ()))
+        if not formulas:
+            kept.append(item)
+            continue
+        replacement = unmask_formulas(str(item.get("replacement") or ""), formulas)
+        original = unmask_formulas(str(item.get("original") or masked), formulas)
+        if replacement is None or original is None:
+            continue
+        kept.append({**item, "original": original, "replacement": replacement})
+    return {"changes": kept}

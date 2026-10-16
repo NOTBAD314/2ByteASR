@@ -1,0 +1,4 @@
+# index.json is signed and every library's SHA-256 is in it: keep the exact bytes.
+* text=auto eol=lf
+*.json -text
+*.sig -text

@@ -7,6 +7,12 @@ discover → read → search → preview → apply. This audit plays the user on
 the approval dialog (real mouse clicks), checks the change in Studio, lets the
 client undo it, rejects a role regrouping, sees a stale plan refused after a
 user edit, and revokes access from the settings dialog.
+
+2026-10-17: the settings page refuses to write Claude Desktop's config while
+Claude runs (played: the process check is machine-wide), reports an entry
+Claude overwrote, writes Claude Code's user config in the isolated home; a
+term-library plan is approved with a real click and the open term library
+page shows the new rows.
 """
 from __future__ import annotations
 
@@ -67,8 +73,9 @@ def start(window, output):
         from .application_settings_ui import ApplicationSettingsDialog
         return next((w for w in QApplication.topLevelWidgets() if isinstance(w, ApplicationSettingsDialog) and w.isVisible()), None)
 
-    def answer_question(name, yes=True):
-        """Click the real QMessageBox the next user step opens (consent / write confirmation)."""
+    def answer_question(name, yes=True, ok=False):
+        """Click the real QMessageBox the next user step opens (consent / write confirmation;
+        ``ok``: a warning that only has OK)."""
         from PySide6.QtWidgets import QMessageBox
 
         def run():
@@ -78,9 +85,16 @@ def start(window, output):
                 return
             result.setdefault('questions', []).append(dict(name=name, title=box.windowTitle(), text=box.text()))
             box.grab().save(str(output / f'question-{name}.png'))
-            button = box.button(QMessageBox.StandardButton.Yes if yes else QMessageBox.StandardButton.No)
+            button = box.button(QMessageBox.StandardButton.Ok if ok else
+                                QMessageBox.StandardButton.Yes if yes else QMessageBox.StandardButton.No)
             QTest.mouseClick(button, Qt.MouseButton.LeftButton)
         QTimer.singleShot(300, run)
+
+    def pump(seconds):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            QApplication.processEvents()
+            time.sleep(0.03)
 
     claude_config = Path(os.environ.get('APPDATA', '')) / 'Claude' / 'claude_desktop_config.json'
 
@@ -101,7 +115,8 @@ def start(window, output):
                 QTest.mouseClick(dialog.mcp_enabled, Qt.MouseButton.LeftButton)
                 result['declined_stays_off'] = not dialog.mcp_enabled.isChecked()
                 answer_question('consent', yes=True)
-                for box in (dialog.mcp_enabled, dialog.mcp_allow_edits, dialog.mcp_allow_export):
+                for box in (dialog.mcp_enabled, dialog.mcp_allow_edits, dialog.mcp_allow_export,
+                            dialog.mcp_allow_glossary):
                     if not box.isChecked():
                         QTest.mouseClick(box, Qt.MouseButton.LeftButton)
                 authorized = output / 'authorized folder 授权'
@@ -109,10 +124,29 @@ def start(window, output):
                 dialog.mcp_export_dir.setText(str(authorized))   # what the folder picker fills in
                 QTest.mouseClick(dialog.mcp_copy, Qt.MouseButton.LeftButton)
                 result['client_config'] = QApplication.clipboard().text()
+                from PySide6.QtWidgets import QScrollArea
+                scroll = dialog.mcp_status.parent()
+                while scroll is not None and not isinstance(scroll, QScrollArea):
+                    scroll = scroll.parent()
                 # Claude Desktop config inside the isolated APPDATA: another server must survive.
                 claude_config.parent.mkdir(parents=True, exist_ok=True)
                 claude_config.write_text(json.dumps({'mcpServers': {'other': {'command': 'other.exe'}},
                                                      'preferences': {'keep': True}}), 'utf-8')
+                # 2026-10-17: whether Claude Desktop runs is a machine-wide fact; record the real
+                # answer, then play "Claude open" (refused) and "Claude quit" (written).
+                from . import mcp_clients
+                result['real_claude_desktop_started'] = mcp_clients.claude_desktop_started_at()
+                mcp_clients.claude_desktop_started_at = lambda platform=None: time.time() - 600
+                answer_question('claude-running', ok=True)
+                QTest.mouseClick(dialog.mcp_write, Qt.MouseButton.LeftButton)
+                QApplication.processEvents()
+                result['while_running'] = dict(config=json.loads(claude_config.read_text('utf-8')),
+                                               status=dialog.mcp_status.text())
+                if scroll is not None:
+                    scroll.ensureWidgetVisible(dialog.mcp_status)
+                    QApplication.processEvents()
+                dialog.grab().save(str(output / '02a-settings-claude-running.png'))
+                mcp_clients.claude_desktop_started_at = lambda platform=None: 0.0
                 answer_question('write-claude', yes=True)
                 QTest.mouseClick(dialog.mcp_write, Qt.MouseButton.LeftButton)
                 QApplication.processEvents()
@@ -120,14 +154,37 @@ def start(window, output):
                 result['claude_backups'] = sorted(p.name for p in claude_config.parent.glob('*2byteasr-backup*'))
                 result['status_after_write'] = dialog.mcp_status.text()
                 dialog.grab().save(str(output / '02-settings-on.png'))
-                from PySide6.QtWidgets import QScrollArea
-                scroll = dialog.mcp_status.parent()
-                while scroll is not None and not isinstance(scroll, QScrollArea):
-                    scroll = scroll.parent()
                 if scroll is not None:
                     scroll.ensureWidgetVisible(dialog.mcp_revoke)
                     QApplication.processEvents()
                     dialog.grab().save(str(output / '02b-settings-claude-written.png'))
+                # Claude writes its in-memory settings back (what happened on 2026-10-16 23:22).
+                claude_config.write_text(json.dumps({'mcpServers': {'other': {'command': 'other.exe'}},
+                                                     'preferences': {'keep': True}}), 'utf-8')
+                pump(1.5)                                        # the page re-reads every second
+                result['status_overwritten'] = dialog.mcp_status.text()
+                dialog.grab().save(str(output / '02c-settings-claude-overwritten.png'))
+                answer_question('write-claude-again', yes=True)
+                QTest.mouseClick(dialog.mcp_write, Qt.MouseButton.LeftButton)
+                QApplication.processEvents()
+                result['claude_rewritten'] = json.loads(claude_config.read_text('utf-8'))
+                # Claude Code's user config in the isolated home.
+                code_config = Path.home() / '.claude.json'
+                isolated = Path(os.environ.get('TWOBYTEASR_TEST_ROOT') or '/nonexistent').resolve()
+                if mcp_clients.claude_code_location().path != code_config or isolated not in code_config.resolve().parents:
+                    raise RuntimeError(f'Claude Code config is not inside the isolated root: {code_config}')
+                code_config.write_text(json.dumps({'numStartups': 3, 'projects': {}}), 'utf-8')
+                dialog.mcp_client.setCurrentIndex(dialog.mcp_client.findData('claude_code'))
+                QApplication.processEvents()
+                answer_question('write-claude-code', yes=True)
+                QTest.mouseClick(dialog.mcp_write, Qt.MouseButton.LeftButton)
+                QApplication.processEvents()
+                result['claude_code_written'] = json.loads(code_config.read_text('utf-8'))
+                result['status_claude_code'] = dialog.mcp_status.text()
+                result['steps_claude_code'] = dialog.mcp_steps.text()
+                dialog.grab().save(str(output / '02d-settings-claude-code.png'))
+                dialog.mcp_client.setCurrentIndex(dialog.mcp_client.findData('claude_desktop'))
+                QApplication.processEvents()
                 from PySide6.QtWidgets import QDialogButtonBox
                 QTest.mouseClick(dialog.buttons.button(QDialogButtonBox.StandardButton.Save), Qt.MouseButton.LeftButton)
             else:
@@ -179,6 +236,21 @@ def start(window, output):
               and len(result.get('claude_backups') or []) == 1 and '已写入' in (result.get('status_after_write') or '')
               and '实际已连线' not in (result.get('status_after_write') or ''),
               dict(written=written, backups=result.get('claude_backups'), status=result.get('status_after_write')))
+        running = result.get('while_running') or {}
+        check('while Claude Desktop runs the write is refused with the reason, file unchanged',
+              '2byteasr' not in (running.get('config') or {}).get('mcpServers', {'2byteasr': 1})
+              and any(q['name'] == 'claude-running' and '正在运行' in q['text'] for q in result.get('questions') or [])
+              and '正在运行' in (running.get('status') or ''), running)
+        check('an entry Claude overwrote is reported as overwritten, and can be written again',
+              '覆盖' in (result.get('status_overwritten') or '')
+              and '2byteasr' in (result.get('claude_rewritten') or {}).get('mcpServers', {}),
+              result.get('status_overwritten'))
+        code_written = (result.get('claude_code_written') or {})
+        check('Claude Code user config: entry added as stdio, other keys kept',
+              (code_written.get('mcpServers') or {}).get('2byteasr', {}).get('type') == 'stdio'
+              and code_written.get('numStartups') == 3 and 'Claude Code 配置：已写入' in (result.get('status_claude_code') or ''),
+              dict(config=code_written, status=result.get('status_claude_code')))
+        check('glossary permission saved from the settings page', settings.get('allow_glossary') is True, settings)
         before = {c.id: (c.text, c.start_ms, c.end_ms, c.speaker_id) for c in page.project.cues}
         # ---- full flow ----
         process = client('full')
@@ -278,6 +350,56 @@ def start(window, output):
         switched = json.loads((output / 'client-switch.json').read_text('utf-8')).get('summary') or {}
         check('a plan for the previous project is refused after switching', switched.get('switch_refused')
               and not dialogs() and [c.text for c in page.project.cues] == sample_texts, switched)
+        # ---- term libraries (2026-10-17): approval in the app, the open library page refreshes ----
+        legacy = window.legacy
+        legacy.add_learned_mapping('MCP 验收词库', '洛克', '洛克', category='角色', origin='手动')
+        library_id = legacy.resolve_glossary_identity('MCP 验收词库')
+        window._manage_terms()
+        yield lambda: window.term_library_page.library is not None
+        terms_page = window.term_library_page.library
+        yield lambda: any(terms_page.game_list.item(i).data(Qt.ItemDataRole.UserRole + 1) == library_id
+                          for i in range(terms_page.game_list.count()))
+        item = next(terms_page.game_list.item(i) for i in range(terms_page.game_list.count())
+                    if terms_page.game_list.item(i).data(Qt.ItemDataRole.UserRole + 1) == library_id)
+        terms_page.game_list.scrollToItem(item)
+        QTest.mouseClick(terms_page.game_list.viewport(), Qt.MouseButton.LeftButton,
+                         pos=terms_page.game_list.visualItemRect(item).center())
+        yield 1.0
+
+        def shown_pairs():
+            model = getattr(terms_page, '_term_model', None)
+            rows = [model.data_for_row(i) for i in range(model.rowCount())] if model is not None else []
+            return {(r.get('source'), r.get('target')) for r in rows if r}
+        result['library_rows_before'] = sorted(map(list, shown_pairs()))
+        _capture(window, output / '06c-term-library-before.png')
+        process = client('glossary')
+        until = time.monotonic() + 180
+        while process.poll() is None and time.monotonic() < until:
+            for dialog in dialogs():
+                _capture(window, output / '06d-glossary-approval.png')
+                dialog.grab().save(str(output / 'glossary-approval-dialog.png'))
+                result['glossary_approval'] = dict(title=dialog.windowTitle(), text=dialog.details.toPlainText()[:1200],
+                                                   button=dialog.approve_button.text())
+                QTest.mouseClick(dialog.approve_button, Qt.MouseButton.LeftButton)
+            yield .1
+        yield 1.0
+        glossary = json.loads((output / 'client-glossary.json').read_text('utf-8')).get('summary') or {}
+        result['client_glossary'] = glossary
+        stored = {(r['from'], r['to']): r for r in legacy.learned_mappings_for_game(library_id)}
+        result['library_rows_after'] = sorted(map(list, shown_pairs()))
+        _capture(window, output / '06e-term-library-after.png')
+        approval = result.get('glossary_approval') or {}
+        check('glossary tools: list, search, preview changes nothing, approval saves, undo_plan refused',
+              glossary.get('listed') and glossary.get('found') == 1 and glossary.get('unchanged_after_preview')
+              and glossary.get('applied') == 'applied' and glossary.get('undo_refused'), glossary)
+        check('glossary approval dialog: plain text, alias warning, "approve and save"',
+              approval.get('title') == '外部 AI 请求修改术语库' and '替换' in approval.get('text', '')
+              and '<b>' in approval.get('text', '') and approval.get('button') == '批准并保存', approval)
+        check('approved rows are in the library file (origin 外部 AI)', stored.get(('落克', '洛克'), {}).get('origin') == '外部 AI'
+              and ('兔白字幕 <b>测试</b>', '兔白字幕 <b>测试</b>') in stored, sorted(stored))
+        check('the open term library page shows the new rows without reopening',
+              {('落克', '洛克')} <= shown_pairs() and ('落克', '洛克') not in set(map(tuple, result['library_rows_before'])),
+              result['library_rows_after'])
         # ---- revoke ----
         drive_settings('revoke')
         open_application_settings(page)

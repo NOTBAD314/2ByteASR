@@ -5,6 +5,7 @@ Claude Desktop config of the person running the tests is never read or written.
 """
 import json
 import os
+import time
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -122,11 +123,98 @@ def test_status_tells_written_apart_from_connected():
     assert "实际已连线" in connected[1] and "Claude" in connected[1] and "get_cues" in connected[1]
 
 
+def test_claude_desktop_overwrite_is_reported_not_called_unwritten(home):
+    """2026-10-16 23:21: written, then Claude rewrote its file from memory (no mcpServers)."""
+    folder = claude_folder(home)
+    config = folder / mcp_clients.CONFIG_NAME
+    claude_own = {"preferences": {"sidebarMode": "code"}}
+    config.write_text(json.dumps(claude_own), encoding="utf-8")
+    place = mcp_clients.claude_desktop_location("win32")
+    mcp_clients.write_entry(place, EXE, ["--mcp-stdio"])
+    written = mcp_clients.written_at(mcp_clients.DESKTOP, place)
+    assert written and mcp_clients.entry_state(place, EXE, ["--mcp-stdio"]) == "written"
+    config.write_text(json.dumps(claude_own), encoding="utf-8")            # Claude writes its memory back
+    assert mcp_clients.entry_state(place, EXE, ["--mcp-stdio"]) == "lost"
+    lost = mcp_clients.connection_lines({}, True, "lost", written=written, started=0.0)
+    assert "覆盖" in lost[0] and "正在运行" not in "".join(lost)
+    running = mcp_clients.connection_lines({}, True, "lost", written=written, started=written + 60)
+    assert "先完全退出" in running[1]
+    # Written while an earlier-started Claude ran: it will overwrite the entry.
+    config.write_text(json.dumps(dict(claude_own, mcpServers={"2byteasr": common.server_entry(EXE, [])})),
+                      encoding="utf-8")
+    early = mcp_clients.config_lines(mcp_clients.DESKTOP, "written", written, started=written - 60)
+    assert "写入前就已打开" in early[0]
+    assert "已读到" in mcp_clients.config_lines(mcp_clients.DESKTOP, "written", written, started=written + 60)[0]
+    mcp_clients.remove_entry(place)                                       # removing forgets the record
+    assert not mcp_clients.written_at(mcp_clients.DESKTOP, place)
+    assert mcp_clients.entry_state(place, EXE, []) == "not_written"
+
+
+def test_write_is_read_back(home, monkeypatch):
+    folder = claude_folder(home)
+    place = mcp_clients.claude_desktop_location("win32")
+    real_write = mcp_clients._write
+    monkeypatch.setattr(mcp_clients, "_write", lambda path, payload: real_write(path, {"preferences": {}}))
+    with pytest.raises(mcp_clients.ConfigError, match="重新读取"):
+        mcp_clients.write_entry(place, EXE, [])
+    assert not mcp_clients.written_at(mcp_clients.DESKTOP, place)
+    assert (folder / mcp_clients.CONFIG_NAME).exists()
+
+
+def test_only_claude_desktop_processes_count(monkeypatch):
+    store = r"C:\Program Files\WindowsApps\Claude_2.42304.0.0_x64__pzs8sxrjxfjjc\app\claude.exe"
+    code = r"C:\Users\x\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.299\claude.exe"
+    squirrel = r"C:\Users\x\AppData\Local\AnthropicClaude\app-0.14.10\claude.exe"
+    cli = r"C:\Users\x\.local\bin\claude.exe"
+    assert mcp_clients.is_claude_desktop_process("claude.exe", store, "win32")
+    assert mcp_clients.is_claude_desktop_process("Claude.exe", squirrel, "win32")
+    assert not mcp_clients.is_claude_desktop_process("claude.exe", code, "win32")
+    assert not mcp_clients.is_claude_desktop_process("claude.exe", cli, "win32")
+    assert not mcp_clients.is_claude_desktop_process("other.exe", store, "win32")
+    assert mcp_clients.is_claude_desktop_process("Claude", "/Applications/Claude.app/Contents/MacOS/Claude", "darwin")
+    monkeypatch.setattr(mcp_clients, "_windows_processes",
+                        lambda image: [("claude.exe", code, 50.0), ("claude.exe", store, 200.0), ("claude.exe", store, 100.0)])
+    assert mcp_clients.claude_desktop_started_at("win32") == 100.0
+    monkeypatch.setattr(mcp_clients, "_windows_processes", lambda image: [("claude.exe", code, 50.0)])
+    assert mcp_clients.claude_desktop_started_at("win32") == 0.0
+    monkeypatch.setattr(mcp_clients, "_windows_processes", lambda image: None)
+    assert mcp_clients.claude_desktop_started_at("win32") is None      # unknown: nothing is refused
+
+
+def test_real_process_snapshot_runs():
+    rows = mcp_clients._windows_processes("python.exe")
+    assert rows is not None and any(when > 0 and path.lower().endswith("python.exe") for _n, path, when in rows)
+
+
+def test_claude_code_user_config_merge(home, monkeypatch):
+    config = home / "home" / mcp_clients.CLAUDE_CODE_CONFIG_NAME
+    config.parent.mkdir(parents=True)
+    original = {"numStartups": 7, "projects": {"C:/work": {"allowedTools": []}},
+                "mcpServers": {"files": {"type": "stdio", "command": "npx", "args": ["fs"], "env": {}}}}
+    config.write_text(json.dumps(original), encoding="utf-8")
+    place = mcp_clients.claude_code_location()
+    assert place.path == config and place.installed
+    assert mcp_clients.entry_state(place, EXE, ["--mcp-stdio"], mcp_clients.CODE) == "not_written"
+    backup = mcp_clients.write_entry(place, EXE, ["--mcp-stdio"], mcp_clients.CODE)
+    written = json.loads(config.read_text(encoding="utf-8"))
+    assert json.loads(backup.read_text(encoding="utf-8")) == original
+    assert written["mcpServers"]["2byteasr"] == {"type": "stdio", "command": EXE, "args": ["--mcp-stdio"]}
+    assert written["mcpServers"]["files"] == original["mcpServers"]["files"]
+    assert written["projects"] == original["projects"] and written["numStartups"] == 7
+    assert mcp_clients.entry_state(place, EXE, ["--mcp-stdio"], mcp_clients.CODE) == "written"
+    assert "Claude Code" in mcp_clients.config_lines(mcp_clients.CODE, "written")[0]
+    # The Claude Desktop record is separate.
+    assert not mcp_clients.written_at(mcp_clients.DESKTOP, place)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home / "elsewhere"))
+    assert mcp_clients.claude_code_location().path == home / "elsewhere" / mcp_clients.CLAUDE_CODE_CONFIG_NAME
+
+
 def test_settings_page_asks_before_enabling_and_writes_only_after_confirming(home, monkeypatch):
     from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
     from twobyteasr.application_settings_ui import ApplicationSettingsDialog
     app = QApplication.instance() or QApplication([])
     folder = claude_folder(home)
+    monkeypatch.setattr(mcp_clients, "claude_desktop_started_at", lambda platform=None: 0.0)  # Claude closed
     answers = []
     monkeypatch.setattr(QMessageBox, "question",
                         lambda *a, **k: answers.pop(0) if answers else QMessageBox.StandardButton.No)
@@ -149,8 +237,34 @@ def test_settings_page_asks_before_enabling_and_writes_only_after_confirming(hom
     assert "已写入" in dialog.mcp_status.text() and "实际已连线" not in dialog.mcp_status.text()
     dialog.mcp_export_dir.setText(str(home / "exports"))
     assert dialog.mcp_values()["export_dir"] == str(home / "exports")
+    assert dialog.mcp_values()["allow_glossary"] is False
+    dialog.mcp_allow_glossary.setChecked(True)
+    assert dialog.mcp_values()["allow_glossary"] is True
     dialog.mcp_client.setCurrentIndex(dialog.mcp_client.findData("claude_code"))
-    assert dialog.mcp_write.isHidden() and dialog.mcp_copy.text() == "复制命令"
+    assert not dialog.mcp_write.isHidden() and dialog.mcp_write.text() == "写入 Claude Code 配置"
+    assert dialog.mcp_copy.text() == "复制命令" and "Claude Code：这台电脑上没有找到" in dialog.mcp_status.text()
+    dialog.close()
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_settings_page_refuses_while_claude_desktop_runs(home, monkeypatch):
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    app = QApplication.instance() or QApplication([])
+    folder = claude_folder(home)
+    monkeypatch.setattr(mcp_clients, "claude_desktop_started_at", lambda platform=None: time.time() - 600)
+    warnings, questions = [], []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: questions.append(a[2]) or QMessageBox.StandardButton.Yes)
+    dialog = ApplicationSettingsDialog(None, {}, home / "Projects", browse=lambda *a: None,
+                                       clear_recent=lambda: None, reset_layout=lambda: None)
+    assert dialog.mcp_steps.text().startswith("2. 完全退出 Claude")             # quit first, then write
+    assert "正在运行" in dialog.mcp_status.text()
+    dialog.mcp_write.click()
+    assert warnings and "正在运行" in warnings[0] and not questions        # refused before asking
+    assert not (folder / mcp_clients.CONFIG_NAME).exists()
+    assert "没有写入" in dialog.mcp_status.text()
     dialog.close()
     dialog.deleteLater()
     app.processEvents()

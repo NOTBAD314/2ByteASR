@@ -15,7 +15,7 @@ from PySide6.QtGui import QUndoCommand
 
 from .i18n import tr
 from .punctuation_style import (MODE_ADD, MODE_HINTS, MODE_LABELS, MODE_NONE, MODE_ORIGINAL, MODES, mode_from_state,
-                                project_mode, protected_terms_of, state_value, style_text)
+                                math_enabled, project_mode, protected_terms_of, state_value, style_text)
 
 
 class SetPunctuationStyleCommand(QUndoCommand):
@@ -46,6 +46,55 @@ class SetPunctuationStyleCommand(QUndoCommand):
 
     def undo(self):
         self._apply(self.before)
+
+
+class SetMathFormulasCommand(QUndoCommand):
+    """2026-10-16 (ADR 0124): show ``$…$`` formulas as Unicode in preview and exports."""
+
+    def __init__(self, project, enabled: bool, changed=None):
+        from .math_text import STATE_KEY, state_value as math_state_value
+        super().__init__(tr('数学公式：开启') if enabled else tr('数学公式：关闭'))
+        self.project = project
+        self.key = STATE_KEY
+        self.before = copy.deepcopy(project.studio_state.get(STATE_KEY))
+        self.after = math_state_value(enabled)
+        self.changed = changed
+
+    def _apply(self, value):
+        from .studio_commands import _commit_mutation
+        from .studio_runtime_state import DirtyDomain
+
+        def mutate():
+            if value is None:
+                self.project.studio_state.pop(self.key, None)
+            else:
+                self.project.studio_state[self.key] = copy.deepcopy(value)
+
+        _commit_mutation(self.project, action_id=self.text(),
+                         dirty=(DirtyDomain.NATIVE_SUBTITLE | DirtyDomain.ADVANCED_PREVIEW
+                                | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.AUTOSAVE),
+                         cue_ids=(), mutate=mutate, changed=self.changed)
+
+    def redo(self):
+        self._apply(self.after)
+
+    def undo(self):
+        self._apply(self.before)
+
+
+def apply_math_formulas(page, enabled: bool) -> bool:
+    """User choice in the workbench: one undoable step; the manuscript is untouched."""
+    if not getattr(page, 'project', None):
+        return False
+    if math_enabled(page.project) == bool(enabled):
+        sync_controls(page)
+        return False
+    page.undo_stack.push(SetMathFormulasCommand(page.project, bool(enabled), None))
+    sync_controls(page)
+    refresh = getattr(page, '_refresh_ass_preview', None)
+    if callable(refresh):
+        refresh()
+    return True
 
 
 def apply_style(page, mode: str) -> bool:
@@ -85,6 +134,14 @@ def build_menu(page, menu) -> None:
     permanent.triggered.connect(lambda: open_permanent_dialog(page))
     menu.addAction(permanent)
     page.punctuation_permanent_action = permanent
+    menu.addSeparator()
+    math = QAction(tr('数学公式：$…$ 显示为数学符号'), menu)
+    math.setObjectName('studioMathFormulasAction')
+    math.setCheckable(True)
+    math.setToolTip(tr('字幕里用 $…$ 写的公式（LaTeX），在画面和所有导出里显示成 x²、∫₀¹ 这样的符号；文稿不变'))
+    math.triggered.connect(lambda checked=False: apply_math_formulas(page, checked))
+    menu.addAction(math)
+    page.math_formulas_action = math
     stack = getattr(page, 'undo_stack', None)
     if stack is not None:
         # Undo/redo of a style switch (and project reloads) keep the checks right.
@@ -103,6 +160,9 @@ def sync_controls(page) -> None:
     permanent = getattr(page, 'punctuation_permanent_action', None)
     if permanent is not None:
         permanent.setEnabled(mode != MODE_ORIGINAL)
+    math = getattr(page, 'math_formulas_action', None)
+    if math is not None:
+        math.setChecked(bool(getattr(page, 'project', None)) and math_enabled(page.project))
 
 
 def open_style_dialog(page) -> None:
@@ -172,9 +232,11 @@ def permanent_changes(project, mode: str | None = None) -> list[tuple[str, str, 
         return []
     hint = project_language(project) or ''
     terms = protected_terms_of(project)
+    # Formulas keep their LaTeX in the manuscript: protected, never converted here.
+    math = math_enabled(project)
     changes = []
     for cue in project.cues:
-        styled = style_text(cue.text, mode, language=hint, protected_terms=terms)
+        styled = style_text(cue.text, mode, language=hint, protected_terms=terms, math=math, convert_math=False)
         if styled.changed and styled.text.strip():
             changes.append((cue.id, cue.text, styled.text))
     return changes
@@ -261,5 +323,6 @@ def initial_state_for_new_project(settings: dict) -> dict | None:
     return state_value(mode) if mode != MODE_ORIGINAL else None
 
 
-__all__ = ['SetPunctuationStyleCommand', 'WritePunctuationCommand', 'apply_style', 'build_menu',
+__all__ = ['SetMathFormulasCommand', 'SetPunctuationStyleCommand', 'WritePunctuationCommand', 'apply_math_formulas',
+           'apply_style', 'build_menu',
            'open_permanent_dialog', 'open_style_dialog', 'permanent_changes', 'sync_controls', 'mode_from_state']

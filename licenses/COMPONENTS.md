@@ -6233,3 +6233,13 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 - 用途/集成：模型工坊→download_models.ps1/模型完整性校验→主运行环境 ctc_aligner_worker.py；只用于日语句首校正；修改/补丁：包内没有该模型权重；下载时按文件哈希校验。未修改模型的声明仅限无本轮修改，不代替模型衍生关系证明。
 - 源码与配套义务：精确revision模型卡、许可全文、版权/NOTICE、基础模型/词表条款；向用户提供来源及适用条件。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
 - 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：required_files只含运行文件；模型卡已按固定revision取得；基础模型 facebook/wav2vec2-large-xlsr-53 与训练数据（Common Voice 6.1、CSS10、JSUT）的条款未逐项核实；模型卡的 Apache-2.0 不自动覆盖数据集条件。
+
+## 623. pylatexenc — 2.11
+
+- 范围/位置：B；`2ByteASR.exe!PYZ:pylatexenc`。
+- 许可：MIT。组件版权声明：Copyright (c) 2015-2019 Philippe Faist（许可原文）。
+- 来源：[对应来源](https://pypi.org/project/pylatexenc/2.11/)、[上游仓库](https://github.com/phfaist/pylatexenc)。版本依据及SHA见机器索引对应`frozen:pylatexenc`。
+- 完整原文及现有材料：[LICENSE.txt](python/pylatexenc-2.11/licenses/LICENSE.txt)
+- 用途/集成：PyInstaller PYZ模块；字幕数学公式（`$…$`）转成 Unicode 文字；修改/补丁：无。
+- 源码与配套义务：保留许可全文与版权声明（已随包）。
+- 证据/兼容性：MIT 与自有 GPL-3.0-only 兼容；0.7.5 起随正式版发布（2026-10-16 起在本机日常程序里）。

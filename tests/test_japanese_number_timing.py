@@ -32,7 +32,9 @@ def _segment(text, step=0.1):
     return SpeechSegment(1, 1.0, time, text, 0.9, words, speaker='S01')
 
 
-@pytest.mark.parametrize('text', USER_LINES)
+# Line 3's only number was 十分 "enough". Since the 十分 adverb rule (also
+# 2026-10-16) it is not formatted, so only lines 1-2 take the mapped path.
+@pytest.mark.parametrize('text', USER_LINES[:2])
 def test_formatted_japanese_line_keeps_one_time_per_character(text):
     segment = _segment(text)
     format_segment(segment, source_text=text, protected_terms=())
@@ -42,6 +44,13 @@ def test_formatted_japanese_line_keeps_one_time_per_character(text):
     assert all(a.start <= b.start for a, b in zip(units, units[1:]))
     cues = build_local_source_cues([segment])
     assert content_only(''.join(cue.text for cue in cues)) == content_only(segment.text)
+
+
+def test_enough_shifen_line_is_not_formatted():
+    segment = _segment(USER_LINES[2])
+    format_segment(segment, source_text=USER_LINES[2], protected_terms=())
+    assert segment.text == USER_LINES[2]
+    assert not segment.caption_arbitration.get('numeric_formatting')
 
 
 def _polish_unchanged(monkeypatch, segment):
@@ -66,8 +75,8 @@ def test_japanese_proofreading_finish_keeps_spoken_numbers(context, monkeypatch,
 
 
 # Same lines unconverted (the user turned number formatting off and got
-# "字幕保真检查未通过：S01 0.570s"), with their spans from the job log. 一万倍 and
-# 十分 still read as numbers; 0.7.3 rebuilt line 1 as いいよ｜一万になったら, which
+# "字幕保真检查未通过：S01 0.570s"), with their spans from the job log. 一万倍 (and,
+# before the 十分 rule, 十分) still read as numbers; 0.7.3 rebuilt line 1 as いいよ｜一万になったら, which
 # loses the 一万 after the space, and the whole file failed.
 UNCONVERTED = [
     (USER_LINES[0], 0.570, 7.830),

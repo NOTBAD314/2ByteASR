@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 import unicodedata
 
+NO_BREAK_SPACES=frozenset('   ')
+
 
 def normalized_caption_text(text):
     return str(text).replace('\r\n','\n').replace('\r','\n').replace('\u2028','\n').replace('\u2029','\n')
@@ -44,7 +46,8 @@ def wrap_caption_text(text,measure,max_width):
                 candidate=''.join(chars[start:end+1])
                 if end>start and measure(candidate)>limit:break
                 end+=1
-                if chars[end-1].isspace() or chars[end-1][-1] in closing:last_break=end
+                # No-break spaces (inside a converted math formula, ADR 0124) never break.
+                if (chars[end-1].isspace() and chars[end-1] not in NO_BREAK_SPACES) or chars[end-1][-1] in closing:last_break=end
             if end<len(chars):
                 if last_break is not None and last_break>start:end=last_break
                 if end-start>1 and chars[end-1][-1] in opening:end-=1

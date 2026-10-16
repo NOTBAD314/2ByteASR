@@ -15,7 +15,7 @@
     "D": "用户另配外部服务/工具",
     "E": "仅本机开发工具，不在当前源码公开树或B中；工具产出/bootloader另列"
   },
-  "component_count": 622,
+  "component_count": 623,
   "components": [
     {
       "id": "npm:renderer/node_modules/@babel/code-frame/package.json",
@@ -41107,6 +41107,61 @@
       "unreviewed_copyright_observations": [],
       "copyright_attribution": [],
       "historical_no_sale_target_compatibility": "保持模型原条款；应用禁止出售条款不能缩减模型原有权利；下载时仍应交付通知"
+    },
+    {
+      "id": "frozen:pylatexenc",
+      "name": "pylatexenc",
+      "version": "2.11",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "2ByteASR.exe!PYZ:pylatexenc"
+      ],
+      "upstream": [
+        "https://github.com/phfaist/pylatexenc"
+      ],
+      "license": "MIT",
+      "copyright": "Copyright (c) 2015-2019 Philippe Faist（许可原文中的声明）",
+      "additional_conditions": [],
+      "modification_status": "未证明逐字节未修改",
+      "patches": [],
+      "integration": "PyInstaller PYZ模块；字幕数学公式 Unicode 一级转换（twobyteasr.math_text）",
+      "required_materials": [
+        "对应版本许可全文、版权与适用NOTICE；先核查原文"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
+      "license_evidence": [
+        {
+          "path": "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt",
+          "sha256": "90b6f8fc23cb0328a9678562627fb2ebc5f9c871712fad698d781869eb02862c",
+          "bytes": 1086
+        }
+      ],
+      "pending": [
+        "确认实际模块与该版本来源的字节对应"
+      ],
+      "local_materials": [
+        "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt"
+      ],
+      "copyright_evidence": [
+        "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt"
+      ],
+      "assembly_status": "许可原文取自构建环境 pylatexenc-2.11.dist-info/licenses/LICENSE.txt",
+      "binary_identity_evidence": [],
+      "official_sources": [
+        "https://pypi.org/project/pylatexenc/2.11/",
+        "https://github.com/phfaist/pylatexenc"
+      ],
+      "version_source": "https://pypi.org/project/pylatexenc/2.11/",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [
+        "Philippe Faist"
+      ],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
     }
   ],
   "material_files": [
@@ -47033,6 +47088,15 @@
       "kind": "model_card",
       "source": {
         "url": "https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-japanese/resolve/cf031e020336460d15a417eba710bbc5bb43be9a/README.md"
+      }
+    },
+    {
+      "path": "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt",
+      "sha256": "90b6f8fc23cb0328a9678562627fb2ebc5f9c871712fad698d781869eb02862c",
+      "bytes": 1086,
+      "kind": "license_or_notice",
+      "source": {
+        "candidate_path": ".venv-main/Lib/site-packages/pylatexenc-2.11.dist-info/licenses/LICENSE.txt"
       }
     }
   ],

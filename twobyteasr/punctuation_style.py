@@ -23,6 +23,11 @@ breaks are never changed. Applying a style twice gives the same text.
 ``StyledText.index_map`` maps every manuscript character index to its index in
 the styled text (``None`` when removed), so word timings that point into the
 manuscript can be shown against the styled text.
+
+2026-10-16 (ADR 0124): when the project's ``studio_state['math_formulas']``
+switch is on, ``$…$`` formulas are protected from every punctuation mode and
+then shown as Unicode text (``subtitle_rules.math_text``) by the same calls,
+so preview, burn-in and exports agree. The manuscript is still never rewritten.
 """
 from __future__ import annotations
 
@@ -89,8 +94,12 @@ class StyledText:
     changed: bool = False
 
 
-def _protected_mask(text: str, terms=()) -> list[bool]:
-    mask = [False] * len(text)
+def _protected_mask(text: str, terms=(), math: bool = False) -> list[bool]:
+    if math:
+        from .math_text import protected_mask
+        mask = protected_mask(text)
+    else:
+        mask = [False] * len(text)
     for pattern in _PROTECTED:
         for match in pattern.finditer(text):
             for index in range(match.start(), match.end()):
@@ -111,10 +120,10 @@ def _identity(text: str) -> StyledText:
     return StyledText(text, list(range(len(text))), False)
 
 
-def strip_sentence_punctuation(text: str, *, protected_terms=()) -> StyledText:
+def strip_sentence_punctuation(text: str, *, protected_terms=(), math: bool = False) -> StyledText:
     """不加标点: remove sentence marks outside protected spans."""
     text = str(text or '')
-    mask = _protected_mask(text, protected_terms)
+    mask = _protected_mask(text, protected_terms, math)
     out: list[str] = []
     mapping: list = [None] * len(text)
     index = 0
@@ -158,14 +167,15 @@ def _remap_after_trim(before: str, after: str, mapping: list) -> list:
     return [position.get(value) if value is not None else None for value in mapping]
 
 
-def add_pause_punctuation(text: str, *, language: str = '', protected_terms=()) -> StyledText:
+def add_pause_punctuation(text: str, *, language: str = '', protected_terms=(), math: bool = False) -> StyledText:
     """添加标点: pause spaces between CJK characters become ，/、; a final 。 or ."""
     text = str(text or '')
     if not text.strip():
         return _identity(text)
     lang = text_language(text, language)
     comma = '、' if lang == 'ja' else '，'
-    mask = _protected_mask(text, protected_terms)
+    mask = _protected_mask(text, protected_terms, math)
+    formula_end = math and text.rstrip(' 　\n').endswith('$') and mask[len(text.rstrip(' 　\n')) - 1]
     out: list[str] = []
     mapping: list = [None] * len(text)
     for index, char in enumerate(text):
@@ -188,20 +198,35 @@ def add_pause_punctuation(text: str, *, language: str = '', protected_terms=()) 
         last = tail[-1]
         # A Latin line ending in a URL, version or e-mail gets no '.' (it would
         # read as part of it); a full-width 。 is never ambiguous.
-        ambiguous = lang == 'en' and mask[last_source]
-        if last not in SENTENCE_MARKS and last not in CLOSERS and (last.isalnum() or _is_cjk(last)) and not ambiguous:
+        ambiguous = lang == 'en' and mask[last_source] and not formula_end
+        if last not in SENTENCE_MARKS and last not in CLOSERS and (last.isalnum() or _is_cjk(last) or formula_end) \
+                and not ambiguous:
             end_mark = '。' if lang in {'zh', 'ja'} else '.'
             styled = tail + end_mark + styled[len(tail):]
     return StyledText(styled, mapping, styled != text)
 
 
-def style_text(text: str, mode: str, *, language: str = '', protected_terms=()) -> StyledText:
+def style_text(text: str, mode: str, *, language: str = '', protected_terms=(), math: bool = False,
+               convert_math: bool = True) -> StyledText:
+    """``math`` protects ``$…$`` formulas from punctuation changes and, unless
+    ``convert_math`` is false (writing into the manuscript), shows them as Unicode."""
     mode = mode if mode in MODES else MODE_ORIGINAL
     if mode == MODE_NONE:
-        return strip_sentence_punctuation(text, protected_terms=protected_terms)
-    if mode == MODE_ADD:
-        return add_pause_punctuation(text, language=language, protected_terms=protected_terms)
-    return _identity(str(text or ''))
+        styled = strip_sentence_punctuation(text, protected_terms=protected_terms, math=math)
+    elif mode == MODE_ADD:
+        styled = add_pause_punctuation(text, language=language, protected_terms=protected_terms, math=math)
+    else:
+        styled = _identity(str(text or ''))
+    return _with_math(styled) if math and convert_math else styled
+
+
+def _with_math(styled: StyledText) -> StyledText:
+    from .math_text import convert
+    text, mapping, changed = convert(styled.text)
+    if not changed:
+        return styled
+    index_map = [mapping[value] if value is not None else None for value in styled.index_map]
+    return StyledText(text, index_map, True)
 
 
 # ----------------------------------------------------------------- project
@@ -250,17 +275,48 @@ def _with_text(cue, text: str):
     return copied
 
 
-def style_cues(project, cues, *, mode: str | None = None) -> list:
+CUES_STYLED_KEY = '_cues_display_styled'
+
+
+def mark_cues_styled(project) -> None:
+    """For a frozen copy whose cue texts are already display text (export and
+    playback snapshots): later styling passes leave those cues alone. Converted
+    formulas no longer carry ``$``, so a second 不加标点 pass would strip their
+    commas. Translations are styled later and are not affected."""
+    project.studio_state[CUES_STYLED_KEY] = True
+
+
+def _cues_already_styled(state) -> bool:
+    return isinstance(state, dict) and state.get(CUES_STYLED_KEY) is True
+
+
+def math_enabled(project) -> bool:
+    from .math_text import project_enabled
+    return project_enabled(project)
+
+
+def math_enabled_from_state(state) -> bool:
+    from .math_text import enabled_from_state
+    return enabled_from_state(state)
+
+
+def styling_active(state) -> bool:
+    """Whether display text can differ from the manuscript for this state."""
+    return mode_from_state(state) != MODE_ORIGINAL or math_enabled_from_state(state)
+
+
+def style_cues(project, cues, *, mode: str | None = None, math: bool | None = None) -> list:
     """Copies of ``cues`` with the project's (or the given) style applied."""
     mode = project_mode(project) if mode is None else mode
+    math = math_enabled(project) if math is None else math
     cues = list(cues)
-    if mode == MODE_ORIGINAL:
+    if (mode == MODE_ORIGINAL and not math) or _cues_already_styled(getattr(project, 'studio_state', None)):
         return cues
     hint = _language_hint(project)
     terms = protected_terms_of(project)
     out = []
     for cue in cues:
-        styled = style_text(cue.text, mode, language=hint, protected_terms=terms)
+        styled = style_text(cue.text, mode, language=hint, protected_terms=terms, math=math)
         if styled.changed:
             cue = _with_text(cue, styled.text)
         out.append(cue)
@@ -270,8 +326,9 @@ def style_cues(project, cues, *, mode: str | None = None) -> list:
 def style_cues_for_state(state, cues, *, language: str = '', metadata=None) -> list:
     """Same as :func:`style_cues` for worker DTOs that carry a state mapping only."""
     mode = mode_from_state(state)
+    math = math_enabled_from_state(state)
     cues = list(cues)
-    if mode == MODE_ORIGINAL:
+    if (mode == MODE_ORIGINAL and not math) or _cues_already_styled(state):
         return cues
     holder = type('_Holder', (), {})()
     holder.studio_state = state
@@ -279,25 +336,29 @@ def style_cues_for_state(state, cues, *, language: str = '', metadata=None) -> l
     terms = protected_terms_of(holder)
     out = []
     for cue in cues:
-        styled = style_text(cue.text, mode, language=language, protected_terms=terms)
+        styled = style_text(cue.text, mode, language=language, protected_terms=terms, math=math)
         if styled.changed:
             cue = _with_text(cue, styled.text)
         out.append(cue)
     return out
 
 
-def style_translation(text: str, mode: str) -> str:
-    """Translations already come punctuated; only 不加标点 changes them."""
+def style_translation(text: str, mode: str, *, math: bool = False) -> str:
+    """Translations already come punctuated; only 不加标点 changes them (formulas
+    are converted when the math switch is on)."""
     if mode != MODE_NONE:
-        return str(text or '')
-    return strip_sentence_punctuation(text).text
+        styled = _identity(str(text or ''))
+    else:
+        styled = strip_sentence_punctuation(text, math=math)
+    return _with_math(styled).text if math else styled.text
 
 
 def style_translations(state, translations):
     mode = mode_from_state(state)
-    if mode != MODE_NONE or not translations:
+    math = math_enabled_from_state(state)
+    if (mode != MODE_NONE and not math) or not translations:
         return translations
-    return {key: style_translation(value, mode) for key, value in dict(translations).items()}
+    return {key: style_translation(value, mode, math=math) for key, value in dict(translations).items()}
 
 
 def preview_rows(project=None, mode: str = MODE_ADD, limit: int = 3) -> list[tuple[str, str]]:
@@ -307,10 +368,11 @@ def preview_rows(project=None, mode: str = MODE_ADD, limit: int = 3) -> list[tup
     if project is not None:
         hint = _language_hint(project)
         terms = protected_terms_of(project)
+        math = math_enabled(project)
         for cue in list(getattr(project, 'cues', []) or [])[:200]:
             if not str(cue.text or '').strip():
                 continue
-            styled = style_text(cue.text, mode, language=hint, protected_terms=terms)
+            styled = style_text(cue.text, mode, language=hint, protected_terms=terms, math=math)
             rows.append((cue.text, styled.text))
             if len(rows) >= limit:
                 break

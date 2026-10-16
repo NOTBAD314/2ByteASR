@@ -7,6 +7,8 @@ runs one phase, writing every step to <out>/client-<phase>.json:
           → change visible → undo (approved) → reject path → export twice
   stale   preview, wait for the app to change the project, apply → refused
   switch  preview, the app opens another project, apply → refused
+  glossary list/search term libraries → preview two additions → apply (approved
+          in the app) → undo_plan refused (2026-10-17)
   revoked any call after access was revoked → refused
 
 usage: mcp_client_flow.py --phase full --out DIR --server-json '["exe", "--mcp-stdio"]' [--env-json '{...}']
@@ -132,6 +134,21 @@ async def run(phase, out: Path, command, env):
                     await asyncio.sleep(0.1)
                 stale = await tool("apply_plan", plan_id=plan["plan_id"])
                 log["summary"] = dict(stale_refused=stale is None)
+            elif phase == "glossary":
+                # 2026-10-17: term libraries; the app approves with a real click.
+                libraries = await tool("list_glossaries")
+                found = await tool("search_glossary", query="洛克", library="MCP 验收词库")
+                plan = await tool("preview_glossary_changes", library="MCP 验收词库", changes=[
+                    {"action": "add", "from": "落克", "to": "洛克", "category": "角色"},
+                    {"action": "add", "to": "兔白字幕 <b>测试</b>"}])
+                again = await tool("search_glossary", library="MCP 验收词库")
+                applied = await tool("apply_plan", plan_id=(plan or {}).get("plan_id", ""), wait_seconds=90)
+                undo = await tool("undo_plan", plan_id=(plan or {}).get("plan_id", ""))
+                log["summary"] = dict(listed=any(row["name"] == "MCP 验收词库" for row in (libraries or {}).get("libraries", [])),
+                                      found=(found or {}).get("total"), planned=(plan or {}).get("change_count"),
+                                      warnings=[w for c in (plan or {}).get("changes", []) for w in c.get("warnings", [])],
+                                      unchanged_after_preview=(again or {}).get("total") == (found or {}).get("total"),
+                                      applied=(applied or {}).get("status"), undo_refused=undo is None)
             elif phase == "revoked":
                 status = await tool("get_status")
                 log["summary"] = dict(refused=status is None)
@@ -140,7 +157,7 @@ async def run(phase, out: Path, command, env):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", required=True, choices=("full", "stale", "switch", "revoked"))
+    parser.add_argument("--phase", required=True, choices=("full", "stale", "switch", "glossary", "revoked"))
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--server-json", required=True)
     parser.add_argument("--env-json", default="{}")

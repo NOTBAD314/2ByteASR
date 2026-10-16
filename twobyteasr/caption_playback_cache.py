@@ -45,7 +45,9 @@ def materialize_caption_project(revision):
     # Original / translation / bilingual: the same display cues the ASS export
     # draws (adjusted originals plus ``<id>#tr`` translation companions).
     from .bilingual_layout import project_display_cues
+    from .punctuation_style import mark_cues_styled
     project.cues = project_display_cues(project)
+    mark_cues_styled(project)  # visual snapshots of these cues must not style them again
     return project
 
 

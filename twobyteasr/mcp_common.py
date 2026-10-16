@@ -6,7 +6,8 @@ never print anything except protocol messages on stdout.
 
 * The feature is off by default. Settings live under the additive ``mcp`` key
   of the Studio settings file (``enabled``, ``scope``, ``allow_edits``,
-  ``allow_export``).
+  ``allow_export``; 2026-10-17 ``allow_glossary`` for the term libraries,
+  which belong to no project and so are not covered by ``scope``).
 * While enabled, the GUI listens on a per-user named pipe and writes a random
   key next to the settings; the stdio server reads the key for every request.
   Turning the feature off (or "撤销授权") stops the pipe and deletes the key,
@@ -27,7 +28,9 @@ SCOPES = ("current", "library")
 DEFAULTS = {"enabled": False, "scope": "current", "allow_edits": False, "allow_export": False,
             # 2026-10-13: one folder the user authorized for exports (empty = the
             # project's "MCP 导出" folder) and whether the data notice was read.
-            "export_dir": "", "acknowledged": False}
+            "export_dir": "", "acknowledged": False,
+            # 2026-10-17: read/search the term libraries and propose changes to them.
+            "allow_glossary": False}
 EXPORT_FOLDER = "MCP 导出"
 MAX_LINE_BYTES = 4 * 1024 * 1024
 
@@ -69,6 +72,7 @@ def read_settings() -> dict:
     result["allow_edits"] = bool(result["allow_edits"])
     result["allow_export"] = bool(result["allow_export"])
     result["acknowledged"] = bool(result["acknowledged"])
+    result["allow_glossary"] = bool(result["allow_glossary"])
     result["export_dir"] = str(result["export_dir"] or "") if isinstance(result["export_dir"], str) else ""
     if result["scope"] not in SCOPES:
         result["scope"] = "current"
@@ -82,7 +86,7 @@ def save_settings(values: dict) -> dict:
     clean = {"enabled": bool(clean["enabled"]), "scope": clean["scope"] if clean["scope"] in SCOPES else "current",
              "allow_edits": bool(clean["allow_edits"]), "allow_export": bool(clean["allow_export"]),
              "export_dir": str(clean["export_dir"] or "") if isinstance(clean["export_dir"], str) else "",
-             "acknowledged": bool(clean["acknowledged"])}
+             "acknowledged": bool(clean["acknowledged"]), "allow_glossary": bool(clean["allow_glossary"])}
     _write_settings_json(lambda payload: payload.__setitem__("mcp", clean))
     return clean
 

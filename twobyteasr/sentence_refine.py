@@ -441,7 +441,14 @@ def refine_cues_with_llm(
         return _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language)
 
 
+def _cuts_a_formula(action, spans) -> bool:
+    positions = [index + 1 for index in (*(action.split_after_chars or ()), *(action.space_after_chars or ()))]
+    return any(start < position < end for start, end, body in spans if body is not None for position in positions)
+
+
 def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts, language):
+    from .math_text import math_spans, project_enabled
+    math_spans_of = math_spans if project is not None and project_enabled(project) else None
     by_id = {cue.id: cue for cue in cues}
     ordered = sorted(cues, key=lambda item: item.start_ms)
     neighbors: dict[str, tuple[str, str]] = {}
@@ -520,6 +527,10 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                 continue
             seen.add(cue_id)
             action = validate_action(cue.text, row)
+            if action is not None and math_spans_of is not None and _cuts_a_formula(action, math_spans_of(cue.text)):
+                # 2026-10-16 (ADR 0124): never cut or space inside a $…$ formula; the cue stays as it is.
+                receipt.setdefault('field_errors', []).append(dict(cue_id=cue_id, category='cut_inside_formula'))
+                action = CueRefineAction(cue_id=cue_id, action="keep")
             if action is None:
                 outcome.rejected += 1
                 outcome.failed_cue_ids.append(cue_id)

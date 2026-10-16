@@ -324,6 +324,8 @@ class ApplicationSettingsDialog(SpringDialog):
         row(access, '允许提出修改', self.mcp_allow_edits, '每次都要你在兔白里批准，可以撤销')
         self.mcp_allow_export = toggle(values['allow_export'])
         row(access, '允许导出字幕', self.mcp_allow_export, '只写到“MCP 导出”或下面的文件夹，不覆盖')
+        self.mcp_allow_glossary = toggle(values['allow_glossary'])
+        row(access, '允许查看和修改术语库', self.mcp_allow_glossary, '术语库对所有工程通用；修改同样要你在兔白里批准')
         folder = QWidget()
         folder_line = QHBoxLayout(folder)
         folder_line.setContentsMargins(0, 0, 0, 0)
@@ -386,7 +388,7 @@ class ApplicationSettingsDialog(SpringDialog):
         revoke_line.addWidget(self.mcp_revoke)
         revoke_line.addStretch(1)
         connect.addLayout(revoke_line)
-        tools = QLabel(tr('能做：查字幕、改字幕（要你批准）、导出。不能：执行命令或读写其他文件。'))
+        tools = QLabel(tr('能做：查字幕、改字幕（要你批准）、导出；单独允许后可查和改术语库（要你批准）。不能：执行命令或读写其他文件。'))
         tools.setObjectName('settingsDescription')
         tools.setWordWrap(True)
         lay.addWidget(tools)
@@ -400,34 +402,58 @@ class ApplicationSettingsDialog(SpringDialog):
             from .mcp_bridge import _BRIDGE
             return _BRIDGE if _BRIDGE is not None and _BRIDGE.window is owner else None
 
+        def client():
+            return mcp_clients.CODE if self.mcp_client.currentData() == 'claude_code' else mcp_clients.DESKTOP
+
         def location():
+            if client() == mcp_clients.CODE:
+                return mcp_clients.claude_code_location()
             return mcp_clients.claude_desktop_location()
+
+        # 2026-10-17: Claude Desktop rewrites its config from memory while it runs,
+        # so whether it runs decides if writing can work (checked at most every 3 s).
+        claude_check = {'at': -10.0, 'started': None}
+
+        def claude_started(fresh=False):
+            import time
+            now = time.monotonic()
+            if fresh or now - claude_check['at'] > 3:
+                claude_check.update(at=now, started=mcp_clients.claude_desktop_started_at())
+            return claude_check['started']
 
         def steps():
             kind = self.mcp_client.currentData()
-            claude = kind == 'claude_desktop'
-            self.mcp_write.setVisible(claude)
-            self.mcp_remove.setVisible(claude)
-            self.mcp_copy.setText(tr('复制命令') if kind == 'claude_code' else tr('复制客户端配置'))
+            claude, code = kind == 'claude_desktop', kind == 'claude_code'
+            self.mcp_write.setVisible(claude or code)
+            self.mcp_remove.setVisible(claude or code)
+            bind_text(self.mcp_write, '写入 Claude Code 配置' if code else '写入 Claude Desktop 配置')
+            bind_text(self.mcp_remove, '从 Claude Code 移除' if code else '从 Claude Desktop 移除')
+            bind_text(self.mcp_copy, '复制命令' if code else '复制客户端配置')
             if claude:
                 place = location()
                 if place is None or not place.installed:
                     text = tr('2. 先安装 Claude Desktop：{url}', url=mcp_clients.CLAUDE_DOWNLOAD_URL)
                 else:
-                    text = tr('2. 点“写入 Claude Desktop 配置”\n3. 完全退出 Claude 再打开\n'
-                              '4. 在 Claude 里问“兔白里打开的是哪个工程？”')
-            elif kind == 'claude_code':
-                text = tr('2. 复制命令，在终端运行一次')
+                    text = tr('2. 完全退出 Claude（任务栏托盘图标 → 退出，只关窗口不算）\n'
+                              '3. 点“写入 Claude Desktop 配置”\n4. 打开 Claude，在对话里问“兔白里打开的是哪个工程？”\n'
+                              'Claude 的对话和 Code 页都会读这一项。')
+            elif code:
+                text = tr('2. 点“写入 Claude Code 配置”（或复制命令，在终端运行一次）\n'
+                          '3. 新开一个 Claude Code 会话，问“兔白里打开的是哪个工程？”')
             else:
                 text = tr('2. 复制配置，贴到客户端的 MCP 设置里')
             self.mcp_steps.setText(text)
 
         def refresh():
+            steps()                     # Claude may be installed while this page is open
             current = bridge()
             listening = current is not None and current.listening()
             command, args = mcp_common.server_command()
-            state = mcp_clients.entry_state(location(), command, args)
-            lines = mcp_clients.connection_lines(current.stats if current is not None else {}, listening, state)
+            kind, place = client(), location()
+            state = mcp_clients.entry_state(place, command, args, kind)
+            lines = mcp_clients.connection_lines(current.stats if current is not None else {}, listening, state,
+                                                 client=kind, written=mcp_clients.written_at(kind, place),
+                                                 started=claude_started() if kind == mcp_clients.DESKTOP else None)
             if not listening:
                 lines.insert(0, tr('状态：未开启') if not self.mcp_enabled.isChecked() else tr('状态：保存设置后开始监听'))
             elif current.stats.get('refused'):
@@ -460,39 +486,54 @@ class ApplicationSettingsDialog(SpringDialog):
                 self.mcp_export_dir.setText(str(Path(chosen)))
 
         def write_claude():
-            place = location()
+            kind, place = client(), location()
+            code = kind == mcp_clients.CODE
             if place is None or not place.installed:
-                self._mcp_message = tr('没有找到 Claude Desktop，未写入。')
+                self._mcp_message = tr('没有找到 Claude Code，未写入。') if code else tr('没有找到 Claude Desktop，未写入。')
+                refresh()
+                return
+            if not code and claude_started(fresh=True):
+                QMessageBox.warning(
+                    self, tr('写入 Claude Desktop 配置'),
+                    tr('Claude 正在运行，现在写入会被它覆盖：Claude 只在打开时读这个文件，运行中改自己的设置时会把旧设置整份写回去。\n\n'
+                       '请先完全退出 Claude（任务栏托盘图标 → 退出，只关窗口不算），再回来点“写入”。'))
+                self._mcp_message = tr('Claude 正在运行，没有写入。完全退出 Claude 后再点“写入”。')
                 refresh()
                 return
             command, args = mcp_common.server_command()
             answer = QMessageBox.question(
-                self, tr('写入 Claude Desktop 配置'),
+                self, tr('写入 Claude Code 配置') if code else tr('写入 Claude Desktop 配置'),
                 tr('会在下面的文件里加入一项 2byteasr，先备份，其他设置不变。\n\n{path}', path=str(place.path)))
             if answer != QMessageBox.StandardButton.Yes:
                 return
             try:
-                backup = mcp_clients.write_entry(place, command, args)
+                backup = mcp_clients.write_entry(place, command, args, kind)
             except (mcp_clients.ConfigError, OSError) as exc:
                 self._mcp_message = tr('没有写入：{reason}', reason=str(exc))
             else:
                 self._mcp_message = (tr('已写入。备份：{backup}', backup=str(backup)) if backup
                                      else tr('已写入（新建了配置文件）。'))
+                if code:
+                    self._mcp_message += tr('\n之后新开的 Claude Code 会话可用；已经开着的会话要重开。')
                 if not self.mcp_enabled.isChecked():
                     self._mcp_message += tr('\n别忘了开启上面的“本机 MCP 访问”并保存，否则 Claude 的调用会被拒绝。')
             refresh()
 
         def remove_claude():
-            place = location()
+            kind, place = client(), location()
             if place is None:
                 return
             try:
-                backup = mcp_clients.remove_entry(place)
+                backup = mcp_clients.remove_entry(place, kind)
             except (mcp_clients.ConfigError, OSError) as exc:
                 self._mcp_message = tr('没有修改：{reason}', reason=str(exc))
             else:
-                self._mcp_message = tr('已从 Claude Desktop 配置移除 2byteasr。备份：{backup}', backup=str(backup)) \
-                    if backup else tr('配置里本来就没有 2byteasr。')
+                if not backup:
+                    self._mcp_message = tr('配置里本来就没有 2byteasr。')
+                elif kind == mcp_clients.CODE:
+                    self._mcp_message = tr('已从 Claude Code 配置移除 2byteasr。备份：{backup}', backup=str(backup))
+                else:
+                    self._mcp_message = tr('已从 Claude Desktop 配置移除 2byteasr。备份：{backup}', backup=str(backup))
             refresh()
 
         def copy_config():
@@ -520,7 +561,7 @@ class ApplicationSettingsDialog(SpringDialog):
         self.mcp_enabled.toggled.connect(enabled_changed)
         choose.clicked.connect(choose_folder)
         clear.clicked.connect(lambda: self.mcp_export_dir.setText(''))
-        self.mcp_client.currentIndexChanged.connect(lambda *_: steps())
+        self.mcp_client.currentIndexChanged.connect(lambda *_: refresh())
         self.mcp_write.clicked.connect(write_claude)
         self.mcp_remove.clicked.connect(remove_claude)
         self.mcp_copy.clicked.connect(copy_config)
@@ -536,7 +577,8 @@ class ApplicationSettingsDialog(SpringDialog):
         return dict(enabled=self.mcp_enabled.isChecked(), scope=self.mcp_scope.currentData() or 'current',
                     allow_edits=self.mcp_allow_edits.isChecked(), allow_export=self.mcp_allow_export.isChecked(),
                     export_dir=self.mcp_export_dir.text().strip(),
-                    acknowledged=bool(self._mcp_acknowledged or self.mcp_enabled.isChecked()))
+                    acknowledged=bool(self._mcp_acknowledged or self.mcp_enabled.isChecked()),
+                    allow_glossary=self.mcp_allow_glossary.isChecked())
 
     def _values(self):
         from PySide6.QtWidgets import QAbstractButton, QComboBox

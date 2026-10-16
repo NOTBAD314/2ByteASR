@@ -13,11 +13,38 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPus
 from .i18n import tr
 
 
+def _glossary_lines(change) -> list[str]:
+    """One term-library change (2026-10-17); the old row's origin is shown so
+    rows the user curated by hand are recognizable before approving."""
+    pair = f"{change['from']} → {change['to']}"
+    if change["action"] == "add":
+        head = tr("新增：{pair}（{category}）", pair=pair, category=change["category"]) if change["kind"] == "alias" \
+            else tr("新增词条：{term}（{category}）", term=change["to"], category=change["category"])
+    elif change["action"] == "edit":
+        head = tr("修改：{pair}  改为  {after}（{category}）", pair=pair, category=change["category"],
+                  after=f"{change['new_from']} → {change['new_to']}")
+    else:
+        head = tr("删除：{pair}", pair=pair)
+    lines = [head]
+    before = change.get("before") or {}
+    if before.get("origin") or before.get("reason"):
+        lines.append("    " + tr("原来的来源：{origin}；理由：{reason}", origin=before.get("origin") or "-",
+                                  reason=before.get("reason") or "-"))
+    lines.extend("    ⚠ " + note for note in change.get("warnings") or ())
+    return lines
+
+
 def describe(plan) -> str:
-    lines = [tr("请求：{summary}", summary=plan.summary), tr("工程：{project}（修订 {revision}）",
-                                                              project=plan.project_id, revision=plan.revision), ""]
+    if plan.kind == "glossary":
+        where = tr("术语库：{library}（{library_id}）", library=plan.scope.get("library", ""),
+                   library_id=plan.scope.get("library_id", ""))
+    else:
+        where = tr("工程：{project}（修订 {revision}）", project=plan.project_id, revision=plan.revision)
+    lines = [tr("请求：{summary}", summary=plan.summary), where, ""]
     for change in plan.changes[:200]:
-        if plan.kind == "text":
+        if plan.kind == "glossary":
+            lines.extend(_glossary_lines(change))
+        elif plan.kind == "text":
             for name, title in (("text", tr("原文")), ("translation", tr("译文"))):
                 if name in change:
                     lines.append(f"#{change['cue_id']} {title}：{change[name]['before']}  →  {change[name]['after']}")
@@ -44,15 +71,23 @@ class ApprovalDialog(QDialog):
     def __init__(self, parent, plan, *, undo: bool):
         super().__init__(parent)
         self.setObjectName("mcpApprovalDialog")
-        self.setWindowTitle(tr("外部 AI 请求撤销修改") if undo else tr("外部 AI 请求修改工程"))
+        self.setWindowTitle(tr("外部 AI 请求撤销修改") if undo else
+                            tr("外部 AI 请求修改术语库") if plan.kind == "glossary" else tr("外部 AI 请求修改工程"))
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(640, 420)
         self._answered = False
         layout = QVBoxLayout(self)
-        intro = QLabel(tr("一个本机 MCP 客户端请求撤销它套用过的修改。批准后执行一次撤销。") if undo else
-                       tr("一个本机 MCP 客户端请求修改当前工程。以下内容来自客户端或字幕本身，只作为数据显示；"
-                          "批准后作为一个可撤销的步骤套用。"))
+        glossary = plan.kind == "glossary"
+        if undo:
+            words = tr("一个本机 MCP 客户端请求撤销它套用过的修改。批准后执行一次撤销。")
+        elif glossary:
+            words = tr("一个本机 MCP 客户端请求修改术语库。以下内容来自客户端或术语库本身，只作为数据显示；"
+                       "批准后直接保存，对之后识别和校对的所有工程生效，不能用撤销。")
+        else:
+            words = tr("一个本机 MCP 客户端请求修改当前工程。以下内容来自客户端或字幕本身，只作为数据显示；"
+                       "批准后作为一个可撤销的步骤套用。")
+        intro = QLabel(words)
         intro.setTextFormat(Qt.TextFormat.PlainText)
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -65,7 +100,7 @@ class ApprovalDialog(QDialog):
         buttons.addStretch(1)
         self.reject_button = QPushButton(tr("拒绝"))
         self.reject_button.setObjectName("mcpRejectButton")
-        self.approve_button = QPushButton(tr("批准撤销") if undo else tr("批准并套用"))
+        self.approve_button = QPushButton(tr("批准撤销") if undo else tr("批准并保存") if glossary else tr("批准并套用"))
         self.approve_button.setObjectName("mcpApproveButton")
         self.reject_button.setAutoDefault(False)
         self.approve_button.setAutoDefault(False)   # Enter alone never approves

@@ -1113,6 +1113,42 @@ def rename_learned_content(library_id, new_name):
     return True
 
 
+def learned_content_note(library_id):
+    """The user's note to AI for one library ('' when none). 2026-10-16, ADR 0124."""
+    games = load_learned_term_payload().get("games", {})
+    identity = _glossary_entry_key(library_id, games)
+    return str((games.get(identity) or {}).get("ai_note") or "") if identity else ""
+
+
+def set_learned_content_note(game_name, library_id, note):
+    """Save (or clear) the note sent to AI with this library; a built-in library
+    without a personal entry gets one holding only its name and the note."""
+    from twobyteasr.terminology import AI_NOTE_LIMIT
+    note = str(note or "").replace("\r\n", "\n").strip()[:AI_NOTE_LIMIT]
+    payload = load_learned_term_payload(strict=True)
+    games = payload.setdefault("games", {})
+    identity = _glossary_entry_key(library_id, games) or _glossary_entry_key(game_name, games)
+    if not identity:
+        if not note:
+            return True
+        identity = _glossary_write_key(library_id or game_name, games)
+        if not identity:
+            return False
+        payload["schema"] = max(2, int(payload.get("schema", 1) or 1))
+        games[identity] = {"game": canonicalize_runtime_game_name(game_name) or identity,
+                           "library_id": str(library_id or identity), "mappings": []}
+    entry = games[identity]
+    if note == str(entry.get("ai_note") or ""):
+        return True
+    if note:
+        entry["ai_note"] = note
+    else:
+        entry.pop("ai_note", None)
+    _touch_glossary_entry(entry, identity)
+    atomic_write_json(LEARNED_TERMS_PATH, payload)
+    return True
+
+
 TERM_PROVENANCE_BUILTIN = "builtin"
 TERM_PROVENANCE_OFFICIAL = "official"
 TERM_PROVENANCE_USER_CONFIRMED = "user_confirmed"

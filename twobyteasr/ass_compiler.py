@@ -225,11 +225,11 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
     state = thaw_json(revision.studio_state) if getattr(revision, "studio_state", "") else {}
     metadata = thaw_json(revision.generation_metadata) if getattr(revision, "generation_metadata", "") else {}
     from .bilingual_layout import display_cues, settings_from_state, translations_of
-    from .punctuation_style import MODE_ORIGINAL, mode_from_state, style_cues_for_state, style_translations
+    from .punctuation_style import style_cues_for_state, style_translations, styling_active
     settings = settings_from_state(state)
     cues = revision.cues
-    if mode_from_state(state) != MODE_ORIGINAL:
-        # Same punctuation style as export and burn-in (the manuscript is untouched).
+    if styling_active(state):
+        # Same punctuation style and math formulas as export and burn-in (the manuscript is untouched).
         from .language_rules import normalize_language
         language = metadata.get("language") if isinstance(metadata, Mapping) else ""
         language = normalize_language(language.get("code") if isinstance(language, Mapping) else language)

@@ -62,10 +62,18 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
     resolver = TermResolver(snapshot)
     segments = []
     local_normalizations = {}
+    # 2026-10-16 (ADR 0124): with the project's math switch on, the model sees
+    # ⟦Fn⟧ instead of each $…$ formula; formulas come back unchanged or the cue
+    # gets no AI change.
+    from .math_text import mask_formulas, project_enabled, protected_mask, unmask_formulas
+    math = project_enabled(project)
+    formulas_of = {}
     for index, cue in enumerate(cues, 1):
         # Current editable text is the review baseline. Original ASR remains
         # independent evidence, never a way to overwrite intervening edits.
         raw = cue.text
+        if math:
+            raw, formulas_of[index] = mask_formulas(raw)
         normalized = resolver.resolve(raw, scene=scene)
         if normalized.hits:
             local_normalizations[index] = {'cue_id': cue.id, 'source': raw,
@@ -181,6 +189,15 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         # A model's unchanged/failed response cannot erase confirmed local normalization.
         final=resolver.resolve(ai_draft,scene=scene).text
         local_only=final==segment.text
+        formulas=formulas_of.get(segment.segment_id,())
+        formula_mask=protected_mask(cue.text) if formulas else [False]*len(cue.text)
+        if formulas:
+            restored=unmask_formulas(final,formulas)
+            if restored is None:
+                # The answer dropped, repeated or changed a formula placeholder.
+                receipt.setdefault('formula_rejected_cues',[]).append(cue.id)
+                restored=cue.text
+            final=restored
         manual=bool(cue.original_text and cue.text!=cue.original_text)
         source='local_confirmed' if local_only else 'ai_accepted'
         reason='当前词库本地确认名称规范化（未核验原音）' if local_only else 'AI 校对建议'
@@ -197,9 +214,14 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
         cue_candidates=[row for row in candidates if any(m.get('cue_id')==segment.segment_id for m in row['matches'])]
         review.extend(local_review_candidates(cue,cue.text,cue_candidates,scene,
             processing_id=segment.segment_id))
+        # Only real integer spans of a cue with formulas; malformed spans keep their existing handling.
+        in_formula=lambda start,end:(bool(formulas) and type(start) is int and type(end) is int
+                                     and any(formula_mask[max(0,start):max(start+1,end)]))
         for hit in review:
+            if in_formula(*hit.span):continue
             if not any(h.cue_id==hit.cue_id and h.span==hit.span and h.replacement==hit.replacement for h in hits):hits.append(hit)
         for suspect in (row for row in suspects if row['cue_id']==segment.segment_id):
+            if in_formula(suspect['start'],suspect['end']):continue
             if any(hit.cue_id==cue.id and hit.span[0]<=suspect['start'] and suspect['end']<=hit.span[1] for hit in hits):continue
             if any(term.confirmed and (term.canonical.casefold()==suspect['surface'].casefold()
                     or any(alias.casefold()==suspect['surface'].casefold() for alias in term.aliases))

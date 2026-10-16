@@ -230,8 +230,71 @@ def test_filetrans_hints_preserve_canonical_spelling_and_pack_without_silent_tai
     assert message['role']=='user' and message['content'][0]['type']=='input_text'
     assert len(message['content'][0]['text'])<=400
     assert hints['hint_counts']['context_omitted_terms']>0
-    with pytest.raises(ASRProtocolError,match='15字符'):
-        filetrans_hints(['中文'*8])
+    assert hints['filetrans_vocabulary_dropped']==[] and hints['hint_counts']['vocabulary_dropped']==0
+    # 2026-10-17: an over-limit term is skipped and listed, not a failed request.
+    hints=filetrans_hints(['中文'*8])
+    assert hints['vocabulary']=={} and hints['filetrans_context']==[]
+    assert hints['filetrans_vocabulary_dropped']==[{'term':'中文'*8,'reason':'non_ascii_longer_than_15_characters'}]
+
+
+def test_filetrans_hints_skip_over_limit_terms_and_keep_the_ranked_rest():
+    from twobyteasr.qwen31_asr import filetrans_hints
+    long_row='这是用户个人词库里写成一整句的说明行'
+    terms=['S0pp',long_row,'中'*15,'one two three four five six seven','one two three four five six seven eight',
+           '换\n行','BerLIN']
+    hints=filetrans_hints(terms)
+    assert list(hints['vocabulary'])==['S0pp','中'*15,'one two three four five six seven','BerLIN']
+    text=hints['filetrans_context'][0]['content'][0]['text']
+    assert text.endswith('：S0pp、'+'中'*15+'、one two three four five six seven、BerLIN')
+    assert long_row not in text
+    assert hints['filetrans_vocabulary_dropped']==[
+        {'term':long_row,'reason':'non_ascii_longer_than_15_characters'},
+        {'term':'one two three four five six seven eight','reason':'ascii_more_than_7_words'},
+        {'term':'换\n行','reason':'contains_line_break'}]
+    assert hints['hint_counts']['native_vocabulary']==4 and hints['hint_counts']['vocabulary_dropped']==3
+
+
+def test_filetrans_hints_send_the_first_2000_ranked_terms():
+    from twobyteasr.qwen31_asr import filetrans_hints
+    terms=[f'T{i:04d}' for i in range(2300)]
+    hints=filetrans_hints(['中文'*8]+terms)
+    assert list(hints['vocabulary'])==terms[:2000]
+    dropped=hints['filetrans_vocabulary_dropped']
+    assert dropped[0]['reason']=='non_ascii_longer_than_15_characters'
+    assert {row['reason'] for row in dropped[1:]}=={'over_2000_terms'} and dropped[1]['term']=='T2000'
+    assert len(dropped)==200 and hints['hint_counts']['vocabulary_dropped']==301
+
+
+def test_filetrans_hints_still_reject_a_wrong_compiled_vocabulary_binding():
+    from twobyteasr.qwen31_asr import filetrans_hints
+    with pytest.raises(ASRProtocolError) as error:
+        filetrans_hints(['S0pp','中文'*8],vocabulary_id='library',vocabulary_model='qwen-audio-3.0-asr-flash-filetrans')
+    assert error.value.category=='vocabulary_model_mismatch'
+    hints=filetrans_hints(['S0pp','中文'*8],vocabulary_id='library',vocabulary_model=FILETRANS)
+    assert hints['vocabulary_id']=='library' and list(hints['vocabulary'])==['S0pp']
+
+
+def test_owned_worker_gets_filetrans_hints_without_the_long_term(monkeypatch):
+    from twobyteasr import asr_api_process
+    from twobyteasr import asr
+    from twobyteasr.runtime import RuntimeContext,activate_runtime_context
+    captured=[];events=[]
+    endpoint=dict(model=FILETRANS,provider='qwen31_filetrans',protocol='dashscope_filetrans',url='https://example.com',api_key='private')
+    context=RuntimeContext(asr_endpoint_snapshot=endpoint,asr_settings_snapshot={'models':{}},speaker_source='native')
+    monkeypatch.setattr(asr,'build_qwen_asr_context',lambda *a:'')
+    monkeypatch.setattr('twobyteasr.terminology.runtime_snapshot',lambda:SimpleNamespace(canonical_terms=['S0pp','中文'*8]))
+    monkeypatch.setattr('twobyteasr.llm_config.read_oss_credentials',lambda:('id','secret'))
+    monkeypatch.setattr('twobyteasr.runtime_registry.resolve_runtime_python',lambda *a:'python')
+    monkeypatch.setattr('twobyteasr.cache.record_run_event',lambda kind,**kw:events.append((kind,kw)))
+    def run(*a,**kw):captured.append(json.loads(kw['input_text']));return {'results':[]}
+    monkeypatch.setattr(asr,'_run_isolated_asr_worker',run)
+    with activate_runtime_context(context):
+        asr_api_process.transcribe('fixture.wav',[dict(start=0,end=1,audio=(np.zeros(16000),16000))])
+    sent=captured[0]['endpoint']
+    assert sent['vocabulary']=={'S0pp':2}
+    assert sent['filetrans_vocabulary_dropped']==[{'term':'中文'*8,'reason':'non_ascii_longer_than_15_characters'}]
+    hint_event=next(kw for kind,kw in events if kind=='cloud_request_hints')
+    assert hint_event['native_vocabulary']==1 and hint_event['vocabulary_dropped']==1
 
 
 def test_compiled_vocabulary_real_binding_is_checked_before_audio_upload(tmp_path):

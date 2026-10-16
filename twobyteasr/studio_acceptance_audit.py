@@ -60,7 +60,11 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('razor-word-split', 'ja-bilingual', 'bilingual-playback', 'speaker-roles', 'mcp', 'ctc-refine', 'onboarding-settings', 'api-setup', 'review-window', 'review-click-fix', 'tour-motion'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'math-ai':
+        from .math_ai_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('razor-word-split', 'ja-bilingual', 'bilingual-playback', 'speaker-roles', 'mcp', 'ctc-refine', 'onboarding-settings', 'api-setup', 'review-window', 'review-click-fix', 'tour-motion', 'math-formulas'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         output = audit_directory()
@@ -374,6 +378,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'bilingual-playback':
         from .bilingual_playback_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'math-formulas':
+        from .math_formulas_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'math-ai':
+        from .math_ai_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

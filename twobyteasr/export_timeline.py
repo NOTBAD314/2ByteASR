@@ -10,8 +10,9 @@ def export_project_snapshot(project):
     snapshot.cues = deepcopy([c for c in projected_cues(project, domain="timeline")
                              if c.speaker_id not in hidden])
     # Burn-in (libass, still frames, web renderer) shows the punctuation choice.
-    from .punctuation_style import style_cues
+    from .punctuation_style import mark_cues_styled, style_cues
     snapshot.cues = style_cues(project, snapshot.cues)
+    mark_cues_styled(snapshot)  # compile_ass(snapshot) must not style them again (math formulas, ADR 0124)
     snapshot.render_settings['_cue_domain'] = 'timeline'
     # A live runtime has source cue lookups. It must never override the frozen
     # projected cues when building a visual snapshot in the export worker.

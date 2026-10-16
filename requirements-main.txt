@@ -13,6 +13,8 @@ QtAwesome==1.4.0
 oss2==2.19.1
 # 2026-10-12：本机 MCP 服务（可选功能，默认关闭；官方 SDK）。
 mcp==2.3.0
+# 2026-10-16：字幕里 $…$ 数学公式转成 Unicode 文字（MIT，纯 Python；ADR 0124）。
+pylatexenc==2.11
 
 # huggingface_hub / transformers versions are controlled exclusively by
 # dependencies.lock.json (environments.main / environments.moss).  Never pin

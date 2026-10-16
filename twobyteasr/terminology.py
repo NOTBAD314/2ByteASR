@@ -46,6 +46,36 @@ class TermEntry:
     priority: int = 20
 
 
+# Hotword value (2026-10-17). Names are what recognizers miss; a recorded
+# mishearing (alias that is not just a case variant) proves the need.
+_NAME_CATEGORIES = frozenset(x.casefold() for x in (
+    "角色", "人物", "选手 ID", "Boss", "首领", "阵营", "地点", "地名", "生物", "精灵", "模型",
+    "character", "person", "player_id", "enemy", "boss", "faction", "location", "region", "spirit"))
+_ORDINARY_CATEGORIES = frozenset(x.casefold() for x in (
+    "", "其他", "其它", "机制", "玩家用语", "常用词",
+    "other", "common", "mechanic", "game_mechanic", "game_system"))
+
+
+def _hotword_tier(term: TermEntry) -> int:
+    """0 builtin (curated order kept), 1 misheard name, 2 name or misheard, 3 other, 4 ordinary."""
+    if term.provenance == "builtin":
+        return 0
+    category = _text(term.category).casefold()
+    name = category in _NAME_CATEGORIES
+    misheard = any(alias.casefold() != term.canonical.casefold() for alias in term.aliases)
+    if name and misheard:
+        return 1
+    if name or misheard:
+        return 2
+    return 4 if category in _ORDINARY_CATEGORIES else 3
+
+
+def recognition_hotwords(snapshot: Any) -> tuple[str, ...]:
+    """Ranked hotwords; objects that only carry canonical_terms keep their order."""
+    ranked = getattr(snapshot, "hotword_terms", None)
+    return tuple(ranked if ranked is not None else getattr(snapshot, "canonical_terms", ()) or ())
+
+
 @dataclass(frozen=True)
 class GlossaryLibrary:
     id: str
@@ -65,6 +95,25 @@ class GlossarySnapshot:
     def canonical_terms(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(term.canonical for library in self.libraries
             for term in library.terms if term.confirmed))
+
+    @property
+    def hotword_terms(self) -> tuple[str, ...]:
+        """``canonical_terms`` reordered for recognition hints, most useful first.
+
+        ASR hint lists keep only their head (Qwen3-ASR 64 terms, MOSS cloud 20,
+        Filetrans context 400 characters), and personal mappings are stored in
+        (to, from) order, so file order would let Unicode order pick the names.
+        Not part of to_dict: the digest and every other consumer are unchanged.
+        """
+        best: dict[str, tuple[int, int]] = {}
+        terms = (term for library in self.libraries for term in library.terms if term.confirmed)
+        for index, term in enumerate(terms):
+            rank = (_hotword_tier(term), index)
+            if term.canonical not in best:
+                best[term.canonical] = rank
+            elif rank[0] < best[term.canonical][0]:
+                best[term.canonical] = (rank[0], best[term.canonical][1])
+        return tuple(sorted(best, key=best.__getitem__))
 
     @cached_property
     def digest(self) -> str:
@@ -139,14 +188,22 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
                 and _text(row.get("library_id", key)) == library_id), {})
         profile_name, profile = next(((name, row) for name, row in profiles.items()
             if isinstance(row, dict) and str(identity(row.get("identity", name))) == library_id), ("", {}))
+        # The term library page writes hidden_reference_terms; hidden_references
+        # is the older key. A hidden builtin row is gone from runtime entirely.
+        hidden = {_text(x) for key in ("hidden_reference_terms", "hidden_references")
+                  for x in entry.get(key, ()) if _text(x)}
         terms = []
         for row in profile.get("terms", ()):
             if not isinstance(row, dict) or not _text(row.get("canonical")):
                 continue
+            user_verified = any(
+                x in _text(row.get("source")) for x in ("user_manual", "user_verified", "manual_srt"))
+            # Same rows the page lists as hideable references (builtin_reference_terms_for_game).
+            if _text(row["canonical"]) in hidden and not user_verified:
+                continue
             # Existing short/contextual aliases still require ASR evidence;
             # only explicitly global builtin aliases are deterministic here.
-            explicitly_confirmed = bool(row.get("confirmed")) or any(
-                x in _text(row.get("source")) for x in ("user_manual", "user_verified", "manual_srt"))
+            explicitly_confirmed = bool(row.get("confirmed")) or user_verified
             aliases = tuple(_text(x) for x in row.get("aliases", ()) if _text(x)) if (
                 row.get("replacement_mode") == "global" or explicitly_confirmed) else ()
             terms.append(TermEntry(_text(row["canonical"]), aliases,
@@ -171,7 +228,6 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
                 _text(row.get("category")) or "其他", _text(row.get("origin")) or "手动", 20))
         references = []
         paths = getattr(legacy, "_profile_lexicon_paths_for", lambda _profile: [])(profile)
-        hidden = set(entry.get("hidden_references", ()))
         for path in paths:
             try:
                 payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
@@ -189,6 +245,11 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
         if assigned_domain:
             metadata['_content_domain'] = {'id': library_id, 'name': assigned_domain,
                 'source': 'saved_library_game'}
+        # 2026-10-16 (ADR 0124): the user's own note to AI for this library.
+        # Only libraries that have one change their profile_json (and digest).
+        note = _text(entry.get('ai_note'))[:AI_NOTE_LIMIT]
+        if note:
+            metadata['_ai_note'] = note
         libraries.append(GlossaryLibrary(library_id, _text(entry.get("game")) or profile_name or selected,
             revision, tuple(terms), tuple(dict.fromkeys(references)), bool(entry or profile),
             json.dumps(metadata, ensure_ascii=False, sort_keys=True)))
@@ -196,6 +257,22 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
 
 
 snapshot_enabled_glossaries = snapshot_glossaries
+
+AI_NOTE_LIMIT = 1000
+
+
+def library_ai_note(library: GlossaryLibrary) -> str:
+    """The note the user wrote for AI in this library ('' when none)."""
+    try:
+        metadata = json.loads(library.profile_json or '{}')
+    except (TypeError, ValueError):
+        return ''
+    return _text(metadata.get('_ai_note')) if isinstance(metadata, dict) else ''
+
+
+def glossary_ai_notes(snapshot: GlossarySnapshot) -> list[tuple[str, str]]:
+    """``(library name, note)`` for every library in the snapshot that has a note."""
+    return [(library.name, note) for library in snapshot.libraries if (note := library_ai_note(library))]
 
 
 def snapshot_from_pairs(pairs: Iterable[tuple[str, str]]) -> GlossarySnapshot:

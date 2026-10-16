@@ -125,6 +125,9 @@ def recover_review_edits(cue, draft, detail, snapshot, scene):
     for edit in detail.get('rejected_edits', ()):
         source, target = str(edit.get('from') or ''), str(edit.get('to') or '')
         failure = edit.get('rule_id', 'invalid_or_no_effect')
+        if '⟦F' in source or '⟦F' in target:  # a math formula placeholder (ADR 0124) is never edited
+            invalid.append({**edit, 'review_state':'formula_placeholder'})
+            continue
         if failure not in recoverable:
             invalid.append({**edit, 'review_state':'invalid_or_protected'})
             continue

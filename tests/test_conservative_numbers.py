@@ -21,6 +21,53 @@ def test_default_conservative_policy(source, expected):
     assert format_numbers(actual)[0] == actual
 
 
+# 2026-10-16: a lone 十 before 分 is the adverb unless a scoring word, 钟/制/以上/
+# 以下/左右 or clause edges make it ten points or minutes (十分感谢 was 10分感谢).
+@pytest.mark.parametrize('source,expected', [
+    ('十分感谢 十分重要 十分好', '十分感谢 十分重要 十分好'),
+    ('他十分厉害 感到十分高兴 打得十分精彩 伤害十分高 十分十分感谢', '他十分厉害 感到十分高兴 打得十分精彩 伤害十分高 十分十分感谢'),
+    ('打了十分 得了十分 扣十分 领先十分 满分十分', '打了10分 得了10分 扣10分 领先10分 满分10分'),
+    ('这把十分！', '这把十分！'),  # no scoring word: kept as written, reads the same
+    ('十分！', '10分！'),
+    ('十分钟 等了十分钟 十分左右 十分以上', '10分钟 等了10分钟 10分左右 10分以上'),
+    ('三十分 九十分 五点三十分 十点十分', '30分 90分 五点三十分 十点十分'),
+])
+def test_adverb_shifen_keeps_source_while_scores_and_minutes_convert(source, expected):
+    actual, _ = format_numbers(source)
+    assert actual == expected
+    assert format_numbers(actual)[0] == actual
+
+
+def test_adverb_shifen_is_one_judgement_for_restore_cuts_and_check():
+    import subtitle_core as legacy  # noqa: F401  (loads the core before the timing helpers)
+    from twobyteasr.number_fidelity import numeric_event_values, numeric_unsafe_cut_offsets
+    # An AI edit that wrote the adverb as 10分 is restored; a score is not.
+    result, receipts = format_numbers('10分感谢 打了10分', source_text='十分感谢 打了十分')
+    assert result == '十分感谢 打了10分'
+    assert [r['reason'] for r in receipts] == ['protected_source_spelling']
+    assert numeric_event_values('十分感谢 十分重要') == ()
+    assert numeric_event_values('打了十分 十分钟') == ('10', '10')
+    # 打了｜十分 would leave 十分 an adverb on its own line, so it is not a safe cut.
+    assert 3 in numeric_unsafe_cut_offsets('他打了十分很厉害')
+    assert not numeric_unsafe_cut_offsets('我十分感谢大家')
+
+
+def test_adverb_shifen_survives_grouping_and_final_check():
+    import subtitle_core as legacy
+    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.pipeline_runtime import finalize_cues
+    source = '十分感谢大家 这把打了十分 等了十分钟 五点三十分'
+    words = [WordUnit(i * .12, (i + 1) * .12, c, .9) for i, c in enumerate(source) if c != ' ']
+    segment = SpeechSegment(1, 0, len(source) * .12, source, .9, words, speaker='S01')
+    context = RuntimeContext(asr_settings_snapshot={'switches': {
+        'prefer_arabic_numbers': True, 'enable_ai_polish': False, 'use_ai_grouping': False}})
+    with activate_runtime_context(context, legacy=legacy):
+        segments = legacy.apply_editorial_segment_rules([segment])
+        cues = legacy.group_subtitles(segments, use_ai=False)
+        cues = finalize_cues(cues, segments, [], [], segment.end, 30, legacy)
+    assert ''.join(c.text.replace(' ', '') for c in cues) == '十分感谢大家这把打了10分等了10分钟五点三十分'
+
+
 def test_only_source_traced_new_arabic_spelling_is_restored():
     source = '一个 一个 两个办法 十几个 一心一意 版本1.0.5'
     proposed = '1个 1个 2个办法 10几个 1心1意 版本1.0.5'

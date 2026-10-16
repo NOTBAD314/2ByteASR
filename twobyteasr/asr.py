@@ -1163,10 +1163,10 @@ def build_qwen_asr_context(media_path):
     record_run_event("asr_content_context_prepared", model="Qwen3-ASR",
         prompt_version="qwen-context-v2-shared-scene", content_scene=scene.to_dict(),
         context_characters=len(context))
-    from .terminology import runtime_snapshot
+    from .terminology import recognition_hotwords, runtime_snapshot
     terms = []
     cost = 0
-    for term in runtime_snapshot().canonical_terms:
+    for term in recognition_hotwords(runtime_snapshot()):
         if len(terms) >= 64 or cost + len(term) > 600:
             break
         terms.append(term)

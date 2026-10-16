@@ -292,6 +292,7 @@ def filetrans(audio, endpoint, cache_root, storage, *, check=lambda:None, progre
             if context: inputs['context'] = context
             save(root/'submission-parameters.json',dict(model=model, input_field=spec.input_field,
                  parameters=parameters, context=context, hint_counts=endpoint.get('hint_counts', {}),
+                 vocabulary_dropped=endpoint.get('filetrans_vocabulary_dropped') or [],
                  storage_kind=getattr(storage,'kind','oss')))
             from .dashscope_service import OSS_RESOLVE_HEADER, needs_oss_resolve
             if needs_oss_resolve(url): headers={**headers,**OSS_RESOLVE_HEADER}

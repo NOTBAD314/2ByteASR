@@ -84,19 +84,41 @@ def filetrans_hints_for_model(model, canonical_terms, *, vocabulary_id='', vocab
     return hints
 
 
+MAX_FILETRANS_TERMS = 2000
+MAX_FILETRANS_NON_ASCII_CHARS = 15
+MAX_FILETRANS_ASCII_WORDS = 7
+
+
+def filetrans_term_limit(term):
+    """Why one hotword breaks the Filetrans vocabulary rules, or ''."""
+    if '\n' in term or '\r' in term:
+        return 'contains_line_break'
+    if not term.isascii() and len(term) > MAX_FILETRANS_NON_ASCII_CHARS:
+        return 'non_ascii_longer_than_15_characters'
+    if term.isascii() and len(term.split()) > MAX_FILETRANS_ASCII_WORDS:
+        return 'ascii_more_than_7_words'
+    return ''
+
+
 def filetrans_hints(canonical_terms, *, vocabulary_id='', vocabulary_model=''):
     """Filetrans HTTP input.context and modest native vocabulary, no aliases.
 
     Official HTTP reference: each context round is capped at 400 characters;
     instantaneous plus compiled hotwords are capped at 2,000 entries. Do not
     rely on the server's silent tail truncation or random over-limit sampling.
+    Terms outside the hotword rules are skipped and listed with a reason
+    (2026-10-17), like MOSS keyterms: one long personal glossary row must not
+    fail the whole recognition. Input order is the hotword ranking.
     """
-    terms = list(dict.fromkeys(str(x).strip() for x in canonical_terms if str(x).strip()))
-    if len(terms) > 2000:
-        raise ASRProtocolError('本场规范词超过 Filetrans 2000 项限制，请缩小启用词库范围。', 'input_limit')
-    if any((not x.isascii() and len(x) > 15) or (x.isascii() and len(x.split()) > 7)
-           or '\n' in x or '\r' in x for x in terms):
-        raise ASRProtocolError('Filetrans热词规范：含非ASCII最多15字符，纯ASCII最多7个空格分词；请缩小本场词库。', 'input_limit')
+    terms, dropped = [], []
+    for term in dict.fromkeys(str(x).strip() for x in canonical_terms if str(x).strip()):
+        reason = filetrans_term_limit(term)
+        if not reason and len(terms) >= MAX_FILETRANS_TERMS:
+            reason = 'over_2000_terms'
+        if reason:
+            dropped.append({'term': term, 'reason': reason})
+        else:
+            terms.append(term)
     text = '本场规范词（仅实际提到时采用，保持大小写和数字）：'
     packed = []
     for term in terms:
@@ -105,8 +127,10 @@ def filetrans_hints(canonical_terms, *, vocabulary_id='', vocabulary_model=''):
     hints = {'vocabulary': {term: 2 for term in terms},
              'filetrans_context': ([{'role': 'user', 'content': [{'type': 'input_text',
                                     'text': text + '、'.join(packed)}]}] if packed else []),
+             'filetrans_vocabulary_dropped': dropped[:200],
              'hint_counts': {'native_vocabulary': len(terms), 'context_terms': len(packed),
-                             'context_omitted_terms': len(terms) - len(packed), 'weight': 2}}
+                             'context_omitted_terms': len(terms) - len(packed), 'weight': 2,
+                             'vocabulary_dropped': len(dropped), 'vocabulary_limit': MAX_FILETRANS_TERMS}}
     if vocabulary_id:
         if vocabulary_model != FILETRANS:
             raise ASRProtocolError('预编译热词库绑定未确认或属于旧模型；请为 Qwen Audio 3.1 Filetrans 重新核对绑定。', 'vocabulary_model_mismatch')

@@ -640,6 +640,7 @@ class TranslationSource:
     records: Mapping[str, Mapping]
     references: Mapping[str, tuple[dict, ...]]
     language: str = ""
+    math_formulas: bool = False  # 2026-10-16 (ADR 0124): $…$ travels as ⟦Fn⟧ placeholders
 
     def cue(self, cue_id: str) -> SourceCue | None:
         return self._index().get(cue_id)
@@ -669,7 +670,8 @@ def translation_source(project) -> TranslationSource:
         language = project_language(project)
     except Exception:  # noqa: BLE001 - language is advisory here
         language = ""
-    return TranslationSource(cues, records, references, language)
+    from .math_text import project_enabled
+    return TranslationSource(cues, records, references, language, math_formulas=project_enabled(project))
 
 
 def _as_source(project_or_source) -> TranslationSource:
@@ -844,24 +846,30 @@ def _batch_glossary(batch: TranslationBatch, pairs: Sequence[tuple[str, str]], s
 
 def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, game_context: str = "",
                    glossary_pairs: Any = (), speaker_names: Mapping[str, str] | None = None,
-                   source_language: str = "") -> list[dict[str, str]]:
-    """System + user messages for one batch (JSON user payload)."""
+                   source_language: str = "", math: bool = False) -> list[dict[str, str]]:
+    """System + user messages for one batch (JSON user payload).
+
+    ``math`` (the project's math switch, ADR 0124): every ``$…$`` is sent as
+    ⟦Fn⟧ (numbered per line) and the system prompt asks to keep them."""
+    from .math_text import FORMULA_RULE, has_placeholders, mask_formulas
+    shown = (lambda text: mask_formulas(text)[0]) if math else (lambda text: text)
     target = normalize_target(target)
     label = TARGET_LABELS[target]
     pairs = normalize_glossary(glossary_pairs)
     names = {str(k): str(v) for k, v in (speaker_names or {}).items() if str(v or "").strip()}
     lines = []
     for line in batch.lines:
-        row: dict[str, Any] = {"id": line.id, "text": line.text, "translate": line.translate}
+        row: dict[str, Any] = {"id": line.id, "text": shown(line.text), "translate": line.translate}
         speaker = names.get(line.speaker_id) or line.speaker
         if speaker:
             row["speaker"] = speaker
         if line.gap_before:
             row["gap_before"] = True
         if not line.translate and line.translation:
-            row["translation"] = line.translation
+            row["translation"] = shown(line.translation)
         if line.translate and line.reference:
-            row["reference"] = [{"text": item.get("source_text", ""), "translation": item.get("translation", "")}
+            row["reference"] = [{"text": shown(item.get("source_text", "")),
+                                 "translation": shown(item.get("translation", ""))}
                                 for item in line.reference]
         lines.append(row)
     english = source_language == "en"
@@ -888,6 +896,8 @@ def build_messages(batch: TranslationBatch, *, target: str = DEFAULT_TARGET, gam
     else:
         system = _GENERIC_SYSTEM_PROMPT.format(source_name=source_name, target_name=target_name,
                                                target_rule=_TARGET_RULES[TARGET_LANGUAGE[target]])
+    if math and any(has_placeholders(row["text"]) for row in lines):
+        system += "\n" + FORMULA_RULE
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -1201,6 +1211,23 @@ def _protected(record: Mapping | None, overwrite_manual: bool, overwrite_legacy:
 _SPLIT_CATEGORIES = frozenset({"request_too_large", "payload_too_large", "transport_length"})
 
 
+def _restore_formulas(source: TranslationSource, accepted: Mapping[str, str],
+                      problems: Mapping[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """Put each line's formulas back into its translation (ADR 0124); a translation
+    that dropped, repeated or invented a ⟦Fn⟧ placeholder becomes a problem (retried)."""
+    from .math_text import has_placeholders, mask_formulas, unmask_formulas
+    kept, issues = {}, dict(problems)
+    for cue_id, text in accepted.items():
+        cue = source.cue(cue_id)
+        formulas = mask_formulas(cue.text)[1] if cue is not None else ()
+        restored = unmask_formulas(text, formulas) if formulas or has_placeholders(text) else text
+        if restored is None:
+            issues[cue_id] = "formula_lost"
+        else:
+            kept[cue_id] = restored
+    return kept, issues
+
+
 def _call_provider(provider, messages, *, max_tokens: int, timeout: float, cancel_check):
     kwargs = dict(max_tokens=max_tokens, temperature=0.2, timeout=timeout, stage=PROVIDER_STAGE,
                   cancel_check=cancel_check, operation_kind=BUDGET_OPERATION, enable_thinking=False)
@@ -1232,6 +1259,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                                         prepare_input, retry_delay, wait_retry)
 
     source = _as_source(project)
+    math = bool(getattr(source, "math_formulas", False))
     target = normalize_target(target)
     source_language = str(getattr(source, "language", "") or "")
     prompt_version = prompt_version_for(source_language, target)
@@ -1303,7 +1331,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             return
         ids = list(batch.target_ids)
         messages = build_messages(batch, target=target, game_context=game_context, glossary_pairs=pairs,
-                                  speaker_names=speaker_names, source_language=source_language)
+                                  speaker_names=speaker_names, source_language=source_language, math=math)
         max_tokens = _max_tokens(batch)
         try:
             prepare_input(messages, schema=RESPONSE_SCHEMA, max_tokens=max_tokens, operation=BUDGET_OPERATION)
@@ -1337,6 +1365,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             delay = retry_delay(exc, 1)
         else:
             accepted, problems = validate_response(batch, payload, target, source_language)
+            if math:
+                accepted, problems = _restore_formulas(source, accepted, problems)
         for cue_id, text in accepted.items():
             succeed(cue_id, text, False)
         note(batch_no, problems)

@@ -223,7 +223,7 @@ def _safe_word_timing(project: SubtitleProject, cue: StudioCue, cues_by_id: dict
 
 def _compile_json(project: SubtitleProject) -> str:
     from .language_rules import project_language
-    from .punctuation_style import MODE_ORIGINAL, project_mode, protected_terms_of, style_text, style_translation
+    from .punctuation_style import math_enabled, project_mode, protected_terms_of, style_text, style_translation
     from .subtitle_translation import container_target, translation_view
 
     speakers = {speaker.id: speaker.name for speaker in project.speakers}
@@ -232,15 +232,16 @@ def _compile_json(project: SubtitleProject) -> str:
     untranslated = {"text": "", "status": "untranslated", "origin": "", "target": target}
     cues_by_id = {item.id: item for item in project.cues}
     mode = project_mode(project)
+    math = math_enabled(project)
     language = project_language(project) or ""
     terms = protected_terms_of(project)
     rows = []
     for cue in sorted(_export_view_cues(project, styled=False), key=lambda item: (item.start_ms, item.end_ms, item.id)):
         info = _lookup_translation(translations, cue.id) or untranslated
         speaker_name = speakers.get(cue.speaker_id, cue.speaker_id)
-        styled = style_text(cue.text, mode, language=language, protected_terms=terms)
+        styled = style_text(cue.text, mode, language=language, protected_terms=terms, math=math)
         word_timing = _safe_word_timing(project, cue, cues_by_id)
-        if mode != MODE_ORIGINAL and styled.changed:
+        if styled.changed:
             # Word pieces index the manuscript (original_text); give the
             # positions in the exported text too.
             for piece in word_timing.get("pieces") or ():
@@ -250,7 +251,7 @@ def _compile_json(project: SubtitleProject) -> str:
                     if mapped:
                         piece["text_char_start"], piece["text_char_end"] = mapped[0], mapped[-1] + 1
         translation = {key: info.get(key, "") for key in ("text", "status", "origin", "target")}
-        translation["text"] = style_translation(translation["text"], mode)
+        translation["text"] = style_translation(translation["text"], mode, math=math)
         rows.append({
             "id": cue.id,
             "start_ms": cue.start_ms,
@@ -276,6 +277,9 @@ def _compile_json(project: SubtitleProject) -> str:
         "punctuation": mode,
         "cues": rows,
     }
+    if math:
+        # 2026-10-16 (ADR 0124): text shows $…$ formulas as Unicode; original_text keeps the LaTeX.
+        payload["math_formulas"] = True
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
@@ -599,10 +603,12 @@ def export_language_layers(
         raise ValueError("unsupported speaker export mode")
     resolved_target = normalize_target(target) if target else container_target(project)
     translations = translation_view(project, target=resolved_target if target else None)
-    from .punctuation_style import MODE_NONE, project_mode, style_translation
-    if project_mode(project) == MODE_NONE and translations:
-        # 不加标点 applies to every layer; translations are copied, never rewritten.
-        translations = {key: (dict(value, text=style_translation(value.get("text", ""), MODE_NONE))
+    from .punctuation_style import MODE_NONE, math_enabled, project_mode, style_translation
+    math = math_enabled(project)
+    if (project_mode(project) == MODE_NONE or math) and translations:
+        # 不加标点 and math formulas apply to every layer; translations are copied, never rewritten.
+        mode = project_mode(project)
+        translations = {key: (dict(value, text=style_translation(value.get("text", ""), mode, math=math))
                               if isinstance(value, dict) else value)
                         for key, value in translations.items()}
     original_suffix = original_suffix or project_language(project) or "ja"

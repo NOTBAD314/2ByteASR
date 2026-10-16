@@ -1,0 +1,19 @@
+name: 报告问题词条
+description: 词条有错、会改坏字幕，或包含不该公开的内容
+title: "[问题] "
+labels: ["report"]
+body:
+  - type: input
+    id: library
+    attributes:
+      label: 词库
+      placeholder: 例如 原神 / genshin-impact
+    validations:
+      required: true
+  - type: textarea
+    id: rows
+    attributes:
+      label: 有问题的词条
+      description: 写出「原词 → 结果」，以及为什么有问题（例如把普通词改坏了）。
+    validations:
+      required: true

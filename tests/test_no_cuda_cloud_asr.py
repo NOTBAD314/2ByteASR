@@ -143,6 +143,33 @@ def test_qwen_audio_31_keeps_file_urls_and_diarization(tmp_path):
     assert sent['parameters'] == {'channel_id': [0], 'diarization_enabled': True}
 
 
+def test_qwen_audio_31_submits_without_an_over_long_glossary_term(tmp_path):
+    # 2026-10-17: one long personal glossary row used to fail the whole request.
+    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.qwen31_asr import filetrans_hints_for_model
+    sent = {}
+
+    class Client:
+        @staticmethod
+        def post(url, **kw):
+            sent.update(kw['json'])
+            return Response({'output': {'task_id': 't1', 'task_status': 'PENDING'}})
+
+        @staticmethod
+        def get(url, **kw):
+            raise OSError('pause')
+
+    long_row = '这是用户个人词库里写成一整句的说明行'
+    hints = filetrans_hints_for_model(FILETRANS, ['S0pp', long_row, '佩丽卡'], language='zh')
+    with pytest.raises(OSError):
+        filetrans(np.zeros(16000), dict(qwen3_endpoint(), model=FILETRANS, **hints), tmp_path, Storage(), client=Client)
+    assert sent['parameters']['vocabulary'] == {'S0pp': 2, '佩丽卡': 2}
+    assert long_row not in json.dumps(sent, ensure_ascii=False)
+    evidence = json.loads(next(tmp_path.rglob('submission-parameters.json')).read_text('utf8'))
+    assert evidence['vocabulary_dropped'] == [{'term': long_row, 'reason': 'non_ascii_longer_than_15_characters'}]
+    assert evidence['hint_counts']['vocabulary_dropped'] == 1
+
+
 def test_filetrans_unknown_task_is_reported_not_resubmitted(tmp_path):
     from twobyteasr.cloud_asr_jobs import filetrans
     posts = []

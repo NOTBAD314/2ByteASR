@@ -56,6 +56,23 @@ def _studio_punctuation(window):
     return run
 
 
+def _studio_math(window):
+    """2026-10-16 (ADR 0124): the switch is a checkable entry in the workbench 「标点」menu."""
+    def run():
+        studio = window.built_page('studio')
+        if studio is not None and getattr(studio, 'project', None) is not None:
+            window._open_subtitle_studio()
+            button = getattr(studio, 'punctuation_button', None)
+            if button is not None and button.isVisible():
+                button.showMenu()
+            return
+        from PySide6.QtWidgets import QMessageBox
+        from .i18n import tr
+        QMessageBox.information(window, tr('数学公式'),
+                                tr('打开工程后，在字幕工作台工具栏“标点”菜单里勾选“数学公式”；字幕里用 $…$ 写公式。'))
+    return run
+
+
 def entries(window) -> list[Entry]:
     open_workshop = getattr(window, '_open_model_workshop', lambda: None)
     return [
@@ -63,6 +80,9 @@ def entries(window) -> list[Entry]:
               '首页 → 字幕语言与输出', _focus_home(window, 'subtitle_punctuation')),
         Entry('字幕标点（当前工程）', ('标点', 'punctuation', '导出标点', '预览标点'),
               '字幕工作台 → 工具栏“标点”', _studio_punctuation(window)),
+        Entry('数学公式（$…$ 显示为 x²、∫ 等符号）', ('公式', '数学', 'math', 'latex', 'katex', '上标', '下标', '积分',
+                                                     '分数', '根号'),
+              '字幕工作台 → 工具栏“标点” → 数学公式', _studio_math(window)),
         Entry('Qwen Cloud（Qwen 官方 API）', ('qwen', 'qwen cloud', '通义', '千问', 'qwen-audio', '3.1', 'api key', '官网'),
               '申请与设置 API → Qwen Cloud', _api(window, 'qwen_cloud_filetrans')),
         Entry('阿里云百炼 · 录音文件识别', ('百炼', 'bailian', 'dashscope', 'qwen', '阿里云', 'oss', 'workspace'),

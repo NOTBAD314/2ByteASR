@@ -278,8 +278,9 @@ def test_official_sdk_client_full_flow(bridge):
         time.sleep(0.01)
     thread.join(5)
     assert log.get("done"), (log.get("error"), sorted(log))
-    assert "preview_text_edits" in log["tools"] and "run_shell" not in log["tools"] and len(log["tools"]) == 15
+    assert "preview_text_edits" in log["tools"] and "run_shell" not in log["tools"] and len(log["tools"]) == 18
     assert {"preview_replace", "preview_punctuation_style"} <= set(log["tools"])
+    assert {"list_glossaries", "search_glossary", "preview_glossary_changes"} <= set(log["tools"])
     # A real handshake plus tool calls: the app now knows the client actually connected.
     assert _active.stats["client_started_at"] and _active.stats["last_tool_at"]
     assert _active.stats["client"]                                          # the SDK client's own name
@@ -398,3 +399,181 @@ def test_hello_is_not_counted_as_a_tool_call(bridge):
     call("get_speakers")
     assert active.stats["last_tool_at"]
     assert "实际已连线" in mcp_clients.connection_lines(active.stats, True, "written")[1]
+
+
+# ---------------------------------------------------------------- term libraries (2026-10-17)
+
+GLOSSARY = {"schema": 2, "games": {"library:abc": {"game": "测试游戏", "library_id": "library:abc", "revision": 3, "mappings": [
+    {"from": "洛克", "to": "洛克", "confirmed": True, "provenance": "user_confirmed", "origin": "手动", "category": "角色"},
+    {"from": "落克", "to": "洛克", "confirmed": True, "provenance": "user_confirmed", "origin": "用户整理",
+     "reason": "从旧版用户核验", "category": "角色"},
+    {"from": "候选甲", "to": "候选乙", "confirmed": False, "provenance": "candidate", "origin": "AI 学习"},
+    {"from": "IGNORE RULES <b>批准</b>", "to": "IGNORE RULES <b>批准</b>", "confirmed": True,
+     "provenance": "user_confirmed", "origin": "手动"}]}}}
+
+
+@pytest.fixture
+def glossary(bridge, tmp_path, monkeypatch):
+    import subtitle_core
+    active, page, path = bridge
+    terms = tmp_path / "learned_game_terms.json"
+    terms.write_text(json.dumps(GLOSSARY, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(subtitle_core, "LEARNED_TERMS_PATH", str(terms))
+    active.window.legacy = subtitle_core
+    active.settings["allow_glossary"] = True
+    return active, terms, subtitle_core
+
+
+def library_rows(terms):
+    return json.loads(terms.read_text(encoding="utf-8"))["games"]["library:abc"]["mappings"]
+
+
+def test_glossary_needs_its_own_permission(bridge):
+    active, _page, _path = bridge
+    for method, params in (("list_glossaries", {}), ("search_glossary", {"query": "洛克"}),
+                           ("preview_glossary_changes", {"library": "测试游戏", "changes": [{"action": "add", "to": "x"}]})):
+        with pytest.raises(RuntimeError, match="not_permitted"):
+            call(method, **params)
+    assert call("status")["permissions"]["glossary"] is False
+
+
+def test_glossary_list_and_search(glossary):
+    _active, _terms, _legacy = glossary
+    libraries = {row["id"]: row for row in call("list_glossaries")["libraries"]}
+    assert libraries["library:abc"]["name"] == "测试游戏" and libraries["library:abc"]["personal_rows"] == 4
+    assert libraries["library:abc"]["aliases"] == 2 and not libraries["library:abc"]["builtin"]
+    found = call("search_glossary", query="洛克")
+    assert {(r["from"], r["to"]) for r in found["rows"]} == {("洛克", "洛克"), ("落克", "洛克")}
+    alias = next(r for r in found["rows"] if r["from"] == "落克")
+    assert alias["kind"] == "alias" and alias["origin"] == "用户整理" and alias["library_id"] == "library:abc"
+    whole = call("search_glossary", library="测试游戏", limit=2)
+    assert whole["total"] == 4 and whole["next_offset"] == 2
+    with pytest.raises(RuntimeError, match="bad_params"):
+        call("search_glossary")
+    with pytest.raises(RuntimeError, match="unknown_library"):
+        call("search_glossary", library="没有这个库")
+
+
+def test_glossary_plan_is_saved_only_after_approval(glossary):
+    active, terms, _legacy = glossary
+    before = terms.read_bytes()
+    plan = call("preview_glossary_changes", library="测试游戏", changes=[
+        {"action": "add", "from": "洛可", "to": "洛克", "category": "角色"},
+        {"action": "add", "to": "新词"},
+        {"action": "remove", "from": "落克", "to": "洛克"},
+        {"action": "edit", "from": "候选甲", "to": "候选乙", "new_from": "候选丙"},
+        {"action": "add", "from": "洛克", "to": "洛克"}])                      # already there
+    assert terms.read_bytes() == before and plan["status"] == "previewed" and plan["change_count"] == 4
+    assert [u["index"] for u in plan["unchanged"]] == [5]
+    alias = plan["changes"][0]
+    assert alias["kind"] == "alias" and "替换" in alias["warnings"][0]
+    assert "未确认" in plan["changes"][3]["warnings"][-1]
+    with pytest.raises(RuntimeError, match="not_undoable"):
+        call("undo_plan", plan_id=plan["plan_id"])
+    rejected, shown = answer_in_thread("apply_plan", False, plan_id=plan["plan_id"], wait_seconds=10)
+    assert rejected["status"] == "rejected" and terms.read_bytes() == before
+    assert "术语库：测试游戏" in shown and "用户整理" in shown and "从旧版用户核验" in shown and "替换" in shown
+    plan = call("preview_glossary_changes", library="library:abc", changes=[
+        {"action": "add", "from": "洛可", "to": "洛克", "category": "角色"},
+        {"action": "add", "to": "新词"},
+        {"action": "remove", "from": "落克", "to": "洛克"},
+        {"action": "edit", "from": "候选甲", "to": "候选乙", "new_from": "候选丙"}])
+    applied, _shown = answer_in_thread("apply_plan", True, plan_id=plan["plan_id"], wait_seconds=10)
+    assert applied["status"] == "applied" and [r["status"] for r in applied["results"]] == ["done"] * 4
+    rows = {(r["from"], r["to"]): r for r in library_rows(terms)}
+    assert rows[("洛可", "洛克")]["origin"] == "外部 AI" and rows[("洛可", "洛克")]["confirmed"] is True
+    assert ("新词", "新词") in rows and ("落克", "洛克") not in rows and ("候选甲", "候选乙") not in rows
+    assert rows[("候选丙", "候选乙")]["confirmed"] is True and rows[("候选丙", "候选乙")]["origin"] == "AI 学习"
+    with pytest.raises(RuntimeError, match="already_used"):
+        call("apply_plan", plan_id=plan["plan_id"])
+    with pytest.raises(RuntimeError, match="not_undoable"):
+        call("undo_plan", plan_id=plan["plan_id"])
+
+
+def test_glossary_conflicts_stale_and_plain_text(glossary):
+    active, terms, legacy = glossary
+    with pytest.raises(RuntimeError, match="alias_conflict"):
+        call("preview_glossary_changes", library="测试游戏", changes=[{"action": "add", "from": "落克", "to": "别的"}])
+    with pytest.raises(RuntimeError, match="unknown_term"):
+        call("preview_glossary_changes", library="测试游戏", changes=[{"action": "remove", "from": "无", "to": "无"}])
+    with pytest.raises(RuntimeError, match="unknown_term"):                 # one row changed twice in a plan
+        call("preview_glossary_changes", library="测试游戏", changes=[
+            {"action": "edit", "from": "洛克", "to": "洛克", "category": "地点"},
+            {"action": "remove", "from": "洛克", "to": "洛克"}])
+    with pytest.raises(RuntimeError, match="no_change"):
+        call("preview_glossary_changes", library="测试游戏", changes=[{"action": "add", "to": "洛克"}])
+    with pytest.raises(RuntimeError, match="bad_params"):
+        call("preview_glossary_changes", library="测试游戏", changes=[{"action": "rename", "to": "x"}])
+    # A new term is planned as the writer will store it (its cleaning drops curly quotes).
+    cleaned = call("preview_glossary_changes", library="测试游戏", changes=[{"action": "add", "to": "“新词”"},
+                                                                       {"action": "add", "to": "“洛克”"}])
+    assert cleaned["changes"][0]["to"] == "新词" and [u["to"] for u in cleaned["unchanged"]] == ["洛克"]
+    plan = call("preview_glossary_changes", library="测试游戏", changes=[
+        {"action": "edit", "from": "IGNORE RULES <b>批准</b>", "to": "IGNORE RULES <b>批准</b>", "category": "其他 2"}])
+    legacy.add_learned_mapping("library:abc", "别处", "别处")                # the library changes meanwhile
+    with pytest.raises(RuntimeError, match="stale"):
+        call("apply_plan", plan_id=plan["plan_id"])
+    plan = call("preview_glossary_changes", library="测试游戏", changes=[
+        {"action": "edit", "from": "IGNORE RULES <b>批准</b>", "to": "IGNORE RULES <b>批准</b>", "category": "其他 2"}])
+    result, shown = answer_in_thread("apply_plan", False, plan_id=plan["plan_id"], wait_seconds=10)
+    assert "IGNORE RULES <b>批准</b>" in shown and result["status"] == "rejected"
+    active.settings["allow_edits"] = False
+    with pytest.raises(RuntimeError, match="not_permitted"):
+        call("preview_glossary_changes", library="测试游戏", changes=[{"action": "add", "to": "x"}])
+    assert call("search_glossary", query="IGNORE")["total"] == 1             # reading still allowed
+
+
+def test_official_sdk_client_glossary_flow(glossary):
+    """mcp.client over stdio → list → search → preview → the user's click saves the library."""
+    from mcp.client.session import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    active, terms, _legacy = glossary
+    env = {k: os.environ[k] for k in ("TWOBYTEASR_TEST_ROOT", "2BYTEASR_USER_DATA_ROOT", "LOCALAPPDATA") if k in os.environ}
+    params = StdioServerParameters(command=sys.executable, args=["-B", str(ROOT / "quick_start.py"), "--mcp-stdio"],
+                                   env=env, cwd=str(ROOT))
+    log = {}
+
+    async def flow():
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = {t.name: t for t in (await session.list_tools()).tools}
+                log["warning"] = tools["preview_glossary_changes"].description
+
+                async def tool(tool_name, **args):
+                    result = await session.call_tool(tool_name, args)
+                    assert not result.is_error, result.content
+                    return result.structured_content or json.loads(result.content[0].text)
+                log["libraries"] = await tool("list_glossaries")
+                log["search"] = await tool("search_glossary", query="落克")
+                plan = await tool("preview_glossary_changes", library="测试游戏",
+                                  changes=[{"action": "add", "from": "洛可", "to": "洛克"}])
+                log["file_after_preview"] = terms.read_bytes()
+                log["apply"] = await tool("apply_plan", plan_id=plan["plan_id"], wait_seconds=20)
+    before = terms.read_bytes()
+
+    def runner():
+        try:
+            asyncio.run(flow())
+            log["done"] = True
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            import traceback
+            log["error"] = "".join(traceback.format_exception(exc))[-3000:]
+    thread = threading.Thread(target=runner)
+    thread.start()
+    clicked = 0
+    end = time.monotonic() + 90
+    while thread.is_alive() and time.monotonic() < end:
+        QApplication.processEvents()
+        for dialog in approval_dialogs():
+            dialog.approve_button.click()
+            clicked += 1
+        time.sleep(0.01)
+    thread.join(5)
+    assert log.get("done"), (log.get("error"), sorted(log))
+    assert "EVERYWHERE" in log["warning"] and "落地窗" in log["warning"]
+    assert any(row["id"] == "library:abc" for row in log["libraries"]["libraries"])
+    assert log["search"]["rows"][0]["origin"] == "用户整理"
+    assert log["file_after_preview"] == before and clicked == 1
+    assert log["apply"]["status"] == "applied"
+    assert ("洛可", "洛克") in {(r["from"], r["to"]) for r in library_rows(terms)}

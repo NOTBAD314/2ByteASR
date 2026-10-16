@@ -12,15 +12,15 @@ def cloud_request_hints(endpoint, settings, requested_language=None):
     """
     from .qwen31_asr import filetrans_hints_for_model, is_filetrans_model
     from .mosi_asr import MODEL as MOSI_MODEL, keyterm_hints
-    from .terminology import runtime_snapshot
+    from .terminology import recognition_hotwords, runtime_snapshot
     models = (settings or {}).get('models', {})
     if is_filetrans_model(endpoint.get('model')):
-        return filetrans_hints_for_model(endpoint['model'], runtime_snapshot().canonical_terms,
+        return filetrans_hints_for_model(endpoint['model'], recognition_hotwords(runtime_snapshot()),
                                          vocabulary_id=models.get('asr_vocabulary_id', ''),
                                          vocabulary_model=models.get('asr_vocabulary_model', ''),
                                          language=requested_language)
     if endpoint.get('model') == MOSI_MODEL:
-        return keyterm_hints(runtime_snapshot().canonical_terms)
+        return keyterm_hints(recognition_hotwords(runtime_snapshot()))
     return {}
 
 

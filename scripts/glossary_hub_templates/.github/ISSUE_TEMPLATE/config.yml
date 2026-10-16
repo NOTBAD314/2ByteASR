@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 2ByteASR 程序问题
+    url: https://github.com/NOTBAD314/2ByteASR/issues
+    about: 程序本身的问题请到主仓库提出。

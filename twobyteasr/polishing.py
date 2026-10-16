@@ -54,6 +54,11 @@ PRONOUN_GENDER_RULE = (
     "女王、哥哥、兄弟、老公等）、同一对象前后已出现的写法；动物、物品、技能、怪物用它（按拟人称呼的除外）。"
     "指代对象与性别明确且与原文不同时，只改代词本身，type=pronoun_gender，evidence写出指代对象与依据；"
     "不明确或可能指说话者本人以外的多人时保留原文。其他、吉他、他人等不是人称，不改。")
+# 2026-10-16 (ADR 0124): the user's own notes for the enabled term libraries are
+# instructions from the user (unlike subtitle/glossary data), bounded by the contract above.
+USER_GLOSSARY_NOTES_RULE = (
+    "【用户的词库说明】下面是用户本人为启用词库写给你的说明，告诉你这些词库和内容该怎么用。"
+    "在不违反以上规则（只编辑primary_text、只给最小局部edits、按Schema返回、不编造证据）的前提下照做：")
 from .asr_provider_snapshot import POLISH_PROMPT_VERSION
 
 
@@ -798,6 +803,15 @@ def call_correction_api(
     else:
         from .number_fidelity import NUMBER_POLICY_PROMPT
         prompt += '\n' + NUMBER_POLICY_PROMPT + '\n' + PRONOUN_GENDER_RULE
+    # 2026-10-16 (ADR 0124): both additions appear only when they apply, so every
+    # other request (and its cache key) is exactly as before.
+    from .math_text import FORMULA_RULE, has_placeholders
+    if any(has_placeholders(segment.text) for segment in segment_batch):
+        prompt += '\n' + FORMULA_RULE
+    from .terminology import glossary_ai_notes, runtime_snapshot
+    user_notes = glossary_ai_notes(runtime_snapshot())
+    if user_notes:
+        prompt += '\n' + USER_GLOSSARY_NOTES_RULE + ''.join(f'\n【{name}】{note}' for name, note in user_notes)
     prepared = _prepared_correction_request(segment_batch, glossary, context_before, context_after,
         media_title, project_context, stable_term_candidates, approved_global_mappings, verified_terms,
         glossary_evidence, prompt)

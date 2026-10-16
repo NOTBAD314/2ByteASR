@@ -1345,5 +1345,13 @@
     "license_files": [
       "licenses/python/wheel-0.45.1/LICENSE.txt"
     ]
+  },
+  {
+    "name": "pylatexenc",
+    "version": "2.11",
+    "license": "MIT",
+    "license_files": [
+      "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt"
+    ]
   }
 ]
