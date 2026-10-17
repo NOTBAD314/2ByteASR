@@ -160,7 +160,7 @@
 녹음이 어떻게 자막이 되는지 궁금하다면 아래 그림을 보세요. Windows + NVIDIA GPU의 기본 로컬 방식(MOSS + FireRedASR2-AED + Qwen3-ASR)을 그린 것이며, 점선은 일본어·영어 미디어만 거치는 경로입니다.
 
 ```mermaid
-%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%%{init: {"htmlLabels": false, "markdownAutoWrap": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400}}}%%
 flowchart TB
     subgraph REC["① 인식: 세 가지 역할"]
         direction TB

@@ -160,7 +160,7 @@ A run uses up to three roles, combined to suit your media and hardware:
 If you want to know how a recording becomes subtitles, the chart below follows the default local route on Windows with an NVIDIA GPU (MOSS + FireRedASR2-AED + Qwen3-ASR). Dashed lines apply only to Japanese and English media.
 
 ```mermaid
-%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%%{init: {"htmlLabels": false, "markdownAutoWrap": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400}}}%%
 flowchart TB
     subgraph REC["① Recognition: 3 roles"]
         direction TB

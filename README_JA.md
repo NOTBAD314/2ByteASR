@@ -160,7 +160,7 @@
 録音がどうやって字幕になるのかを知りたい方向けに、Windows + NVIDIA GPU の標準ローカルプラン（MOSS + FireRedASR2-AED + Qwen3-ASR）の流れを下の図にまとめました。点線は日本語・英語の素材だけが通る経路です。
 
 ```mermaid
-%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
+%%{init: {"htmlLabels": false, "markdownAutoWrap": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400}}}%%
 flowchart TB
     subgraph REC["① 認識：3 つの役割"]
         direction TB
