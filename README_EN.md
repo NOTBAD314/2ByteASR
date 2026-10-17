@@ -32,7 +32,7 @@ Current release: **0.7.5** (2026-10-17). Pick the one installer for your compute
 
 ## Before you start
 
-- **The app is free.** Official builds cost nothing: no paid features, sign-up or subscription.
+- **The app is free.** Official builds cost nothing: no paid features, sign-up or subscription. To support development, see [Afdian](#support-the-author).
 - **Local recognition downloads models first.** The installer contains no speech models. The first time you transcribe locally, the Model workshop downloads the models and runtime for the route you picked (the NVIDIA high-quality route is about 11 GB of models plus its runtime). After that it works offline and your media never leaves your computer.
 - **Cloud recognition and AI features use your own accounts.** Cloud transcription needs an account and API key with the provider, is billed by them, and uploads your audio to them. AI segmentation, AI proofreading, translation and AI glossary building need your own text-AI service (only subtitle text is sent). You can transcribe, edit and export without any of these.
 - **Not every computer runs every model.** Start here:
@@ -154,6 +154,38 @@ A run uses up to three roles, combined to suit your media and hardware:
 - [Interface tour](docs/product-demo.en.md): progress, completion, Model workshop, export, themes and more (0.7.1 interface)
 - [API setup guides](docs/api-setup/README.md) (Chinese): sign-up steps and pricing notes for each cloud and text-AI provider
 - [Mac notes](docs/deployment/macos-experimental.zh-CN.md) (Chinese) · [Updating](UPDATING.md) (Chinese) · [0.7.5 release notes](docs/releases/0.7.5.md) (Chinese, English, Japanese, Korean) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
+
+## How recognition works
+
+If you want to know how a recording becomes subtitles, the chart below follows the default local route on Windows with an NVIDIA GPU (MOSS + FireRedASR2-AED + Qwen3-ASR). Dashed lines apply only to Japanese and English media.
+
+```mermaid
+flowchart TB
+    subgraph REC["① Recognition: 3 roles"]
+        direction LR
+        A["Video or audio<br>to 16 kHz audio"] --> M["<b>Primary transcription</b><br>MOSS<br>text and speakers"]
+        A --> V["<b>Voice detection</b><br>FireRedVAD<br>finds where people speak"]
+        M -->|Chinese| F["<b>Subtitle timeline</b><br>FireRedASR2-AED<br>times every character"]
+        M -.->|Japanese, English| Q["<b>Subtitle timeline</b><br>Qwen3-ForcedAligner<br>aligns the text to audio"]
+        V --> R["<b>Text review</b><br>Qwen3-ASR<br>a second transcript"]
+    end
+    subgraph POST["② Compare, tidy, export"]
+        direction LR
+        D["<b>Merged draft</b><br>compares 3 readings<br>keeps differences<br>as candidates"] --> T["<b>Text cleanup</b><br>glossary fixes<br>AI proofreading<br>(optional)"]
+        T --> S["<b>Line breaking</b><br>local rules or AI<br>final timing"]
+        S --> P["<b>Subtitle Studio</b><br>compare candidates<br>cut by character<br>export subtitles, video"]
+        S -.->|Japanese, English| J["aligned again<br>to the final text"]
+    end
+    REC --> POST
+```
+
+In short: MOSS listens to the whole file, writes the text and tells the speakers apart, while FireRedVAD finds where people actually speak; lines with no voice under them are dropped. FireRedASR2-AED and Qwen3-ASR then each listen again on their own: the first times every character, the second writes another transcript. Using MOSS's sentences and speakers as the backbone, the app compares the three readings. It replaces text automatically only when the other two models agree and the change passes a safety check; other differences are marked and left for you to decide in the Studio's review mode. Chinese text then gets glossary fixes and AI proofreading from the text-AI service you set up (optional; every edit must pass a local safety check first). Line breaking uses local rules or AI, but the AI only decides where to break and cannot change the text. A final check confirms that no characters were lost or added, and timing is snapped to video frames with enough reading time. Japanese and English media skip the Chinese timeline model: Qwen3-ForcedAligner aligns them, and after line breaking each line is aligned again to its final text (Japanese line starts can also be checked with a CTC aligner).
+
+Other routes keep the same roles with different models. With cloud recognition the provider writes the text (MOSS Pro cloud and Qwen-Audio 3.1 also separate speakers); character timing can be added by the local Qwen3-ForcedAligner (CPU capable), otherwise the provider's sentence times are used and marked as estimated. Light local (SenseVoice) only transcribes and does not separate speakers. Macs use MLX Qwen3-ASR with an aligner, or MOSS + FireRed on the Apple GPU. When a long stream recording does not fit in GPU memory at once, MOSS splits it into several windows and matches the speakers across them by voiceprint.
+
+## Support the author
+
+If 2ByteASR helps you, you can support its development on Afdian (爱发电): **[afdian.com/a/2byteasr](https://afdian.com/a/2byteasr)**. Sponsoring is entirely optional; every feature works without it.
 
 ## Feedback, licences and third-party components
 
