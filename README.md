@@ -22,6 +22,7 @@
 | **Windows 10 22H2 或更新（64 位）**<br>正式版 | **[2ByteASR-Setup-0.7.5.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-Setup-0.7.5.exe)**（约 1 GB）<br>安装程序没有代码签名，Windows 可能提示“未知发布者”，见 [Windows 安装](docs/product-guide.zh-CN.md#windows-安装)。 |
 | **Mac：Apple 芯片（M1 及以后），macOS 15 或更新**<br>**实验版** | **[2ByteASR-0.7.5-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-0.7.5-macos-arm64-Setup.dmg)**（约 0.5 GB）<br>只在 GitHub 的虚拟 Mac 上验证过，**不支持 Intel Mac**；没有经过 Apple 公证，第一次打开见 [Mac 安装](docs/product-guide.zh-CN.md#mac-安装实验版)。 |
 
+- **中国大陆下载慢或打不开：** 先从 GitCode 国内镜像下载 [Windows 安装程序](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.7.5/2ByteASR-Setup-0.7.5.exe) · [Mac 安装包](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.7.5/2ByteASR-0.7.5-macos-arm64-Setup.dmg)；还不行再用第三方加速站 gh-proxy：[Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-Setup-0.7.5.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-0.7.5-macos-arm64-Setup.dmg)。各来源的文件完全相同，可用 `SHA256SUMS.txt` 核对。
 - **已经装了 0.6.5、0.7.0、0.7.1、0.7.2、0.7.3 或 0.7.4：** 在程序右上角“检查更新”，只下载有变化的部分。0.6.0 及更早版本：直接运行新的安装程序覆盖安装，不要先卸载。
 - **其他附件不用下载。** [Releases 页面](https://github.com/NOTBAD314/2ByteASR/releases/latest)里的 `Source`、`ThirdParty`、`update`、`.sig` 等文件是给源码、许可材料和程序内更新用的。下载后可用 `SHA256SUMS.txt` 核对文件是否完整。
 
