@@ -160,21 +160,40 @@ A run uses up to three roles, combined to suit your media and hardware:
 If you want to know how a recording becomes subtitles, the chart below follows the default local route on Windows with an NVIDIA GPU (MOSS + FireRedASR2-AED + Qwen3-ASR). Dashed lines apply only to Japanese and English media.
 
 ```mermaid
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
 flowchart TB
     subgraph REC["① Recognition: 3 roles"]
-        direction LR
-        A["Video or audio<br>to 16 kHz audio"] --> M["<b>Primary transcription</b><br>MOSS<br>text and speakers"]
-        A --> V["<b>Voice detection</b><br>FireRedVAD<br>finds where people speak"]
-        M -->|Chinese| F["<b>Subtitle timeline</b><br>FireRedASR2-AED<br>times every character"]
-        M -.->|Japanese, English| Q["<b>Subtitle timeline</b><br>Qwen3-ForcedAligner<br>aligns the text to audio"]
-        V --> R["<b>Text review</b><br>Qwen3-ASR<br>a second transcript"]
+        direction TB
+        A["`Video or audio
+to 16 kHz audio`"] --> M["`**Primary transcription**
+MOSS
+text and speakers`"]
+        A --> V["`**Voice detection**
+FireRedVAD
+where people speak`"]
+        M -->|Chinese| F["`**Subtitle timeline**
+FireRedASR2-AED
+times every character`"]
+        M -.->|Japanese, English| Q["`**Subtitle timeline**
+Qwen3-ForcedAligner
+aligns text to audio`"]
+        V --> R["`**Text review**
+Qwen3-ASR
+a second transcript`"]
     end
     subgraph POST["② Compare, tidy, export"]
         direction LR
-        D["<b>Merged draft</b><br>compares 3 readings<br>keeps differences<br>as candidates"] --> T["<b>Text cleanup</b><br>glossary fixes<br>AI proofreading<br>(optional)"]
-        T --> S["<b>Line breaking</b><br>local rules or AI<br>final timing"]
-        S --> P["<b>Subtitle Studio</b><br>compare candidates<br>cut by character<br>export subtitles, video"]
-        S -.->|Japanese, English| J["aligned again<br>to the final text"]
+        D["`**Merged draft**
+compares 3 readings
+keeps candidates`"] --> T["`**Cleanup and lines**
+glossary fixes
+AI proofreading
+(optional)
+line breaks, timing`"]
+        T --> P["`**Subtitle Studio**
+compare and cut
+export subtitles
+and video`"]
     end
     REC --> POST
 ```

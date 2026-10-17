@@ -160,21 +160,40 @@
 녹음이 어떻게 자막이 되는지 궁금하다면 아래 그림을 보세요. Windows + NVIDIA GPU의 기본 로컬 방식(MOSS + FireRedASR2-AED + Qwen3-ASR)을 그린 것이며, 점선은 일본어·영어 미디어만 거치는 경로입니다.
 
 ```mermaid
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
 flowchart TB
     subgraph REC["① 인식: 세 가지 역할"]
-        direction LR
-        A["영상 또는 오디오<br>16 kHz 오디오로 통일"] --> M["<b>주 전사</b><br>MOSS<br>받아쓰기, 화자 구분"]
-        A --> V["<b>음성 구간 검출</b><br>FireRedVAD<br>사람 목소리 구간 찾기"]
-        M -->|중국어| F["<b>자막 타임라인</b><br>FireRedASR2-AED<br>글자마다 시간 매기기"]
-        M -.->|일본어, 영어| Q["<b>자막 타임라인</b><br>Qwen3-ForcedAligner<br>텍스트를 음성에 맞추기"]
-        V --> R["<b>텍스트 검토</b><br>Qwen3-ASR<br>한 번 더 듣고<br>따로 받아쓰기"]
+        direction TB
+        A["`영상 또는 오디오
+16 kHz로 통일`"] --> M["`**주 전사**
+MOSS
+받아쓰기
+화자 구분`"]
+        A --> V["`**음성 구간 검출**
+FireRedVAD
+목소리 구간 찾기`"]
+        M -->|중국어| F["`**자막 타임라인**
+FireRedASR2-AED
+글자마다 시간`"]
+        M -.->|일본어, 영어| Q["`**자막 타임라인**
+Qwen3-ForcedAligner
+텍스트를 음성에 맞춤`"]
+        V --> R["`**텍스트 검토**
+Qwen3-ASR
+한 번 더 듣고
+따로 받아쓰기`"]
     end
     subgraph POST["② 비교, 정리, 출력"]
         direction LR
-        D["<b>초안 합치기</b><br>세 가지 표기 비교<br>다른 부분은 후보로"] --> T["<b>텍스트 정리</b><br>용어 라이브러리 교정<br>AI 교정(선택)"]
-        T --> S["<b>줄 나누기</b><br>로컬 규칙 또는 AI<br>타임라인 확정"]
-        S --> P["<b>자막 스튜디오</b><br>후보 비교<br>글자 단위 자르기<br>자막·영상 내보내기"]
-        S -.->|일본어, 영어| J["최종 텍스트로<br>한 번 더 맞추기"]
+        D["`**초안 합치기**
+세 표기 비교
+차이는 후보로`"] --> T["`**정리와 줄 나누기**
+용어 라이브러리
+AI 교정(선택)
+줄 나누기, 시간 확정`"]
+        T --> P["`**자막 스튜디오**
+후보 비교, 자르기
+자막·영상 내보내기`"]
     end
     REC --> POST
 ```

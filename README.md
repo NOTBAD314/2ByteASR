@@ -160,21 +160,40 @@
 想知道一段录音是怎么变成字幕的，可以看下面这张图。它画的是 Windows + NVIDIA 显卡的默认本机方案（MOSS + FireRedASR2-AED + Qwen3-ASR）；虚线是只有日语、英语素材才走的路线。
 
 ```mermaid
+%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%
 flowchart TB
     subgraph REC["① 识别：三个模型分工"]
-        direction LR
-        A["视频或音频<br>统一成 16 kHz"] --> M["<b>主力转写</b><br>MOSS<br>写出文字，分出说话人"]
-        A --> V["<b>人声检测</b><br>FireRedVAD<br>找出有人声的区间"]
-        M -->|中文| F["<b>字幕时间轴</b><br>FireRedASR2-AED<br>给每个字标上时间"]
-        M -.->|日语、英语| Q["<b>字幕时间轴</b><br>Qwen3-ForcedAligner<br>把文字对齐到声音"]
-        V --> R["<b>文字复核</b><br>Qwen3-ASR<br>再听一遍，另写一份"]
+        direction TB
+        A["`视频或音频
+统一成 16 kHz`"] --> M["`**主力转写**
+MOSS
+写出文字
+分出说话人`"]
+        A --> V["`**人声检测**
+FireRedVAD
+找出有人声的区间`"]
+        M -->|中文| F["`**字幕时间轴**
+FireRedASR2-AED
+给每个字标上时间`"]
+        M -.->|日语、英语| Q["`**字幕时间轴**
+Qwen3-ForcedAligner
+把文字对齐到声音`"]
+        V --> R["`**文字复核**
+Qwen3-ASR
+再听一遍
+另写一份`"]
     end
     subgraph POST["② 比对、整理、输出"]
         direction LR
-        D["<b>合成主稿</b><br>比较三份写法<br>不一致的留作候选"] --> T["<b>文字整理</b><br>术语库纠错<br>AI 校对（可选）"]
-        T --> S["<b>断句</b><br>本地规则或 AI<br>锁定时间轴"]
-        S --> P["<b>字幕工作台</b><br>对照候选、按字切分<br>导出字幕和成片"]
-        S -.->|日语、英语| J["按最终文字<br>再对齐一次"]
+        D["`**合成主稿**
+比较三份写法
+分歧留作候选`"] --> T["`**整理与断句**
+术语库纠错
+AI 校对（可选）
+断句，锁定时间轴`"]
+        T --> P["`**字幕工作台**
+对照候选、切分
+导出字幕和成片`"]
     end
     REC --> POST
 ```
