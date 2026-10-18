@@ -156,6 +156,11 @@ class StudioWorkspaceBuilder:
         outer.setSpacing(0)
         toolbar = QFrame()
         toolbar.setObjectName("studioToolbar")
+        # _fit_studio_toolbar keeps the commands inside the page width. Without
+        # this the bar's full minimum (~1900 px while every command is briefly
+        # shown) widened a page with no window minimum of its own, and the next
+        # fit measured that wider page (2026-10-18).
+        toolbar.setMinimumWidth(1)
         page.studio_toolbar = toolbar
         toolbar.installEventFilter(page)
         bar = QHBoxLayout(toolbar)

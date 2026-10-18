@@ -27,6 +27,7 @@ ICON_ROLES = (
 
 _BUTTON_PROPERTY = "_themed_icon"          # (name, role) on QAbstractButton
 _TABS_PROPERTY = "_themed_tab_icons"       # [(name, role)] on QTabWidget
+_TABS_HIDDEN_PROPERTY = "_themed_tab_icons_hidden"  # True while a narrow tab bar shows text only
 _FONT_FALLBACK_PRIMED = False
 _PIXMAP_CACHE: dict[tuple[str, str, int, int, int, str], QPixmap] = {}
 _NORMAL_PIXMAP_CACHE: dict[tuple[str, int, int, int], QPixmap] = {}
@@ -177,6 +178,15 @@ def install_themed_tabs(tabs: QTabWidget, entries: list[tuple[str, str]]) -> Non
         tabs.setTabIcon(index, themed_icon(name, role))
 
 
+def show_themed_tab_icons(tabs: QTabWidget, shown: bool) -> None:
+    """Hide or bring back the icons install_themed_tabs registered (theme refreshes keep them hidden)."""
+    tabs.setProperty(_TABS_HIDDEN_PROPERTY, not shown)
+    specs = tabs.property(_TABS_PROPERTY)
+    for index, spec in enumerate(specs if isinstance(specs, list) else []):
+        if isinstance(spec, tuple) and len(spec) == 2 and index < tabs.count():
+            tabs.setTabIcon(index, themed_icon(spec[0], spec[1]) if shown else QIcon())
+
+
 def refresh_themed_icons(app: QApplication | None = None) -> int:
     """Re-rasterize registered icons for the active theme. Returns count."""
     app = app or QApplication.instance()
@@ -201,7 +211,7 @@ def refresh_themed_icons(app: QApplication | None = None) -> int:
                 refreshed += 1
         elif isinstance(widget, QTabWidget):
             specs = widget.property(_TABS_PROPERTY)
-            if isinstance(specs, list):
+            if isinstance(specs, list) and not widget.property(_TABS_HIDDEN_PROPERTY):
                 for index, spec in enumerate(specs):
                     if isinstance(spec, tuple) and len(spec) == 2 and index < widget.count():
                         widget.setTabIcon(index, themed_icon(spec[0], spec[1]))

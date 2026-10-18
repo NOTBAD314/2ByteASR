@@ -53,6 +53,57 @@ class ModelChoice:
 
 
 @dataclass(frozen=True)
+class Shot:
+    """A screenshot of the official site (``assets/api-setup/<file>``), 2026-10-18.
+
+    ``ring`` is the button to press as (x, y, width, height) fractions of the
+    picture; the dialog draws it in the theme's accent, so one picture serves
+    every theme. Pages change: ``source`` and ``captured`` say what was shot
+    and when (scripts/capture_api_setup_shots.mjs takes the public ones again).
+    """
+    file: str
+    ring: tuple
+    source: str
+    captured: str
+
+    def path(self, root=None) -> Path:
+        from .runtime_paths import detect_install_root
+        base = Path(root) if root is not None else detect_install_root()
+        return base / 'assets' / 'api-setup' / self.file
+
+
+@dataclass(frozen=True)
+class StepText:
+    """What one step of a provider's walkthrough says (overrides the defaults).
+
+    ``lines`` are broken by hand at natural pauses, one short phrase each, and
+    translated one by one: wrapping a long sentence in a narrow column broke
+    it in odd places (user, 2026-10-18).
+    """
+    role: str                  # account | topup | key | storage
+    title: str = ''
+    label: str = ''            # the word under its progress segment
+    lines: tuple = ()
+    note: str = ''
+    note_kind: str = ''        # 'free' | 'warn' | ''
+    action: str = ''
+    shot: Shot | None = None
+
+
+@dataclass(frozen=True)
+class WalkStep:
+    role: str                  # account | topup | key | storage | paste | fill
+    label: str
+    title: str
+    lines: tuple = ()
+    note: str = ''
+    note_kind: str = ''
+    url: str = ''
+    action: str = ''
+    shot: Shot | None = None
+
+
+@dataclass(frozen=True)
 class ProviderGuide:
     key: str
     kind: str                # 'asr' or 'text'
@@ -68,6 +119,22 @@ class ProviderGuide:
     status_note: str = ''
     advanced_only: bool = False
     account_note: str = ''           # which account/key this entry needs and what it cannot share
+    # 2026-10-18 walkthrough: a short name and where it lives, honest facts in
+    # a few words (about how long, what it costs first), a tag for the
+    # provider menu, and per-step texts. ``free_trial``: no top-up step, the
+    # service gives free credit to try with first.
+    short_title: str = ''
+    site: str = ''
+    minutes: int = 0
+    money: str = ''
+    tag: str = ''
+    free_trial: bool = False
+    after_note: str = ''
+    walk: tuple = ()
+
+    @property
+    def name(self) -> str:
+        return self.short_title or self.title
 
     def guide_path(self, root=None) -> Path:
         from .runtime_paths import detect_install_root
@@ -138,6 +205,14 @@ def _oss_fields(region_example: str, *, international: bool = False) -> tuple:
         Field('oss_access_key_secret', 'AccessKey Secret', '与 AccessKey ID 同时生成，只显示一次。', '', secret=True,
               show_when=_OWN_OSS, hint='与 AccessKey ID 一起生成，只显示一次。'))
 
+# 百炼's API Key page (北京), shared by 录音文件识别 and 文字 AI; captured signed in, keys and the
+# workspace address blocked out (2026-10-18).
+BAILIAN_KEY_SHOT = Shot('bailian-api-keys.jpg', (0.840, 0.386, 0.130, 0.068),
+                        'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key', '2026-10-18')
+BAILIAN_ACCOUNT = StepText('account', lines=('用手机号注册阿里云账号，', '已有账号点“前往登录”。'),
+                           shot=Shot('bailian-1-register.jpg', (0.418, 0.311, 0.513, 0.411),
+                                     'https://account.aliyun.com/register/qr_register.htm', '2026-10-18'))
+
 ASR_GUIDES = (
     ProviderGuide(
         'qwen_cloud_filetrans', 'asr', 'Qwen Cloud（Qwen 官方 API）· 录音文件识别',
@@ -180,7 +255,17 @@ ASR_GUIDES = (
         needs_storage=True,
         account_note='需要 Qwen Cloud 账号（home.qwencloud.com，用阿里云国际账号登录）；正式使用另需同一国际账号下的 OSS。'
                      'Qwen Cloud 的 Key 与阿里云百炼（中国站）的 Key 不能互换；Qwen 官网 qwen.ai 的聊天登录也不能用来调用识别接口。',
-        status_note='代码与离线测试已完成；本机没有 Qwen Cloud 账号，真实服务尚未验证。'),
+        status_note='代码与离线测试已完成；本机没有 Qwen Cloud 账号，真实服务尚未验证。',
+        short_title='Qwen Cloud 录音文件识别', site='Qwen 官方 API', minutes=15, money='补全付款信息后有免费额度',
+        tag='另需国际站 OSS',
+        walk=(StepText('account', lines=('点右上角“Get Started”，', '用阿里云国际账号登录。'),
+                       shot=Shot('qwencloud-1-home.jpg', (0.855, 0.028, 0.124, 0.075), 'https://home.qwencloud.com/',
+                                 '2026-10-18')),
+              StepText('topup', title='补全付款信息', label='付款信息',
+                       lines=('在账单页补全付款信息，', '新账号每个模型有 90 天免费额度。'), action='打开账单页'),
+              StepText('key', lines=('打开 API Key 页面，', '点“Create API key”新建一把。'),
+                       note='不要用 sk-sp- 开头的 Token Plan Key', note_kind='warn'),
+              StepText('storage', lines=('在国际站 OSS 建一个私有 Bucket，', '再为它建一把 AccessKey。')))),
     ProviderGuide(
         'mosi_moss_pro', 'asr', 'MOSS-Transcribe-Diarize Pro 云端（MOSI 平台）',
         '云端多人转写：文字、句段时间与说话人，不需要显卡。只要一把 API Key，直接上传本地音频。'
@@ -202,7 +287,21 @@ ASR_GUIDES = (
                             speakers=True, timestamps='segment', hotwords=True),),
         uploads='识别时把本次任务的音频（16 kHz 单声道 WAV，只含音频）上传到 MOSI（api.mosi.cn）。',
         cost='MOSI 价格页：¥2.00 / 小时音频（40 积分 / 小时），按实际用量计费；失败任务是否计费官方未写明（2026-10-14 核对，以积分账单为准）。',
-        status_note='代码与离线测试已完成；尚未用真实密钥实测。'),
+        status_note='代码与离线测试已完成；尚未用真实密钥实测。',
+        # 2026-10-18 (user): MOSI gives free credit, so trying needs no top-up.
+        # Its home page offers 50 credits a day on login (valid that day);
+        # diarized transcription costs 40 credits an hour (pricing page).
+        short_title='MOSS 云端识别', site='MOSI 平台', minutes=5, money='每天送免费积分，可先试',
+        tag='只要一把 Key', free_trial=True, after_note='免费积分用完再充值：¥2 一小时音频。',
+        walk=(StepText('account', lines=('点「立即登录领取」，', '用 Mossland 账号登录。'),
+                       note='每天登录送 50 积分，约够 1 小时音频', note_kind='free', action='打开 MOSI 网站',
+                       shot=Shot('mosi-1-login.jpg', (0.572, 0.84, 0.39, 0.116), 'https://platform.mosi.cn/',
+                                 '2026-10-18')),
+              # Signed-in pages: captured in the user's own session, keys blocked out (2026-10-18).
+              StepText('key', lines=('登录后点「创建 API Key」，', '新建一把，马上复制下来。'),
+                       note='完整 Key 只显示这一次', note_kind='warn',
+                       shot=Shot('mosi-2-api-keys.jpg', (0.777, 0.079, 0.184, 0.071),
+                                 'https://platform.mosi.cn/app/api-keys/', '2026-10-18')))),
     ProviderGuide(
         'qwen31_filetrans', 'asr', '阿里云百炼 · 录音文件识别（Qwen3-ASR / Qwen-Audio-3.1）',
         '云端识别长录音：文字与字/词级时间（Qwen-Audio-3.1 另有说话人），不需要显卡。'
@@ -243,7 +342,11 @@ ASR_GUIDES = (
         needs_storage=True,
         account_note='需要阿里云账号与百炼服务；密钥、API Host 与模型按地域区分、不能混用，'
                      '也不能和 Qwen Cloud 的 Key 互换。',
-        status_note='Qwen-Audio-3.1 路线 2026-10-04 有真实识别记录；Qwen3-ASR 路线代码与离线测试已完成，尚未用真实密钥实测。'),
+        status_note='Qwen-Audio-3.1 路线 2026-10-04 有真实识别记录；Qwen3-ASR 路线代码与离线测试已完成，尚未用真实密钥实测。',
+        short_title='阿里云百炼 录音文件识别', site='阿里云', minutes=15, money='按音频时长计费', tag='另需阿里云 OSS',
+        walk=(BAILIAN_ACCOUNT,
+              StepText('key', lines=('在百炼创建 API Key，', '复制 Key 和弹窗里的 API Host。'),
+                       note='Key 与 API Host 要同一地域', note_kind='warn', shot=BAILIAN_KEY_SHOT))),
     ProviderGuide(
         'spark_asr_v2', 'asr', '讯飞 Spark-ASR 2.0',
         '讯飞大模型语音识别（中英）：每约 55 秒一段的文字，没有逐字时间与说话人；按实时速度发送，识别时间约等于音频时长。',
@@ -266,7 +369,20 @@ ASR_GUIDES = (
                 '不附文件名或词库。',
         cost='先在产品页领免费额度或购买套餐；价格与额度页面需登录查看，2026-10-14 未能读到具体数字（待核实）。',
         account_note='需要讯飞开放平台账号并完成个人实名认证，在“我的应用”建应用并开通语音听写大模型（中英）V2.0。',
-        status_note='已有接入；本轮未用真实密钥重新实测。'),
+        status_note='已有接入；本轮未用真实密钥重新实测。',
+        short_title='讯飞 Spark-ASR 2.0', site='讯飞开放平台', minutes=10, money='先领免费额度', tag='需实名认证',
+        walk=(StepText('account', lines=('注册讯飞开放平台账号，', '完成个人实名认证。'),
+                       shot=Shot('spark-1-quickguide.jpg', (0.033, 0.455, 0.885, 0.225),
+                                 'https://www.xfyun.cn/doc/platform/quickguide.html', '2026-10-18')),
+              StepText('topup', title='领免费额度', label='领额度', lines=('在产品页领免费额度，', '或购买套餐。'),
+                       action='打开产品页',
+                       shot=Shot('spark-2-product.jpg', (0.077, 0.44, 0.184, 0.118),
+                                 'https://www.xfyun.cn/services/spark_asr_zh_en_v2.0', '2026-10-18')),
+              StepText('key', title='创建应用，复制三项', label='创建应用',
+                       lines=('在“我的应用”里建一个应用，', '复制 AppID、APIKey、APISecret。'),
+                       note='三项要来自同一个应用', note_kind='warn',
+                       shot=Shot('spark-credentials.jpg', (0.0625, 0.236, 0.844, 0.308),
+                                 'https://console.xfyun.cn/services/iat_zh_cn_mandarin_spark_asr_v2', '2026-10-18')))),
     ProviderGuide(
         'groq', 'asr', 'Groq Whisper', 'OpenAI 兼容的 Whisper 云端转写：句段时间，没有逐字时间与说话人。', 'groq.zh-CN.md',
         links=(Link('Groq API Key 页面', 'https://console.groq.com/keys', needs_login=True),
@@ -282,7 +398,10 @@ ASR_GUIDES = (
         cost='whisper-large-v3-turbo $0.04/小时音频，每次请求最少按 10 秒计（兔白每段不超过 10 秒，所以约等于段数 × 10 秒）；'
              '有免费档（Groq 模型页，2026-10-14 核对）。',
         account_note='需要 Groq 账号；免费档不需付款方式。中国大陆网络能否直连，兔白未实测。',
-        status_note='已有接入；本轮未用真实密钥重新实测。'),
+        status_note='已有接入；本轮未用真实密钥重新实测。',
+        short_title='Groq Whisper', site='GroqCloud', minutes=5, money='有免费档', tag='有免费档',
+        walk=(StepText('account', lines=('用 Google、GitHub 或邮箱', '注册并登录 GroqCloud。'),
+                       shot=Shot('groq-1-login.jpg', (0.057, 0.087, 0.535, 0.824), 'https://console.groq.com/', '2026-10-18')),)),
     ProviderGuide(
         'openai', 'asr', 'OpenAI 转写',
         'OpenAI 的音频转写接口。默认 gpt-transcribe 只回文字（每段一个时间范围）；要句段时间请改用 whisper-1。',
@@ -300,7 +419,11 @@ ASR_GUIDES = (
         uploads='识别时把音频分段和提示文字（字幕场景、素材文件名、专名写法）上传到 OpenAI（api.openai.com）。',
         cost='预付额度；gpt-transcribe 约 $0.0045/分钟，whisper-1 $0.006/分钟（OpenAI 价格页，2026-10-14 核对）。',
         account_note='需要 OpenAI 开发者平台账号并加值；中国大陆、香港、澳门不在官方支持地区。',
-        status_note='已有接入；本轮未用真实密钥重新实测。'),
+        status_note='已有接入；本轮未用真实密钥重新实测。',
+        short_title='OpenAI 转写', site='OpenAI 开发者平台', minutes=5, money='需先加值', tag='不支持中国大陆',
+        walk=(StepText('account', lines=('点官方快速开始页的', '「Create an API Key」登录。'),
+                       shot=Shot('openai-1-quickstart.jpg', (0.028, 0.227, 0.34, 0.146),
+                                 'https://developers.openai.com/api/docs/quickstart', '2026-10-18')),)),
     ProviderGuide(
         # 2026-10-14: there is no "MAI 2.1" transcription model (mai-voice-2.1
         # is text-to-speech); the current MAI-Transcribe-2 id is still refused
@@ -324,7 +447,10 @@ ASR_GUIDES = (
         cost='按模型单价（美元）：mai-transcribe-1.5 $0.36/小时、whisper-large-v3-turbo 约 $0.012/小时；'
              '买额度另收 5.5% 平台费（2026-10-14 核对，以账单为准）。',
         account_note='需要 OpenRouter 账号并先充值（转写模型没有免费额度）；Key 可设额度上限。',
-        status_note='兔白未用真实密钥实测；不建议一般使用者选择。', advanced_only=True),
+        status_note='兔白未用真实密钥实测；不建议一般使用者选择。', advanced_only=True,
+        site='OpenRouter', minutes=5, money='需先充值',
+        walk=(StepText('account', shot=Shot('openrouter-1-home.jpg', (0.888, 0.011, 0.079, 0.06), 'https://openrouter.ai/',
+                                            '2026-10-18')),)),
     ProviderGuide(
         'azure', 'asr', 'Azure OpenAI 部署式转写（进阶）',
         '调用你在 Azure OpenAI 资源里部署的转写模型（例如 whisper）：句段时间、无说话人。'
@@ -350,7 +476,14 @@ ASR_GUIDES = (
         uploads='识别时把音频分段和提示文字（字幕场景、素材文件名、专名写法）上传到你的 Azure 资源。',
         cost='按部署的模型计费；2026-10-14 Azure OpenAI 价格页的转写单价显示为“$-”，未能确定，以 Azure 账单为准。',
         account_note='需要 Azure 订阅、一个 Azure OpenAI 资源和一个转写模型部署（建议 whisper）。',
-        status_note='兔白未用真实密钥实测；属于进阶设置。', advanced_only=True),
+        status_note='兔白未用真实密钥实测；属于进阶设置。', advanced_only=True,
+        site='Azure', minutes=20, money='按部署的模型计费',
+        walk=(StepText('account', shot=Shot('azure-1-account.jpg', (0.255, 0.547, 0.207, 0.109),
+                                            'https://azure.microsoft.com/en-us/pricing/purchase-options/azure-account', '2026-10-18')),
+              StepText('key', title='找到 Key 与 Endpoint', label='找 Key', lines=('官方快速入门写了', 'Key 与 Endpoint 在哪里。'),
+                       action='打开快速入门',
+                       shot=Shot('azure-2-whisper.jpg', (0.763, 0.433, 0.192, 0.044),
+                                 'https://learn.microsoft.com/en-us/azure/foundry/openai/whisper-quickstart', '2026-10-18')))),
     ProviderGuide(
         'custom', 'asr', '自定义 OpenAI 兼容转写', '你自己架设或其他服务商的 OpenAI 兼容 /audio/transcriptions 接口。',
         'custom-asr.zh-CN.md',
@@ -374,7 +507,17 @@ TEXT_GUIDES = (
                          Link('注册 / 登录', 'https://platform.deepseek.com/sign_in'),
                          Link('充值', 'https://platform.deepseek.com/top_up', needs_login=True),
                          Link('模型与价格', 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing'),
-                         Link('错误码', 'https://api-docs.deepseek.com/zh-cn/quick_start/error_codes'))),
+                         Link('错误码', 'https://api-docs.deepseek.com/zh-cn/quick_start/error_codes')),
+                  site='DeepSeek 开放平台', minutes=5, money='先充 10 元',
+                  walk=(StepText('account', lines=('用手机号收验证码登录，', '没注册过会自动注册。'),
+                                 shot=Shot('deepseek-1-signin.jpg', (0.076, 0.300, 0.479, 0.612),
+                                           'https://platform.deepseek.com/sign_in', '2026-10-18')),
+                        StepText('topup', title='先充值 10 元', lines=('10 元就够先用一阵，', '用多少扣多少。'),
+                                 shot=Shot('deepseek-2-topup.jpg', (0.038, 0.286, 0.072, 0.078),
+                                           'https://platform.deepseek.com/top_up', '2026-10-18')),
+                        StepText('key', note='完整 Key 只显示这一次', note_kind='warn',
+                                 shot=Shot('deepseek-3-api-keys.jpg', (0.806, 0.290, 0.132, 0.070),
+                                           'https://platform.deepseek.com/api_keys', '2026-10-18')))),
     ProviderGuide('bailian', 'text', '阿里云百炼（通义千问）', '文字 AI：AI 断句、字幕校对、翻译。可与语音识别共用同一地域的 API Key。',
                   'bailian-text.zh-CN.md', uploads='发送字幕文字到百炼。',
                   links=(Link('百炼 API Key 页面（北京）', 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key',
@@ -383,7 +526,10 @@ TEXT_GUIDES = (
                          Link('地域与接入域名', 'https://help.aliyun.com/zh/model-studio/regions'),
                          Link('OpenAI 兼容说明', 'https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope'),
                          Link('模型价格', 'https://help.aliyun.com/zh/model-studio/model-pricing'),
-                         Link('错误码', 'https://help.aliyun.com/zh/model-studio/error-code'))),
+                         Link('错误码', 'https://help.aliyun.com/zh/model-studio/error-code')),
+                  site='阿里云', minutes=5, money='按用量计费',
+                  walk=(BAILIAN_ACCOUNT,
+                        StepText('key', note='完整 Key 只显示这一次', note_kind='warn', shot=BAILIAN_KEY_SHOT))),
     ProviderGuide('openai', 'text', 'OpenAI', '文字 AI：AI 断句、字幕校对、翻译。', 'openai-text.zh-CN.md',
                   uploads='发送字幕文字到 OpenAI。',
                   links=(Link('OpenAI API Key 页面', 'https://platform.openai.com/settings/organization/api-keys',
@@ -392,7 +538,10 @@ TEXT_GUIDES = (
                          Link('账单', 'https://platform.openai.com/settings/organization/billing', needs_login=True),
                          Link('支持的国家和地区', 'https://developers.openai.com/api/docs/supported-countries'),
                          Link('价格', 'https://developers.openai.com/api/docs/pricing'),
-                         Link('错误码', 'https://developers.openai.com/api/docs/guides/error-codes'))),
+                         Link('错误码', 'https://developers.openai.com/api/docs/guides/error-codes')),
+                  site='OpenAI 开发者平台', minutes=5, money='需先加值',
+                  walk=(StepText('topup', title='先加值', label='加值', lines=('在账单页加值，', '用多少扣多少。'),
+                                 action='打开账单页'),)),
     # 2026-10-18: Claude through the Anthropic Messages API; links checked that day.
     ProviderGuide('claude', 'text', 'Anthropic Claude', '文字 AI：AI 断句、字幕校对、翻译、AI 特效字幕。', 'claude.zh-CN.md',
                   uploads='发送字幕文字到 Anthropic（api.anthropic.com）；AI 特效字幕可能附带画面截图。',
@@ -404,20 +553,32 @@ TEXT_GUIDES = (
                          Link('获取 API Key 说明', 'https://platform.claude.com/docs/en/get-api-key', checked='2026-10-18'),
                          Link('支持的国家和地区', 'https://www.anthropic.com/supported-countries', checked='2026-10-18'),
                          Link('价格', 'https://platform.claude.com/docs/en/about-claude/pricing', checked='2026-10-18'),
-                         Link('错误码', 'https://platform.claude.com/docs/en/api/errors', checked='2026-10-18'))),
+                         Link('错误码', 'https://platform.claude.com/docs/en/api/errors', checked='2026-10-18')),
+                  site='Claude Console', minutes=5, money='需先充值',
+                  walk=(StepText('account', lines=('用 Google 或电子邮箱', '注册并登录 Claude Console。'),
+                                 shot=Shot('claude-1-login.jpg', (0.233, 0.364, 0.534, 0.406),
+                                           'https://platform.claude.com/', '2026-10-18')),)),
     ProviderGuide('gemini', 'text', 'Google Gemini', '文字 AI：AI 断句、字幕校对、翻译（OpenAI 兼容接口）。', 'gemini.zh-CN.md',
                   uploads='发送字幕文字到 Google。',
                   links=(Link('Google AI Studio API Key 页面', 'https://aistudio.google.com/apikey', needs_login=True),
                          Link('API Key 说明', 'https://ai.google.dev/gemini-api/docs/api-key'),
                          Link('可用地区', 'https://ai.google.dev/gemini-api/docs/available-regions'),
                          Link('价格', 'https://ai.google.dev/gemini-api/docs/pricing'),
-                         Link('错误码', 'https://ai.google.dev/gemini-api/docs/api-errors'))),
+                         Link('错误码', 'https://ai.google.dev/gemini-api/docs/api-errors')),
+                  site='Google AI Studio', minutes=5, money='按用量计费',
+                  walk=(StepText('account', lines=('用 Google 账号登录，', '没有就点“创建账号”。'),
+                                 shot=Shot('gemini-1-google.jpg', (0.704, 0.66, 0.228, 0.083),
+                                           'https://aistudio.google.com/apikey', '2026-10-18')),)),
     ProviderGuide('xai', 'text', 'xAI Grok API', '文字 AI：AI 断句、字幕校对、翻译。', 'xai.zh-CN.md', uploads='发送字幕文字到 xAI。',
                   links=(Link('xAI API Keys 页面', 'https://console.x.ai/team/default/api-keys', needs_login=True),
                          Link('xAI 控制台（注册 / 登录）', 'https://console.x.ai/'),
                          Link('入门', 'https://docs.x.ai/docs/tutorial'),
                          Link('模型与价格', 'https://docs.x.ai/docs/models'),
-                         Link('错误码', 'https://docs.x.ai/docs/key-information/debugging'))),
+                         Link('错误码', 'https://docs.x.ai/docs/key-information/debugging')),
+                  site='xAI 控制台', minutes=5, money='按用量计费',
+                  walk=(StepText('account', lines=('点“Create an account”注册，', '已有账号点“Sign in”。'),
+                                 shot=Shot('xai-1-console.jpg', (0.039, 0.446, 0.472, 0.107), 'https://console.x.ai/',
+                                           '2026-10-18')),)),
     ProviderGuide('custom', 'text', '自定义 OpenAI 兼容服务', '你自己架设或其他服务商的 OpenAI 兼容聊天接口。', 'custom-text.zh-CN.md',
                   uploads='发送字幕文字到你填写的地址。', advanced_only=True),
     ProviderGuide('cli_accounts', 'text', '账号登录类（Grok / Codex / Antigravity CLI）',
@@ -441,6 +602,82 @@ def guide_for(key: str, kind: str = 'asr') -> ProviderGuide | None:
     if kind == 'text' and key in {'grok_account', 'codex_cli', 'antigravity'}:
         key = 'cli_accounts'
     return next((g for g in ALL_GUIDES if g.key == key and g.kind == kind), None)
+
+
+# Default step texts of the walkthrough; a guide's ``walk`` overrides them.
+TOPUP_WORDS = ('充值', '账单', 'Credits', '积分', '领免费额度')
+_STEP_DEFAULTS = {
+    'account': StepText('account', title='注册并登录', label='注册登录', lines=('打开官网，', '注册一个账号并登录。'),
+                        action='打开官网'),
+    'topup': StepText('topup', title='先充值', label='充值', lines=('登录后先充值一点，', '用多少扣多少。'),
+                      action='打开充值页'),
+    'key': StepText('key', title='创建 API Key', label='创建 Key', lines=('在 API Key 页面新建一把，', '马上复制下来。'),
+                    action='打开 API Key 页面'),
+    'storage': StepText('storage', title='建私有 OSS 与 AccessKey', label='建 OSS',
+                        lines=('建一个私有 Bucket，', '再为它建一把 AccessKey。'),
+                        note='只授权这个 Bucket，不要用主账号', note_kind='warn', action='打开 OSS 控制台'),
+}
+FILL_TITLE = '贴到“AI 智能断句设置”并测试'
+FILL_LINES = ('到“AI 智能断句设置”里', '贴上密钥，按“测试连接”。')
+FILL_NOTE = '文字 AI 只发送字幕文字'
+FILL_ACTION = '去填写这家服务的密钥'
+
+
+def paste_title(guide: ProviderGuide) -> str:
+    if guide.key == 'spark_asr_v2':
+        return '把三项贴到这里'
+    if guide.needs_storage:
+        return '贴上 Key 和存储信息'
+    if guide.key in {'custom', 'azure'}:
+        return '填写接口信息'
+    return '把 Key 贴到这里'
+
+
+def walkthrough(guide: ProviderGuide | None, *, can_fill: bool = False) -> list[WalkStep]:
+    """The steps a first-time user follows, in order (2026-10-18 redesign).
+
+    注册登录 › (先充值, unless the service gives free credit to try) › 创建 Key
+    › (录音文件识别: 私有 OSS) › 贴上检查 (语音识别) or 去填写 (文字 AI, whose
+    key is entered in “AI 智能断句设置”). Each web step opens the official page
+    from ``links``. Services without official links (自定义、账号登录类) have
+    no walkthrough: the dialog shows their form or notes directly.
+    """
+    if guide is None or not guide.links or guide.key in {'custom', 'cli_accounts'}:
+        return []
+    links = list(guide.links)
+    if guide.kind == 'asr':
+        key_link = next((item for item in links if 'key' in item.label.lower() or 'AppID' in item.label), links[0])
+        signup = next((item for item in links if '注册' in item.label),
+                      next((item for item in links if not item.needs_login and item is not key_link), key_link))
+    else:
+        key_link = next((item for item in links if 'key' in item.label.lower()), links[0])
+        signup = next((item for item in links if '注册' in item.label), key_link)
+    plan = [('account', signup.url)]
+    topup = None if guide.free_trial else next(
+        (item for item in links if any(word in item.label for word in TOPUP_WORDS)), None)
+    if topup is not None:
+        plan.append(('topup', topup.url))
+    plan.append(('key', key_link.url))
+    if guide.kind == 'asr' and guide.needs_storage:
+        oss = next((item for item in links if 'OSS 控制台' in item.label), None)
+        if oss is not None:
+            plan.append(('storage', oss.url))
+    overrides = {text.role: text for text in guide.walk}
+    steps = []
+    for role, url in plan:
+        base, own = _STEP_DEFAULTS[role], overrides.get(role)
+        if own is None:
+            steps.append(WalkStep(role, base.label, base.title, base.lines, base.note, base.note_kind, url, base.action))
+            continue
+        note, kind = (own.note, own.note_kind) if own.note else (base.note, base.note_kind)
+        steps.append(WalkStep(role, own.label or base.label, own.title or base.title, own.lines or base.lines,
+                              note, kind, url, own.action or base.action, own.shot))
+    if guide.kind == 'asr':
+        steps.append(WalkStep('paste', '贴上检查', paste_title(guide)))
+    else:
+        steps.append(WalkStep('fill', '去填写', FILL_TITLE, FILL_LINES, FILL_NOTE, '',
+                              action=FILL_ACTION if can_fill else ''))
+    return steps
 
 
 def model_choice(guide: ProviderGuide, model: str) -> ModelChoice | None:

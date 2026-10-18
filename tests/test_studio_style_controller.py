@@ -288,13 +288,19 @@ def test_gradient_and_motion_each_keep_one_undo_step(tmp_path, monkeypatch):
     page.motion_preset.setCurrentIndex(index)
     page.motion_preset.blockSignals(False)
     page._motion_preset_changed(index)
+    # 0.8.0 motion page: a preset is a draft until 应用到 N 条字幕.
+    assert page.undo_stack.count() == 0
+    assert page.motion_scope.currentData() == "current"
+    page.motion_apply.click()
     assert page.undo_stack.count() == 1
-    assert page.session._cue_lookup["a"].effect_id == "soft_pop"
-    assert page.project.effects["soft_pop"]["entry"]["duration"] == page.effect_duration.value()
+    applied = page.session._cue_lookup["a"].effect_id
+    assert page.project.effects[applied]["entry"]["type"] == "soft_pop"
+    assert page.project.effects[applied]["entry"]["duration"] == page.effect_duration.value()
+    assert page.session._cue_lookup["b"].effect_id == "none"
     page.undo_stack.undo()
     assert page.session._cue_lookup["a"].effect_id == "none"
     page.undo_stack.redo()
-    assert page.session._cue_lookup["a"].effect_id == "soft_pop"
+    assert page.session._cue_lookup["a"].effect_id == applied
     _finish(page)
 
 

@@ -1761,9 +1761,7 @@ class EndpointEditor(QFrame):
             self.base_url.blockSignals(True)
             self.base_url.setText(values["base_url"])
             self.base_url.blockSignals(False)
-            self.model.blockSignals(True)
-            self.model.setCurrentText(values["model"])
-            self.model.blockSignals(False)
+            self._load_service_models(service_id, values["model"])
             protocol_index = self.protocol.findData(values["protocol"] or "auto")
             if protocol_index >= 0:
                 self.protocol.blockSignals(True)
@@ -1796,6 +1794,24 @@ class EndpointEditor(QFrame):
             self.status.setObjectName("statusWarn")
             bind_text(self.status, '请先检测 CLI 与登录状态')
         self._refresh_endpoint_hint()
+
+    def _load_service_models(self, service_id: str, model: str) -> None:
+        """模型下拉换成该服务自己的目录（不联网）；选项里绝不留上一家的模型。"""
+        items = [item for item in service_model_catalog(self._settings_ref, service_id)
+                 if not model_is_retired(item)]
+        if model_is_retired(model):
+            model = items[0] if items else ""  # 已下线：回落默认，提示由 model_warning 给出
+        if model and model not in items:
+            items.insert(0, model)  # 保存过的自定义模型仍可选
+        previous = self.model.blockSignals(True)
+        self.model.clear()
+        self.model.addItems(items)
+        if model:
+            self.model.setCurrentText(model)
+        else:
+            self.model.setCurrentIndex(-1)
+            self.model.setEditText("")
+        self.model.blockSignals(previous)
 
     def _transport_changed(self) -> None:
         self._service_changed()
@@ -1950,7 +1966,7 @@ class EndpointEditor(QFrame):
                 raise ValueError("方案中的 AI 服务不可用")
             self.service.setCurrentIndex(index)
             self._service_changed(initial=True)
-            self.model.setCurrentText(values["model"])
+            self._load_service_models(values["service"], values["model"])
             self.base_url.setText(values["base_url"])
             self.protocol.setCurrentIndex(max(0, self.protocol.findData(values.get("protocol") or "auto")))
             bind_text(self.custom_name, values.get('provider_name') or '自定义服务')
@@ -11354,7 +11370,9 @@ class MainWindow(QWidget):
             self._ai_has_draft = drafts != saved_values or draft_switches != saved_switches
             if self._ai_has_draft:
                 summary += ' · ' + translate('未保存草稿', language) + '：' + pair(drafts, draft_switches)
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, RuntimeError):
+            # validate_endpoint raises RuntimeError (missing or retired model, bad URL); before
+            # 2026-10-18 that escaped here and a saved retired model stopped the app at startup.
             self._ai_has_draft = True
             summary += ' · ' + translate('未保存草稿', language) + '：' + translate('配置未通过保存校验', language)
         summary += ' · ' + translate('真实连接需单独测试', language)

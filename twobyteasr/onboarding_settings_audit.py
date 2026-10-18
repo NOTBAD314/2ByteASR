@@ -394,6 +394,7 @@ def start(window, output: Path):
         def qwen(dialog):
             from PySide6.QtWidgets import QLineEdit, QPushButton
             dialog.resize(1100, 860)
+            dialog._go(len(dialog._walk) - 1)   # 2026-10-18 walkthrough: the fields are on its last step
             QApplication.processEvents()
             links = [b.toolTip().split('\n')[0] for b in dialog.findChildren(QPushButton, 'helpLink')]
             fields = [e.objectName() for e in dialog.findChildren(QLineEdit) if e.objectName().startswith('apiSetupField_')

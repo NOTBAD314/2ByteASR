@@ -92,18 +92,15 @@ def qapp():
 
 
 def test_dialog_builds_every_provider_page(qapp):
-    from PySide6.QtCore import Qt
     from twobyteasr.api_setup_dialog import ApiSetupDialog
     dialog = ApiSetupDialog(None, Host().make(), kind='asr', initial='mosi_moss_pro', show_advanced=True)
-    seen = []
-    for row in range(dialog.provider_list.count()):
-        data = dialog.provider_list.item(row).data(Qt.ItemDataRole.UserRole)
-        if not data:
-            continue
-        dialog.provider_list.setCurrentRow(row)
-        assert dialog._guide is not None and dialog._guide.key == data[1]
-        seen.append(tuple(data))
+    seen = dialog.provider_choices()
+    for kind, key in seen:
+        dialog.choose(kind, key)
+        assert dialog._guide is not None and (dialog._guide.kind, dialog._guide.key) == (kind, key)
+        assert dialog.stack.count() >= 2  # its steps (or form / notes) plus 看完整教程
     assert ('asr', 'mosi_moss_pro') in seen and ('text', 'deepseek') in seen
+    assert ('asr', 'custom') in seen and ('text', 'cli_accounts') in seen  # 进阶 entries shown on request
     dialog.deleteLater()
 
 
@@ -123,7 +120,8 @@ def test_header_close_has_room_for_its_glyph_and_is_not_the_first_focus(qapp):
     glyph = close.fontMetrics().tightBoundingRect('×')
     assert (close.width(), close.height()) == (32, 32)
     assert room.width() >= glyph.width() > 0 and room.height() >= glyph.height() > 0
-    assert dialog.focusWidget() is dialog.provider_list
+    # 2026-10-18: it opens on step 1, focus on the button that opens the official page.
+    assert dialog.focusWidget() is not close and dialog.focusWidget().objectName() == 'apiSetupOpen_0'
     dialog.close()
     dialog.deleteLater()
 
@@ -321,3 +319,129 @@ def test_cloud_followups_only_change_what_cannot_run():
     assert cloud_followups({'firered_asr_backend': 'local', 'qwen_asr_backend': 'off'}, {'firered_aed'}, gpu)[0] == {}
     mac = HostProfile('darwin', 'arm64', nvidia_tool=False, main_runtime=False, mlx_runtime=False)
     assert cloud_followups({'firered_asr_backend': 'local'}, {'firered_aed'}, mac)[0] == {'firered_asr_backend': 'off'}
+
+
+# ---------------------------------------------------------------- 2026-10-18 walkthrough
+
+def test_walkthrough_steps_follow_the_official_pages():
+    from twobyteasr import api_setup_catalog as catalog
+    roles = {(g.kind, g.key): [s.role for s in catalog.walkthrough(g)] for g in catalog.ALL_GUIDES}
+    # User (2026-10-18): MOSI gives free credit, so trying it needs no top-up step.
+    assert roles[('asr', 'mosi_moss_pro')] == ['account', 'key', 'paste']
+    assert roles[('asr', 'qwen31_filetrans')] == ['account', 'key', 'storage', 'paste']
+    assert roles[('asr', 'qwen_cloud_filetrans')] == ['account', 'topup', 'key', 'storage', 'paste']
+    assert roles[('text', 'deepseek')] == ['account', 'topup', 'key', 'fill']
+    assert roles[('asr', 'custom')] == [] and roles[('text', 'cli_accounts')] == []
+    for guide in catalog.ALL_GUIDES:
+        links = {link.url for link in guide.links}
+        for step in catalog.walkthrough(guide):
+            assert not step.url or step.url in links  # every button opens a catalogued official page
+            # Lines are broken by hand: short phrases (about 16 Chinese characters), never one long sentence.
+            widths = [sum(2 if ord(ch) > 0x2E7F else 1 for ch in line) for line in step.lines]
+            assert all(width <= 32 for width in widths), (guide.key, step.lines)
+            assert step.label and step.title
+        if catalog.walkthrough(guide) and guide.kind == 'asr' and not guide.advanced_only:
+            assert guide.minutes and guide.money and guide.tag, guide.key   # the honest line on top
+
+
+def test_mosi_walkthrough_says_free_credit_and_rings_real_screenshots():
+    from twobyteasr import api_setup_catalog as catalog
+    guide = catalog.guide_for('mosi_moss_pro', 'asr')
+    account, key, paste = catalog.walkthrough(guide)
+    assert '50 积分' in account.note and account.note_kind == 'free'
+    assert '免费' in guide.money and '¥2' in guide.after_note   # top up later, said plainly
+    for step in (account, key):
+        assert step.shot is not None
+    assert paste.title == '把 Key 贴到这里'
+
+
+def test_every_screenshot_shows_the_page_its_button_opens():
+    """2026-10-18: official-site pictures; signed-in ones were taken in the user's session, keys blocked out."""
+    from PIL import Image
+    from twobyteasr import api_setup_catalog as catalog
+    shots = 0
+    for guide in catalog.ALL_GUIDES:
+        for step in catalog.walkthrough(guide):
+            shot = step.shot
+            if shot is None:
+                continue
+            shots += 1
+            assert shot.source == step.url, (guide.key, step.role)   # the picture is the page the button opens
+            assert shot.path(ROOT).is_file() and shot.captured, shot.file
+            width, height = Image.open(shot.path(ROOT)).size
+            assert abs(width / height - 1.6) < 0.01 and width >= 470, shot.file   # 16:10, as ShotView draws it
+            x, y, w, h = shot.ring
+            assert 0 <= x and 0 <= y and x + w <= 1 and y + h <= 1, shot.file
+    assert shots >= 10
+    used = {step.shot.file for guide in catalog.ALL_GUIDES for step in catalog.walkthrough(guide) if step.shot}
+    assert {path.name for path in (ROOT / 'assets' / 'api-setup').iterdir()} == used   # no stale pictures
+
+
+def test_saved_key_opens_on_paste_and_ticks_the_web_steps(qapp):
+    from dataclasses import replace
+    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    host = replace(Host().make(), saved_key=lambda provider, url: 'sk-saved-abcd')
+    dialog = ApiSetupDialog(None, host, kind='asr', initial='mosi_moss_pro')
+    assert dialog._page_kind == 'paste' and dialog._done[:2] == [True, True] and dialog._done[2] is False
+    assert '···abcd' in dialog._fields['api_key'].placeholderText()
+    dialog.deleteLater()
+
+
+def test_steps_advance_and_a_passing_check_leads_to_saving(qapp):
+    from twobyteasr import cloud_api_test as tests
+    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    host = Host()
+    dialog = ApiSetupDialog(None, host.make(), kind='asr', initial='mosi_moss_pro')
+    assert dialog._page_kind == 'step' and dialog._index == 0
+    assert not dialog.save_button.isVisibleTo(dialog) and dialog.skip_button.isVisibleTo(dialog)
+    dialog._finish_step(0)
+    assert dialog._index == 1 and dialog._done[0]
+    dialog.skip_button.click()
+    assert dialog._page_kind == 'paste' and dialog.save_primary_button.property('buttonRole') == 'secondary'
+    # Model and the prefilled address fold into “更多设置”; the key does not.
+    assert dialog._more_box.isAncestorOf(dialog._fields['model'])
+    assert dialog._more_box.isAncestorOf(dialog._fields['url'])
+    assert not dialog._more_box.isAncestorOf(dialog._fields['api_key'])
+    failed = tests.Report().add('format', tests.PASS, '').add('connection', tests.FAIL, '连不上').add('key', tests.SKIP, '')
+    dialog._show_report(failed)
+    assert dialog._page_kind == 'paste' and dialog._results_box.isVisibleTo(dialog)
+    passed = tests.Report().add('format', tests.PASS, '').add('connection', tests.PASS, '').add('key', tests.PASS, '')
+    dialog._fields['api_key'].setText('sk-mosi')
+    dialog._show_report(passed)
+    assert dialog._page_kind == 'done' and all(dialog._done)
+    assert dialog.save_primary_button.property('buttonRole') == 'primary'
+    dialog._back()
+    assert dialog._page_kind == 'paste'   # 返回修改
+    dialog._save(True)
+    assert host.saved[-1][0] == 'mosi_moss_pro' and host.saved[-1][2] is True
+    dialog.deleteLater()
+
+
+def test_text_ai_last_step_opens_the_ai_settings(qapp):
+    from dataclasses import replace
+    from PySide6.QtWidgets import QPushButton
+    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    opened = []
+    host = replace(Host().make(), open_text_settings=opened.append)
+    dialog = ApiSetupDialog(None, host, kind='text', initial='deepseek')
+    topup = dialog._walk[1]
+    assert topup.role == 'topup' and '10 元' in topup.title and topup.url.endswith('/top_up')
+    dialog._go(len(dialog._walk) - 1)
+    assert dialog._page_kind == 'fill'
+    dialog.stack.currentWidget().findChild(QPushButton, 'apiSetupFill').click()
+    assert opened == ['deepseek']
+    dialog.deleteLater()
+
+
+def test_provider_menu_lists_services_with_a_few_honest_words(qapp):
+    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    dialog = ApiSetupDialog(None, Host().make(), kind='asr', initial='mosi_moss_pro')
+    dialog._fill_provider_menu()
+    texts = [action.text() for action in dialog.provider_menu.actions()]
+    assert any(text.startswith('MOSS 云端识别\t只要一把 Key') for text in texts)
+    assert '更多：自架接口、待验证服务' in texts and ('asr', 'custom') not in dialog.provider_choices()
+    current = next(a for a in dialog.provider_menu.actions() if a.data() == ('asr', 'mosi_moss_pro'))
+    assert current.isChecked()
+    next(a for a in dialog.provider_menu.actions() if a.data() == ('text', 'gemini')).trigger()
+    assert dialog._guide.key == 'gemini' and dialog._page_kind == 'step'
+    dialog.deleteLater()

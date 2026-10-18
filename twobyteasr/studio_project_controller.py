@@ -676,7 +676,7 @@ class StudioProjectController:
             if isinstance(center_sizes, list) and len(center_sizes) == 2:
                 page.center_splitter.setSizes([max(0, int(value)) for value in center_sizes])
             from .studio_context_tabs import restored_context_tab
-            page._last_context_tab = restored_context_tab(layout_state)
+            page._last_context_tab = restored_context_tab(layout_state, saved_at=project.updated_at)
             page.context_drawer.setCurrentIndex(page._last_context_tab)
             # 2026-10-18 (user): the cue list and the tool panel open with every
             # project, so nobody misses that they exist. The saved

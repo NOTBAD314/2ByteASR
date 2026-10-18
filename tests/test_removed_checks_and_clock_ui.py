@@ -6,11 +6,12 @@ from twobyteasr.studio_context_tabs import restored_context_tab
 from tests.test_studio_cue_controller import _page, _finish
 
 
-@pytest.mark.parametrize('old,expected', [(0,0),(1,1),(2,1),(3,2),(4,3),(5,4),(99,1),('bad',1)])
+# Old numbering: AI, checks, style, video, highlight, media. Today: AI, style, motion, video, highlight, media.
+@pytest.mark.parametrize('old,expected', [(0,0),(1,1),(2,1),(3,3),(4,4),(5,5),(99,1),('bad',1)])
 def test_old_context_index_migrates(old,expected):
     assert restored_context_tab({'context_tab':old})==expected
     assert restored_context_tab({'context_tab_id':'checks','context_tab':3})==1
-    assert restored_context_tab({'context_tab_id':'media','context_tab':1})==4
+    assert restored_context_tab({'context_tab_id':'media','context_tab':1})==5
 
 
 def test_real_escape_clears_all_selection_domains_and_next_target_restores(tmp_path,monkeypatch):
@@ -32,7 +33,7 @@ def test_real_escape_clears_all_selection_domains_and_next_target_restores(tmp_p
 
 def test_checks_widgets_removed_shared_review_and_undo_remain(tmp_path,monkeypatch):
     page=_page(tmp_path,monkeypatch);before=page.project.to_dict()['cues']
-    assert [page.context_drawer.tabToolTip(i) for i in range(page.context_drawer.count())]==['AI设计','样式','视频','剪辑助手','素材']
+    assert [page.context_drawer.tabToolTip(i) for i in range(page.context_drawer.count())]==['AI设计','样式','动效','视频','剪辑助手','素材']
     assert not hasattr(page,'safe_fix_button') and not hasattr(page,'_refresh_checks')
     assert not any('安全修复' in w.text() for w in page.findChildren(QPushButton))
     assert not any(w.text()=='检查' for w in page.findChildren(QLabel))

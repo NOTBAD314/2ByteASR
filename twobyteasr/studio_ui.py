@@ -15,7 +15,7 @@ from time import perf_counter
 from pathlib import Path
 
 
-from .themed_icons import install_themed_icon
+from .themed_icons import install_themed_icon, show_themed_tab_icons
 from PySide6.QtCore import (
     QEvent,
     QModelIndex,
@@ -28,6 +28,8 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QCursor,
+    QFont,
+    QFontMetrics,
     QImage,
     QKeySequence,
     QKeyEvent,
@@ -118,6 +120,7 @@ from .studio_theme import (
 )
 from .ui_theme import theme_definition
 from .studio_widgets import ScrubDoubleSpinBox, ScrubSpinBox
+from .studio_context_tabs import context_tab_layout
 from .studio_review import cached_qc_result
 from .studio_qc import (
     QCSeverity,
@@ -1688,37 +1691,84 @@ class SubtitleStudioPage(
         if callable(responsive):
             responsive()
 
+    # Richest first: full names, short names with icons, short names alone
+    # (icons would push 素材 out), icons alone; tooltips keep the full names.
+    _CONTEXT_TAB_FULL = ("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")
+    _CONTEXT_TAB_SHORT = ("AI", "样式", "动效", "视频", "剪辑", "素材")
+    _CONTEXT_TAB_MODES = (
+        ("full", _CONTEXT_TAB_FULL),
+        ("medium", _CONTEXT_TAB_SHORT),
+        ("text", _CONTEXT_TAB_SHORT),
+        ("icon", ("",) * len(_CONTEXT_TAB_FULL)),
+    )
+
     def _update_context_tab_labels(self) -> None:
         drawer = getattr(self, "context_drawer", None)
-        if drawer is None:
+        if drawer is None or getattr(self, "_context_tab_measuring", False):
             return
         tabbar = drawer.tabBar()
         tabbar.setElideMode(Qt.TextElideMode.ElideNone)
         tabbar.setUsesScrollButtons(False)
         # Expanding stays on: tabs share the drawer width (centered group).
-        full = ("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")
-        medium = ("AI", "样式", "动效", "视频", "剪辑", "素材")
-        width = max(1, drawer.width())
-        # Compact glyphs leave room for readable labels in the default drawer.
-        if width >= 530:
-            labels, mode, icon_only = full, "full", False
-        elif width >= 350:
-            labels, mode, icon_only = medium, "medium", False
-        else:
-            labels, mode, icon_only = ("", "样式", "动效", "", "", ""), "icon", True
+        # 2026-10-18: fixed 530 / 350 px tiers clipped 素材 — six short tabs
+        # need ~397 px in Chinese (more in English / Japanese) while the panel
+        # can be 360 px. Each label set is measured on the tab bar itself
+        # (padding, icons, font, language) and used only where it fits.
+        available = drawer.width() - 2
+        for mode, labels in self._CONTEXT_TAB_MODES:
+            if mode == "icon" or self._context_tab_row_width(mode, labels) <= available:
+                break
         if getattr(self, "_context_tab_mode", "") == mode:
             return
+        self._apply_context_tab_mode(mode, labels)
+
+    def _apply_context_tab_mode(self, mode: str, labels) -> None:
+        drawer = self.context_drawer
+        tabbar = drawer.tabBar()
         self._context_tab_mode = mode
         drawer.setProperty("tabMode", mode)
         drawer.style().unpolish(drawer)
         drawer.style().polish(drawer)
         tabbar.style().unpolish(tabbar)
         tabbar.style().polish(tabbar)
+        show_themed_tab_icons(drawer, mode != "text")
         for index, label in enumerate(labels):
             if index >= drawer.count():
                 break
             drawer.setTabText(index, tr(label))
-            drawer.setTabToolTip(index, tr(full[index]))
+            drawer.setTabToolTip(index, tr(self._CONTEXT_TAB_FULL[index]))
+
+    def _context_tab_row_width(self, mode: str, labels) -> int:
+        """Natural width of the tab row in one label mode (cached per language, font, theme and screen)."""
+        tabbar = self.context_drawer.tabBar()
+        texts = tuple(tr(label) for label in labels)
+        key = (mode, texts, tabbar.font().key(), tabbar.devicePixelRatioF(), hash(self.styleSheet()))
+        cache = getattr(self, "_context_tab_widths", None)
+        if cache is None:
+            cache = self._context_tab_widths = {}
+        if key not in cache:
+            self._context_tab_measuring = True
+            try:
+                self._apply_context_tab_mode(mode, labels)
+                # The selected tab is drawn bold; leave room for any of them.
+                bold_font = QFont(tabbar.font())
+                bold_font.setBold(True)
+                regular, bold = QFontMetrics(tabbar.font()), QFontMetrics(bold_font)
+                slack = max((bold.horizontalAdvance(t) - regular.horizontalAdvance(t) for t in texts), default=0)
+                hints = [tabbar.tabSizeHint(i).width() for i in range(tabbar.count())]
+                # The tab QSS caps width (max-width); a label at the cap is cut
+                # inside its tab ("Clip Assistant"), so that set does not fit.
+                shown = tabbar.tabText(0)
+                tabbar.setTabText(0, "W" * 64)
+                cap = tabbar.tabSizeHint(0).width()
+                tabbar.setTabText(0, shown)
+                clipped = mode != "icon" and any(hint >= cap for hint in hints)
+                cache[key] = (1 << 20) if clipped else sum(hints) + slack
+            finally:
+                self._context_tab_measuring = False
+                # The bar now shows the measured set; the chosen one is reapplied.
+                self._context_tab_mode = ""
+        return cache[key]
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -2413,10 +2463,9 @@ class SubtitleStudioPage(
                     "workspace_sizes": self.workspace_splitter.sizes(),
                     "center_sizes": self.center_splitter.sizes(),
                     "context_collapsed": not self.context_panel.isVisible(),
-                    # Keep the legacy numeric meaning for older readers; new
-                    # readers restore by stable identity after tab removal.
-                    "context_tab": self._last_context_tab + (1 if self._last_context_tab else 0),
-                    "context_tab_id": ("ai", "style", "video", "highlight", "media")[self._last_context_tab],
+                    # Restored by stable page id; the legacy number stays for
+                    # older readers (studio_context_tabs).
+                    **context_tab_layout(self._last_context_tab),
                     "cue_list_visible": self.cue_list_panel.isVisible(),
                     "editor_visible": self.cue_editor.isVisible(),
                     "context_visible": self.context_panel.isVisible(),

@@ -321,6 +321,40 @@ def test_p74d_motion_inspector_shows_graph_motion_not_none(tmp_path, monkeypatch
     page.deleteLater()
 
 
+def test_p74d_applied_graph_motion_plays_until_the_motion_page_overrides_it(tmp_path, monkeypatch):
+    # 0.8.0: the compat pop stored beside an AI graph recipe replaced the
+    # authored tracks in preview and export (snapshot) and in the 动效 page.
+    _app()
+    from twobyteasr.motion_application import motion_command
+    from twobyteasr.studio_project import save_project
+    from twobyteasr.studio_ui import SubtitleStudioPage
+
+    project, _graph, recipe = _project_with_graph(tmp_path)
+    path = save_project(project, tmp_path / "demo.2byteproj")
+    page = SubtitleStudioPage()
+    monkeypatch.setattr(page.video, "load", lambda *_a, **_k: None)
+    monkeypatch.setattr(page, "_generate_waveform", lambda *_a, **_k: None)
+    monkeypatch.setattr(page, "_generate_project_waveforms", lambda *_a, **_k: None)
+    page.open_project(path)
+    page.selected_cue_id = "cue-1"
+    assert page._apply_style_recipe("cue-1", recipe)
+    cue = page.project.cues[0]
+    assert page.project.effects[cue.effect_id]["entry"]["type"] == "pop"
+    authored = page.project.style_recipes[cue.style_id]["visualGraph"]["motionGraph"]["tracks"]
+    snapshot = build_visual_cue_snapshot(page.project, "cue-1", width=640, height=360)
+    assert snapshot.motion_recipe["graph"]["tracks"] == authored
+
+    command = motion_command(page.project, ["cue-1"], motion={"entry": {"type": "fade", "duration": 240}, "exit": {"type": "none"}})
+    page.undo_stack.push(command)
+    page._load_style_inspector()
+    assert page.effect_preset.currentData() == "fade"
+    assert page.graph_motion_summary.isHidden()
+    snapshot = build_visual_cue_snapshot(page.project, "cue-1", width=640, height=360)
+    assert [track["property"] for track in snapshot.motion_recipe["graph"]["tracks"]] == ["opacity"]
+    page.close_page()
+    page.deleteLater()
+
+
 def test_p74d_short_timeline_does_not_stack_v2_on_v1(tmp_path, monkeypatch):
     _app()
     from twobyteasr.studio_project import save_project

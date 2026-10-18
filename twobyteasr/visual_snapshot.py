@@ -377,15 +377,14 @@ def build_visual_cue_snapshot(
     glow = normalize_glow_contract(effects.get("glow", {}))
     from .style_recipe import MOTION_SOURCE_NONE, motion_source
     from .effect_dsl import validate_effect
-    from .motion_application import native_motion_graph
-    from .word_animation import WORD_MODES, build_word_animation
+    from .motion_application import authored_motion_tracks, native_motion_graph, overrides_style_motion
+    from .word_animation import build_word_animation
     effect = validate_effect(project.effects.get(cue.effect_id, {}))
     word_animation = build_word_animation(project, cue, caption.text, effect=effect)
     # Cue effects are the inspector's explicit motion choice. The raster
     # preview previously consumed only recipes, silently dropping this choice.
-    override_motion = effect.get('motion_override') or (
-        effect['entry']['type'] not in WORD_MODES | {'none', 'emphasis'}
-        or effect['exit']['type'] != 'none' or effect.get('loop', {}).get('type', 'none') != 'none')
+    # An AI graph recipe's compat entrance is not a choice (overrides_style_motion).
+    override_motion = overrides_style_motion(effect, authored_motion_tracks(recipe.visual_graph))
     if override_motion and not recipe.web_theme:
         from .visual_design_graph import graph_from_style_recipe
         graph = copy.deepcopy(recipe.visual_graph) if recipe.visual_graph else graph_from_style_recipe(recipe).to_dict()

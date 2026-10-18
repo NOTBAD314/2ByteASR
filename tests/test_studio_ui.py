@@ -993,21 +993,24 @@ def test_p202_context_tabs_timeline_tools_and_splitters(tmp_path, monkeypatch):
     app.processEvents()
 
     drawer = page.context_drawer
-    assert drawer.count() == 5
-    expected = ("AI设计", "样式", "视频", "剪辑助手", "素材")
+    tabs = drawer.tabBar()
+    assert drawer.count() == 6
+    expected = ("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")
     # Full names stay reachable through tooltips in every width tier.
-    assert [drawer.tabToolTip(index) for index in range(5)] == list(expected)
-    # Widening the panel past the full-label threshold restores readable
-    # labels; narrowing it again falls back to the icon-only tier. Both
-    # transitions must work from splitter drags, not only page resizes.
+    assert [drawer.tabToolTip(index) for index in range(6)] == list(expected)
+    # Widening the panel past the full-label width restores the full names;
+    # narrowing it to the 360 px minimum falls back to short names that still
+    # fit (icons go first). Both transitions must work from splitter drags,
+    # not only page resizes.
     page.upper_splitter.setSizes([300, 660, 520])
     app.processEvents()
-    assert [drawer.tabText(index) for index in range(5)] == list(expected)
+    assert [drawer.tabText(index) for index in range(6)] == list(expected)
     page.upper_splitter.setSizes([360, 860, 360])
     app.processEvents()
-    assert [drawer.tabText(index) for index in range(5)] == [""] * 5
+    assert [drawer.tabText(index) for index in range(6)] == ["AI", "样式", "动效", "视频", "剪辑", "素材"]
+    assert tabs.tabRect(5).right() < tabs.width()
     assert not page.context_drawer.tabBar().usesScrollButtons()
-    for index in range(3):
+    for index in (0, 1, 3):  # AI设计, 样式, 视频 (动效 scrolls its own card list)
         area = page.context_drawer.widget(index)
         assert isinstance(area, QScrollArea)
         assert area.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1024,7 +1027,7 @@ def test_p202_context_tabs_timeline_tools_and_splitters(tmp_path, monkeypatch):
     assert "与下一条合并 (Ctrl+Shift+M)" in tooltips
     assert "删除当前字幕 (Delete)" in tooltips
 
-    page.context_drawer.setCurrentIndex(2)
+    page.context_drawer.setCurrentIndex(3)  # 视频
     page._collapse_context_panel()
     page.workspace_splitter.setSizes([510, 330])
     page.upper_splitter.setSizes([410, 760, 390])
@@ -1629,10 +1632,11 @@ def test_project_restores_and_captures_studio_navigation_state(tmp_path, monkeyp
     assert page.timeline.playhead_ms == 2500
     assert page.timeline.visible_duration_ms == 60_000
     assert page.timeline.visible_start_ms == 1000
-    assert page.context_drawer.currentIndex() == 2
+    # Legacy context_tab 3 is 视频 (old numbering kept 检查 at 1); today it is the 4th page.
+    assert page.context_drawer.currentIndex() == 3
     assert not page.context_panel.isVisible()
     page._show_context_panel()
-    assert page.context_drawer.currentIndex() == 2
+    assert page.context_drawer.currentIndex() == 3
     page.timeline.set_playhead(2800)
     page.timeline.visible_start_ms = 1500
     page._capture_studio_state()

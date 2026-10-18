@@ -1,10 +1,11 @@
 """Real-window check of the 「申请与设置 API」 dialog on a private desktop (2026-10-14).
 
-Starts the real app (source, or ``--exe``) with an isolated data folder, opens
-the dialog for MOSS Pro, 百炼, Qwen Cloud and 讯飞 and checks the step cards,
-upload route, address display and offline checks (see
-``twobyteasr/api_setup_audit.py``). Offline: no provider is contacted and no
-web page is opened. Screenshots and ``result.json`` land in ``--output``.
+Starts the real app (source, or ``--exe``) with an isolated data folder in the
+chosen theme (``--theme grape|warm``), walks MOSS 云端 at a narrow and a wide
+size, then 百炼, Qwen Cloud, 讯飞 and DeepSeek (see
+``twobyteasr/api_setup_audit.py``, redone for the 2026-10-18
+walkthrough). Offline: no provider is contacted and no web page is opened.
+Screenshots and ``result.json`` land in ``--output``.
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ def main() -> int:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--exe', type=Path)
     parser.add_argument('--scale', default='1')
+    parser.add_argument('--theme', default='grape', choices=('grape', 'warm'))
     parser.add_argument('--timeout', type=int, default=300)
     args = parser.parse_args()
     out = args.output.resolve()
@@ -46,7 +48,7 @@ def main() -> int:
     env.update(LOCALAPPDATA=str(local), APPDATA=str(roaming), **{'2BYTEASR_USER_DATA_ROOT': str(local)},
                TWOBYTEASR_STARTUP_PROJECT=str(fixture))
     env.update(TWOBYTEASR_TEST_ROOT=str(profile), PYTHONUTF8='1', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
-               PYTHONFAULTHANDLER='1', TWOBYTEASR_ACCEPTANCE_DIR=str(out), TWOBYTEASR_ACCEPTANCE_SCENARIO='api-setup',
+               PYTHONFAULTHANDLER='1', TWOBYTEASR_ACCEPTANCE_DIR=str(out), TWOBYTEASR_ACCEPTANCE_SCENARIO='api-setup', TWOBYTEASR_API_SETUP_THEME=args.theme,
                TWOBYTEASR_INVOKER_CWD=str(ROOT), TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', QT_QPA_PLATFORM='windows',
                QT_SCALE_FACTOR=args.scale, NO_PROXY='127.0.0.1,localhost')
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT / 'quick_start.py')]

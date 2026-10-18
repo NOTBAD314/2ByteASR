@@ -183,6 +183,8 @@ def test_retired_saved_model_shows_warning_and_never_selected(tmp_path, monkeypa
         "model": RETIRED,
         "protocol": "auto",
     }
+    # 设置页直接打开在 DeepSeek 上（不靠前面测试留下的 ai_service）
+    settings["models"]["ai_service"] = "deepseek"
     editor = _make_editor(settings)
 
     assert editor.model.currentText().strip() != RETIRED
@@ -243,6 +245,64 @@ def test_runtime_never_resolves_retired_model(tmp_path, monkeypatch, _no_secret_
             },
             "全文断句模型",
         )
+
+
+def _flat_retired_settings(legacy, profile_model: str, *, unified: bool) -> dict:
+    """服务档案存 profile_model，两段平铺字段（含 transport，识别快照走 prefer_role）都是墓碑。"""
+    settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
+    settings.pop("_asr_provider_snapshot", None)
+    models = settings.setdefault("models", {})
+    models["ai_service"] = "deepseek"
+    models["provider_profiles"] = {"deepseek": {
+        "base_url": "https://api.deepseek.com/v1", "model": profile_model, "protocol": "auto"}}
+    for stage in ("polish", "group"):
+        models.update({f"{stage}_provider": "deepseek", f"{stage}_transport": "openai_compatible",
+                       f"{stage}_base_url": "https://api.deepseek.com/v1", f"{stage}_model": RETIRED})
+    settings.setdefault("switches", {})["unified_glm_processing"] = unified
+    return settings
+
+
+@pytest.mark.parametrize("unified", [False, True])
+@pytest.mark.parametrize("profile_model, expected", [(MODEL_A, MODEL_A), (RETIRED, MODEL_B)])
+def test_flat_retired_model_resolves_to_service_model(
+        tmp_path, monkeypatch, _no_secret_writes, unified, profile_model, expected):
+    """关闭统一模型后全文断句读平铺 group_model；识别快照（prefer_role）两段都读平铺字段。
+
+    这些路径不经过服务档案，平铺字段里的墓碑换成该服务当前的模型：档案值，
+    档案也是墓碑时用服务默认（DeepSeek 是 deepseek-v4-flash）。
+    """
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    import subtitle_core as legacy
+    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.llm_config import effective_ai_identity, endpoint_from_settings
+
+    settings = _flat_retired_settings(legacy, profile_model, unified=unified)
+    for stage in ("polish", "group"):
+        assert endpoint_from_settings(settings, stage)["model"] == expected
+        assert endpoint_from_settings(settings, stage, prefer_role=True)["model"] == expected
+        assert resolve_provider_snapshot(settings, stage=stage).model == expected
+        assert effective_ai_identity(settings, stage)["model"] == expected
+
+
+def test_flat_retired_model_without_service_default_keeps_explicit_error(
+        tmp_path, monkeypatch, _no_secret_writes):
+    """自定义端点没有默认模型：保留原值，请求前由 validate_endpoint 报“已不可用”。"""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    import subtitle_core as legacy
+    from twobyteasr.llm_config import endpoint_from_settings, validate_endpoint
+
+    settings = _flat_retired_settings(legacy, RETIRED, unified=False)
+    models = settings["models"]
+    models["ai_service"] = "custom"
+    models["provider_profiles"] = {}
+    for stage in ("polish", "group"):
+        models.update({f"{stage}_provider": "custom", f"{stage}_base_url": "https://llm.example.test/v1"})
+
+    for prefer_role in (False, True):
+        endpoint = endpoint_from_settings(settings, "group", prefer_role=prefer_role)
+        assert endpoint["model"] == RETIRED
+        with pytest.raises(RuntimeError, match="已不可用"):
+            validate_endpoint({**endpoint, "api_key": "whatever"}, "全文断句模型")
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +395,69 @@ def test_profile_apply_with_retired_ref_keeps_global_model(isolated_main_window)
     assert current == str(
         legacy.RUNTIME_SETTINGS.get("models", {}).get("group_model", "") or ""
     ) or current
+
+
+def _select_service(editor, service_id: str) -> None:
+    editor.service.setCurrentIndex(editor.service.findData(service_id))
+
+
+def test_ai_summary_preview_reports_typed_retired_model(isolated_main_window):
+    """模型框里手动输入下线 id：预演保存时 validate_endpoint 的 RuntimeError 记成“未通过保存校验”。"""
+    window, _legacy = isolated_main_window
+    window.ai_grouping.setChecked(True)
+    window.ai_polish.setChecked(True)
+    window.unified_glm.setChecked(True)
+    _select_service(window.group_editor, "deepseek")
+    _select_service(window.polish_editor, "deepseek")
+    window.group_editor.model.setCurrentText(RETIRED)  # currentTextChanged -> _refresh_ai_summary
+
+    window._refresh_ai_summary()  # 改前这里抛出 RuntimeError（启动时会弹“2ByteASR 启动失败”）
+
+    summary = window.ai_panel.summary_label.text()
+    assert "配置未通过保存校验" in summary
+    assert window._ai_has_draft is True
+    # 清空模型框同样只是“未通过保存校验”（validate_endpoint 报缺少模型名称也是 RuntimeError）
+    window.group_editor.model.setCurrentText("")
+    window._refresh_ai_summary()
+    assert "配置未通过保存校验" in window.ai_panel.summary_label.text()
+    # 改回可用模型后提示消失（也免得这个窗口在后面测试的全局重翻译里带着坏值）
+    window.group_editor.model.setCurrentText(MODEL_B)
+    window._refresh_ai_summary()
+    assert "配置未通过保存校验" not in window.ai_panel.summary_label.text()
+
+
+def test_main_window_starts_with_flat_retired_models_not_unified(monkeypatch, tmp_path, _no_secret_writes):
+    """关闭统一模型、档案与平铺字段都是墓碑：程序照常启动，已保存摘要和编辑器都不显示墓碑。
+
+    改前已保存摘要（识别快照走平铺字段）写着墓碑，编辑器却是默认模型，于是没改任何东西
+    也显示“未保存草稿”。
+    """
+    _app = QApplication.instance() or QApplication([])
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    import subtitle_core as legacy
+    import twobyteasr.ui as ui_module
+
+    original_settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
+    legacy.RUNTIME_SETTINGS = _flat_retired_settings(legacy, RETIRED, unified=False)
+    legacy.RUNTIME_SETTINGS["switches"].update({"use_ai_grouping": True, "enable_ai_polish": True})
+    window = None
+    try:
+        window = ui_module.MainWindow([], legacy, object(), None)
+        window._ensure_recognition_page()  # 启动页是工程库时设置页延后建立；这里补建
+        window._refresh_ai_summary()
+        summary = window.ai_panel.summary_label.text()
+        assert RETIRED not in summary
+        assert MODEL_B in summary
+        assert "未保存草稿" not in summary and window._ai_has_draft is False
+        assert RETIRED not in window.setting_tiles["ai"].summary_label.text()
+        for editor in (window.polish_editor, window.group_editor):
+            assert editor.model.currentText().strip() == MODEL_B
+            assert editor.model.findText(RETIRED) < 0
+    finally:
+        legacy.RUNTIME_SETTINGS = original_settings
+        if window is not None:
+            window.close()
+            window.deleteLater()
 
 
 def test_save_ai_configuration_updates_profile_bookmark(isolated_main_window, capsys):

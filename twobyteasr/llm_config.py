@@ -725,7 +725,8 @@ def service_model_catalog(settings: dict, service_id: str) -> tuple[str, ...]:
 
     Profile values are included only when they belong to the selected model
     family.  This heals legacy mixed state such as DeepSeek + Gemini without
-    mutating settings merely by opening a panel.
+    mutating settings merely by opening a panel.  RETIRED ids never appear,
+    not even as the saved profile value.
     """
     service_id = str(service_id or "custom").strip()
     spec = AI_SERVICE_SPECS.get(service_id, AI_SERVICE_SPECS["custom"])
@@ -740,7 +741,7 @@ def service_model_catalog(settings: dict, service_id: str) -> tuple[str, ...]:
     default = str(spec.get("model") or "").strip()
     if not discovered and default and not _model_is_cross_provider(service_id, default):
         values.append(default)
-    return tuple(dict.fromkeys(values))
+    return tuple(dict.fromkeys(value for value in values if not model_is_retired(value)))
 
 
 def service_for_provider(provider: str, transport: str = "") -> str:
@@ -801,11 +802,7 @@ def resolved_service_values(settings: dict, service_id: str) -> dict:
     profile = normalize_provider_profile(get_provider_profiles(settings).get(service_id, {}))
     catalog = service_model_catalog(settings, service_id)
     configured_model = profile.get("model", "")
-    model = (
-        configured_model
-        if configured_model
-        else ""
-    )
+    model = "" if model_is_retired(configured_model) else configured_model
     model = model or (str(spec.get("model") or "") if str(spec.get("transport")) != "openai_compatible"
                       else (catalog[0] if catalog else ""))
     return {
@@ -1018,6 +1015,15 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
                 protocol = default_protocol(provider)
     if provider == "anthropic":
         protocol = "anthropic_messages"  # the Messages API is Claude's only HTTP route here
+    if model_is_retired(model):
+        # 平铺字段里残留的下线模型（关闭统一模型后的全文断句、识别快照的
+        # prefer_role）不经过服务档案：换成该服务商当前的模型（档案值或默认）。
+        # 没有默认模型的服务（自定义端点）保留原值，由 validate_endpoint 报“已不可用”。
+        fallback_service = service_for_provider(provider, str(models.get(f"{prefix}_transport") or ""))
+        if fallback_service:
+            fallback = str(resolved_service_values(settings, fallback_service).get("model") or "").strip()
+            if fallback and not model_is_retired(fallback):
+                model = fallback
     # Credential precedence is deliberately resolved only after the active
     # provider/profile has been selected: provider-scoped DPAPI, matching ENV,
     # then the unsaved editor value.  This keeps Home and Studio on the same

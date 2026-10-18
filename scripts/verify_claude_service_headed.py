@@ -1,9 +1,12 @@
 """The Claude AI service (2026-10-18) in the real app (scenario ``claude-service``).
 
 Usage: python scripts/verify_claude_service_headed.py --output tmp/<fresh dir> [--exe path\\to\\2ByteASR.exe]
-       [--theme grape|warm]
+       [--theme grape|warm] [--retired-saved-model [--not-unified]]
 Runs on a private Windows desktop with isolated user data; see
-twobyteasr/acceptance/claude_service_audit.py for the checks.
+twobyteasr/acceptance/claude_service_audit.py for the checks. ``--retired-saved-model`` starts the app
+with DeepSeek chosen and a retired model saved for it, so the dialog's open path is checked first.
+``--not-unified`` saves 「同一云端模型负责字幕校对与全文断句」 switched off with both steps on, so 全文断句
+reads the flat ``group_model``.
 """
 from __future__ import annotations
 
@@ -32,7 +35,11 @@ def main() -> int:
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--exe', type=Path)
     parser.add_argument('--theme', default='grape')
+    parser.add_argument('--retired-saved-model', action='store_true')
+    parser.add_argument('--not-unified', action='store_true')
     args = parser.parse_args()
+    if args.not_unified and not args.retired_saved_model:
+        parser.error('--not-unified goes with --retired-saved-model')
     output = args.output.resolve()
     if not output.is_relative_to(ROOT / 'tmp') or output.exists():
         raise ValueError('Choose a fresh output directory under repository tmp')
@@ -42,6 +49,24 @@ def main() -> int:
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
     from twobyteasr.test_isolation import install
     install()
+    retired = ''
+    if args.retired_saved_model:
+        # Saved settings as an old install left them: DeepSeek chosen, its retired model saved.
+        from twobyteasr.llm_config import RETIRED_MODEL_IDS
+        from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+        retired = sorted(RETIRED_MODEL_IDS)[0]
+        settings, _path, _warnings = load_runtime_settings()
+        models = settings.setdefault('models', {})
+        models['ai_service'] = 'deepseek'
+        models.setdefault('provider_profiles', {})['deepseek'] = {
+            'base_url': 'https://api.deepseek.com/v1', 'model': retired, 'protocol': 'auto'}
+        for prefix in ('polish', 'group'):
+            models.update({f'{prefix}_provider': 'deepseek', f'{prefix}_transport': 'openai_compatible',
+                           f'{prefix}_base_url': 'https://api.deepseek.com/v1', f'{prefix}_model': retired})
+        if args.not_unified:
+            settings.setdefault('switches', {}).update(
+                unified_glm_processing=False, use_ai_grouping=True, enable_ai_polish=True)
+        save_runtime_settings(settings)
     from twobyteasr.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
                                                     default_style, save_project)
 
@@ -71,7 +96,7 @@ def main() -> int:
         env.pop(key, None)
     env.update(TWOBYTEASR_ACCEPTANCE_DIR=str(output), TWOBYTEASR_ACCEPTANCE_SCENARIO='claude-service',
                TWOBYTEASR_STARTUP_PROJECT=str(fixture), TWOBYTEASR_INVOKER_CWD=str(ROOT),
-               TWOBYTEASR_CLAUDE_AUDIT_THEME=args.theme,
+               TWOBYTEASR_CLAUDE_AUDIT_THEME=args.theme, TWOBYTEASR_CLAUDE_AUDIT_RETIRED=retired,
                QT_QPA_PLATFORM='windows', TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', PYTHONUTF8='1',
                HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
                HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9', NO_PROXY='127.0.0.1,localhost')

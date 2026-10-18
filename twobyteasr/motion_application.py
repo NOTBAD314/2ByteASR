@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections.abc import Mapping
 
 from .effect_dsl import validate_effect, STRENGTH_PRESETS
 from .word_animation import WORD_MODES, word_part
@@ -45,6 +46,31 @@ def motion_command(project, cue_ids, *, motion=None, words=None, changed=None):
         styles=project.styles, effects=effects, style_recipes=project.style_recipes,
         text='应用字幕动效', changed=changed, merge_enabled=False,
     )
+
+
+def authored_motion_tracks(visual_graph):
+    """The motion tracks a style's visual graph authors itself (AI / custom motion)."""
+    motion = visual_graph.get('motionGraph') if isinstance(visual_graph, Mapping) else None
+    return list(motion.get('tracks') or []) if isinstance(motion, Mapping) else []
+
+
+def overrides_style_motion(effect, authored_tracks=()):
+    """Whether a cue effect replaces the motion its style already carries.
+
+    A 动效 page choice is marked ``motion_override`` and always wins. An
+    unmarked effect never displaces authored graph motion: applying an AI graph
+    recipe also stores a compat entrance (``pop``) for interchange, which is
+    not a choice. Styles without graph motion take any real entrance, exit or
+    loop, as before.
+    """
+    effect = validate_effect(effect)
+    if effect.get('motion_override'):
+        return True
+    if authored_tracks:
+        return False
+    return (effect['entry']['type'] not in WORD_MODES | {'none', 'emphasis'}
+            or effect['exit']['type'] != 'none'
+            or effect.get('loop', {}).get('type', 'none') != 'none')
 
 
 def native_motion_graph(effect, duration_ms):

@@ -153,7 +153,11 @@ def test_workshop_browser_role_survives_fifty_role_model_updates(monkeypatch):
         assert checked is not None
         assert checked.property("role") == role
         for model_key, card in page._cards.items():
-            expected = role in workshop._browser_groups(card.model)
+            # Platform-only builds (MLX on macOS) stay out of other hosts' lists.
+            expected = (
+                role in workshop._browser_groups(card.model)
+                and workshop.model_platform_available(card.model)
+            )
             assert card.isHidden() is not expected, (index, role, model_key)
 
     page._set_role("primary")

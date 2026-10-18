@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QLabel, QPushButton, QHBoxLayout, QSizePolicy
 from .studio_theme import StudioComboBox
 from .i18n import tr
 from .effect_dsl import builtin_effects, validate_effect
-from .motion_application import motion_command
+from .motion_application import authored_motion_tracks, motion_command, overrides_style_motion
 from .word_animation import WORD_MODES, word_part, build_word_animation
 
 
@@ -300,8 +300,10 @@ class MotionWorkflow:
         page._set_combo_data(page.motion_word_color, word.get('color', '#FFD166'))
         entry = effect['entry']['type']
         recipe = page.project.style_recipes.get(cue.style_id, {})
-        authored = recipe.get('visualGraph', {}).get('motionGraph', {}).get('tracks')
-        if authored and not effect.get('motion_override') and entry in WORD_MODES | {'none'}:
+        authored = authored_motion_tracks(recipe.get('visualGraph'))
+        # Same rule as preview and export: an AI recipe's compat entrance
+        # (pop, no motion_override) still means the graph motion plays.
+        if authored and not overrides_style_motion(effect, authored):
             page._set_combo_data(page.effect_preset, 'visual_graph')
         else:
             page._set_combo_data(page.effect_preset, 'none' if entry in WORD_MODES else entry)
