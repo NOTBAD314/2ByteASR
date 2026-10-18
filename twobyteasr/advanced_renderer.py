@@ -666,6 +666,8 @@ def compile_composition_data(
 ) -> dict[str, object]:
     start_ms = round(start_seconds * 1000)
     end_ms = start_ms + round(duration_seconds * 1000)
+    from .bilingual_layout import materialize_display_project
+    project = materialize_display_project(project)
     recipes: dict[str, object] = {}
     cues = []
     for cue in project.cues:
@@ -1131,6 +1133,8 @@ class AdvancedRendererBackend:
     ) -> Path:
         from .static_caption_export import static_graph_project, render_static_graph
         from .export_filtergraph import simple_video_clips
+        from .bilingual_layout import materialize_display_project
+        project = materialize_display_project(project)
         if job.video_graph:
             from dataclasses import replace
             from .timeline_media import resolve_video_graph

@@ -133,7 +133,7 @@ def test_primary_mpv_startup_never_opens_audio_device():
     args = mpv_startup_arguments("mpv.exe", 123, r"\\.\pipe\fixture")
     assert "--aid=no" in args
     assert "--aid=auto" not in args
-    assert "--video-sync=display-resample" in args
+    assert "--video-sync=audio" in args
 
 
 def test_audio_engine_has_no_continuous_clock_timer():

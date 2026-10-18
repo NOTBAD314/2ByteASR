@@ -290,7 +290,10 @@ def _cue_translation(project: SubtitleProject, cue_id: str) -> str:
     translations = metadata.get("translations")
     if not isinstance(translations, Mapping):
         return ""
-    return str(translations.get(cue_id, "") or "")
+    from .bilingual_layout import is_companion, translation_for_cue
+    if is_companion(cue_id):
+        return ""
+    return str(translation_for_cue(translations, cue_id) or "")
 
 
 def build_visual_cue_snapshot(

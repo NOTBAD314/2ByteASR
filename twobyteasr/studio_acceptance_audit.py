@@ -63,7 +63,7 @@ def isolate_acceptance_settings() -> None:
         from .acceptance.translation_requests_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('timeline-models', 'timeline-language'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('timeline-models', 'timeline-language', 'preview-clock'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -655,6 +655,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-chain-apply':
         from .glossary_chain_apply_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'preview-clock':
+        from .acceptance.preview_clock_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

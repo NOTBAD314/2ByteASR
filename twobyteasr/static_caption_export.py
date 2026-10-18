@@ -41,6 +41,8 @@ def static_graph_project(project):
 
 @record_completion
 def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, trace=None):
+    from .bilingual_layout import materialize_display_project
+    project = materialize_display_project(project)
     from PIL import Image
     from .advanced_renderer import compile_composition_data, _run_streaming_process, _ffmpeg_filter_path, _native_segment_project
     from .ass_compiler import compile_ass

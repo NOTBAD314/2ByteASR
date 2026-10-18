@@ -107,7 +107,8 @@ def test_static_graph_final_route_keeps_composed_frame_cap(tmp_path,monkeypatch)
     from twobyteasr import studio_render,advanced_renderer,static_caption_export,export_validation,export_preview
     job=replace(job_at(tmp_path),video_graph=None,composition_resolved=True,duration_seconds=128/60,
         export_context={'composed_video_frame_clock':{'frame_count':128}})
-    project=SimpleNamespace(media=SimpleNamespace(width=4,height=2,duration_ms=2117))
+    from twobyteasr.studio_project import SubtitleProject, StudioMedia
+    project=SubtitleProject(media=StudioMedia(path=job.media_path,width=4,height=2,duration_ms=2117))
     monkeypatch.setattr(advanced_renderer,'compile_composition_data',lambda *a,**k:{'cues':[]})
     monkeypatch.setattr(advanced_renderer,'_native_segment_project',lambda *a:SimpleNamespace(cues=[]))
     monkeypatch.setattr(studio_render,'select_encoder',lambda *a:'libx264')

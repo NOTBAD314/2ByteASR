@@ -122,9 +122,8 @@ def _export_view_cues(project: SubtitleProject, *, styled: bool = True):
 
 def _lookup_translation(view: dict, cue_id: str) -> dict | None:
     """A view cue's translation info (projected ids fall back to their source cue)."""
-    from .studio_edit_sequence import source_cue_id_of
-
-    return view.get(cue_id) or view.get(source_cue_id_of(cue_id))
+    from .bilingual_layout import translation_for_cue
+    return translation_for_cue(view, cue_id)
 
 
 def _word_piece(word: dict, enrich: dict | None, basis: str) -> dict:
@@ -283,14 +282,34 @@ def _compile_json(project: SubtitleProject) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
 
 
+def _display_text_cues(project: SubtitleProject):
+    """Plain exports follow the visible language mode, retaining untranslated cues."""
+    from .bilingual_layout import settings_from_state
+    from .subtitle_translation import translation_view
+    from .punctuation_style import math_enabled, project_mode, style_translation
+    view = _export_view_cues(project)
+    settings = settings_from_state(project.studio_state)
+    if settings.mode == "original":
+        return view
+    translations = {key: dict(info, text=style_translation(info.get("text", ""),
+                    project_mode(project), math=math_enabled(project)))
+                    for key, info in translation_view(project).items()}
+    result, missing, _ = layer_cues(view, translations, settings.mode,
+                                   translation_first=settings.order == "translation_first")
+    if settings.mode == "translation":
+        missing_ids = set(missing)
+        result.extend(c for c in view if c.id in missing_ids)
+    return sorted(result, key=lambda c: (c.start_ms, c.end_ms, c.id))
+
+
 def _compile_format(project: SubtitleProject, format_name: str) -> str:
     view = _export_view_cues(project)
     if format_name == "srt":
-        return compile_srt(view)
+        return compile_srt(_display_text_cues(project))
     if format_name == "ass":
         return compile_ass(project, cues=view)
     if format_name == "txt":
-        return compile_txt(project, cues=view)
+        return compile_txt(project, cues=_display_text_cues(project))
     if format_name == "json":
         return _compile_json(project)
     raise ValueError(f"unsupported subtitle format: {format_name}")
@@ -357,6 +376,11 @@ def export_subtitle_artifacts(
                 _atomic_text_write(candidate, _compile_format(scoped_project, format_name))
                 expected = copy.copy(scoped_project)
                 expected.cues = _export_view_cues(scoped_project)
+                if format_name in {"srt", "txt"}:
+                    expected.cues = _display_text_cues(scoped_project)
+                elif format_name == "ass":
+                    from .bilingual_layout import project_display_cues
+                    expected.cues = project_display_cues(scoped_project, expected.cues)
                 artifact = SubtitleExportArtifact(candidate, format_name, speaker_id, len(expected.cues))
                 verification = verify_subtitle_artifact(artifact, expected)
                 count_invalid = (

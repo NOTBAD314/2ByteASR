@@ -107,7 +107,12 @@ def mpv_startup_arguments(
         "--hwdec=auto-safe",
         "--vo=gpu-next",
         video_arguments[0],
-        "--video-sync=display-resample",
+        # Audio belongs to Studio's separate PCM sink. Display-sync may retime
+        # video to a misreported monitor refresh rate without changing that
+        # audio (even while mpv's speed property remains 1). With aid=no,
+        # "audio" uses the system clock and preserves source timestamp cadence,
+        # including VFR sections; captions follow those same video timestamps.
+        "--video-sync=audio",
         "--audio-pitch-correction=yes",
         # All audible lanes share Studio's PCM mix; mpv never opens WASAPI.
         "--aid=no",

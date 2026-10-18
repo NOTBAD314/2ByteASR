@@ -199,6 +199,23 @@ def validate_output(ffmpeg, path, *, duration=None, fps=None, cancelled=None, pr
                 if child.poll() is None:child.kill();child.wait()
         from .export_bitrate import export_bitrate_measurements
         data.update(export_bitrate_measurements(ffmpeg, path, data, cancelled=cancelled))
+        # MKV/WebM often omit stream.duration and nb_frames. The container
+        # duration above can then be the longer AUDIO duration, hiding a video
+        # whose timestamps run twice as fast. Reuse the bounded packet scan
+        # already made for bitrate truth; never let audio stand in for video.
+        measured = data.get('video_bitrate') or {}
+        video_duration = positive_number(measured.get('duration_seconds'))
+        if duration and measured.get('reliable') and video_duration is not None:
+            from fractions import Fraction
+            try:
+                rate = positive_number(fps) or positive_number(Fraction(video.get('avg_frame_rate') or '0'))
+            except (ValueError, ZeroDivisionError):
+                rate = positive_number(fps)
+            tolerance = max(.05, 2 / (rate or 30))
+            if abs(video_duration - duration) > tolerance:
+                raise RuntimeError(
+                    f'导出验证失败：视频实际时间轴时长 {video_duration:.3f} 秒，'
+                    f'与工程范围 {duration:.3f} 秒不一致（可能存在速度异常），已停止发布')
         return data
     finally:
         log.unlink(missing_ok=True)

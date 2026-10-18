@@ -4413,8 +4413,16 @@ def process_media(
 
     firered_early = None
     api_overlap = False
+    from twobyteasr.language_rules import AUTO, ZH, normalize_language
+    # The Chinese recognizer may start beside the cloud transcript only while
+    # Chinese is still possible: a manual Chinese task, or Auto (the usual case;
+    # a Japanese/English result discards it below). A manual Japanese/English
+    # task never starts it: its timeline needs the transcript as the forced
+    # aligner's reference (2026-10-18: a Japanese task ran FireRed for 6 min).
+    early_chinese_timeline = normalize_language(runtime_context.requested_language) in (ZH, AUTO)
     if (primary_backend == "api" and legacy.PARALLEL_GPU_ASR
-            and legacy.USE_FIRERED_BOUNDARY_REFINEMENT and legacy.FIRERED_ASR_BACKEND == "local"):
+            and legacy.USE_FIRERED_BOUNDARY_REFINEMENT and legacy.FIRERED_ASR_BACKEND == "local"
+            and early_chinese_timeline):
         from twobyteasr.asr_progress import api_local_admission
         admission = api_local_admission(_gpu_runtime_snapshot(), audio_bytes=getattr(shared_audio, "nbytes", 0))
         legacy.record_run_event("api_local_admission", **admission)

@@ -85,6 +85,14 @@ def translations_of(metadata: Mapping[str, Any] | None) -> Mapping[str, str]:
     return value if isinstance(value, Mapping) else {}
 
 
+def translation_for_cue(translations: Mapping, cue_id: str):
+    """Resolve a projected instance without losing its source cue's translation."""
+    from .studio_edit_sequence import source_cue_id_of
+    if cue_id in translations:
+        return translations[cue_id]
+    return translations.get(source_cue_id_of(cue_id))
+
+
 def is_companion(cue_id: str) -> bool:
     return str(cue_id).endswith(COMPANION_SUFFIX)
 
@@ -198,7 +206,7 @@ def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settin
     from .resolved_caption_style import resolve_caption_style
     out = []
     for cue in cues:
-        text = str(translations.get(cue.id, "") or "").strip()
+        text = str(translation_for_cue(translations, cue.id) or "").strip()
         if not text:
             out.append(cue)
             continue
@@ -280,10 +288,32 @@ def project_display_cues(project, cues=None) -> list:
                         play_res_y=int(project.render_settings.get("play_res_y", 1080)))
 
 
+def materialize_display_project(project):
+    """Freeze bilingual geometry once before splitting native/advanced exports.
+
+    Preview already draws companion cues. Advanced export must receive those
+    same cues, including translated text and font/position overrides. The copy
+    is worker-local; its original mode prevents a later ASS pass adding a
+    second companion or applying the font scale twice.
+    """
+    if settings_from_state(project.studio_state).mode == "original":
+        return project
+    if not translations_of(project.generation_metadata):
+        return project
+    from .punctuation_style import mark_cues_styled
+    result = copy.deepcopy(project)
+    result.__dict__.pop("_studio_state_runtime", None)
+    result.cues = project_display_cues(result)
+    mark_cues_styled(result)
+    result.studio_state["bilingual"] = {"mode": "original"}
+    result.studio_state["bilingual_mode"] = False
+    return result
+
+
 def group_extra_for(project, cue, play_res_x: int = 1920) -> float:
     """Extra height (play-res px) a cue's translation line adds in the compact bilingual layout; 0 otherwise."""
     settings = settings_from_state(project.studio_state)
-    text = str(translations_of(project.generation_metadata).get(cue.id, "") or "").strip()
+    text = str(translation_for_cue(translations_of(project.generation_metadata), cue.id) or "").strip()
     if settings.mode != "bilingual" or settings.layout != "ink_v1" or settings.legacy or not text:
         return 0.0
     from .resolved_caption_style import resolve_caption_style
