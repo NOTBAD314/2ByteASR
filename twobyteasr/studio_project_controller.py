@@ -678,23 +678,15 @@ class StudioProjectController:
             from .studio_context_tabs import restored_context_tab
             page._last_context_tab = restored_context_tab(layout_state)
             page.context_drawer.setCurrentIndex(page._last_context_tab)
-            if bool(layout_state.get("context_collapsed", False)):
-                page._collapse_context_panel()
-            else:
-                page._show_context_panel()
-            page._set_major_panel_visible(
-                "cue_list", bool(layout_state.get("cue_list_visible", True))
-            )
+            # 2026-10-18 (user): the cue list and the tool panel open with every
+            # project, so nobody misses that they exist. The saved
+            # context_collapsed / cue_list_visible / context_visible keys are
+            # still written (older readers) but no longer hide a panel on open;
+            # 字幕列表 / 工具面板 hide them for the session.
+            page._show_context_panel()
+            page._set_major_panel_visible("cue_list", True)
+            page._set_major_panel_visible("context", True)
             # Compatibility: deprecated editor_visible state is deliberately ignored.
-            page._set_major_panel_visible(
-                "context",
-                bool(
-                    layout_state.get(
-                        "context_visible",
-                        not bool(layout_state.get("context_collapsed", False)),
-                    )
-                ),
-            )
             editor_fields = layout_state.get("editor_fields", {})
             if isinstance(editor_fields, dict):
                 for field in page._editor_field_visibility:
@@ -715,6 +707,17 @@ class StudioProjectController:
                 if isinstance(sizes, list) and len(sizes) == count:
                     splitter.setSizes([max(0, int(value)) for value in sizes])
                     splitter.refresh()
+        side_sizes = page.upper_splitter.sizes()
+        # A side panel saved dragged down to nothing (or squeezed out by a
+        # narrow window) is open but invisible: give both their default widths.
+        squeezed = len(side_sizes) == 3 and (
+            side_sizes[0] < max(120, page.cue_list_panel.minimumSizeHint().width() // 2)
+            or side_sizes[2] < max(120, page.context_panel.minimumSizeHint().width() // 2))
+        if squeezed:
+            total = max(900, sum(side_sizes))
+            context = min(480, max(380, round(total * 0.24)))
+            left = min(420, max(page.cue_list_panel.minimumWidth(), round(total * 0.22)))
+            page.upper_splitter.setSizes([left, max(360, total - left - context), context])
         if not restored_workspace_sizes:
             page._apply_default_workspace_layout()
         mark_hydration("layout_restore")

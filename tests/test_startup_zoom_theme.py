@@ -112,7 +112,7 @@ def test_zoomed_page_takes_the_layout_of_a_smaller_window():
         assert ui_zoom.logical(1600) == 800 and ui_zoom.px(800) == 1600
         plan._responsive_profile = ""
         plan._update_responsive_profile(True)
-        assert plan._responsive_profile == "compact"  # what a 700x240 band gets at 100%
+        assert plan._responsive_profile == "normal"  # what a 700x240 band gets at 100%
     finally:
         _reset_zoom()
         plan.close()

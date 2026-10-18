@@ -78,6 +78,10 @@ PROVIDER_PRESETS = {
         "label": "OpenAI API",
         "base_url": "https://api.openai.com/v1",
     },
+    "anthropic": {
+        "label": "Claude API",
+        "base_url": "https://api.anthropic.com/v1",
+    },
     "gemini": {
         "label": "Gemini API",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -120,6 +124,17 @@ AI_SERVICE_SPECS = {
         "label": "OpenAI API", "transport": "openai_compatible",
         "provider": "openai", "base_url": "https://api.openai.com/v1",
         "model": "gpt-4.1-mini", "models": ("gpt-4.1-mini",),
+        "capabilities": ("text", "vision", "structured_output"),
+    },
+    # 2026-10-18 (user): Claude through the Anthropic Messages API on this
+    # application's own HTTP layer, no SDK. "openai_compatible" here means an
+    # API key over HTTP (key storage, settings page, readiness); the request
+    # itself uses protocol "anthropic_messages" (endpoint_from_settings).
+    "claude": {
+        "label": "Claude API", "transport": "openai_compatible",
+        "provider": "anthropic", "base_url": "https://api.anthropic.com/v1",
+        "model": "claude-opus-5-5",
+        "models": ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"),
         "capabilities": ("text", "vision", "structured_output"),
     },
     "gemini": {
@@ -566,6 +581,31 @@ def responses_url(base_url: str) -> str:
     base = normalize_base_url(base_url)
     return f"{base}/responses" if base else ""
 
+ANTHROPIC_VERSION = "2023-06-01"
+
+
+def messages_url(base_url: str) -> str:
+    """The Anthropic Messages endpoint from a Base URL (``…/v1`` + ``/messages``)."""
+    base = normalize_base_url(base_url)
+    if base.lower().endswith("/messages"):
+        base = base[: -len("/messages")].rstrip("/")
+    return f"{base}/messages" if base else ""
+
+
+def default_protocol(provider: str) -> str:
+    """What ``protocol: auto`` means for a provider."""
+    provider = str(provider or "")
+    return ("responses" if provider == "openai" else
+            "anthropic_messages" if provider == "anthropic" else "openai_compatible_chat")
+
+
+def endpoint_url(base_url: str, protocol: str) -> str:
+    if protocol == "responses":
+        return responses_url(base_url)
+    if protocol == "anthropic_messages":
+        return messages_url(base_url)
+    return chat_completion_url(base_url)
+
 
 def models_url(base_url: str) -> str:
     """Build the OpenAI-compatible model-list URL without duplicating /v1.
@@ -625,6 +665,7 @@ def model_is_retired(model: object) -> bool:
 
 
 _KNOWN_MODEL_PREFIXES = {
+    "claude": ("claude-",),
     "deepseek": ("deepseek-",),
     "antigravity": ("gemini-",),
     "gemini": ("gemini-",),
@@ -951,7 +992,7 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
     model = str(models.get(f"{prefix}_model", "") or "").strip()
     protocol = str(models.get(f"{prefix}_protocol", "auto") or "auto").strip()
     if protocol == "auto":
-        protocol = "responses" if provider == "openai" else "openai_compatible_chat"
+        protocol = default_protocol(provider)
     ephemeral_key = str(models.get(f"{prefix}_api_key") or "").strip()
     # Preserve old installations whose Bailian key was saved before scoped
     # provider credentials existed. A custom/OpenAI-compatible endpoint must
@@ -974,7 +1015,9 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
                 model = str(active_values.get("model") or model).strip()
             protocol = str(active_values.get("protocol") or protocol).strip()
             if protocol == "auto":
-                protocol = "responses" if provider == "openai" else "openai_compatible_chat"
+                protocol = default_protocol(provider)
+    if provider == "anthropic":
+        protocol = "anthropic_messages"  # the Messages API is Claude's only HTTP route here
     # Credential precedence is deliberately resolved only after the active
     # provider/profile has been selected: provider-scoped DPAPI, matching ENV,
     # then the unsaved editor value.  This keeps Home and Studio on the same
@@ -993,7 +1036,7 @@ def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = Fa
         "model": model,
         "base_url": base_url,
         "protocol": protocol,
-        "url": responses_url(base_url) if protocol == "responses" else chat_completion_url(base_url),
+        "url": endpoint_url(base_url, protocol),
         "api_key": api_key,
         "key_source": key_source,
     }
@@ -1022,8 +1065,36 @@ def effective_ai_identity(settings: dict, stage: str = 'polish') -> dict:
             'credential_configured': bool(endpoint.get('api_key'))}
 
 
-def auth_headers(api_key: str) -> dict:
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+def text_ai_key_missing(settings: dict, stage: str) -> bool:
+    """True when a user-clicked text-AI action for ``stage`` would stop at "缺少 API 密钥" (2026-10-15).
+
+    Same rule as ``persist_ai_configuration(local_without_key=True)`` and the
+    home AI card: an OpenAI-compatible endpoint that needs a key and finds none
+    (saved, in the environment or typed in). Both ways a request resolves its
+    endpoint — the role snapshot (glossary review) and the broker client
+    (Studio actions) — must come up empty, so nobody with a key is stopped
+    here. Any other configuration problem returns False: the request reports
+    it as before.
+    """
+    from .ai_providers import AITransport, transport_for_stage
+    try:
+        identity = effective_ai_identity(settings, stage)
+        if (identity['transport'] != AITransport.OPENAI_COMPATIBLE.value or identity['credential_configured']
+                or transport_for_stage(settings, stage) is not AITransport.OPENAI_COMPATIBLE):
+            return False
+        endpoint = endpoint_from_settings(dict(settings), stage)
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+        return False
+    return (not str(endpoint.get('api_key') or '').strip() and endpoint_requires_key(endpoint)
+            and endpoint_requires_key({'provider': identity['provider'], 'base_url': identity['base_url']}))
+
+
+def auth_headers(api_key: str, provider: str = "") -> dict:
+    if not api_key:
+        return {}
+    if str(provider or "") == "anthropic":
+        return {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+    return {"Authorization": f"Bearer {api_key}"}
 
 
 def validate_endpoint(endpoint: dict, label: str = "大模型", *, require_credentials=True) -> None:
@@ -1085,6 +1156,7 @@ def _provider_key_id(provider: str, base_url: str) -> str:
 _STANDARD_PROVIDER_KEY_ENV = {
     "deepseek": "DEEPSEEK_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "xai": "XAI_API_KEY",
     "groq": "GROQ_API_KEY",

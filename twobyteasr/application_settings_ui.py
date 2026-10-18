@@ -253,19 +253,24 @@ class ApplicationSettingsDialog(SpringDialog):
         self._saved_values = self._values()
 
     def _build_shortcut_page(self, page):
-        """快捷键: every page's keys in one place, saved immediately (2026-10-13)."""
+        """快捷键: every page's keys in one place (2026-10-13).
+
+        2026-10-17: the page does not scroll itself; the panel's grouped list
+        is the one scroll area (the old table sat in the page's scroll and
+        showed four rows). 保存更改 below saves the keys with everything else.
+        """
         from . import shortcut_registry
         from .studio_shortcuts import ShortcutSettingsPanel
         self.navigation.insertItem(self.navigation.count() - 1, '快捷键')
-        lay = page('快捷键', '按自己的习惯改键：工作台、审核模式、首页、AI 词库校对页与界面缩放。'
-                   '同一页面里重复的组合会提示是哪个功能；不同页面可以共用同一个组合。')
+        content = QWidget(); content.setObjectName('settingsPage')
+        lay = QVBoxLayout(content); lay.setContentsMargins(28, 24, 20, 16); lay.setSpacing(12)
+        name = QLabel('快捷键'); name.setProperty('typography', 'section'); lay.addWidget(name)
+        sub = QLabel('点一下按键，再按新的组合；按 Esc 取消。同一页面里不能重复，不同页面可以共用。')
+        sub.setObjectName('settingsDescription'); sub.setWordWrap(True); lay.addWidget(sub)
+        self.pages.addWidget(content)
         self.shortcut_panel = ShortcutSettingsPanel(shortcut_registry.current_values(), self,
                                                     scopes=tuple(shortcut_registry.SCOPE_LABELS), embedded=True)
         self.shortcut_panel.setObjectName('applicationShortcutPanel')
-        self.shortcut_panel.setMinimumHeight(520)
-        self.shortcut_panel.cancel_button.hide()
-        bind_text(self.shortcut_panel._save_button, '保存快捷键（立即生效）')
-        self.shortcut_panel.accepted.connect(self._save_shortcuts)
         lay.addWidget(self.shortcut_panel, 1)
         self._shortcut_saved = dict(self.shortcut_panel.values())
 
@@ -284,7 +289,7 @@ class ApplicationSettingsDialog(SpringDialog):
             return False
         shortcut_registry.save_values(values)
         self._shortcut_saved = dict(values)
-        bind_text(panel.conflict_label, '已保存，立即生效。')
+        panel.show_message(tr('已保存，立即生效。'))
         return True
 
     def _build_mcp_page(self, page, section, row, toggle, parent):
@@ -585,14 +590,23 @@ class ApplicationSettingsDialog(SpringDialog):
         # The shortcut page keeps its own saved state (its search box and key
         # editors are not settings); unsaved key edits compare as bindings.
         panel = getattr(self, 'shortcut_panel', None)
+        # findChildren() follows each parent's child list, and the page stack
+        # moves the page it shows to the end of it; keep the order the inputs
+        # were first seen in, so browsing pages is not a change (2026-10-15).
+        order = getattr(self, '_input_order', None)
+        if order is None:
+            order = self._input_order = {}
 
-        def counted(widget):
-            return panel is None or not panel.isAncestorOf(widget)
+        def inputs(kind, wanted=lambda widget: True):
+            found = [w for w in self.findChildren(kind) if (panel is None or not panel.isAncestorOf(w)) and wanted(w)]
+            for widget in found:
+                order.setdefault(widget, len(order))
+            return sorted(found, key=order.__getitem__)
         shortcuts = (tuple(sorted(panel.values().items())) != tuple(sorted(self._shortcut_saved.items()))
                      if panel is not None and hasattr(self, '_shortcut_saved') else False)
-        return (tuple((w.objectName(), w.text()) for w in self.findChildren(QLineEdit) if counted(w)),
-                tuple(w.currentIndex() for w in self.findChildren(QComboBox) if counted(w)),
-                tuple(w.isChecked() for w in self.findChildren(QAbstractButton) if w.isCheckable() and counted(w)),
+        return (tuple((w.objectName(), w.text()) for w in inputs(QLineEdit)),
+                tuple(w.currentIndex() for w in inputs(QComboBox)),
+                tuple(w.isChecked() for w in inputs(QAbstractButton, lambda w: w.isCheckable())),
                 shortcuts)
 
     def accept(self):

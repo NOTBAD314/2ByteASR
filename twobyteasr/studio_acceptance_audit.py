@@ -52,6 +52,25 @@ def audit_directory() -> Path | None:
     return output
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'runtime-location':
+        # Program-folder runtimes are chosen only without TWOBYTEASR_TEST_ROOT (2026-10-17).
+        output = audit_directory()
+        if output is not None:
+            from .runtime_location_audit import isolate
+            isolate(output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'translation-requests':
+        from .acceptance.translation_requests_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('timeline-models', 'timeline-language'):
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-export':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'seven-issues':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -60,11 +79,19 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-actions-no-key':
+        from .ai_actions_no_key_audit import install_guards
+        install_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'math-ai':
         from .math_ai_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('razor-word-split', 'ja-bilingual', 'bilingual-playback', 'speaker-roles', 'mcp', 'ctc-refine', 'onboarding-settings', 'api-setup', 'review-window', 'review-click-fix', 'tour-motion', 'math-formulas'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'claude-service':
+        from .claude_service_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('razor-word-split', 'ja-bilingual', 'bilingual-playback', 'speaker-roles', 'mcp', 'ctc-refine', 'onboarding-settings', 'api-setup', 'review-window', 'review-click-fix', 'tour-motion', 'math-formulas', 'style-background-grid', 'workbench-fixes'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         output = audit_directory()
@@ -341,6 +368,46 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'runtime-location':
+        from .runtime_location_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'continuous-motion':
+        from .motion_inspector_audit import run_window
+        output = audit_directory()
+        if output is not None:
+            window.hide()
+            run_window(output, embedded=True)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'video-transition-looks':
+        from .video_transition_looks_audit import run_window
+        output = audit_directory()
+        if output is not None:
+            window.hide()
+            run_window(output, os.environ.get('TWOBYTEASR_TRANSITION_AUDIT_THEME', 'grape'),
+                       export=os.environ.get('TWOBYTEASR_TRANSITION_AUDIT_EXPORT', '1') == '1', embedded=True)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'translation-requests':
+        from .acceptance.translation_requests_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'timeline-models':
+        from .timeline_models_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'timeline-language':
+        from .timeline_language_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-export':
+        from .speaker_export_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'update-flow':
         from .update_flow_audit import start
         output = audit_directory()
@@ -643,6 +710,36 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-click-fix':
         from .review_click_fix_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-actions-no-key':
+        from .ai_actions_no_key_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'style-background-grid':
+        from .style_background_grid_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'workbench-fixes':
+        from .workbench_fixes_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'claude-service':
+        from .claude_service_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-submit':
+        from .glossary_submit_audit import start
         output = audit_directory()
         if output is not None:
             start(window, output)

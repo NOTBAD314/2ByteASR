@@ -12,10 +12,11 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
-from .processes import popen_hidden_subprocess
+from .processes import popen_hidden_subprocess, sanitized_child_environment
 from .playback_probe import mark as playback_mark
 from .platform_mpv import native_video_arguments, open_mpv_ipc, unix_ipc_path, cleanup_unix_ipc
 
@@ -116,6 +117,99 @@ def mpv_startup_arguments(
     if log_path:
         arguments.extend(["--msg-level=all=warn", f"--log-file={log_path}"])
     return arguments
+
+
+# The bundled Windows mpv.exe imports vulkan-1.dll, which only GPU drivers
+# install. Without one, Windows refuses to start mpv (2026-10-17: VMs, remote
+# desktops, basic display drivers). Studio renders through D3D11 and never
+# creates a Vulkan instance, so a bundled Khronos loader only has to exist.
+# Installs carry it in third_party/vulkan-loader (the 主程序 update component);
+# a source tree gets it in tools/vulkan-loader from scripts/collect_tools.ps1.
+VULKAN_LOADER_FOLDERS = (("third_party", "vulkan-loader"), ("tools", "vulkan-loader"))
+
+
+def vulkan_loader_fallback_dir(root: str | os.PathLike[str] | None = None) -> Path | None:
+    if root is None:
+        from .runtime_paths import detect_install_root
+        root = detect_install_root()
+    for parts in VULKAN_LOADER_FOLDERS:
+        folder = Path(root).joinpath(*parts)
+        if (folder / "vulkan-1.dll").is_file():
+            return folder
+    return None
+
+
+def mpv_environment(
+    environ: Mapping[str, str] | None = None,
+    *,
+    root: str | os.PathLike[str] | None = None,
+    windows: bool | None = None,
+) -> dict[str, str]:
+    """mpv's child environment, with the bundled Vulkan loader LAST on PATH.
+
+    Windows looks for a DLL in mpv.exe's folder, then System32, and only then
+    along PATH. A GPU driver's own loader therefore always wins; the bundled
+    one is used only on PCs that have none.
+    """
+    env = sanitized_child_environment(None if environ is None else dict(environ))
+    if not (os.name == "nt" if windows is None else windows):
+        return env
+    folder = vulkan_loader_fallback_dir(root)
+    if folder is None:
+        return env
+    entries = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+    if os.path.normcase(str(folder)) not in {os.path.normcase(part) for part in entries}:
+        entries.append(str(folder))
+    env["PATH"] = os.pathsep.join(entries)
+    return env
+
+
+# NTSTATUS exit codes of a Windows child the loader could not start. mpv never
+# ran any of its own code, so waiting or restarting it cannot help.
+_STARTUP_FAILURES = {
+    0xC0000135: "播放器缺少需要的运行库（通常是显卡驱动带的 vulkan-1.dll），无法启动（{code}）。请重新安装 2ByteASR，或安装显卡驱动。",
+    0xC0000139: "播放器需要的系统文件版本不对（多半是旧的 vulkan-1.dll），无法启动（{code}）。请更新显卡驱动；仍不行请安装最新的 Vulkan Runtime。",
+    0xC000007B: "播放器文件损坏或与这台电脑不兼容，无法启动（{code}）。请重新安装 2ByteASR。",
+    0xC000012F: "播放器文件损坏或与这台电脑不兼容，无法启动（{code}）。请重新安装 2ByteASR。",
+}
+
+
+# A Windows child inherits its parent's hard-error mode. Studio started from
+# Explorer or a shortcut has system error boxes on, so an mpv that Windows
+# cannot load waited on a "找不到 vulkan-1.dll" box instead of exiting, and the
+# readiness gate only saw a 30 s timeout (2026-10-17, Server 2019 VM).
+_SEM_FAILCRITICALERRORS = 0x0001
+
+
+def _kernel32():
+    return ctypes.windll.kernel32 if os.name == "nt" else None
+
+
+@contextmanager
+def _without_system_error_boxes():
+    """Start children with SEM_FAILCRITICALERRORS so a load failure just exits."""
+    kernel32 = _kernel32()
+    if kernel32 is None:
+        yield
+        return
+    previous = kernel32.GetErrorMode()
+    kernel32.SetErrorMode(previous | _SEM_FAILCRITICALERRORS)
+    try:
+        yield
+    finally:
+        kernel32.SetErrorMode(previous)
+
+
+def startup_failure_message(returncode: object) -> str:
+    """User-facing reason for an mpv that Windows could not load, else ''."""
+    if not isinstance(returncode, int):
+        return ""
+    code = returncode & 0xFFFFFFFF
+    source = _STARTUP_FAILURES.get(code)
+    if source is None:
+        return ""
+    from .i18n import tr
+    return tr(source, code=f"0x{code:08X}")
 
 
 def _ipc_pipe_name() -> str:
@@ -700,6 +794,12 @@ class MpvController:
     def running(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
+    @property
+    def exit_code(self) -> int | None:
+        """The child's exit status once it has exited; None before that."""
+        process = self._process
+        return None if process is None else process.poll()
+
     def source_alive(self, *, max_silence_s: float = 5.0) -> bool:
         """True while the child lives AND the IPC pipe still answers.
 
@@ -723,16 +823,18 @@ class MpvController:
             return
         self._pipe_path = _ipc_pipe_name()
         try:
-            self._process = popen_hidden_subprocess(
-                mpv_startup_arguments(
-                    self.executable, window_id, self._pipe_path, log_path=log_path
-                ),
-                purpose="mpv studio preview",
-                process_factory=self._process_factory,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            with _without_system_error_boxes():
+                self._process = popen_hidden_subprocess(
+                    mpv_startup_arguments(
+                        self.executable, window_id, self._pipe_path, log_path=log_path
+                    ),
+                    purpose="mpv studio preview",
+                    process_factory=self._process_factory,
+                    env=mpv_environment(),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
         except BaseException:
             if os.name != "nt":
                 cleanup_unix_ipc(self._pipe_path)

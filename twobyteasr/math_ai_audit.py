@@ -237,6 +237,8 @@ def start(window, out):
             page.add_game_item(spec['library_name'], library_id=library, select=True)
             page.refresh_current_game()
             pump(.8)
+            QTest.mouseClick(page.more_button, Qt.MouseButton.LeftButton)  # 2026-10-17: the 「⋯」 menu
+            pump(.3)
             button = page.ai_note_button
             check('术语库页 has the 「给 AI 的说明」 button for the selected library',
                   button.isVisible() and button.isEnabled() and button.text() == '给 AI 的说明', button.text())

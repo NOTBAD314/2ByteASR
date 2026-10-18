@@ -143,7 +143,8 @@ def main() -> int:
     for width, height in SIZES:
         capture(window, "term_library_page", width, height)
 
-    # 4. Glossary add game state（顶部 toolbar 输入态）
+    # 4. Glossary add game state（2026-10-17 起：侧栏「新建」展开的小表单）
+    terms_dialog.sidebar_new_button.click()
     terms_dialog.game_input.setText("星穹铁道")
     terms_dialog.game_input.setFocus()
     app.processEvents()

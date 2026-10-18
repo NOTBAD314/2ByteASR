@@ -690,16 +690,96 @@ def export_language_layers(
                                tuple(all_missing), tuple(all_stale))
 
 
+@dataclass(frozen=True)
+class PlannedSubtitleFile:
+    name: str
+    format: str
+    speaker_id: str
+    # "new"; "replace" (an existing file is replaced after read-back);
+    # "renamed" (language layers never replace: the set moves to "(2)").
+    status: str = "new"
+
+
+def _planned_scope_stems(project: SubtitleProject, stem: str, speaker_mode: str) -> list[tuple[str, str]]:
+    """Same scopes and per-speaker names as the two export functions."""
+    visible_cues = project.visible_cues()
+    scopes: list[tuple[str, str]] = []
+    if speaker_mode in {"combined", "both"}:
+        scopes.append(("", stem))
+    if speaker_mode in {"per_speaker", "both"}:
+        mapping = {speaker.id: speaker.name for speaker in project.speakers}
+        used_names: set[str] = set()
+        for speaker_id in dict.fromkeys(cue.speaker_id for cue in visible_cues):
+            label = _speaker_filename(mapping.get(speaker_id, speaker_id))
+            original_label, suffix = label, 2
+            while label.casefold() in used_names:
+                label = f"{original_label}_{suffix}"
+                suffix += 1
+            used_names.add(label.casefold())
+            scopes.append((speaker_id, f"{stem}_{label}"))
+    return scopes
+
+
+def planned_subtitle_files(
+    project: SubtitleProject,
+    directory: str | os.PathLike[str] | None,
+    base_name: str,
+    options: SubtitleExportOptions,
+    layers: Iterable[str] = (),
+) -> tuple[PlannedSubtitleFile, ...]:
+    """File names an export with these choices would write, without writing.
+
+    With language ``layers`` the SRT (and JSON) files come from
+    ``export_language_layers``; the other formats from
+    ``export_subtitle_artifacts`` — the same split the export dialogs use.
+    ``directory`` may be ``None`` when the folder is chosen later.
+    """
+    from .export_preferences import output_basename
+
+    target_dir = Path(directory) if directory else None
+    formats = set(options.formats) & SUPPORTED_SUBTITLE_FORMATS
+    if options.speaker_mode not in SPEAKER_EXPORT_MODES:
+        return ()
+    scopes = _planned_scope_stems(project, output_basename(base_name or "subtitles"), options.speaker_mode)
+    planned: list[PlannedSubtitleFile] = []
+    layers = tuple(dict.fromkeys(layer for layer in layers if layer in LANGUAGE_LAYERS))
+    if layers and "srt" in formats:
+        from .language_rules import project_language
+        from .subtitle_translation import container_target
+        layer_list = layers + (("json",) if "json" in formats else ())
+        original_suffix = project_language(project) or "ja"
+        translation_suffix = _translation_suffix(container_target(project))
+        counter = 1
+        while target_dir is not None and any(
+                (target_dir / _layer_filename(scope_stem, layer, original_suffix, translation_suffix, counter)).exists()
+                for _sid, scope_stem in scopes for layer in layer_list):
+            counter += 1
+        for speaker_id, scope_stem in scopes:
+            for layer in layer_list:
+                planned.append(PlannedSubtitleFile(
+                    _layer_filename(scope_stem, layer, original_suffix, translation_suffix, counter),
+                    "json" if layer == "json" else "srt", speaker_id, "renamed" if counter > 1 else "new"))
+        formats -= {"srt", "json"}
+    for speaker_id, scope_stem in scopes:
+        for format_name in sorted(formats):
+            name = f"{scope_stem}.{format_name}"
+            exists = target_dir is not None and (target_dir / name).exists()
+            planned.append(PlannedSubtitleFile(name, format_name, speaker_id, "replace" if exists else "new"))
+    return tuple(planned)
+
+
 __all__ = [
     "ArtifactVerification",
     "LANGUAGE_LAYERS",
     "LanguageLayerArtifact",
     "LanguageLayerExport",
+    "PlannedSubtitleFile",
     "SubtitleExportArtifact",
     "SubtitleExportOptions",
     "compile_srt",
     "export_language_layers",
     "export_subtitle_artifacts",
     "layer_cues",
+    "planned_subtitle_files",
     "verify_subtitle_artifact",
 ]

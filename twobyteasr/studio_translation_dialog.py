@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
-                               QProgressBar, QPushButton, QRadioButton, QVBoxLayout)
+                               QProgressBar, QPushButton, QRadioButton, QVBoxLayout, QApplication)
 
 from .i18n import bind_text, tr, user_text
 
@@ -41,6 +41,7 @@ def parse_glossary(text: str) -> list[tuple[str, str]]:
 
 class _Signals(QObject):
     progress = Signal(int, int, str)
+    event = Signal(object)
     finished = Signal(object)
 
 
@@ -56,9 +57,11 @@ class SubtitleTranslationDialog(QDialog):
         self._cancel = threading.Event()
         self._thread = None
         self._result = None
+        self._log = None
         self._signals = _Signals(self)
         self._signals.progress.connect(self._on_progress)
         self._signals.finished.connect(self._on_finished)
+        self._signals.event.connect(self._on_event)
         from .subtitle_translation import migrate
         migrate(self.project)
         layout = QVBoxLayout(self)
@@ -124,7 +127,20 @@ class SubtitleTranslationDialog(QDialog):
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.log_note = QLabel(tr("请求日志含字幕文字与模型最终回复，不含 API Key；分享前请检查内容。"))
+        self.log_note.setWordWrap(True)
+        layout.addWidget(self.log_note)
+        self.request_log = QPlainTextEdit()
+        self.request_log.setReadOnly(True)
+        self.request_log.setMaximumBlockCount(1000)
+        self.request_log.setFixedHeight(125)
+        self.request_log.setPlaceholderText(tr("开始后显示每批请求、耗时、用量、失败原因和重试过程。"))
+        layout.addWidget(self.request_log)
         buttons = QHBoxLayout()
+        self.copy_log_button = QPushButton(tr("复制请求日志"))
+        self.copy_log_button.setEnabled(False)
+        self.copy_log_button.clicked.connect(self._copy_log)
+        buttons.addWidget(self.copy_log_button)
         self.accept_suggestions_button = QPushButton(tr("用 AI 结果替换这些人工译文"))
         self.accept_suggestions_button.hide()
         self.accept_suggestions_button.clicked.connect(self._accept_suggestions)
@@ -167,21 +183,27 @@ class SubtitleTranslationDialog(QDialog):
 
     def _describe_service(self) -> bool:
         from .studio_ai import GLOBAL_PROVIDER_REGISTRY
+        from .llm_config import text_ai_key_missing
+        missing = False
         try:
             settings = GLOBAL_PROVIDER_REGISTRY.settings()
             selection = GLOBAL_PROVIDER_REGISTRY.selection(settings, stage="polish")
             ready, _source = GLOBAL_PROVIDER_REGISTRY.credential(selection)
             model = str(getattr(selection, "model", "") or "")
             name = f"{selection.service or selection.provider}{' · ' + model if model else ''}"
+            missing = not ready and text_ai_key_missing(settings, "polish")
         except Exception:  # noqa: BLE001 - shown to the user as "not configured"
             ready, name = False, ""
         if ready:
             bind_text(self.service, "使用已配置的 AI 文字服务：{name}。只发送字幕文字和前后几句上下文（不发送音频），"
                                     "按批请求，可能产生费用；不会改用其他模型。", name=name)
+        elif missing:
+            # 2026-10-15: only the key is missing — 开始翻译 stays clickable and explains it.
+            bind_text(self.service, "这个功能要用 AI，需要先填 API Key")
         else:
             bind_text(self.service, "还没有配置 AI 文字服务：请先在设置中配置“字幕校对”使用的服务，再回来翻译。")
-        self.start_button.setEnabled(ready)
-        return ready
+        self.start_button.setEnabled(ready or missing)
+        return ready or missing
 
     def _scope_ids(self):
         from .subtitle_translation import ids_with_status
@@ -200,11 +222,27 @@ class SubtitleTranslationDialog(QDialog):
         if ids is not None and not ids:
             bind_text(self.status, "没有需要处理的字幕。")
             return
+        from .api_key_explainer import ask_for_key_if_missing
+        if ask_for_key_if_missing(self, GLOBAL_PROVIDER_REGISTRY.settings(), "polish",
+                                  status=lambda: bind_text(self.status, "翻译没有运行：还没填 API Key")):
+            return
+        self.request_log.clear()
+        self.accept_suggestions_button.hide()
+        self._result = None
+        from .subtitle_rules.translation_diagnostics import TranslationLog
+        self._log = TranslationLog()
+        self.copy_log_button.setEnabled(True)
+        self.request_log.appendPlainText(tr("日志文件：{path}", path=str(self._log.path)))
         pairs = parse_glossary(self.glossary.toPlainText())
         self.project.generation_metadata["translation_glossary"] = [list(pair) for pair in pairs]
         self.project.generation_metadata["translation_context"] = self.context.text().strip()
         source = translation_source(self.project)
-        provider = provider_for_stage(GLOBAL_PROVIDER_REGISTRY.settings(), "polish")
+        try:
+            provider = provider_for_stage(GLOBAL_PROVIDER_REGISTRY.settings(), "polish")
+        except Exception as exc:
+            self._log({"event": "error", "error": str(exc)})
+            self._on_finished(exc)
+            return
         options = dict(target=self._target(), game_context=self.context.text().strip(), glossary_pairs=pairs)
         self._cancel.clear()
         self.start_button.setEnabled(False)
@@ -212,18 +250,24 @@ class SubtitleTranslationDialog(QDialog):
         bind_text(self.status, "正在翻译…")
         cache = load_cache()
 
+        def record(event):
+            self._log(event)
+            self._signals.event.emit(event)
+
         def work():
             from .subtitle_translation import translate
             try:
                 result = translate(source, ids, provider, cancel_check=self._cancel.is_set,
                                    progress=lambda done, total, message="": self._signals.progress.emit(
                                        int(done), int(total), str(message or "")),
-                                   cache=cache, suggest_for_manual=True, **options)
+                                   cache=cache, suggest_for_manual=True, event=record, **options)
                 try:
                     save_cache(cache)
                 except OSError:
                     pass
             except Exception as exc:  # noqa: BLE001 - reported in the dialog
+                from .provider_diagnostics import redact_diagnostics
+                record({"event": "error", "error": str(redact_diagnostics(str(exc)))})
                 result = exc
             self._signals.finished.emit(result)
 
@@ -234,12 +278,70 @@ class SubtitleTranslationDialog(QDialog):
         self.progress.setValue(int(100 * done / max(1, total)))
         bind_text(self.status, "已完成 {done}/{total} 条 {message}", done=done, total=total, message=message)
 
+    def _on_event(self, event: dict) -> None:
+        from .provider_diagnostics import redact_diagnostics
+        event = redact_diagnostics(event)
+        kind, batch = event.get("event"), event.get("batch", "")
+        prefix = f"[{event.get('at', '')}] "
+        if kind == "request":
+            text = tr("第 {batch} 批 · {provider} / {model} · {count} 条 · 输出上限 {tokens}",
+                      batch=batch, provider=event.get("provider"), model=event.get("model"),
+                      count=len(event.get("ids", [])), tokens=event.get("max_tokens"))
+        elif kind == "response":
+            usage = event.get("usage") or {key: value for key, value in event.get("response_metadata", {}).items()
+                                          if key in {"prompt_tokens", "completion_tokens", "total_tokens"}}
+            text = tr("第 {batch} 批返回 · {seconds} 秒 · 用量 {usage}", batch=batch,
+                      seconds=event.get("elapsed_seconds"), usage=json.dumps(usage, ensure_ascii=False) if usage else tr("未返回用量"))
+        elif kind == "validated":
+            text = tr("第 {batch} 批校验 · 接受 {count} 条 · 问题 {problems}", batch=batch,
+                      count=event.get("accepted"), problems=json.dumps(event.get("problems", {}), ensure_ascii=False))
+        elif kind == "error":
+            text = tr("第 {batch} 批失败 · {category} · {error}", batch=batch,
+                      category=event.get("category", ""), error=event.get("error", ""))
+        elif kind == "retry":
+            text = tr("第 {batch} 批重试 · 剩余 {count} 条 · 等待 {seconds} 秒 · 输出至少 {tokens}",
+                      batch=batch, count=len(event.get("ids", [])), seconds=event.get("wait_seconds"),
+                      tokens=event.get("output_floor"))
+        elif kind == "started":
+            text = tr("开始翻译：{count} 条 · {provider} / {model}", count=event.get("requested"),
+                      provider=event.get("provider"), model=event.get("model"))
+        elif kind == "finished":
+            summary = event.get("summary", {})
+            text = tr("翻译结束：成功 {done} 条，失败 {failed} 条，请求 {requests} 批", done=summary.get("succeeded", 0),
+                      failed=summary.get("failed", 0), requests=summary.get("requests", 0))
+        elif kind == "cache":
+            text = tr("缓存命中 {count} 条", count=event.get("count", 0))
+        elif kind == "split":
+            text = tr("拆分批次：{count} 条 · {reason}", count=len(event.get("ids", [])), reason=event.get("reason"))
+        else:
+            # Request/answer bodies stay in the copyable file; the visible log
+            # remains readable while a long project is running.
+            text = json.dumps({key: value for key, value in event.items()
+                               if key not in {"at", "provider", "model", "target", "failed"}}, ensure_ascii=False)
+        self.request_log.appendPlainText(prefix + text)
+        self.request_log.verticalScrollBar().setValue(self.request_log.verticalScrollBar().maximum())
+
+    def _copy_log(self) -> None:
+        from .provider_diagnostics import redact_diagnostics
+        text = self.request_log.toPlainText()
+        if self._log is not None:
+            try:
+                text = self._log.path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+        QApplication.clipboard().setText(str(redact_diagnostics(text)))
+
     def _on_finished(self, result) -> None:
         self._thread = None
         self.start_button.setEnabled(self._provider_ready)
         bind_text(self.cancel_button, "关闭")
+        if self._log is not None and self._log.error:
+            self.request_log.appendPlainText(tr("日志文件写入失败：{error}", error=self._log.error))
         if isinstance(result, Exception):
-            bind_text(self.status, "翻译没有完成：{error}。已完成的部分没有写入，可以再试。", error=str(result)[:200])
+            from .provider_diagnostics import redact_diagnostics
+            error = str(redact_diagnostics(str(result)))
+            self.request_log.appendPlainText(error)
+            bind_text(self.status, "翻译没有完成：{error}。已完成的部分没有写入，可以再试。", error=error[:200])
             self.translation_finished.emit(False, {})
             return
         self._result = result
@@ -252,9 +354,12 @@ class SubtitleTranslationDialog(QDialog):
                                                                       label="AI 翻译字幕"))
         parts = [tr("成功 {count} 条", count=len(result.translations))]
         if result.cache_hits:
-            parts.append(tr("其中 {count} 条来自翻译缓存", count=result.cache_hits))
+            parts.append(tr("其中 {count} 条来自翻译缓存", count=len(result.cache_hits)))
         if result.failed:
             parts.append(tr("失败 {count} 条（可选“只处理未翻译、失败…”再试）", count=len(result.failed)))
+            from .provider_diagnostics import redact_diagnostics
+            reason = str(redact_diagnostics(result.fatal_error or next(iter(result.failed.values()))))
+            parts.append(tr("失败原因：{error}（详情见请求日志）", error=reason[:180]))
         if result.suggestions:
             parts.append(tr("人工译文 {count} 条保留不变（AI 结果可选择替换）", count=len(result.suggestions)))
             self.accept_suggestions_button.show()

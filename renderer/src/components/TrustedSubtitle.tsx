@@ -2,6 +2,7 @@ import React from 'react';
 import {interpolate} from 'remotion';
 import type {Recipe} from '../SubtitleComposition';
 import {OutsideStrokeText} from './OutsideStrokeText';
+import {TimedText} from './TimedText';
 
 const KNOWN_DECORATIONS = new Set(['corner_brackets','left_bracket','right_bracket','scanline','side_line','underline','accent_line','particle_lite']);
 
@@ -121,7 +122,7 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
     scale:`${scaleX} ${scaleY}`,
     rotate:`${(recipe.layout.rotation ?? 0) + entryRotate}deg`,
     transformOrigin:`${anchorX}% ${anchorY}%`,
-    whiteSpace: 'pre-wrap', wordBreak: 'normal', overflowWrap: 'anywhere', textAlign: 'center', fontFamily: recipe.typography.fontFamily,
+    whiteSpace: 'pre-wrap', wordBreak: 'normal', overflowWrap: 'anywhere', width: 'max-content', textAlign: 'center', fontFamily: recipe.typography.fontFamily,
     fontSize: recipe.typography.fontSize, fontWeight: recipe.typography.fontWeight ?? (recipe.typography.bold ? 700 : 400),
     fontStyle: recipe.typography.italic ? 'italic' : 'normal', letterSpacing: recipe.typography.spacing,
     lineHeight: (recipe.layout as Record<string, unknown>).lineHeightPx ? `${(recipe.layout as Record<string, unknown>).lineHeightPx}px` : numberValue((recipe.layout as Record<string, unknown>).lineGap, 1.12), opacity,
@@ -131,7 +132,9 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
   };
   const visibleText = entranceActive && entranceType === 'type_on' ? text.slice(0, Math.ceil(text.length * entryProgress)) : text;
   const perLetter = (entranceActive && entranceType === 'letter_stagger') || (holdActive && holdType === 'per_letter_bounce');
-  const textContent = perLetter
+  const textContent = (recipe.wordAnimation?.spans?.length || recipe.wordAnimation?.units?.length)
+    ? <TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/>
+    : perLetter
     ? Array.from(visibleText).map((character, index) => <span key={`${character}-${index}`} style={{display:'inline-block',opacity:Math.max(0,Math.min(1,entryProgress*text.length-index)),translate:`0 ${holdType === 'per_letter_bounce' ? Math.sin(frame*.28+index*.7)*3 : (1-entryProgress)*12}px`}}>{character}</span>)
     : visibleText;
   const panelGradient = panel.gradient.colors.length >= 2
@@ -165,7 +168,7 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
       filter:shadow.blur > 0 ? `blur(${shadow.blur}px)` : undefined,
     }}>{textContent}</span>}
     {[...recipe.strokes].reverse().map((stroke, index) => <OutsideStrokeText key={`stroke-${index}`} radius={stroke.width} color={cssColor(stroke.color)} style={{position:'absolute',inset:0,zIndex:2}}>{textContent}</OutsideStrokeText>)}
-    <span data-layer="fill" style={{...fillStyle,position:'relative',zIndex:3,display:'inline-block',backgroundSize:'100% 100%',WebkitTextStroke:'0 transparent'}}>{textContent}</span>
+    <span data-layer="fill" style={{...(recipe.wordAnimation?.units?.length?{}:fillStyle),position:'relative',zIndex:3,display:'inline-block',backgroundSize:'100% 100%',WebkitTextStroke:'0 transparent'}}>{(recipe.wordAnimation?.spans?.length || recipe.wordAnimation?.units?.length) ? <TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000} fill paint={fillStyle} paintFont={base}/> : textContent}</span>
     {activeGlitch && <>
       {Array.from({length:sliceCount}).map((_,index) => <span key={`slice-${index}`} style={{...fillStyle,position:'absolute',inset:0,opacity:.54,transform:`translateX(${Math.sin(index*7+frame)*chromaticOffset*(1-entryProgress)}px)`,clipPath:`inset(${index/sliceCount*100}% 0 ${100-(index+1)/sliceCount*100}% 0)`,WebkitTextStroke:`1px ${index%2?'#ff4db8':'#20d6e8'}`}}>{text}</span>)}
     </>}

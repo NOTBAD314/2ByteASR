@@ -86,12 +86,41 @@ class StudioReviewMixin:
         self._set_cue_filter(status)
 
     def _jump_to_row(self) -> None:
-        if not self.project or not self.project.cues:
+        # Leaving the box without changing the number is not a jump.
+        if not getattr(self, "_jump_pending", False):
             return
-        row = min(len(self.project.cues), max(1, self.jump_spin.value())) - 1
-        cue = self.project.cues[row]
+        self._jump_pending = False
+        order = getattr(self, "_cue_jump_order", None)
+        if not self.project or not order:
+            return
+        row = min(len(order), max(1, self.jump_spin.value())) - 1
+        self._go_to_listed_cue(order[row])
+
+    def _go_to_listed_cue(self, cue) -> None:
+        # The seek re-picks the caption at the playhead; where captions
+        # overlap it would take the one on the current track and 下一条 kept
+        # landing on the previous caption (2026-10-18). Its track goes first.
+        self.session.preferred_subtitle_speaker = cue.speaker_id
         self.select_cue(cue.id)
         self._seek(cue.start_ms / 1000.0)
+
+    def _sync_jump_position(self) -> None:
+        """The 跳转 box shows the selected caption's number (2026-10-18, user:
+        after 上一条 / 下一条 it kept the old number)."""
+        spin = getattr(self, "jump_spin", None)
+        if spin is None or getattr(self, "_jump_pending", False):
+            return  # a number the user is typing stays until they jump
+        lookup = getattr(self, "_cue_jump_index", None) or {}
+        cue_id = str(self.selected_cue_id or "")
+        index = lookup.get(cue_id)
+        if index is None and cue_id:
+            from .studio_edit_sequence import source_cue_id_of
+            index = lookup.get(source_cue_id_of(cue_id))
+        if index is None or spin.value() == index + 1:
+            return
+        spin.blockSignals(True)
+        spin.setValue(index + 1)
+        spin.blockSignals(False)
 
     def _step_cue(self, delta: int) -> None:
         if not self.project or not self.cue_model.rowCount():
@@ -99,9 +128,7 @@ class StudioReviewMixin:
         index = self.cue_model.row_for_cue_id(self.selected_cue_id)
         index = 0 if index < 0 else index
         target = min(self.cue_model.rowCount() - 1, max(0, index + int(delta)))
-        cue = self.cue_model.cue_at(target)
-        self.select_cue(cue.id)
-        self._seek(cue.start_ms / 1000.0)
+        self._go_to_listed_cue(self.cue_model.cue_at(target))
 
 
     def _focus_review_editor(self) -> None:
@@ -253,6 +280,7 @@ class StudioReviewMixin:
                         current_text=cue.text,
                         parent=self,
                         suggestions=suggestions if index == 0 else (),
+                        key_text=self._shortcut_key_text,
                     )
                     card.clicked.connect(lambda row=index: self._adopt_review_candidate(row))
                     if index == 0 and suggestions:
@@ -284,7 +312,8 @@ class StudioReviewMixin:
                     # glossary fixes or 他/她 to flip: card 1 next to the banner.
                     from .studio_qc import QCCandidate
                     card = ReviewCandidateCard(0, QCCandidate(cue.text, ("Current",)), is_current=True,
-                                               current_text=cue.text, parent=self, suggestions=suggestions)
+                                               current_text=cue.text, parent=self, suggestions=suggestions,
+                                               key_text=self._shortcut_key_text)
                     card.clicked.connect(lambda: self._adopt_review_candidate(0))
                     card.suggestion_activated.connect(self._apply_review_suggestion)
                     card.suggestion_menu_requested.connect(self._show_review_suggestion_menu)
@@ -854,7 +883,8 @@ class StudioReviewMixin:
             return False
         if not self.cue_controller.set_text(cue.id, value, command_text=tr("审核改字")):
             return False
-        bind_text(self.save_state, '已改为「{new}」· Ctrl+Z 撤销', new=row.options[int(option)].text or "∅")
+        bind_text(self.save_state, '已改为「{new}」· {key} 撤销', new=row.options[int(option)].text or "∅",
+                  key=self._shortcut_key_text("undo"))
         self._refresh_review_summary_strip()
         return True
 
@@ -883,7 +913,7 @@ class StudioReviewMixin:
             return False
         if not self.cue_controller.set_text(cue.id, value, command_text=tr("切换人称")):
             return False
-        bind_text(self.save_state, '人称已切换 · Ctrl+Z 撤销')
+        bind_text(self.save_state, '人称已切换 · {key} 撤销', key=self._shortcut_key_text("undo"))
         self._refresh_review_summary_strip()
         return True
 

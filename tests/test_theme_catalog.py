@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from twobyteasr.ui_theme import (THEME_FAMILIES, THEME_ORDER, THEME_TRAITS, THEMES, contrast_ratio,
-                                 ordered_themes, theme_display_label, theme_family_label, theme_mood)
+                                 ordered_themes, theme_display_label, theme_family_label)
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL = {"grape", "warm", "plum", "lavender", "slate"}
@@ -64,11 +64,12 @@ def test_light_or_dark_comes_from_the_background_not_the_key():
         assert theme.on_accent_is_light == (contrast_ratio("#ffffff", theme.text_on_accent) < 2)
 
 
-def test_every_theme_is_named_and_described_in_every_language():
+def test_every_theme_is_named_by_its_colours_in_every_language():
+    # 2026-10-17: names are "base / accent", no poetic four-character names.
     for theme in THEMES.values():
         for language in LANGUAGES:
-            assert theme.labels.get(language), (theme.key, language)
-            assert theme_mood(theme, language), (theme.key, language)
+            name = theme.labels.get(language)
+            assert name and name.count(" / ") == 1, (theme.key, language, name)
         assert theme_display_label(theme, "zh-Hant") != theme.label  # not the English fallback
     assert len({theme_display_label(theme, "zh") for theme in THEMES.values()}) == len(THEMES)
     for family, _labels in THEME_FAMILIES:

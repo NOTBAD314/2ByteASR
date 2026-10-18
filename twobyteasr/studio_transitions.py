@@ -2,10 +2,54 @@
 from __future__ import annotations
 import copy
 import math
+import random
 import uuid
+import zlib
 from dataclasses import asdict, is_dataclass
 
 KEY = 'clip_transitions'
+DEFAULT_LOOK_KEY = 'default_video_transition_look'
+# Video seam looks (2026-10-17): generic editing techniques implemented here.
+# ``cross_dissolve`` is the original look and is saved as *no* ``look`` field,
+# so older projects and older builds stay byte-for-byte compatible. A record
+# keeps ``type: cross_dissolve``; older builds render any look as a dissolve
+# and keep the unknown ``look`` field when they re-align the edit.
+VIDEO_LOOKS = ('cross_dissolve', 'push', 'whip', 'zoom_blur', 'flash', 'glitch', 'stretch')
+LOOK_DIRECTIONS = {'push': ('left', 'right', 'up', 'down'), 'whip': ('left', 'right', 'up', 'down'),
+                   'flash': ('white', 'black'), 'stretch': ('horizontal', 'vertical')}
+_KEEP = object()
+
+
+def normalize_look(value):
+    """Canonical ``{id, direction?, intensity}``, or None for the plain dissolve.
+
+    Unknown ids (a newer build's look) also read as None: they are played as
+    a dissolve but never rewritten unless the user picks another look.
+    """
+    if isinstance(value, str):
+        value = dict(id=value)
+    if not isinstance(value, dict):
+        return None
+    look_id = str(value.get('id') or '')
+    if look_id not in VIDEO_LOOKS or look_id == 'cross_dissolve':
+        return None
+    try:
+        intensity = float(value.get('intensity', 1.))
+    except (TypeError, ValueError):
+        intensity = 1.
+    if not math.isfinite(intensity):
+        intensity = 1.
+    result = dict(id=look_id, intensity=round(max(.5, min(1.5, intensity)), 3))
+    choices = LOOK_DIRECTIONS.get(look_id, ())
+    if choices:
+        direction = str(value.get('direction') or '')
+        result['direction'] = direction if direction in choices else choices[0]
+    return result
+
+
+def default_look(project):
+    state = project.get('studio_state', {}) if isinstance(project, dict) else project.studio_state
+    return normalize_look((state or {}).get(DEFAULT_LOOK_KEY))
 
 
 def _data(value):
@@ -116,7 +160,10 @@ def reconcile_transitions(project):
     return records
 
 
-def set_transition(project, media, track_id, left_clip_id='', right_clip_id='', edge='seam', duration_ms=500):
+def set_transition(project, media, track_id, left_clip_id='', right_clip_id='', edge='seam', duration_ms=500,
+                   look=_KEEP):
+    """Create or update one transition. ``look`` applies to video seams only;
+    omitted, an existing seam keeps its look (also an unknown newer one)."""
     if media not in ('video', 'audio'):
         raise ValueError('转场仅适用于视频或音频')
     graph = _graph(project)
@@ -129,6 +176,10 @@ def set_transition(project, media, track_id, left_clip_id='', right_clip_id='', 
     item = dict(id=existing['id'] if existing else 'transition-'+uuid.uuid4().hex[:12], media=media,
                 track_id=track_id, left_clip_id=left_clip_id, right_clip_id=right_clip_id,
                 edge=edge, duration_ms=duration_ms)
+    if media == 'video' and edge == 'seam':
+        chosen = (existing or {}).get('look') if look is _KEEP else normalize_look(look)
+        if chosen is not None:
+            item['look'] = copy.deepcopy(chosen)
     item = _constraint(graph, item)
     records = [t for t in records if t.get('id') != item['id']]
     records.append(item)
@@ -163,6 +214,12 @@ def transition_windows(project, media):
                 window.update(timeline_in_ms=start,timeline_out_ms=end,
                     source_in_ms=clip['source_in_ms']+round((start-clip['timeline_in_ms'])*rate),
                     source_out_ms=clip['source_out_ms']+round((end-clip['timeline_out_ms'])*rate))
+            look = normalize_look(item.get('look')) if media == 'video' and item['edge'] == 'seam' else None
+            if look:
+                # Both sides move under a look; transition_effect samples them.
+                window['envelopes'].append(dict(start_ms=item['start_ms'], end_ms=item['end_ms'], role=role,
+                    curve='look', look=look, transition_id=item['id']))
+                continue
             # SourceOver implements an opaque video dissolve by retaining the
             # outgoing frame and fading the incoming frame above it. Audio has
             # two complementary, equal-power sampling envelopes.
@@ -173,18 +230,124 @@ def transition_windows(project, media):
     return result
 
 
-def transition_gain(envelopes, timeline_ms):
-    gain = 1.
+IDENTITY_FX = dict(opacity=1., dx=0., dy=0., sx=1., sy=1., blur_x=0., blur_y=0., zoom_blur=0.,
+                   rgb_split=0., glitch=0., seed=0, tint='', tint_alpha=0.)
+_DIRECTIONS = {'left': (-1., 0.), 'right': (1., 0.), 'up': (0., -1.), 'down': (0., 1.)}
+_MIX = .06  # zoom/stretch: brief overlap around the cut hides the swap
+
+
+def _clamp01(value):
+    return max(0., min(1., value))
+
+
+def _smoothstep(low, high, value):
+    t = _clamp01((value-low)/(high-low))
+    return t*t*(3-2*t)
+
+
+def _ease_in_out(u, power):
+    return 2**(power-1)*u**power if u < .5 else 1-(-2*u+2)**power/2
+
+
+def _ease_speed(u, power):
+    """Derivative of ``_ease_in_out``, normalised to 1 at the midpoint."""
+    return (2*min(u, 1-u))**(power-1)
+
+
+def _slide(look, role, u, power, smear):
+    vx, vy = _DIRECTIONS.get(look.get('direction'), _DIRECTIONS['left'])
+    progress = _ease_in_out(u, power)
+    shift = progress if role == 'out' else progress-1.
+    blur = smear*look['intensity']*_ease_speed(u, power)
+    return dict(dx=vx*shift, dy=vy*shift, blur_x=abs(vx)*blur, blur_y=abs(vy)*blur)
+
+
+def _grow(look, role, u):
+    """Shared cut-point timing for zoom and stretch: the outgoing clip
+    accelerates into the cut, the incoming clip decelerates out of it."""
+    if role == 'out':
+        t = _clamp01(u/.5)
+        return t**3, t*t, (1. if u < .5+_MIX else 0.)
+    t = _clamp01((u-.5)/.5)
+    return (1-t)**3, (1-t)**2, _smoothstep(.5-_MIX, .5+_MIX, u)
+
+
+def _look_sample(look, role, u, transition_id, timeline_ms):
+    kind = look['id']
+    k = look['intensity']
+    if kind == 'push':
+        return _slide(look, role, u, 3, .16)
+    if kind == 'whip':
+        return _slide(look, role, u, 5, .4)
+    if kind == 'zoom_blur':
+        amount, speed, opacity = _grow(look, role, u)
+        scale = 1+.45*k*amount
+        return dict(sx=scale, sy=scale, zoom_blur=.3*k*speed, opacity=opacity)
+    if kind == 'stretch':
+        amount, speed, opacity = _grow(look, role, u)
+        along = 1+2.2*k*amount
+        horizontal = look.get('direction') != 'vertical'
+        return dict(sx=along if horizontal else 1., sy=1. if horizontal else along,
+                    blur_x=.12*k*speed if horizontal else 0., blur_y=0. if horizontal else .12*k*speed,
+                    opacity=opacity)
+    shown = 1. if (u < .5) == (role == 'out') else 0.
+    if kind == 'flash':
+        t = _clamp01(u/.5) if role == 'out' else 1-_clamp01((u-.5)/.5)
+        return dict(opacity=shown, tint='#000000' if look.get('direction') == 'black' else '#ffffff',
+                    tint_alpha=min(1., t*t*(.75+.5*k)))
+    if kind == 'glitch':
+        strength = (1-abs(2*u-1))**.6
+        # Seeded by project time, so preview and export draw the same slices.
+        seed = zlib.crc32(f'{transition_id}:{int(float(timeline_ms)//40)}'.encode())
+        jitter = (random.Random(seed).random()-.5)*.03*k*strength
+        return dict(opacity=shown, dx=jitter, rgb_split=.018*k*strength, glitch=k*strength, seed=seed)
+    return {}
+
+
+def _compose(fx, part):
+    fx['opacity'] *= part.get('opacity', 1.)
+    for key in ('dx', 'dy', 'blur_x', 'blur_y'):
+        fx[key] += part.get(key, 0.)
+    for key in ('sx', 'sy'):
+        fx[key] *= part.get(key, 1.)
+    for key in ('zoom_blur', 'rgb_split', 'glitch'):
+        fx[key] = max(fx[key], part.get(key, 0.))
+    if part.get('glitch', 0.) > 0:
+        fx['seed'] = part['seed']
+    if part.get('tint_alpha', 0.) > fx['tint_alpha']:
+        fx['tint'], fx['tint_alpha'] = part['tint'], part['tint_alpha']
+
+
+def transition_effect(envelopes, timeline_ms):
+    """Per-layer transition state at one project time: ``IDENTITY_FX`` keys.
+
+    Positions are fractions of the output frame; scale is about the layer
+    centre. Every look is the identity at its outgoing start and incoming end,
+    so nothing changes outside the transition window.
+    """
+    fx = dict(IDENTITY_FX)
     for item in envelopes:
         if item['role'] == 'hold':
             continue
         u = max(0., min(1., (float(timeline_ms)-item['start_ms'])/max(1,item['end_ms']-item['start_ms'])))
+        if item['curve'] == 'look':
+            _compose(fx, _look_sample(item['look'], item['role'], u, item.get('transition_id', ''), timeline_ms))
+            continue
         if item['curve'] == 'equal_power':
             value = math.sin(u*math.pi/2) if item['role']=='in' else math.cos(u*math.pi/2)
         else:
             value = u if item['role']=='in' else 1-u
-        gain *= value
-    return gain
+        fx['opacity'] *= value
+    return fx
+
+
+def transition_fx_active(fx):
+    """True when a layer needs more than its opacity to draw this frame."""
+    return bool(fx) and any(fx[key] != IDENTITY_FX[key] for key in IDENTITY_FX if key not in ('opacity', 'seed', 'tint'))
+
+
+def transition_gain(envelopes, timeline_ms):
+    return transition_effect(envelopes, timeline_ms)['opacity']
 
 
 def transition_volume_expression(envelopes, *, origin_ms=0):

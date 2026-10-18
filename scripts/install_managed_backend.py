@@ -162,9 +162,10 @@ def main():
         raise RemovedModelError('DiariZen / VibeVoice models have been removed; no installation or download was started.')
     root = args.root.resolve()
     sys.path.append(str(root))
-    from twobyteasr.runtime_paths import user_data_root
+    from twobyteasr.runtime_paths import managed_runtime_root
     from twobyteasr.runtime_registry import register_runtime, load_registry
-    managed = user_data_root() / 'runtimes'
+    # setup_managed_backend.ps1 passes the folder it locked (2BYTEASR_RUNTIME_ROOT).
+    managed = managed_runtime_root()
     # Always use this app's cache; a caller's global UV_CACHE_DIR never leaks in.
     os.environ['UV_CACHE_DIR'] = str(managed / 'download-cache')
     # Hardlinks survive cache unlinking; symbolic links would tie installed

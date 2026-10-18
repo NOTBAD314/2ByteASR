@@ -1025,6 +1025,9 @@ class SubtitleStudioPage(
             "review_adopt_4": lambda: self._adopt_review_candidate(3),
             "review_flip_pronoun": self._flip_review_pronouns,
         }
+        # 2026-10-17: jump, zoom, nudge, export, panels... (one module, same registry).
+        from .studio_shortcut_actions import extra_command_callbacks
+        self._command_callbacks.update(extra_command_callbacks(self))
         if getattr(self,'_new_shortcut_conflicts',None):
             bind_text(self.save_state,'新增快捷键与已有自定义绑定冲突，已保留原绑定；请在快捷键设置中改绑')
         from . import shortcut_registry
@@ -1045,7 +1048,14 @@ class SubtitleStudioPage(
             shortcut = getattr(self, attribute, None)
             if shortcut is not None:
                 shortcut.setKey(QKeySequence(self._shortcut_values.get(command_id, "")))
+        # The timeline's own select-all key (a standalone timeline keeps Ctrl+A)
+        # and the key its selected-gap hint names.
+        self.timeline.select_all_key = self._shortcut_values.get("select_all", "")
+        self.timeline.delete_key = self._shortcut_values.get("delete", "")
+        self.timeline.update()
         self._refresh_shortcut_tooltips()
+        if getattr(self, "project", None) is not None and getattr(self, "video_empty_note", None) is not None:
+            self._sync_video_empty_state()  # the empty-timeline note names the undo key
         # 2026-09-19：焦点看门狗——mpv/预览子窗口的异步操作可能在编辑自愈
         # 之后再次把 Win32 焦点打到 NULL。仅在本应用处于前台时低频收回，
         # 绝不打扰用户正在使用的其他应用。
@@ -1281,8 +1291,9 @@ class SubtitleStudioPage(
                 sequence = QKeySequence(event.keyCombination()).toString(
                     QKeySequence.SequenceFormat.PortableText
                 )
+                from .shortcut_registry import normalize
                 if (
-                    sequence.casefold() == "ctrl+a"
+                    self._shortcut_lookup.get(normalize(sequence)) == "select_all"
                     and self.project
                     and self._cue_list_has_focus()
                 ):
@@ -1375,27 +1386,41 @@ class SubtitleStudioPage(
         return True
 
     def _refresh_shortcut_tooltips(self) -> None:
-        """Toolbar hints show the current keys (same wording as before for defaults)."""
+        """Every hint that names a key shows the current binding (2026-10-17: all of them).
+
+        Widgets register through ``_shortcut_tooltip`` while the workspace is
+        built; a rebind reinstalls the shortcuts, which lands here. Default
+        keys read as before ("剃刀工具 (C)——…").
+        """
+        targets = getattr(self, "_shortcut_tooltip_targets", [])
+        for entry in list(targets):
+            try:
+                self._apply_shortcut_tooltip(*entry)
+            except RuntimeError:
+                targets.remove(entry)  # the widget was deleted
+
+    def _shortcut_tooltip(self, widget, template: str, command_ids) -> None:
+        """Bind ``widget``'s tooltip to ``template`` filled with the current keys.
+
+        ``command_ids`` is one registry id (``{key}`` in the template) or a
+        mapping placeholder -> id for a tooltip naming several keys.
+        """
+        ids = {"key": command_ids} if isinstance(command_ids, str) else dict(command_ids)
+        targets = getattr(self, "_shortcut_tooltip_targets", None)
+        if targets is None:
+            targets = self._shortcut_tooltip_targets = []
+        targets.append((widget, template, ids))
+        self._apply_shortcut_tooltip(widget, template, ids)
+
+    def _apply_shortcut_tooltip(self, widget, template: str, ids: dict) -> None:
+        bind_text(widget, template, property="toolTip",
+                  **{name: self._shortcut_key_text(command_id) for name, command_id in ids.items()})
+
+    def _shortcut_key_text(self, command_id: str):
+        """The current key of a Studio command as tooltips and menus name it."""
         from . import shortcut_registry as keys
-        values = self._shortcut_values
-
-        def key(command_id):
-            return keys.tooltip_key(command_id, values)
-
-        for attribute, template, command_id in (
-            ("save_button", "保存项目 ({key})", "save"),
-            ("track_forward_tool_button", "轨道向前选择 ({key}) · Shift 单轨", "track_forward_tool"),
-        ):
-            widget = getattr(self, attribute, None)
-            if widget is not None:
-                bind_text(widget, template, property="toolTip", key=key(command_id))
-        widget = getattr(self, "studio_find_replace_button", None)
-        if widget is not None:
-            bind_text(widget, '查找并替换字幕文字 ({find} / {replace})', property='toolTip',
-                      find=key("find"), replace=key("find_replace"))
-        widget = getattr(self, "review_mode_button", None)
-        if widget is not None:
-            bind_text(widget, '{key} 进入 / 退出审核模式', property='toolTip', key=key("toggle_review"))
+        key = (getattr(self, "_shortcut_values", None) or {}).get(command_id, "")
+        return keys.display(key) if key else tr("未绑定")
 
     def _clear_review_space(self, generation: int) -> None:
         if generation == self._review_space_generation:
@@ -1485,12 +1510,16 @@ class SubtitleStudioPage(
         editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _show_shortcut_settings(self) -> None:
+        # 2026-10-18 (user): the same entry closes the open panel (asking
+        # first about keys changed but not saved).
         if getattr(self, "_shortcut_settings_panel", None) is not None:
+            self._request_close_shortcut_settings()
             return
         from .studio_shortcuts import ShortcutSettingsPanel
         previous = (self.context_panel.isVisible(), self.upper_splitter.sizes(), QApplication.focusWidget())
         panel = ShortcutSettingsPanel(self._shortcut_values, self.context_stack)
         self._shortcut_settings_panel = panel
+        opened_with = dict(panel.values())
         self.context_stack.addWidget(panel)
         self.context_stack.setCurrentWidget(panel)
         self.context_panel.show()
@@ -1505,7 +1534,7 @@ class SubtitleStudioPage(
                     self._install_shortcuts()
                 except Exception as exc:
                     self._shortcut_values = before
-                    bind_text(panel.conflict_label, '保存失败：{exc}', exc=exc)
+                    panel.show_message(tr('保存失败：{exc}', exc=exc), 'error')
                     return
             self.context_stack.setCurrentWidget(self.context_drawer)
             self.context_stack.removeWidget(panel)
@@ -1518,17 +1547,41 @@ class SubtitleStudioPage(
             if previous[2] is not None:
                 previous[2].setFocus(Qt.FocusReason.OtherFocusReason)
 
+        def request_close():
+            if self._shortcut_settings_panel is not panel:
+                return
+            if panel.values() != opened_with:
+                choice = studio_message_box(
+                    self, QMessageBox.Icon.Question, tr('快捷键设置'), tr('快捷键已修改，要保存吗？'),
+                    QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                    | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Save)
+                if choice == QMessageBox.StandardButton.Cancel:
+                    return
+                if choice == QMessageBox.StandardButton.Save:
+                    from . import shortcut_registry
+                    if shortcut_registry.blocking_conflicts(panel.values()):
+                        panel.show_message(tr('还有快捷键冲突，请先处理再保存。'), 'error')
+                        return
+                    finish(True)
+                    return
+            finish(False)
+
+        self._request_close_shortcut_settings = request_close
         panel.accepted.connect(lambda: finish(True))
         panel.rejected.connect(lambda: finish(False))
+        panel.close_requested.connect(request_close)
 
-    def _tool_button(self, icon_name: str, tooltip: str, slot) -> QToolButton:
+    def _tool_button(self, icon_name: str, tooltip: str, slot, shortcut=None) -> QToolButton:
         button = QToolButton()
         button.setObjectName("studioTool")
         install_themed_icon(button, icon_name)
         button.setIconSize(QSize(24, 24))
         button.setMinimumSize(QSize(32, 32))
         button.setProperty('commandSource', tooltip)
-        bind_text(button, tooltip, property='toolTip')
+        if shortcut:
+            self._shortcut_tooltip(button, tooltip, shortcut)  # names the current key(s)
+        else:
+            bind_text(button, tooltip, property='toolTip')
         button.clicked.connect(slot)
         return button
 
@@ -1643,16 +1696,16 @@ class SubtitleStudioPage(
         tabbar.setElideMode(Qt.TextElideMode.ElideNone)
         tabbar.setUsesScrollButtons(False)
         # Expanding stays on: tabs share the drawer width (centered group).
-        full = ("AI设计", "样式", "视频", "剪辑助手", "素材")
-        medium = ("AI", "样式", "视频", "剪辑", "素材")
+        full = ("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")
+        medium = ("AI", "样式", "动效", "视频", "剪辑", "素材")
         width = max(1, drawer.width())
         # Compact glyphs leave room for readable labels in the default drawer.
-        if width >= 460:
+        if width >= 530:
             labels, mode, icon_only = full, "full", False
-        elif width >= 370:
+        elif width >= 350:
             labels, mode, icon_only = medium, "medium", False
         else:
-            labels, mode, icon_only = ("",) * len(full), "icon", True
+            labels, mode, icon_only = ("", "样式", "动效", "", "", ""), "icon", True
         if getattr(self, "_context_tab_mode", "") == mode:
             return
         self._context_tab_mode = mode
@@ -2466,7 +2519,8 @@ class SubtitleStudioPage(
         )
         if timeline_empty:
             bind_text(self.video_empty_label, '时间线为空')
-            bind_text(self.video_empty_note, '已清除旧画面、字幕和播放状态；按 Ctrl+Z 可恢复')
+            bind_text(self.video_empty_note, '已清除旧画面、字幕和播放状态；按 {key} 可恢复',
+                      key=self._shortcut_key_text("undo"))
             self.video_empty_import.hide()
         elif audio_only:
             bind_text(self.video_empty_label, '纯音频工程')
@@ -2604,8 +2658,18 @@ class SubtitleStudioPage(
         else:
             view_cues = []
         total = len(view_cues)
+        # 2026-10-18 (user): 跳转 numbers the captions as listed here and
+        # follows the selection (see _sync_jump_position).
+        self._cue_jump_order = list(view_cues)
+        self._cue_jump_index = {}
+        for index, cue in enumerate(view_cues):
+            self._cue_jump_index.setdefault(str(cue.id), index)
+            self._cue_jump_index.setdefault(_source_key(cue), index)
+        self.jump_spin.blockSignals(True)  # a clamped value is not the user's number
         self.jump_spin.setRange(1, max(1, total))
+        self.jump_spin.blockSignals(False)
         self.cue_total_label.setText(f"/ {total}")
+        self._sync_jump_position()
         if not self.project:
             for key, label in {'all': '全部', 'priority': '建议确认', 'critical': '需要检查'}.items():
                 if key in self.cue_filter_buttons:
@@ -2738,15 +2802,17 @@ class SubtitleStudioPage(
             menu.addSeparator()
             summary, has_range = range_summary(self.project)
             title = menu.addAction(tr("入出点范围：{range}", range=summary) if has_range
-                                   else tr("入出点范围：未设置（在播放头按 I / O 设置）"))
+                                   else tr("入出点范围：未设置（在播放头按 {mark_in} / {mark_out} 设置）",
+                                           mark_in=self._shortcut_key_text("mark_in"),
+                                           mark_out=self._shortcut_key_text("mark_out")))
             title.setEnabled(False)
             if has_range:
                 menu.addAction(tr("跳到入点"), lambda: self._seek(effective_range(self.project)[0] / 1000.0))
                 menu.addAction(tr("跳到出点"), lambda: self._seek(effective_range(self.project)[1] / 1000.0))
                 menu.addAction(_icon("fa5s.times"), tr("清除入出点范围"), self._clear_range)
             else:
-                menu.addAction(tr("在播放头设置入点（I）"), self._mark_in)
-                menu.addAction(tr("在播放头设置出点（O）"), self._mark_out)
+                menu.addAction(tr("在播放头设置入点（{key}）", key=self._shortcut_key_text("mark_in")), self._mark_in)
+                menu.addAction(tr("在播放头设置出点（{key}）", key=self._shortcut_key_text("mark_out")), self._mark_out)
         menu.exec(global_pos)
 
     def _apply_timing_offset(self, cue_ids: list[str], offset_ms: int) -> None:

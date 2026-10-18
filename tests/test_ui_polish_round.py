@@ -183,7 +183,10 @@ def test_glossary_new_game_toolbar_is_above_sidebar_list():
     _app()
     win = _main_window()
     dialog = _open_terms(win)
-    # 创建游戏控件在顶部（y 小于游戏列表）
+    # 2026-10-17 redesign: 「新建」 opens the small form above the library list.
+    dialog.sidebar_new_button.click()
+    _app().processEvents()
+    assert dialog.new_library_panel.isVisible()
     assert dialog.game_input.mapTo(dialog, dialog.game_input.rect().topLeft()).y() < \
         dialog.game_list.mapTo(dialog, dialog.game_list.rect().topLeft()).y()
     assert dialog.add_game_button is not None
@@ -192,23 +195,17 @@ def test_glossary_new_game_toolbar_is_above_sidebar_list():
     win.close()
 
 
-def test_glossary_add_term_is_before_lists_and_search_collapsed():
+def test_glossary_add_term_is_before_lists_and_search_sits_above_the_table():
     _app()
     win = _main_window()
     dialog = _open_terms(win)
     # 添加术语输入在列表区域之前（有词时在列表前；空态时在空态引导前）
-    list_area_top = min(
-        dialog.listing.mapTo(dialog, dialog.listing.rect().topLeft()).y()
-        if dialog.listing.isVisible() else 10**6,
-        dialog.listing_empty.mapTo(dialog, dialog.listing_empty.rect().topLeft()).y(),
-    )
+    shown = dialog.listing if dialog.listing.isVisible() else dialog.listing_empty
+    list_area_top = shown.mapTo(dialog, shown.rect().topLeft()).y()
     assert dialog.term_editor.mapTo(dialog, dialog.term_editor.rect().topLeft()).y() < list_area_top
-    # 术语搜索默认折叠；内置参考默认折叠
-    assert dialog.search.isHidden()
-    assert dialog.builtin.isHidden()
-    # 打开后搜索可展开
-    dialog.search_toggle.click()
+    # 2026-10-17 redesign: the term search is always shown, in the tool row above the table.
     assert dialog.search.isVisible()
+    assert dialog.search.mapTo(dialog, dialog.search.rect().topLeft()).y() < list_area_top
     dialog.close()
     win.close()
 

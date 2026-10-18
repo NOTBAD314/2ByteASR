@@ -64,6 +64,10 @@ def save_project_frame(project, graph, milliseconds, directory, name, *, subtitl
     # Only visible video at this instant belongs to a still: unrelated audio
     # and later/offline clips must not start a whole-recording preparation.
     from .timeline_media import resolve_frame_graph
+    from .studio_transitions import transition_windows,transition_effect,transition_fx_active
+    # Seams widen both clips over their overlap, exactly as the export raster
+    # pass does; windows come from the whole edit, before it is cut to ``ms``.
+    windows=transition_windows(graph,'video')
     graph=resolve_frame_graph(graph,ms,ffmpeg)
     width=int(graph['width'] or 1920);height=int(graph['height'] or 1080)
     image=QImage(width,height,QImage.Format_ARGB32_Premultiplied);image.fill(Qt.black)
@@ -73,12 +77,16 @@ def save_project_frame(project, graph, milliseconds, directory, name, *, subtitl
         for track in sorted(graph['video_tracks'],key=lambda t:(t.get('z_index',0),t['id'])):
             if not track.get('enabled',True):continue
             for clip in track['clips']:
+                clip=dict(clip,**{k:v for k,v in windows.get((track['id'],clip['id']),windows.get(clip['id'],{})).items() if k!='id'})
                 if not clip.get('enabled',True) or not clip['timeline_in_ms']<=ms<clip['timeline_out_ms']:continue
                 asset=assets[clip['asset_id']]
                 if asset.get('video_metadata',{}).get('has_video') is False:continue
                 layer,receipt=decode_frame(asset['canonical_source'],project_to_source_exact(clip,ms/1000))
                 receipt['clip_id']=clip['id'];receipts.append(receipt)
-                paint_layer(painter,width,height,layer,clip)
+                sampled=dict(clip,transform=dict(clip.get('transform') or {}))
+                fx=transition_effect(clip.get('envelopes',[]),ms)
+                sampled['transform']['opacity']=float(sampled['transform'].get('opacity',1.))*fx['opacity']
+                paint_layer(painter,width,height,layer,sampled,fx if transition_fx_active(fx) else None)
     finally:painter.end()
     if require_video_frame and not receipts:
         raise ValueError('当前时间位于空轨或已停用的视频片段，没有可用视频帧')

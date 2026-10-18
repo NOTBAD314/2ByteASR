@@ -165,8 +165,11 @@ def _global_qss(theme: ThemeDefinition) -> str:
         f'QFrame#recognitionRoleCard[role="{role}"]:hover {{ background: {blend_hex(theme.surface, color, hover)};'
         f' border-color: {color}; }}\n'
         f'QFrame#recognitionRoleCard[role="{role}"]:focus {{ border: 1px solid {theme.focus}; }}\n'
-        f'QFrame#recognitionRoleCard[role="{role}"] QLabel#recognitionRoleIcon {{ background: {color};'
-        f' color: {theme.on_vivid}; }}\n'
+        # Light themes fill the chip with the identity hue; dark ones keep a
+        # soft chip with the glyph in that hue (2026-10-17, calmer on dark).
+        f'QFrame#recognitionRoleCard[role="{role}"] QLabel#recognitionRoleIcon {{ background: '
+        f'{color if theme.is_light else blend_hex(theme.surface, color, 0.22)};'
+        f' color: {theme.on_vivid if theme.is_light else color}; }}\n'
         f'QFrame#recognitionRoleCard[role="{role}"] QLabel#recognitionRoleLabel {{ color: {color}; }}'
         for role, color in theme.role_colors.items()
     )
@@ -198,7 +201,7 @@ QLabel#dropOverlayHint {{ color: {theme.text_muted}; }}
 QLabel#recognitionRoleLabel, QFrame#recognitionRoleCard[density="compact"] QLabel#recognitionRoleLabel,
 QFrame#recognitionRoleCard[density="large"] QLabel#recognitionRoleLabel,
 QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionRoleLabel {{
-    color: {theme.text_secondary}; font-size: 15px; font-weight: 600;
+    color: {theme.text_secondary}; font-size: 13px; font-weight: 700;
 }}
 {role_rules}
 QFrame#recognitionRoleCard[role="primary"] QLabel#recognitionModelName {{ color: {theme.text}; }}
@@ -363,10 +366,12 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
             app._theme_fusion_installed = True
         app.setPalette(_palette(theme))
         t = _trace_mark("app.setPalette", t)
+        from .glossary_page_qss import build_glossary_page_qss
         sheet = (
             retheme_qss(APP_QSS, theme)
             + _global_qss(theme)
             + build_secondary_surface_qss(theme)
+            + build_glossary_page_qss(theme)
         )
         # QApplication's repolish visits its cached widgets AND recursively
         # their descendants (~300k style events for 3.6k widgets). A window

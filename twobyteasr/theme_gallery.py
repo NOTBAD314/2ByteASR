@@ -14,12 +14,12 @@ The gallery keeps the small combo-like API the settings code and audits use
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen, QTextLayout, QTextOption
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QAbstractButton, QButtonGroup, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from .theme_manager import theme_key
 from .ui_theme import (THEME_FAMILIES, ThemeDefinition, blend_hex, ordered_themes, theme_definition,
-                       theme_display_label, theme_family_label, theme_mood)
+                       theme_display_label, theme_family_label)
 from .ui_zoom import px
 
 CARD_MIN_WIDTH = 164
@@ -147,7 +147,11 @@ def paint_theme_miniature(painter: QPainter, rect: QRectF, theme: ThemeDefinitio
 
 
 class ThemeCard(QAbstractButton):
-    """One checkable theme card: miniature on top, name and mood below."""
+    """One checkable theme card: miniature on top, the name below.
+
+    2026-10-17 (user: four-character poetic names felt machine-written): the
+    name is just "base / accent colour" and the one-line description is gone.
+    """
 
     def __init__(self, theme: ThemeDefinition, parent=None):
         super().__init__(parent)
@@ -163,11 +167,10 @@ class ThemeCard(QAbstractButton):
         self.retranslate_ui()
 
     def retranslate_ui(self) -> None:
-        name, mood = theme_display_label(self.theme), theme_mood(self.theme)
+        name = theme_display_label(self.theme)
         self.setText(name)
         self.setAccessibleName(name)
-        self.setAccessibleDescription(mood)
-        self.setToolTip(f"{name}\n{mood}")
+        self.setToolTip(name)
         self.update()
 
     def keyPressEvent(self, event) -> None:
@@ -181,19 +184,15 @@ class ThemeCard(QAbstractButton):
     def _preview_height(self) -> int:
         return px(100)
 
-    def _fonts(self) -> tuple[QFont, QFont]:
+    def _name_font(self) -> QFont:
         name_font = QFont(self.font())
         name_font.setPixelSize(px(14))
         name_font.setWeight(QFont.Weight.DemiBold)
-        mood_font = QFont(self.font())
-        mood_font.setPixelSize(px(12))
-        mood_font.setWeight(QFont.Weight.Normal)
-        return name_font, mood_font
+        return name_font
 
     def _text_height(self) -> int:
         # From the real font metrics: CJK UI fonts run taller than 1.2x size.
-        name_font, mood_font = self._fonts()
-        return round(QFontMetricsF(name_font).height() + px(3) + 2 * QFontMetricsF(mood_font).lineSpacing() + px(4))
+        return round(QFontMetricsF(self._name_font()).height())
 
     def sizeHint(self) -> QSize:
         return QSize(px(CARD_MIN_WIDTH), self._preview_height() + px(8) + self._text_height() + px(14))
@@ -244,7 +243,7 @@ class ThemeCard(QAbstractButton):
 
         text_left = pad + px(2)
         text_width = self.width() - 2 * text_left
-        name_font, mood_font = self._fonts()
+        name_font = self._name_font()
         painter.setFont(name_font)
         painter.setPen(_color(host.text))
         name_metrics = QFontMetricsF(name_font)
@@ -252,38 +251,6 @@ class ThemeCard(QAbstractButton):
         name = name_metrics.elidedText(self.text(), Qt.TextElideMode.ElideRight, text_width)
         painter.drawText(QRectF(text_left, name_top, text_width, name_metrics.height()),
                          int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), name)
-
-        painter.setFont(mood_font)
-        painter.setPen(_color(host.text_muted))
-        mood_top = name_top + name_metrics.height() + px(3)
-        self._draw_wrapped(painter, mood_font, self.accessibleDescription(),
-                           QRectF(text_left, mood_top, text_width, self.height() - mood_top - px(6)))
-
-    @staticmethod
-    def _draw_wrapped(painter: QPainter, font: QFont, text: str, box: QRectF, max_lines: int = 2) -> None:
-        """Up to two wrapped lines; the last one is elided when the text is longer."""
-        metrics = QFontMetricsF(font)
-        layout = QTextLayout(text, font)
-        option = QTextOption()
-        option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        layout.setTextOption(option)
-        layout.beginLayout()
-        lines = []
-        while len(lines) < max_lines:
-            line = layout.createLine()
-            if not line.isValid():
-                break
-            line.setLineWidth(box.width())
-            lines.append((line.textStart(), line.textLength()))
-        layout.endLayout()
-        y = box.top()
-        for index, (start, length) in enumerate(lines):
-            piece = text[start:start + length].rstrip()
-            if index == len(lines) - 1 and start + length < len(text):
-                piece = metrics.elidedText(text[start:], Qt.TextElideMode.ElideRight, box.width())
-            painter.drawText(QRectF(box.left(), y, box.width(), metrics.height()),
-                             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), piece)
-            y += metrics.lineSpacing()
 
 
 class ThemeGallery(QWidget):

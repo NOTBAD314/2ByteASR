@@ -54,6 +54,7 @@ def start(window, output):
             settle()
             page = window.term_library_page._ensure_library()
             if not restoring:
+                click(page.sidebar_new_button)  # 2026-10-17: 「新建」 opens the small form
                 page.game_input.setText('本地输入验收')
                 click(page.add_game_button)
             library_id = window.legacy.resolve_glossary_identity('本地输入验收')

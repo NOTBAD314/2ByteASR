@@ -370,6 +370,13 @@ class StudioReadiness(QObject):
         now = time.perf_counter()
         self.profile['gui_gaps_ms'].append(round((now-self.last_tick)*1000, 3))
         self.last_tick = now
+        if '准备播放器' not in self.completed:
+            # 2026-10-17：没有 vulkan-1.dll 的电脑上 mpv 约 0.5 秒就被 Windows 拒绝启动，
+            # 以前要等满 30 秒才说“准备超时”。退出码已能说明原因时立刻说清楚。
+            message = self._player_start_failure()
+            if message:
+                self.fail('准备播放器', message)
+                return
         if now-self.started > 30:
             self.fail(self._failed_stage(), '准备超时；请检查素材和播放器状态。')
             return
@@ -453,6 +460,12 @@ class StudioReadiness(QObject):
         except Exception as exc:
             self.fail(self._failed_stage(), str(exc))
 
+    def _player_start_failure(self):
+        """Why Windows could not load mpv at all, or '' (still starting / other errors)."""
+        from .studio_mpv import startup_failure_message
+        controller = getattr(self.page.video, 'controller', None)
+        return startup_failure_message(getattr(controller, 'exit_code', None))
+
     def fail(self, stage, error):
         self.page.timeline.setUpdatesEnabled(True)
         self.active, self.ready = False, False
@@ -464,7 +477,9 @@ class StudioReadiness(QObject):
         self.profile['error'] = {'stage': stage, 'message': error}
         bind_text(self.label, '{stage}失败\n{error}\n工程文件仍保留，可重试载入：\n{value2}', stage=stage, error=error, value2=self.path)
         self._fit_card()
-        failed = next((task for task in self.TASKS if task not in self.completed), '')
+        # Mark the stage that failed. The first unfinished one was wrong when a
+        # stage fails early (2026-10-17: mpv refused while 读取工程 was still running).
+        failed = stage if stage in self.TASKS else next((task for task in self.TASKS if task not in self.completed), '')
         self.steps_view.set_state(self.completed, '', failed)
         self.retry.show()
         # 2026-09-17：识别交接的 reload 在此静默失败过——字幕已写入工程文件

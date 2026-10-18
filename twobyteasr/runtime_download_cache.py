@@ -73,8 +73,8 @@ class RuntimeCacheResult:
 
 
 def runtime_cache_path(data_root: Path | None = None) -> Path:
-    from .runtime_paths import user_data_root
-    return (Path(data_root) if data_root is not None else user_data_root()) / 'runtimes/download-cache'
+    from .runtime_paths import managed_runtime_root
+    return managed_runtime_root(data_root) / 'download-cache'
 
 
 def mark_runtime_cache_state(state: str, *, data_root: Path | None = None) -> None:

@@ -23,7 +23,10 @@ def test_every_exposed_provider_has_its_own_guide_file():
     for guide in catalog.ALL_GUIDES:
         text = guide.guide_text(ROOT)
         assert not text.startswith('（找不到教程文件'), guide.guide_file
-        assert '最后核对：' + catalog.CHECKED in text, guide.guide_file
+        # A guide is dated by its own links (2026-10-18: Claude, checked that day).
+        dates = {link.checked for link in guide.links} or {catalog.CHECKED}
+        assert len(dates) == 1, guide.guide_file
+        assert '最后核对：' + dates.pop() in text, guide.guide_file
 
 
 def test_every_guide_covers_the_eight_required_parts():
@@ -61,11 +64,12 @@ def test_guide_links_are_official_and_dated():
     from twobyteasr import api_setup_catalog as catalog
     official = re.compile(r'^https://([a-z0-9.-]+\.)?(mosi\.cn|aliyun\.com|xfyun\.cn|groq\.com|openai\.com|'
                           r'openrouter\.ai|microsoft\.com|deepseek\.com|google\.dev|x\.ai|qwencloud\.com|'
-                          r'alibabacloud\.com|azure\.com|google\.com|chatgpt\.com|antigravity\.google)/')
+                          r'alibabacloud\.com|azure\.com|google\.com|chatgpt\.com|antigravity\.google|'
+                          r'claude\.com|anthropic\.com)/')
     for guide in catalog.ALL_GUIDES:
         for link in guide.links:
             assert official.match(link.url), link.url
-            assert link.checked == catalog.CHECKED
+            assert link.checked == (guide.links[0].checked if guide.key == 'claude' else catalog.CHECKED)
 
 
 class Host:

@@ -4,9 +4,11 @@ import {TrustedSubtitle} from './components/TrustedSubtitle';
 import {VisualDesignGraphSubtitle} from './components/VisualDesignGraphSubtitle';
 import {WebThemeCue, WebThemeStage} from './components/WebThemeSubtitle';
 import {bundledThemeFontCss} from './webThemeFonts';
+import type {WordAnimation} from './components/TimedText';
 
-export type Cue = {id: string; text: string; speaker?: string; translation?: string; startMs: number; endMs: number; styleId: string; visual?: Recipe; snapshotHash?: string};
+export type Cue = {id: string; text: string; speaker?: string; translation?: string; startMs: number; endMs: number; localOffsetMs?: number; cueDurationMs?: number; styleId: string; visual?: Recipe; snapshotHash?: string};
 export type Recipe = {
+  wordAnimation?: WordAnimation;
   name: string;
   components: string[];
   typography: {fontFamily: string; fontSize: number; fontWeight?: number; bold: boolean; italic: boolean; spacing: number};
@@ -58,8 +60,8 @@ export const SubtitleComposition: React.FC<SubtitleProps> = ({cues, recipes}) =>
     {cues.filter((cue) => nowMs >= cue.startMs && nowMs < cue.endMs).map((cue) => {
       const recipe = cue.visual ?? recipes[cue.styleId];
       if (!recipe) return null;
-      const localFrame = Math.max(0, frame - Math.round(cue.startMs / 1000 * fps));
-      const durationFrames = Math.max(1, Math.round((cue.endMs - cue.startMs) / 1000 * fps));
+      const localFrame = Math.max(0, frame - Math.round(cue.startMs / 1000 * fps)) + (cue.localOffsetMs || 0)/1000*fps;
+      const durationFrames = Math.max(1, Math.round((cue.cueDurationMs ?? (cue.endMs - cue.startMs)) / 1000 * fps));
       if (recipe.webTheme) {
         return <WebThemeCue
           key={cue.id}

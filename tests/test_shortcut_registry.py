@@ -168,8 +168,7 @@ def test_settings_panel_records_resolves_unbinds_and_restores(qapp, tmp_path):
     panel.findChild(QToolButton, "shortcutClear_razor_tool").click()
     assert panel.values()["razor_tool"] == ""
     panel.search.setText("剃刀")
-    visible = [aid for aid, row in panel._rows.items() if not panel.table.isRowHidden(row)]
-    assert visible == ["razor_tool"]
+    assert panel.visible_action_ids() == ["razor_tool"]
     exported = tmp_path / "keys.json"
     exported.write_text(reg.export_payload(dict(reg.platform_defaults(), razor_tool="Shift+C")), encoding="utf-8")
     assert panel.import_file(str(exported)) and panel.values()["razor_tool"] == "Shift+C"

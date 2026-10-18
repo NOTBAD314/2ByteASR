@@ -19,7 +19,6 @@ from .ass_compiler import compile_ass
 from .studio_export_ui import SubtitleExportDialog
 from .studio_project import (SubtitleProject, studio_data_root)
 from .studio_revisions import (StudioRevisionStore, preview_render_revision, thaw_json)
-from .studio_subtitle_export import export_subtitle_artifacts
 from .studio_theme import studio_message_box
 from .style_recipe import (recipe_payload_for_style, route_recipe)
 
@@ -534,19 +533,7 @@ class StudioAssFlowMixin:
     def export_subtitles(self) -> None:
         if not self.project:
             return
-        dialog = SubtitleExportDialog(self.project, self.project_path, self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        try:
-            directory, reason = dialog.selected_destination()
-            base_name = Path(self.project.media.path).stem or "subtitles"
-            artifacts = export_subtitle_artifacts(
-                self.project, directory, base_name, dialog.selected_options()
-            )
-        except Exception as exc:
-            studio_message_box(self, QMessageBox.Icon.Warning, tr('导出字幕失败'), str(exc))
-            return
-        studio_message_box(
-            self, QMessageBox.Icon.Information, tr('导出字幕'),
-            tr('已导出并验证 {value0} 个文件。\n{value1}', value0=len(artifacts), value1=reason),
-        )
+        # 2026-10-18: the dialog writes, verifies and shows the result itself
+        # (打开文件夹 / 复制路径); a failure stays in the dialog with the choices.
+        dialog = SubtitleExportDialog(self.project, self.project_path, self, export_on_accept=True)
+        dialog.exec()

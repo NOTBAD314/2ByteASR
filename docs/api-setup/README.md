@@ -20,6 +20,7 @@
 | DeepSeek | [教程](deepseek.zh-CN.md) |
 | 阿里云百炼 · 通义千问 | [教程](bailian-text.zh-CN.md) |
 | OpenAI | [教程](openai-text.zh-CN.md) |
+| Anthropic Claude（2026-10-18 新增） | [教程](claude.zh-CN.md) |
 | Google Gemini | [教程](gemini.zh-CN.md) |
 | xAI Grok API | [教程](xai.zh-CN.md) |
 | 进阶：自定义兼容服务、账号登录类 CLI | [自定义](custom-text.zh-CN.md)、[账号登录类](cli-accounts.zh-CN.md) |

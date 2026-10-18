@@ -467,11 +467,21 @@ def test_editable_font_surface_opens_picker(monkeypatch):
     calls = []
     monkeypatch.setattr(page.style_font, "showPopup", lambda: calls.append("open"))
     line_edit = page.style_font.lineEdit()
-    event = QMouseEvent(
+    press = QMouseEvent(
         QEvent.Type.MouseButtonPress, QPoint(12, 12),
         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
     )
-    assert page.style_font.eventFilter(line_edit, event)
+    release = QMouseEvent(
+        QEvent.Type.MouseButtonRelease, QPoint(12, 12),
+        Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    line_edit.resize(200, 30)
+    # 2026-10-18: the press only focuses; the list opens on the release, so the
+    # same click cannot close it again (or pick the font under the pointer).
+    assert page.style_font.eventFilter(line_edit, press)
+    assert calls == []
+    assert page.style_font.eventFilter(line_edit, release)
     assert calls == ["open"]
     page.close_page(); page.deleteLater()

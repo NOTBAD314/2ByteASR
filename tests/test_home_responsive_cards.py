@@ -25,11 +25,13 @@ def test_recognition_cards_use_bounded_height_profiles_without_repolish_storm():
     plan = RecognitionPlanWidget()
     plan.show()
 
+    # Home C′ (2026-10-17): compact tiles, icon beside the model name;
+    # layout A (2026-10-18): the model name one size larger.
     expected = (
-        (240, "compact", 44, 16, 22),
-        (330, "normal", 56, 20, 28),
-        (410, "large", 68, 23, 36),
-        (520, "extra_large", 68, 26, 40),
+        (140, "compact", 40, 12, 20),
+        (165, "normal", 44, 13, 22),
+        (200, "large", 50, 13, 26),
+        (260, "extra_large", 54, 14, 28),
     )
     for height, profile, icon_size, role_size, model_size in expected:
         plan.resize(1200, height)
@@ -42,7 +44,7 @@ def test_recognition_cards_use_bounded_height_profiles_without_repolish_storm():
             assert card.icon_label.height() == icon_size
             assert card.role_label.font().pixelSize() == role_size
             assert card.model_label.font().pixelSize() == model_size
-            assert card.description_label.isVisible() == (profile != "compact")
+            assert card.description_label.isVisible()
 
     apply_counts = {
         role: card._responsive_apply_count for role, card in plan.cards.items()
@@ -99,7 +101,7 @@ def test_recognition_cards_keep_shared_identity_and_bottom_row_tracks():
             metrics = QFontMetrics(label.font())
             required = metrics.boundingRect(0, 0, label.width(), 2000,
                                              Qt.TextFlag.TextWordWrap, label.text()).height()
-            assert label.height() >= max(required, metrics.lineSpacing()*2)
+            assert label.height() >= max(required, metrics.lineSpacing())
         for attr in ("icon_label", "role_label", "model_label", "status_badge", "change_hint"):
             assert len({getattr(card, attr).mapTo(plan, getattr(card, attr).rect().topLeft()).y() for card in cards}) == 1
 

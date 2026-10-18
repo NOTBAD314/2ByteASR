@@ -338,6 +338,11 @@ class OpenAICompatibleProvider(AIProvider):
         if _cancelled(cancel_check):
             raise AIProviderError("AI 请求已取消。", category="cancelled")
         protocol = str(self.endpoint.get("protocol") or "openai_compatible_chat")
+        if protocol == "anthropic_messages":
+            return self._complete_anthropic(messages, max_tokens=max_tokens, timeout=timeout,
+                                            cancel_check=cancel_check, stage=stage, operation=operation,
+                                            json_wanted=json_schema is not None or kwargs.get("response_format") is not None,
+                                            on_stream_event=on_stream_event, **kwargs)
         if on_stream_event is not None and protocol != "responses":
             from .llm_adapter import LLMRequestError, post_chat_completion_stream
 
@@ -458,6 +463,38 @@ class OpenAICompatibleProvider(AIProvider):
                             if diagnostics.get(key) is not None} or None,
             actual_cost_usd=None,timings=dict(getattr(self,'last_timings',{})))
         return value
+
+
+    # Visual design work keeps the model's own thinking depth; batch text work
+    # (proofreading, grouping, numbers, glossary, translation) asks for low effort.
+    _DESIGN_OPERATIONS = frozenset({"generate", "regenerate_candidate", "visual_feedback", "local_patch"})
+
+    def _complete_anthropic(self, messages, *, max_tokens, timeout, cancel_check, stage, operation,
+                            json_wanted, on_stream_event, **kwargs) -> str:
+        """Claude: the Messages API over the same request layer (2026-10-18, user)."""
+        from .anthropic_messages import complete
+        from .llm_adapter import LLMRequestError, get_last_llm_response_diagnostics
+        effort = None if operation in self._DESIGN_OPERATIONS else "low"
+        try:
+            return complete(self.endpoint, list(messages), max_tokens=max_tokens, timeout=timeout, stage=stage,
+                            cancel_check=cancel_check, json_wanted=json_wanted, effort=effort,
+                            on_stream_event=on_stream_event, request_diagnostics=kwargs.get("request_diagnostics"),
+                            total_deadline=kwargs.get("_total_deadline"),
+                            input_budget=getattr(self, "last_timings", {}).get("request_budget"))
+        except LLMRequestError as exc:
+            error = AIProviderError(str(exc), category=exc.category)
+            for name in ("report", "retry_after_seconds"):
+                if hasattr(exc, name):
+                    setattr(error, name, getattr(exc, name))
+            raise error from exc
+        finally:
+            diagnostics = get_last_llm_response_diagnostics()
+            self.last_invocation_trace = dict(
+                provider_id=self.provider_id, model=self.model, request_id=diagnostics.get("request_id"),
+                http_status=diagnostics.get("http_status"), response_boundary=diagnostics,
+                reported_usage={key: diagnostics[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                                if diagnostics.get(key) is not None} or None,
+                actual_cost_usd=None, timings=dict(getattr(self, "last_timings", {})))
 
 
 class CLIProvider(AIProvider):

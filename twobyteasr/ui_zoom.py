@@ -411,6 +411,12 @@ def window_shown(window: QWidget) -> None:
     apply_to(window)
 
 
+def _shows_studio(window) -> bool:
+    if window is None:
+        return False
+    return any(page.isVisible() for page in window.findChildren(QWidget, "subtitleStudio"))
+
+
 def _zoomable(widget) -> bool:
     if not isinstance(widget, QWidget):
         return False
@@ -421,6 +427,16 @@ def _zoomable(widget) -> bool:
         if isinstance(current, QGraphicsView):
             return False  # canvases zoom their own content
         current = current.parentWidget()
+    # 2026-10-18 (user: in the workbench Ctrl+wheel zoomed the timeline and the
+    # interface). While a window shows the workbench, none of it zooms the
+    # interface: not its edges outside the page, nor a tool window floating
+    # over it (overlays, the tour). Dialogs keep their own zoom.
+    top = widget.window()
+    if _shows_studio(top):
+        return False
+    owner = top.parentWidget()
+    if owner is not None and not isinstance(top, QDialog) and _shows_studio(owner.window()):
+        return False
     return True
 
 
@@ -509,6 +525,7 @@ class ZoomController(QObject):
             shortcut.activated.connect(handler)
             self._shortcuts.append(shortcut)
             bindings[action_id] = shortcut
+        self._reset_shortcut = bindings["app.zoom_reset"]  # its key is named in the toast
         try:
             from .shortcut_registry import keep_keys
             keep_keys(bindings)  # customizable in 应用设置 → 快捷键
@@ -591,12 +608,23 @@ class ZoomController(QObject):
             f"QLabel#uiZoomToast {{ background: {theme.surface_elevated}; color: {theme.text};"
             f" border: 1px solid {theme.border_strong}; border-radius: 10px; padding: 8px 16px;"
             f" font-size: 15px; font-weight: 600; }}")
-        self._toast.setText(tr("界面大小 {percent}%  ·  Ctrl+0 恢复默认", percent=percent))
+        self._toast.setText(tr("界面大小 {percent}%  ·  {key} 恢复默认", percent=percent, key=self._reset_key_text()))
         self._toast.adjustSize()
         self._toast.move(max(0, (window.width() - self._toast.width()) // 2), 72)
         self._toast.raise_()
         self._toast.show()
         self._toast_timer.start(1400)
+
+    def _reset_key_text(self):
+        """The reset key as the shortcut has it now (customizable in 应用设置 → 快捷键)."""
+        from PySide6.QtGui import QKeySequence
+        from .i18n import tr
+        from .shortcut_registry import display
+        try:
+            key = self._reset_shortcut.key().toString(QKeySequence.SequenceFormat.PortableText)
+        except RuntimeError:  # the window behind the shortcut was deleted
+            key = ""
+        return display(key) if key else tr("未绑定")
 
 
 def reapply_all(app: QApplication | None = None) -> None:

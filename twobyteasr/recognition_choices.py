@@ -27,6 +27,14 @@ MLX_PRIMARY = {'mlx_qwen3_asr': 'Apple Silicon 本地 Qwen3-ASR 0.6B（MLX）',
                'mlx_qwen3_asr_1_7b': 'Apple Silicon 本地 Qwen3-ASR 1.7B（MLX）'}
 REVIEW_LABELS = {'api': '云端识别服务', 'whisper_turbo': 'Whisper', 'sensevoice': 'SenseVoice',
                  'funasr_nano': 'Fun-ASR Nano', 'firered_llm': 'FireRed LLM'}
+# 2026-10-18: Japanese and English audio is timed by Qwen3-ForcedAligner
+# whatever timeline model is chosen; FireRed / Whisper / Paraformer are Chinese
+# timing tools here and are rerouted (moss_firered_pipeline.run_firered_stage).
+# The home card, the model picker, the workshop and the pre-run summary name
+# the stage through language_timeline so they never disagree.
+LANGUAGE_ALIGNERS = frozenset({'qwen_aligner', 'mlx_qwen_aligner'})
+ALIGNED_LANGUAGES = ('ja', 'en')
+TIMELINE_LABELS = {'local': 'FireRedASR2-AED', 'whisper_turbo': 'Whisper', 'paraformer': 'Paraformer'}
 
 
 @dataclass(frozen=True)
@@ -223,12 +231,45 @@ def plan_options(settings: dict, installed: set, host: HostProfile, cloud_ready:
     return options
 
 
+def spoken_language(settings: dict | None) -> str:
+    """The home page's spoken-language choice: auto, zh, ja or en."""
+    value = str(((settings or {}).get('subtitle_language') or {}).get('recognition_language') or 'auto')
+    return value if value in {'auto', 'zh', 'ja', 'en'} else 'auto'
+
+
+def language_timeline(timeline: str, spoken: str, settings: dict) -> dict | None:
+    """What the timeline stage runs for a chosen spoken language; None: as chosen.
+
+    None for Chinese and auto (auto decides per task) and for a stage that is
+    off. Otherwise ``name`` is the model name the home card shows, ``rerouted``
+    says the chosen model is not used for this language, and ``ctc`` that
+    Japanese line starts are then checked by the CTC aligner (switched on and
+    installed).
+    """
+    timeline = str(timeline or 'off')
+    if spoken not in ALIGNED_LANGUAGES or timeline == 'off':
+        return None
+    ctc = False
+    if spoken == 'ja':
+        try:
+            from .ctc_alignment import enabled, model_dir
+            ctc = bool(enabled(settings) and model_dir())
+        except Exception:  # noqa: BLE001 - the stage is still named by the aligner
+            ctc = False
+    return {'spoken': spoken, 'rerouted': timeline not in LANGUAGE_ALIGNERS, 'ctc': ctc,
+            'name': 'Qwen3 对齐 + 日语 CTC' if ctc else 'Qwen3 对齐'}
+
+
 def run_disclosure(settings: dict) -> dict:
     """What this recognition run will use — shown before it starts."""
     models = (settings or {}).get('models', {})
     switches = (settings or {}).get('switches', {})
     primary = str(models.get('primary_asr_backend', 'moss'))
     timeline = str(models.get('firered_asr_backend', 'off'))
+    language_stage = language_timeline(timeline, spoken_language(settings), settings or {})
+    chosen_timeline = timeline
+    if language_stage is not None and language_stage['rerouted']:
+        timeline = 'qwen_aligner'
     review = str(models.get('qwen_asr_backend', 'off'))
     info = {'engine': primary, 'speakers': '', 'timestamps': '', 'uploads': [], 'cost': [], 'local': []}
     if primary == 'api':
@@ -290,6 +331,14 @@ def run_disclosure(settings: dict) -> dict:
         info['timestamps'] = f'{timeline} 时间轴'
         info['local'].append(timeline)
     info['notes'] = []
+    if language_stage is not None:
+        spoken = '日语' if language_stage['spoken'] == 'ja' else '英语'
+        if language_stage['rerouted']:
+            info['notes'].append(f"字幕语言为{spoken}：所选 {TIMELINE_LABELS.get(chosen_timeline, chosen_timeline)} "
+                                 f"只用于中文，这次由 Qwen3 对齐模型对齐{spoken}字词时间。")
+        if language_stage['ctc']:
+            info['notes'].append('日语句首再由日语 CTC 对齐模型校正。')
+            info['local'].append('日语 CTC 对齐模型')
     if review == 'local':
         info['local'].append('文字复核：本地 Qwen3-ASR（需要 NVIDIA 显卡）')
     elif review == 'api' and primary != 'api':

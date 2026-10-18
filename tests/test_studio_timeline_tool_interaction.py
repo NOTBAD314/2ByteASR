@@ -334,7 +334,7 @@ def test_shortcut_dialog_opens_and_merge_tool_defaults_to_b(tmp_path, monkeypatc
 
     assert STUDIO_COMMANDS["merge_tool"][1] == "B"
     dialog = ShortcutSettingsDialog({"merge_tool": "B"}, None)
-    assert dialog.table.rowCount() == len(STUDIO_COMMANDS)
+    assert len(dialog.rows) == len(STUDIO_COMMANDS)
     assert dialog._editors["merge_tool"].keySequence().toString().upper() == "B"
     dialog.deleteLater()
     app.processEvents()

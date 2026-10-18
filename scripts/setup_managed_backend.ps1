@@ -12,7 +12,16 @@ if ($ModelKey | Where-Object { $_ -in @('diarizen','diarizen_embedding','vibevoi
     throw 'DiariZen / VibeVoice models have been removed; no installation or download was started.'
 }
 $base = if ($env:2BYTEASR_USER_DATA_ROOT) { $env:2BYTEASR_USER_DATA_ROOT } else { $env:LOCALAPPDATA }
-$managed = Join-Path $base '2ByteASR\runtimes'
+# Runtime folder (2026-10-17): the app passes it (program folder for new
+# installs, or where the user moved runtimes); otherwise the folder registered
+# in runtime_paths.json, otherwise the original per-user folder.
+$managed = $env:2BYTEASR_RUNTIME_ROOT
+if (-not $managed) {
+    try { $managed = [string](Get-Content -LiteralPath (Join-Path $base '2ByteASR\runtime_paths.json') -Raw -Encoding UTF8 | ConvertFrom-Json).runtime_root } catch { $managed = '' }
+    if (-not $managed) { $managed = Join-Path $base '2ByteASR\runtimes' }
+}
+# install_managed_backend.py resolves the same folder from this variable.
+$env:2BYTEASR_RUNTIME_ROOT = $managed
 if ($env:TWOBYTEASR_TEST_ROOT) {
     $isolatedPrefix=[IO.Path]::GetFullPath($env:TWOBYTEASR_TEST_ROOT).TrimEnd('\')+'\'
     foreach ($directory in @($managed,$env:LOCALAPPDATA,$env:TEMP,$env:HF_HOME,$env:MODELSCOPE_CACHE,$env:TORCH_HOME)) {

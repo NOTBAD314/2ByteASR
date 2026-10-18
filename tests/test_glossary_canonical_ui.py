@@ -142,8 +142,11 @@ def test_try_sentence_uses_real_shared_resolver(dialog):
         ancestor = ancestor.parentWidget()
     quick = dialog.term_try_panel.parentWidget()
     header = quick.parentWidget()
-    ai_panel = header.layout().itemAt(header.layout().count() - 1).widget()
-    assert ai_panel.geometry().top() > quick.geometry().bottom()
+    # 2026-10-17 redesign: the AI card left the header; the tools below it
+    # (content body) must still start under the grown trial.
+    below = header.parentWidget().layout().itemAt(1).widget()
+    assert quick.geometry().bottom() <= header.height()
+    assert below.geometry().top() >= header.geometry().bottom()
 
 
 def test_duplicate_labels_have_two_actual_ids_without_phantom_row(dialog):

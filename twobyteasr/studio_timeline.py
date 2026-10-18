@@ -2582,7 +2582,7 @@ class WaveformTimeline(QWidget):
             painter.fillRect(rect, color)
             painter.setPen(QPen(QColor(palette.clip_selected_border), 1, Qt.PenStyle.DashLine))
             painter.drawRect(rect)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, '空白 · Delete 闭合')
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, tr('空白 · {key} 闭合', key=self._delete_key_text()))
         self._paint_edge_feedback(painter, palette)
         # 右侧统一控制区：泳道分界把手（滚动/调高同列，直绘在滚动条列）。
         self._paint_track_height_grips(painter, palette)
@@ -3403,14 +3403,18 @@ class WaveformTimeline(QWidget):
             if row is None:continue
             start=item.get('start_ms',0);end=item.get('end_ms',start)
             if end<self.visible_start_ms or start>self.visible_start_ms+self.visible_duration_ms:continue
-            result.append((item,QRectF(self._time_to_x(start),row.top()+3,
-                max(2,self._time_to_x(end)-self._time_to_x(start)),min(14,row.height()-6))))
+            # Bottom of the row: clip names sit at the top-left of each clip,
+            # and the incoming clip's name starts exactly at the cut.
+            height=min(14,row.height()-6)
+            result.append((item,QRectF(self._time_to_x(start),row.bottom()-3-height,
+                max(2,self._time_to_x(end)-self._time_to_x(start)),height)))
         return result
 
     def _transition_at(self,point):
         return next((t for t,rect in self._transition_rects() if rect.contains(point)),None)
 
     def _paint_transitions(self,painter,palette):
+        from .studio_transitions import normalize_look
         painter.save()
         for item,rect in self._transition_rects():
             selected=item['id']==self.selected_transition_id
@@ -3418,8 +3422,48 @@ class WaveformTimeline(QWidget):
             painter.setPen(QPen(color,2.2 if selected else 1.2))
             fill=QColor(color);fill.setAlpha(125 if selected else 65)
             painter.setBrush(fill);painter.drawRect(rect)
-            painter.drawLine(rect.topLeft(),rect.bottomRight())
-            painter.drawLine(rect.bottomLeft(),rect.topRight())
+            look=normalize_look(item.get('look')) if item['media']=='video' and item.get('edge')=='seam' else None
+            if look and rect.width()>=12:
+                self._paint_transition_glyph(painter,rect,look,color)
+            else:
+                painter.drawLine(rect.topLeft(),rect.bottomRight())
+                painter.drawLine(rect.bottomLeft(),rect.topRight())
+        painter.restore()
+
+    @staticmethod
+    def _paint_transition_glyph(painter,rect,look,color):
+        """A drawn mark per look (no font glyphs). The incoming clip's name
+        label starts at the cut and covers the right half, so the mark sits
+        in the left half when there is room."""
+        size=min(rect.height()-4,rect.width()-4,10.)
+        c=rect.center();h=size/2
+        if rect.width()>=4*size:
+            c=QPointF(rect.left()+rect.width()/4,c.y())
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing,True)
+        painter.setPen(QPen(color.lighter(130),1.4));painter.setBrush(Qt.BrushStyle.NoBrush)
+        kind=look['id'];direction=look.get('direction','')
+        if kind in ('push','whip','stretch'):
+            vertical=direction in ('up','down','vertical')
+            sign=-1 if direction in ('left','up') else 1
+            def at(along,across):
+                return QPointF(c.x()+(across if vertical else along),c.y()+(along if vertical else across))
+            painter.drawLine(at(-h,0),at(h,0))
+            heads=[sign] if kind=='push' else ([-1,1] if kind=='stretch' else [sign])
+            for head in heads:
+                painter.drawLine(at(head*h,0),at(head*(h-h*.6),-h*.55))
+                painter.drawLine(at(head*h,0),at(head*(h-h*.6),h*.55))
+            if kind=='whip':
+                painter.drawLine(at(sign*h*.2,0),at(-sign*h*.4,-h*.55))
+                painter.drawLine(at(sign*h*.2,0),at(-sign*h*.4,h*.55))
+        elif kind=='zoom_blur':
+            painter.drawEllipse(c,h,h);painter.drawEllipse(c,h*.4,h*.4)
+        elif kind=='flash':
+            painter.setBrush(QColor('#000000' if direction=='black' else '#FFFFFF'))
+            painter.drawEllipse(c,h*.8,h*.8)
+        elif kind=='glitch':
+            for row,shift in ((-.6,-.3),(0,.35),(.6,-.1)):
+                painter.drawLine(QPointF(c.x()-h+shift*h,c.y()+row*h),QPointF(c.x()+h*.6+shift*h,c.y()+row*h))
         painter.restore()
 
     def _selection_items(self):
@@ -3778,7 +3822,8 @@ class WaveformTimeline(QWidget):
                     self._marquee_modifiers=event.modifiers()
                     self._marquee_candidates=self._selection_items()
                 if self.selected_gap:
-                    self.edit_blocked.emit(f'已选择 {track_id} 空白：Delete 同步闭合工程时间；其他轨道有素材或受锁定保护时停止')
+                    self.edit_blocked.emit(tr('已选择 {track_id} 空白：{key} 同步闭合工程时间；其他轨道有素材或受锁定保护时停止',
+                                              track_id=track_id, key=self._delete_key_text()))
                 self.update()
                 return
             if self.tool_mode == 'selection':
@@ -4481,6 +4526,23 @@ class WaveformTimeline(QWidget):
         self.update()
         return True
 
+    # The Studio page sets this from the registry's select_all after every
+    # rebind (2026-10-17); a timeline used on its own keeps Ctrl+A.
+    select_all_key = 'Ctrl+A'
+    # Likewise from ``delete``: the key that closes a selected gap, named in its hints.
+    delete_key = 'Delete'
+
+    def _delete_key_text(self):
+        from .shortcut_registry import display
+        return display(self.delete_key) if self.delete_key else tr('未绑定')
+
+    def _is_select_all_key(self, event: QKeyEvent) -> bool:
+        from PySide6.QtGui import QKeySequence
+        from .shortcut_registry import normalize
+        key = normalize(self.select_all_key)
+        pressed = QKeySequence(event.keyCombination()).toString(QKeySequence.SequenceFormat.PortableText)
+        return bool(key) and normalize(pressed).casefold() == key.casefold()
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key_Control and self._drag and self._drag[1] != 'roll' and getattr(self, '_seam_candidate', None):
             self._flush_timing_preview()
@@ -4492,7 +4554,7 @@ class WaveformTimeline(QWidget):
             self._begin_caption_roll(self._seam_candidate, x, boundary)
             event.accept()
             return
-        if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
+        if self._is_select_all_key(event):
             self.select_all_clips()
             event.accept()
             return

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QLabel
 from .themed_icons import themed_icon
 from .ui_theme import MUTED
 
-from PySide6.QtCore import QEvent, QPoint, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
 
@@ -36,6 +36,14 @@ class StudioStatusLabel(QLabel):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._elide()
+
+    def sizeHint(self):
+        # The whole message, not its elided form: a label shortened once
+        # would otherwise keep asking for its short width (2026-10-18).
+        hint = super().sizeHint()
+        margins = self.contentsMargins()
+        width = self.fontMetrics().horizontalAdvance(getattr(self, '_full_text', '')) + margins.left() + margins.right() + 4
+        return QSize(width, hint.height())
 
 
 class _ScrubMixin:

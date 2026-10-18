@@ -125,25 +125,26 @@ QLabel#recognitionRoleIcon {{
     max-height: 44px;
     padding: 0px;
 }}
+/* 2026-10-17 主页 C′：图标在模型名左边，四档都是圆角方块。 */
 QFrame#recognitionRoleCard[density="compact"] QLabel#recognitionRoleIcon {{
-    border-radius: 22px;
-    min-width: 44px; min-height: 44px;
-    max-width: 44px; max-height: 44px;
+    border-radius: 11px;
+    min-width: 40px; min-height: 40px;
+    max-width: 40px; max-height: 40px;
 }}
 QFrame#recognitionRoleCard[density="normal"] QLabel#recognitionRoleIcon {{
-    border-radius: 28px;
-    min-width: 56px; min-height: 56px;
-    max-width: 56px; max-height: 56px;
+    border-radius: 13px;
+    min-width: 46px; min-height: 46px;
+    max-width: 46px; max-height: 46px;
 }}
 QFrame#recognitionRoleCard[density="large"] QLabel#recognitionRoleIcon {{
-    border-radius: 34px;
-    min-width: 68px; min-height: 68px;
-    max-width: 68px; max-height: 68px;
+    border-radius: 14px;
+    min-width: 52px; min-height: 52px;
+    max-width: 52px; max-height: 52px;
 }}
 QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionRoleIcon {{
-    border-radius: 34px;
-    min-width: 68px; min-height: 68px;
-    max-width: 68px; max-height: 68px;
+    border-radius: 15px;
+    min-width: 56px; min-height: 56px;
+    max-width: 56px; max-height: 56px;
 }}
 QFrame#recognitionRoleCard[role="timeline"] QLabel#recognitionRoleIcon {{
     background: #e4c36a;
@@ -153,26 +154,27 @@ QFrame#recognitionRoleCard[role="review"] QLabel#recognitionRoleIcon {{
     background: {GREEN};
     color: #ffffff;
 }}
-QLabel#recognitionRoleLabel {{ color: {INK}; font-family: {TITLE_FONT_STACK}; font-size: 20px; font-weight: 800; }}
-QFrame#recognitionRoleCard[density="compact"] QLabel#recognitionRoleLabel {{ font-size: 16px; }}
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionRoleLabel {{ font-size: 23px; }}
-QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionRoleLabel {{ font-size: 26px; }}
+QLabel#recognitionRoleLabel {{ color: {INK}; font-family: {TITLE_FONT_STACK}; font-size: 13px; font-weight: 700; }}
+QFrame#recognitionRoleCard[density="compact"] QLabel#recognitionRoleLabel {{ font-size: 12px; }}
+QFrame#recognitionRoleCard[density="large"] QLabel#recognitionRoleLabel {{ font-size: 13px; }}
+QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionRoleLabel {{ font-size: 14px; }}
 QLabel#recognitionModelName {{
     color: {INK};
-    font-size: 28px;
+    font-size: 22px;
     font-weight: {WEIGHT_SCALE['heavy']};
     border: 0;
     background: transparent;
 }}
-QFrame#recognitionRoleCard[density="compact"] QLabel#recognitionModelName {{ font-size: 22px; }}
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionModelName {{ font-size: 36px; }}
-QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionModelName {{ font-size: 40px; }}
+/* 2026-10-18 版面 A：模型名再大一档（卡片空间留给名字与语言）。 */
+QFrame#recognitionRoleCard[density="compact"] QLabel#recognitionModelName {{ font-size: 20px; }}
+QFrame#recognitionRoleCard[density="large"] QLabel#recognitionModelName {{ font-size: 26px; }}
+QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionModelName {{ font-size: 28px; }}
 QLabel#recognitionModelDescription {{
-    color: {MUTED}; font-size: 15px; font-weight: 500;
+    color: {MUTED}; font-size: 14px; font-weight: 500;
     background: transparent; border: 0;
 }}
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionModelDescription {{ font-size: 16px; }}
-QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionModelDescription {{ font-size: 17px; }}
+QFrame#recognitionRoleCard[density="large"] QLabel#recognitionModelDescription {{ font-size: 14px; }}
+QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionModelDescription {{ font-size: 15px; }}
 QLabel#recognitionKindBadge {{
     background: #efe8da;
     color: #5b564c;
@@ -432,15 +434,6 @@ QLabel#termLibraryBadge {{
     font-size: 12px;
     font-weight: 700;
 }}
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionKindBadge,
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionStatusGood,
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionStatusWarn,
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionStatusMuted {{ font-size: 15px; }}
-QFrame#recognitionRoleCard[density="large"] QLabel#recognitionKindBadge {{ font-size: 15px; }}
-QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionKindBadge,
-QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionStatusGood,
-QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionStatusWarn,
-QFrame#recognitionRoleCard[density="extra_large"] QLabel#recognitionStatusMuted {{ font-size: 16px; }}
 QLabel#termLibrarySectionTitle {{
     color: {INK};
     font-size: 14px;

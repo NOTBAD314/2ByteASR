@@ -23,6 +23,20 @@
       "mpv_revision": "7b8915bc1d",
       "license": "GPL-2.0-or-later (build); bundled libraries retain their own licenses",
       "purpose": "Subtitle Studio Win32 HWND video and libass preview"
+    },
+    "vulkan_loader": {
+      "version": "1.4.363.0",
+      "source": "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip",
+      "sha256": "a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a",
+      "file": "x64/vulkan-1.dll",
+      "file_sha256": "e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3",
+      "signer": "LunarG, Inc. (Authenticode)",
+      "upstream": "https://github.com/KhronosGroup/Vulkan-Loader",
+      "upstream_tag": "v1.4.363",
+      "upstream_revision": "9e9518d2cf00054a220ae1a40f4406804b420ef5",
+      "license": "Apache-2.0 AND MIT AND HPND-Kevlin-Henney",
+      "install_path": "third_party/vulkan-loader/vulkan-1.dll",
+      "purpose": "mpv.exe imports vulkan-1.dll; Studio appends this folder to the END of mpv's PATH so PCs without a GPU driver can start mpv while a driver's own loader in System32 still wins"
     }
   },
   "sources": {

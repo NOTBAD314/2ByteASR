@@ -3116,7 +3116,7 @@ class GlossaryProofreadPage(QWidget):
         self.ai_button.setFixedHeight(40)
         bind_text(self.ai_button, '用已配置的校对模型结合所选词库和上下文生成建议（会调用付费模型）；不会直接修改字幕',
                   property='toolTip')
-        self.ai_button.clicked.connect(lambda: self._run(True))
+        self.ai_button.clicked.connect(self._run_ai)
         top.addWidget(self.ai_button)
         self.cancel_button = QPushButton("取消")
         self.cancel_button.setObjectName("proofreadGhost")
@@ -4946,6 +4946,20 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         queued_ai, queued_ids = self._queued
         ids = None if queued_ids is None or cue_ids is None else queued_ids | set(cue_ids)
         self._queued = (queued_ai or bool(use_ai), ids)
+
+    def _run_ai(self):
+        """「AI 校对」: without a key, explain instead of a failed request (2026-10-15).
+
+        The tutorial's offline stand-in needs no key; 按词库匹配 never asks."""
+        if self.ai_stand_in is None:
+            import subtitle_core as legacy
+            from .llm_config import text_ai_key_missing
+            if text_ai_key_missing(copy.deepcopy(getattr(legacy, "RUNTIME_SETTINGS", {}) or {}), "polish"):
+                self._set_status(tr("AI 校对没有运行：还没填 API Key"))
+                from .api_key_explainer import offer_api_key_help
+                offer_api_key_help(self)
+                return
+        self._run(True)
 
     def _run(self, use_ai, cue_ids=None):
         """Match (or AI-review) all captions, or only ``cue_ids``."""

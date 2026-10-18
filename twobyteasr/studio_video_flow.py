@@ -548,6 +548,8 @@ class StudioVideoFlowMixin:
                 spin=getattr(self,"default_"+media+"_transition_duration",None)
                 if spin is not None:
                     spin.setValue(int(self.project.studio_state.get("default_"+media+"_transition_ms",fallback)) if self.project else fallback)
+            from .studio_transition_ui import refresh_defaults
+            refresh_defaults(self)
         if not hasattr(self, "video_transform_controls"):
             return
         track, clip = self._selected_video_clip()
@@ -1429,7 +1431,7 @@ class StudioVideoFlowMixin:
             primary_video_track_id,
         )
 
-        from .studio_transitions import transition_windows, transition_gain
+        from .studio_transitions import transition_windows, transition_effect, transition_fx_active
         windows = transition_windows(project, "video")
         primary_id = primary_video_track_id(project)
         layers: list[dict[str, object]] = []
@@ -1483,7 +1485,8 @@ class StudioVideoFlowMixin:
             )
             envelopes = windows.get((track.id,clip.id),windows.get(clip.id, {})).get("envelopes", [])
             transition_active = any(e["start_ms"] <= timeline_ms < e["end_ms"] for e in envelopes)
-            transform["opacity"] = float(transform.get("opacity", 1.)) * transition_gain(envelopes, timeline_ms)
+            transition_fx = transition_effect(envelopes, timeline_ms)
+            transform["opacity"] = float(transform.get("opacity", 1.)) * transition_fx["opacity"]
             effects = dict(getattr(clip, "effects", {}) or {})
             effects.update(self._video_effects_preview_overrides.get(clip.id, {}))
             layers.append({
@@ -1510,6 +1513,7 @@ class StudioVideoFlowMixin:
                 "transform": transform,
                 "effects": effects,
                 "transition_active": transition_active,
+                "transition_fx": transition_fx if transition_fx_active(transition_fx) else None,
                 "audio_enabled": bool(clip.audio_enabled),
                 "track_muted": bool(track.muted),
             })

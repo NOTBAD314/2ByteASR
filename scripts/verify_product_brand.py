@@ -90,7 +90,7 @@ def main():
                     dialog=next(w for w in app.allWidgets() if w.isVisible() and hasattr(w,'theme_combo'))
                     dialog.navigation.setCurrentRow(2);QTest.qWait(120)
                     check('real appearance selector defaults to grape',dialog.theme_combo.currentData()=='grape',dialog.theme_combo.currentText())
-                    check('theme name identifies deep grape','深葡萄紫' in dialog.theme_combo.currentText())
+                    check('theme name identifies dark purple / berry','深紫 / 莓红' in dialog.theme_combo.currentText())
                     capture(dialog,'desktop-appearance.png')
                     # Dispose the audit dialog directly: the private desktop can
                     # suspend native opacity animations. Closing motion is not

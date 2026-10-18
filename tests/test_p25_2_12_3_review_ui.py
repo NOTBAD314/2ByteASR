@@ -45,6 +45,8 @@ REVIEW_METHODS = (
     "_show_filter_menu",
     "_activate_filter",
     "_jump_to_row",
+    "_go_to_listed_cue",
+    "_sync_jump_position",
     "_step_cue",
     "_focus_review_editor",
     "_refresh_current_review_context",

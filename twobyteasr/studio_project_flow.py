@@ -244,8 +244,73 @@ class StudioProjectFlowMixin:
         toggle = getattr(self, "bilingual_toggle_button", None)
         if toggle is not None and id(toggle) not in overflow:
             toggle.setVisible(editing)
-        for button in getattr(self, "_studio_compact_commands", ()):
-            button.setVisible(editing and self.width() >= (1800 if current_language() != "zh" else 1480))
+        self._fit_studio_toolbar(editing, hub)
+
+    def _fit_studio_toolbar(self, editing: bool, hub: bool = False) -> None:
+        """Move less used commands into ⋯ until the toolbar fits (2026-10-18).
+
+        User: a long project name ran under the home / library icons. A fixed
+        1480 px threshold no longer matched a bar that needs ~1930 px with every
+        command shown, so Qt squeezed widgets onto each other. Commands now
+        leave the bar one by one (``_studio_toolbar_collapse_order``) while its
+        minimum width exceeds the page; the save status goes last. The name
+        itself elides.
+        """
+        bar = getattr(self, "studio_toolbar", None)
+        order = tuple(getattr(self, "_studio_toolbar_collapse_order", ()))
+        save_state = getattr(self, "save_state", None)
+        collapsed = []
+        self._studio_toolbar_collapsed = collapsed
+        compact = set(getattr(self, "_studio_compact_commands", ()))
+        for widget in order:
+            # Outside the editor the old rule stays: the compact commands are
+            # editor-only, the rest follow the Hub header (hidden in the Hub).
+            widget.setVisible(editing or (widget not in compact and not hub))
+        if save_state is not None:
+            save_state.setVisible(True)
+        if bar is None or hub:
+            return
+        layout = bar.layout()
+        available = self.width()
+
+        def tidy_dividers():
+            # A group whose commands all left would leave its dividers side by side.
+            items = [layout.itemAt(index).widget() for index in range(layout.count())]
+            dividers = [w for w in items if w is not None and w.objectName() == "toolbarDivider"]
+            for divider in dividers:
+                divider.setVisible(True)
+            previous_content = False
+            last_shown = None
+            for widget in items:
+                if widget is None:
+                    continue
+                if widget in dividers:
+                    keep = previous_content
+                    widget.setVisible(keep)
+                    if keep:
+                        last_shown = widget
+                    previous_content = False
+                elif not widget.isHidden():
+                    previous_content = True
+                    last_shown = None
+            if last_shown is not None:
+                last_shown.setVisible(False)
+
+        def needed():
+            tidy_dividers()
+            layout.invalidate()
+            return layout.minimumSize().width()
+
+        if not editing:
+            tidy_dividers()
+            return
+        for widget in order:
+            if needed() <= available:
+                return
+            widget.setVisible(False)
+            collapsed.append(widget)
+        if save_state is not None and needed() > available:
+            save_state.setVisible(False)
 
     def dragEnterEvent(self, event) -> None:
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]

@@ -52,6 +52,7 @@ from .effect_dsl import (
     EASING_PRESETS,
     POSITION_EFFECT_TYPES,
     builtin_effects,
+    preset_effect,
     validate_effect,
 )
 from .motion_library import MotionPreset, MotionPresetStore
@@ -87,6 +88,13 @@ from .style_recipe import (
 )
 from .selection_scope import SelectionMode, SelectionScope
 from .ui_theme import BORDER_ACTIVE, BORDER_STRONG
+from .studio_style_widgets import (
+    STYLE_LABEL_GAP,
+    STYLE_ROW_INSET,
+    ElidedComboBox,
+    StyleGridLabel,
+    StyleLabelColumn,
+)
 from .design.controls import (
     AngleDisc,
     CompactNumericField,
@@ -96,7 +104,7 @@ from .design.controls import (
 
 
 def _sync_background_enable(page, enabled: bool) -> None:
-    """Keep the hidden enable checkbox in step with the 透明 toggle."""
+    """Set the background switch without counting it as a user toggle."""
     checkbox = getattr(page, "style_background", None)
     if checkbox is None:
         return
@@ -106,7 +114,7 @@ def _sync_background_enable(page, enabled: bool) -> None:
 
 
 def _restore_background_from_color(page) -> None:
-    """Picking a background color re-enables the box (drops 透明)."""
+    """Picking a background color switches the background on."""
     from PySide6.QtGui import QColor
 
     if getattr(page, "_updating_style_ui", False):
@@ -114,12 +122,15 @@ def _restore_background_from_color(page) -> None:
     text = str(getattr(page, "style_back_color", None) and page.style_back_color.text() or "")
     if not QColor(text).isValid():
         return
-    toggle = getattr(page, "style_background_transparent", None)
-    if toggle is not None and toggle.isChecked():
-        toggle.blockSignals(True)
-        toggle.setChecked(False)
-        toggle.blockSignals(False)
     _sync_background_enable(page, True)
+    page._background_edited = True
+
+
+def _background_switched(page) -> None:
+    """The user flipped the background switch: an edit the graph panel must
+    follow (the switch's own toggled connection then commits it)."""
+    if not getattr(page, "_updating_style_ui", False):
+        page._background_edited = True
 
 
 def _refresh_appearance_summaries(page) -> None:
@@ -178,10 +189,13 @@ def _refresh_appearance_summaries(page) -> None:
         angle, distance = offset_to_polar(
             page.style_shadow_offset_x.value(), page.style_shadow_offset_y.value()
         )
+        shadow_on = opacity > 0 and (blur > 0 or shadow > 0 or distance > 0)
         rows["shadow"].set_summary(
             tr("不透明度 {opacity:g}% · 距离 {distance:.0f}px · 模糊 {blur:g}px", opacity=opacity, distance=distance, blur=blur)
-            if opacity > 0 and (blur > 0 or shadow > 0 or distance > 0) else tr("已关闭")
+            if shadow_on else tr("已关闭")
         )
+        shadow_color = str(page.style_shadow_color.text() or "#FF000000") if hasattr(page, "style_shadow_color") else "#FF000000"
+        rows["shadow"].set_chip_colors([shadow_color] if shadow_on else [])
     else:
         rows["shadow"].set_summary(tr("黑色 · {shadow:g}", shadow=shadow) if shadow > 0 else tr("已关闭"))
 
@@ -200,7 +214,7 @@ def _refresh_appearance_summaries(page) -> None:
 class StudioStyleController:
     """Coordinate Style/Motion UI against canonical ``StudioSession`` state."""
 
-    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft")
+    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft", "_motion_workflow")
 
     def __init__(self, page, session):
         self.page = page
@@ -245,16 +259,43 @@ class StudioStyleController:
         # (used constantly) leads, the preview is slimmer and shows the
         # selected line ("Aa" switches to the sample), presets are one row
         # and every appearance property is one line.
+        # 2026-10-17 (user: "文字元素不太整齊"): one label column for the
+        # whole tab. Labels outside a section start at the section headers
+        # and end where the in-section labels end, so every control (scope
+        # chips, preset, font, swatches) starts on the same vertical line.
+        page._style_label_column = label_column = StyleLabelColumn()
+
+        def outer_label(text: str) -> QLabel:
+            return label_column.add(StyleGridLabel(text), extra=STYLE_ROW_INSET)
+
+        def section_label(text: str) -> QLabel:
+            return label_column.add(StyleGridLabel(text))
+
+        def grid_width(field: QWidget, minimum: int) -> None:
+            # prepare_controls() would pin 80 px spin boxes and 180 px combos
+            # here; with the label column 字号/字距/B I U and 预设/样式库 then
+            # overlap at the default panel width.
+            field.setProperty("fieldWidth", "styleGrid")
+            field.setProperty("controlSize", "compact")
+            field.setMinimumWidth(minimum)
+
+        def in_control_column(widget: QWidget, *, extra: int = 0) -> QHBoxLayout:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(0)
+            row.addWidget(label_column.control_indent(extra=extra))
+            row.addWidget(widget, 1)
+            return row
+
         scope_card = QFrame()
         scope_card.setObjectName("styleScopeBar")
         scope_layout = QVBoxLayout(scope_card)
-        scope_layout.setContentsMargins(2, 0, 2, 0)
+        scope_layout.setContentsMargins(6, 0, 6, 0)
         scope_layout.setSpacing(4)
         scope_row = QHBoxLayout()
         scope_row.setContentsMargins(0, 0, 0, 0)
-        scope_row.setSpacing(8)
-        scope_caption = QLabel("应用到")
-        scope_caption.setObjectName("styleInlineLabel")
+        scope_row.setSpacing(STYLE_LABEL_GAP)
+        scope_caption = outer_label("应用到")
         scope_row.addWidget(scope_caption)
         page.style_scope = page._new_style_scope_selector()
         page.style_scope.addItem("当前字幕", "current")
@@ -270,7 +311,8 @@ class StudioStyleController:
         page.style_apply_geometry.setObjectName("styleInlineCheck")
         page.style_apply_geometry.setChecked(True)
         bind_text(page.style_apply_geometry, '勾选后，批量应用样式时同步应用当前的位置、边距与缩放；关闭则保留每条字幕各自的几何。', property='toolTip')
-        scope_layout.addWidget(page.style_apply_geometry)
+        # Under the scope chips it qualifies (control column).
+        scope_layout.addLayout(in_control_column(page.style_apply_geometry, extra=STYLE_ROW_INSET))
         layout.addWidget(scope_card)
 
         page.style_preview = page._new_style_preview()
@@ -279,6 +321,10 @@ class StudioStyleController:
         page.style_preview.setMaximumHeight(60)
         page.style_preview.enable_sample_toggle()
         layout.addWidget(page.style_preview)
+        # 2026-10-18 (user): the video layer already shows the caption; the
+        # sample only pushed 外观 down. Kept (hidden) because the motion
+        # preview copies its shadow / glow state.
+        page.style_preview.hide()
 
         advanced_card, advanced_layout = page._style_section("复杂视觉效果")
         advanced_top = QHBoxLayout()
@@ -488,9 +534,9 @@ class StudioStyleController:
         preset_card = QFrame()
         preset_card.setObjectName("styleInlineSection")
         preset_layout = QVBoxLayout(preset_card)
-        preset_layout.setContentsMargins(2, 2, 2, 2)
+        preset_layout.setContentsMargins(6, 2, 6, 2)
         preset_layout.setSpacing(0)
-        page.style_preset = StudioComboBox()
+        page.style_preset = ElidedComboBox()
         bind_text(page.style_preset, '选择或管理字幕样式预设', property='toolTip')
         page._refresh_style_presets()
         page.style_preset.currentIndexChanged.connect(page._load_style_inspector)
@@ -502,9 +548,12 @@ class StudioStyleController:
         page.style_preset.currentIndexChanged.connect(page._preset_index_changed)
         page.style_preset.activated.connect(page._preset_activated)
         preset_row = QHBoxLayout()
-        preset_row.setSpacing(5)
-        preset_caption = QLabel("预设")
-        preset_caption.setObjectName("styleInlineLabel")
+        preset_row.setSpacing(STYLE_LABEL_GAP)
+        # A long preset name is elided instead of pushing into 样式库.
+        page.style_preset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        page.style_preset.setMinimumContentsLength(6)
+        grid_width(page.style_preset, 110)
+        preset_caption = outer_label("预设")
         preset_row.addWidget(preset_caption)
         preset_row.addWidget(page.style_preset, 1)
         preset_more = QToolButton()
@@ -535,15 +584,20 @@ class StudioStyleController:
         layout.addWidget(preset_card)
 
         typography_card, typography_layout = page._style_section("文字")
+        # Same insets as a property row's content: labels and right edges
+        # line up with 外观 (填充…发光).
+        typography_layout.setContentsMargins(STYLE_ROW_INSET, 0, 8, 0)
         page.style_font = page._new_lazy_font_combo()
         page.style_font.setEditable(True)
         page.style_font.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         page.style_font.fontPicked.connect(lambda _family, _weight: page._style_control_changed())
         font_row = QHBoxLayout()
-        font_row.setSpacing(8)
-        font_caption = QLabel("字体")
-        font_caption.setObjectName("styleInlineLabel")
+        font_row.setSpacing(STYLE_LABEL_GAP)
+        font_caption = section_label("字体")
         font_row.addWidget(font_caption)
+        # prepare_controls() would cap the combo at 360 px; a wider panel then
+        # centred label + combo and broke the label column.
+        grid_width(page.style_font, 120)
         font_row.addWidget(page.style_font, 1)
         typography_layout.addLayout(font_row)
         page.style_font_warning = QLabel()
@@ -553,17 +607,16 @@ class StudioStyleController:
         typography_layout.addWidget(page.style_font_warning)
         text_grid = QGridLayout()
         text_grid.setContentsMargins(0, 0, 0, 0)
-        text_grid.setHorizontalSpacing(7)
+        text_grid.setHorizontalSpacing(STYLE_LABEL_GAP)
         page.style_font_size = ScrubSpinBox()
         page.style_font_size.setRange(8, 500)
         page.style_spacing = ScrubSpinBox()
         page.style_spacing.setRange(-100, 200)
-        size_caption = QLabel("字号")
-        size_caption.setObjectName("styleInlineLabel")
+        size_caption = section_label("字号")
         spacing_caption = QLabel("字距")
         spacing_caption.setObjectName("styleInlineLabel")
-        page.style_font_size.setMinimumWidth(58)
-        page.style_spacing.setMinimumWidth(58)
+        grid_width(page.style_font_size, 58)
+        grid_width(page.style_spacing, 58)
         text_grid.addWidget(size_caption, 0, 0)
         text_grid.addWidget(page.style_font_size, 0, 1)
         text_grid.addWidget(spacing_caption, 0, 2)
@@ -621,7 +674,10 @@ class StudioStyleController:
         page.style_shadow_offset_y = ScrubDoubleSpinBox(); page.style_shadow_offset_y.setRange(-100, 100); page.style_shadow_offset_y.setDecimals(2); page.style_shadow_offset_y.setValue(4)
         page.style_shadow_blur = ScrubDoubleSpinBox(); page.style_shadow_blur.setRange(0, 40); page.style_shadow_blur.setDecimals(0); page.style_shadow_blur.setValue(8)
         page.style_shadow_spread = ScrubDoubleSpinBox(); page.style_shadow_spread.setRange(0, 20); page.style_shadow_spread.setDecimals(0); page.style_shadow_spread.setValue(0)
-        page.style_background = QCheckBox("背景框")
+        # 2026-10-18 (user): background is switched on/off like shadow and glow
+        # (was a 透明 button); the switch is the background checkbox itself.
+        page.style_background = QCheckBox()
+        page.style_background.setObjectName("styleSwitch")
         page.style_fill_button = page.style_fill_swatch.findChild(page._style_color_button_type())
         page.style_outline_button = page.style_outline_swatch.findChild(page._style_color_button_type())
         page.style_back_button = page.style_back_swatch.findChild(page._style_color_button_type())
@@ -630,8 +686,7 @@ class StudioStyleController:
         page.style_shadow_color.setText("#FF000000")
         page.style_shadow_swatch = page._style_color_control(page.style_shadow_color)
         page.style_shadow_button = page.style_shadow_swatch.findChild(page._style_color_button_type())
-        bind_text(page.style_background, '启用')
-        bind_text(page.style_background, '启用或关闭字幕背景框', property='toolTip')
+        bind_text(page.style_background, '开启或关闭字幕背景框；点选背景色也会开启', property='toolTip')
         page.style_glow = QCheckBox("发光")
         bind_text(page.style_glow, '在文字边缘增加柔和光晕，提高高亮和霓虹效果。', property='toolTip')
         page.style_glow_color = page._new_style_color_edit()
@@ -649,11 +704,12 @@ class StudioStyleController:
         # Five scannable property rows; complex editors expand on click.
         StylePropertyRow = __import__("twobyteasr.studio_ui", fromlist=["StylePropertyRow"]).StylePropertyRow
 
-        swatch_width = 46
+        # Square color swatches (the color is the control, 2026-10-18).
+        swatch_width = STYLE_FIELD_HEIGHT
 
         def inline_swatch(host):
             # The swatch only (its label would repeat the row's summary).
-            host.setFixedWidth(swatch_width)
+            host.setFixedSize(swatch_width, swatch_width)
             return host
 
         fill_row = StylePropertyRow("填充", on_activate=page._open_fill_editor)
@@ -670,13 +726,13 @@ class StudioStyleController:
         page.style_outline_width.setMinimumHeight(28)
         page.style_outline_width.setMinimumWidth(64)
         outline_row.inline_layout().addWidget(inline_swatch(page.style_outline_swatch))
-        width_caption = QLabel("宽度")
-        width_caption.setObjectName("styleInlineLabel")
-        outline_row.inline_layout().addWidget(width_caption)
+        # No 宽度 caption: next to the stroke swatch the number is obviously its width.
+        bind_text(page.style_outline_width, '描边宽度', property='toolTip')
         outline_row.inline_layout().addWidget(CompactNumericField(page.style_outline_width, unit="px"))
         layer2 = QHBoxLayout()
         layer2.setSpacing(8)
         page.style_outline2 = QCheckBox("第二层")
+        page.style_outline2.setObjectName("styleInlineCheck")
         bind_text(page.style_outline2, '在第一层之上再叠一层描边（例如黑边外套白边）；预览与 Remotion 渲染保持一致', property='toolTip')
         page.style_outline2.setMinimumHeight(28)
         page.style_outline2_color = page._new_style_color_edit()
@@ -697,7 +753,7 @@ class StudioStyleController:
         layer2_fields = QHBoxLayout(page.style_outline2_fields)
         layer2_fields.setContentsMargins(0, 0, 0, 0)
         layer2_fields.setSpacing(8)
-        layer2_fields.addWidget(page.style_outline2_swatch, 1)
+        layer2_fields.addWidget(inline_swatch(page.style_outline2_swatch))
         layer2_fields.addWidget(CompactNumericField(page.style_outline2_width, unit="px"))
         outline_stack.addWidget(page.style_outline2_fields)
         page.style_outline2_fields.hide()
@@ -712,16 +768,8 @@ class StudioStyleController:
         background_row.set_inline(True, summary=False, expandable=False)
         background_editor = background_row.inline_layout()
         background_editor.addWidget(inline_swatch(page.style_back_swatch))
-        # 2026-09-02：启用勾选改为"透明"切换——点色即生效，透明即无背景。
-        page.style_background_transparent = QPushButton("透明")
-        page.style_background_transparent.setObjectName("studioButton")
-        page.style_background_transparent.setCheckable(True)
-        bind_text(page.style_background_transparent, '开启后字幕无背景框；点选任意背景色即恢复', property='toolTip')
-        page.style_background_transparent.toggled.connect(
-            lambda checked: _sync_background_enable(page, not checked)
-        )
-        background_editor.addWidget(page.style_background_transparent)
-        page.style_background.hide()
+        background_row.set_trailing(page.style_background)
+        page.style_background.toggled.connect(lambda _checked: _background_switched(page))
         appearance_layout.addWidget(background_row)
 
         shadow_row = StylePropertyRow("阴影")
@@ -809,38 +857,41 @@ class StudioStyleController:
 
         page.style_shadow_switch.toggled.connect(toggle_shadow)
         page._sync_shadow_switch = sync_shadow_switch
-        shadow_row.inline_layout().addWidget(page.style_shadow_switch)
+        # Switches share the rows' trailing slot so every swatch lines up.
+        shadow_row.set_trailing(page.style_shadow_switch)
         shadow_row.inline_layout().addWidget(inline_swatch(page.style_shadow_swatch))
-        shadow_row1 = QHBoxLayout()
-        shadow_row1.setContentsMargins(0, 0, 0, 0)
-        shadow_row1.setSpacing(8)
-        shadow_row1.addWidget(CompactNumericField(page.style_shadow_opacity, label="不透明度", unit="%"), 1)
-        shadow_row2 = QHBoxLayout()
-        shadow_row2.setSpacing(8)
-        direction = QHBoxLayout()
-        direction.setSpacing(6)
-        direction.addWidget(page.style_shadow_angle)
-        direction.addWidget(CompactNumericField(page.style_shadow_angle_value, label="方向", unit="°"), 1, Qt.AlignmentFlag.AlignBottom)
-        shadow_row2.addLayout(direction, 1)
-        shadow_row2.addWidget(CompactNumericField(page.style_shadow_distance, label="距离", unit="px"), 1, Qt.AlignmentFlag.AlignBottom)
-        shadow_row3 = QHBoxLayout()
-        shadow_row3.setSpacing(8)
-        shadow_row3.addWidget(CompactNumericField(page.style_shadow_blur, label="模糊", unit="px"), 1)
-        shadow_row3.addWidget(CompactNumericField(page.style_shadow_spread, label="扩散", unit="px"), 1)
-        shadow_row.content_layout().addLayout(shadow_row1)
-        shadow_row.content_layout().addLayout(shadow_row2)
-        shadow_row.content_layout().addLayout(shadow_row3)
+        # 2026-10-18 (user): the disc shows and sets the direction itself (its
+        # centre reads the angle), so no 方向 box; distance / opacity / blur /
+        # spread sit in a 2 x 2 grid beside the disc, as tall as the disc.
+        page.style_shadow_angle_value.setParent(shadow_row.content)  # kept for sync, never top-level
+        page.style_shadow_angle_value.hide()
+        page.style_shadow_angle.setFixedSize(112, 112)
+        shadow_grid = QGridLayout()
+        shadow_grid.setContentsMargins(0, 0, 0, 0)
+        shadow_grid.setHorizontalSpacing(10)
+        shadow_grid.setVerticalSpacing(8)
+        shadow_grid.addWidget(page.style_shadow_angle, 0, 0, 2, 1, Qt.AlignmentFlag.AlignVCenter)
+        for index, (control, label, unit) in enumerate((
+            (page.style_shadow_distance, "距离", "px"),
+            (page.style_shadow_opacity, "不透明度", "%"),
+            (page.style_shadow_blur, "模糊", "px"),
+            (page.style_shadow_spread, "扩散", "px"),
+        )):
+            grid_width(control, 44)
+            shadow_grid.addWidget(CompactNumericField(control, label=label, unit=unit), index // 2, 1 + index % 2)
+        shadow_grid.setColumnStretch(1, 1)
+        shadow_grid.setColumnStretch(2, 1)
+        shadow_row.content_layout().addLayout(shadow_grid)
         appearance_layout.addWidget(shadow_row)
 
         glow_row = StylePropertyRow("发光")
         glow_row.set_inline(True, summary=False, expandable=False)
         page.style_glow.setObjectName("styleSwitch")
         page.style_glow.setText("")
-        glow_row.inline_layout().addWidget(page.style_glow)
+        glow_row.set_trailing(page.style_glow)
         glow_row.inline_layout().addWidget(inline_swatch(page.style_glow_swatch))
-        glow_caption = QLabel("半径")
-        glow_caption.setObjectName("styleInlineLabel")
-        glow_row.inline_layout().addWidget(glow_caption)
+        # No 半径 caption (2026-10-18): next to the glow swatch it reads as the radius.
+        bind_text(page.style_glow_strength, '发光半径', property='toolTip')
         glow_row.inline_layout().addWidget(CompactNumericField(page.style_glow_strength, unit="px"))
         appearance_layout.addWidget(glow_row)
 
@@ -851,6 +902,7 @@ class StudioStyleController:
         exclusive = [fill_row, outline_row, background_row, shadow_row, glow_row]
         for row in exclusive:
             row.set_exclusive_group(exclusive)
+            label_column.add_row(row)
         page.style_outline2.toggled.connect(
             lambda checked, _page=page: _page.style_outline2_fields.setVisible(bool(checked))
         )
@@ -878,7 +930,12 @@ class StudioStyleController:
         page.style_glow.toggled.connect(page._glow_toggled)
         layout.addWidget(appearance_card)
 
-        effect_card, effect_layout = page._style_section("动效")
+        from .motion_inspector_ui import MotionPanel
+        page.motion_panel = MotionPanel()
+        effect_card = page.motion_panel
+        effect_layout = QVBoxLayout(effect_card)
+        effect_layout.setContentsMargins(10, 8, 10, 12)
+        effect_layout.setSpacing(8)
         page.motion_preview = page._new_style_preview()
         page.motion_preview.setObjectName("motionPreview")
         page.motion_preview.setMinimumHeight(68)
@@ -889,11 +946,11 @@ class StudioStyleController:
         page.graph_motion_summary.setWordWrap(True)
         page.graph_motion_summary.hide()
         effect_layout.addWidget(page.graph_motion_summary)
-        replay_motion = QPushButton("重播 Motion")
+        page.motion_replay_button = replay_motion = QPushButton("播放本条")
         replay_motion.setObjectName("studioButton")
         replay_motion.setIcon(page._style_icon("fa5s.redo-alt"))
         replay_motion.clicked.connect(lambda: page._replay_motion())
-        page.motion_library_button = QPushButton("打开 Motion Library")
+        page.motion_library_button = QPushButton("动效预设库…")
         page.motion_library_button.setObjectName("studioButton")
         page.motion_library_button.setIcon(page._style_icon("fa5s.play-circle"))
         page.motion_library_button.clicked.connect(page._open_motion_browser)
@@ -940,11 +997,13 @@ class StudioStyleController:
             legacy_index = page.effect_preset.findData(legacy_id)
             if legacy_index >= 0:
                 page.effect_preset.view().setRowHidden(legacy_index, True)
+        for legacy_id in ('karaoke_highlight', 'emphasis', 'blur_reveal', 'visual_graph'):
+            page.effect_preset.view().setRowHidden(page.effect_preset.findData(legacy_id), True)
         page.effect_exit = StudioComboBox()
         for label, effect_type in (
             ("无", "none"),
             ("轻微淡出", "soft_fade"),
-            ("缩小淡出", "scale"),
+            ("缩小退出", "scale"),
             ("兼容 · 淡出", "fade"),
         ):
             page.effect_exit.addItem(label, effect_type)
@@ -959,6 +1018,12 @@ class StudioStyleController:
         page.effect_out_duration.setRange(1, 4000)
         page.effect_out_duration.setValue(140)
         page.effect_out_duration.setSuffix(" ms")
+        page.effect_loop = StudioComboBox()
+        for label, value in (("无", "none"), ("呼吸", "loop_breathe"), ("漂浮", "loop_float"), ("摇曳", "loop_sway")):
+            page.effect_loop.addItem(label, value)
+        page.effect_loop_duration = ScrubSpinBox()
+        page.effect_loop_duration.setRange(120, 4000)
+        page.effect_loop_duration.setValue(1200)
         page.effect_strength = StudioComboBox()
         for label, value in (("轻微", "low"), ("标准", "medium"), ("强烈", "high")):
             page.effect_strength.addItem(label, value)
@@ -970,7 +1035,7 @@ class StudioStyleController:
         effect_grid.setContentsMargins(0, 0, 0, 0)
         effect_grid.setHorizontalSpacing(7)
         effect_grid.setVerticalSpacing(5)
-        effect_grid.addWidget(page._style_field("预设", page.motion_preset), 0, 0, 1, 2)
+        page.motion_preset.hide()
         effect_grid.addWidget(page._style_field("入场", page.effect_preset), 1, 0)
         effect_grid.addWidget(page._style_field("出场", page.effect_exit), 1, 1)
         effect_grid.addWidget(page._style_field("强度", page.effect_strength), 2, 0)
@@ -1016,7 +1081,25 @@ class StudioStyleController:
         page.motion_advanced.hide()
         page.motion_advanced_button.toggled.connect(page._toggle_motion_advanced)
         effect_layout.addWidget(page.motion_advanced)
-        layout.addWidget(effect_card)
+        # Keep controller fields for project hydration / custom presets, while
+        # the dedicated inspector owns the visible stage cards and timing UI.
+        page.motion_legacy = QWidget(effect_card)
+        legacy_layout = QVBoxLayout(page.motion_legacy)
+        while effect_layout.count():
+            item = effect_layout.takeAt(0)
+            if item.widget(): legacy_layout.addWidget(item.widget())
+            elif item.layout(): legacy_layout.addLayout(item.layout())
+        for control in (page.motion_preset, page.effect_loop, page.effect_loop_duration):
+            legacy_layout.addWidget(control)
+        page.motion_legacy.hide()
+        from .motion_controls_ui import MotionWorkflow
+        self._motion_workflow = MotionWorkflow(self, effect_layout)
+        page.motion_preview.hide()
+        # Existing shortcuts continue to open the dedicated tool page.
+        page.motion_jump_button = QPushButton(tr('打开动效'))
+        page.motion_jump_button.setParent(panel)
+        page.motion_jump_button.hide()
+        page.motion_jump_button.clicked.connect(lambda: page.context_drawer.setCurrentIndex(page.motion_tab_index))
 
         position_card, position_layout = page._style_section("高级位置与对齐", expanded=False)
         page.style_alignment = StudioComboBox()
@@ -1027,16 +1110,30 @@ class StudioStyleController:
         ):
             page.style_alignment.addItem(label, value)
         page.style_anchor_buttons = {}
-        position_layout.addWidget(page._style_field("对齐", page.style_alignment))
+        # Same label column as 文字 / 外观 (was captions stacked above).
+        position_layout.setContentsMargins(STYLE_ROW_INSET, 0, 8, 0)
+        alignment_row = QHBoxLayout()
+        alignment_row.setSpacing(STYLE_LABEL_GAP)
+        alignment_row.addWidget(section_label("对齐"))
+        grid_width(page.style_alignment, 120)
+        alignment_row.addWidget(page.style_alignment, 1)
+        position_layout.addLayout(alignment_row)
         position_grid = QGridLayout()
         position_grid.setContentsMargins(0, 0, 0, 0)
-        position_grid.setHorizontalSpacing(7)
+        position_grid.setHorizontalSpacing(STYLE_LABEL_GAP)
         page.style_position_x = ScrubSpinBox()
         page.style_position_y = ScrubSpinBox()
         for control in (page.style_position_x, page.style_position_y):
             control.setRange(0, 16384)
-        position_grid.addWidget(page._style_field("X", page.style_position_x), 0, 0)
-        position_grid.addWidget(page._style_field("Y", page.style_position_y), 0, 1)
+            grid_width(control, 58)
+        position_y_caption = QLabel("Y")
+        position_y_caption.setObjectName("styleInlineLabel")
+        position_grid.addWidget(section_label("X"), 0, 0)
+        position_grid.addWidget(page.style_position_x, 0, 1)
+        position_grid.addWidget(position_y_caption, 0, 2)
+        position_grid.addWidget(page.style_position_y, 0, 3)
+        position_grid.setColumnStretch(1, 1)
+        position_grid.setColumnStretch(3, 1)
         position_layout.addLayout(position_grid)
         page.position_edit_button = QPushButton("在画面中拖动字幕")
         page.position_edit_button.setObjectName("studioButton")
@@ -1044,7 +1141,7 @@ class StudioStyleController:
         page.position_edit_button.setChecked(True)
         page.position_edit_button.setIcon(page._style_icon("fa5s.arrows-alt"))
         page.position_edit_button.toggled.connect(page._toggle_position_edit)
-        position_layout.addWidget(page.position_edit_button)
+        position_layout.addLayout(in_control_column(page.position_edit_button))
         margin_row = QGridLayout()
         margin_row.setContentsMargins(0, 0, 0, 0)
         margin_row.setHorizontalSpacing(5)
@@ -1060,13 +1157,17 @@ class StudioStyleController:
             control.setRange(0, 1000)
             control.setPrefix(prefix)
             control.setSuffix(" px")
+            grid_width(control, 58)
             margin_row.addWidget(control, index // 2, index % 2)
         margin_row.setColumnStretch(0, 1)
         margin_row.setColumnStretch(1, 1)
-        position_layout.addLayout(margin_row)
+        margin_host = QWidget()
+        margin_host.setLayout(margin_row)
+        position_layout.addLayout(in_control_column(margin_host))
         layout.addWidget(position_card)
 
         current_card, current_layout = page._style_section("当前字幕", expanded=False)
+        current_layout.setContentsMargins(STYLE_ROW_INSET, 0, 8, 0)
         page.current_cue_section_button = current_card.findChild(QToolButton, "styleSectionHeader")
         page.cue_text.setMinimumHeight(42)
         page.cue_text.setMaximumHeight(64)
@@ -1079,7 +1180,7 @@ class StudioStyleController:
         # 二十七轮：原生参数分区宿主登记——当前 cue 是 AI 特效字幕时整组
         # 隐藏（_update_web_adjust_visibility 反转可见性），面板只留 AI 调整卡。
         page.style_native_hosts = [
-            preset_card, typography_card, appearance_card, effect_card,
+            preset_card, typography_card, appearance_card,
             scope_card, position_card, current_card,
         ]
 
@@ -1089,13 +1190,10 @@ class StudioStyleController:
             page.style_font_size, page.style_spacing,
             page.style_margin_l, page.style_margin_r, page.style_margin_v,
             page.style_position_x, page.style_position_y,
-            page.style_outline_width, page.style_outline2_width, page.style_shadow, page.effect_duration,
+            page.style_outline_width, page.style_outline2_width, page.style_shadow,
             page.style_shadow_opacity, page.style_shadow_offset_x, page.style_shadow_offset_y,
             page.style_shadow_angle_value, page.style_shadow_distance,
             page.style_shadow_blur, page.style_shadow_spread,
-            page.effect_out_duration, page.effect_delay, page.effect_scale,
-            page.effect_offset_x, page.effect_offset_y, page.effect_blur,
-            page.effect_overshoot, page.effect_accel,
         ):
             control.valueChanged.connect(page._queue_style_commit)
             control.editingFinished.connect(page._commit_style_now)
@@ -1206,11 +1304,11 @@ class StudioStyleController:
         effect_id = str(page.effect_preset.currentData() or "none")
         if effect_id == "visual_graph":
             return
-        page._load_motion_controls(effect_id)
+        self._load_motion_controls(effect_id, include_other_stages=False)
         page._preview_motion_preset(effect_id)
         page._motion_contract_dirty = True
         page._pending_motion_replay_cue_id = self.session.selected_cue_id
-        page._style_control_changed()
+        self._motion_workflow.motion_changed()
 
     def _motion_preset_changed(self, _index: int = -1) -> None:
         page = self.page
@@ -1237,27 +1335,34 @@ class StudioStyleController:
         page.motion_preview.play_motion(effect)
         page._motion_contract_dirty = True
         page._pending_motion_replay_cue_id = self.session.selected_cue_id
-        page._style_control_changed()
+        self._motion_workflow.motion_changed()
 
     def _open_motion_browser(self) -> None:
-        # 2026-09-02: Motion Library 入口改为 Web 主题特效字幕库——旧 graph
-        # 动效卡（Qt 自绘近似）不再展示；真实 HTML/CSS 预览 + 范围套用。
         page = self.page
-        from .studio_web_theme_browser import WebThemeBrowserDialog
-
-        dialog = WebThemeBrowserDialog(page, self.window() or page)
-        dialog.theme_applied.connect(
-            lambda name, _theme: bind_text(page.ai_confidence, '特效字幕已应用：{name}', name=name)
-            if hasattr(page, "ai_confidence") else None
-        )
+        style = page._selected_style_source(use_cue_style=True)
+        if style is None:
+            page._show_studio_hint(tr('先选择一条字幕，再打开动效库'))
+            return
+        motion, preview = self._current_motion_for_library()
+        dialog = page._new_motion_browser_dialog(style, page.window(),
+            current_motion=motion, current_preview_effect_id=preview)
+        dialog.motion_selected.connect(page._apply_motion_library_preset)
         dialog.exec()
 
     def _current_motion_for_library(self) -> tuple[dict[str, object], str]:
         page = self.page
+        if hasattr(self, '_motion_workflow') and page.effect_preset.currentData() != 'visual_graph':
+            effect_id = str(page.effect_preset.currentData() or 'none')
+            effect = page._effect_from_controls(effect_id)
+            effect['word_highlight'] = self._motion_workflow.word_settings()
+            return {'nativeEffect': validate_effect(effect)}, effect_id if effect_id in builtin_effects() else 'none'
         cue = self.session._cue_lookup.get(self.session.selected_cue_id)
         payload = self.session.project.style_recipes.get(cue.style_id) if self.session.project and cue else None
         if isinstance(payload, Mapping) and payload:
             recipe = StyleRecipe.from_dict(payload)
+            if recipe.visual_graph.get('motionGraph', {}).get('tracks'):
+                return {'mode': 'explicit', 'origin': 'visual_graph',
+                        'graph': copy.deepcopy(recipe.visual_graph['motionGraph'])}, 'soft_fade'
             if any(key in recipe.motion for key in ("entrance", "hold", "exit")):
                 return copy.deepcopy(recipe.motion), "soft_fade"
         effect_id = str(page.effect_preset.currentData() or "none")
@@ -1280,17 +1385,42 @@ class StudioStyleController:
         preset = MotionPresetStore().all().get(str(preset_id))
         if preset is None or not self.session.project:
             return
+        if isinstance(preset.motion.get('nativeEffect'), Mapping):
+            effect = validate_effect(preset.motion['nativeEffect'])
+            targets = [c.id for c in self._motion_workflow.targets() if self._motion_workflow.supported(c)]
+            from .motion_application import motion_command
+            from .word_animation import word_part
+            command = motion_command(self.session.project, targets, motion=effect,
+                words=word_part(effect) or {'type': 'none'}, changed=page._changed)
+            if command:
+                self.session.undo_stack.push(command)
+            page._load_style_inspector()
+            return
         if preset.native_effect_id:
+            from .word_animation import WORD_MODES
+            if preset.native_effect_id in WORD_MODES:
+                page._set_combo_data(page.motion_word_mode, preset.native_effect_id)
+                from .letter_motion import PRESETS
+                if preset.native_effect_id in PRESETS:
+                    page._set_combo_data(page.motion_word_color, PRESETS[preset.native_effect_id][2])
+                self._motion_workflow.draft_changed()
+                self._motion_workflow.apply()
+                return
             index = page.effect_preset.findData(preset.native_effect_id)
             if index >= 0:
+                page._updating_style_ui = True
                 page.effect_preset.setCurrentIndex(index)
+                page._load_motion_controls(preset.native_effect_id)
+                page._updating_style_ui = False
                 page.motion_preview.play_motion(builtin_effects()[preset.preview_effect_id])
+                self._motion_workflow.motion_changed()
+                self._motion_workflow.apply()
                 return
         page._apply_advanced_motion(preset)
 
     def _apply_advanced_motion(self, preset: MotionPreset) -> None:
         page = self.page
-        cue_ids = page._style_target_ids()
+        cue_ids = [c.id for c in self._motion_workflow.targets() if self._motion_workflow.supported(c)]
         if not self.session.project or not cue_ids:
             return
         existing_styles = {style.id: style for style in self.session.project.styles}
@@ -1298,11 +1428,19 @@ class StudioStyleController:
         recipes = dict(self.session.project.style_recipes)
         mapped: dict[str, str] = {}
         effect_ids: dict[str, str] = {}
+        effects = dict(self.session.project.effects)
         groups: dict[str, list[str]] = {}
         for cue_id in cue_ids:
             cue = cue_by_id(self.session.project, cue_id)
             groups.setdefault(cue.style_id, []).append(cue_id)
-            effect_ids[cue_id] = cue.effect_id
+            # A preceding native override must not mask the newly chosen
+            # authored motion. Speech timing remains independent.
+            from .word_animation import word_part
+            clean = validate_effect({'entry': {'type': 'none'}, 'exit': {'type': 'none'},
+                                     'word_highlight': word_part(effects.get(cue.effect_id, {}))})
+            key = 'cue-motion-' + hashlib.sha256(json.dumps(clean, sort_keys=True).encode()).hexdigest()[:16]
+            effects[key] = clean
+            effect_ids[cue_id] = key
         for source_id, group_ids in groups.items():
             source = existing_styles.get(source_id)
             if source is None:
@@ -1318,6 +1456,15 @@ class StudioStyleController:
                 recipe = page._base_recipe_for_style(source)
             recipe.engine = "remotion"
             recipe.motion = copy.deepcopy(preset.motion)
+            recipe.motion['mode'] = 'explicit'
+            if recipe.visual_graph or preset.motion.get('graph'):
+                from .visual_design_graph import graph_from_style_recipe
+                authored = copy.deepcopy(recipe.visual_graph) if recipe.visual_graph else graph_from_style_recipe(recipe).to_dict()
+                recipe.visual_graph = {}
+                authored['motionGraph'] = copy.deepcopy(preset.motion.get('graph') or
+                    graph_from_style_recipe(recipe).to_dict()['motionGraph'])
+                recipe.visual_graph = authored
+                recipe.motion.update(origin='visual_graph', graph=copy.deepcopy(authored['motionGraph']))
             recipes[target_id] = recipe.to_dict()
             for cue_id in group_ids:
                 mapped[cue_id] = target_id
@@ -1326,8 +1473,8 @@ class StudioStyleController:
         first = cue_by_id(self.session.project, cue_ids[0])
         self.session.undo_stack.push(SetCuesPresentationCommand(
             self.session.project, cue_ids, style_id=mapped[cue_ids[0]], style_ids=mapped,
-            effect_id=first.effect_id, effect_ids=effect_ids, styles=styles,
-            effects=self.session.project.effects, style_recipes=recipes,
+            effect_id=effect_ids[first.id], effect_ids=effect_ids, styles=styles,
+            effects=effects, style_recipes=recipes,
             text=f"应用 Motion: {preset.name}", changed=page._changed,
         ))
         page.motion_preview.play_motion(builtin_effects()[preset.preview_effect_id])
@@ -1338,6 +1485,7 @@ class StudioStyleController:
         payload = self.session.project.style_recipes.get(selected.style_id, {}) if selected else {}
         if isinstance(payload, Mapping):
             page._queue_advanced_preview(payload, force=True)
+        page._load_style_inspector()
 
     def _toggle_motion_advanced(self, expanded: bool) -> None:
         page = self.page
@@ -1374,18 +1522,20 @@ class StudioStyleController:
                 return validate_effect(self.session.project.effects[effect_id])
             except (TypeError, ValueError):
                 pass
-        return copy.deepcopy(builtin_effects().get(effect_id, builtin_effects()["none"]))
+        return copy.deepcopy(preset_effect(effect_id) or builtin_effects()["none"])
 
-    def _load_motion_controls(self, effect_id: str) -> None:
+    def _load_motion_controls(self, effect_id: str, *, include_other_stages: bool = True) -> None:
         page = self.page
         effect = page._motion_source(effect_id)
         entry = effect.get("entry", {"type": "none"})
         exit_part = effect.get("exit", {"type": "none"})
+        loop_part = effect.get("loop", {"type": "none"})
         controls = (
             page.effect_duration, page.effect_out_duration, page.effect_delay,
             page.effect_scale, page.effect_offset_x, page.effect_offset_y,
             page.effect_blur, page.effect_overshoot, page.effect_accel,
             page.effect_exit, page.effect_strength, page.effect_curve,
+            page.effect_loop, page.effect_loop_duration,
         )
         for control in controls:
             control.blockSignals(True)
@@ -1393,7 +1543,10 @@ class StudioStyleController:
             active = entry.get("type") != "none"
             page.effect_duration.setEnabled(active)
             page.effect_duration.setValue(int(entry.get("duration", 180)))
-            page.effect_out_duration.setValue(int(exit_part.get("duration", 140)))
+            if include_other_stages:
+                page.effect_out_duration.setValue(int(exit_part.get("duration", 140)))
+                page._set_combo_data(page.effect_loop, loop_part.get("type", "none"))
+                page.effect_loop_duration.setValue(int(loop_part.get("duration", 1200)))
             page.effect_delay.setValue(int(entry.get("delay", 0)))
             page.effect_scale.setValue(int(entry.get("scale_from", 100)))
             page.effect_offset_x.setValue(int(entry.get("offset_x", 0)))
@@ -1401,7 +1554,8 @@ class StudioStyleController:
             page.effect_blur.setValue(float(entry.get("blur", 0)))
             page.effect_overshoot.setValue(int(entry.get("overshoot", 100)))
             page.effect_accel.setValue(float(entry.get("accel", 1.0)))
-            page._set_combo_data(page.effect_exit, str(exit_part.get("type") or "none"))
+            if include_other_stages:
+                page._set_combo_data(page.effect_exit, str(exit_part.get("type") or "none"))
             page._set_combo_data(page.effect_strength, str(entry.get("strength") or "medium"))
             page._set_combo_data(page.effect_curve, str(entry.get("easing") or "soft"))
         finally:
@@ -1504,11 +1658,14 @@ class StudioStyleController:
         if page._updating_style_ui:
             return
         summary = getattr(page, "graph_motion_summary", None)
-        if summary is not None and summary.isVisible():
-            return
         effect_id = str(page.effect_preset.currentData() or "none")
         if effect_id == "visual_graph":
-            return
+            page._updating_style_ui = True
+            page._set_combo_data(page.effect_preset, 'none')
+            page._updating_style_ui = False
+            effect_id = 'none'
+        if summary is not None:
+            summary.hide()
         effect = page._effect_from_controls(effect_id)
         for preview in (
             getattr(page, "style_preview", None),
@@ -1518,12 +1675,10 @@ class StudioStyleController:
                 preview.play_motion(effect)
         page._motion_contract_dirty = True
         page._pending_motion_replay_cue_id = self.session.selected_cue_id
-        page._style_control_changed()
+        self._motion_workflow.motion_changed()
 
     def _effect_from_controls(self, effect_id: str) -> dict:
         page = self.page
-        if effect_id == "none":
-            return copy.deepcopy(builtin_effects()["none"])
         effect = page._motion_source(effect_id)
         entry = copy.deepcopy(effect.get("entry", {"type": effect_id}))
         entry_type = str(entry.get("type") or effect_id)
@@ -1552,10 +1707,14 @@ class StudioStyleController:
                 if effect_id == "fade" and exit_type == "fade"
                 else page.effect_out_duration.value()
             )
+            if exit_type == "scale": exit_part["scale_from"] = 65
             exit_part["easing"] = str(page.effect_curve.currentData() or "soft")
             exit_part["accel"] = page.effect_accel.value()
             exit_part["strength"] = str(page.effect_strength.currentData() or "medium")
-        payload = {"entry": entry, "exit": exit_part}
+        payload = {"entry": entry, "exit": exit_part,
+                   "loop": {"type": str(page.effect_loop.currentData() or "none"),
+                            "duration": page.effect_loop_duration.value(),
+                            "strength": str(page.effect_strength.currentData() or "medium")}}
         if "word_highlight" in effect:
             payload["word_highlight"] = copy.deepcopy(effect["word_highlight"])
         return validate_effect(payload)
@@ -2683,11 +2842,7 @@ class StudioStyleController:
             page.style_shadow_blur.setValue(float(shadow_payload.get("blur_radius", style.shadow * 1.5) or 0))
             page.style_shadow_spread.setValue(float(shadow_payload.get("spread", 0) or 0))
             page.style_background.setChecked(style.border_style == 3)
-            transparent_toggle = getattr(page, "style_background_transparent", None)
-            if transparent_toggle is not None:
-                transparent_toggle.blockSignals(True)
-                transparent_toggle.setChecked(style.border_style != 3)
-                transparent_toggle.blockSignals(False)
+            page._background_edited = False
             page.style_back_color.setText(style.back_color)
             if _index >= 0 and not recipe:
                 # Dropdown-driven preset load: gradient/glow presets ship with a
@@ -2746,6 +2901,8 @@ class StudioStyleController:
             )
             if isinstance(recipe, Mapping) and recipe:
                 self._load_advanced_motion_controls(recipe)
+            if hasattr(self, "_motion_workflow"):
+                self._motion_workflow.load()
         finally:
             for blocker in blocked:
                 blocker.unblock()
@@ -3241,6 +3398,10 @@ class StudioStyleController:
                 "fontFamily": preset.font_family, "fontSize": preset.font_size,
                 "bold": preset.bold, "italic": preset.italic,
                 "spacing": preset.spacing, "scaleX": preset.scale_x, "scaleY": preset.scale_y,
+                # A new family must not keep the old one's face (2026-10-18:
+                # 优设标题黑 kept Source Han's "Heavy / 900" and was reported missing).
+                "fontWeight": preset.font_weight, "fontStyleName": preset.font_style_name,
+                "fontFile": preset.font_file, "fontFaceIndex": preset.font_face_index,
             })
             recipe.layout.update({
                 "alignment": preset.alignment, "marginL": preset.margin_l,
@@ -3304,6 +3465,16 @@ class StudioStyleController:
                     text_layer["shadow"] = copy.deepcopy(recipe.outline["shadow"])
                     text_layer["letterSpacing"] = preset.spacing
                     text_layer["alignment"] = preset.alignment
+                if getattr(page, "_background_edited", False):
+                    # Renderers paint the background from the graph's panel;
+                    # an AI panel is only touched when the user edits it.
+                    from .visual_design_graph import apply_background_to_graph
+
+                    visual_graph = apply_background_to_graph(
+                        visual_graph,
+                        enabled=preset.border_style == 3,
+                        color=preset.back_color,
+                    )
                 recipe.visual_graph = visual_graph
             recipe.background.update({
                 "enabled": preset.border_style == 3,
@@ -3333,10 +3504,8 @@ class StudioStyleController:
             style_recipes[target_style_id] = copy.deepcopy(dict(saved_recipe))
         else:
             style_recipes.pop(target_style_id, None)
-        effect = "none" if replace_preset else str(page.effect_preset.currentData() or "none")
+        effect = "none" if replace_preset else current_cue.effect_id
         effects = dict(self.session.project.effects)
-        if effect != "none":
-            effects[effect] = page._effect_from_controls(effect)
         batch_style_ids: dict[str, str] = {}
         # 2026-09-19：勾选"同时应用位置与缩放"时，几何跟随当前有效样式
         # 传播；未勾选时保留每条目标字幕自己的几何。transform 里的几何键
@@ -3444,6 +3613,7 @@ class StudioStyleController:
                 cue_ids,
                 style_id=target_style_id,
                 effect_id=effect,
+                effect_ids=None if replace_preset else {c.id: c.effect_id for c in self.session.project.cues if c.id in cue_ids},
                 style_ids=batch_style_ids,
                 base_preset_id=preset_id,
                 appearance_override=appearance_override,
@@ -3462,6 +3632,7 @@ class StudioStyleController:
         self._trace_subtitle_preset(preset_id, cue_ids, cue_count_before,
                                     scope=str(page.style_scope.currentData() or "current"))
         page._motion_contract_dirty = False
+        page._background_edited = False
         selected_after = self.session._cue_lookup.get(self.session.selected_cue_id)
         payload_after = self.session.project.style_recipes.get(selected_after.style_id, {}) if selected_after else {}
         # Every presentation transaction commits the same foreground owner.

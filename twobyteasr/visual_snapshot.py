@@ -63,6 +63,7 @@ class VisualCueSnapshot:
     project_id: str = ""
     translation: str = ""
     resolved_caption: object = None
+    word_animation: object = None
 
     def to_dict(self) -> dict[str, Any]:
         # dataclasses.asdict already recursively copies every mutable field.
@@ -259,6 +260,14 @@ def _materialize_recipe_appearance(
                     "type": "solid",
                     "color": style.primary_color,
                 }
+        if "border_style" in appearance_override or "back_color" in appearance_override:
+            # The panel is drawn from the graph. A background the user set in
+            # the Inspector wins over a panel saved before that edit.
+            from .visual_design_graph import apply_background_to_graph
+
+            graph = apply_background_to_graph(
+                graph, enabled=style.border_style == 3, color=style.back_color,
+            )
         recipe.visual_graph = graph
     return recipe
 
@@ -367,6 +376,24 @@ def build_visual_cue_snapshot(
     shadow = normalize_shadow_contract(recipe_shadow)
     glow = normalize_glow_contract(effects.get("glow", {}))
     from .style_recipe import MOTION_SOURCE_NONE, motion_source
+    from .effect_dsl import validate_effect
+    from .motion_application import native_motion_graph
+    from .word_animation import WORD_MODES, build_word_animation
+    effect = validate_effect(project.effects.get(cue.effect_id, {}))
+    word_animation = build_word_animation(project, cue, caption.text, effect=effect)
+    # Cue effects are the inspector's explicit motion choice. The raster
+    # preview previously consumed only recipes, silently dropping this choice.
+    override_motion = effect.get('motion_override') or (
+        effect['entry']['type'] not in WORD_MODES | {'none', 'emphasis'}
+        or effect['exit']['type'] != 'none' or effect.get('loop', {}).get('type', 'none') != 'none')
+    if override_motion and not recipe.web_theme:
+        from .visual_design_graph import graph_from_style_recipe
+        graph = copy.deepcopy(recipe.visual_graph) if recipe.visual_graph else graph_from_style_recipe(recipe).to_dict()
+        graph['motionGraph'] = native_motion_graph(effect, cue.end_ms-cue.start_ms)
+        recipe.visual_graph = graph
+        recipe.motion = {'mode': 'explicit' if graph['motionGraph']['tracks'] else 'none',
+                         'origin': 'visual_graph' if graph['motionGraph']['tracks'] else 'none',
+                         'graph': graph['motionGraph']}
 
     raw_motion = recipe.motion if isinstance(recipe.motion, Mapping) else {}
     motion = normalize_motion_contract(raw_motion)
@@ -435,4 +462,5 @@ def build_visual_cue_snapshot(
         project_id=str(project.project_id),
         translation=_cue_translation(project, cue.id),
         resolved_caption=caption,
+        word_animation=word_animation,
     )

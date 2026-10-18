@@ -80,7 +80,10 @@ STABLE_FEED = f"https://github.com/{REPOSITORY}/releases/latest/download/{UPDATE
 RELEASES_API = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page=20"
 # Download fallbacks for networks where github.com is slow.  Manifests are
 # signed and archives hashed, so a mirror can delay but not alter an update.
-GITHUB_MIRRORS = ("https://ghfast.top/", "https://ghproxy.net/")
+# Tried in order after github.com and GitCode.  gh-proxy.org (2026-10-17) is
+# last: identical bytes from a Japan exit, not yet measured on a mainland line;
+# it sometimes ignores Range, and _download_once then restarts from zero.
+GITHUB_MIRRORS = ("https://ghfast.top/", "https://ghproxy.net/", "https://gh-proxy.org/")
 USER_AGENT = "2ByteASR-updater"
 AUTO_CHECK_INTERVAL = 24 * 3600
 MANUAL_RECHECK_SECONDS = 60

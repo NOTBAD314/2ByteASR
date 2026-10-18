@@ -114,10 +114,13 @@ def test_disc_drag_is_one_undo_with_live_direction(tmp_path,monkeypatch):
     try:
         page.show();app.processEvents();disc=page.style_shadow_angle
         before=page.undo_stack.count()
-        QTest.mousePress(disc,Qt.LeftButton,pos=QPoint(65,36))
+        # Points on the disc's own size (72 px before 2026-10-18, 112 px since).
+        center=QPoint(disc.width()//2,disc.height()//2);reach=disc.width()//2-7
+        right=center+QPoint(reach,0);down=center+QPoint(0,reach)
+        QTest.mousePress(disc,Qt.LeftButton,pos=right)
         assert abs(build_visual_cue_snapshot(page.project,'a').shadow['offset_y'])<.1
-        QTest.mouseMove(disc,QPoint(36,65),20)
-        QTest.mouseRelease(disc,Qt.LeftButton,pos=QPoint(36,65))
+        QTest.mouseMove(disc,down,20)
+        QTest.mouseRelease(disc,Qt.LeftButton,pos=down)
         assert disc.angle()==90 and page.style_shadow_angle_value.value()==90
         assert page.undo_stack.count()==before+1
         shadow=build_visual_cue_snapshot(page.project,'a').shadow

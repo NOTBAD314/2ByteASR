@@ -52,6 +52,25 @@ class MotionCard(QFrame):
         self.preview = StylePreview(self)
         self.preview.setFixedHeight(74)
         self.preview.set_style(style)
+        if preset.category in {'常用', '精选字效'} or isinstance(preset.motion.get('nativeEffect'), Mapping):
+            self.preview.hide()
+            self.preview.deleteLater()
+            from .motion_controls_ui import MotionSample
+            from .visual_snapshot import build_visual_cue_snapshot
+            from .studio_project import SubtitleProject, StudioMedia, StudioCue
+            self.preview = MotionSample(self)
+            self.preview.auto_play = False
+            sample_style = copy.deepcopy(style)
+            sample_style.id = 'default'
+            sample = SubtitleProject(media=StudioMedia(path='motion-sample', duration_ms=2400),
+                styles=[sample_style], cues=[StudioCue('sample', 0, 2400, '让每一句，都有余韵',
+                    effect_id=preset.native_effect_id, evidence_refs=['sample'])],
+                asr_evidence={'sample': {'words': [dict(text=t, start_ms=a, end_ms=b)
+                    for t,a,b in [('让',100,300), ('每',360,530), ('一',600,780), ('句',850,1040), ('都',1200,1370), ('有',1430,1600), ('余',1710,1900), ('韵',1960,2190)]]}})
+            if isinstance(preset.motion.get('nativeEffect'), Mapping):
+                sample.effects['sample-effect'] = copy.deepcopy(preset.motion['nativeEffect'])
+                sample.cues[0].effect_id = 'sample-effect'
+            self.preview.set_snapshot(build_visual_cue_snapshot(sample, 'sample'))
         self._preview_effect = builtin_effects()[preset.preview_effect_id]
         self._previewing = False
         layout.addWidget(self.preview)
@@ -69,6 +88,7 @@ class MotionCard(QFrame):
         meta_row.setSpacing(6)
         kind = QLabel(preset.describe())
         kind.setObjectName("motionCardType")
+        kind.setWordWrap(True)
         meta_row.addWidget(kind, 1)
         self.favorite = QToolButton()
         self.favorite.setObjectName("motionCardFavorite")
@@ -92,25 +112,24 @@ class MotionCard(QFrame):
         layout.addLayout(meta_row)
 
     def _library_preview_effect(self) -> dict:
-        effect = copy.deepcopy(self._preview_effect)
-        entry = effect.setdefault("entry", {})
-        raw = int(entry.get("duration", 180) or 180)
-        if raw < 900:
-            entry["duration"] = min(1600, max(1100, raw * 5))
-        exit_part = effect.setdefault("exit", {})
-        exit_raw = int(exit_part.get("duration", 140) or 140)
-        if exit_raw < 400:
-            exit_part["duration"] = min(700, max(420, exit_raw * 3))
-        return effect
+        return copy.deepcopy(self._preview_effect)
 
     def start_preview(self) -> None:
         if self._previewing:
             return
         self._previewing = True
+        if hasattr(self.preview, 'clock'):
+            self.preview.clock.start()
+            self.preview.timer.start()
+            return
         self.preview.play_motion(self._library_preview_effect(), loop=True, hold_ms=700)
 
     def stop_preview(self) -> None:
         self._previewing = False
+        if hasattr(self.preview, 'clock'):
+            self.preview.timer.stop()
+            self.preview.draw_frame()
+            return
         self.preview._motion_timer.stop()
         self.preview._motion_clock.invalidate()
         self.preview.update()
@@ -142,13 +161,15 @@ class MotionCard(QFrame):
 class MotionBrowserDialog(QDialog):
     motion_selected = Signal(str)
 
-    FILTERS = (("全部", "all"), ("收藏", "favorite"), ("内置", "builtin"), ("自定义", "custom"))
+    FILTERS = (("精选字效", "featured"), ("基础动效", "all"), ("收藏", "favorite"), ("自定义", "custom"), ("旧版动效", "legacy"))
 
     def __init__(self, style, parent=None, *, current_motion: Mapping[str, object] | None = None,
                  current_preview_effect_id: str = "soft_fade"):
         super().__init__(parent)
-        self.setWindowTitle("Motion Library")
-        self.setMinimumSize(900, 650)
+        self.setWindowTitle(tr("动效预设库"))
+        self.setMinimumSize(620, 440)
+        self.resize(780, 600)
+        self._selected_id = ''
         self._style = copy.deepcopy(style)
         self._current_motion = copy.deepcopy(dict(current_motion or {}))
         self._current_preview_effect_id = (
@@ -160,11 +181,11 @@ class MotionBrowserDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         heading = QHBoxLayout()
-        title = QLabel("Motion Library")
+        title = QLabel(tr("动效预设库"))
         title.setObjectName("motionLibraryTitle")
         heading.addWidget(title)
         heading.addStretch(1)
-        self.save_current = QPushButton("保存当前 Motion")
+        self.save_current = QPushButton(tr("保存当前动效"))
         self.save_current.setObjectName("studioButton")
         self.save_current.setEnabled(bool(self._current_motion))
         bind_text(self.save_current, '把当前 Inspector 中的动效（时长 / 缓动 / 延迟 / 参数）保存为可复用 Motion', property='toolTip')
@@ -175,6 +196,10 @@ class MotionBrowserDialog(QDialog):
         self.search.setMaximumWidth(260)
         heading.addWidget(self.search)
         layout.addLayout(heading)
+        self.selection_hint = QLabel(tr("悬停播放完整字效；保留字幕字体与配色。选好后应用到面板指定范围。"))
+        self.selection_hint.setObjectName('cardMeta')
+        self.selection_hint.setWordWrap(True)
+        layout.addWidget(self.selection_hint)
         filters = QHBoxLayout()
         filters.setSpacing(4)
         self.filter_group = QButtonGroup(self)
@@ -198,6 +223,10 @@ class MotionBrowserDialog(QDialog):
         self.scroll.setWidget(self.host)
         layout.addWidget(self.scroll, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText(tr('关闭'))
+        self.apply_button = buttons.addButton(tr('应用所选动效'), QDialogButtonBox.AcceptRole)
+        self.apply_button.setEnabled(False)
+        self.apply_button.clicked.connect(self._apply_selected)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.search.textChanged.connect(self._populate)
@@ -219,7 +248,9 @@ class MotionBrowserDialog(QDialog):
         self._clear()
         needle = self.search.text().strip().casefold()
         presets = list(self.store.all().values())
-        presets.sort(key=lambda preset: (not preset.favorite, not preset.system, preset.name.casefold()))
+        order = ['word_mist','word_sweep','word_pulse','word_echo','word_float','word_dust','word_reveal','karaoke_highlight','word_current','none','soft_fade','float','slide','bounce','punch']
+        presets.sort(key=lambda preset: (not preset.favorite, not preset.system,
+            order.index(preset.id) if preset.id in order else len(order), preset.name.casefold()))
         kind = self._active_filter()
         def _visible(preset: MotionPreset) -> bool:
             if needle and needle not in preset.name.casefold() and needle not in preset.describe().casefold():
@@ -230,7 +261,11 @@ class MotionBrowserDialog(QDialog):
                 return preset.system
             if kind == "custom":
                 return not preset.system
-            return True
+            if kind == 'featured':
+                return preset.category == '精选字效'
+            if kind == 'legacy':
+                return preset.system and preset.category not in {'常用','精选字效'}
+            return preset.category == '常用' or not preset.system
         visible = [preset for preset in presets if _visible(preset)]
         for index, preset in enumerate(visible):
             card = MotionCard(preset, self._style)
@@ -239,10 +274,28 @@ class MotionBrowserDialog(QDialog):
             card.delete_requested.connect(self._delete)
             card.rename_requested.connect(self._rename)
             self.grid.addWidget(card, index // 3, index % 3)
+            card.setProperty('selected', preset.id == self._selected_id)
+        if not visible:
+            self.grid.addWidget(QLabel(tr('没有符合条件的动效。试试其他关键词或分类。')), 0, 0, 1, 3)
         self.grid.setRowStretch((len(visible) + 2) // 3, 1)
 
     def _select(self, preset_id: str) -> None:
-        self.motion_selected.emit(preset_id)
+        self._selected_id = preset_id
+        preset = self.store.all().get(preset_id)
+        self.apply_button.setEnabled(preset is not None)
+        if preset:
+            self.selection_hint.setText(tr('已选择：{name} · {description}', name=preset.name, description=preset.describe()))
+        for card in self.host.findChildren(MotionCard):
+            card.setProperty('selected', card.preset.id == preset_id)
+            card.style().unpolish(card)
+            card.style().polish(card)
+            if card.preset.id != preset_id:
+                card.stop_preview()
+
+    def _apply_selected(self) -> None:
+        if not self._selected_id:
+            return
+        self.motion_selected.emit(self._selected_id)
         self.accept()
 
     def _favorite(self, preset_id: str, favorite: bool) -> None:
@@ -344,7 +397,7 @@ class MotionBrowserDialog(QDialog):
         for item in ("通用", "游戏", "柔和", "强调", "故障"):
             category_edit.addItem(item)
         favorite_box = QCheckBox("收藏")
-        entrance = self._current_motion.get("entrance", {})
+        entrance = self._current_motion.get('nativeEffect', {}).get('entry') or self._current_motion.get("entrance", {})
         entrance_type = str((entrance or {}).get("type", "动效")) if isinstance(entrance, Mapping) else "动效"
         summary = bind_text(QLabel(), '来源：{entrance_type} · 入场 {value1}ms', entrance_type=entrance_type, value1=(entrance or {}).get('duration_ms', (entrance or {}).get('duration', '-')))
         summary.setObjectName("cardMeta")

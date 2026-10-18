@@ -52,13 +52,29 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('frame_right', '下一帧', 'Right', category='播放'),
     _a('previous_cue', '上一条字幕', 'Up', category='播放'),
     _a('next_cue', '下一条字幕', 'Down', category='播放'),
-    # Studio — tools
-    _a('selection_tool', '选择工具', 'V', category='时间轴工具'),
-    _a('track_forward_tool', '轨道向前选择', 'A', category='时间轴工具'),
-    _a('razor_tool', '剃刀工具（移动预览切点，点击切开）', 'C', category='时间轴工具'),
-    _a('merge_tool', '合并工具（点选字幕后拖动方向合并）', 'B', category='时间轴工具'),
-    _a('toggle_snap', '切换时间轴吸附', 'S', category='时间轴工具'),
-    _a('track_gain', '轨道音量（分贝）', 'G', category='时间轴工具'),
+    # 2026-10-17 additions (user: more keys should be changeable); callbacks
+    # live in studio_shortcut_actions. Rarely used ones start unbound.
+    _a('jump_start', '跳到开头', 'Home', category='播放'),
+    _a('jump_end', '跳到结尾', 'End', category='播放'),
+    _a('seek_back', '后退 1 秒', 'Shift+Left', category='播放'),
+    _a('seek_forward', '前进 1 秒', 'Shift+Right', category='播放'),
+    _a('loop_cue', '循环播放当前字幕', 'Ctrl+L', category='播放'),
+    _a('speed_down', '播放减速', '', category='播放'),
+    _a('speed_up', '播放加速', '', category='播放'),
+    _a('speed_reset', '恢复 1 倍速', '', category='播放'),
+    # Studio — timeline (tools, then view)
+    _a('selection_tool', '选择工具', 'V', category='时间轴'),
+    _a('track_forward_tool', '轨道向前选择', 'A', category='时间轴'),
+    _a('razor_tool', '剃刀工具（移动预览切点，点击切开）', 'C', category='时间轴'),
+    _a('merge_tool', '合并工具（点选字幕后拖动方向合并）', 'B', category='时间轴'),
+    _a('toggle_snap', '切换时间轴吸附', 'S', category='时间轴'),
+    _a('track_gain', '轨道音量（分贝）', 'G', category='时间轴'),
+    _a('timeline_zoom_in', '放大时间轴', '=', category='时间轴'),
+    _a('timeline_zoom_out', '缩小时间轴', '-', category='时间轴'),
+    _a('timeline_fit', '时间轴显示全部', 'Shift+Z', category='时间轴'),
+    _a('toggle_waveform', '显示 / 隐藏波形', '', category='时间轴'),
+    _a('toggle_filmstrip', '显示 / 隐藏缩略图', '', category='时间轴'),
+    _a('toggle_follow', '开关“跟随播放头”', '', category='时间轴'),
     # Studio — editing
     _a('trim_start', '字幕起点至播放头 / 视频向前波纹剪除', 'Q'),
     _a('trim_end', '字幕终点至播放头 / 视频向后波纹剪除', 'W'),
@@ -77,6 +93,10 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('redo_alt', '重做（备用）', 'Ctrl+Shift+Z'),
     _a('find', '查找字幕文字', 'Ctrl+F'),
     _a('find_replace', '批量替换字幕文字', 'Ctrl+H'),
+    _a('nudge_earlier', '所选字幕提前 0.1 秒', 'Alt+Left'),
+    _a('nudge_later', '所选字幕推后 0.1 秒', 'Alt+Right'),
+    _a('smart_align', '智能对齐当前字幕', ''),
+    _a('reasr_current', '重新识别当前字幕', ''),
     # Studio — video edit
     _a('video_transition', '应用默认视频转场', 'Ctrl+D', category='剪辑'),
     _a('audio_transition', '应用默认音频转场', 'Ctrl+Shift+D', category='剪辑'),
@@ -85,10 +105,21 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('mark_out', '设置出点', 'O', category='剪辑'),
     _a('add_marker', '添加时间轴标记', 'Shift+M', category='剪辑'),
     _a('add_io_candidate', '将 I/O 加入剪辑候选', 'Shift+I', category='剪辑'),
+    _a('go_to_in', '跳到入点', '', category='剪辑'),
+    _a('go_to_out', '跳到出点', '', category='剪辑'),
+    _a('clear_in_out', '清除入点和出点', '', category='剪辑'),
     # Studio — file and panels
     _a('save', '保存工程', 'Ctrl+S', category='文件'),
+    _a('open_project', '打开工程', 'Ctrl+O', category='文件'),
+    _a('import_media', '导入媒体', 'Ctrl+I', category='文件'),
+    _a('export_subtitles', '导出字幕文件', 'Ctrl+E', category='文件'),
+    _a('export_video', '导出视频', 'Ctrl+Shift+E', category='文件'),
     _a('save_current_frame', '保存当前帧', 'Ctrl+Alt+F', category='文件'),
-    _a('performance_panel', '播放性能面板', 'Ctrl+Shift+P', category='文件'),
+    _a('toggle_cue_list', '显示 / 隐藏字幕列表', '', category='窗口'),
+    _a('toggle_tool_panel', '显示 / 隐藏右侧面板', '', category='窗口'),
+    _a('fullscreen', '全屏 / 退出全屏', 'F11', category='窗口'),
+    _a('speaker_manager', '说话人管理', '', category='窗口'),
+    _a('performance_panel', '播放性能面板', 'Ctrl+Shift+P', category='窗口'),
     # Studio — review mode
     _a('toggle_review', '进入 / 退出审核模式', 'R', category='审核'),
     _a('review_play_context', '播放当前审核片段', 'Space', 'studio.review', '审核'),
@@ -109,6 +140,7 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('home.start_run', '开始生成字幕', 'Ctrl+Return', 'home', '首页'),
     _a('home.choose_media', '选择素材', 'Ctrl+O', 'home', '首页'),
     _a('home.search', '搜索功能与设置', 'Ctrl+K', 'home', '首页'),
+    _a('home.open_studio', '打开字幕工作台', '', 'home', '首页'),
     # AI 词库校对 page
     _a('proofread.find', '查找', 'Ctrl+F', 'proofread', '词库校对页'),
     _a('proofread.replace', '替换', 'Ctrl+H', 'proofread', '词库校对页'),
@@ -120,12 +152,13 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('app.zoom_in_alt', '放大界面（备用）', 'Ctrl++', 'app', '全局'),
     _a('app.zoom_out', '缩小界面', 'Ctrl+-', 'app', '全局'),
     _a('app.zoom_reset', '界面缩放复原', 'Ctrl+0', 'app', '全局'),
+    _a('app.open_settings', '打开应用设置', 'Ctrl+,', 'app', '全局'),
 )
 
 BY_ID = {action.id: action for action in ACTIONS}
 SCOPE_LABELS = {'studio': '字幕工作台', 'studio.review': '审核模式（工作台内）', 'home': '首页',
                 'proofread': 'AI 词库校对页', 'app': '全局'}
-CATEGORY_ORDER = ('播放', '编辑', '时间轴工具', '剪辑', '审核', '文件', '首页', '词库校对页', '全局')
+CATEGORY_ORDER = ('播放', '编辑', '时间轴', '剪辑', '审核', '文件', '窗口', '首页', '词库校对页', '全局')
 
 # Kept out of the editor on purpose; listed in settings so nobody guesses.
 FIXED_GESTURES = (
@@ -158,6 +191,7 @@ def platform_defaults(platform: str | None = None) -> dict[str, str]:
         values['redo_alt'] = ''
         values['proofread.redo'] = 'Ctrl+Shift+Z'
         values['proofread.redo_alt'] = ''
+        values['fullscreen'] = 'Ctrl+Meta+F'  # F11 shows the desktop on macOS
     return values
 
 
@@ -281,17 +315,25 @@ def reserved_reason(sequence: str, platform: str | None = None) -> str:
     return ''
 
 
-def display(sequence: str) -> str:
-    """Platform key names for menus and tooltips (⌘ on macOS)."""
+def display(sequence: str, platform: str | None = None) -> str:
+    """Key names for menus and tooltips: native (⌘) names on macOS.
+
+    Elsewhere the English names of the settings page's key caps (Enter,
+    Delete, Space, Win). Qt's native text is translated by the app's Qt
+    translator ("Ctrl+回车") and says Return / Del, so the same key would
+    read differently in a tooltip and on its key cap.
+    """
     text = normalize(sequence)
     if not text:
         return ''
-    try:
-        from PySide6.QtGui import QKeySequence
-        native = QKeySequence(text).toString(QKeySequence.SequenceFormat.NativeText)
-        return native or text
-    except Exception:
-        return text
+    if (platform or sys.platform) == 'darwin':
+        try:
+            from PySide6.QtGui import QKeySequence
+            return QKeySequence(text).toString(QKeySequence.SequenceFormat.NativeText) or text
+        except Exception:
+            return text
+    names = {'Return': 'Enter', 'Meta': 'Win'}
+    return '+'.join(names.get(part, part) for part in text.split('+'))
 
 
 def export_payload(values: dict[str, str]) -> str:

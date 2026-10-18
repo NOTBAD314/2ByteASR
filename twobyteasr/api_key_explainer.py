@@ -13,6 +13,10 @@ line each:
 
 The animations come from assets/onboarding/source/tutorial.html
 (local_free, key_what, key_topup, key_get), like the tutorial's.
+
+``offer_api_key_help`` is the short note in front of it when a user-clicked
+AI action (Studio AI 断句 / AI 设计 / 翻译 / 查找替换的 AI 预览, AI 词库校对's
+AI 校对, 术语库 AI 建库) finds no key; ``ask_for_key_if_missing`` checks and asks.
 """
 from __future__ import annotations
 
@@ -168,13 +172,69 @@ def open_api_key_explainer(window, *, offer_setup: bool = True) -> str:
     return choice
 
 
+NEEDS_KEY_TITLE = '需要 API Key'
+NEEDS_KEY = '这个功能要用 AI，需要先填 API Key'
+
+
+def _setup_host(widget):
+    """The main window (it opens 申请与设置 API), else the widget's own window."""
+    from PySide6.QtWidgets import QApplication
+    window = widget.window() if widget is not None else None
+    if window is not None and hasattr(window, '_open_api_setup_guide'):
+        return window
+    for candidate in QApplication.topLevelWidgets():
+        if hasattr(candidate, '_open_api_setup_guide'):
+            return candidate
+    return window
+
+
+def offer_api_key_help(widget) -> str:
+    """A user-clicked AI action has no key: say so instead of failing (2026-10-15).
+
+    「API Key 是什么？」 opens the explainer (which offers 申请与设置 API);
+    「取消」 closes. Nothing is sent either way. Returns 'cancel' or the
+    explainer's choice.
+    """
+    from PySide6.QtWidgets import QMessageBox
+    host = _setup_host(widget) or widget
+    box = QMessageBox(host)
+    box.setObjectName('apiKeyNeeded')
+    box.setIcon(QMessageBox.Icon.Information)
+    bind_text(box, NEEDS_KEY_TITLE, property='windowTitle')
+    bind_text(box, NEEDS_KEY)
+    explain = box.addButton(tr('API Key 是什么？'), QMessageBox.ButtonRole.AcceptRole)
+    explain.setObjectName('apiKeyNeededExplain')
+    box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole).setObjectName('apiKeyNeededCancel')
+    box.setDefaultButton(explain)
+    box.exec()
+    clicked = box.clickedButton()
+    box.deleteLater()
+    if clicked is not explain:
+        return 'cancel'
+    return open_api_key_explainer(host)
+
+
+def ask_for_key_if_missing(widget, settings, stage: str = 'polish', *, status=None) -> bool:
+    """True, after the note, when this click needs a key that is not there; nothing is sent.
+
+    ``status``: called first, to leave a line where the feature reports (it did not run)."""
+    from .llm_config import text_ai_key_missing
+    if not text_ai_key_missing(settings, stage):
+        return False
+    if status is not None:
+        status()
+    offer_api_key_help(widget)
+    return True
+
+
 def explainer_strings() -> tuple[str, ...]:
     """Every user-facing string here (the localization test reads this)."""
     texts = ['API Key 是什么？', '关闭', '好，先用本机', '想让 AI 帮你断句、改错字？三步拿到 API Key',
-             '我要用 AI：一步步教我', '知道了', HERO[1], HERO[2]]
+             '我要用 AI：一步步教我', '知道了', HERO[1], HERO[2], NEEDS_KEY_TITLE, NEEDS_KEY, '取消']
     for _name, title, line in KEY_STEPS:
         texts += [title, line]
     return tuple(texts)
 
 
-__all__ = ['ApiKeyExplainerDialog', 'open_api_key_explainer', 'explainer_strings', 'KEY_STEPS', 'HERO']
+__all__ = ['ApiKeyExplainerDialog', 'open_api_key_explainer', 'offer_api_key_help', 'ask_for_key_if_missing',
+           'explainer_strings', 'KEY_STEPS', 'HERO']

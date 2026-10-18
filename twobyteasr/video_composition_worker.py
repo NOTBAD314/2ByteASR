@@ -16,7 +16,7 @@ class VideoCompositionWorker:
 
     def configure(self,state):
         signature=repr((state['size'],state['display_rect'],state['base'],state.get('publication_epoch'),
-            [(x['clip_id'],x['path'],x['generation'],x.get('decode_epoch'),x['transform'],x['effects']) for x in state['layers']])) if state else None
+            [(x['clip_id'],x['path'],x['generation'],x.get('decode_epoch'),x['transform'],x['effects'],x.get('transition_fx')) for x in state['layers']])) if state else None
         with self.condition:
             if signature!=self.signature:
                 self.version+=1;self.signature=signature;self.dirty=True
@@ -61,6 +61,7 @@ class VideoCompositionWorker:
                         and all(layer['transform'].get(k,v)==v for k,v in defaults.items())
                         and layer['effects'].get('blendMode','normal')=='normal'
                         and not (layer['effects'].get('chromaKey') or {}).get('enabled')
+                        and not layer.get('transition_fx')
                         and abs(frame.width/frame.height-width/height)<.005):
                     direct=(layer,frame)
             if direct:
@@ -86,9 +87,15 @@ class VideoCompositionWorker:
                 effects=layer['effects'];chroma=effects.get('chromaKey')
                 if isinstance(chroma,dict) and chroma.get('enabled'):pixels=apply_chroma_key(pixels,chroma)
                 local,matrix=layer_geometry(width,height,layer,frame.width,frame.height)
-                painter.save();painter.setOpacity(max(0,min(1,float(layer['transform'].get('opacity',1)))))
-                painter.setCompositionMode(_BLEND_COMPOSITION_MODES.get(effects.get('blendMode','normal'),QPainter.CompositionMode_SourceOver))
-                painter.setTransform(matrix);painter.drawImage(local,pixels);painter.restore()
+                mode=_BLEND_COMPOSITION_MODES.get(effects.get('blendMode','normal'),QPainter.CompositionMode_SourceOver)
+                if layer.get('transition_fx'):
+                    from .transition_looks import paint_with_effects
+                    paint_with_effects(painter,(width,height),pixels,local,matrix,layer['transition_fx'],
+                                       opacity=float(layer['transform'].get('opacity',1)),mode=mode)
+                else:
+                    painter.save();painter.setOpacity(max(0,min(1,float(layer['transform'].get('opacity',1)))))
+                    painter.setCompositionMode(mode)
+                    painter.setTransform(matrix);painter.drawImage(local,pixels);painter.restore()
                 presented.append(dict(clip_id=layer['clip_id'],pts_ms=frame.pts_ms,generation=frame.generation,decode_epoch=frame.epoch,
                     codec_decoded_at=frame.codec_decoded_at,
                     decoded_at=frame.decoded_at,received_at=frame.received_at))

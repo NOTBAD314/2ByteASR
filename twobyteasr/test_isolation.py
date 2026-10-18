@@ -157,6 +157,7 @@ def resolved_data_paths() -> dict[str, Path]:
         ('project_profiles', 'twobyteasr.project_profiles', 'project_profiles_path'),
         ('process_log', 'twobyteasr.process_diagnostics', 'process_log_path'),
         ('startup_trace', 'twobyteasr.startup_trace', '_trace_path'),
+        ('runtime_root', 'twobyteasr.runtime_paths', 'managed_runtime_root'),
     )
     import importlib
     for name, module_name, attr in probes:
@@ -244,6 +245,10 @@ def install():
         if candidate.is_relative_to(root):
             model_root = candidate
     model_root.mkdir(parents=True, exist_ok=True)
+    # A runtime folder override outside the root would install or clean there.
+    configured_runtimes = os.environ.get('2BYTEASR_RUNTIME_ROOT', '').strip()
+    if configured_runtimes and not Path(configured_runtimes).expanduser().resolve().is_relative_to(root):
+        os.environ.pop('2BYTEASR_RUNTIME_ROOT', None)
     os.environ.update(USERPROFILE=str(root/'profile'), HF_HOME=str(root/'hf-cache'),
                       MODELSCOPE_CACHE=str(root/'modelscope-cache'), TORCH_HOME=str(root/'torch-cache'),
                       **{'2BYTEASR_MODEL_ROOT': str(model_root)})

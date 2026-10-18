@@ -103,6 +103,14 @@ class StudioSentenceRefineMixin:
 
         settings = load_runtime_settings()
         settings = settings[0] if isinstance(settings, tuple) else settings
+        from .llm_config import text_ai_key_missing
+        if text_ai_key_missing(settings, "group"):
+            # 2026-10-15: no key → explain instead of a failed run; nothing is sent.
+            bind_text(self.save_state, 'AI 断句没有运行：还没填 API Key')
+            self._studio_trace("SentenceRefineNeedsKey", cues=len(cues))
+            from .api_key_explainer import offer_api_key_help
+            offer_api_key_help(self)
+            return
         self._refine_origin_project = self.project
         self._refine_origin_cues = {cue.id:(cue.text,cue.start_ms,cue.end_ms,cue.speaker_id) for cue in cues}
         worker = SentenceRefineWorker(cues, self.project, settings, self)

@@ -276,7 +276,7 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
     diagnostics['wire_payload']=dict(bytes=len(encoded),sha256=hashlib.sha256(encoded).hexdigest(),
         encoding='requests JSON, UTF-8 (ASCII escapes included)',
         parameters={key:body[key] for key in ('model','max_tokens','max_output_tokens','temperature','stream',
-                    'thinking','enable_thinking','response_format') if key in body})
+                    'thinking','enable_thinking','response_format','output_config','fallbacks') if key in body})
     if input_budget is not None:
         limit=input_budget['policy']['payload_bytes']
         input_budget['wire_payload_bytes']=len(encoded)
@@ -343,6 +343,10 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                 diagnostics['provider_error_message'] = message
                 if diagnostics.get('provider_error', {}).get('code') in {'insufficient_quota', 'billing_hard_limit_reached', 'quota_exceeded'}:
                     category = 'quota_exhausted'
+                if protocol == 'anthropic':  # its error type tells overload / billing / model apart (2026-10-18)
+                    from .anthropic_messages import refine_error_category
+                    category = refine_error_category(category, str(diagnostics.get('provider_error', {}).get('type') or ''),
+                                                     response.status_code)
                 error = StreamProtocolError(f'Provider HTTP {response.status_code}' + (': '+message if message else ''), category)
                 error.retry_after_seconds = retry_after_seconds(response.headers.get('Retry-After'))
                 diagnostics['retry_after_seconds'] = error.retry_after_seconds
@@ -365,6 +369,11 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                     if protocol == 'responses':
                         emit_public_summaries(packet,send)
                         content = responses_final(packet, diagnostics)
+                        reason = 'stop'
+                        choices = None
+                    elif protocol == 'anthropic':
+                        from .anthropic_messages import messages_final
+                        content = messages_final(packet, diagnostics)
                         reason = 'stop'
                         choices = None
                     else:
@@ -391,7 +400,7 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                     if isinstance(exc, StreamProtocolError):
                         raise
                     raise StreamProtocolError('Provider返回无效的JSON协议对象') from None
-                diagnostics.update(protocol=f'{"responses" if protocol == "responses" else "chat_completions"}_json', finish_reason=reason, request_id=packet.get('id'), content_chars=len(content) if isinstance(content, str) else 0)
+                diagnostics.update(protocol=f'{protocol if protocol in ("responses", "anthropic") else "chat_completions"}_json', finish_reason=reason, request_id=packet.get('id'), content_chars=len(content) if isinstance(content, str) else 0)
                 if reason != 'stop':
                     raise StreamProtocolError(f'Provider未完整生成正文（finish_reason={reason}）', 'structured_output_truncated' if reason == 'length' else 'provider_terminal_error')
                 if not isinstance(content, str) or not content.strip():
@@ -399,7 +408,10 @@ def request_chat(url, headers, body, timeout, diagnostics, emit, cancel_check=No
                 diagnostics.update(completed=True, content_sha256=hashlib.sha256(content.encode('utf-8')).hexdigest())
                 send('delta', content)
             else:
-                parser = responses_body if protocol == 'responses' else chat_body
+                if protocol == 'anthropic':
+                    from .anthropic_messages import messages_body as parser
+                else:
+                    parser = responses_body if protocol == 'responses' else chat_body
                 content = parser(chunks(1024), diagnostics, send, stop.is_set)
             send('complete', content)
         except BaseException as exc:

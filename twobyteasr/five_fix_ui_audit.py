@@ -313,8 +313,9 @@ def start(window, output):
             QApplication.instance().aboutToQuit.connect(stopped)
             modal = QApplication.activeModalWidget()
             if isinstance(modal, SpeakerManagerDialog):
-                modal._name_preedit = False
-                modal.name_edit.setText(modal._editor_speaker_id or 'audit')
+                for card in modal.cards.values():
+                    card.preedit = False
+                    card.name_edit.setText(card.committed_name or 'audit')
                 modal.reject()
             window.close()
 

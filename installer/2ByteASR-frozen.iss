@@ -30,7 +30,9 @@ VersionInfoVersion={#MyAppNumericVersion}
 #endif
 VersionInfoProductName=2ByteASR
 VersionInfoDescription=2ByteASR (兔白字幕) Setup
-MinVersion=10.0.19045
+; Windows 10 1809 is the floor of Qt / PySide6 6.9; Chromium, Node and uv need
+; Windows 10. Keep min_os_build in scripts/release_pipeline.py in step.
+MinVersion=10.0.17763
 DisableDirPage=no
 AppPublisher=2ByteASR contributors
 DefaultGroupName=2ByteASR
@@ -49,6 +51,14 @@ WizardStyle=modern
 SetupLogging=yes
 AllowNoIcons=yes
 ChangesAssociations=yes
+
+[Messages]
+; Inno 6.7.3 shows WindowsVersionNotSupported both when Windows is older than
+; MinVersion and when the system is not x64 (checked 2026-10-17); it runs before
+; [Code], so the text cannot name the user's build. WinVersionTooLowError is
+; unused by 6.7.3 and kept in Chinese in case a later Inno shows it instead.
+WindowsVersionNotSupported=兔白字幕需要 64 位的 Windows 10 1809（版本号 17763）或更新版本，例如 Windows 10 LTSC 2019 / LTSC 2021、Windows 10 22H2 或 Windows 11。%n%n这台电脑的 Windows 版本太旧或不是 64 位，无法安装。Windows 7 和 Windows 8.1 无法运行兔白字幕。%n%n查看本机版本：按 Win+R，输入 winver 后按回车。
+WinVersionTooLowError=兔白字幕需要 64 位的 Windows 10 1809（版本号 17763）或更新版本，例如 Windows 10 LTSC 2019 / LTSC 2021、Windows 10 22H2 或 Windows 11。%n%nWindows 7 和 Windows 8.1 无法运行兔白字幕。%n%n查看本机版本：按 Win+R，输入 winver 后按回车。
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: checkedonce
@@ -93,6 +103,53 @@ Type: filesandordirs; Name: "{app}\.update-backup"
 ; Inno removes only files it installed. Models, projects and per-user settings
 ; created later are intentionally retained; never recursively delete {app}.
 [Code]
+var
+  StorageHint: TNewStaticText;
+
+{ 2026-10-17 (users: C: drive full): models and runtimes are stored beside
+  the program (ADR 0129), so say so where the folder is chosen and suggest
+  another drive when the system drive is nearly full. }
+procedure UpdateStorageHint;
+var
+  Drive, DriveName, Text: String;
+  Free, Total: Int64;
+begin
+  Drive := ExtractFileDrive(WizardForm.DirEdit.Text);
+  DriveName := Drive;
+  if Length(Drive) = 2 then
+    DriveName := Copy(Drive, 1, 1) + ' 盘';
+  Text := '模型和运行环境会放在这个文件夹里，按你下载的本机模型需要几 GB 到几十 GB。'
+    + '装好后也可以在「应用设置 → 存储与缓存 → 移到其他位置…」把它们搬到别的磁盘。';
+  if (Drive <> '') and GetSpaceOnDisk64(AddBackslash(Drive), Free, Total) then begin
+    if (CompareText(Drive, ExpandConstant('{sd}')) = 0) and (Free < Int64(40) * 1024 * 1024 * 1024) then
+      Text := '注意：' + DriveName + '只剩 ' + IntToStr(Free div (1024 * 1024 * 1024))
+        + ' GB。建议改选其他磁盘（例如 D:\2ByteASR），避免系统盘被占满。' + #13#10 + Text
+    else if Free < Int64(20) * 1024 * 1024 * 1024 then
+      Text := '注意：' + DriveName + '只剩 ' + IntToStr(Free div (1024 * 1024 * 1024))
+        + ' GB，下载本机模型可能不够。' + #13#10 + Text;
+  end;
+  StorageHint.Caption := Text;
+end;
+
+procedure DirEditChanged(Sender: TObject);
+begin
+  UpdateStorageHint;
+end;
+
+procedure InitializeWizard;
+begin
+  StorageHint := TNewStaticText.Create(WizardForm);
+  StorageHint.Parent := WizardForm.SelectDirPage;
+  StorageHint.AutoSize := False;
+  StorageHint.WordWrap := True;
+  StorageHint.Left := WizardForm.DirEdit.Left;
+  StorageHint.Top := WizardForm.DirEdit.Top + WizardForm.DirEdit.Height + ScaleY(14);
+  StorageHint.Width := WizardForm.DirBrowseButton.Left + WizardForm.DirBrowseButton.Width - StorageHint.Left;
+  StorageHint.Height := WizardForm.DiskSpaceLabel.Top - StorageHint.Top - ScaleY(6);
+  WizardForm.DirEdit.OnChange := @DirEditChanged;
+  UpdateStorageHint;
+end;
+
 function NotAudit: Boolean;
 begin
 #ifdef QAInstall

@@ -1,7 +1,8 @@
-"""识别方案区：三张角色模型卡（UI IMPLEMENTATION 批准图 #1/#2）。
+"""识别方案区：三张角色模型卡（UI IMPLEMENTATION 批准图 #1/#2；2026-10-18 版面 A）。
 
 角色卡是首页第一视觉焦点：
-- role 小字 + 大号模型名（视觉主体）+ [本地/在线] + 状态 + 底部「点击更换 ↻」
+- 顶行 role + [本地/在线] + 状态；模型标志 + 大号模型名（视觉主体）+ 「›」；
+  模型的语言与用途一行；底部六格语言徽章
 - 整卡可点击（鼠标 / Enter / Space）→ 发出 role_requested，由 MainWindow
   打开模型工坊并 focus 对应角色
 - 缺模型 / API 未配置 → 卡内状态提示 + 唯一恢复动作
@@ -10,7 +11,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -50,19 +51,48 @@ _ROLE_STYLES = {
 }
 _ROLE_LABELS = {"primary": "主力转写", "timeline": "字幕时间轴", "review": "文字复核"}
 _ROLE_DESCRIPTIONS = {
-    "primary": "中文多人转写与说话人区分",
+    "primary": "把语音转成文字，作为字幕初稿",
     "timeline": "断句、时间轴与字幕节奏校准",
     "review": "错词复核、专名与上下文纠正",
 }
 
 
+class _LineLabel(QLabel):
+    """The description: wraps, or (compact cards) one line ending in "…"."""
+
+    def paintEvent(self, event):
+        if self.wordWrap():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        rect = self.contentsRect()
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, rect.width())
+        self.style().drawItemText(painter, rect, int(self.alignment()), self.palette(), self.isEnabled(),
+                                  text, self.foregroundRole())
+        painter.end()
+
+
+def home_plan_height(tier: int) -> int:
+    """Height (100% px) of the three compact model cards on home (C′,
+    2026-10-17) per window-height tier: < 900, 900–1149, ≥ 1150."""
+    return {0: 152, 1: 170, 2: 200}.get(tier, 170)
+
+
 class RecognitionRoleCard(QFrame):
-    """单张角色模型卡。整卡 clickable + 键盘可触发。"""
+    """单张角色模型卡。整卡 clickable + 键盘可触发。
+
+    2026-10-18 (layout A): role and status share the top line; the model's own
+    logo sits beside its name; the line under the name comes from the chosen
+    model (its languages and its task, ``model_role_line``) instead of a fixed
+    role sentence; the six language badges close the card. "点击更换 / 详情"
+    became one chevron beside the name (the whole card still opens the picker).
+    """
 
     clicked = Signal(str)  # role
     recovery_requested = Signal(str, str)  # role, action: install/api
 
-    # role → (qtawesome 图标, 卡底色, 边框/强调色)
+    # role → (qtawesome 图标, 卡底色, 边框/强调色): the chip shown before a
+    # model is chosen (or when the role is off).
     _ROLE_STYLES = {
         "primary": ("fa5s.wave-square", GREEN_SOFT, GREEN),
         "timeline": ("fa5s.clock", WARM, WARM_BORDER),
@@ -73,6 +103,7 @@ class RecognitionRoleCard(QFrame):
     def __init__(self, role: str, parent=None):
         super().__init__(parent)
         import qtawesome as qta
+        from .model_language_badges import LanguageBadgeRow
 
         self.role = role
         self.setObjectName("recognitionRoleCard")
@@ -82,115 +113,111 @@ class RecognitionRoleCard(QFrame):
         self.setMinimumHeight(228)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         bind_text(self, '{value0} 模型卡', property='accessibleName', value0=_ROLE_LABELS.get(role, role))
+        bind_text(self, '点击更换模型', property='toolTip')
         self._responsive_profile = ""
         self._responsive_apply_count = 0
         self._identity_centered = False
+        self._model = None
+        self._model_line = None
+        self._note = None
+        self._glyph_size = 19
+        self._name_px = None  # a smaller name size when a name needs a third line
+        self._name_base = 0
 
         icon_name, _card_bg, _border = self._ROLE_STYLES.get(
             role, ("fa5s.circle", GREEN_SOFT, GREEN)
         )
         self._icon_name = icon_name
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 14)
-        layout.setSpacing(8)
+        layout.setContentsMargins(18, 14, 18, 12)
+        layout.setSpacing(6)
 
-        self._leading_space_index = layout.count()
-        self._leading_space = QSpacerItem(
-            0,
-            0,
-            QSizePolicy.Policy.Minimum,
-            QSizePolicy.Policy.Fixed,
-        )
-        layout.addSpacerItem(self._leading_space)
-
-        top = QHBoxLayout()
-        top.setSpacing(10)
-        top.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-        self.icon_label = QLabel()
-        self.icon_label.setObjectName("recognitionRoleIcon")
-        self.icon_label.setFixedSize(44, 44)
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setPixmap(qta.icon(icon_name, color=self._icon_color()).pixmap(20, 20))
-        top.addWidget(self.icon_label)
-        top.addStretch(1)
-        layout.addLayout(top)
-        self._upper_gap = QSpacerItem(
-            0,
-            0,
-            QSizePolicy.Policy.Minimum,
-            QSizePolicy.Policy.Fixed,
-        )
-        layout.addSpacerItem(self._upper_gap)
+        # Top line: role on the left, local/online and readiness on the right;
+        # a fix (安装模型 / 配置 API) takes the local/online chip's place. The
+        # chips drop under the role when a narrow card cannot hold both.
+        top = self._top_layout = QGridLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setHorizontalSpacing(6)
+        top.setVerticalSpacing(4)
         self.role_label = QLabel(_ROLE_LABELS.get(role, role))
         self.role_label.setObjectName("recognitionRoleLabel")
-        layout.addWidget(self.role_label)
-
-        self.model_label = QLabel("—")
-        self.model_label.setProperty("uiZoomOwnSize", True)  # height measured from its own text
-        self.model_label.setObjectName("recognitionModelName")
-        self.model_label.setWordWrap(True)
-        self.model_label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-        )
-        self.model_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        layout.addWidget(self.model_label)
-        self.description_label = QLabel(_ROLE_DESCRIPTIONS.get(role, ""))
-        self.description_label.setObjectName("recognitionModelDescription")
-        self.description_label.setWordWrap(True)
-        layout.addWidget(self.description_label)
-        self._body_stretch_index = layout.count()
-        layout.addStretch(3)
-
-        rule = QFrame()
-        rule.setObjectName("contentRule")
-        rule.setFixedHeight(1)
-        layout.addWidget(rule)
-
-        status_row = self._status_layout = QGridLayout()
-        status_row.setSpacing(6)
+        top.addWidget(self.role_label, 0, 0)
+        top.setColumnStretch(1, 1)
         self.kind_badge = QLabel("")
         self.kind_badge.setObjectName("recognitionKindBadge")
-        self.kind_badge.setSizePolicy(
-            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
-        )
+        self.kind_badge.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
         self.kind_badge.hide()
-        status_row.addWidget(self.kind_badge, 0, 0)
         self.status_badge = QLabel("")
         self.status_badge.setObjectName("recognitionStatusGood")
-        self.status_badge.setSizePolicy(
-            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
-        )
-        status_row.addWidget(self.status_badge, 0, 1)
-        status_row.setColumnStretch(2, 1)
+        self.status_badge.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        chips = self._chips = QWidget()
+        chips_layout = QHBoxLayout(chips)
+        chips_layout.setContentsMargins(0, 0, 0, 0)
+        chips_layout.setSpacing(6)
+        chips_layout.addWidget(self.kind_badge)
+        chips_layout.addWidget(self.status_badge)
         self.recovery = QPushButton("")
         self.recovery.setObjectName("recognitionRecovery")
         self.recovery.setCursor(Qt.CursorShape.PointingHandCursor)
         self.recovery.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        # Beside the chips the button must not pin the card's minimum width:
-        # otherwise a card widened once (maximized window) can never narrow
-        # again, so it never wraps the button below and the page overflows.
+        # The button must not pin the card's minimum width: otherwise a card
+        # widened once (maximized window) can never narrow again.
         self.recovery.setProperty("flexibleWidth", True)
         self.recovery.setMinimumWidth(1)
         self.recovery.hide()
         self.recovery.clicked.connect(
             lambda: self.recovery_requested.emit(self.role, self._recovery_action)
         )
-        status_row.addWidget(self.recovery, 0, 3)
-        layout.addLayout(status_row)
+        chips_layout.addWidget(self.recovery)
+        top.addWidget(chips, 0, 2, Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(top)
 
-        footer = QHBoxLayout()
-        self.change_hint = QLabel("点击更换")
+        self._leading_space_index = layout.count()
+        self._leading_space = QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        layout.addSpacerItem(self._leading_space)
+
+        identity = self._identity_layout = QHBoxLayout()
+        identity.setSpacing(10)
+        self.icon_label = QLabel()
+        self.icon_label.setObjectName("recognitionRoleIcon")
+        self.icon_label.setFixedSize(44, 44)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setPixmap(qta.icon(icon_name, color=self._icon_color()).pixmap(20, 20))
+        identity.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.model_label = QLabel("—")
+        self.model_label.setProperty("uiZoomOwnSize", True)  # height measured from its own text
+        self.model_label.setObjectName("recognitionModelName")
+        self.model_label.setWordWrap(True)
+        self.model_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.model_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        identity.addWidget(self.model_label, 1)
+        self.change_hint = QLabel()
         self.change_hint.setObjectName("recognitionChangeHint")
-        footer.addWidget(self.change_hint)
-        footer.addStretch(1)
-        swap = QLabel("详情  ›")
-        swap.setObjectName("recognitionChangeHint")
-        bind_text(swap, '查看模型详情', property='toolTip')
-        swap.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        footer.addWidget(swap)
-        layout.addLayout(footer)
+        self.change_hint.setFixedWidth(10)
+        self.change_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        identity.addWidget(self.change_hint, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.detail_hint = self.change_hint  # one chevron replaces 点击更换 + 详情 ›
+        layout.addLayout(identity)
+
+        self._upper_gap = QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        layout.addSpacerItem(self._upper_gap)
+        self.description_label = _LineLabel(_ROLE_DESCRIPTIONS.get(role, ""))
+        self.description_label.setObjectName("recognitionModelDescription")
+        self.description_label.setWordWrap(True)
+        self.description_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self.description_label)
+        self._body_stretch_index = layout.count()
+        layout.addStretch(3)
+
+        # Bottom: the model's languages, always one line.
+        self.language_row = LanguageBadgeRow(short=True)
+        # Hidden (no model chosen) it keeps its line, so the three cards'
+        # names stay level.
+        policy = self.language_row.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.language_row.setSizePolicy(policy)
+        self.language_row.hide()
+        layout.addWidget(self.language_row)
 
         for child in (
             self.icon_label,
@@ -200,34 +227,55 @@ class RecognitionRoleCard(QFrame):
             self.kind_badge,
             self.status_badge,
             self.change_hint,
+            chips,
         ):
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self._recovery_action = ""
+        self._paint_chevron()
         self.apply_responsive_profile("compact")
 
     def retranslate(self, language: str | None = None):
         language = language or current_language()
         role_text = translate(_ROLE_LABELS.get(self.role, self.role), language)
         self.role_label.setText(role_text)
-        bind_text(self.change_hint, translate('点击更换', language))
         self.setAccessibleName(
             f"{role_text} " + ("model card" if language == "en" else "模型卡")
         )
+        self._layout_status()
 
     def refresh_theme_palette(self) -> None:
-        import qtawesome as qta
-
-        size = max(20, round(self.icon_label.width() * 0.46))
-        self.icon_label.setPixmap(
-            qta.icon(self._icon_name, color=self._icon_color()).pixmap(size, size)
-        )
+        self._paint_icon()
+        self._paint_chevron()
         self._sync_model_slot_height()
 
     def _icon_color(self):
         theme = theme_definition(theme_key())
-        # The chip is painted with the role's identity hue (theme.role_colors).
-        return theme.on_vivid
+        # Light themes paint the chip with the role's identity hue
+        # (theme.role_colors) and the glyph on top; dark themes use a soft chip
+        # with the glyph in that hue (2026-10-17, calmer on dark).
+        if theme.is_light:
+            return theme.on_vivid
+        return theme.role_colors.get(self.role, theme.accent_text)
+
+    def _paint_chevron(self) -> None:
+        import qtawesome as qta
+        from . import ui_zoom
+        color = theme_definition(theme_key()).text_muted
+        self.change_hint.setPixmap(qta.icon("fa5s.chevron-right", color=color).pixmap(ui_zoom.px(10), ui_zoom.px(12)))
+
+    def _paint_icon(self) -> None:
+        """The chosen model's logo tile, or the role chip when none is chosen."""
+        import qtawesome as qta
+        from . import ui_zoom
+        size = self.icon_label.width()
+        if self._model is None:
+            self.icon_label.setStyleSheet("")
+            glyph = ui_zoom.px(self._glyph_size)
+            self.icon_label.setPixmap(qta.icon(self._icon_name, color=self._icon_color()).pixmap(glyph, glyph))
+            return
+        self.icon_label.setStyleSheet("background: transparent;")
+        self.icon_label.setPixmap(model_tile_pixmap(self._model, size, self.devicePixelRatioF()))
 
     # ------------------------------------------------------------ 事件
 
@@ -250,10 +298,9 @@ class RecognitionRoleCard(QFrame):
         self.model_label.setText(model_name)
         if kind:
             self.kind_badge.setText(kind)
-            self.kind_badge.show()
         else:
             self.kind_badge.clear()
-            self.kind_badge.hide()
+        self.kind_badge.setVisible(bool(kind) and not recovery)  # _layout_status may hide it
         self.status_badge.setText(status)
         self.status_badge.setVisible(bool(status))
         self.status_badge.setObjectName(
@@ -272,6 +319,39 @@ class RecognitionRoleCard(QFrame):
         self._sync_model_slot_height()
         self._layout_status()
 
+    def set_model(self, model=None, line=None):
+        """The catalog model this role runs (None: nothing chosen or off) and its line.
+
+        ``line`` (``model_role_line``) replaces the role sentence under the
+        name; the logo and the language badges come from the same model.
+        """
+        from .model_languages import language_support
+        self._model = model
+        self._model_line = line if model is not None else None
+        self._paint_icon()
+        if model is None:
+            self.language_row.set_support(None)
+            self.language_row.hide()
+        else:
+            self.language_row.set_support(language_support(model.key))
+            self.language_row.show()
+        self._show_description()
+        self._layout_status()
+
+    def set_note(self, note=None):
+        """Show a short reason in place of the description line (None: the description).
+
+        2026-10-18: the timeline card says when the chosen model is not used
+        for the spoken language, so the card and the model picker agree.
+        """
+        self._note = note
+        self._show_description()
+
+    def _show_description(self) -> None:
+        text = self._note or self._model_line or _ROLE_DESCRIPTIONS.get(self.role, "")
+        bind_text(self.description_label, text)
+        self._sync_model_slot_height()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_model_slot_height()
@@ -281,20 +361,43 @@ class RecognitionRoleCard(QFrame):
         self._layout_status()
 
     def _layout_status(self):
-        if not hasattr(self, 'recovery'):
+        """Fit the top line. When it is short of room the local/online chip
+        goes first (its text moves to the status tooltip), then, beside a fix
+        button, the status chip (the button says what to do); only then do
+        the chips drop under the role."""
+        if not hasattr(self, '_chips'):
             return
-        margins=self.layout().contentsMargins()
-        available=self.width()-margins.left()-margins.right()
-        needed=sum(w.sizeHint().width() for w in (self.kind_badge,self.status_badge,self.recovery) if not w.isHidden())+18
-        wrapped=needed>available and not self.recovery.isHidden()
-        if wrapped==getattr(self,'_status_wrapped',None):
+        margins = self.layout().contentsMargins()
+        available = self.width() - margins.left() - margins.right()
+        # A card with a fix button and one without keep the same top line
+        # (compact cards have no height to spare for it).
+        compact = self._responsive_profile == "compact"
+        self._chips.setMinimumHeight(0 if compact else self.recovery.sizeHint().height())
+
+        def needed(*widgets):
+            chips = sum(w.sizeHint().width() + 6 for w in widgets if w is not None)
+            return self.role_label.sizeHint().width() + chips + 12
+
+        recovery = None if self.recovery.isHidden() else self.recovery
+        kind = self.kind_badge if self.kind_badge.text() and recovery is None else None
+        status = self.status_badge if self.status_badge.text() else None
+        if kind is not None and needed(kind, status, recovery) > available:
+            kind = None
+        if recovery is not None and status is not None and needed(None, status, recovery) > available:
+            status = None
+        self.kind_badge.setVisible(kind is not None)
+        self.status_badge.setVisible(status is not None)
+        self.status_badge.setToolTip(self.kind_badge.text() if kind is None and recovery is None else "")
+        self.recovery.setToolTip(self.status_badge.text() if status is None else "")
+        wrapped = needed(kind, status, recovery) > available
+        if wrapped == getattr(self, '_status_wrapped', None):
             return
-        self._status_wrapped=wrapped
-        self._status_layout.removeWidget(self.recovery)
+        self._status_wrapped = wrapped
+        self._top_layout.removeWidget(self._chips)
         if wrapped:
-            self._status_layout.addWidget(self.recovery,1,0,1,4,Qt.AlignmentFlag.AlignRight)
+            self._top_layout.addWidget(self._chips, 1, 0, 1, 3, Qt.AlignmentFlag.AlignLeft)
         else:
-            self._status_layout.addWidget(self.recovery,0,3)
+            self._top_layout.addWidget(self._chips, 0, 2, Qt.AlignmentFlag.AlignRight)
 
     def apply_ui_zoom(self, _factor):
         """Interface zoom changed: re-apply the current profile (glyph size)."""
@@ -314,16 +417,17 @@ class RecognitionRoleCard(QFrame):
             return False
 
         config = {
-            # 四十八轮（用户"主页变丑了，能变回原样吗"）：03bd900 把三档卡片
-            # 全部压成小图标+等边距的紧凑形态，角色卡失去呼吸感——回滚到
-            # 原始分档（compact/normal/large/extra_large 各自有层次）。
-            "compact": {"margins": (16, 14, 16, 12), "spacing": 7, "icon": 44, "glyph": 20, "gap": 0, "minimum": 228},
-            "normal": {"margins": (18, 18, 18, 14), "spacing": 9, "icon": 56, "glyph": 26, "gap": 4, "minimum": 288},
-            "large": {"margins": (20, 20, 20, 16), "spacing": 10, "icon": 68, "glyph": 32, "gap": 7, "minimum": 342},
-            "extra_large": {"margins": (22, 22, 22, 17), "spacing": 11, "icon": 68, "glyph": 32, "gap": 8, "minimum": 376},
+            # 2026-10-17 (home C′): compact tiles — the icon sits beside the
+            # name; home gives them a fixed height per window tier
+            # (home_plan_height), each profile's minimum fits its band.
+            "compact": {"margins": (16, 9, 16, 8), "spacing": 4, "icon": 40, "glyph": 19, "gap": 0, "minimum": 130},
+            "normal": {"margins": (16, 13, 16, 12), "spacing": 6, "icon": 44, "glyph": 21, "gap": 0, "minimum": 150},
+            "large": {"margins": (20, 15, 20, 13), "spacing": 7, "icon": 50, "glyph": 24, "gap": 0, "minimum": 176},
+            "extra_large": {"margins": (22, 18, 22, 15), "spacing": 8, "icon": 54, "glyph": 26, "gap": 2, "minimum": 220},
         }[profile]
         self._responsive_profile = profile
         self._responsive_apply_count += 1
+        self._glyph_size = config["glyph"]
         self.setProperty("density", profile)
         layout = self.layout()
         from . import ui_zoom
@@ -337,31 +441,30 @@ class RecognitionRoleCard(QFrame):
         )
         self._apply_identity_balance(profile != "compact")
         ui_zoom.set_size(self.icon_label, fixed_w=config["icon"], fixed_h=config["icon"])
-        self.description_label.setVisible(profile != "compact")
-        import qtawesome as qta
-        self.icon_label.setPixmap(
-            qta.icon(self._icon_name, color=self._icon_color()).pixmap(
-                ui_zoom.px(config["glyph"]), ui_zoom.px(config["glyph"])
-            )
-        )
+        self.description_label.setVisible(True)  # compact tiles keep their line, on one line
+        self.description_label.setWordWrap(profile != "compact")
+        self._paint_icon()
         ui_zoom.set_size(self, min_h=config["minimum"])
+        self.set_name_px(None)  # the profile's own size first; the plan steps down if needed
         self.style().unpolish(self)
         self.style().polish(self)
         # Qt does not always invalidate child rules that depend on a dynamic
-        # property of the parent. Refresh only the two responsive labels when
+        # property of the parent. Refresh only the responsive labels when
         # the bounded profile changes, never on every resize pixel.
         for label in (self.role_label, self.model_label, self.description_label):
             label.style().unpolish(label)
             label.style().polish(label)
-        # Every card owns the same top-aligned two-line model slot. A one-line
-        # name never recenters itself and cannot move the rows below it.
+        # Every card owns the same top-aligned model slot. A one-line name
+        # never recenters itself and cannot move the rows below it.
         self._sync_model_slot_height()
+        self._status_wrapped = None
+        self._layout_status()
         layout.invalidate()
         self.update()
         return True
 
     def _sync_model_slot_height(self) -> None:
-        """Keep the two-line identity slot valid after application QSS changes."""
+        """Keep the name and description slots valid after application QSS changes."""
         parent = self.parentWidget()
         sync = getattr(parent, "_sync_identity_height", None)
         if callable(sync):
@@ -369,14 +472,53 @@ class RecognitionRoleCard(QFrame):
         else:
             self.model_label.setFixedHeight(self._required_model_slot_height())
 
+    def name_base_px(self) -> int:
+        """The profile's name size (before any step down)."""
+        if self._name_px is None:
+            self.model_label.ensurePolished()
+            self._name_base = self.model_label.font().pixelSize()
+        return self._name_base
+
+    def name_lines(self, px: int) -> int:
+        """How many lines the name takes beside the logo at ``px``."""
+        font = QFont(self.model_label.font())
+        font.setPixelSize(px)
+        metrics = QFontMetrics(font)
+        margins = self.layout().contentsMargins()
+        beside = self.icon_label.width() + self.change_hint.width() + self._identity_layout.spacing() * 2
+        width = max(80, self.width() - margins.left() - margins.right() - beside)
+        height = metrics.boundingRect(0, 0, width, 2000, Qt.TextFlag.TextWordWrap, self.model_label.text()).height()
+        return max(1, round(height / max(1, metrics.lineSpacing())))
+
+    def set_name_px(self, px) -> None:
+        if px == self._name_px:
+            return
+        self._name_px = px
+        self.model_label.setStyleSheet("" if px is None else f"font-size: {px}px;")
+
+    def _required_description_height(self) -> int:
+        """Lines the description needs at this width (the plan takes the tallest card)."""
+        label = self.description_label
+        label.ensurePolished()
+        metrics = QFontMetrics(label.font())
+        if not label.wordWrap():
+            return metrics.lineSpacing()
+        margins = self.layout().contentsMargins()
+        width = max(80, self.width() - margins.left() - margins.right())
+        height = metrics.boundingRect(0, 0, width, 2000, Qt.TextFlag.TextWordWrap, label.text()).height()
+        return max(metrics.lineSpacing(), height)
+
     def _required_model_slot_height(self) -> int:
         self.model_label.ensurePolished()
         metrics = QFontMetrics(self.model_label.font())
-        # Long online model names wrap naturally; reserve two rows as the
-        # common baseline, with a third only when the actual label needs it.
-        width = max(80, self.width() - self.layout().contentsMargins().left() - self.layout().contentsMargins().right())
+        # Long names wrap beside the logo; the slot is as tall as the label
+        # needs (the plan widget takes the tallest card).
+        margins = self.layout().contentsMargins()
+        identity = self._identity_layout
+        beside = self.icon_label.width() + self.change_hint.width() + identity.spacing() * 2
+        width = max(80, self.width() - margins.left() - margins.right() - beside)
         height = metrics.boundingRect(0, 0, width, 2000, Qt.TextFlag.TextWordWrap, self.model_label.text()).height()
-        return max(metrics.lineSpacing() * 2, height)
+        return max(metrics.lineSpacing(), height)
 
     def _apply_identity_balance(self, centered: bool):
         centered = bool(centered)
@@ -390,12 +532,53 @@ class RecognitionRoleCard(QFrame):
             QSizePolicy.Policy.Minimum,
             QSizePolicy.Policy.Expanding if centered else QSizePolicy.Policy.Fixed,
         )
-        # Balance the identity block between equal flexible spaces; the
-        # fixed footer keeps model names near the optical center of the card.
+        # The top line stays on top and the languages at the bottom; the name
+        # and its line float between equal flexible spaces.
         layout.setStretch(self._leading_space_index, 1 if centered else 0)
         layout.setStretch(self._body_stretch_index, 1)
         layout.invalidate()
         return True
+
+
+def model_tile_pixmap(model, size: int, ratio: float = 1.0):
+    """A rounded tile with the model's logo (on white) or glyph (on its colour)."""
+    from pathlib import Path
+    import qtawesome as qta
+    from PySide6.QtCore import QRect, QRectF
+    from PySide6.QtGui import QPixmap
+
+    pixels = max(1, round(size * ratio))
+    tile = QPixmap(pixels, pixels)
+    tile.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(tile)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    radius = pixels * 0.26
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, pixels, pixels), radius, radius)
+    logo = None
+    if model.logo_asset:
+        # From the install root (like the app icon), whatever the package layout.
+        from .main_ui_helpers import APP_ROOT
+        file = APP_ROOT / "assets" / "model_logos" / model.logo_asset
+        if file.is_file():
+            from PySide6.QtGui import QImage
+            image = QImage(str(file))
+            logo = None if image.isNull() else image
+    painter.fillPath(path, QColor("#ffffff" if logo is not None else model.icon_background))
+    painter.setClipPath(path)
+    if logo is not None:
+        inner = round(pixels * 0.78)
+        scaled = logo.scaled(inner, inner, Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+        painter.drawImage((pixels - scaled.width()) // 2, (pixels - scaled.height()) // 2, scaled)
+    else:
+        glyph = round(pixels * 0.5)
+        offset = (pixels - glyph) // 2
+        qta.icon(model.icon_name, color=model.icon_color).paint(painter, QRect(offset, offset, glyph, glyph))
+    painter.end()
+    tile.setDevicePixelRatio(ratio)
+    return tile
 
 
 class RecognitionPlanWidget(QWidget):
@@ -409,7 +592,7 @@ class RecognitionPlanWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
         self.cards: dict[str, RecognitionRoleCard] = {}
         for role in ("primary", "timeline", "review"):
             card = RecognitionRoleCard(role)
@@ -427,15 +610,41 @@ class RecognitionPlanWidget(QWidget):
             return
         self._syncing_identity_height = True
         try:
+            self._fit_names()
             height = max(card._required_model_slot_height() for card in self.cards.values())
             for card in self.cards.values():
                 card.model_label.setFixedHeight(height)
+            # 2026-10-18: equal description slots too, so a one-line line does
+            # not move that card's name off the others' row.
+            height = max(card._required_description_height() for card in self.cards.values())
+            for card in self.cards.values():
+                card.description_label.setFixedHeight(height)
         finally:
             self._syncing_identity_height = False
+
+    def _fit_names(self) -> None:
+        """A name needing a third line (e.g. the Japanese stage name in a
+        narrow window) steps all three names down together, to at most 0.6 of the size."""
+        cards = list(self.cards.values())
+        base = cards[0].name_base_px()
+        if base <= 0:
+            return
+        chosen = None
+        for scale in (1.0, 0.86, 0.76, 0.68, 0.6):
+            size = round(base * scale)
+            if all(card.name_lines(size) <= 2 for card in cards):
+                chosen = None if scale == 1.0 else size
+                break
+            chosen = size
+        for card in cards:
+            card.set_name_px(chosen)
 
     def retranslate(self, language: str | None = None):
         for card in self.cards.values():
             card.retranslate(language)
+        # The bound texts change after this call; size the slots afterwards.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._sync_identity_height)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -460,11 +669,11 @@ class RecognitionPlanWidget(QWidget):
         from .ui_zoom import logical
         available_width, available_height = logical(available_width), logical(available_height)
 
-        if available_height < 300 or available_width < 175:
+        if available_height < 150 or available_width < 175:
             profile = "compact"
-        elif available_height < 365 or available_width < 285:
+        elif available_height < 180 or available_width < 250:
             profile = "normal"
-        elif available_height < 455 or available_width < 325:
+        elif available_height < 240 or available_width < 300:
             profile = "large"
         else:
             profile = "extra_large"

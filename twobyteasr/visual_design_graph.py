@@ -607,6 +607,61 @@ def _legacy_motion_tracks(motion: Mapping[str, Any]) -> list[MotionTrack]:
     return tracks
 
 
+_PANEL_TYPES = {
+    "comic_burst": "COMIC_BURST", "burst": "COMIC_BURST",
+    "rectangle": "RECTANGLE", "badge": "BADGE", "ribbon": "RIBBON",
+    "cut_corner": "CUT_CORNER", "angled_plate": "ANGLED_PLATE",
+    "bracket_frame": "BRACKET_FRAME", "tech_frame": "TECH_FRAME",
+    "comic_bubble": "COMIC_BUBBLE", "underline_slab": "UNDERLINE_SLAB",
+}
+
+
+def _panel_primitive_for_type(value: Any) -> str:
+    # Also accepts the exact primitive name kept by a switched-off panel.
+    background_type = str(value or "rounded_panel").casefold()
+    primitive = _PANEL_TYPES.get(background_type, background_type.upper())
+    return primitive if primitive in PANEL_PRIMITIVES and primitive != "NONE" else "ROUNDED_PANEL"
+
+
+def _same_color(left: Any, right: Any) -> bool:
+    def normalized(value: Any) -> str:
+        text = str(value or "").strip().upper()
+        # #RRGGBB and #FFRRGGBB are the same opaque color.
+        return "#FF" + text[1:] if len(text) == 7 and text.startswith("#") else text
+
+    return normalized(left) == normalized(right)
+
+
+def apply_background_to_graph(
+    graph: Mapping[str, Any], *, enabled: bool, color: str,
+) -> dict[str, Any]:
+    """Make the graph's panel layer show the Inspector's background choice.
+
+    Renderers draw the background from ``panelLayer``, not from
+    ``recipe.background``.  Turning the background off keeps the panel shape
+    in ``params.type`` so turning it on again restores it; a new color
+    replaces the panel's own fill.  An unchanged color keeps any gradient.
+    """
+    result = copy.deepcopy(dict(graph))
+    panel = dict(result.get("panelLayer") or {})
+    params = dict(panel.get("params") or {})
+    primitive = str(panel.get("primitive") or "NONE").upper()
+    if not enabled:
+        if primitive != "NONE":
+            params["type"] = primitive.casefold()
+        primitive = "NONE"
+    elif primitive == "NONE":
+        primitive = _panel_primitive_for_type(params.get("type"))
+    if not _same_color(params.get("color", "#00000000"), color):
+        params["color"] = color
+        params.pop("fill", None)
+        params.pop("gradient", None)
+    params["enabled"] = bool(enabled)
+    panel.update({"id": panel.get("id") or "panel", "primitive": primitive, "params": params})
+    result["panelLayer"] = PanelLayer.from_dict(panel).to_dict()
+    return result
+
+
 def graph_from_style_recipe(recipe: Any) -> VisualDesignGraph:
     """Compile a legacy StyleRecipe into the layered V1 graph."""
     if isinstance(recipe, Mapping):
@@ -630,13 +685,7 @@ def graph_from_style_recipe(recipe: Any) -> VisualDesignGraph:
     panel_primitive = "NONE"
     if background.get("enabled"):
         background_type = str(background.get("type") or "rounded_panel").casefold()
-        panel_primitive = {
-            "comic_burst": "COMIC_BURST", "burst": "COMIC_BURST",
-            "rectangle": "RECTANGLE", "badge": "BADGE", "ribbon": "RIBBON",
-            "cut_corner": "CUT_CORNER", "angled_plate": "ANGLED_PLATE",
-            "bracket_frame": "BRACKET_FRAME", "tech_frame": "TECH_FRAME",
-            "comic_bubble": "COMIC_BUBBLE", "underline_slab": "UNDERLINE_SLAB",
-        }.get(background_type, "ROUNDED_PANEL")
+        panel_primitive = _PANEL_TYPES.get(background_type, "ROUNDED_PANEL")
     decorations = []
     for index, item in enumerate(effects.get("decorations") or ()):
         if not isinstance(item, Mapping):
@@ -2113,6 +2162,7 @@ __all__ = [
     "MOTION_POST_BEHAVIORS",
     "PANEL_PRIMITIVES", "PanelLayer", "DecorationLayer", "TextLayer",
     "VisualDesignGraph", "VisualDesignGraphValidationError", "achievement_pop_graph",
+    "apply_background_to_graph",
     "clean_subtitle_graph",
     "comic_burst_graph", "glitch_graph", "graph_from_style_recipe",
     "manga_impact_graph", "streamer_gaming_graph", "structural_signature", "style_recipe_from_graph",

@@ -121,6 +121,8 @@ class StudioAIFlowMixin:
                 candidate_mode=self.ai_candidate_mode.currentData(),
                 candidate_concurrency=self.ai_candidate_concurrency.currentData(),
                 settings=copy.deepcopy(GLOBAL_PROVIDER_REGISTRY.settings()))
+        if self._ai_needs_key(GLOBAL_PROVIDER_REGISTRY.settings()):
+            return
         self._ai_preparing_request = context
         self._ai_start_feedback(context, 'preparing', '正在准备设计…')
         project = self.project
@@ -153,6 +155,15 @@ class StudioAIFlowMixin:
                 if self._ai_preparing_request is context:
                     self._ai_preparing_request = None
         QTimer.singleShot(0, prepare)
+
+    def _ai_needs_key(self, settings) -> bool:
+        """No key for the design service: explain instead of a failed request (2026-10-15)."""
+        from .api_key_explainer import ask_for_key_if_missing
+
+        def status():
+            self._show_studio_hint(tr('AI 设计没有运行：还没填 API Key'))
+            self._studio_trace('AI_DESIGN_NEEDS_KEY')
+        return ask_for_key_if_missing(self, settings, "polish", status=status)
 
     def _ai_start_feedback(self, context, status, message):
         context.update(status=status, message=message, worker_started=status == 'started',
@@ -1167,6 +1178,8 @@ class StudioAIFlowMixin:
         if not targets:
             self._show_studio_hint(tr('所选范围内没有 AI 特效字幕'))
             return
+        if self._ai_needs_key(GLOBAL_PROVIDER_REGISTRY.settings()):
+            return
         request = opinion
         if len(targets) > 1:
             request += (
@@ -1423,6 +1436,8 @@ class StudioAIFlowMixin:
             return
         if self._ai_revision_active:
             bind_text(self.ai_confidence, '上一轮微调仍在进行')
+            return
+        if self._ai_needs_key(GLOBAL_PROVIDER_REGISTRY.settings()):
             return
         feedback, accepted = _revision_feedback_dialog(self, index)
         feedback = str(feedback or "").strip()

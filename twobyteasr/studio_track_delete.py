@@ -290,13 +290,16 @@ def track_menu(page, kind, track_id, pos):
         role_menu(page, menu, track_id)
         menu.addSeparator()
     if kind == 'audio':
+        from .i18n import tr
         track = next((t for t in page.project.audio_tracks if t.id == track_id), None)
         if track is None:return
-        menu.addAction('轨道音量…    G',lambda:page._show_track_gain(track_id))
+        menu.addAction(tr('轨道音量…    {key}', key=page._shortcut_key_text('track_gain')),
+                       lambda:page._show_track_gain(track_id))
         menu.addAction('恢复声音' if track.muted else '静音轨道',lambda:page._audio_track_action(track_id,'muted'))
         menu.addAction('取消 Solo' if track.soloed else 'Solo / 独听此轨',lambda:page._audio_track_action(track_id,'solo'))
         missing = {a.asset_id for a in page.project.media_pool if a.offline}
         clip = next((c for c in track.clips if c.asset_id in missing and c.timeline_in_ms <= page.timeline.playhead_ms < c.timeline_out_ms),None)
         if clip:menu.addAction('重新链接素材…',lambda:page.media_availability.choose_relink(clip.asset_id))
-    menu.addAction(delete_label(page.project,kind,track_id)+'    Delete',lambda:delete_track(page,kind,track_id))
+    menu.addAction(delete_label(page.project,kind,track_id)+'    '+page._shortcut_key_text('delete'),
+                   lambda:delete_track(page,kind,track_id))
     menu.exec(pos)

@@ -114,22 +114,29 @@ def fake_gpu(monkeypatch):
 
 
 class Processor:
-    """13.3 prompt tokens per audio second; remembers every window it saw."""
-    feature_extractor = SimpleNamespace(sampling_rate=16000)
+    """MOSS-like sample/token counts and the real processor's context rejection."""
+    feature_extractor = SimpleNamespace(sampling_rate=16000, n_samples=480000, hop_length=160)
+    audio_merge_size = 4
+    audio_token = '<audio>'
 
     def __init__(self):
         self.lengths = []
-        self.tokenizer = SimpleNamespace(decode=self.decode)
+        self.tokenizer = SimpleNamespace(decode=self.decode, encode=lambda *a, **kw: [1] * 50)
         self._last = 0
 
     def apply_chat_template(self, *a, **k):
-        return 'prompt'
+        return 'before<audio>after'
+
+    def _audio_span_ids(self, tokens):
+        return [1] * tokens
 
     def __call__(self, **kw):
         samples = len(kw['audio'][0])
         self.lengths.append(samples)
         import torch
-        tokens = 100 + int(samples / 16000 * 13.3)
+        tokens = worker.planning_prompt_length(self, samples, [])
+        if tokens > kw['max_length']:
+            raise ValueError(f"Prompt/audio sequence exceeds max_length={kw['max_length']}")
         self._last = samples / 16000
         return Inputs(input_ids=torch.ones((1, tokens), dtype=torch.long),
                       attention_mask=torch.ones((1, tokens), dtype=torch.long),
@@ -181,7 +188,8 @@ def test_long_task_runs_windows_in_one_process(fake_gpu, tmp_path):
     chunks = payload['chunks']
     assert receipt['window_mode'] == 'context_windows' and receipt['window_plan']['count'] == len(chunks) >= 3
     assert len(calls) == len(chunks)                    # one generate per window, model loaded once
-    assert processor.lengths[0] == len(audio)           # planning saw the whole task first
+    assert len(processor.lengths) == len(chunks)        # only actual windows extract features
+    assert max(processor.lengths) < len(audio)
     assert chunks[0]['offset'] == 0 and abs(chunks[-1]['offset'] + chunks[-1]['duration'] - 3 * 3600) < 1e-3
     for left, right in zip(chunks, chunks[1:]):
         assert abs(left['offset'] + left['duration'] - right['offset'] - 20) < 0.01
@@ -198,7 +206,41 @@ def test_short_task_keeps_one_context_and_reuses_the_planning_input(fake_gpu, tm
     receipt, payload = run(noisy(300), processor, generate, 13.3 * GIB, tmp_path)
     assert receipt['window_mode'] == 'single_context' and len(payload['chunks']) == 1
     assert processor.lengths == [300 * 16000]           # no second processor pass
-    assert payload['raw_text'] and receipt['input_tokens'] == 100 + int(300 * 13.3)
+    assert payload['raw_text'] and receipt['input_tokens'] == worker.planning_prompt_length(processor, 300 * 16000, [])
+
+
+@pytest.mark.parametrize('samples, tokens', [(1, 101), (1279, 101), (1280, 101), (1281, 102),
+                                           (480000, 475), (480001, 476), (960000, 850)])
+def test_planning_counts_partial_blocks_without_processing_audio(samples, tokens):
+    processor = Processor()
+    assert worker.planning_prompt_length(processor, samples, []) == tokens
+    assert processor.lengths == []
+
+
+def test_report_5060_input_exceeds_limit_but_windows_cover_every_sample(fake_gpu, tmp_path):
+    torch = fake_gpu
+    # The report's exact sample count. A zero-stride view avoids a giant test fixture.
+    samples = 207029589
+    audio = np.broadcast_to(np.array([0.1], np.float32), (samples,))
+    processor = Processor()
+    assert worker.planning_prompt_length(processor, samples, []) > 131072
+    with pytest.raises(ValueError, match='exceeds max_length=131072'):
+        worker.prompt_inputs(processor, audio, [], 131072)
+    processor.lengths.clear()
+    calls = []
+    def generate(**kw):
+        calls.append(kw['input_ids'].shape[1])
+        assert calls[-1] + kw['generation_config'].max_new_tokens < 131072
+        return torch.cat([kw['input_ids'], torch.tensor([[7, 151645]])], dim=1)
+    receipt, payload = run(audio, processor, generate, 5.146 * GIB, tmp_path)
+    chunks = payload['chunks']
+    assert receipt['complete'] and receipt['window_mode'] == 'context_windows'
+    assert len(processor.lengths) == len(calls) == len(chunks) > 1
+    assert max(processor.lengths) < samples
+    assert chunks[0]['offset'] == 0
+    assert round((chunks[-1]['offset'] + chunks[-1]['duration']) * 16000) == samples
+    for left, right in zip(chunks, chunks[1:]):
+        assert round((left['offset'] + left['duration'] - right['offset']) * 16000) == 20 * 16000
 
 
 def test_decoder_oom_splits_the_window_instead_of_retrying_it(fake_gpu, tmp_path, monkeypatch):

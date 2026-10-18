@@ -123,9 +123,9 @@ def maintain_registered_storage(service, cancel):
     # cache maintenance below can free the cached files only they linked to.
     if not cancel.is_set() and not service.busy() and service.policy()['enabled']:
         run_runtime_maintenance(service, cancel)
-    marker = service.paths.user_data_root / 'runtimes' / 'download-cache-maintenance.json'
+    marker = service.paths.managed_runtime_root / 'download-cache-maintenance.json'
     try:
-        state = json.loads(marker.read_text('utf8')).get('state') if safe_path(marker, (service.paths.user_data_root,)) else None
+        state = json.loads(marker.read_text('utf8')).get('state') if safe_path(marker, (service.paths.managed_runtime_root,)) else None
     except (OSError, ValueError, AttributeError): state = None
     # Interrupted installs ("installing" left by a pause, "paused", "failed")
     # no longer block maintenance for good: the prune keeps their resume data
@@ -170,10 +170,9 @@ def app_busy(owner, *, manual=False):
     # it closes, without closing it on the user's behalf. This is intentionally conservative.
     project=getattr(studio,'project',None)
     if not manual and project and getattr(project.media,'path','') and not getattr(studio,'_close_requested',False):return True
-    from .runtime_paths import get_runtime_paths
-    if (get_runtime_paths().user_data_root/'runtimes'/'bootstrap.lock').exists():
-        # File presence is not a lock (the file survives). Actual prune checks its OS lock.
-        pass
+    # Moving models/runtimes elsewhere (2026-10-17) holds them for its duration.
+    from .storage_relocation import relocation_running
+    if relocation_running():return True
     return False
 
 
@@ -232,10 +231,22 @@ class StorageWorker(QObject):
 class StoragePanel(QWidget):
     def __init__(self, parent=None, *, owner=None, service=None):
         super().__init__(parent)
-        self.owner=owner; self.service=service or StorageService(busy=lambda:app_busy(owner),manual_busy=lambda:app_busy(owner,manual=True),media_references=lambda:loaded_media_graph(owner))
+        self.owner=owner;self._own_service=service is None;self.service=service or self._new_service()
         self.scan_result=None; self.worker=None
         self.setObjectName('storageCachePanel')
         layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);layout.setSpacing(12)
+        # 2026-10-17 (users: C: drive full): where runtimes and models are, and
+        # moving both to another folder or drive (Windows; ADR 0129).
+        self.location_label=QLabel();self.location_label.setObjectName('storageLocations')
+        self.location_label.setWordWrap(True);self.location_label.setProperty('i18nUserText',True)
+        self.location_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.move_button=None
+        locations=QHBoxLayout();locations.addWidget(self.location_label,1)
+        import os
+        if os.name=='nt':
+            self.move_button=bind_text(QPushButton(),'移到其他位置…');self.move_button.setObjectName('storageRelocate')
+            self.move_button.clicked.connect(self.relocate);locations.addWidget(self.move_button,0,Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(locations);self._show_locations()
         self.summary=QLabel(tr('尚未扫描；统计将在后台执行。'));self.summary.setWordWrap(True);layout.addWidget(self.summary)
         buttons=QHBoxLayout()
         self.scan_button=bind_text(QPushButton(),'扫描占用'); self.scan_button.setObjectName('storageScan')
@@ -285,6 +296,36 @@ class StoragePanel(QWidget):
 
     def _stop_worker(self,*args):
         if self.worker:self.worker.cancel.set()
+    def _new_service(self):
+        owner=self.owner
+        return StorageService(busy=lambda:app_busy(owner),manual_busy=lambda:app_busy(owner,manual=True),media_references=lambda:loaded_media_graph(owner))
+    def _show_locations(self):
+        paths=self.service.paths
+        self.location_label.setText(tr('运行环境：{path}',path=str(paths.managed_runtime_root))+'\n'+tr('模型：{path}',path=str(paths.model_root)))
+    def relocate(self):
+        from .storage_relocation_ui import choose_and_move
+        choose_and_move(self,busy=lambda:app_busy(self.owner,manual=True) or bool(self.worker and self.worker.isRunning()),
+                        on_moved=self._relocated)
+    def _relocated(self,_result):
+        from .runtime_paths import get_runtime_paths
+        # The download cache root and the model root changed with the move.
+        if self._own_service:
+            try:self.service=self._new_service()
+            except (OSError,RuntimeError):pass
+        self._show_locations()
+        # 应用设置 saves its 模型下载目录 field on OK; it must not put the old folder back.
+        dialog=self.window();edit=getattr(dialog,'model_root_edit',None)
+        if edit is not None:
+            old,new=edit.text(),str(get_runtime_paths().model_root);edit.setText(new)
+            # The move already saved it: closing the dialog must not ask to save it again.
+            saved=getattr(dialog,'_saved_values',None)
+            if isinstance(saved,tuple) and saved and isinstance(saved[0],tuple):
+                dialog._saved_values=(tuple((name,new if name==edit.objectName() and text==old else text)
+                                            for name,text in saved[0]),*saved[1:])
+        workshop=existing_page(self.owner,'workshop')
+        if workshop is not None and callable(getattr(workshop,'refresh',None)):workshop.refresh()
+        self.scan_result=None;self.tree.clear();self._update_clean_controls()
+        self.summary.setText(tr('位置已改变；需要时请重新扫描。'))
     def policy_values(self):
         return dict(enabled=self.enabled.isChecked(), **{k:w.value()*d for k,(w,d) in self.policy_controls.items()})
     def save_policy(self): self.service.save_policy(self.policy_values())

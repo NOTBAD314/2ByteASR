@@ -161,3 +161,21 @@ README 列出的外部库确切版本（`git describe` 形式即上游提交）�
 - 源码 `x265-419182243-source.tar.gz` 含 x265 自带的 CMake 构建系统，已附。
 - Remotion 仓库里唯一相关的补丁 `x265-api.patch` 改的是 FFmpeg 的 `libavcodec/libx265.c`，不是 x265，也已附（`splitter-licensed/`）。
 - 只缺 Remotion 当年的命令行记录。那是操作记录，不是缺源码、补丁或构建脚本。
+
+## 2026-10-14：随附 FFmpeg 命令行换为 BtbN 固定构建（下一版安装包起）
+
+以前：Windows 安装包随附 gyan.dev 9.0-essentials，gyan 只公开 FFmpeg 提交和 README，构建脚本、可能的补丁与部分库版本无从取得（上一节）。现在：开发树的 `tools/ffmpeg/bin/ffmpeg.exe`、`ffprobe.exe` 换成 BtbN/FFmpeg-Builds 的月末构建，构建脚本和每个依赖的提交都公开固定。已发布的 0.7.1 及更早安装包不受影响，仍按上一节说明。
+
+- 出处：Release `autobuild-2026-09-30-13-08` 的 `ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip`，SHA-256 `a0e45723c72141975f51d8666302e614711745f3102b704ca3f82c897a58d278`（与 GitHub 服务端摘要、该 Release 的 `checksums.sha256` 一致）。包内 `ffmpeg.exe`（`513368c8…583d98`）、`ffprobe.exe`（`0fd8f3ba…1f68f`）与随附文件逐字节相同；`ffplay.exe` 未随附。BtbN 说明月末构建保留两年。
+- FFmpeg 本体：`release/9.0` 提交 `2a571b606854520cf89804d8030c8b328e621689`，无补丁。
+- 构建脚本与补丁：构建仓库提交 `6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b` 的源码包已附，[说明](source-materials/btbn-ffmpeg-builds-6c9aec5f/README.md)。
+- 依赖：[`dependencies.json`](source-materials/btbn-ffmpeg-builds-6c9aec5f/dependencies.json) 列出 105 个固定来源（99 个 git 提交、4 个已解析为提交的标签、2 个 SVN 修订号），2026-10-14 逐项确认公开可取。依赖源码按 GPLv3 §6(d) 指向这些上游固定提交，本项目没有另行打包（2026-10-14 用户决定）。
+- 仍如实保留的限制：编译工具链（crosstool-NG、Rust）没有按提交固定，二进制自报 `gcc 16.2.0 (crosstool-NG 1.29.0.7_b1a94f6)`，不属于对应源码，但影响逐字节重建；本项目没有重建验证；各依赖库许可原文尚未逐项收集；该构建静态链接 libdvdcss（GPL-2.0-or-later），用户已确认可随附。
+
+## 2026-10-17：mpv 的 Vulkan 运行库兜底（下一版安装包起）
+
+随包 `mpv.exe` 需要 `vulkan-1.dll` 才能启动，没有显卡驱动的电脑没有这个文件。下一版安装包在 `third_party/vulkan-loader/` 随附 LunarG 官方签名的 Khronos Vulkan-Loader 1.4.363.0，原样未改：
+
+- 来源：`VulkanRT-X64-1.4.363.0-Components.zip`（SHA-256 `a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a`），只取 `x64/vulkan-1.dll`（SHA-256 `e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3`）。
+- 源码：上游 [Vulkan-Loader v1.4.363](https://github.com/KhronosGroup/Vulkan-Loader/tree/v1.4.363)（`9e9518d2cf00054a220ae1a40f4406804b420ef5`）。Apache-2.0、MIT、HPND 都不要求提供源码，这里只记录出处；本项目没有自行重建核对二进制与标签逐字节对应。
+- 许可原文与版权：见[组件目录](COMPONENTS.md)第 624 条和 `materials/vulkan-loader/1.4.363.0/`。

@@ -178,7 +178,7 @@ class StorageService:
         self.roots = tuple(Path(p).absolute() for p in (roots or (
             self.paths.cache_root, self.paths.temp_root, self.paths.log_root,
             self.paths.user_data_root / 'SubtitleStudioPreview',
-            self.paths.user_data_root / 'runtimes' / 'download-cache',
+            self.paths.managed_runtime_root / 'download-cache',
         )))
         self.roots = tuple(r for n,r in enumerate(self.roots) if not any(
             r == other and k < n or r != other and r.is_relative_to(other)
@@ -362,7 +362,7 @@ class StorageService:
                         else:
                             row = registered.get(str(path))
                             category, producer, source, rebuild, protected, used = row or ('unknown', '', '', 'unknown', '无法确认生成归属', None)
-                            if path.is_relative_to(self.paths.user_data_root/'runtimes'/'download-cache'):
+                            if path.is_relative_to(self.paths.managed_runtime_root/'download-cache'):
                                 category,producer,rebuild,protected='uv','uv','download','包管理器缓存；仅通过官方 uv 维护入口处理'
                             reason = protected
                             warning=''
@@ -420,7 +420,7 @@ class StorageService:
         if include_models and not cancel.is_set():
             # Shown, never cleaned here: hard links counted once (2026-10-16).
             from .runtime_usage import runtime_disk_usage
-            usage = runtime_disk_usage(self.paths.user_data_root / 'runtimes', cancel.is_set)
+            usage = runtime_disk_usage(self.paths.managed_runtime_root, cancel.is_set)
             result.runtime_usage = usage if usage is not None and usage.complete else None
         result.items.sort(key=lambda i:(i.category,-i.size,i.path))
         return result

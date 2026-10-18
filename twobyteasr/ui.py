@@ -165,6 +165,7 @@ from twobyteasr.llm_config import (
     resolved_service_values,
     service_model_catalog,
     responses_url,
+    messages_url,
     qwen_asr_endpoint_from_settings,
     read_api_key,
     read_asr_api_key,
@@ -204,6 +205,7 @@ from twobyteasr.updater import (
 )
 from twobyteasr.startup_trace import mark as _startup_mark
 from twobyteasr import ui_zoom
+from twobyteasr.ui_recognition import home_plan_height
 from twobyteasr.lazy_pages import existing_page
 
 # Work that must not delay the first window; run on the GUI thread about
@@ -348,6 +350,9 @@ TIMELINE_MODEL_CHOICES = (
 
 def populate_available_asr_choices(primary, review, timeline, settings, root=APP_ROOT):
     """Populate selectors from complete local installs, never from catalog claims."""
+    from .model_workshop import MODELS, model_platform_available
+    unavailable_backends = {backend for model in MODELS if not model_platform_available(model)
+                            for _role, backend in model.adapter_bindings}
     installed = installed_model_keys(Path(root))
     desired = settings.get("models", {})
     missing = []
@@ -357,7 +362,7 @@ def populate_available_asr_choices(primary, review, timeline, settings, root=APP
         combo.blockSignals(True)
         combo.clear()
         for label, value, required in local_choices:
-            if required <= installed:
+            if required <= installed and value not in unavailable_backends:
                 combo.addItem(label, value)
         for label, value in trailing:
             combo.addItem(label, value)
@@ -1712,6 +1717,8 @@ class EndpointEditor(QFrame):
             return "gemini"
         if "api.x.ai" in host:
             return "xai"
+        if "api.anthropic.com" in host:
+            return "claude"
         return "custom"
 
     def _service_changed(self, _index: int = -1, *, initial: bool = False) -> None:
@@ -1853,7 +1860,8 @@ class EndpointEditor(QFrame):
     def _refresh_endpoint_hint(self):
         base = normalize_base_url(self.base_url.text())
         protocol = str(self.protocol.currentData() or "auto")
-        suffix = "/responses" if protocol == "responses" else "/chat/completions"
+        suffix = ("/messages" if str(self.provider.currentData() or "") == "anthropic"
+                  else "/responses" if protocol == "responses" else "/chat/completions")
         bind_text(self.endpoint_hint, "实际请求：{url}", url=base+suffix) if base else bind_text(self.endpoint_hint, "填写 Base URL，程序会按所选协议补全请求路径。")
 
     def _on_key_text_changed(self, text: str) -> None:
@@ -2322,6 +2330,8 @@ class EndpointEditor(QFrame):
             "api_key": key,
             "url": responses_url(values["base_url"]) if values.get("protocol") == "responses" else chat_completion_url(values["base_url"]),
         }
+        if values.get("provider") == "anthropic":  # Claude: the Messages API (2026-10-18)
+            endpoint.update(protocol="anthropic_messages", url=messages_url(values["base_url"]))
         try:
             validate_endpoint(endpoint, "当前模型")
         except RuntimeError as exc:
@@ -3916,8 +3926,11 @@ def _bind_home_shortcuts(window, owner):
 
     def start_key(key):
         window.start_button.setShortcut(QKeySequence(key))
+        window._start_run_key = key  # the readiness bar rewrites this tooltip
         bind_text(window.start_button, '开始生成字幕 ({key})', property='toolTip',
                   key=keys.display(key) if key else tr('未绑定'))
+        if getattr(window, "_last_plan_items", None) is not None:
+            window._refresh_readiness_bar(window._last_plan_items)  # keeps "先选择素材…" while no media
 
     choose = QShortcut(QKeySequence("Ctrl+O"), owner)
     choose.setContext(Qt.ShortcutContext.WindowShortcut)
@@ -3925,8 +3938,22 @@ def _bind_home_shortcuts(window, owner):
     search = QShortcut(QKeySequence("Ctrl+K"), owner)
     search.setContext(Qt.ShortcutContext.WindowShortcut)
     search.activated.connect(lambda: window._open_feature_search() if window._home_page_active() else None)
-    window._home_shortcuts = (choose, search)
-    keys.keep_keys({"home.start_run": start_key, "home.choose_media": choose, "home.search": search})
+    # 2026-10-17: the same button as the studio card; settings from any page
+    # of the main window (owner = the window, not the home action bar).
+    studio = QShortcut(QKeySequence(), owner)
+    studio.setContext(Qt.ShortcutContext.WindowShortcut)
+    studio.activated.connect(lambda: window.open_studio_project() if window._home_page_active() else None)
+    settings = QShortcut(QKeySequence("Ctrl+,"), window)
+    settings.setContext(Qt.ShortcutContext.WindowShortcut)
+
+    def open_settings():
+        modal = getattr(window, "_modal_host", None)
+        if not (modal is not None and modal.isVisible()):
+            window._open_application_settings()
+    settings.activated.connect(open_settings)
+    window._home_shortcuts = (choose, search, studio, settings)
+    keys.keep_keys({"home.start_run": start_key, "home.choose_media": choose, "home.search": search,
+                    "home.open_studio": studio, "app.open_settings": settings})
 
 
 class MainWindow(QWidget):
@@ -4176,6 +4203,7 @@ class MainWindow(QWidget):
             page.api_preset_requested.connect(self._apply_asr_api_preset)
             page.api_configure_requested.connect(self._open_api_setup_guide)
             page.backend_requested.connect(self._apply_workshop_backend)
+            page.auto_stage_changed.connect(self._timeline_helper_changed)
             if self._density_comfortable is not None:
                 page.apply_density(self._density_comfortable)
         elif name == "history":
@@ -5341,6 +5369,9 @@ class MainWindow(QWidget):
         except Exception:
             pass
 
+    def _timeline_helper_changed(self):
+        self._refresh_asr_summary()
+
     def _apply_workshop_backend(self, role: str, value: str):
         if role == 'speaker':
             self.speaker_source.setCurrentIndex(max(0,self.speaker_source.findData(value)))
@@ -5919,6 +5950,7 @@ class MainWindow(QWidget):
         media_row.addSpacerItem(self.media_kind_gap)
         media_text = QVBoxLayout()
         media_text.setSpacing(1)
+        media_text.addStretch(1)  # lines stay together, centred, at any drop-zone height
         self.media_name = MediaNameLabel("")
         self.media_name.setObjectName("mediaName")
         self.media_drop_hint = QLabel("可把视频 / 音频拖到窗口，或按回车选择")
@@ -5944,6 +5976,7 @@ class MainWindow(QWidget):
         self.media_origin_label.setObjectName("studioOrigin")
         self.media_origin_label.hide()
         media_text.addWidget(self.media_origin_label)
+        media_text.addStretch(1)
         media_row.addLayout(media_text, 1)
         self._media_text_index = media_row.count() - 1
         media_row.addSpacing(12)
@@ -5970,7 +6003,10 @@ class MainWindow(QWidget):
         self.media_input_list_layout.setSpacing(4)
         self.media_input_list.hide()
         layout.addWidget(self.media_input_list)
-        layout.addSpacing(2)
+        # Grows on tall windows (_fit_home_rhythm) so the cards sit between
+        # even gaps instead of above an empty strip.
+        self._home_mid_space = QSpacerItem(0, 2, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        layout.addSpacerItem(self._home_mid_space)
         # 2026-10-08 (user): the left third is the project entrance — one
         # cover of the latest project with its name and info, a few other
         # recent project names, and the way into the Studio. A cover or row
@@ -5982,6 +6018,7 @@ class MainWindow(QWidget):
         studio_entry.clicked.connect(lambda: self.open_studio_project())
         entry_layout = QVBoxLayout(studio_entry)
         entry_layout.setContentsMargins(20, 18, 20, 18)
+        self._home_studio_layout = entry_layout
         entry_layout.setSpacing(12)
         entry_head = QHBoxLayout()
         entry_head.setSpacing(14)
@@ -6012,6 +6049,7 @@ class MainWindow(QWidget):
         for label in (entry_icon, entry_title, entry_hint):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         entry_head.addLayout(entry_text, 1)
+        entry_head.setContentsMargins(0, 0, 0, 0)
         entry_layout.addLayout(entry_head)
 
         def open_recent(path):
@@ -6046,28 +6084,33 @@ class MainWindow(QWidget):
         surface.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
         surface.setMinimumHeight(320)
         self.settings_surface = surface
-        # 2026-10-08 home columns (user): left = content & terms, then the
-        # Studio gallery; right = recognition plan, then AI segmentation.
-        # Each column stacks at natural height; blocks are not forced equal.
+        # 2026-10-17 home C′ (user): left = the Studio card; right = one
+        # settings card in hairline-divided sections — recognition plan (three
+        # model cards level with the cover), AI segmentation, content & terms,
+        # subtitle language & output. Each section carries its zone colour.
         surface_layout = QHBoxLayout(surface)
         surface_layout.setContentsMargins(0, 2, 0, 0)
-        surface_layout.setSpacing(20)
+        surface_layout.setSpacing(16)
         left = QVBoxLayout()
         left.setSpacing(16)
         self.settings_left_column = left
+        settings_card = QFrame()
+        settings_card.setObjectName("homeSettingsCard")
+        self.home_settings_card = settings_card
         content_profile = QFrame()
         content_profile.setObjectName("homeContentProfile")
         self.content_profile_card = content_profile
         profile_layout = QVBoxLayout(content_profile)
-        profile_layout.setContentsMargins(20, 16, 20, 16)
-        profile_layout.setSpacing(9)
+        profile_layout.setContentsMargins(22, 16, 22, 18)
+        self._home_content_layout = profile_layout
+        profile_layout.setSpacing(12)
         # 2026-10-08: the content name lives once, in the combo; the term
-        # switch and its state line live once, in the term panel below.
+        # switch and its state line live once, in the term column.
         content_head = QHBoxLayout()
         content_head.setSpacing(12)
         self.content_icon = QLabel()
         self.content_icon.setObjectName("homeCardIcon")
-        self.content_icon.setFixedSize(40, 40)
+        self.content_icon.setFixedSize(36, 36)
         self.content_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         content_head.addWidget(self.content_icon, 0, Qt.AlignmentFlag.AlignVCenter)
         current_eyebrow = QLabel("内容与术语")
@@ -6075,18 +6118,19 @@ class MainWindow(QWidget):
         content_head.addWidget(current_eyebrow)
         content_head.addStretch(1)
         profile_layout.addLayout(content_head)
-        # Two framed panels of equal height: content choice | terms
-        # (glossary correction and the optional web check as parallel rows).
+        # Three columns divided by hairlines: content name and recent chips |
+        # glossary correction | the optional web check.
         content_body = QHBoxLayout()
-        content_body.setSpacing(14)
-        # Left: name, input and recent chips without an extra frame.
+        content_body.setSpacing(20)
         choice_panel = QWidget()
         choice_panel.setObjectName("homeContentPlain")
         self.content_choice_panel = choice_panel
         content_choice = QVBoxLayout(choice_panel)
-        content_choice.setContentsMargins(2, 4, 4, 4)
+        content_choice.setContentsMargins(0, 0, 0, 0)
         content_choice.setSpacing(10)
-        content_body.addWidget(choice_panel, 1)
+        content_body.addWidget(choice_panel, 16)
+        # Label + 46 px box: its size hint is taken before the QSS fonts apply.
+        ui_zoom.set_size(choice_panel, min_h=80)
         profile_layout.addLayout(content_body)
         self.current_content_title = QLabel("通用内容")
         self.current_content_title.setObjectName("contentHeroTitle")
@@ -6110,13 +6154,13 @@ class MainWindow(QWidget):
         bind_text(self.game_box, '选择历史记录或内置游戏，也可以直接输入；留空为通用模式', property='placeholderText')
         bind_text(self.game_box, '点击右侧箭头选择历史记录或内置游戏；输入新名称也会自动保存', property='toolTip')
         self.game_box.setObjectName("homeContentCombo")
+        ui_zoom.set_size(self.game_box, min_h=46)  # its QSS height; the row must reserve it
         content_choice.addWidget(self.game_box)
         # Recent content names as one-click chips (same history as the combo).
         from .home_widgets import QuickPickRow
         self.content_quick_picks = QuickPickRow("最近")
         self.content_quick_picks.picked.connect(self._pick_recent_content)
         content_choice.addWidget(self.content_quick_picks)
-        self._build_subtitle_language_row(content_choice)
         self.game_box.currentTextChanged.connect(self._sync_content_quick_picks)
         self.terms = SwitchControl("术语库校对")
         self.terms.setObjectName("homeSwitch")
@@ -6133,7 +6177,7 @@ class MainWindow(QWidget):
         batch_glossary.setObjectName("homeBatchGlossary")
         self.batch_glossary_card = batch_glossary
         batch_layout = QVBoxLayout(batch_glossary)
-        batch_layout.setContentsMargins(16, 12, 16, 12)
+        batch_layout.setContentsMargins(0, 2, 0, 0)
         batch_layout.setSpacing(6)
         terms_row = QHBoxLayout()
         terms_row.setSpacing(8)
@@ -6193,36 +6237,58 @@ class MainWindow(QWidget):
         self.glossary_chips_layout.setSpacing(6)
         self.glossary_chips_layout.setContentsMargins(46, 0, 0, 0)
         batch_layout.addLayout(self.glossary_chips_layout)
-        terms_rule = QFrame()
-        terms_rule.setObjectName("homePanelRule")
-        terms_rule.setFixedHeight(1)
-        batch_layout.addSpacing(4)
-        batch_layout.addWidget(terms_rule)
-        batch_layout.addSpacing(4)
-        batch_layout.addWidget(self.term_search)
+        batch_layout.addStretch(1)
+
+        def column_rule():
+            rule = QFrame()
+            rule.setObjectName("homePanelRule")
+            rule.setFixedWidth(1)
+            return rule
+
+        content_body.addWidget(column_rule())
+        content_body.addWidget(batch_glossary, 8)
+        # The optional web check is its own column (home C′).
+        search_panel = QWidget()
+        search_panel.setObjectName("homeTermSearchPanel")
+        self.term_search_panel = search_panel
+        search_layout = QVBoxLayout(search_panel)
+        search_layout.setContentsMargins(0, 2, 0, 0)
+        search_layout.setSpacing(6)
+        search_layout.addWidget(self.term_search)
         self.term_search_note = QLabel("仅本次任务启用；需可验证的搜索能力")
         self.term_search_note.setObjectName("homeTermState")
         self.term_search_note.setProperty("tone", "off")
         self.term_search_note.setWordWrap(True)
         self.term_search_note.setContentsMargins(46, 0, 0, 0)
-        batch_layout.addWidget(self.term_search_note)
-        batch_layout.addStretch(1)
-        content_body.addWidget(batch_glossary, 1)
+        search_layout.addWidget(self.term_search_note)
+        search_layout.addStretch(1)
+        content_body.addWidget(column_rule())
+        content_body.addWidget(search_panel, 7)
         content_choice.addStretch(1)
-        # AI segmentation card; filled once the AI tile exists.
+        # Subtitle language and output: one row under a hairline.
+        language_rule = QFrame()
+        language_rule.setObjectName("homePanelRule")
+        language_rule.setFixedHeight(1)
+        profile_layout.addWidget(language_rule)
+        self._build_subtitle_language_row(profile_layout)
+        # AI segmentation section; filled once the AI tile exists.
         self.home_process_card = QFrame()
         self.home_process_card.setObjectName("homeProcessCard")
         process_layout = QVBoxLayout(self.home_process_card)
-        process_layout.setContentsMargins(4, 4, 4, 14)
-        process_layout.setSpacing(4)
+        process_layout.setContentsMargins(8, 4, 12, 4)
+        self._home_ai_layout = process_layout
+        process_layout.setSpacing(0)
 
         plan_block = QWidget()
         plan_block.setObjectName("homePlanBlock")
         right = QVBoxLayout(plan_block)
+        # The three model cards are the card's first band, edge to edge (C′).
         right.setContentsMargins(0, 0, 0, 0)
-        right.setSpacing(14)
+        self._home_plan_layout = right
+        right.setSpacing(0)
         recognition_header = QHBoxLayout()
-        recognition_header.setSpacing(8)
+        recognition_header.setContentsMargins(0, 0, 0, 0)
+        recognition_header.setSpacing(10)
         recognition_heading = QLabel("识别方案")
         recognition_heading.setObjectName("homeSectionTitle")
         recognition_header.addWidget(recognition_heading)
@@ -6233,7 +6299,6 @@ class MainWindow(QWidget):
         self.home_task_settings_button.clicked.connect(
             self._open_task_settings_from_workshop
         )
-        recognition_header.addWidget(self.home_task_settings_button)
         recognition_note = QLabel("三个角色协作，可点击任一模型卡进行更换")
         recognition_note.setObjectName("pageSubtitle")
         recognition_note.hide()
@@ -6270,26 +6335,27 @@ class MainWindow(QWidget):
             self.recognition_mode_combo.addItem(plan.label, plan.key)
         bind_text(self.recognition_mode_combo, '新手只需选择目标；高级用户可切换到自定义并继续使用模型卡', property='toolTip')
         self.recognition_mode_combo.currentIndexChanged.connect(self._apply_recognition_plan_from_ui)
-        plan_row.addWidget(self.recognition_mode_combo, 1)
+        plan_row.addWidget(self.recognition_mode_combo)
         self.recognition_plan_hint = QLabel("")
         self.recognition_plan_hint.setObjectName("muted")
         self.recognition_plan_hint.setWordWrap(True)
         self.recognition_plan_hint.hide()
-        plan_row.addLayout(profile_row, 1)
-        # Wide windows: one header row (title, goal, saved plan, advanced);
-        # narrower ones put goal / plan on their own line (2026-10-08). The
-        # dropdowns may shrink so neither form widens the page.
-        for combo in (self.recognition_mode_combo, self.project_profile_combo):
+        plan_row.addSpacing(6)
+        plan_row.addLayout(profile_row)
+        # 2026-10-08 (user): the plan toolbar sits on the 本批字幕 heading row;
+        # 2026-10-17 (home C′): its dropdowns keep a natural width instead of
+        # stretching across the row.
+        for combo, length, widest in ((self.recognition_mode_combo, 7, 220), (self.project_profile_combo, 11, 300)):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-            combo.setMinimumContentsLength(8)
-        plan_row.setContentsMargins(8, 0, 0, 0)
+            combo.setMinimumContentsLength(length)
+            combo.setMaximumWidth(widest)
+        plan_row.setContentsMargins(0, 0, 0, 0)
         self.plan_controls = QWidget()
         self.plan_controls.setLayout(plan_row)
         self.plan_header_layout = recognition_header
-        recognition_header.insertWidget(1, self.plan_controls, 1)
-        # 2026-10-08 (user): the plan toolbar sits on the 本批字幕 heading row
-        # so the three model cards start level with the Studio card.
-        page_heading.addLayout(recognition_header, 3)
+        recognition_header.addWidget(self.plan_controls)
+        recognition_header.addWidget(self.home_task_settings_button)
+        page_heading.addLayout(recognition_header)
         self.page_subtitle = page_subtitle
         # 识别方案：三张角色模型卡（批准图核心区）
         from twobyteasr.ui_recognition import RecognitionPlanWidget
@@ -6299,6 +6365,14 @@ class MainWindow(QWidget):
         self.recognition_plan.setProperty("uiZoomOwnSize", True)
         self.recognition_plan.role_requested.connect(self._open_model_picker)
         self.recognition_plan.recovery_requested.connect(self._recognition_recovery)
+        # Three equal columns divided by hairlines (home QSS), no gaps.
+        plan_columns = self.recognition_plan.layout()
+        plan_columns.setSpacing(0)
+        policy = self.recognition_plan.sizePolicy()
+        policy.setVerticalPolicy(QSizePolicy.Policy.Fixed)  # its size hint, between the tier height and +48
+        self.recognition_plan.setSizePolicy(policy)
+        for index in range(plan_columns.count()):
+            plan_columns.setStretch(index, 1)
         right.addWidget(self.recognition_plan)
         # 兼容属性：旧测试/逻辑引用（内容由 _refresh_asr_summary 同步）
         self.recognition_summary = QLabel("")
@@ -6309,17 +6383,18 @@ class MainWindow(QWidget):
         self.run_next_action.hide()
         self.recognition_action = AnimatedButton("")
         self.recognition_action.hide()
-        # Right two thirds: plan, AI, content & terms as one column; the
-        # left project card takes exactly that height (follows the right).
-        produce = QVBoxLayout()
-        produce.setSpacing(16)
+        # Right two thirds: one card — plan, AI, content & terms, language —
+        # and the left project card takes exactly that height.
+        produce = QVBoxLayout(settings_card)
+        produce.setContentsMargins(0, 0, 0, 0)
+        produce.setSpacing(0)
         produce.addWidget(plan_block)
         produce.addWidget(self.home_process_card)
-        produce.addWidget(content_profile)
+        produce.addWidget(content_profile, 1)
         self.settings_right_column = produce
         left.addWidget(studio_entry, 1)
         surface_layout.addLayout(left, 1)
-        surface_layout.addLayout(produce, 2)
+        surface_layout.addWidget(settings_card, 2)
         layout.addWidget(surface)
 
         settings = self.legacy.RUNTIME_SETTINGS
@@ -6745,16 +6820,76 @@ class MainWindow(QWidget):
             card.set_cover_path(cover_path)
         hero = getattr(self, "studio_recent_hero", None)
         if hero is not None:
-            entries = recent_studio_entries(records, limit=3)
+            entries = recent_studio_entries(records, limit=1 + self.studio_recent_list.limit)
             key = (entries, current_language())
             if key != getattr(self, "_studio_recent_key", None):
                 self._studio_recent_key = key
                 self._studio_recent_entries = entries
                 hero.set_entry(entries[0] if entries else None)
-                # The cover is the current project; the list holds the two
-                # other recent ones, and hovering a row previews it.
+                # The cover is the current project; the list holds the other
+                # recent ones (2–4 by window height), and hovering a row previews it.
                 self.studio_recent_list.set_entries(entries[1:])
                 self.studio_recent_caption.setVisible(len(entries) > 1)
+
+    def _sync_home_plan(self, tier: int) -> None:
+        """Compact model cards at a fixed height per window-height tier (home
+        C′, 2026-10-17); taller windows list one more recent project."""
+        height = ui_zoom.px(home_plan_height(tier) + getattr(self, "_home_plan_extra", 0))
+        # A recovery button wrapped under the badges may need a little more.
+        self.recognition_plan.setMinimumHeight(height)
+        self.recognition_plan.setMaximumHeight(height + ui_zoom.px(48))
+        rows = 3 if tier == 2 else 2
+        recent = getattr(self, "studio_recent_list", None)
+        if recent is not None and recent.limit != rows:
+            recent.limit = rows
+            self._studio_recent_key = None
+            self._refresh_studio_entry_card()
+
+    def _schedule_home_fit(self) -> None:
+        timer = getattr(self, "_home_fit_timer", None)
+        if timer is None:
+            timer = self._home_fit_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(60)
+            timer.timeout.connect(self._fit_home_rhythm)
+        timer.start()
+
+    def _fit_home_rhythm(self) -> None:
+        """Share a tall window's spare height a little at a time — a roomier
+        drop zone (+40 px), taller model cards (+40 px) and up to 10 px more
+        room around the sections — instead of an empty strip under the cards
+        or one stretched card (home C′, 2026-10-17)."""
+        page = getattr(self, "settings_page_widget", None)
+        if page is None or not page.isVisible() or not hasattr(self, "_home_plan_layout"):
+            return
+        area = page.parentWidget()
+        while area is not None and not hasattr(area, "viewport"):
+            area = area.parentWidget()
+        viewport = area.viewport().height() if area is not None else page.height()
+        # Rate the page with the drop zone at its empty height: loading media
+        # only shrinks the drop zone and never re-flows the cards (the tutorial
+        # points at the language row right after its demo video loads).
+        frame = self.media_frame
+        drop_now = max(frame.minimumHeight(), min(frame.sizeHint().height(), frame.maximumHeight()))
+        drop_base = ui_zoom.px(88 if ui_zoom.logical(self.height()) >= 900 else 82)
+        natural = (page.layout().sizeHint().height() - (drop_now - drop_base)
+                   - getattr(self, "_home_room_px", 0))
+        room = max(0, min(40, round(ui_zoom.logical(viewport - natural) / 3.1)))  # 0..40 ≈ 0..125 px
+        # What is still left is shared above and below the cards (≤ 40 px above).
+        middle = max(0, min(40, round((ui_zoom.logical(viewport - natural) - room * 3.1) / 2)))
+        if (room, middle) == getattr(self, "_home_room", None):
+            return
+        self._home_room = (room, middle)
+        self._home_mid_space.changeSize(0, ui_zoom.px(2 + middle), QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        step, self._home_drop_extra, self._home_plan_extra = room // 4, room, room
+        # Everything added outside the drop zone (its own extra is in drop_now).
+        self._home_room_px = ui_zoom.px(round(step * 4.5) + self._home_plan_extra + middle)
+        ui_zoom.set_layout(self._home_studio_layout, (20, 18 + step, 20, 18 + step), 12)
+        ui_zoom.set_layout(self._home_ai_layout, (8, 4 + step // 2, 12, 4 + step // 2), 0)
+        ui_zoom.set_layout(self._home_content_layout, (22, 16 + step, 22, 18 + step), 12 + step // 2)
+        self._sync_home_plan(getattr(self, "_home_tier", (1,))[0])
+        if not getattr(self, "media_paths", None):
+            self._apply_media_mode(False)
 
     def _refresh_readiness_bar(self, plan_items) -> None:
         """Missing items as buttons that open their fix, and the reason the
@@ -6797,7 +6932,12 @@ class MainWindow(QWidget):
         # One group of clickable missing items; the button only says why.
         self.start_hint.hide()
         reason = translate("先选择素材才能开始", language) if media_missing else ""
-        self.start_button.setToolTip(reason or translate("开始生成字幕 (Ctrl+Enter)", language))
+        # The key follows home.start_run (2026-10-17: was a literal Ctrl+Enter).
+        from . import shortcut_registry as keys
+        start_key = getattr(self, "_start_run_key", keys.BY_ID["home.start_run"].default)
+        start_tip = translate("开始生成字幕 ({key})", language).format(
+            key=keys.display(start_key) if start_key else translate("未绑定", language))
+        self.start_button.setToolTip(reason or start_tip)
 
     def _preview_recent_project(self, index: int) -> None:
         timer = getattr(self, "_studio_preview_timer", None)
@@ -6826,31 +6966,36 @@ class MainWindow(QWidget):
         card = self.home_process_card
         layout = card.layout()
         tile.chevron.hide()
+        tile.setMinimumHeight(60)
         self.ai_settings_button = AnimatedButton("设置 AI")
         self.ai_settings_button.setObjectName("homeAiSettings")
         install_themed_icon(self.ai_settings_button, "fa5s.sliders-h", "secondary")
         self.ai_settings_button.clicked.connect(lambda: self._open_ai_settings_dialog())
-        tile.layout().addWidget(self.ai_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
         tile.clicked.connect(lambda _checked=False: self._open_ai_settings_dialog())
         layout.addWidget(tile)
-        self.home_fact_row = QWidget()
+        # One row (home C′): title and service, the three facts, 设置 AI.
+        tile_layout = tile.layout()
+        tile_layout.setStretch(1, 0)
+        tile.summary_label.setWordWrap(False)
+        self.home_fact_row = QWidget(tile)
         row = QHBoxLayout(self.home_fact_row)
-        row.setContentsMargins(70, 0, 16, 0)
+        row.setContentsMargins(14, 0, 8, 0)
         row.setSpacing(8)
         self._ai_state_chips = {}
         for key in ("saved", "key", "connection"):
             chip = QLabel()
             chip.setObjectName("homeFactChip")
-            row.addWidget(chip)
+            row.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
             self._ai_state_chips[key] = chip
         # 2026-10-15: the picture explainer for people who never heard of a key.
         self.ai_key_help_button = AnimatedButton("API Key 是什么？")
         self.ai_key_help_button.setObjectName("linkButton")
         self.ai_key_help_button.setIcon(_icon("fa5s.question-circle"))
         self.ai_key_help_button.clicked.connect(lambda: self._open_api_key_explainer())
-        row.addWidget(self.ai_key_help_button)
+        row.addWidget(self.ai_key_help_button, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addStretch(1)
-        layout.addWidget(self.home_fact_row)
+        tile_layout.insertWidget(2, self.home_fact_row, 1)
+        tile_layout.addWidget(self.ai_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self._refresh_home_process_facts()
 
     def _open_api_key_explainer(self) -> None:
@@ -7090,25 +7235,25 @@ class MainWindow(QWidget):
         dialog.activateWindow()
 
     def _apply_media_mode(self, ready: bool) -> None:
-        """Empty: a tall, centred drop zone. Loaded: the compact one-line row."""
+        """Empty: a one-row dashed drop zone (title, hint and formats, the
+        button at the right; home C′ 2026-10-17). Loaded: the compact row."""
         layout = getattr(self, "media_row_layout", None)
         if layout is None:
             return
         hero = not ready
-        policy = QSizePolicy.Policy.Expanding if hero else QSizePolicy.Policy.Fixed
         for spacer in (self.media_lead_space, self.media_tail_space):
-            spacer.changeSize(0, 0, policy, QSizePolicy.Policy.Minimum)
+            spacer.changeSize(0, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
         self.media_kind_gap.changeSize(0 if hero else 20, 0, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
-        layout.setStretch(self._media_text_index, 0 if hero else 1)
+        layout.setStretch(self._media_text_index, 1)
         self.media_kind_label.setVisible(not hero)
         self.media_formats.setVisible(hero)
         tall = ui_zoom.logical(self.height()) >= 900
-        icon = (64 if tall else 52) if hero else 36
+        icon = (48 if tall else 44) if hero else 36
         self.media_type_icon.setFixedSize(icon, icon)
-        layout.setContentsMargins(*((28, 18, 28, 18) if hero else (12, 8, 12, 8)))
-        layout.setSpacing(18 if hero else 6)
+        layout.setContentsMargins(*((24, 8, 24, 8) if hero else (12, 8, 12, 8)))
+        layout.setSpacing(16 if hero else 6)
         if hero:
-            height = 130 if ui_zoom.logical(self.height()) >= 1150 else 124 if tall else 116
+            height = (88 if tall else 82) + getattr(self, "_home_drop_extra", 0)
             self.media_frame.setMinimumHeight(height)
             self.media_frame.setMaximumHeight(height)
         else:
@@ -8856,26 +9001,15 @@ class MainWindow(QWidget):
         if hasattr(self, "recognition_plan") and getattr(self, "_home_tier", None) != (tier, comfortable, zoom):
             previous = getattr(self, "_home_tier", None)
             self._home_tier = (tier, comfortable, zoom)
-            # The card row has a bounded height per window tier: the card
-            # profile follows its height, and a natural-height column would
-            # otherwise keep whichever profile minimum it started with. The
-            # range stays inside one profile (compact < 300 <= normal < 365);
-            # narrower windows leave room for a wrapped recovery button.
-            if tier == 2:
-                low, high = (306, 306) if comfortable else (306, 360)
-            else:
-                low, high = 240, 296
-            if zoom == ui_zoom.DEFAULT_PERCENT:
-                self.recognition_plan.setMinimumHeight(low)
-                self.recognition_plan.setMaximumHeight(high)
-            else:
-                # Zoomed text wraps more than the band allows: grow, never clip.
-                self.recognition_plan.setMinimumHeight(ui_zoom.px(low))
-                self.recognition_plan.setMaximumHeight(16777215)
+            # 2026-10-17 (user, home C′): compact model cards at their natural
+            # height per tier; the card profile follows that height.
+            self._sync_home_plan(tier)
             if hasattr(self, "media_row_layout") and (previous or (None,))[0] != tier:
                 self._apply_media_mode(bool(getattr(self, "media_paths", None)))
                 if not self.media_paths:
                     self._style_media_summary()
+        if hasattr(self, "_home_plan_layout"):
+            self._schedule_home_fit()
         # Recognition cards also depend on their current height, so let that
         # lightweight cached path run on every resize.
         if hasattr(self, "recognition_plan"):
@@ -8929,10 +9063,10 @@ class MainWindow(QWidget):
             self.media_type_icon.setPixmap(
                 qta.icon("fa5s.file-import", color=theme.accent_text).pixmap(QSize(glyph, glyph)))
         self.media_name.setStyleSheet(
-            f"font-size: {16 if ready else 22}px; font-weight: 600; color: {theme.text};"
+            f"font-size: {16 if ready else 19}px; font-weight: 600; color: {theme.text};"
         )
         self.media_drop_hint.setStyleSheet(
-            f"color: {theme.text_secondary}; font-size: {13 if ready else 14}px;"
+            f"color: {theme.text_secondary}; font-size: 13px;"
         )
         self._style_home_icons()
         if hasattr(self, "media_origin_label"):
@@ -9704,10 +9838,12 @@ class MainWindow(QWidget):
     def _build_subtitle_language_row(self, layout):
         """Spoken language and subtitle output, chosen before a task starts."""
         label = QLabel("字幕语言与输出")
-        label.setObjectName("homeFieldLabel")
-        layout.addWidget(label)
+        label.setObjectName("homeLanguageTitle")
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(10)
+        # One row with its own title (home C′, 2026-10-17).
+        row.addWidget(label)
+        row.addSpacing(6)
         saved = dict((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {})
         self.recognition_language = FramelessPopupCombo()
         for text, value in (("自动识别语言", "auto"), ("中文", "zh"), ("日语", "ja"), ("英语", "en")):
@@ -9726,7 +9862,7 @@ class MainWindow(QWidget):
                                     (self.translation_script, "translation_script", "zh-Hans")):
             combo.setCurrentIndex(max(0, combo.findData(saved.get(key, default))))
             combo.setObjectName("homeLanguageCombo")
-            row.addWidget(combo)
+            row.addWidget(combo, 1)
         # 2026-10-13: punctuation default for new tasks (display/export only).
         from .punctuation_style import MODE_ADD, MODE_NONE, MODE_ORIGINAL, default_mode_for_new_tasks
         self.subtitle_punctuation = FramelessPopupCombo()
@@ -9736,8 +9872,7 @@ class MainWindow(QWidget):
         self.subtitle_punctuation.setCurrentIndex(max(0, self.subtitle_punctuation.findData(
             default_mode_for_new_tasks(self.legacy.RUNTIME_SETTINGS))))
         bind_text(self.subtitle_punctuation, '新任务的字幕标点；文稿不变，工作台里随时能换', property='toolTip')
-        row.addWidget(self.subtitle_punctuation)
-        row.addStretch(1)
+        row.addWidget(self.subtitle_punctuation, 1)
         bind_text(self.recognition_language, '自动：按转写里的文字判断中文、日语或英语（只有汉字不算日语证据）。日语和英语改用 Qwen3-ForcedAligner 对齐字词时间，需在模型工坊下载。', property='toolTip')
         bind_text(self.subtitle_output, '译文/双语：识别完成后用已配置的 AI 文字服务把字幕翻成所选语言（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。', property='toolTip')
         bind_text(self.translation_script, '译文语言', property='toolTip')
@@ -9806,13 +9941,17 @@ class MainWindow(QWidget):
                                              tr("只要中文译文" if chinese_target else "只要译文"))
         hints = []
         aligner_missing = False
-        if options["recognition_language"] in ("ja", "en", "auto"):
+        timeline = self.__dict__.get("firered_asr_backend")
+        timeline_enabled = timeline is None or str(timeline.currentData()) != "off"
+        if timeline_enabled and options["recognition_language"] in ("ja", "en", "auto"):
             try:
                 from .asr import resolve_qwen_aligner_local_source
                 aligner_missing = not resolve_qwen_aligner_local_source()
             except Exception:
                 aligner_missing = False
-        if options["recognition_language"] == "ja":
+        if not timeline_enabled and options["recognition_language"] in ("ja", "en"):
+            hints.append("字幕时间轴已关闭；不会运行字词对齐或日语 CTC 句首校正。")
+        if timeline_enabled and options["recognition_language"] == "ja":
             try:
                 from .ctc_alignment import enabled as ctc_enabled, model_dir as ctc_model_dir
                 timeline = self.__dict__.get("firered_asr_backend")
@@ -9822,7 +9961,7 @@ class MainWindow(QWidget):
                 ctc_runs = False
             hints.append("日语：不送中文时间轴模型；字词时间由 Qwen3-ForcedAligner 对齐，句首再由日语 CTC 对齐模型校正。"
                          if ctc_runs else "日语：不送中文时间轴模型；字词时间由 Qwen3-ForcedAligner 对齐。")
-        if options["recognition_language"] == "en":
+        if timeline_enabled and options["recognition_language"] == "en":
             hints.append("英语：按单词断句，单词之间保留空格；单词时间由 Qwen3-ForcedAligner 对齐。")
         if aligner_missing and options["recognition_language"] == "ja":
             hints.append("还没有安装 Qwen3-ForcedAligner：日语字幕将没有字词时间（剃刀只能按估算切），不会悄悄改用估算冒充。")
@@ -10192,25 +10331,30 @@ class MainWindow(QWidget):
         from .recognition_choices import cloud_asr_readiness
         key_ready, self._cloud_asr_block_reason = cloud_asr_readiness(
             _models_cfg, typed_key=self.qwen_asr_api_key.text())
+        if self.__dict__.get("subtitle_language_hint") is not None:
+            self._subtitle_language_changed(save=False)
         # 2026-10-14: the timeline card names what really runs for the spoken
         # language. Japanese and English never use the Chinese timeline model:
         # words are timed by Qwen3-ForcedAligner, and Japanese line starts are
         # then checked by the CTC aligner when it is installed and switched on
         # (moss_firered_pipeline). Before, the card kept saying FireRedASR2-AED
         # and the CTC model chosen in the workshop showed nowhere.
+        # 2026-10-18: one rule (language_timeline) for the card, the model
+        # picker and the workshop. When the chosen model is not used for this
+        # language the card says why: the picker used to call FireRed current
+        # while this card said Qwen3 对齐.
+        from .recognition_choices import language_timeline
         timeline_backend = firered_backend
         timeline_name = timeline_short.get(firered_backend, firered_backend)
         spoken = self._subtitle_language_options()["recognition_language"]
-        if spoken in ("ja", "en") and firered_backend != "off":
+        timeline_note = None
+        language_stage = language_timeline(firered_backend, spoken, self.legacy.RUNTIME_SETTINGS)
+        if language_stage is not None:
             timeline_backend = "qwen_aligner"
-            timeline_name = translate("Qwen3 对齐", language)
-            if spoken == "ja":
-                try:
-                    from .ctc_alignment import enabled as ctc_enabled, model_dir as ctc_model_dir
-                    if ctc_enabled(self.legacy.RUNTIME_SETTINGS) and ctc_model_dir():
-                        timeline_name = translate("Qwen3 对齐 + 日语 CTC", language)
-                except Exception:  # noqa: BLE001 - the card still names the aligner
-                    pass
+            if language_stage["rerouted"]:
+                timeline_note = tr("字幕语言是日语，{value0} 只用于中文" if spoken == "ja"
+                                   else "字幕语言是英语，{value0} 只用于中文", value0=timeline_name)
+            timeline_name = translate(language_stage["name"], language)
         timeline_short = dict(timeline_short, **{timeline_backend: timeline_name})
         self.asr_panel.set_summary(
             " / ".join(
@@ -10301,6 +10445,17 @@ class MainWindow(QWidget):
                     tone,
                     translate(recovery, language),
                 )
+                # 2026-10-18: logo, the line under the name and the language
+                # badges come from the model this role really runs.
+                from .model_workshop import model_for_backend, model_role_line
+                card_model = model_for_backend(
+                    role, backend, str(_models_cfg.get("qwen_asr_api_provider", "qwen31_filetrans")))
+                card_line = model_role_line(card_model, role) if card_model is not None else None
+                if card_line is not None and role == "timeline" and language_stage and language_stage["ctc"]:
+                    card_line = tr("{line}，日语句首再校正", line=card_line)
+                card.set_model(card_model, card_line)
+                if role == "timeline":
+                    card.set_note(timeline_note)
                 if sys.platform == 'darwin' and backend == 'sensevoice':
                     from .platform_macos import macos_copy
                     card.setToolTip(macos_copy(
@@ -10470,12 +10625,11 @@ class MainWindow(QWidget):
         panel.begin_session()
 
         def _after_close():
-            # Selection changes already update the home controls through
-            # _apply_workshop_backend. Refresh only if a download changed local
-            # availability while this picker was open.
+            # Installs rebuild the choices; helper switches also change the
+            # effective timeline without changing the installed model set.
             if frozenset(self.workshop_page._installed) != installed_before:
                 self._refresh_available_asr_choices()
-                self._refresh_asr_summary()
+            self._timeline_helper_changed()
             if on_closed is not None:
                 try:
                     on_closed()

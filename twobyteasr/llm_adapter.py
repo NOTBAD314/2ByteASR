@@ -62,6 +62,20 @@ def llm_provider_capabilities(provider, base_url=""):
     }
 
 
+def _gemini_fast_reasoning(provider, base_url, model, enable_thinking):
+    """Gemini 3 cannot disable thinking; request its documented low level.
+
+    Scope to Google's endpoint and the known 3.x family. Never send a guessed
+    reasoning option to older models, unknown future models or relays.
+    https://ai.google.dev/gemini-api/docs/openai#thinking
+    """
+    if (str(provider).casefold() == "gemini" and enable_thinking is False
+            and (urlsplit(str(base_url)).hostname or "").lower() == "generativelanguage.googleapis.com"
+            and re.match(r"^gemini-3(?:[.-])", str(model).lower())):
+        return {"reasoning_effort": "low"}
+    return {}
+
+
 def _redact(value, api_key=""):
     text = str(value or "")
     if api_key:
@@ -436,6 +450,10 @@ def post_chat_completion(
         thinking_mode = "enabled" if enable_thinking else "disabled"
     else:
         thinking_mode = "provider_default"
+    gemini_reasoning = _gemini_fast_reasoning(provider, base_url or url, model, enable_thinking)
+    if gemini_reasoning:
+        body.update(gemini_reasoning)
+        thinking_mode = "low"
     if response_format is not None:
         body["response_format"] = response_format
     if isinstance(extra_body, dict):
@@ -651,6 +669,7 @@ def post_chat_completion(
     diagnostics.update(request_sent=True, request_sent_at=request_sent_at)
     message_evidence(payload, diagnostics, api_key=api_key)
     content = extract_chat_message_text(message, prefer_structured=bool(response_format))
+    diagnostics["final_content_preview"] = llm_response_preview(_redact(content, api_key))
     diagnostics["selected_content_length"] = len(str(content or ""))
     _DIAGNOSTIC_LOCAL.value = diagnostics
     same_budget_empty_retry = (
@@ -805,6 +824,7 @@ def post_chat_completion_stream(
         body['thinking'] = {'type': 'enabled' if enable_thinking is True else 'disabled'}
     elif response_format is not None and caps['supports_enable_thinking']:
         body['enable_thinking'] = False
+    body.update(_gemini_fast_reasoning(provider, base_url or url, model, enable_thinking))
     diagnostics = dict(provider=provider, model=model, endpoint=url, base_url=base_url, stream=True,
                        max_tokens=max_tokens, thinking_sent=body.get('thinking'),
                        thinking_mode=(body.get('thinking') or {}).get('type','provider_default'))

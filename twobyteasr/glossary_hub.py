@@ -18,7 +18,10 @@ How it works (ADR 0127, plan docs/exec-plans/active/2026-10-17-online-glossary-h
   record and each installed row a ``hub`` marker, so an update replaces only
   rows that came from the hub and that the user did not edit or delete.
 * Submitting exports a cleaned file and opens the hub's issue page; the
-  maintainer reviews it and publishes with ``scripts/glossary_hub.py``.
+  maintainer reviews it and publishes with ``scripts/glossary_hub.py``.  The
+  submit sheet (2026-10-18) lists the libraries (``submittable_libraries``),
+  lets the user untick rows (``build_submission(excluded=...)``) and says
+  each kind of finding once (``group_findings``).
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
-from .glossary_lint import BLOCK, WARN, Finding, lint_rows
+from .glossary_lint import BLOCK, MESSAGES, WARN, Finding, lint_rows
 
 GITHUB_REPOSITORY = "NOTBAD314/2ByteASR-glossaries"
 GITCODE_REPOSITORY = "Notbad314/2ByteASR-glossaries"
@@ -51,7 +54,8 @@ MAX_LIBRARY_BYTES = 2 * 1024 * 1024
 CHECK_INTERVAL = 24 * 3600
 RACE_GRACE = 3.0
 CONNECT_TIMEOUT, READ_TIMEOUT = 6, 20
-GITHUB_PROXIES = ("https://ghfast.top/", "https://ghproxy.net/")
+# Tried in order after raw.githubusercontent.com; same list as the updater's GITHUB_MIRRORS.
+GITHUB_PROXIES = ("https://ghfast.top/", "https://ghproxy.net/", "https://gh-proxy.org/")
 HUB_ORIGIN = "线上词库"
 USER_AGENT = "2ByteASR-glossary-hub"
 
@@ -295,6 +299,56 @@ def fetch_catalog(*, request_get: Callable | None = None, force: bool = False, l
     except OSError:
         pass
     return Catalog(document, label, now)
+
+
+def cached_catalog(legacy=None, trusted_keys: Mapping[str, str] | None = None) -> Catalog | None:
+    """The last verified catalog on disk, however old; never touches the network."""
+    keys = TRUSTED_HUB_KEYS if trusted_keys is None else trusted_keys
+    return _read_cache(legacy, keys) if keys else None
+
+
+def catalog_is_fresh(catalog: Catalog | None, now: float | None = None) -> bool:
+    now = time.time() if now is None else now
+    return catalog is not None and 0 <= now - catalog.fetched_at < CHECK_INTERVAL
+
+
+# --------------------------------------------------------------------------
+# "Share this library" prompt (term library redesign, 2026-10-17): shown once
+# per library.  Kept next to the catalog cache, not in the settings file.
+
+SHARE_PROMPT_MIN_ROWS = 50
+
+
+def _prompts_path(legacy=None) -> Path:
+    return hub_cache_dir(legacy) / "prompts.json"
+
+
+def share_prompt_done(library_key: str, legacy=None) -> bool:
+    try:
+        state = json.loads(_prompts_path(legacy).read_text("utf-8"))
+    except (OSError, ValueError):
+        return False
+    return str(library_key) in (state.get("share_prompt_done") or [])
+
+
+def mark_share_prompt_done(library_key: str, legacy=None) -> None:
+    """The user dismissed the prompt or submitted this library: never ask again."""
+    path = _prompts_path(legacy)
+    try:
+        state = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        state = {}
+    done = [str(item) for item in state.get("share_prompt_done") or []]
+    if str(library_key) in done:
+        return
+    state["share_prompt_done"] = [*done, str(library_key)]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".tmp")
+        temp.write_text(json.dumps(state, ensure_ascii=False, indent=1), "utf-8")
+        os.replace(temp, path)
+    except OSError:
+        pass  # the prompt may show once more; nothing else depends on it
 
 
 # --------------------------------------------------------------------------
@@ -589,25 +643,15 @@ def _verified_audio(row: Mapping) -> bool:
             or _text(row.get("verification")) == "manual_srt")
 
 
-def build_submission(library_key: str, *, author: str = "", title: str = "", note: str = "",
-                     legacy=None, app_version: str = "") -> tuple[dict, list[Finding]]:
-    """A cleaned library file for the hub, plus the shared check's findings.
-
-    Only confirmed rows are sent, and only from/to/category (and whether an
-    alias was heard in real audio).  Reasons, sources, task ids and dates stay
-    on this computer.
-    """
-    legacy = _legacy(legacy)
-    payload = legacy.load_learned_term_payload()
-    entry = (payload.get("games") or {}).get(library_key)
-    if not isinstance(entry, dict):
-        raise HubError("找不到这个词库")
-    rows, seen = [], set()
+def _submission_rows(entry: Mapping, legacy) -> tuple[list[dict], int]:
+    """(the rows a submission sends, how many rows stay home unconfirmed)."""
+    rows, seen, unconfirmed = [], set(), 0
     for row in entry.get("mappings", []):
         if not isinstance(row, dict):
             continue
         provenance = legacy.learned_mapping_provenance(row)
         if provenance != legacy.TERM_PROVENANCE_USER_CONFIRMED or not row.get("confirmed", True):
+            unconfirmed += 1
             continue
         item = {"from": _text(row.get("from")), "to": _text(row.get("to")),
                 "category": _text(row.get("category")) or "其他"}
@@ -618,6 +662,85 @@ def build_submission(library_key: str, *, author: str = "", title: str = "", not
             item["verified_audio"] = True
         rows.append(item)
     rows.sort(key=lambda item: (item["to"], item["from"]))
+    return rows, unconfirmed
+
+
+@dataclass
+class SubmittableLibrary:
+    """A personal library as the first step of the submit sheet lists it."""
+    key: str
+    game: str
+    rows: int                # confirmed rows a submission would send
+    aliases: int
+    unconfirmed: int         # rows that stay home because nobody confirmed them
+    hub_title: str = ""      # installed from the hub: a submission becomes its next version
+
+
+def submittable_libraries(legacy=None, payload: Mapping | None = None) -> list[SubmittableLibrary]:
+    """Every personal library, in file order; ones without confirmed rows have rows == 0."""
+    legacy = _legacy(legacy)
+    payload = payload if payload is not None else legacy.load_learned_term_payload()
+    found = []
+    for key, entry in (payload.get("games") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        rows, unconfirmed = _submission_rows(entry, legacy)
+        hub = entry.get("hub") if isinstance(entry.get("hub"), dict) else {}
+        found.append(SubmittableLibrary(
+            str(key), _text(entry.get("game")) or str(key), len(rows),
+            sum(1 for row in rows if row["from"] != row["to"]), unconfirmed,
+            _text(hub.get("title") or hub.get("id")) if hub.get("id") else ""))
+    return found
+
+
+@dataclass
+class FindingGroup:
+    """The findings of one kind, said once in the submit sheet (2026-10-18:
+    the user saw 37 identical lines and could not tell what they meant)."""
+    level: str
+    code: str
+    keys: list[tuple[str, str]] = field(default_factory=list)   # (from, to), in row order
+    verified: int = 0                                            # of those, heard in real audio
+
+    @property
+    def count(self) -> int:
+        return len(self.keys)
+
+
+def group_findings(findings: Iterable[Finding], rows: Iterable[Mapping] = ()) -> list[FindingGroup]:
+    """One group per kind: blocking kinds first, then in the shared check's order."""
+    verified = {(_text(row.get("from")), _text(row.get("to"))) for row in rows if row.get("verified_audio")}
+    groups: dict[tuple[str, str], FindingGroup] = {}
+    for finding in findings:
+        group = groups.setdefault((finding.level, finding.code), FindingGroup(finding.level, finding.code))
+        if finding.key not in group.keys:
+            group.keys.append(finding.key)
+    order = list(MESSAGES)
+    for group in groups.values():
+        group.verified = sum(1 for key in group.keys if key in verified)
+    return sorted(groups.values(), key=lambda group: (
+        group.level != BLOCK, order.index(group.code) if group.code in order else len(order)))
+
+
+def build_submission(library_key: str, *, author: str = "", title: str = "", note: str = "",
+                     legacy=None, app_version: str = "",
+                     excluded: Iterable[str] = ()) -> tuple[dict, list[Finding]]:
+    """A cleaned library file for the hub, plus the shared check's findings.
+
+    Only confirmed rows are sent, and only from/to/category (and whether an
+    alias was heard in real audio).  Reasons, sources, task ids and dates stay
+    on this computer.  ``excluded`` holds ``row_key``s the user unticked in
+    the submit sheet; they stay home too.
+    """
+    legacy = _legacy(legacy)
+    payload = legacy.load_learned_term_payload()
+    entry = (payload.get("games") or {}).get(library_key)
+    if not isinstance(entry, dict):
+        raise HubError("找不到这个词库")
+    rows, _unconfirmed = _submission_rows(entry, legacy)
+    excluded = set(excluded)
+    if excluded:
+        rows = [row for row in rows if row_key(row) not in excluded]
     game = _text(entry.get("game")) or library_key
     hub = entry.get("hub") or {}
     document = {

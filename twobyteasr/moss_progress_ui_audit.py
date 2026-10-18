@@ -5,6 +5,8 @@ from pathlib import Path
 
 
 def start(window, output):
+    if (output / 'failure-cases.json').is_file():
+        return start_failures(window, output)
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
     from .service import PipelineEvent
@@ -83,3 +85,74 @@ def start(window, output):
             (output/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),'utf8')
             QApplication.instance().quit()
     QTimer.singleShot(800,tick)
+
+
+def start_failures(window, output):
+    """Explicit fault fixtures: verify visible causes, not real GPU failures."""
+    import sys
+    import traceback
+    import moss_firered_pipeline as pipeline
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    from .service import MediaResult, QueueResult, RunOptions
+    from .support_entry_audit import capture
+    cases = json.loads((output / 'failure-cases.json').read_text('utf8'))
+    result = {'passed': False, 'scope': 'synthetic failures through normal completion page', 'checks': [],
+              'packaged': bool(getattr(sys, 'frozen', False)), 'executable': sys.executable}
+    window._last_run_options = RunOptions()
+
+    def finish():
+        (output / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), 'utf8')
+        window.close()
+        QTimer.singleShot(500, QApplication.instance().quit)
+
+    def tick():
+        try:
+            if not cases:
+                result['passed'] = all(row['passed'] for row in result['checks'])
+                finish()
+                return
+            case = cases.pop(0)
+            receipt = output / (case['name'] + '-worker.json')
+            phase = 'audio_encoding' if case['name'] == 'context' else 'model_loading'
+            receipt.write_text(json.dumps({'execution': {'error': case['cause'], 'failure_stage': phase}}), 'utf8')
+            lines = ['MOSS_EVENT ' + json.dumps({'phase': phase, 'padding': 'x' * 6000, 'error': case['cause']})]
+            # Exercise the actual in-process implementation, including the PYZ
+            # module when frozen, rather than accepting a source-generated string.
+            try:
+                pipeline._read_moss_worker_payload(receipt, 1, lines, 'MOSS 整段worker')
+            except RuntimeError as exc:
+                case['error'] = str(exc)
+            else:
+                raise RuntimeError('Worker failure was unexpectedly accepted')
+            report = output / (case['name'] + '-report.json')
+            report.write_text(json.dumps({'status': 'failed', 'media': {'name': 'first stream.mp4'},
+                'result': {'cue_count': 0, 'error': case['error']}, 'stages': [], 'events': []},
+                ensure_ascii=False), 'utf8')
+            item = MediaResult(media_path=str(output / 'first stream.mp4'), status='failed',
+                               error=case['error'], report_json_path=str(report))
+            window._handle_result(QueueResult((item,), 17.922))
+            dialog = getattr(window, '_completion_dialog', None)
+            if dialog and dialog.isVisible():
+                dialog.confirm_button.click()
+            QApplication.processEvents()
+            label = window.result_exception_summary
+            text = label.text()
+            passed = (label.isVisible() and case['expected'] in text and 'MOSS_EVENT' not in text
+                      and 'padding' not in text and label.height() >= label.heightForWidth(label.width())
+                      and not window.export_result_button.isEnabled()
+                      and not window.open_studio_result_button.isEnabled())
+            result['checks'].append(dict(name=case['name'], passed=passed, text=text))
+            # Let the completion dialog's closing animation remove its dimmer.
+            def shot_then_continue():
+                try:
+                    capture(window, output / (case['name'] + '.png'))
+                    QTimer.singleShot(100, tick)
+                except Exception:
+                    result['error'] = traceback.format_exc()
+                    finish()
+            QTimer.singleShot(700, shot_then_continue)
+        except Exception:
+            result['error'] = traceback.format_exc()
+            finish()
+    QTimer.singleShot(800, tick)

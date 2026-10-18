@@ -157,8 +157,8 @@ def test_shortcut_and_render_dialogs_fit_common_dpi_sizes(tmp_path, monkeypatch)
         shortcuts.resize(width, height)
         shortcuts.show()
         app.processEvents()
-        assert shortcuts.table.geometry().right() <= shortcuts.contentsRect().right()
-        assert shortcuts.table.geometry().bottom() <= shortcuts.contentsRect().bottom()
+        assert shortcuts.list_view.geometry().right() <= shortcuts.contentsRect().right()
+        assert shortcuts.list_view.geometry().bottom() <= shortcuts.contentsRect().bottom()
 
     for width, height in ((560, 650), (700, 760), (840, 860)):
         render.resize(width, height)

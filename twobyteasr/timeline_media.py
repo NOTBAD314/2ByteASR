@@ -12,15 +12,22 @@ TIME_CONTRACT = "timeline-content-v2"
 
 def resolve_frame_graph(graph, milliseconds, ffmpeg, *, cache=None):
     """Resolve only the frozen instant's video, on the capture worker."""
+    from .studio_transitions import transition_windows
     graph = copy.deepcopy(graph)
     assets = {a['asset_id']: a for a in graph.get('media_pool', [])}
+    # A seam overlaps both of its clips: keep each one active at this instant
+    # by its transition window, so the still can draw the transition.
+    windows = transition_windows(graph, 'video')
     tracks = []
     for track in graph.get('video_tracks', []):
         if not track.get('enabled', True):
             continue
+        def span(c):
+            window = windows.get((track['id'], c['id']), windows.get(c['id'], c))
+            return window['timeline_in_ms'], window['timeline_out_ms']
         track['clips'] = [c for c in track.get('clips', [])
                           if c.get('enabled', True)
-                          and c['timeline_in_ms'] <= milliseconds < c['timeline_out_ms']
+                          and span(c)[0] <= milliseconds < span(c)[1]
                           and assets[c['asset_id']].get('video_metadata', {}).get('has_video') is not False]
         if track['clips']:
             tracks.append(track)

@@ -252,7 +252,7 @@ def cmd_feed(args) -> None:
     notes = json.loads(Path(args.notes_json).read_text("utf-8")) if args.notes_json else {}
     manifest = {
         "schema": UPDATE_SCHEMA, "product": PRODUCT, "app_id": APP_ID, "version": version, "tag": tag,
-        "channel": args.channel, "platform": PLATFORM, "arch": ARCH, "min_os_build": 19045,
+        "channel": args.channel, "platform": PLATFORM, "arch": ARCH, "min_os_build": 17763,
         "published": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "release_page": args.release_page or f"https://github.com/{REPOSITORY}/releases/tag/{tag}",
         "notes": notes,

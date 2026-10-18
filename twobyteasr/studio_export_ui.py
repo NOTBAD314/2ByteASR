@@ -297,145 +297,374 @@ class ExportTarget:
 
 
 class SubtitleExportDialog(QDialog):
-    """Focused subtitle-only export dialog used by the Studio toolbar."""
+    """Focused subtitle-only export dialog used by the Studio toolbar.
 
-    def __init__(self, project: SubtitleProject, project_path: str | Path | None = None, parent=None):
+    2026-10-18: format cards with a line on each format's use, segmented
+    speaker / destination choices, a short path with “打开文件夹” and a preview
+    of the files that will be written. With ``export_on_accept`` the dialog
+    exports itself and ends on a result page (打开文件夹 / 复制路径).
+    """
+
+    def __init__(self, project: SubtitleProject, project_path: str | Path | None = None, parent=None, *,
+                 export_on_accept: bool = False, base_name: str = ""):
         super().__init__(parent)
+        from .studio_theme import _active_theme
+        from .subtitle_export_widgets import (
+            DESTINATION_CHOICES, LANGUAGE_CHOICES, SPEAKER_CHOICES, FileList, PathRow, SegmentedChoice,
+            build_subtitle_export_qss, chip, footer_frame, format_grid, section_label,
+        )
         self.project = project
         self.project_path = Path(project_path).resolve() if project_path else None
+        self.export_on_accept = bool(export_on_accept)
+        self.base_name = str(base_name or Path(project.media.path).stem or "subtitles")
+        self.artifacts: tuple = ()
+        self.result_reason = ""
         self._settings = QSettings("2ByteASR", "2ByteASR")
         bind_text(self, '导出字幕', property='windowTitle')
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(680)
         self.setObjectName("subtitleExportDialog")
         apply_secondary_surface_theme(self)
+        theme = _active_theme(None)
+        self.setStyleSheet(build_secondary_surface_qss(theme) + build_subtitle_export_qss(theme))
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 20, 22, 16)
-        root.setSpacing(12)
-        title = QLabel("导出字幕")
-        title.setObjectName("sectionTitle")
-        root.addWidget(title)
-        subtitle = QLabel("选择格式、说话人拆分方式和保存位置；导出后会自动回读验证。")
-        subtitle.setObjectName("cardMeta")
-        subtitle.setWordWrap(True)
-        root.addWidget(subtitle)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        self.pages = QStackedWidget()
+        root.addWidget(self.pages)
 
-        formats = QGroupBox("格式")
-        format_layout = QHBoxLayout(formats)
-        self.format_checks: dict[str, StyledCheckBox] = {}
+        setup = QWidget()
+        outer = QVBoxLayout(setup)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        body = QVBoxLayout()
+        body.setContentsMargins(22, 18, 22, 12)
+        body.setSpacing(9)
+        outer.addLayout(body, 1)
+        title = QLabel()
+        title.setObjectName("exportDialogTitle")
+        bind_text(title, "导出字幕")
+        body.addWidget(title)
+        from .export_preferences import output_basename
+        name = QLabel()
+        name.setObjectName("exportDialogMeta")
+        bind_text(name, "文件名：{name}", name=output_basename(self.base_name))
+        body.addWidget(name)
+        body.addSpacing(4)
+
+        body.addWidget(section_label("格式（可多选）"))
         saved_formats = str(self._settings.value("subtitle/export_formats", "srt") or "srt").split(",")
-        for label, name in (("SRT", "srt"), ("ASS", "ass"), ("TXT", "txt"), ("JSON", "json")):
-            box = StyledCheckBox(label)
-            box.setChecked(name in saved_formats)
-            self.format_checks[name] = box
-            format_layout.addWidget(box)
-        format_layout.addStretch(1)
-        root.addWidget(formats)
+        self.format_checks: dict = {}
+        body.addWidget(format_grid(self.format_checks, saved_formats))
+        for card in self.format_checks.values():
+            card.toggled.connect(lambda _checked: self._refresh_preview())
 
-        speakers = QGroupBox("说话人")
-        speaker_layout = QHBoxLayout(speakers)
-        self.speaker_modes: dict[str, StyledRadio] = {}
+        # Language layers, only when the project has translations: the same
+        # original / translation / bilingual SRT set as the export page.
+        self.language_checks: dict = {}
+        self.language_row = QWidget()
+        language = QVBoxLayout(self.language_row)
+        language.setContentsMargins(0, 2, 0, 0)
+        language.setSpacing(6)
+        language.addWidget(section_label("语言（SRT）"))
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for layer, label in LANGUAGE_CHOICES:
+            button = chip(label, checked=True)
+            button.toggled.connect(lambda _checked: self._refresh_preview())
+            self.language_checks[layer] = button
+            chips.addWidget(button)
+        self.translation_first = StyledCheckBox("双语译文在上")
+        self.translation_first.setChecked(True)
+        chips.addSpacing(6)
+        chips.addWidget(self.translation_first)
+        chips.addStretch(1)
+        language.addLayout(chips)
+        self.language_row.setVisible(bool((getattr(project, "generation_metadata", None) or {}).get("translations")))
+        body.addWidget(self.language_row)
+
+        body.addWidget(section_label("说话人"))
+        self.speaker_choice = SegmentedChoice(SPEAKER_CHOICES)
+        self.speaker_modes = self.speaker_choice.buttons
         saved_speaker = str(self._settings.value("subtitle/export_speaker_mode", "combined") or "combined")
-        for label, mode in (("合并", "combined"), ("分别导出", "per_speaker"), ("两者", "both")):
-            radio = StyledRadio(label)
-            radio.setChecked(mode == saved_speaker)
-            self.speaker_modes[mode] = radio
-            speaker_layout.addWidget(radio)
-        speaker_layout.addStretch(1)
-        root.addWidget(speakers)
+        self.speaker_choice.set_value(saved_speaker if saved_speaker in self.speaker_modes else "combined")
+        self.speaker_choice.group.buttonToggled.connect(lambda *_args: self._refresh_preview())
+        body.addWidget(self.speaker_choice)
+        self.speaker_hint = QLabel()
+        self.speaker_hint.setObjectName("exportHint")
+        self.speaker_hint.setWordWrap(True)
+        body.addWidget(self.speaker_hint)
 
-        destination = QGroupBox("保存位置")
-        destination_layout = QVBoxLayout(destination)
-        self.destination_modes: dict[str, StyledRadio] = {}
+        body.addWidget(section_label("存到"))
+        self.destination_choice = SegmentedChoice(DESTINATION_CHOICES)
+        self.destination_modes = self.destination_choice.buttons
         saved_destination = str(self._settings.value("subtitle/export_destination", "source") or "source")
-        for label, mode in (("与源媒体同目录", "source"), ("工程 exports", "project"), ("自定义位置", "custom")):
-            radio = StyledRadio(label)
-            radio.setChecked(mode == saved_destination)
-            radio.toggled.connect(lambda checked, selected=mode: self._destination_changed(selected if checked else ""))
-            self.destination_modes[mode] = radio
-            destination_layout.addWidget(radio)
-        custom_row = QHBoxLayout()
+        if saved_destination not in self.destination_modes:
+            saved_destination = "source"
         self.custom_directory = QLineEdit(str(self._settings.value("subtitle/custom_directory", "") or ""))
         self.custom_directory.setReadOnly(True)
-        bind_text(self.custom_directory, '选择自定义文件夹', property='placeholderText')
-        choose = QPushButton("选择文件夹")
-        choose.clicked.connect(self._choose_custom_directory)
-        custom_row.addWidget(self.custom_directory, 1)
-        custom_row.addWidget(choose)
-        destination_layout.addLayout(custom_row)
+        self.custom_directory.hide()
+        if saved_destination == "custom" and not self.custom_directory.text().strip():
+            saved_destination = "source"
+        self.destination_choice.set_value(saved_destination)
+        self.destination_choice.changed.connect(self._destination_clicked)
+        body.addWidget(self.destination_choice)
+        self.path_row = PathRow()
+        self.path_row.open_clicked.connect(self._open_destination)
+        self.path_row.change_clicked.connect(self._choose_custom_directory)
+        body.addWidget(self.path_row)
         self.destination_status = QLabel()
-        self.destination_status.setObjectName("cardMeta")
+        self.destination_status.setObjectName("exportHint")
         self.destination_status.setWordWrap(True)
-        destination_layout.addWidget(self.destination_status)
-        root.addWidget(destination)
-
+        body.addWidget(self.destination_status)
+        self.file_list = FileList()
+        body.addWidget(self.file_list)
         self.warning = QLabel()
         self.warning.setObjectName("checkWarning")
         self.warning.setWordWrap(True)
         self.warning.hide()
-        root.addWidget(self.warning)
-        footer = QHBoxLayout()
-        footer.addStretch(1)
-        cancel = QPushButton("取消")
-        cancel.setObjectName("studioButton")
+        body.addWidget(self.warning)
+        body.addStretch(1)
+        footer, row = footer_frame()
+        row.addStretch(1)
+        cancel = QPushButton()
+        bind_text(cancel, "取消")
+        button_role(cancel, "secondary")
         cancel.clicked.connect(self.reject)
-        export = QPushButton("导出字幕")
-        export.setObjectName("studioPrimary")
-        export.clicked.connect(self._accept)
-        footer.addWidget(cancel)
-        footer.addWidget(export)
-        root.addLayout(footer)
+        row.addWidget(cancel)
+        self.export_button = QPushButton()
+        bind_text(self.export_button, "导出字幕")
+        button_role(self.export_button, "primary")
+        self.export_button.setDefault(True)
+        self.export_button.clicked.connect(self._accept)
+        row.addWidget(self.export_button)
+        outer.addWidget(footer)
+        self.pages.addWidget(setup)
+        self.setup_page = setup
+
+        done = QWidget()
+        done_outer = QVBoxLayout(done)
+        done_outer.setContentsMargins(0, 0, 0, 0)
+        done_outer.setSpacing(0)
+        done_body = QVBoxLayout()
+        done_body.setContentsMargins(24, 22, 24, 12)
+        done_body.setSpacing(10)
+        badge = QLabel("✓")
+        badge.setObjectName("exportDoneBadge")
+        badge.setFixedSize(36, 36)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        done_body.addWidget(badge)
+        self.done_title = QLabel()
+        self.done_title.setObjectName("exportDialogTitle")
+        done_body.addWidget(self.done_title)
+        self.done_note = QLabel()
+        self.done_note.setObjectName("exportHint")
+        self.done_note.setWordWrap(True)
+        done_body.addWidget(self.done_note)
+        self.done_files = FileList()
+        done_body.addWidget(self.done_files)
+        self.done_path = PathRow(can_change=False)
+        self.done_path.open_button.hide()  # the footer's primary button opens it
+        done_body.addWidget(self.done_path)
+        done_body.addStretch(1)
+        done_outer.addLayout(done_body, 1)
+        done_footer, done_row = footer_frame()
+        self.copy_paths_button = QPushButton()
+        bind_text(self.copy_paths_button, "复制路径")
+        button_role(self.copy_paths_button, "secondary")
+        self.copy_paths_button.clicked.connect(self._copy_paths)
+        done_row.addWidget(self.copy_paths_button)
+        done_row.addStretch(1)
+        self.done_button = QPushButton()
+        bind_text(self.done_button, "完成")
+        button_role(self.done_button, "secondary")
+        self.done_button.clicked.connect(self.accept)
+        done_row.addWidget(self.done_button)
+        self.open_folder_button = QPushButton()
+        bind_text(self.open_folder_button, "打开文件夹")
+        button_role(self.open_folder_button, "primary")
+        self.open_folder_button.clicked.connect(lambda: (self._open_result_folder(), self.accept()))
+        done_row.addWidget(self.open_folder_button)
+        done_outer.addWidget(done_footer)
+        self.pages.addWidget(done)
+        self.done_page = done
+        for button in self.findChildren(QPushButton):
+            if button is not self.export_button:
+                button.setAutoDefault(False)
+        self._last_destination = saved_destination
         self._destination_changed(saved_destination, persist=False)
 
+    # ----------------------------------------------------------- choices
     def _selected_destination(self) -> str:
-        return next((mode for mode, radio in self.destination_modes.items() if radio.isChecked()), "source")
+        return self.destination_choice.value() or "source"
+
+    def selected_speaker_mode(self) -> str:
+        return self.speaker_choice.value() or "combined"
+
+    def _selected_formats(self) -> frozenset[str]:
+        return frozenset(name for name, box in self.format_checks.items() if box.isChecked())
+
+    def _selected_layers(self) -> tuple[str, ...]:
+        if not self.language_row.isVisibleTo(self):
+            return ()
+        return tuple(layer for layer, button in self.language_checks.items() if button.isChecked())
+
+    def selected_options(self) -> SubtitleExportOptions:
+        return SubtitleExportOptions(self._selected_formats(), self.selected_speaker_mode())
+
+    def selected_destination(self) -> tuple[Path, str]:
+        return resolve_subtitle_export_destination(self.project, self.project_path, self._selected_destination(), self.custom_directory.text())
+
+    def _destination_clicked(self, mode: str) -> None:
+        if mode == "custom" and not self.custom_directory.text().strip():
+            if not self._choose_custom_directory():
+                self.destination_choice.set_value(self._last_destination)
+            return
+        self._destination_changed(mode)
 
     def _destination_changed(self, mode: str, *, persist: bool = True) -> None:
         if not mode:
             return
+        self._last_destination = mode
         if persist:
             self._settings.setValue("subtitle/export_destination", mode)
+        self.path_row.change_button.setVisible(mode == "custom")
         try:
             destination, reason = resolve_subtitle_export_destination(
                 self.project, self.project_path, mode, self.custom_directory.text()
             )
-            self.destination_status.setText(f"{reason} · {destination}")
+            self.path_row.set_path(str(destination))
+            fallback = reason not in {"自定义位置", "工程 exports 目录", "与源媒体同目录"}
+            bind_text(self.destination_status, reason) if fallback else self.destination_status.clear()
         except (ValueError, PermissionError) as exc:
+            self.path_row.set_path("", exists=False)
             self.destination_status.setText(str(exc))
+        self.destination_status.setVisible(bool(self.destination_status.text()))
+        self._refresh_preview()
 
-    def _choose_custom_directory(self) -> None:
+    def _choose_custom_directory(self) -> bool:
         path = QFileDialog.getExistingDirectory(self, tr('选择字幕保存文件夹'), self.custom_directory.text() or str(Path(self.project.media.path).parent))
-        if path:
-            self.custom_directory.setText(path)
-            self._settings.setValue("subtitle/custom_directory", path)
-            self.destination_modes["custom"].setChecked(True)
-            self._destination_changed("custom")
+        if not path:
+            return False
+        self.custom_directory.setText(path)
+        self._settings.setValue("subtitle/custom_directory", path)
+        self.destination_choice.set_value("custom")
+        self._destination_changed("custom")
+        return True
 
+    def _open_destination(self) -> None:
+        from .subtitle_export_widgets import open_folder
+        open_folder(self.path_row.path_label.path())
+
+    def _refresh_preview(self) -> None:
+        from .studio_subtitle_export import planned_subtitle_files
+        formats = self._selected_formats()
+        layers = self._selected_layers()
+        mode = self.selected_speaker_mode()
+        try:
+            directory, _reason = self.selected_destination()
+        except (ValueError, PermissionError):
+            directory = None
+        planned = planned_subtitle_files(self.project, directory, self.base_name,
+                                         SubtitleExportOptions(formats, mode), layers) if formats else ()
+        self.file_list.set_files(planned)
+        missing_layer = bool(self.language_row.isVisibleTo(self) and "srt" in formats and not layers)
+        if missing_layer:
+            bind_text(self.file_list.header, "SRT 至少选一种语言")
+        self.export_button.setEnabled(bool(planned) and not missing_layer)
+        (bind_text(self.export_button, "导出 {count} 个文件", count=len(planned)) if planned
+         else bind_text(self.export_button, "导出字幕"))
+        from .speaker_names import display_speaker_name
+        visible = {cue.speaker_id for cue in self.project.visible_cues()}
+        names = {speaker.id: display_speaker_name(self.project, speaker) for speaker in self.project.speakers}
+        shown = [names.get(speaker_id, speaker_id) for speaker_id in dict.fromkeys(
+            cue.speaker_id for cue in self.project.visible_cues())]
+        hidden = [names[speaker.id] for speaker in self.project.speakers
+                  if speaker.hidden and speaker.id not in visible
+                  and any(cue.speaker_id == speaker.id for cue in self.project.cues)]
+        parts = []
+        if mode != "combined" and shown:
+            parts.append(tr("每人一份：{names}", names="、".join(shown)))
+        if hidden:
+            parts.append(tr("已隐藏的说话人不导出：{names}", names="、".join(hidden)))
+        self.speaker_hint.setText("\n".join(parts))
+        self.speaker_hint.setVisible(bool(parts))
+
+    # ------------------------------------------------------------ export
     def _accept(self) -> None:
-        if not any(box.isChecked() for box in self.format_checks.values()):
+        self.warning.hide()
+        if not self._selected_formats():
             bind_text(self.warning, '至少选择一种字幕格式')
             self.warning.show()
             return
         try:
-            resolve_subtitle_export_destination(self.project, self.project_path, self._selected_destination(), self.custom_directory.text())
+            self.selected_destination()
         except (ValueError, PermissionError) as exc:
             self.warning.setText(str(exc))
             self.warning.show()
             return
         self._settings.setValue("subtitle/export_formats", ",".join(name for name, box in self.format_checks.items() if box.isChecked()))
         self._settings.setValue("subtitle/export_speaker_mode", self.selected_speaker_mode())
-        self.accept()
+        self._settings.setValue("subtitle/export_destination", self._selected_destination())
+        if not self.export_on_accept:
+            self.accept()
+            return
+        self._run_export()
 
-    def selected_speaker_mode(self) -> str:
-        return next((mode for mode, radio in self.speaker_modes.items() if radio.isChecked()), "combined")
+    def _run_export(self) -> None:
+        from .studio_subtitle_export import export_language_layers
+        directory, reason = self.selected_destination()
+        formats = set(self._selected_formats())
+        layers = self._selected_layers()
+        mode = self.selected_speaker_mode()
+        self.export_button.setEnabled(False)
+        bind_text(self.export_button, "正在写入并回读验证…")
+        QApplication.processEvents()
+        layered = None
+        try:
+            if layers and "srt" in formats:
+                layered = export_language_layers(
+                    self.project, directory, self.base_name,
+                    tuple(layers) + (("json",) if "json" in formats else ()),
+                    translation_first=self.translation_first.isChecked(), speaker_mode=mode)
+                formats -= {"srt", "json"}
+            artifacts = list(layered.artifacts) if layered is not None else []
+            if formats:
+                artifacts += list(export_subtitle_artifacts(
+                    self.project, directory, self.base_name, SubtitleExportOptions(frozenset(formats), mode)))
+        except Exception as exc:
+            bind_text(self.warning, '导出字幕失败：{error}', error=' '.join(str(exc).split())[:240])
+            self.warning.show()
+            self._refresh_preview()
+            return
+        self.artifacts = tuple(artifacts)
+        self.result_reason = reason
+        bind_text(self.done_title, "已导出并检查 {count} 个文件", count=len(self.artifacts))
+        notes = [tr(reason)]
+        if layered is not None and layered.missing_translation_count:
+            notes.append(tr("{count} 条没有译文（双语只写原文）", count=layered.missing_translation_count))
+        if layered is not None and layered.needs_update_count:
+            notes.append(tr("{count} 条译文需要更新", count=layered.needs_update_count))
+        self.done_note.setText(" · ".join(notes))
+        self.done_files.set_files([artifact.path.name for artifact in self.artifacts],
+                                  header=tr("已写入并回读检查："))
+        folder = self.artifacts[0].path.parent if self.artifacts else Path(directory)
+        self.done_path.set_path(str(folder))
+        # The result is shorter than the choices: drop the choices page so the
+        # dialog can shrink to the result (the format cards' height-for-width
+        # would otherwise keep the old height).
+        self.pages.setCurrentWidget(self.done_page)
+        self.pages.removeWidget(self.setup_page)
+        QTimer.singleShot(0, lambda: self.resize(self.width(), self.sizeHint().height()))
+        self.open_folder_button.setDefault(True)
+        self.open_folder_button.setFocus()
 
-    def selected_options(self) -> SubtitleExportOptions:
-        return SubtitleExportOptions(
-            frozenset(name for name, box in self.format_checks.items() if box.isChecked()),
-            self.selected_speaker_mode(),
-        )
+    def _open_result_folder(self) -> None:
+        from .subtitle_export_widgets import open_folder
+        open_folder(self.done_path.path_label.path())
 
-    def selected_destination(self) -> tuple[Path, str]:
-        return resolve_subtitle_export_destination(self.project, self.project_path, self._selected_destination(), self.custom_directory.text())
+    def _copy_paths(self) -> None:
+        QApplication.clipboard().setText("\n".join(str(item.path.resolve()) for item in self.artifacts))
+        bind_text(self.done_note, "已复制 {count} 个字幕路径", count=len(self.artifacts))
 
 
 def _clock(milliseconds: int, millis: bool = False) -> str:
@@ -653,11 +882,14 @@ class StudioExportWorkspace(QWidget):
         self.failure_page = self._failure_page()
         for page in (self.setup_page, self.exporting_page, self.success_page, self.failure_page):
             self.pages.addWidget(page)
-        for key, callback in (("I", self._set_in), ("O", self._set_out)):
-            shortcut = QShortcut(QKeySequence(key), self)
-            from .project_range import text_input_focused
+        # The Studio's 设置入点 / 设置出点 keys, rebinds included (2026-10-17: were I / O literals).
+        from .project_range import text_input_focused
+        from . import shortcut_registry
+        for command_id, callback in (("mark_in", self._set_in), ("mark_out", self._set_out)):
+            shortcut = QShortcut(QKeySequence(), self)
             shortcut.activated.connect(lambda cb=callback: None if text_input_focused() else cb())
-            setattr(self, f"_shortcut_{key.lower()}", shortcut)
+            setattr(self, f"_shortcut_{command_id}", shortcut)
+        shortcut_registry.keep_keys({"mark_in": self._shortcut_mark_in, "mark_out": self._shortcut_mark_out})
 
     def _setup_page(self) -> QWidget:
         page = QWidget()

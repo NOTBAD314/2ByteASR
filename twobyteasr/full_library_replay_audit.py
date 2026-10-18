@@ -88,6 +88,7 @@ def start(owner, output):
                 check('actual user library selected',page._library_key()=='瓦罗兰特',page._library_key())
                 manager=page._ensure_task_manager();state['manager']=manager
                 manager.task_finished.connect(lambda tid,game,payload:state.update(task=tid,payload=payload))
+                QTest.mouseClick(page.ai_menu_button,Qt.MouseButton.LeftButton)  # 2026-10-17: 「AI 更新 ▾」 menu
                 check('one direct visible button',page.ai_full_button.menu() is None and page.ai_full_button.isVisible() and page.ai_full_button.isEnabled())
                 _capture(owner,output/'full-replay-before.png')
                 QTest.mouseClick(page.ai_full_button,Qt.MouseButton.LeftButton)

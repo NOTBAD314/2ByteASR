@@ -140,6 +140,39 @@ class SubtitleLayoutPreview(QDialog):
         return True
 
 
+def rearrange_now(page, cue_ids):
+    """One-click re-layout from the timeline 调整 menu (2026-10-18, user).
+
+    Same command the preview applies, without the table: the scope's captions
+    that have no manual position or keyframes, one undo step. Returns how many
+    captions moved."""
+    from .i18n import tr
+    from .studio_edit_sequence import source_cue_id_of
+    project = page.project
+    if project is None:
+        return 0
+    cues = {cue.id: cue for cue in project.cues}
+    ids = {str(key) if str(key) in cues else source_cue_id_of(str(key)) for key in cue_ids} & set(cues)
+    if not ids:
+        page._show_studio_hint(tr('先选中要重新排版的字幕'))
+        return 0
+    kept = {key for key in ids if manual_position(cues[key]) or _has_keyframes(cues[key].transform)}
+    command, layout = rearrange_subtitles_command(project, ids - kept, changed=page._changed)
+    moved = 0 if command is None else sum(1 for key, after in command.after.items()
+                                          if after != command.before.get(key))
+    if command is None or not moved:
+        text = tr('字幕位置已经不重叠，无需重新排版')
+    else:
+        page.undo_stack.push(command)
+        text = tr('已重新排版 {count} 条字幕的位置（可撤销）', count=moved)
+    if kept:
+        text = f"{text}{tr('；{count} 条手动摆放或带关键帧的保持不动', count=len(kept))}"
+    if layout.warnings:
+        text = f"{text}{tr('；{count} 处放不下仍会重叠', count=len(layout.warnings))}"
+    page._show_studio_hint(text)
+    return moved
+
+
 def open_layout_preview(page, cue_ids):
     """Modeless explicit review; opening/cancelling never changes the project."""
     if page.project is None:

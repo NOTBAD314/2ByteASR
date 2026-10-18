@@ -1,17 +1,23 @@
-"""Explicit subtitle delivery from a frozen task result, independent of Studio."""
+"""Explicit subtitle delivery from a frozen task result, independent of Studio.
+
+2026-10-18: the same format cards, speaker split and file preview as the
+Studio “导出字幕” dialog; speakers are chips. The folder is chosen when
+exporting and the completion page lists the written files, as before.
+"""
 from __future__ import annotations
 
 import copy
 from collections import Counter
-from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import QDialog, QFileDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
+from .design.presentation import button_role
+from .studio_theme import _active_theme, apply_secondary_surface_theme, build_secondary_surface_qss
 from .studio_edit_sequence import projected_cues
-from .studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts
+from .studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts, planned_subtitle_files
+from .subtitle_export_widgets import (SPEAKER_CHOICES, ChipFlowLayout, FileList, SegmentedChoice,
+                                      build_subtitle_export_qss, chip, footer_frame, format_grid, section_label)
 
 from .i18n import bind_text, tr
 
@@ -26,108 +32,181 @@ def selected_result(project, speaker_ids):
 
 class CompletionExportDialog(QDialog):
     def __init__(self, project, name, parent=None, language="zh"):
+        # ``language`` is kept for callers; texts follow the app's UI language.
         super().__init__(parent)
         self.project = copy.deepcopy(project)
         self.artifacts = ()
-        lang = {"zh": 0, "en": 1, "ja": 2}.get(language, 0)
-        self.t = lambda zh, en, ja: (zh, en, ja)[lang]
-        if language == "ko":
-            # bind_text shows the Korean of a known key; otherwise English.
-            from .i18n import language_table
-            korean = language_table("ko")
-            self.t = lambda zh, en, ja: zh if zh in korean else en
-        t = self.t
-        bind_text(self, t('导出字幕', 'Export subtitles', '字幕を書き出す'), property='windowTitle')
-        self.setMinimumWidth(480)
-        self.resize(580, 430)
-        layout = QVBoxLayout(self)
-        title = QLabel(name)
-        title.setWordWrap(True)
-        layout.addWidget(title)
-        note = QLabel(t("选择要导出的说话人。时间位置与空白均保留。",
-            "Choose speakers. Timing and gaps are preserved.", "話者を選択。時刻と空白は保持されます。"))
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        self.all_speakers = QCheckBox(t("全部说话人", "All speakers", "すべての話者"))
-        self.all_speakers.setChecked(True)
-        layout.addWidget(self.all_speakers)
-        self.speakers = QListWidget()
+        bind_text(self, "导出字幕", property="windowTitle")
+        self.setObjectName("subtitleExportDialog")
+        self.setMinimumWidth(640)
+        apply_secondary_surface_theme(self)
+        theme = _active_theme(None)
+        self.setStyleSheet(build_secondary_surface_qss(theme) + build_subtitle_export_qss(theme))
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        body = QVBoxLayout()
+        body.setContentsMargins(22, 18, 22, 12)
+        body.setSpacing(9)
+        root.addLayout(body, 1)
+        title = QLabel()
+        title.setObjectName("exportDialogTitle")
+        bind_text(title, "导出字幕")
+        body.addWidget(title)
+        source = QLabel(str(name))
+        source.setObjectName("exportDialogMeta")
+        source.setWordWrap(True)
+        body.addWidget(source)
+        body.addSpacing(4)
+
+        body.addWidget(section_label("说话人"))
         counts = Counter(c.speaker_id for c in projected_cues(self.project))
         names = {s.id: s.name for s in self.project.speakers}
-        for sid, count in counts.items():
-            label = names.get(sid, sid) or t("未判定", "Unassigned", "未判定")
-            if sid == "S00":
-                label = t("未判定", "Unassigned", "未判定")
-            identity = label if label == sid else f"{label} ({sid})"
-            item = QListWidgetItem(f"{identity} · {count} " + t("条字幕", "subtitles", "件"))
-            item.setData(Qt.ItemDataRole.UserRole, sid)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
-            self.speakers.addItem(item)
-        self.speakers.setMinimumHeight(70)
-        self.speakers.setMaximumHeight(min(230,max(80,len(counts)*38+16)))
-        layout.addWidget(self.speakers)
+        chips_host = QWidget()
+        chips = ChipFlowLayout(chips_host)
+        self.all_speakers = chip("全部说话人", checked=True)
         self.all_speakers.toggled.connect(self._select_all)
-        self.speakers.itemChanged.connect(self._selection_changed)
-        form = QFormLayout()
+        chips.addWidget(self.all_speakers)
+        self.speaker_chips: dict[str, QPushButton] = {}
+        for sid, count in counts.items():
+            label = names.get(sid, sid) or tr("未判定")
+            if sid == "S00":
+                label = tr("未判定")
+            button = chip("")
+            button.setChecked(True)
+            button.setText(tr("{name} · {count} 条", name=label, count=count))
+            button.setToolTip(sid)
+            button.setProperty("speakerId", sid)
+            button.toggled.connect(self._selection_changed)
+            self.speaker_chips[sid] = button
+            chips.addWidget(button)
+        body.addWidget(chips_host)
+        hint = QLabel()
+        hint.setObjectName("exportHint")
+        bind_text(hint, "只导出选中的说话人；时间位置与空白均保留。")
+        body.addWidget(hint)
+
+        body.addWidget(section_label("文件名"))
         # The completion page already supplies the extension-free media name.
         # Dotted identifiers such as .456-467 are part of that name.
         self.name = QLineEdit(str(name))
-        form.addRow(t("文件名", "File name", "ファイル名"), self.name)
-        formats = QHBoxLayout()
-        self.formats = {}
-        for fmt in ("srt", "ass", "txt", "json"):
-            box = QCheckBox(fmt.upper())
-            box.setChecked(fmt == "srt")
-            self.formats[fmt] = box
-            formats.addWidget(box)
-        form.addRow(t("格式", "Formats", "形式"), formats)
-        self.mode = QComboBox()
-        for key, label in (("combined", t("合并文件", "Combined", "結合ファイル")),
-                           ("per_speaker", t("按说话人分文件", "Separate by speaker", "話者別ファイル")),
-                           ("both", t("合并及分文件", "Both", "両方"))):
-            self.mode.addItem(label, key)
-        form.addRow(t("导出方式", "Output", "出力"), self.mode)
-        layout.addLayout(form)
+        self.name.setProperty("fieldWidth", "exportName")
+        self.name.textChanged.connect(lambda _text: self._refresh_preview())
+        body.addWidget(self.name)
+
+        body.addWidget(section_label("格式（可多选）"))
+        self.formats: dict = {}
+        body.addWidget(format_grid(self.formats, {"srt"}))
+        for card in self.formats.values():
+            card.toggled.connect(lambda _checked: self._refresh_preview())
+
+        body.addWidget(section_label("说话人文件"))
+        self.mode = SegmentedChoice(SPEAKER_CHOICES)
+        self.mode.set_value("combined")
+        self.mode.group.buttonToggled.connect(lambda *_args: self._refresh_preview())
+        body.addWidget(self.mode)
+        self.file_list = FileList()
+        body.addWidget(self.file_list)
         self.status = QLabel("")
+        self.status.setObjectName("checkWarning")
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
-        bind_text(buttons.button(QDialogButtonBox.StandardButton.Cancel), t('取消', 'Cancel', 'キャンセル'))
-        export = buttons.addButton(t("选择目录并导出", "Choose folder and export", "保存先を選んで書き出す"),
-                                   QDialogButtonBox.ButtonRole.AcceptRole)
-        export.setObjectName("primary")
-        export.clicked.connect(self._export)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        body.addWidget(self.status)
+        body.addStretch(1)
+
+        footer, row = footer_frame()
+        row.addStretch(1)
+        cancel = QPushButton()
+        bind_text(cancel, "取消")
+        button_role(cancel, "secondary")
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        self.export_button = QPushButton()
+        bind_text(self.export_button, "选择文件夹并导出")
+        self.export_button.setObjectName("primary")
+        button_role(self.export_button, "primary")
+        self.export_button.setDefault(True)
+        self.export_button.clicked.connect(self._export)
+        row.addWidget(self.export_button)
+        root.addWidget(footer)
+        self._refresh_preview()
+
+    # Chips replace the earlier checkable list; this keeps its reading side.
+    @property
+    def speakers(self):
+        return _ChipList(self.speaker_chips)
+
+    def _selected_speakers(self) -> set[str]:
+        return {sid for sid, button in self.speaker_chips.items() if button.isChecked()}
 
     def _select_all(self, checked):
-        self.speakers.blockSignals(True)
-        for i in range(self.speakers.count()):
-            self.speakers.item(i).setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
-        self.speakers.blockSignals(False)
+        for button in self.speaker_chips.values():
+            button.blockSignals(True)
+            button.setChecked(checked)
+            button.blockSignals(False)
+        self._refresh_preview()
 
-    def _selection_changed(self, _item):
+    def _selection_changed(self, _checked=False):
         self.all_speakers.blockSignals(True)
-        self.all_speakers.setChecked(all(self.speakers.item(i).checkState() == Qt.CheckState.Checked
-                                        for i in range(self.speakers.count())))
+        self.all_speakers.setChecked(all(button.isChecked() for button in self.speaker_chips.values()))
         self.all_speakers.blockSignals(False)
+        self._refresh_preview()
+
+    def _options(self) -> SubtitleExportOptions:
+        return SubtitleExportOptions(frozenset(f for f, box in self.formats.items() if box.isChecked()),
+                                     self.mode.value() or "combined")
+
+    def _refresh_preview(self):
+        options = self._options()
+        selected = self._selected_speakers()
+        ready = bool(selected and options.formats and self.name.text().strip())
+        planned = planned_subtitle_files(selected_result(self.project, selected), None, self.name.text(), options) \
+            if ready else ()
+        self.file_list.set_files(planned)
+        if not ready:
+            bind_text(self.file_list.header, "请选择说话人、格式并填写文件名。")
+        self.export_button.setEnabled(ready)
 
     def _export(self):
-        selected = {self.speakers.item(i).data(Qt.ItemDataRole.UserRole)
-                    for i in range(self.speakers.count())
-                    if self.speakers.item(i).checkState() == Qt.CheckState.Checked}
-        formats = frozenset(f for f, box in self.formats.items() if box.isChecked())
-        if not selected or not formats or not self.name.text().strip():
-            bind_text(self.status, self.t('请选择说话人、格式并填写文件名。', 'Select speakers, formats and a file name.', '話者、形式、ファイル名を指定してください。'))
+        selected = self._selected_speakers()
+        options = self._options()
+        if not selected or not options.formats or not self.name.text().strip():
+            bind_text(self.status, "请选择说话人、格式并填写文件名。")
             return
         folder = QFileDialog.getExistingDirectory(self, self.windowTitle())
         if not folder:
             return
         try:
             self.artifacts = export_subtitle_artifacts(selected_result(self.project, selected), folder,
-                self.name.text(), SubtitleExportOptions(formats, self.mode.currentData()))
+                                                       self.name.text(), options)
         except Exception as exc:
             self.status.setText(str(exc))
             return
         self.accept()
+
+
+class _ChipList:
+    """Read side of the old QListWidget for scripted acceptance runs."""
+
+    def __init__(self, chips):
+        self._chips = list(chips.items())
+
+    def count(self) -> int:
+        return len(self._chips)
+
+    def item(self, index: int):
+        return _ChipItem(*self._chips[index])
+
+
+class _ChipItem:
+    def __init__(self, sid, button):
+        self._sid, self._button = sid, button
+
+    def data(self, _role=None):
+        return self._sid
+
+    def checkState(self):
+        return Qt.CheckState.Checked if self._button.isChecked() else Qt.CheckState.Unchecked
+
+    def setCheckState(self, state):
+        self._button.setChecked(state == Qt.CheckState.Checked)

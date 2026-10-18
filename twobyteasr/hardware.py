@@ -207,7 +207,7 @@ print(marker + json.dumps(result, ensure_ascii=False))
     if not interpreter:
         return {
             "imported": False,
-            "error": "Main runtime Python was not found (registry, legacy venvs or %LOCALAPPDATA%\\2ByteASR\\runtimes)",
+            "error": "Main runtime Python was not found (registry, legacy venvs or the runtimes folder)",
             "parent_sys_path_hash_before": _sys_path_hash(parent_path),
             "parent_sys_path_hash_after": _sys_path_hash(),
             "parent_cwd_before": parent_cwd,

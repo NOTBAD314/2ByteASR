@@ -46,6 +46,10 @@ for source, destination in (
     ("third_party", "third_party"),
     ("tools/ffmpeg", "tools/ffmpeg"),
     ("tools/mpv", "tools/mpv"),
+    # mpv's fallback Vulkan loader (2026-10-17). Installed outside tools/ so it
+    # belongs to the 主程序 update component: older installs reject a tools/
+    # path inside the app archive, and tools/ itself would re-download ~211 MB.
+    ("tools/vulkan-loader", "third_party/vulkan-loader"),
 ):
     path = ROOT / source
     if path.exists():

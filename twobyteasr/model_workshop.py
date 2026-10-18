@@ -250,8 +250,34 @@ def _auto_stage_enabled(model, runtime_settings) -> bool:
     """Installed helpers run unless the user turned them off (2026-10-14)."""
     if model.key == "ja_ctc_aligner":
         from .ctc_alignment import enabled
-        return enabled(runtime_settings if isinstance(runtime_settings, dict) else None)
+        settings = runtime_settings if isinstance(runtime_settings, dict) else {}
+        return (enabled(settings)
+                and settings.get("models", {}).get("firered_asr_backend", "local") != "off")
     return True
+
+
+def _spoken_timeline_state(runtime_settings, model, role: str, state: str) -> str:
+    """Japanese/English timing runs Qwen3-ForcedAligner whatever is chosen (2026-10-18).
+
+    A Chinese timing model is then ``language_unused`` (installed, not
+    selectable) and, when one of those is the saved choice, the Qwen3 aligner
+    card is the selected one, as on the home card.
+    """
+    if role != "timeline" or state not in {"selected", "installed"} or model.api_preset:
+        return state
+    backend = _adapter_backend(model, "timeline")
+    if not backend:
+        return state
+    from .recognition_choices import ALIGNED_LANGUAGES, LANGUAGE_ALIGNERS, spoken_language
+    settings = runtime_settings if isinstance(runtime_settings, dict) else {}
+    if spoken_language(settings) not in ALIGNED_LANGUAGES:
+        return state
+    if backend not in LANGUAGE_ALIGNERS:
+        return "language_unused"
+    timeline = str(settings.get("models", {}).get("firered_asr_backend", "local"))
+    if backend == "qwen_aligner" and timeline not in LANGUAGE_ALIGNERS | {"off"}:
+        return "selected"
+    return state
 
 
 def _set_auto_stage_enabled(model, value: bool, runtime_settings) -> None:
@@ -309,6 +335,9 @@ MODELS = (
         '讯飞原生 WSS · 中英听写 V2','在线 · AppID + APIKey + APISecret','不占本地空间',
         '协议接入；真实服务验证待完成',
         '单会话不超过 60 秒，长音频连续切块，动态修订替换。没有原生说话人能力；时间证据不足时由所选对齐模型补充。可保留已有字幕的说话人标签。',(),
+        # 2026-10-18: no logo file ships for iFlytek; a spark (星火) on iFlytek
+        # blue replaces the theme placeholder wave.
+        icon_name='mdi6.creation',icon_color='#ffffff',icon_background='#1f6fe5',
         api_preset='spark_asr_v2',asr_capabilities=('ASR_TEXT',),adapter_bindings=(('primary','api'),('review','api'))),
     # 2026-10-13: Qwen Cloud, the official international Qwen API (no workspace
     # host). 2026-10-14 (ADR 0112): regular use needs the user's own OSS; the
@@ -317,19 +346,19 @@ MODELS = (
         '长文件异步 · Qwen-Audio-3.1 或 Qwen3-ASR','在线 · Qwen Cloud API Key + 自己的 OSS','不占本地空间',
         '不需要显卡与本地模型；正式使用需要自己的 OSS 私有存储',
         'Qwen 官方国际站（home.qwencloud.com）的录音文件识别：Qwen-Audio-3.1 返回字/词级时间与说话人，Qwen3-ASR 返回字/词级时间（无说话人）。音频先传到你自己的 OSS 私有存储，用限时签名链接交给服务商，结果保存后删除；服务商临时上传只供试用（48 小时失效，官方说明勿用于生产）。单文件不超过 12 小时。Key 与阿里云百炼（中国站）的不能互换。超时不会自动重新付费提交。',(),
-        api_preset='qwen_cloud_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
+        logo_asset='qwen.png',api_preset='qwen_cloud_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
     WorkshopModel('qwen31_filetrans','api','阿里云百炼｜录音文件识别','QF',
         '长文件异步 · Qwen3-ASR 或 Qwen-Audio-3.1','在线 · 百炼 Key + API Host','不占本地空间',
         '不需要显卡；正式使用需要自己的 OSS 私有存储',
         '同一个百炼 Key 下两个模型：Qwen3-ASR-Flash（字/词级时间，无说话人，不支持热词）与 Qwen-Audio-3.1（字/词级时间与说话人，支持热词）。单文件不超过 12 小时；说话人区分官方建议 2 小时内。音频先传到你自己的 OSS 私有存储，用限时签名链接交给百炼，结果成功保存后删除；百炼临时上传只供试用（48 小时失效，官方说明勿用于生产）。超时不会自动重新付费提交。',(),
-        api_preset='qwen31_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
+        logo_asset='qwen.png',api_preset='qwen31_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
     # 2026-10-13: cloud MOSS on the MOSI platform; independent of the local
     # "moss" card (no shared settings, key or job state).
     WorkshopModel('mosi_moss_pro','api','MOSS-Transcribe-Diarize Pro 云端','MP',
         '云端多人转写 · 本地文件直传','在线 · 只需 MOSI API Key','不占本地空间',
         '不需要显卡与本地模型；句段级时间',
         'MOSI 平台的 moss-transcribe-diarize-pro：上传本次音频，返回文字、句段起止时间与说话人。单次最长 60 分钟，更长自动分段且各段说话人不合并。只有句段时间；需要按字剪辑时可再配本地对齐模型。按音频时长计费（官方价格页 ¥2.00/小时，2026-10-13 核对）。',(),
-        api_preset='mosi_moss_pro',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),)),
+        logo_asset='openmoss.png',api_preset='mosi_moss_pro',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),)),
     WorkshopModel(
         "moss",
         "primary",
@@ -813,6 +842,36 @@ def _adapter_backend(model: WorkshopModel, role: str) -> str | None:
     return dict(model.adapter_bindings).get(role)
 
 
+def model_for_backend(role: str, backend: str, provider: str = "") -> WorkshopModel | None:
+    """The catalog model a saved role backend runs (``api``: the provider's card)."""
+    for candidate in MODELS:
+        if _adapter_backend(candidate, role) != backend:
+            continue
+        if backend == "api" and candidate.api_preset != provider:
+            continue
+        return candidate
+    return None
+
+
+def model_role_line(model: WorkshopModel, role: str):
+    """The home card line under the model name (2026-10-18).
+
+    Its languages and what it does in this role, from the catalog: the card
+    used to say "中文多人转写与说话人区分" whatever was chosen, although MOSS,
+    for one, transcribes 50+ languages.
+    """
+    from .model_languages import language_support
+    capabilities = set(model.asr_capabilities)
+    if role == "timeline":
+        task = "字/词级对齐" if "ALIGNMENT" in capabilities else "识别并给出字词时间"
+    elif role == "review":
+        task = "独立复核错词"
+    else:
+        task = "转写并区分说话人" if "DIARIZATION" in capabilities else "语音转写"
+    summary = (language_support(model.key) or {}).get("summary")
+    return tr("{languages} · {task}", languages=tr(summary), task=tr(task)) if summary else tr(task)
+
+
 MLX_DOWNLOAD_KEYS = frozenset({"mlx_qwen3_asr_0_6b", "mlx_qwen3_asr_1_7b", "mlx_qwen_aligner"})
 # MOSS / FireRed on the Apple GPU (2026-10-14): prepared by
 # macos_model_prepare.prepare_local; an Intel Mac has no Apple GPU.
@@ -832,6 +891,11 @@ def _host_platform_tag() -> str:
     import platform
     machine = platform.machine().lower()
     return f"{sys.platform}-{ {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(machine, machine) }"
+
+
+def model_platform_available(model: WorkshopModel) -> bool:
+    """Keep platform-only builds out of the host's model choices."""
+    return not model.platforms or _host_platform_tag() in model.platforms
 
 
 def _model_roles(model: WorkshopModel) -> tuple[str, ...]:
@@ -1219,10 +1283,7 @@ def model_task_badges(model: WorkshopModel) -> tuple[str, ...]:
     if task.standalone_asr and "DIARIZATION" in model.asr_capabilities:
         badges.append("说话人")
     badges.extend(copy.advantages)
-    official = _technical_profile(model).get("official", {})
-    languages = official.get("language_summary") or " / ".join(model.languages)
-    if languages:
-        badges.append(str(languages))
+    # Languages have their own badge row (model_language_badges, 2026-10-18).
     badges.append("在线 API" if model.api_preset else "本地")
     return tuple(ui_literal(text, current_language()) for text in dict.fromkeys(badges))[:5]
 
@@ -2340,6 +2401,10 @@ QLabel#workshopModelTitle, QLabel#technicalDetailsHeading {{
     font-family: {UI_FONT_STACK}; font-weight: {WEIGHT_SCALE['semibold']};
 }}
 QWidget#modelWorkshopRoot {{ background: {theme.app_background}; color: {theme.text}; }}
+QLabel#workshopLanguageNote {{
+    background: {theme.warning_soft}; color: {theme.text}; border: 1px solid {theme.border};
+    border-radius: 10px; padding: 8px 12px; font-size: 13px;
+}}
 QFrame#workshopSidebar {{
     background: {theme.surface_muted}; color: {theme.text};
     border-color: {theme.border};
@@ -2583,6 +2648,13 @@ class ModelCard(QFrame):
                 language_row.addWidget(pill, 0, Qt.AlignmentFlag.AlignLeft)
             language_row.addStretch(1)
             meta_stack.addLayout(language_row)
+        # 2026-10-18: the same six language badges on every card, in the
+        # same place, so one column (e.g. 日语) can be scanned down the list.
+        from .model_language_badges import LanguageBadgeRow
+        from .model_languages import language_support
+        self.language_row = LanguageBadgeRow(caption=True)
+        self.language_row.set_support(language_support(model.key))
+        meta_stack.addWidget(self.language_row)
         text.addLayout(meta_stack)
         self._row.addWidget(self.info_host, 4)
 
@@ -2727,6 +2799,12 @@ class ModelCard(QFrame):
         for widget in (self, self.monogram):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
+
+    def sync_configure_button(self, state: str) -> None:
+        """An unconfigured API card's main button already says 配置: no second one."""
+        visible = bool(self.model.api_preset) and state != "configure"
+        if self.configure.isHidden() == visible:
+            self.configure.setVisible(visible)
 
     def set_uninstall_available(self, visible: bool, enabled: bool = True):
         visible = bool(visible)
@@ -3166,9 +3244,11 @@ class ModelDownloadDialog(QDialog):
         environment.insert("PYTHONUTF8", "1")
         environment.insert("PYTHONIOENCODING", "utf-8")
         try:
-            from twobyteasr.runtime_paths import MODEL_ROOT_ENV, get_runtime_paths
+            from twobyteasr.runtime_paths import MODEL_ROOT_ENV, RUNTIME_ROOT_ENV, get_runtime_paths
 
             environment.insert(MODEL_ROOT_ENV, str(get_runtime_paths().model_root))
+            # setup_managed_backend.ps1 installs runtimes here (2026-10-17).
+            environment.insert(RUNTIME_ROOT_ENV, str(get_runtime_paths().managed_runtime_root))
         except Exception:
             pass
         self.process.setProcessEnvironment(environment)
@@ -4603,6 +4683,7 @@ class ModelWorkshopPage(QWidget):
     api_preset_requested = Signal(str)
     api_configure_requested = Signal(str)
     models_refreshed = Signal()
+    auto_stage_changed = Signal()
     removal_finished = Signal(object)
     removal_planned = Signal(object)
     mac_cpu_runtime_checked = Signal(object)
@@ -5274,6 +5355,8 @@ class ModelWorkshopPage(QWidget):
                     downloads.extend(str(key) for key in (dialog.download_keys or ()))
             except RuntimeError:
                 continue
+        from .recognition_choices import spoken_language
+        models += "|" + spoken_language(self.runtime_settings)  # Japanese/English change the timeline cards
         return (models, current_language(), stamp(secrets_path()),
                 stamp(user_data_root() / 'model-readiness'), preflight_cache_token(),
                 _registry_fingerprint(self._registry), tuple(sorted(downloads)),
@@ -5405,6 +5488,7 @@ class ModelWorkshopPage(QWidget):
             text, enabled = self._action_text(model, state)
             card.action.setText(translate(text, language))
             card.action.setEnabled(enabled)
+            card.sync_configure_button(state)
             card.set_selected(state == "selected")
             manageable = self._has_managed_local_files(model)
             card.set_uninstall_available(manageable, not self._model_is_current(model) and key not in self._removing)
@@ -5418,7 +5502,7 @@ class ModelWorkshopPage(QWidget):
                     "ready" if ready else "missing",
                 )
             else:
-                ready = state in {"selected", "installed", "downloaded"}
+                ready = state in {"selected", "installed", "downloaded", "language_unused"}
                 badge_text = (
                     "下载中"
                     if state == "downloading"
@@ -5504,13 +5588,14 @@ class ModelWorkshopPage(QWidget):
         if memo is not None:
             key = (model.key, role)
             if key not in memo:
-                memo[key] = self._compute_model_state(model, role)
+                memo[key] = _spoken_timeline_state(self.runtime_settings, model, role,
+                                                   self._compute_model_state(model, role))
             return memo[key]
-        return self._compute_model_state(model, role)
+        return _spoken_timeline_state(self.runtime_settings, model, role, self._compute_model_state(model, role))
 
     def _compute_model_state(self, model: WorkshopModel, role: str) -> str:
         models = self.runtime_settings.get("models", {})
-        if model.platforms and _host_platform_tag() not in model.platforms:
+        if not model_platform_available(model):
             return 'platform_unavailable'
         mac_gpu = sys.platform == 'darwin' and model.download_key in MAC_GPU_DOWNLOAD_KEYS
         if mac_gpu and _host_platform_tag() != 'darwin-arm64':
@@ -5654,6 +5739,9 @@ class ModelWorkshopPage(QWidget):
             return "使用", True
         if state == "selected":
             return "取消使用", True
+        if state == "language_unused":
+            from .recognition_choices import spoken_language
+            return ("日语时不使用" if spoken_language(self.runtime_settings) == "ja" else "英语时不使用"), False
         # Reaching "installed" means the selected role has a verified adapter;
         # _model_state already maps capability-only downloads to "downloaded".
         return "使用", True
@@ -5945,7 +6033,8 @@ class ModelWorkshopPage(QWidget):
                  " ".join(model_task_badges(model)))
             ).casefold()
             show = (
-                self.browser_role in _browser_groups(model)
+                model_platform_available(model)
+                and self.browser_role in _browser_groups(model)
                 and (not needle or needle in haystack)
                 and self._card_matches_chips(model)
             )
@@ -6002,8 +6091,9 @@ class ModelWorkshopPage(QWidget):
             "load_failed": "文件与运行库已准备 · 加载或设备验证未通过",
             "platform_unavailable": "尚未适配 macOS",
             "platform_unverified": "当前平台未验证",
+            "language_unused": "",
         }[state]
-        if state == 'platform_unavailable':
+        if state in {'platform_unavailable', 'language_unused'}:
             badge = self._action_text(model,state)[0]
         auto_ready = (state == "downloaded" and bool(model.auto_stage)
                       and _auto_stage_enabled(model, self.runtime_settings))
@@ -6107,7 +6197,7 @@ class ModelWorkshopPage(QWidget):
             # "使用/取消使用"都没有任何反应（三十四轮用户实录）。
             effective_role = "primary"
         state = self._model_state(model, effective_role)
-        if state == "planned":
+        if state in {"planned", "language_unused"}:
             return
         if state == "downloading":
             self._show_active_download(model.download_key)
@@ -6120,12 +6210,25 @@ class ModelWorkshopPage(QWidget):
             self.api_preset_requested.emit(model.api_preset)
             return
         if state == "downloaded" and model.auto_stage:
+            enable = not _auto_stage_enabled(model, self.runtime_settings)
+            if (enable and model.key == "ja_ctc_aligner"
+                    and self.runtime_settings.get("models", {}).get("firered_asr_backend") == "off"):
+                # CTC is a second pass within the timeline stage. Turning its
+                # switch on while that stage stays off would never run it.
+                aligner = self._cards["qwen_aligner"].model
+                if self._model_state(aligner, "timeline") not in {"installed", "selected"}:
+                    QMessageBox.information(self, tr("需要安装时间轴模型"),
+                                            tr("日语 CTC 用于校正句首。请先安装并启用 Qwen3-ForcedAligner，再使用日语 CTC。"))
+                    return
+                self.backend_requested.emit("firered", "qwen_aligner")
+                if self.runtime_settings.get("models", {}).get("firered_asr_backend") == "off":
+                    return  # The main window could not save/activate the dependency.
             try:
-                _set_auto_stage_enabled(model, not _auto_stage_enabled(model, self.runtime_settings),
-                                        self.runtime_settings)
+                _set_auto_stage_enabled(model, enable, self.runtime_settings)
             except (OSError, RuntimeError, ValueError) as exc:
                 QMessageBox.warning(self, tr('无法保存设置'), str(exc))
             self.refresh()
+            self.auto_stage_changed.emit()
             return
         if state in {"selected", "installed", "configured"}:
             self._request_model_selection(model, state, role=effective_role)
@@ -6153,13 +6256,8 @@ class ModelWorkshopPage(QWidget):
         }[role]
         selected_backend = str(models.get(setting_key, ""))
         selected_provider = str(models.get("qwen_asr_api_provider", "qwen31_filetrans"))
-        for candidate in MODELS:
-            if _adapter_backend(candidate, role) != selected_backend:
-                continue
-            if selected_backend == "api" and candidate.api_preset != selected_provider:
-                continue
-            return candidate.key
-        return None
+        model = model_for_backend(role, selected_backend, selected_provider)
+        return model.key if model is not None else None
 
     def _request_model_selection(
         self, model: WorkshopModel, state: str, *, role: str | None = None
@@ -6609,6 +6707,17 @@ class ModelPickerPanel(QWidget):
         self.current_badge.setObjectName("workshopBadge")
         header.addWidget(self.current_badge, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
+        # 2026-10-18: what the four language badge styles on the cards mean.
+        from .model_language_badges import LanguageLegend
+        self.language_legend = LanguageLegend()
+        layout.addWidget(self.language_legend)
+        # 2026-10-18: why the Chinese timing models are not used for the
+        # spoken language chosen on home (shown for Japanese/English only).
+        self.language_note = QLabel()
+        self.language_note.setObjectName("workshopLanguageNote")
+        self.language_note.setWordWrap(True)
+        self.language_note.hide()
+        layout.addWidget(self.language_note)
 
         scroll = QScrollArea()
         self.scroll = scroll
@@ -6624,7 +6733,8 @@ class ModelPickerPanel(QWidget):
         by_key = {key: card.model for key, card in self.controller._cards.items()}
         for key in CANONICAL_MODEL_ORDER:
             model = by_key.get(key)
-            if model is None or self.role not in _model_roles(model):
+            if (model is None or not model_platform_available(model)
+                    or self.role not in _model_roles(model)):
                 continue
             card = ModelCard(model)
             card.selected.connect(self._select)
@@ -6677,6 +6787,7 @@ class ModelPickerPanel(QWidget):
                 text = "下载并安装"
             card.action.setText(translate(text, language))
             card.action.setEnabled(enabled)
+            card.sync_configure_button(state)
             card.set_selected(state == "selected")
             card.set_uninstall_available(False)
             if card.model.api_preset:
@@ -6686,7 +6797,7 @@ class ModelPickerPanel(QWidget):
                     "ready" if ready else "missing",
                 )
             else:
-                ready = state in {"selected", "installed", "downloaded"}
+                ready = state in {"selected", "installed", "downloaded", "language_unused"}
                 badge_text = {'partial': '权重不完整', 'unreadable': '目录无法读取',
                               'runtime_missing': '权重已安装 · 环境未就绪',
                               'checking': '检查运行库', 'inference_pending': '推理待验证',
@@ -6698,7 +6809,11 @@ class ModelPickerPanel(QWidget):
         selected_key = self.controller._selected_model_key_for_role(self.role)
         if selected_key in self.cards:
             selected_name = self.cards[selected_key].model.name
+        language_stage = self._language_stage()
+        if language_stage is not None:
+            selected_name = translate(language_stage["name"], language)  # the home card's name
         (bind_text(self.current_badge, f'Current: {selected_name}') if language == 'en' else bind_text(self.current_badge, '当前：{value0}', value0=ui_literal(selected_name)))
+        self._refresh_language_note(language_stage)
         # Pin for this opening. Canceling a model must not move the button
         # away under the pointer; begin_session restores catalog order.
         selected = [key for key, card in self.cards.items() if card.property("selected")]
@@ -6709,3 +6824,29 @@ class ModelPickerPanel(QWidget):
             if self.cards_layout.itemAt(index).widget() is not card:
                 self.cards_layout.removeWidget(card)
                 self.cards_layout.insertWidget(index, card)
+
+    def _language_stage(self):
+        """The timeline the home card names for the spoken language, or None."""
+        if self.role != "timeline":
+            return None
+        from .recognition_choices import language_timeline, spoken_language
+        settings = self.controller.runtime_settings
+        return language_timeline(settings.get("models", {}).get("firered_asr_backend", "local"),
+                                 spoken_language(settings), settings)
+
+    def _refresh_language_note(self, language_stage) -> None:
+        from .recognition_choices import spoken_language
+        spoken = spoken_language(self.controller.runtime_settings) if self.role == "timeline" else "auto"
+        if spoken not in ("ja", "en"):
+            self.language_note.hide()
+            return
+        if spoken == "ja":
+            reason = tr("字幕语言是日语：FireRedASR2-AED 等中文时间轴模型不用于日语，"
+                        "字词时间由 Qwen3-ForcedAligner 对齐。")
+        else:
+            reason = tr("字幕语言是英语：FireRedASR2-AED 等中文时间轴模型不用于英语，"
+                        "单词时间由 Qwen3-ForcedAligner 对齐。")
+        ctc = tr("句首再由日语 CTC 对齐模型校正。") if language_stage and language_stage["ctc"] else ""
+        bind_text(self.language_note, "{value0}{value1}{value2}", value0=reason, value1=ctc,
+                  value2=tr("要用中文时间轴模型，请先在首页把「字幕语言」改成中文或自动识别。"))
+        self.language_note.show()

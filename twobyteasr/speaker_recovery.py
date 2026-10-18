@@ -5,6 +5,7 @@ existing edited cues are retained in the project's extensible metadata.
 """
 from __future__ import annotations
 
+import bisect
 import copy
 import hashlib
 import json
@@ -162,16 +163,28 @@ def apply_automatic_candidate_policy(project):
     project.speakers=[s for s in project.speakers if s.id in active]
 
 
-def representative_interval(snapshot, label):
+def representative_row(snapshot, label):
     rows = [row for row in snapshot["raw_segments"] if str(row.get("speaker") or "S00") == label]
     if not rows:
         raise ValueError("该标签没有原始语音段。")
     # Prefer a long clean turn over a turn overlapped by another label.
+    others = sorted((float(other["start"]), float(other["end"])) for other in snapshot["raw_segments"]
+                    if other.get("speaker") != label)
+    starts = [start for start, _end in others]
+    longest = max((end - start for start, end in others), default=0.0)
     def score(row):
-        overlap = sum(max(0, min(row["end"], other["end"]) - max(row["start"], other["start"]))
-                      for other in snapshot["raw_segments"] if other.get("speaker") != label)
+        # Only rows starting within one longest-turn of this row can overlap it;
+        # the window keeps long recordings fast with the same exact sum.
+        lo = bisect.bisect_right(starts, row["start"] - longest)
+        hi = bisect.bisect_left(starts, row["end"])
+        overlap = sum(max(0, min(row["end"], end) - max(row["start"], start))
+                      for start, end in others[max(0, lo - 1):hi])
         return (row["end"] - row["start"] - overlap, row["end"] - row["start"])
-    row = max(rows, key=score)
+    return max(rows, key=score)
+
+
+def representative_interval(snapshot, label):
+    row = representative_row(snapshot, label)
     start = max(0, round(row["start"] * 1000) - 150)
     duration = min(4000, max(2000, round((row["end"] - row["start"]) * 1000) + 300))
     return start, start + duration
@@ -228,30 +241,7 @@ def rebuild_selected_speakers(project, snapshot, roles):
         added.append(label)
         if state.get('allow_raw_recovery') is False:
             raise ValueError(f'{label} 没有最终字幕缓存；未从 MOSS 原文覆盖 API 文字。')
-        for index, row in enumerate(state["raw_segments"]):
-            if str(row.get("speaker") or "S00") != label or not str(row.get("text") or "").strip():
-                continue
-            text = str(row["text"])
-            start, end = round(row["start"] * 1000), round(row["end"] * 1000)
-            parts = min(len(text), max(1, math.ceil((end-start)/5000)))
-            for part in range(parts):
-                lo, hi = len(text)*part//parts, len(text)*(part+1)//parts
-                cue_id = f"moss-{label}-{index}-{part}"
-                while cue_id in used_ids:
-                    cue_id += "-r"
-                used_ids.add(cue_id)
-                a, b = start+(end-start)*lo//len(text), start+(end-start)*hi//len(text)
-                ref = f"moss-raw:{index}:{part}"
-                result.asr_evidence[ref] = {
-                    "speaker_id": label, "raw_moss_label": label, "text": text[lo:hi], "moss_text": text,
-                    "start_ms": a, "end_ms": b, "moss_start": row["start"], "moss_end": row["end"],
-                    "acoustic_start_ms": start, "acoustic_end_ms": end,
-                    "display_split_estimated": parts > 1,
-                    "confidence": 0.5, "final_timing_owner": "MOSS_DEGRADED",
-                    "review_required": True, "source": "user-selected MOSS cache",
-                }
-                cues.append(StudioCue(cue_id, a, b, text[lo:hi], speaker_id=label,
-                                      evidence_refs=[ref], style_id=result.styles[0].id))
+        cues.extend(_raw_cues(result, state, label, used_ids))
         saved[label] = [asdict(cue) for cue in cues if cue.speaker_id == label]
     for cue in cues:
         cue.speaker_id = merge_target(roles.get(cue.speaker_id,'')) or cue.speaker_id
@@ -282,5 +272,166 @@ def rebuild_selected_speakers(project, snapshot, roles):
         from .speaker_organization import organize
         result=organize(result,background,'background')
     # Identity-only decisions never alter authored text, segmentation or timing.
+    result.validate()
+    return result
+
+
+def _raw_cues(result, state, label, used_ids):
+    """Cues for a label without cached captions, on MOSS's natural boundaries."""
+    from .studio_project import StudioCue
+
+    cues = []
+    for index, row in enumerate(state["raw_segments"]):
+        if str(row.get("speaker") or "S00") != label or not str(row.get("text") or "").strip():
+            continue
+        text = str(row["text"])
+        start, end = round(row["start"] * 1000), round(row["end"] * 1000)
+        parts = min(len(text), max(1, math.ceil((end-start)/5000)))
+        for part in range(parts):
+            lo, hi = len(text)*part//parts, len(text)*(part+1)//parts
+            cue_id = f"moss-{label}-{index}-{part}"
+            while cue_id in used_ids:
+                cue_id += "-r"
+            used_ids.add(cue_id)
+            a, b = start+(end-start)*lo//len(text), start+(end-start)*hi//len(text)
+            ref = f"moss-raw:{index}:{part}"
+            result.asr_evidence[ref] = {
+                "speaker_id": label, "raw_moss_label": label, "text": text[lo:hi], "moss_text": text,
+                "start_ms": a, "end_ms": b, "moss_start": row["start"], "moss_end": row["end"],
+                "acoustic_start_ms": start, "acoustic_end_ms": end,
+                "display_split_estimated": parts > 1,
+                "confidence": 0.5, "final_timing_owner": "MOSS_DEGRADED",
+                "review_required": True, "source": "user-selected MOSS cache",
+            }
+            cues.append(StudioCue(cue_id, a, b, text[lo:hi], speaker_id=label,
+                                  evidence_refs=[ref], style_id=result.styles[0].id))
+    return cues
+
+
+def candidate_destination(roles, label, anonymous, _seen=frozenset()):
+    """Track that holds a label's captions under its role; None when ignored."""
+    role = str(roles.get(label, "unconfirmed"))
+    if role == "ignore":
+        return None
+    if role == "game" or (role == "unconfirmed" and not anonymous):
+        return "GAME_BACKGROUND"
+    if role.startswith("merge:"):
+        target = role[6:]
+        if target in _seen or target == label or target not in roles:
+            return None
+        return candidate_destination(roles, target, anonymous, _seen | {label})
+    return label
+
+
+def apply_candidate_role(project, snapshot, label, role):
+    """One label's new role, applied to the current project in place.
+
+    Unlike ``rebuild_selected_speakers`` nothing else is rebuilt from the
+    cache: other labels, manual reassignments and deletions stay as they are.
+    The captions that still follow the label's previous role (its own track,
+    or its cached cues on the track its role sent them to) move to the new
+    track. Ignoring keeps exactly the captions that were on the track in
+    ``cue_cache``; choosing another role brings those back. Returns ``None``
+    when the role is unchanged. No model is requested.
+    """
+    from .speaker_names import ensure_speaker_names
+    from .studio_project import StudioCue, StudioSpeaker, SubtitleProject
+
+    background = "GAME_BACKGROUND"
+    state = copy.deepcopy(snapshot)
+    candidate_snapshot(state["raw_segments"])
+    labels = [item["label"] for item in candidate_statistics(state["raw_segments"])]
+    if label not in labels:
+        raise ValueError("未知的说话人标签。")
+    roles = {item: str(state.get("roles", {}).get(item, "unconfirmed")) for item in labels}
+    anonymous = anonymous_snapshot(state)
+    role = str(role)
+    target = role[6:] if role.startswith("merge:") else ""
+    if role not in {"main", "game", "ignore", "unconfirmed"} and not target:
+        raise ValueError("请选择有效用途。")
+    if role == "unconfirmed" and not anonymous:
+        raise ValueError("这个来源没有“待确认”轨道，请选择主要、游戏声或忽略。")
+    if target and (target == label or target not in roles
+                   or candidate_destination(roles, target, anonymous) != target):
+        raise ValueError("只能并入仍有自己字幕轨的说话人。")
+    if roles[label] == role:
+        return None
+    new_roles = dict(roles, **{label: role})
+    old_destination = candidate_destination(roles, label, anonymous)
+    new_destination = candidate_destination(new_roles, label, anonymous)
+
+    result = SubtitleProject.from_dict(project.to_dict())
+    saved = state.setdefault("cue_cache", {})
+    cached = {row["id"]: row for row in saved.get(label, []) if isinstance(row, dict) and row.get("id")}
+    following = [cue for cue in result.cues if cue.speaker_id == label or (
+        cue.id in cached and old_destination is not None and cue.speaker_id == old_destination)]
+    moving = {cue.id for cue in following}
+    present = {cue.id for cue in result.cues}
+    for cue in following:
+        cached[cue.id] = dict(asdict(cue), speaker_id=label)
+    if new_destination is None:
+        saved[label] = [dict(asdict(cue), speaker_id=label) for cue in following]
+        result.cues = [cue for cue in result.cues if cue.id not in moving]
+    else:
+        for cue in result.cues:
+            if cue.id in moving:
+                cue.speaker_id = new_destination
+        if old_destination is None:
+            restored = [row for row in saved.get(label, []) if isinstance(row, dict) and row.get("id") not in present]
+            if restored:
+                for row in restored:
+                    cue = StudioCue(**copy.deepcopy(row))
+                    cue.speaker_id = new_destination
+                    result.cues.append(cue)
+                    cached[cue.id] = dict(row, speaker_id=label)
+            elif not following and state.get("allow_raw_recovery") is not False:
+                # Legacy MOSS labels never had captions: use the raw sentences,
+                # marked for review. API text is never replaced by MOSS text.
+                raw = _raw_cues(result, state, label, present | set(cached))
+                for cue in raw:
+                    cached[cue.id] = asdict(cue)
+                    cue.speaker_id = new_destination
+                result.cues.extend(raw)
+                state["newly_restored"] = sorted(set(state.get("newly_restored", [])) | {label})
+        saved[label] = list(cached.values())
+    result.cues.sort(key=lambda cue: (cue.start_ms, cue.end_ms, cue.id))
+
+    organization = result.generation_metadata.setdefault("speaker_organization", {})
+    identities = organization.setdefault("original_speakers", {})
+    names = result.generation_metadata.get("speaker_names", {}).get("entries", {})
+    display = state.setdefault("display_labels", {})
+    current = {speaker.id: speaker for speaker in result.speakers}
+    if label in current and new_destination != label:
+        identities[label] = asdict(current[label])
+        display[label] = current[label].name or label
+        result.speakers = [speaker for speaker in result.speakers if speaker.id != label]
+    if (old_destination == background and new_destination != background
+            and not any(cue.speaker_id == background for cue in result.cues)):
+        result.speakers = [speaker for speaker in result.speakers if speaker.id != background]
+    if new_destination is not None and new_destination not in {speaker.id for speaker in result.speakers}:
+        identity = identities.get(new_destination)
+        if isinstance(identity, dict) and identity.get("id") == new_destination:
+            speaker = StudioSpeaker(**{key: identity[key] for key in
+                                       ("id", "name", "style_id", "color", "hidden", "is_host") if key in identity})
+        elif new_destination == background:
+            speaker = StudioSpeaker(background, name="游戏背景声")
+        else:
+            name = (names.get(new_destination, {}).get("name") if isinstance(names.get(new_destination), dict) else "")
+            speaker = StudioSpeaker(new_destination, name=name or display.get(new_destination) or new_destination,
+                                    style_id=result.styles[0].id)
+        speaker.hidden = False
+        result.speakers.append(speaker)
+    for speaker in result.speakers:
+        if speaker.id == label:
+            speaker.is_host = role == "main" or (speaker.is_host and not anonymous)
+    order = [item for item in result.studio_state.get("speaker_track_order", [])
+             if item in {speaker.id for speaker in result.speakers}]
+    order += [speaker.id for speaker in result.speakers if speaker.id not in order]
+    result.studio_state["speaker_track_order"] = order
+    display.update(ensure_speaker_names(result))
+    pending = [item for item in labels if new_roles[item] == "unconfirmed"] if anonymous else []
+    state.update(roles=new_roles, needs_confirmation=bool(pending), confirmed_by="user",
+                 unconfirmed_candidates=pending)
+    result.generation_metadata["speaker_recovery"] = state
     result.validate()
     return result

@@ -15,7 +15,7 @@
     "D": "用户另配外部服务/工具",
     "E": "仅本机开发工具，不在当前源码公开树或B中；工具产出/bootloader另列"
   },
-  "component_count": 623,
+  "component_count": 624,
   "components": [
     {
       "id": "npm:renderer/node_modules/@babel/code-frame/package.json",
@@ -41162,6 +41162,133 @@
         "Philippe Faist"
       ],
       "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
+    },
+    {
+      "id": "runtime:vulkan-loader",
+      "name": "Khronos Vulkan-Loader (LunarG Vulkan Runtime, vulkan-1.dll)",
+      "version": "1.4.363.0",
+      "scopes": [
+        "B"
+      ],
+      "paths": [
+        "third_party/vulkan-loader/vulkan-1.dll",
+        "third_party/vulkan-loader/VulkanRT-License.txt"
+      ],
+      "upstream": [
+        {
+          "version": "1.4.363.0",
+          "source": "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip",
+          "sha256": "a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a",
+          "file": "x64/vulkan-1.dll",
+          "file_sha256": "e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3",
+          "signer": "LunarG, Inc. (Authenticode, valid on 2026-10-17)"
+        },
+        {
+          "url": "https://github.com/KhronosGroup/Vulkan-Loader/tree/v1.4.363",
+          "revision": "9e9518d2cf00054a220ae1a40f4406804b420ef5"
+        }
+      ],
+      "license": "Apache-2.0 AND MIT AND HPND-Kevlin-Henney",
+      "copyright": "Copyright (c) 2015-2026 The Khronos Group Inc.; Copyright (c) 2015-2026 LunarG, Inc.; Copyright (c) 2015-2026 Valve Corporation; Copyright (c) 2009 Dave Gamble (cJSON); Copyright (c) 2014 joseph werle; Copyright Kevlin Henney, 1997, 2003, 2012 (dirent_on_windows)",
+      "additional_conditions": [
+        "上游仓库没有 NOTICE 文件，Apache-2.0 第 4(d) 条不适用；cJSON（MIT）与 dirent_on_windows（HPND-Kevlin-Henney）的版权与许可文字随附"
+      ],
+      "modification_status": "未修改：LunarG 签名的官方二进制，SHA-256 与 dependencies.lock.json 锁定值一致",
+      "patches": [],
+      "integration": "Windows 工作台启动 mpv 时把 third_party/vulkan-loader 追加到 mpv 进程 PATH 末尾；系统 System32 已有（显卡驱动带的）vulkan-1.dll 时用系统的。mpv 只用 D3D11，不创建 Vulkan 实例",
+      "required_materials": [
+        "Apache-2.0 全文、MIT（cJSON 等）与 HPND-Kevlin-Henney 原文及版权声明；来源与版本"
+      ],
+      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；Apache-2.0 与 GPLv3 兼容，独立 DLL；当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
+      "evidence_status": "有初步证据",
+      "version_evidence": {
+        "path": "dependencies.lock.json",
+        "tool_key": "vulkan_loader"
+      },
+      "license_evidence": [
+        {
+          "url": "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip",
+          "sha256": "404deb98dabf3e54bf9070d59676b31d69a3da2f9f6e56bdf09ad315c04c718c",
+          "local": "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt"
+        },
+        {
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/v1.4.363/LICENSE.txt",
+          "sha256": "43c0a37e6a0fa7ff3c843b3ec5a4fac84b712558ddac103fbd4c1649662a9ece",
+          "local": "licenses/materials/vulkan-loader/1.4.363.0/Vulkan-Loader-LICENSE.txt"
+        },
+        {
+          "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/v1.4.363/LICENSES/HPND-Kevlin-Henney.txt",
+          "sha256": "9c73641270f020fce60e4b6aa93f56754763916517cd72d21a73527696ccd3ed",
+          "local": "licenses/materials/vulkan-loader/1.4.363.0/HPND-Kevlin-Henney.txt"
+        }
+      ],
+      "pending": [
+        "上游不要求提供源码；固定标签 v1.4.363 与二进制的逐字节对应未自行重建核实"
+      ],
+      "local_materials": [
+        "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt",
+        "licenses/materials/vulkan-loader/1.4.363.0/Vulkan-Loader-LICENSE.txt",
+        "licenses/materials/vulkan-loader/1.4.363.0/HPND-Kevlin-Henney.txt",
+        "licenses/materials/common/apache-2.0.txt"
+      ],
+      "copyright_evidence": [
+        "Copyright (c) 2015-2026 The Khronos Group Inc.",
+        "Copyright (c) 2015-2026 LunarG, Inc.",
+        "Copyright (c) 2015-2026 Valve Corporation",
+        "Copyright (c) 2009 Dave Gamble (cJSON)",
+        "Copyright (c) 2014 joseph werle",
+        "Copyright Kevlin Henney, 1997, 2003, 2012 (dirent_on_windows)"
+      ],
+      "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
+      "binary_identity_evidence": [
+        {
+          "path": "third_party/vulkan-loader/vulkan-1.dll",
+          "sha256": "e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3",
+          "bytes": 1729464,
+          "file_version": "1.4.363.0"
+        }
+      ],
+      "official_sources": [
+        "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip",
+        "https://github.com/KhronosGroup/Vulkan-Loader/tree/v1.4.363"
+      ],
+      "version_source": "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip",
+      "audit_evidence_status": "有初步证据",
+      "unreviewed_copyright_observations": [],
+      "copyright_attribution": [
+        {
+          "notice": "Copyright (c) 2015-2026 The Khronos Group Inc.",
+          "path": "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt",
+          "status": "component-specific notice; not an exhaustive ownership determination"
+        },
+        {
+          "notice": "Copyright (c) 2015-2026 LunarG, Inc.",
+          "path": "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt",
+          "status": "component-specific notice; not an exhaustive ownership determination"
+        },
+        {
+          "notice": "Copyright (c) 2015-2026 Valve Corporation",
+          "path": "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt",
+          "status": "component-specific notice; not an exhaustive ownership determination"
+        },
+        {
+          "notice": "Copyright (c) 2009 Dave Gamble (cJSON)",
+          "path": "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt",
+          "status": "component-specific notice; not an exhaustive ownership determination"
+        },
+        {
+          "notice": "Copyright (c) 2014 joseph werle",
+          "path": "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt",
+          "status": "component-specific notice; not an exhaustive ownership determination"
+        },
+        {
+          "notice": "Copyright Kevlin Henney, 1997, 2003, 2012 (dirent_on_windows)",
+          "path": "licenses/materials/vulkan-loader/1.4.363.0/HPND-Kevlin-Henney.txt",
+          "line": 1,
+          "status": "component-specific notice; not an exhaustive ownership determination"
+        }
+      ],
+      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
     }
   ],
   "material_files": [
@@ -47097,6 +47224,37 @@
       "kind": "license_or_notice",
       "source": {
         "candidate_path": ".venv-main/Lib/site-packages/pylatexenc-2.11.dist-info/licenses/LICENSE.txt"
+      }
+    },
+    {
+      "path": "licenses/materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt",
+      "sha256": "404deb98dabf3e54bf9070d59676b31d69a3da2f9f6e56bdf09ad315c04c718c",
+      "bytes": 4008,
+      "kind": "license_or_notice",
+      "source": {
+        "url": "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip",
+        "member": "VulkanRT-X64-1.4.363.0-Components/VulkanRT-License.txt",
+        "retrieved": "2026-10-17"
+      }
+    },
+    {
+      "path": "licenses/materials/vulkan-loader/1.4.363.0/Vulkan-Loader-LICENSE.txt",
+      "sha256": "43c0a37e6a0fa7ff3c843b3ec5a4fac84b712558ddac103fbd4c1649662a9ece",
+      "bytes": 11661,
+      "kind": "license_or_notice",
+      "source": {
+        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/v1.4.363/LICENSE.txt",
+        "retrieved": "2026-10-17"
+      }
+    },
+    {
+      "path": "licenses/materials/vulkan-loader/1.4.363.0/HPND-Kevlin-Henney.txt",
+      "sha256": "9c73641270f020fce60e4b6aa93f56754763916517cd72d21a73527696ccd3ed",
+      "bytes": 421,
+      "kind": "license_or_notice",
+      "source": {
+        "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Loader/v1.4.363/LICENSES/HPND-Kevlin-Henney.txt",
+        "retrieved": "2026-10-17"
       }
     }
   ],

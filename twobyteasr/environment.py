@@ -183,7 +183,7 @@ def environment_interpreter(role):
 
     Resolution goes through the RuntimeEnvironmentRegistry: environment
     override, persisted registry, legacy in-place venvs, then the stable
-    per-role root under %LOCALAPPDATA%\\2ByteASR\\runtimes. A packaged exe
+    per-role root under the runtime folder (``managed_runtime_root``). A packaged exe
     therefore reuses the user's existing healthy venvs instead of expecting
     them inside ``dist``. When nothing exists, the stable/intended root is
     returned so diagnostics and repair target one stable location.

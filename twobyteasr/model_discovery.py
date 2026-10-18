@@ -70,6 +70,14 @@ def _positive(row, names):
     return None
 
 
+def _anthropic_modalities(row):
+    """Anthropic's /v1/models states image input under capabilities.image_input (2026-10-18)."""
+    image = (row.get('capabilities') or {}).get('image_input') if isinstance(row.get('capabilities'), dict) else None
+    if isinstance(image, dict) and isinstance(image.get('supported'), bool):
+        return ['text', 'image'] if image['supported'] else ['text']
+    return None
+
+
 def _records(data, source):
     values = data if isinstance(data, list) else next((data[k] for k in ('data', 'models', 'language_models', 'result')
         if isinstance(data.get(k), list)), []) if isinstance(data, dict) else []
@@ -81,8 +89,9 @@ def _records(data, source):
             continue
         result.append(dict(id=mid, context_tokens=_positive(row, ('context_length', 'context_window', 'max_context_length')),
             input_tokens=_positive(row, ('inputTokenLimit', 'max_input_tokens')),
-            output_tokens=_positive(row, ('outputTokenLimit', 'max_output_tokens')),
-            input_modalities=row.get('input_modalities'), output_modalities=row.get('output_modalities'), source=source))
+            output_tokens=_positive(row, ('outputTokenLimit', 'max_output_tokens', 'max_tokens')),
+            input_modalities=row.get('input_modalities') or _anthropic_modalities(row),
+            output_modalities=row.get('output_modalities'), source=source))
     return result
 
 
@@ -96,13 +105,17 @@ def discover(provider, base_url, api_key, *, timeout=12, force=False):
     validate_transport_url(base_url, '模型列表')
     url = models_url(base_url)
     headers = {'Authorization': 'Bearer '+api_key} if api_key else {}
+    anthropic = provider == 'anthropic'
+    if anthropic:
+        from .llm_config import auth_headers
+        headers = auth_headers(api_key, 'anthropic')
     official_xai = urlsplit(base_url).hostname == 'api.x.ai'
     gemini = provider == 'gemini' and urlsplit(base_url).hostname == 'generativelanguage.googleapis.com'
     if gemini:
         url = 'https://generativelanguage.googleapis.com/v1beta/models'
         headers = {'x-goog-api-key': api_key}
     origin = urlsplit(url)[:2]
-    records, seen, params = {}, set(), {}
+    records, seen, params = {}, set(), ({'limit': 100} if anthropic else {})
     deadline = time.monotonic()+timeout
 
     def fetch(target, parameters):
@@ -135,7 +148,7 @@ def discover(provider, base_url, api_key, *, timeout=12, force=False):
         if data.get('nextPageToken'):
             params = {'pageToken': data['nextPageToken']}
         elif data.get('has_more') and data.get('last_id'):
-            params = {'after': data['last_id']}
+            params = {'after_id': data['last_id'], 'limit': 100} if anthropic else {'after': data['last_id']}
         elif isinstance(data.get('next'), str) and data['next']:
             url, params = urljoin(url, data['next']), {}
         else:

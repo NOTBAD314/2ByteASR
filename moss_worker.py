@@ -628,6 +628,33 @@ def install_encoder_batching(model, batch_size, progress):
     return state
 
 
+def planning_prompt_length(processor, sample_count, messages):
+    """Count the locked MOSS processor's prompt without extracting audio features.
+
+    Its 30-second chunks use ceil(samples / (hop * encoder stride 2 * merge)),
+    including the final partial chunk. Reuse the processor's time-marker IDs
+    and tokenizer so digit boundaries and the chat template count exactly.
+    No max_length override or audio truncation is involved: this count is only
+    for planning, and each actual window still uses the processor's limit.
+    """
+    feature = processor.feature_extractor
+    block = int(feature.n_samples)
+    stride = int(feature.hop_length) * 2 * int(processor.audio_merge_size)
+    if sample_count <= 0 or block <= 0 or stride <= 0:
+        raise ValueError("MOSS 音频长度或处理器采样参数无效。")
+    complete, tail = divmod(int(sample_count), block)
+    audio_tokens = complete * ((block - 1) // stride + 1)
+    if tail:
+        audio_tokens += (tail - 1) // stride + 1
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    if text.count(processor.audio_token) != 1:
+        raise ValueError("MOSS 任务提示词必须包含一个音频占位符。")
+    before, after = text.split(processor.audio_token, maxsplit=1)
+    return (len(processor.tokenizer.encode(before, add_special_tokens=False))
+            + len(processor._audio_span_ids(audio_tokens))
+            + len(processor.tokenizer.encode(after, add_special_tokens=False)))
+
+
 def prompt_inputs(processor, audio, messages, context_limit):
     """Processor output for one audio window (CPU tensors) and its prompt length."""
     import torch
@@ -772,7 +799,7 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
     half = policy["overlap_seconds"] / 2
     context_limit = int(model.config.text_config.max_position_embeddings)
     progress.set_phase("audio_encoding")
-    full_inputs, full_prompt = prompt_inputs(processor, audio, messages, context_limit)
+    full_prompt = planning_prompt_length(processor, len(audio), messages)
     ops = progress.ops or DeviceOps(torch, "cuda", device)
     usable, total, fraction = ops.usable()
     if fraction is not None:
@@ -801,8 +828,7 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
                        f"还需要约 {need:.1f} GiB。请关闭其他占用内存的程序后重试，或改用云端识别等其他主力转写方式。")
         raise WindowCapacityError(message)
     queue = window_bounds(audio, duration, plan["count"], rate)
-    first_inputs = full_inputs if plan["count"] == 1 else None
-    del full_inputs
+    first_inputs = None
     chunks, windows, attempts, splits = [], [], 0, 0
     while queue:
         start, end = queue.pop(0)

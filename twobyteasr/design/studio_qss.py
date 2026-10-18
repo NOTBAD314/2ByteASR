@@ -200,7 +200,8 @@ QWidget#studioTimelineCommandBar QToolButton#rangeAction {{ background: transpar
     border: 1px solid {theme.border}; border-radius: 8px; min-height: 34px; max-height: 34px; min-width: 34px;
     padding: 0 6px; font-size: {t.label_size}px; }}
 QWidget#studioTimelineCommandBar QToolButton#rangeAction:hover {{ background: {theme.selected}; border-color: {theme.border_strong}; color: {theme.text}; }}
-QWidget#studioTimelineCommandBar QToolButton#rangeAction::menu-button {{ border: 0; border-left: 1px solid {theme.border}; width: 16px; }}
+/* 2026-10-18 (user): no divider inside 保存当前帧; the cover button beside it has none. */
+QWidget#studioTimelineCommandBar QToolButton#rangeAction::menu-button {{ border: 0; width: 16px; }}
 QWidget#studioTimelineCommandBar QToolButton#rangeAction[menuOnly="true"] {{ padding-right: 18px; }}
 QWidget#studioTimelineCommandBar QToolButton#rangeAction[splitMenu="true"] {{ padding: 0 16px 0 0; }}
 QWidget#studioTimelineCommandBar QToolButton#rangeAction::menu-indicator {{
@@ -242,7 +243,9 @@ QLabel#styleFieldLabel {{ color: {theme.text_muted}; font-size: 12px; font-weigh
    captions, one-line property rows with small switches. */
 QFrame#styleScopeBar, QFrame#styleInlineSection {{ background: transparent; border: 0; }}
 QLabel#styleInlineLabel {{ color: {theme.text_muted}; font-size: 12px; font-weight: 600; background: transparent; }}
-QCheckBox#styleInlineCheck {{ color: {theme.text_secondary}; font-size: 12px; background: transparent; }}
+/* 2026-10-17: every checkbox of the style tab shares one look. */
+QCheckBox#styleInlineCheck {{ color: {theme.text_secondary}; font-size: 13px; font-weight: 500;
+    spacing: 8px; background: transparent; }}
 QFrame#styleScopeBar QRadioButton#scopeOption {{ color: {theme.text_secondary}; background: {theme.surface};
     border: 1px solid {theme.border}; border-radius: 7px; padding: 2px 6px; min-height: 26px; spacing: 0; }}
 QFrame#styleScopeBar QRadioButton#scopeOption::indicator {{ width: 0; height: 0; margin: 0; }}
@@ -262,11 +265,16 @@ QPushButton#styleLibraryButton:hover {{ background: {theme.accent}; color: {them
 QPushButton#styleLibraryButton:focus {{ border-color: {theme.focus}; }}
 QToolButton#styleEmphasis:checked, QToolButton#styleAnchor:checked {{
     background: {theme.accent_tint}; color: {theme.accent_text}; border-color: {theme.accent_text}; }}
+/* The compact button role's side padding made B/I/U 41 px instead of the
+   31 px above, and 字号 / 字距 / B I U no longer fit one row. */
+QToolButton#styleEmphasis[controlSize="compact"], QToolButton#styleAnchor[controlSize="compact"] {{ padding: 0; }}
 QFrame#stylePropertyRow {{ background: transparent; border: 0; border-top: 1px solid {theme.hairline};
     border-left: 3px solid transparent; border-radius: 0; }}
 QFrame#stylePropertyRow:hover {{ background: {theme.surface}; }}
 QFrame#stylePropertyRow[expanded="true"] {{ background: {theme.surface}; border-left: 3px solid {theme.accent_text}; }}
-QLabel#stylePropertyRowTitle {{ font-size: 14px; font-weight: 600; }}
+/* 2026-10-17: one style for every left-column label of the style tab
+   (应用到, 预设, 字体, 字号, 填充…发光, 对齐, X, 边距). */
+QLabel#stylePropertyRowTitle {{ color: {theme.text_secondary}; font-size: 13px; font-weight: 600; }}
 QLabel#stylePropertyRowSummary {{ font-size: 12px; }}
 QFrame#resumeProjectCard {{ background: {blend_hex(theme.surface, theme.accent_text, 0.07)};
     border: 1px solid {blend_hex(theme.surface, theme.accent_text, 0.40)}; }}

@@ -177,13 +177,23 @@ class LazyFontComboBox(StudioComboBox):
 
     def eventFilter(self, watched, event) -> bool:
         # The whole combo frame must open the list: clicking the text field is
-        # the largest target, not only the arrow button. Consume the press and
-        # hand focus back to the edit so typing still filters the open list.
-        if watched is self.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
-            if not self.view().isVisible():
-                editor = self.lineEdit()
-                editor.setFocus(Qt.FocusReason.MouseFocusReason)
-                self.showPopup()
+        # the largest target, not only the arrow button. Typing still filters
+        # the open list because focus goes back to the edit.
+        # 2026-10-18 (user: the list "马上又消失", several clicks needed): the
+        # list used to open on the press, so the same click's release landed
+        # on the freshly opened popup and closed it (or picked the font under
+        # the pointer). Open on the release; the press only focuses the edit.
+        if watched is self.lineEdit() and event.type() in (
+                QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
+            if event.button() == Qt.MouseButton.LeftButton and not self.view().isVisible():
+                self.lineEdit().setFocus(Qt.FocusReason.MouseFocusReason)
+                self._open_on_release = True
+                return True
+        if watched is self.lineEdit() and event.type() == QEvent.Type.MouseButtonRelease:
+            if getattr(self, "_open_on_release", False) and event.button() == Qt.MouseButton.LeftButton:
+                self._open_on_release = False
+                if not self.view().isVisible() and self.lineEdit().rect().contains(event.position().toPoint()):
+                    self.showPopup()
                 return True
         return super().eventFilter(watched, event)
 

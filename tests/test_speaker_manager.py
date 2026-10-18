@@ -41,9 +41,9 @@ def test_speaker_manager_mutations_keep_timeline_list_save_and_undo_consistent(t
     page.open_project(path)
 
     manager = SpeakerManagerDialog(page)
-    assert manager.table.rowCount() == 2
-    assert manager.table.item(0, 3).text() == "1"
-    assert manager.table.item(0, 4).text() == "00:01.000"
+    assert list(manager.cards) == ["S01", "S03"]
+    assert manager.cards["S01"].meta_label.text() == "1 条字幕 · 1 秒"
+    assert manager.cards["S01"].strip.intervals() == [(0, 1_000)]
     manager.close()
 
     page.undo_stack.push(SetSpeakerCommand(

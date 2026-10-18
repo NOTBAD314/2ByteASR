@@ -13,7 +13,7 @@ $version = (Get-Content -Raw -LiteralPath (Join-Path $payload "2byteasr_version.
 if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid payload version" }
 $identity = Get-Content -Raw -LiteralPath (Join-Path $payload "2byteasr_build.json") | ConvertFrom-Json
 if ($identity.app_version -ne $version) { throw "Payload identity/version mismatch" }
-foreach ($required in @("2ByteASR.exe", "2ByteASRUpdater.exe", "2byteasr_components.json", "python310.dll", "tools\node\node.exe", "tools\mpv\mpv.exe", "tools\ffmpeg\bin\ffmpeg.exe", "renderer\service.mjs", "LICENSE", "PROJECT_LICENSE.md", "SOURCE_DELIVERY.md", "BUILD_FROM_SOURCE.md", "THIRD_PARTY_NOTICES.md")) {
+foreach ($required in @("2ByteASR.exe", "2ByteASRUpdater.exe", "2byteasr_components.json", "python310.dll", "tools\node\node.exe", "tools\mpv\mpv.exe", "third_party\vulkan-loader\vulkan-1.dll", "tools\ffmpeg\bin\ffmpeg.exe", "renderer\service.mjs", "LICENSE", "PROJECT_LICENSE.md", "SOURCE_DELIVERY.md", "BUILD_FROM_SOURCE.md", "THIRD_PARTY_NOTICES.md")) {
     if (-not (Test-Path -LiteralPath (Join-Path $payload $required))) { throw "Missing runtime: $required" }
 }
 $files = @(Get-ChildItem -LiteralPath $payload -File -Recurse -Force)

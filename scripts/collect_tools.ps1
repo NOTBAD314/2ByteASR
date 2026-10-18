@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param([string]$ToolsDir = "")
 
-# 收集内置工具（tools/）：ffmpeg、mpv、minGit、Python 安装器、uv —— 离线安装依赖。
+# 收集内置工具（tools/）：ffmpeg、mpv（及其 Vulkan 运行库兜底）、minGit、Python 安装器、uv —— 离线安装依赖。
 # 便携包构建与 Setup 安装包共用；目标目录已就绪时跳过（下载一次多包复用）。
 #
 # 用法：powershell -ExecutionPolicy Bypass -File scripts/collect_tools.ps1 [-ToolsDir <dir>]
@@ -17,6 +17,8 @@ $ExpectedHashes = @{
     "python-3.10.11-amd64.exe" = "d8dede5005564b408ba50317108b765ed9c3c510342a598f9fd42681cbe0648b"
     "python-3.12.10-amd64.exe" = "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
     "mpv-x86_64-20260814-git-7b8915bc1d.7z" = "1bf3b029da2c98e605e00e85f21ee3142f22a1dcc4ceb5c827b5c51e36e390f9"
+    "VulkanRT-X64-1.4.363.0-Components.zip" = "a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a"
+    "vulkan-1.dll" = "e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3"
 }
 
 function Assert-ExpectedHash {
@@ -107,6 +109,37 @@ function Install-MpvTool {
 }
 
 
+# Vulkan 运行库兜底（2026-10-17）：随包 mpv 的导入表直接依赖 vulkan-1.dll，而它只随显卡驱动安装，
+# 虚拟机、远程桌面和基本显示驱动的电脑没有，mpv 一启动就退出。工作台只用 D3D11，这个文件只为让
+# Windows 能加载 mpv.exe。Studio 启动 mpv 时把它所在的文件夹放在 PATH 末尾，系统里有就用系统的。
+# 冻结程序把 tools/vulkan-loader 装到 third_party/vulkan-loader（属于“主程序”更新元件）。
+function Install-VulkanLoader {
+    param([Parameter(Mandatory = $true)][string]$DownloadRoot)
+    $loaderDir = Join-Path $ToolsDir "vulkan-loader"
+    $loaderTarget = Join-Path $loaderDir "vulkan-1.dll"
+    if (Test-Path -LiteralPath $loaderTarget) {
+        Assert-ExpectedHash $loaderTarget "vulkan-1.dll"
+        return
+    }
+
+    $archiveName = "VulkanRT-X64-1.4.363.0-Components.zip"
+    $archive = Join-Path $DownloadRoot $archiveName
+    $extractRoot = Join-Path $DownloadRoot "vulkan-extract"
+    Write-Host "[工具] 下载 Vulkan 运行库（LunarG 1.4.363.0，mpv 兜底）..." -ForegroundColor Cyan
+    Invoke-Download "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/$archiveName" $archive
+    Assert-ExpectedHash $archive $archiveName
+    Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive $archive $extractRoot -Force
+    $package = Join-Path $extractRoot "VulkanRT-X64-1.4.363.0-Components"
+    $loader = Join-Path $package "x64\vulkan-1.dll"
+    if (-not (Test-Path -LiteralPath $loader)) { throw "Vulkan 运行库解压后未找到 x64\vulkan-1.dll。" }
+    Assert-ExpectedHash $loader "vulkan-1.dll"
+    New-Item -ItemType Directory -Path $loaderDir -Force | Out-Null
+    Copy-Item $loader $loaderTarget -Force
+    Copy-Item (Join-Path $package "VulkanRT-License.txt") (Join-Path $loaderDir "VulkanRT-License.txt") -Force
+}
+
+
 $coreReady = (Test-Path (Join-Path $ToolsDir "ffmpeg\bin\ffmpeg.exe")) -and
          (Test-Path (Join-Path $ToolsDir "ffmpeg\bin\ffprobe.exe")) -and
          (Test-Path (Join-Path $ToolsDir "git\cmd\git.exe")) -and
@@ -117,13 +150,14 @@ if ($coreReady) {
     Assert-ExpectedHash (Join-Path $ToolsDir "uv.exe") "uv.exe"
     Assert-ExpectedHash (Join-Path $ToolsDir "python-3.10.11-amd64.exe") "python-3.10.11-amd64.exe"
     Assert-ExpectedHash (Join-Path $ToolsDir "python-3.12.10-amd64.exe") "python-3.12.10-amd64.exe"
+    $mpvDownload = Join-Path $env:TEMP "2byteasr-tools"
+    New-Item -ItemType Directory -Path $mpvDownload -Force | Out-Null
     if (-not (Test-Path -LiteralPath (Join-Path $ToolsDir "mpv\mpv.exe"))) {
-        $mpvDownload = Join-Path $env:TEMP "2byteasr-tools"
-        New-Item -ItemType Directory -Path $mpvDownload -Force | Out-Null
         Install-MpvTool $mpvDownload
-        Remove-Item $mpvDownload -Recurse -Force -ErrorAction SilentlyContinue
     }
-    Write-Host "[工具] 已就绪（含 mpv）：$ToolsDir" -ForegroundColor Green
+    Install-VulkanLoader $mpvDownload
+    Remove-Item $mpvDownload -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "[工具] 已就绪（含 mpv 与 Vulkan 运行库兜底）：$ToolsDir" -ForegroundColor Green
     exit 0
 }
 
@@ -189,6 +223,7 @@ foreach ($py in @("3.10.11", "3.12.10")) {
 }
 
 Install-MpvTool $tmpDownload
+Install-VulkanLoader $tmpDownload
 
 Remove-Item $tmpDownload -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "[工具] 内置工具收集完成：$ToolsDir" -ForegroundColor Green

@@ -38,7 +38,7 @@ def test_gallery_groups_every_theme_and_selects_the_active_one(app):
     from twobyteasr.theme_gallery import ThemeGallery
     gallery = ThemeGallery("frost")
     assert gallery.count() == len(THEMES)
-    assert gallery.currentData() == "frost" and gallery.currentText() == "霜白引擎"
+    assert gallery.currentData() == "frost" and gallery.currentText() == "银白 / 蓝"
     assert [family for family, *_ in gallery._sections] == [family for family, _ in THEME_FAMILIES]
     for family, header, _grid, cards in gallery._sections:
         assert header.text() and cards
@@ -81,7 +81,7 @@ def test_card_click_previews_and_cancel_restores_the_opening_theme(app, tmp_path
         assert dialog.theme_combo is gallery  # name kept for settings save / audits
         QTest.mouseClick(gallery.card("obsidian"), Qt.MouseButton.LeftButton)
         assert applied[-1] == "obsidian" and theme_manager.theme_key() == "obsidian"
-        assert "黑曜警戒" in dialog.theme_preview_hint.text() and "葡萄夜幕" in dialog.theme_preview_hint.text()
+        assert "黑 / 黄" in dialog.theme_preview_hint.text() and "深紫 / 莓红" in dialog.theme_preview_hint.text()
         dialog.done(0)
         assert applied[-1] == "grape" and theme_manager.theme_key() == "grape"
         dialog.deleteLater()
@@ -152,13 +152,13 @@ def test_gallery_follows_language_switch(app, monkeypatch):
     from twobyteasr import i18n
     from twobyteasr.theme_gallery import ThemeGallery
     gallery = ThemeGallery("obsidian")
-    assert gallery.currentText() == "黑曜警戒"
-    for language, name, family in (("en", "Obsidian Signal", "Dark"), ("ja", "オブシディアン・シグナル", "ダーク"),
-                                   ("ko", "옵시디언 시그널", "다크"), ("zh-Hant", "黑曜警戒", "深色")):
+    assert gallery.currentText() == "黑 / 黄"
+    for language, name, family in (("en", "Black / Yellow", "Dark"), ("ja", "ブラック / イエロー", "ダーク"),
+                                   ("ko", "검정 / 노랑", "다크"), ("zh-Hant", "黑 / 黃", "深色")):
         monkeypatch.setattr(i18n, "current_language", lambda language=language: language)
         gallery.retranslate_ui()
         assert gallery.currentText() == name
-        assert gallery.card("obsidian").text() == name and gallery.card("obsidian").accessibleDescription()
+        assert gallery.card("obsidian").text() == name == gallery.card("obsidian").accessibleName()
         assert any(header.text() == family for _f, header, _g, _c in gallery._sections)
-    assert gallery.card("midnight").text() == "夜航藍圖"  # zh-Hant names are Traditional, not English
+    assert gallery.card("midnight").text() == "深藍 / 天藍"  # zh-Hant names are Traditional, not English
     gallery.deleteLater()

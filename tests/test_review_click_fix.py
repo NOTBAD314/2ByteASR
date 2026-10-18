@@ -143,3 +143,71 @@ def test_p_flips_the_caption_and_a_consistent_caption_still_gets_card_one(tmp_pa
     finally:
         page.close_page()
         page.deleteLater()
+
+
+# 2026-10-17: alternatives are ruby chips above the questioned characters -------
+def _centre(card, rect):
+    return card.text_label.mapTo(card, rect.center().toPoint())
+
+
+def test_each_chip_writes_its_own_alternative_and_the_sentence_stays_whole():
+    from twobyteasr.review_marked_text import BASE, MORE
+    card, rows = _card("须弥的风景真好看", [("虚迷的风景真好看", ("MOSS",)), ("须迷的风景真好看", ("Qwen3-ASR",)),
+                                    ("需米的风景真好看", ("FireRed",))])
+    activated, menus, adopted = [], [], []
+    card.suggestion_activated.connect(lambda mark, option: activated.append((mark, option)))
+    card.suggestion_menu_requested.connect(lambda mark, _pos: menus.append(mark))
+    card.clicked.connect(adopted.append)
+    try:
+        assert card.text_label.text() == "须弥的风景真好看"  # plain caption, no arrow or alternatives inline
+        rects = card.text_label.chip_rects()
+        assert sorted(rects) == [(0, MORE), (0, BASE), (0, 0), (0, 1)]  # two chips and "+1"
+        assert rects[(0, 0)].bottom() <= rects[(0, BASE)].top()  # the chips sit above the word
+        for key, rect in rects.items():
+            assert card._hit_at(_centre(card, rect)) == key
+        QTest.mouseClick(card, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _centre(card, rects[(0, 1)]))
+        assert activated == [(0, 1)]
+        QTest.mouseClick(card, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, _centre(card, rects[(0, MORE)]))
+        QTest.mouseClick(card, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                         _centre(card, rects[(0, BASE)]))
+        assert menus == [0, 0] and activated == [(0, 1)] and adopted == []
+        tips = [card._mark_tip(0, option) for option in (0, 1, MORE, BASE)]
+        assert "MOSS" in tips[0] and "须迷" in tips[1] and "3" in tips[2]
+    finally:
+        card.close()
+
+
+def test_chips_stay_apart_and_inside_on_a_narrow_card():
+    from twobyteasr.review_marked_text import BASE
+    for width in (520, 300, 240):
+        for text, others in (
+                ("园神那维来特这波开大", [("原神那维莱特这波开打", ("MOSS",)), ("原神那维莱特这波开塔", ("Qwen3-ASR",))]),
+                ("他说刀塔蛮好玩的", [("他说DOTA2满好玩的", ("MOSS",)), ("他说刀塔传奇满好玩的", ("Qwen3-ASR",))]),
+                ("他说今天咱们去打副本然后再去刷那个材料", [("她说今天咱门去打附本然后在去刷那个才料", ("MOSS",))])):
+            card, rows = _card(text, others)
+            try:
+                card.resize(width, 160)
+                _app().processEvents()
+                label = card.text_label
+                rects = label.chip_rects()
+                chips = [(key, rect) for key, rect in rects.items() if key[1] != BASE]
+                assert chips
+                for index, (key, rect) in enumerate(chips):
+                    assert -0.5 <= rect.left() and rect.right() <= label.width() + 0.5, (width, text, key)
+                    assert not any(rect.adjusted(0.5, 0.5, -0.5, -0.5).intersects(other) for _k, other in chips[index + 1:])
+                assert label.heightForWidth(label.width()) <= label.height() + 1
+            finally:
+                card.close()
+
+
+def test_a_line_break_is_a_sign_not_a_second_chip_band():
+    card, rows = _card("这个角色的元素暴发\n伤害真的太离普了吧", [("这个角色的元素爆发\n伤害真的太离谱了吧", ("MOSS",))])
+    try:
+        card.resize(620, 110)
+        _app().processEvents()
+        label = card.text_label
+        assert [row.original for row in rows] == ["暴", "普"]
+        one_line = label.heightForWidth(10_000)
+        assert label.heightForWidth(label.width()) == one_line  # both marks share one chip band
+    finally:
+        card.close()

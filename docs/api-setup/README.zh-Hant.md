@@ -20,6 +20,7 @@
 | DeepSeek | [教程](deepseek.zh-Hant.md) |
 | 阿里雲百鍊 · 通義千問 | [教程](bailian-text.zh-Hant.md) |
 | OpenAI | [教程](openai-text.zh-Hant.md) |
+| Anthropic Claude（2026-10-18 新增） | [教程](claude.zh-Hant.md) |
 | Google Gemini | [教程](gemini.zh-Hant.md) |
 | xAI Grok API | [教程](xai.zh-Hant.md) |
 | 進階：自定義相容服務、賬號登入類 CLI | [自定義](custom-text.zh-Hant.md)、[賬號登入類](cli-accounts.zh-Hant.md) |

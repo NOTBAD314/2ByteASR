@@ -54,3 +54,43 @@ def test_frame_composes_layers_visibility_and_trim_rate(tmp_path):
     assert abs(result['decode'][1]['source_seconds']-.4)<1e-9
     assert image.pixelColor(80,90).blue()>230
     assert image.pixelColor(240,90).red()>230
+
+
+@pytest.mark.parametrize('look,milliseconds,check',[
+    (None,1500,'dissolve'),(None,1250,'quarter'),
+    (dict(id='push',direction='left'),1500,'split'),(dict(id='flash'),1500,'white'),
+])
+def test_frame_inside_a_seam_draws_the_transition(tmp_path,look,milliseconds,check):
+    # Same edit as the export check: red 0–1.5 s cut to blue, 1 s seam
+    # 1.0–2.0 s. Without the transition only one clip covers each instant.
+    from twobyteasr.studio_project import VideoClip
+    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.studio_media_pool import sync_linked_av_contract
+    from twobyteasr.studio_transitions import set_transition
+    app=QApplication.instance() or QApplication([])
+    source=tmp_path/'red then blue.mkv'
+    run_hidden_subprocess([str(FFMPEG),'-v','error','-y','-f','lavfi','-i','color=red:s=160x90:r=10:d=2',
+        '-f','lavfi','-i','color=blue:s=160x90:r=10:d=2','-filter_complex','[0][1]concat=n=2:v=1',
+        '-c:v','ffv1',str(source)],check=True,timeout=20,purpose='frame transition fixture')
+    p=SubtitleProject(media=StudioMedia(str(source),duration_ms=4000,width=160,height=90));p.validate()
+    asset=p.media_pool[0];asset.offline=False
+    asset.video_metadata=dict(asset.video_metadata or {},width=160,height=90,has_video=True,fps=10)
+    p.video_tracks[0].clips=[VideoClip('red',asset.asset_id,0,1500,0,1500),
+                             VideoClip('blue',asset.asset_id,2500,4000,1500,3000)]
+    p.video_tracks[0].locked=False;sequence_of(p).video_track_locked=False
+    sync_linked_av_contract(p)
+    set_transition(p,'video',p.video_tracks[0].id,'red','blue',duration_ms=1000,look=look)
+    result=save_project_frame(export_project_snapshot(p),capture_video_graph(p),milliseconds,tmp_path,'seam',
+                              subtitles=False,ffmpeg=FFMPEG)
+    assert sorted(r['clip_id'] for r in result['decode'])==['blue','red']
+    image=QImage(result['path'])
+    left,middle,right=image.pixelColor(20,45),image.pixelColor(80,45),image.pixelColor(140,45)
+    if check=='dissolve':
+        assert abs(middle.red()-128)<=6 and abs(middle.blue()-128)<=6
+    elif check=='quarter':
+        # Before the cut: the incoming clip is already a quarter in.
+        assert abs(middle.red()-191)<=6 and abs(middle.blue()-64)<=6
+    elif check=='split':
+        assert left.red()>200 and left.blue()<40 and right.blue()>200 and right.red()<40
+    else:
+        assert min(middle.red(),middle.green(),middle.blue())>240

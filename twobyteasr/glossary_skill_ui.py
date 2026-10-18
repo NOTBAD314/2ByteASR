@@ -1184,6 +1184,10 @@ class BatchUpdateDialog(QWidget):
             bind_text(self.status, '请先勾选要更新的游戏。')
             return
         settings = self.settings_factory()
+        from .api_key_explainer import ask_for_key_if_missing
+        if ask_for_key_if_missing(self, settings, "polish",
+                                  status=lambda: bind_text(self.status, 'AI 建库没有运行：还没填 API Key')):
+            return
         self.worker = BatchGlossaryUpdateWorker(self.owner.legacy, games, settings, self)
         self.worker.game_started.connect(self._on_game_started)
         self.worker.game_stage.connect(self._on_game_stage)

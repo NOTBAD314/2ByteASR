@@ -143,7 +143,9 @@ def test_home_recognition_cards_use_tall_window_space_without_moving_action_bar(
     app.processEvents()
     tall_height = win.recognition_plan.cards["primary"].height()
 
-    assert win.recognition_plan.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
+    # Home C′ (2026-10-17): the row takes its size hint between the tier height
+    # and +48 px (a wrapped recovery button); taller windows add a little.
+    assert win.recognition_plan.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Fixed
     assert all(
         card.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Preferred
         for card in win.recognition_plan.cards.values()
@@ -256,7 +258,10 @@ def test_term_library_uses_structured_table_and_adaptive_category_badges():
         "状态",
         "操作",
     ]
-    assert isinstance(dialog.listing.itemDelegateForColumn(1), _CategoryPillDelegate)
+    # 2026-10-17 redesign v2: categories are plain text; status is a dot and text.
+    from twobyteasr.glossary_page_parts import StatusDotDelegate
+    assert not isinstance(dialog.listing.itemDelegateForColumn(1), _CategoryPillDelegate)
+    assert isinstance(dialog.listing.itemDelegateForColumn(3), StatusDotDelegate)
     assert dialog.listing.columnWidth(1) >= 72
     categories = ("其他", "角色", "Boss", "技能", "物品")
     model.set_data(
@@ -291,7 +296,9 @@ def test_term_library_uses_structured_table_and_adaptive_category_badges():
     assert dialog.library_footer.parentWidget() is dialog.library_content
     assert dialog.sidebar_new_button.text() == "新建"
     assert dialog.sidebar_search_button.toolTip() == "搜索我的词库"
-    assert dialog.sidebar_sync.text() == "官方词库已同步"
+    # 2026-10-17 redesign: 「我的词库」/「线上词库」 tabs; the duplicate sync line left the sidebar.
+    assert dialog.hub_tab_button.text() == "线上词库"
+    assert dialog.page_stack.currentWidget() is dialog.mine_page
     assert dialog.official_stats.text().endswith(("条参考", "references"))
     content_body_layout = dialog.learned_title.parentWidget().layout()
     tools_index = next(

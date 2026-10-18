@@ -926,6 +926,10 @@ class FindReplaceDialog(QDialog):
         if not snapshot.canonical_terms:
             self.status_label.setText("请先选择有已确认规范词的词库。")
             return
+        from .api_key_explainer import ask_for_key_if_missing
+        if ask_for_key_if_missing(self, copy.deepcopy(legacy.RUNTIME_SETTINGS), "polish", status=lambda: bind_text(
+                self.status_label, 'AI 校对没有运行：还没填 API Key')):
+            return
         binding = PreviewBinding.capture(project)
         generation = self._review_generation
         settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
@@ -982,6 +986,13 @@ class FindReplaceDialog(QDialog):
         if project is None:
             return
         options = [key for key, box in self.ai_option_boxes.items() if box.isChecked()]
+        from .api_key_explainer import ask_for_key_if_missing
+        from .settings import load_runtime_settings
+        settings = load_runtime_settings()
+        settings = settings[0] if isinstance(settings, tuple) else settings
+        if ask_for_key_if_missing(self, settings, "polish", status=lambda: bind_text(
+                self.status_label, 'AI 清理没有运行：还没填 API Key')):
+            return
         binding = PreviewBinding.capture(project)
         bind_text(self.status_label, '正在调用已配置的 AI…')
         try:

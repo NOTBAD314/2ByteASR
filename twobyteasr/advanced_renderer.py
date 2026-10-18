@@ -184,6 +184,7 @@ def _native_segment_project(project: SubtitleProject, start_ms: int, end_ms: int
     native, _advanced = split_renderer_cues(project)
     segment = deepcopy(project)
     segment.cues = []
+    segment._word_animation_plans = {}
     # 三十八轮：隐藏的说话人轨不进高保真预览（与导出/压制一致）。
     hidden = getattr(project, "hidden_speaker_ids", None)
     hidden_ids = hidden() if callable(hidden) else frozenset()
@@ -195,6 +196,18 @@ def _native_segment_project(project: SubtitleProject, start_ms: int, end_ms: int
         cue = deepcopy(source)
         cue.start_ms = max(0, source.start_ms - start_ms)
         cue.end_ms = min(end_ms - start_ms, source.end_ms - start_ms)
+        from .word_animation import build_word_animation
+        plan = build_word_animation(project, source)
+        if plan:
+            cut = max(0, start_ms-source.start_ms)
+            plan = deepcopy(plan)
+            plan['original_duration_ms'] = plan['duration_ms']
+            plan['clock_offset_ms'] = cut
+            plan['duration_ms'] = cue.end_ms-cue.start_ms
+            for span in plan['spans']:
+                span['start_ms'] -= cut
+                span['end_ms'] -= cut
+            segment._word_animation_plans[cue.id] = plan
         segment.cues.append(cue)
     return segment
 
@@ -486,6 +499,9 @@ def scale_visual_for_composition(visual: dict[str, object], composition_width: i
     which is the "giant vertical subtitle" regression. The final render uses
     the real video resolution, where this scale factor is exactly 1.
     """
+    # Graph and HTML renderers perform their own stage conversion.
+    if visual.get('visualGraph') or visual.get('webTheme'):
+        return visual
     layout = visual.get("layout") if isinstance(visual.get("layout"), Mapping) else {}
     play_res_x = int(layout.get("playResX") or 1920)
     composition_width = max(1, int(composition_width))
@@ -513,11 +529,24 @@ def scale_visual_for_composition(visual: dict[str, object], composition_width: i
     for field in ("offsetX", "offsetY", "blur", "spread"):
         if field in shadow:
             shadow[field] = float(shadow[field]) * scale
+    for field in ('lineHeightPx', 'maxWidthPx'):
+        if field in scaled.get('layout', {}):
+            scaled['layout'][field] *= scale
+    panel = scaled.get('background', {})
+    for field in ('paddingX', 'paddingY', 'radius'):
+        if field in panel:
+            panel[field] *= scale
+    for section, fields in (('border', ('width',)), ('shadow', ('offsetX', 'offsetY', 'blur')),
+                            ('transform', ('offsetX', 'offsetY'))):
+        for field in fields:
+            if field in panel.get(section, {}):
+                panel[section][field] *= scale
     return scaled
 
 
 def normalized_visual_snapshot(snapshot: VisualCueSnapshot) -> dict[str, object]:
     normalized = _normalized_recipe(snapshot.style_recipe)
+    normalized['wordAnimation'] = deepcopy(getattr(snapshot, 'word_animation', None) or {})
     normalized["typography"] = {
         "fontFamily": snapshot.font_family,
         "fontSize": snapshot.font_size,
@@ -648,7 +677,7 @@ def compile_composition_data(
         snapshot = build_visual_cue_snapshot(
             project, cue.id, width=width, height=height, fps=fps,
         )
-        visual = normalized_visual_snapshot(snapshot)
+        visual = scale_visual_for_composition(normalized_visual_snapshot(snapshot), width)
         # recipes 键按样式共享，保持无偏移的样式定义；偏移只进 per-cue visual。
         if cue.style_id not in recipes:
             recipes[cue.style_id] = visual
@@ -660,6 +689,8 @@ def compile_composition_data(
             "translation": getattr(snapshot, "translation", ""),
             "startMs": max(0, cue.start_ms - start_ms),
             "endMs": min(round(duration_seconds * 1000), cue.end_ms - start_ms),
+            "localOffsetMs": max(0, start_ms-cue.start_ms),
+            "cueDurationMs": cue.end_ms-cue.start_ms,
             "styleId": cue.style_id,
             "visual": visual,
             "snapshotHash": snapshot.stable_hash(),
@@ -741,6 +772,14 @@ def _export_browser(root: Path, *, web: bool) -> Path:
     for browser in ((bundled, system) if web else (system, bundled)):
         if browser.is_file():return browser
     raise RuntimeError('本地渲染浏览器缺失；请修复安装中的 Chromium 后重试（不会自动下载）。')
+
+
+def _composition_browser(root: Path, props: Mapping[str, object]) -> Path:
+    # Numeric glyph motion uses explicit resolved font faces. Prefer the
+    # installed render runtime; system Chrome can reject cold CDP launches.
+    letter_motion = any(cue.get('visual', {}).get('wordAnimation', {}).get('units')
+                        for cue in props.get('cues', []))
+    return _export_browser(root, web=_web_theme_composition(props) or letter_motion)
 
 
 def _trim_overlay_cache() -> None:
@@ -1153,7 +1192,7 @@ class AdvancedRendererBackend:
             if trace:
                 trace("advanced_overlay_cache", {"hit": cache_hit})
             cli = self.root / "node_modules" / ".bin" / ("remotion.cmd" if os.name == "nt" else "remotion")
-            chrome = _export_browser(self.root, web=_web_theme_composition(props))
+            chrome = _composition_browser(self.root, props)
             command = [
                 *renderer_node_command(self.root,self.root/'node_modules/@remotion/cli/remotion-cli.js'), "render", "src/index.ts", "SubtitleOverlay", str(overlay),
                 f"--props={props_path}", "--codec=prores", "--prores-profile=4444",

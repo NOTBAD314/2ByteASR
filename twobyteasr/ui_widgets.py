@@ -373,8 +373,10 @@ class SettingTile(QFrame):
         self.summary_label.setText(text)
 
     def apply_density(self, comfortable: bool) -> None:
-        """Keep cards readable without forcing a scroll at 1366x768."""
-        self.setMinimumHeight(104 if comfortable else 88)
+        """Keep cards readable without forcing a scroll at 1366x768.
+
+        2026-10-17: the only tile is the home AI row (one line, home C′)."""
+        self.setMinimumHeight(64 if comfortable else 60)
 
     def isChecked(self) -> bool:
         return self._checked

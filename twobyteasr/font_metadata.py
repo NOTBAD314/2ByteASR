@@ -203,7 +203,9 @@ def resolve_local_face(family: str, weight: int = 0, style: str = '', bold: bool
         exact = [face for face in candidates if not style or face.style.casefold() == style.casefold()]
         chosen = min(exact or candidates, key=lambda face: abs(face.weight - requested))
         if (style and not exact) or (weight and chosen.weight != weight):
-            reason = f'缺失字体字面：{family} / {style or requested}；临时使用 {chosen.full_name} ({chosen.weight})'
+            # Plain words (2026-10-18, user: "告诉我缺少优设标题黑，那我用的是什么？"):
+            # the family IS used, only the requested weight does not exist.
+            reason = f'{family} 没有 {style or requested} 字重，正在使用它的 {chosen.style or chosen.weight}（{chosen.weight}）'
         return chosen, reason
     chosen = next(face for face in faces if face.family == 'Source Han Sans SC' and face.weight == 500)
     return chosen, f'缺失字体：{family}；临时使用 {chosen.full_name}，原始选择保留'

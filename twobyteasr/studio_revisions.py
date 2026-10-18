@@ -215,6 +215,7 @@ class SubtitleRenderRevision:
     frame_rate: object = None
     # LIVE consumers select cues in project time; native ASS uses source time.
     timeline_cues: tuple[RenderCueDTO, ...] | None = None
+    word_animations: FrozenJSON = None
 
     @property
     def compile_key(self) -> tuple[str, int, int, str]:
@@ -408,6 +409,26 @@ class StudioRevisionStore:
     def _capture_render(self, revision: int) -> SubtitleRenderRevision:
         settings = self.project.render_settings
         from .caption_frame_time import project_frame_rate
+        from .word_animation import build_word_animation, needs_word_plan
+        from .studio_edit_sequence import source_cue_id_of
+        source_cues = {c.id: c for c in self.project.cues}
+        word_plans = {}
+        # Independent captions use CaptionScene; do not realign the entire
+        # project for the empty legacy ASS revision on every style edit.
+        for rendered in self._render_cues:
+            if not needs_word_plan(self.project.effects.get(rendered.effect_id, {})):
+                continue
+            source = source_cues.get(source_cue_id_of(rendered.id))
+            if source is None:
+                continue
+            plan = build_word_animation(self.project, source, rendered.text)
+            plan['original_duration_ms'] = plan['duration_ms']
+            plan['clock_offset_ms'] = rendered.start_ms-source.start_ms
+            plan['duration_ms'] = rendered.end_ms-rendered.start_ms
+            for span in plan.get('spans', ()):
+                span['start_ms'] += source.start_ms-rendered.start_ms
+                span['end_ms'] += source.start_ms-rendered.start_ms
+            word_plans[rendered.id] = plan
         return SubtitleRenderRevision(
             project_id=str(self.project.project_id),
             revision_id=int(revision),
@@ -429,6 +450,7 @@ class StudioRevisionStore:
             studio_state=self._frozen_studio_state(),
             frame_rate=project_frame_rate(self.project),
             timeline_cues=self._timeline_cues,
+            word_animations=freeze_json(word_plans),
         )
 
     def _capture_persistence(self, generation: int) -> PersistenceRevision:

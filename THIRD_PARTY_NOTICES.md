@@ -10,7 +10,7 @@
 
 ## 每个组件的详细声明
 
-[完整组件目录](licenses/COMPONENTS.md)逐项提供622条分层记录的名称/准确版本、范围、实际路径、版权证据、官方与版本来源、本地原文位置、用途/集成、修改/补丁、对应源码义务、证据等级及缺口。记录含重复层级和未查明项，不代表604种软件均已获得法律核实。
+[完整组件目录](licenses/COMPONENTS.md)逐项提供623条分层记录的名称/准确版本、范围、实际路径、版权证据、官方与版本来源、本地原文位置、用途/集成、修改/补丁、对应源码义务、证据等级及缺口。记录含重复层级和未查明项，不代表604种软件均已获得法律核实。
 
 [机器索引](licenses/component-index.json)提供原文、NOTICE、例外和源码材料的逐文件SHA/来源；[模型表](licenses/MODELS.md)区分代码、权重、配置/词表；[源码说明](licenses/SOURCES.md)说明实际可取得内容与未完成范围；[分发状态](licenses/DISTRIBUTION-STATUS.md)保留开放事项。
 
@@ -35,6 +35,7 @@
 | QtPdf6.9.2 | B | PDFium等第三方不能用QtBase主许可概括；精确第三方版本/版权映射仍待补 |
 | FFmpeg/ffprobe9.0-essentials_build-www.gyan.dev | B，独立CLI | 实际开启GPL/version3/static，不能称泛LGPL；原`ffmpeg-GPLv3.txt`、build-records保留，完整源码/静态依赖未齐；[FFmpeg](https://ffmpeg.org/legal.html)、[提供者](https://www.gyan.dev/ffmpeg/builds/) |
 | mpv0.41.0-923-g7b8915bc1 | B，HWND嵌入/JSON IPC独立进程 | GPL功能开启，内部FFmpeg N-126125-g1d7b14f61/libplacebo dirty另列；原mpv-Copyright及build-records保留；[固定提交](https://github.com/mpv-player/mpv/tree/7b8915bc1d) |
+| Khronos Vulkan-Loader 1.4.363.0（LunarG Vulkan Runtime 官方签名的 `vulkan-1.dll`，2026-10-17 起，下一版安装包随附） | B，`third_party/vulkan-loader/`；mpv 的兜底运行库，只在系统没有显卡驱动带的 `vulkan-1.dll` 时才被用到 | Apache-2.0、MIT（cJSON 等）、HPND-Kevlin-Henney；未修改，上游没有 NOTICE 文件。原文在 `materials/vulkan-loader/1.4.363.0/`；[LunarG 组件包](https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip)、[上游固定标签](https://github.com/KhronosGroup/Vulkan-Loader/tree/v1.4.363)；组件目录第 624 条 |
 | PyAV17.1.0 / FFmpeg8.1.1 | B，同进程扩展与离线wheel | PyAV BSD不覆盖编码库。FFmpeg自报LGPLv3却链接x264/x265，构建补丁移动GPL检查；GPL路线仍需闭合实际版本/源码/补丁，不凭自报LGPL放行。原文/部分源码见pyav-codecs及SOURCES；[PyAV](https://github.com/PyAV-Org/PyAV/tree/v17.1.0)、[构建工程](https://github.com/PyAV-Org/pyav-ffmpeg/tree/8.1.1-2) |
 | Qt Multimedia FFmpeg | B，avcodec61.19.101/format61.7.100/util59.39.100 | 此套自报LGPL2.1+，与CLI和PyAV不同；原文及库探针已附，源码补丁对应仍待闭合 |
 | Remotion4.0.513 / compositor FFmpeg n7.1 | B，实际渲染运行时及ProRes4444透明层生产导出辅助进程 | JS自定义Free/Company License不授予全部GPL下游权利，具体组合范围见当前审阅。媒体库的fdk-aac-free2.0.0原NOTICE现已取得，保留Fraunhofer版权及限制，不能凭移除configure检查按GPL放行。[完整FDK原文](licenses/materials/remotion/4.0.513/fdk-aac-free-2.0.0-NOTICE.txt)、[对应源码及缺口](licenses/SOURCES.md)、[Remotion固定原文](https://github.com/remotion-dev/remotion/blob/v4.0.513/LICENSE.md) |

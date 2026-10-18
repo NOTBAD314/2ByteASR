@@ -178,7 +178,11 @@ class StudioWorkspaceBuilder:
         page.save_state.setMinimumWidth(110)
         page.save_state.setMaximumWidth(220)
         page.save_state.setWordWrap(False)
-        page.save_state.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        # 2026-10-18 (user: 已自动保存 drawn under the home icon): an Ignored
+        # policy hints 0 px, so a tight bar gave the label no room while its
+        # 110 px minimum still sized it, on top of the next buttons. Preferred
+        # keeps it between 110 and 220 px; long messages elide.
+        page.save_state.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         bar.addWidget(page.save_state)
         page.save_state.installEventFilter(page)
         bar.addStretch(1)
@@ -203,12 +207,12 @@ class StudioWorkspaceBuilder:
         page.relink_button = page._tool_button("fa5s.link", "重新定位源媒体", page._relink_media)
         page.relink_button.hide()
         bar.addWidget(page.relink_button)
-        page.save_button = page._tool_button("fa5s.save", "保存项目 (Ctrl+S)", page.save)
+        page.save_button = page._tool_button("fa5s.save", "保存项目 ({key})", page.save, shortcut="save")
         page.studio_save_button = page.save_button
         bar.addWidget(page.save_button)
         bar.addWidget(page._toolbar_divider())
-        undo_button = page._tool_button("fa5s.undo", "撤销 (Ctrl+Z)", page._undo_interactive)
-        redo_button = page._tool_button("fa5s.redo", "重做 (Ctrl+Y)", page._redo_interactive)
+        undo_button = page._tool_button("fa5s.undo", "撤销 ({key})", page._undo_interactive, shortcut="undo")
+        redo_button = page._tool_button("fa5s.redo", "重做 ({key})", page._redo_interactive, shortcut="redo")
         undo_button.setEnabled(page.undo_stack.canUndo())
         redo_button.setEnabled(page.undo_stack.canRedo())
         page.undo_stack.canUndoChanged.connect(undo_button.setEnabled)
@@ -251,7 +255,7 @@ class StudioWorkspaceBuilder:
         # 按钮；与行内其它工具按钮统一走 themed role 图标（随主题重着色）。
         install_themed_icon(page.review_mode_button, "fa5s.glasses", "primary")
         page.review_mode_button.setCheckable(True)
-        bind_text(page.review_mode_button, 'R 进入 / 退出审核模式', property='toolTip')
+        page._shortcut_tooltip(page.review_mode_button, '{key} 进入 / 退出审核模式', 'toggle_review')
         page.review_mode_button.toggled.connect(page._set_review_mode)
         page.review_mode_button.setParent(page)
         page.review_mode_button.hide()
@@ -260,7 +264,8 @@ class StudioWorkspaceBuilder:
         find_replace.setObjectName("studioButton")
         find_replace.setStyleSheet("min-width: 86px; padding: 0 4px;")
         find_replace.setIcon(_icon("fa5s.exchange-alt", GREEN))
-        bind_text(find_replace, '查找并替换字幕文字 (Ctrl+F / Ctrl+H)', property='toolTip')
+        page._shortcut_tooltip(find_replace, '查找并替换字幕文字 ({find} / {replace})',
+                               {'find': 'find', 'replace': 'find_replace'})
         find_replace.clicked.connect(page._open_find_replace)
         bar.addWidget(find_replace)
         # 2026-10-14: the user's own line-broken script, timed by the project's
@@ -351,13 +356,16 @@ class StudioWorkspaceBuilder:
         page._studio_toolbar_overflow_widgets = (open_button,
             page.bilingual_toggle_button, page.review_mode_button, clip_assistant)
         page._studio_compact_commands = (page.speaker_manager_button, shortcut_entry, find_replace, script_match)
+        # Leave the bar first to last when it is too narrow (_fit_studio_toolbar).
+        page._studio_toolbar_collapse_order = (script_match, shortcut_entry, find_replace, page.punctuation_button,
+                                               page.speaker_manager_button, page.cue_list_toggle_button,
+                                               page.context_expand_button)
         overflow=page._tool_button('fa5s.ellipsis-h', '更多工作区操作', lambda: None)
         overflow_menu=create_studio_menu(overflow)
         def update_workspace_menu():
             overflow_menu.clear()
             sources = page._studio_toolbar_overflow_widgets
-            if any(not button.isVisible() for button in page._studio_compact_commands):
-                sources += tuple(b for b in page._studio_compact_commands if not b.isVisible())
+            sources += tuple(getattr(page, '_studio_toolbar_collapsed', ()))
             for source in sources:
                 if source.menu() is not None:
                     submenu = source.menu()
@@ -622,7 +630,7 @@ class StudioWorkspaceBuilder:
         strip_header.addWidget(page.review_queue_label, 0)
         review_confirm = QPushButton("当前正确")
         review_confirm.setObjectName("studioPrimary")
-        bind_text(review_confirm, '确认当前字幕，不修改文本 (Enter)', property='toolTip')
+        page._shortcut_tooltip(review_confirm, '确认当前字幕，不修改文本 ({key})', 'confirm_review')
         review_confirm.clicked.connect(page._confirm_current_review)
         strip_header.addWidget(review_confirm)
         review_replay = QPushButton("重听")
@@ -806,6 +814,9 @@ class StudioWorkspaceBuilder:
         style_scroll = self._scroll_context_panel(page._style_panel_p213())
         style_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         page.context_drawer.addTab(style_scroll, QIcon(), "样式")
+        page.motion_tab_index = page.context_drawer.addTab(
+            self._self_scrolling_context_panel(page.motion_panel, page.motion_inspector.cards_scroll), QIcon(), "动效"
+        )
         page.video_transform_tab_index = page.context_drawer.addTab(
             self._scroll_context_panel(self._video_transform_panel()), QIcon(), "视频"
         )
@@ -821,11 +832,11 @@ class StudioWorkspaceBuilder:
         page.media_pool_tab_index = page.context_drawer.addTab(
             self._scroll_context_panel(page.media_pool_panel), QIcon(), "素材"
         )
-        for index, tip in enumerate(("AI设计", "样式", "视频", "剪辑助手", "素材")):
+        for index, tip in enumerate(("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")):
             page.context_drawer.setTabToolTip(index, tip)
         install_themed_tabs(page.context_drawer, [
             ("fa5s.magic", "secondary"), ("fa5s.palette", "secondary"),
-            ("fa5s.expand-arrows-alt", "secondary"), ("fa5s.cut", "secondary"),
+            ("fa5s.play-circle", "secondary"), ("fa5s.expand-arrows-alt", "secondary"), ("fa5s.cut", "secondary"),
             ("fa5s.photo-video", "secondary"),
         ])
         page.context_drawer.currentChanged.connect(page._remember_context_tab)
@@ -880,28 +891,48 @@ class StudioWorkspaceBuilder:
         page.auto_stacking_toggle.toggled.connect(toggle_stacking)
         page.auto_stacking_toggle.setContextMenuPolicy(Qt.CustomContextMenu)
         def fill_stacking_menu(menu):
+            from PySide6.QtWidgets import QMenu
             from .theme_visual_bounds import start_studio_calibration
-            from .subtitle_layout_ui import open_layout_preview
-            def rearrange(scope):
-                if not page.project:return
+            from .display_handoff_ui import bridge_short_gaps, open_handoff_preview
+            from .subtitle_layout_ui import open_layout_preview, rearrange_now
+            def scope_ids(scope):
+                if not page.project:return []
                 from .studio_edit_sequence import source_cue_id_of
                 current_id = source_cue_id_of(str(page.selected_cue_id or ''))
                 current = next((c for c in page.project.cues if c.id == current_id), None)
-                if scope == 'all':ids=[c.id for c in page.project.cues]
-                elif scope == 'speaker':ids=[c.id for c in page.project.cues if current and c.speaker_id == current.speaker_id]
-                elif scope == 'selected':
+                if scope == 'all':return [c.id for c in page.project.cues]
+                if scope == 'speaker':return [c.id for c in page.project.cues if current and c.speaker_id == current.speaker_id]
+                if scope == 'selected':
                     rows=page.cue_table.selectionModel().selectedRows()
-                    ids=[str(page.cue_model.data(page.cue_model.index(row.row(),0),Qt.UserRole)) for row in rows]
-                else:ids=[page.selected_cue_id] if page.selected_cue_id else []
-                open_layout_preview(page, ids)
+                    return [str(page.cue_model.data(page.cue_model.index(row.row(),0),Qt.UserRole)) for row in rows]
+                return [page.selected_cue_id] if page.selected_cue_id else []
+            # 2026-10-18 (user): the four 预览… re-layouts and the other reviews
+            # were used about never. The everyday actions are one click (one
+            # undo step each); the previews and the decoration measurement wait
+            # under 更多.
+            selected = menu.addAction('重新排版选中字幕的位置',
+                                      lambda: rearrange_now(page, scope_ids('selected') or scope_ids('current')))
+            selected.setToolTip(tr('没有多选时排当前这条；手动摆放或带关键帧的不动，可撤销'))
+            every = menu.addAction('重新排版全部字幕的位置', lambda: rearrange_now(page, scope_ids('all')))
+            every.setToolTip(tr('重叠的字幕自动上下错开；手动摆放或带关键帧的不动，可撤销'))
+            bridge = menu.addAction('衔接 0.5 秒以内的字幕间隙（防闪烁）', lambda: bridge_short_gaps(page))
+            bridge.setToolTip(tr('上一条字幕的结束接到下一条的开始；下一条的开始时间不变，可撤销'))
+            for action in (selected, every, bridge):
+                action.setEnabled(page.project is not None)
+            for old in menu.findChildren(QMenu, 'stackingMoreMenu'):
+                old.deleteLater()  # clear() keeps the previous submenu object
+            more = create_studio_menu(menu)
+            more.setObjectName('stackingMoreMenu')
+            more.setToolTipsVisible(True)
+            bind_text(more, '更多', property='title')
             for label,scope in [('当前字幕','current'),('已选字幕','selected'),('当前说话人字幕','speaker'),('全部字幕','all')]:
-                menu.addAction(f'预览重新排版{label}（可撤销）…',lambda _checked=False,s=scope:rearrange(s))
+                more.addAction(f'先预览再重新排版{label}…',lambda _checked=False,s=scope:open_layout_preview(page, scope_ids(s)))
+            more.addSeparator()
+            more.addAction('预览说话人交接边界…', lambda: open_handoff_preview(page))
+            more.addAction('测量重叠 HTML 主题装饰…', lambda: start_studio_calibration(page))
+            more.setEnabled(page.project is not None)
             menu.addSeparator()
-            from .display_handoff_ui import bridge_short_gaps, open_handoff_preview
-            menu.addAction('预览说话人交接边界（可撤销）…', lambda: open_handoff_preview(page))
-            bridge = menu.addAction('衔接 0.5 秒以内的字幕间隙（防闪烁，可撤销）', lambda: bridge_short_gaps(page))
-            bridge.setToolTip(tr('上一条字幕的结束接到下一条的开始；下一条的开始时间不变'))
-            menu.addAction('测量重叠 HTML 主题装饰…', lambda: start_studio_calibration(page))
+            menu.addMenu(more)
 
         def stacking_menu(point):
             from PySide6.QtWidgets import QMenu
@@ -940,36 +971,42 @@ class StudioWorkspaceBuilder:
         timeline_toolbar.addWidget(page.add_video_track_button)
         from .studio_track_delete import add_subtitle_track
         page.add_subtitle_track_button = page._tool_button(
-            'fa5s.closed-captioning', '新建字幕轨 · 按 T 在此轨添加字幕', lambda: add_subtitle_track(page))
+            'fa5s.closed-captioning', '新建字幕轨 · 按 {key} 在此轨添加字幕', lambda: add_subtitle_track(page),
+            shortcut='add_subtitle')
         timeline_toolbar.addWidget(page.add_subtitle_track_button)
         page.add_subtitle_button = page._tool_button(
-            'fa5s.plus', '添加字幕 (T) · 在播放头创建字幕块', page._add_subtitle_at_playhead)
+            'fa5s.plus', '添加字幕 ({key}) · 在播放头创建字幕块', page._add_subtitle_at_playhead, shortcut='add_subtitle')
         page.add_subtitle_button.setText(tr('添加字幕'))
         page.add_subtitle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         timeline_toolbar.addWidget(page.add_subtitle_button)
-        page.selection_tool_button = page._tool_button("fa5s.mouse-pointer", "选择工具 (V)", lambda: page._set_timeline_tool("selection"))
-        page.track_forward_tool_button = page._tool_button("fa5s.arrow-right", "轨道向前选择 (A) · Shift 单轨", lambda: page._set_timeline_tool("track_forward"))
-        page.razor_tool_button = page._tool_button("fa5s.cut", "剃刀工具 (C)——移动鼠标预览切点与前后文字，点击切开；Esc 取消", lambda: page._set_timeline_tool("razor"))
+        page.selection_tool_button = page._tool_button("fa5s.mouse-pointer", "选择工具 ({key})", lambda: page._set_timeline_tool("selection"), shortcut="selection_tool")
+        page.track_forward_tool_button = page._tool_button("fa5s.arrow-right", "轨道向前选择 ({key}) · Shift 单轨", lambda: page._set_timeline_tool("track_forward"), shortcut="track_forward_tool")
+        page.razor_tool_button = page._tool_button("fa5s.cut", "剃刀工具 ({key})——移动鼠标预览切点与前后文字，点击切开；Esc 取消", lambda: page._set_timeline_tool("razor"), shortcut="razor_tool")
         # 2026-09-03（用户需求重做）：合并工具点选字幕后按住向左/右拖动即定向
         # 合并；再点击另一条字幕则两点配对。不再拿播放头处的旧选中当合并对象。
-        page.merge_tool_button = page._tool_button("fa5s.link", "合并工具 (B)——点选字幕后拖动方向合并", lambda: page._set_timeline_tool("merge"))
+        page.merge_tool_button = page._tool_button("fa5s.link", "合并工具 ({key})——点选字幕后拖动方向合并", lambda: page._set_timeline_tool("merge"), shortcut="merge_tool")
         for button in (page.selection_tool_button, page.track_forward_tool_button, page.razor_tool_button, page.merge_tool_button):
             button.setCheckable(True)
             timeline_toolbar.addWidget(button)
         page.selection_tool_button.setChecked(True)
         from .studio_transition_ui import menu as transition_menu
-        transition_button=page._tool_button('fa5s.adjust','转场 · Ctrl+D 视频 / Ctrl+Shift+D 音频',lambda:None)
+        transition_button=page._tool_button('fa5s.adjust','转场 · {video} 视频 / {audio} 音频',lambda:None,
+                                            shortcut={'video':'video_transition','audio':'audio_transition'})
         transition_button.setPopupMode(QToolButton.InstantPopup)
         transition_button.setMenu(transition_menu(page))
         timeline_toolbar.addWidget(transition_button)
         page.clip_selection_count=QLabel('')
         timeline_toolbar.addWidget(page.clip_selection_count)
         timeline_toolbar.addWidget(page._toolbar_divider())
-        timeline_toolbar.addWidget(page._tool_button("fa5s.cut", "拆分当前字幕 (Ctrl+Shift+S)", page._split_current))
-        timeline_toolbar.addWidget(page._tool_button("fa5s.link", "与下一条合并 (Ctrl+Shift+M)", page._merge_next))
-        timeline_toolbar.addWidget(page._tool_button("fa5s.step-backward", "波纹向前合并 (Shift+Q)", lambda: page.cue_controller.merge_with_neighbor(-1)))
-        timeline_toolbar.addWidget(page._tool_button("fa5s.step-forward", "波纹向后合并 (Shift+W)", lambda: page.cue_controller.merge_with_neighbor(1)))
-        timeline_toolbar.addWidget(page._tool_button("fa5s.trash-alt", "删除当前字幕 (Delete)", page._delete_current))
+        cue_commands = (
+            page._tool_button("fa5s.cut", "拆分当前字幕 ({key})", page._split_current, shortcut="split"),
+            page._tool_button("fa5s.link", "与下一条合并 ({key})", page._merge_next, shortcut="merge"),
+            page._tool_button("fa5s.step-backward", "波纹向前合并 ({key})", lambda: page.cue_controller.merge_with_neighbor(-1), shortcut="merge_previous"),
+            page._tool_button("fa5s.step-forward", "波纹向后合并 ({key})", lambda: page.cue_controller.merge_with_neighbor(1), shortcut="merge_next"),
+            page._tool_button("fa5s.trash-alt", "删除当前字幕 ({key})", page._delete_current, shortcut="delete"),
+        )
+        for button in cue_commands:
+            timeline_toolbar.addWidget(button)
         timeline_toolbar.addWidget(page._toolbar_divider())
         page.smart_align_button = page._tool_button("fa5s.magic", "智能修轴当前字幕", page._smart_align_current)
         timeline_toolbar.addWidget(page.smart_align_button)
@@ -982,16 +1019,16 @@ class StudioWorkspaceBuilder:
         for button in (page.ai_optimize_button, page.reasr_button, page.cue_more_button):
             timeline_toolbar.addWidget(button)
         timeline_toolbar.addWidget(page._toolbar_divider())
-        transport_start = page._tool_button("fa5s.step-backward", "上一帧 (Left)", lambda: page._frame_step(True))
+        transport_start = page._tool_button("fa5s.step-backward", "上一帧 ({key})", lambda: page._frame_step(True), shortcut="frame_left")
         timeline_toolbar.addWidget(transport_start)
-        page.play_button = page._tool_button("fa5s.play", "播放或暂停 (Space)", page._toggle_playback)
+        page.play_button = page._tool_button("fa5s.play", "播放或暂停 ({key})", page._toggle_playback, shortcut="play_pause")
         page.play_button.setProperty("transportRole", "play")
         # Glyph in the on-accent colour at about half the circle, so it reads as
         # centred with room around it (2026-10-14: 24 px in a 34 px circle).
         install_themed_icon(page.play_button, "fa5s.play", "on_accent")
         page.play_button.setIconSize(QSize(16, 16))
         timeline_toolbar.addWidget(page.play_button)
-        timeline_toolbar.addWidget(page._tool_button("fa5s.step-forward", "下一帧 (Right)", lambda: page._frame_step(False)))
+        timeline_toolbar.addWidget(page._tool_button("fa5s.step-forward", "下一帧 ({key})", lambda: page._frame_step(False), shortcut="frame_right"))
         page.position_label = QLabel("00:00:00.000")
         page.position_label.setObjectName("timelineTimecode")
         page.position_label.setMinimumWidth(112)
@@ -1065,7 +1102,7 @@ class StudioWorkspaceBuilder:
         page.snap_toggle = QCheckBox("吸附")
         page.snap_toggle.setObjectName("timelineToggleChip")
         page.snap_toggle.setChecked(True)
-        bind_text(page.snap_toggle, '拖动字幕时吸附到播放头、相邻边界和静音点（快捷键 S）', property='toolTip')
+        page._shortcut_tooltip(page.snap_toggle, '拖动字幕时吸附到播放头、相邻边界和静音点（快捷键 {key}）', 'toggle_snap')
         page.snap_toggle.toggled.connect(page._toggle_timeline_snap)
         timeline_toolbar.addWidget(page.snap_toggle)
         for toggle, icon_name in ((page.waveform_toggle, 'fa5s.wave-square'), (page.filmstrip_toggle, 'fa5s.film'),
@@ -1102,14 +1139,14 @@ class StudioWorkspaceBuilder:
         timeline_toolbar.addWidget(page.timeline_options_button)
         # Keep the functional command groups stable. Single-cue
         # commands move into a menu without changing their callbacks.
+        # Marked by a property, not found by tooltip: tooltips name the current key.
+        for button in (*cue_commands, page.smart_align_button, page.loop_cue_button,
+                       page.ai_optimize_button, page.reasr_button):
+            button.setProperty('cueMenuCommand', True)
         hidden_timeline=[]
         for i in range(timeline_toolbar.count()):
             widget=timeline_toolbar.itemAt(i).widget()
-            if isinstance(widget,QToolButton) and widget.property('commandSource') in {
-                '拆分当前字幕 (Ctrl+Shift+S)', '与下一条合并 (Ctrl+Shift+M)',
-                '波纹向前合并 (Shift+Q)', '波纹向后合并 (Shift+W)',
-                '删除当前字幕 (Delete)', '智能修轴当前字幕',
-                '循环当前字幕（前后留 250/300ms）', 'AI 优化当前字幕', '重新识别当前字幕'}:
+            if isinstance(widget,QToolButton) and widget.property('cueMenuCommand'):
                 hidden_timeline.append(widget)
         for widget in hidden_timeline:
             timeline_toolbar.removeWidget(widget);widget.setParent(page);widget.hide()
@@ -1779,6 +1816,9 @@ class StudioWorkspaceBuilder:
         page.jump_spin = QSpinBox()
         page.jump_spin.setRange(1, 1)
         page.jump_spin.setFixedWidth(70)
+        # Only a number the user changed jumps; the box otherwise follows the
+        # selection (_sync_jump_position sets it with signals blocked).
+        page.jump_spin.valueChanged.connect(lambda _value: setattr(page, "_jump_pending", True))
         page.jump_spin.editingFinished.connect(page._jump_to_row)
         footer.addWidget(page.jump_spin)
         page.cue_total_label = QLabel("/ 0")

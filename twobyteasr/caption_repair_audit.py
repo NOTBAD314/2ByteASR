@@ -150,9 +150,13 @@ def exercise(page, out, pump, wait):
         check('shadow_live_route_updated',all(r['trace']['renderer_route']=='advanced' for r in report['shadow_runtime'][1:]))
         scroll.ensureWidgetVisible(page.style_shadow_spread,0,20);pump(.2)
         page.window().grab().save(str(out/'shadow-panel.png'))
-        check('angle_input_visible',page.style_shadow_angle_value.isVisible())
-        check('compact_direction_distance',abs(page.style_shadow_angle_value.mapToGlobal(page.style_shadow_angle_value.rect().topLeft()).y()-
-             page.style_shadow_distance.mapToGlobal(page.style_shadow_distance.rect().topLeft()).y())<=2)
+        # 2026-10-18: the direction is set on the disc itself (no number box); the
+        # distance field sits beside the disc, level with its top half.
+        disc=page.style_shadow_angle
+        check('angle_disc_visible',disc.isVisible() and not page.style_shadow_angle_value.isVisible())
+        disc_top=disc.mapToGlobal(disc.rect().topLeft()).y()
+        distance_top=page.style_shadow_distance.mapToGlobal(page.style_shadow_distance.rect().topLeft()).y()
+        check('compact_direction_distance',disc_top<=distance_top<=disc_top+disc.height()//2)
         reopen(original_path)
         report['passed']=all(report['checks'].values())
     finally:

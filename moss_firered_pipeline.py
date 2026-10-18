@@ -968,9 +968,72 @@ def _moss_parallel_worker_count(jobs, legacy, total_vram_gb=None, free_vram_gb=N
     return 1
 
 
+def _moss_worker_failure(output_path, returncode, output_lines):
+    """Keep the cause ahead of progress JSON, including when loading failed.
+
+    The worker saves execution.error even on failure. Old workers and native
+    crashes may only leave stdout, so inspect complete events/tracebacks before
+    limiting display text. Full stdout and the raw receipt are retained by the
+    caller in speaker-evidence, independently of this short user-facing error.
+    """
+    execution = {}
+    try:
+        with open(output_path, encoding="utf-8") as source:
+            raw = json.load(source)
+        if isinstance(raw, dict) and isinstance(raw.get("execution"), dict):
+            execution = raw["execution"]
+    except (OSError, ValueError):
+        pass
+    reason = str(execution.get("error") or "").strip()
+    phase = str(execution.get("failure_stage") or "")
+    ordinary = []
+    for line in output_lines:
+        line = str(line).strip()
+        if line.startswith("MOSS_EVENT "):
+            try:
+                event = json.loads(line[len("MOSS_EVENT "):])
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("error") and not execution.get("error"):
+                reason = str(event["error"]).strip()
+                phase = str(event.get("failure_stage") or event.get("phase") or "")
+            continue
+        if line:
+            ordinary.append(line)
+    if not reason:
+        # Prefer an exception line over trailing warnings/cleanup/heartbeats.
+        import re
+        errors = [line for line in ordinary if re.match(
+            r"^(?:[\w.]+(?:Error|Exception)|MemoryError|OSError|ImportError):|^fatal\s*:",
+            line, re.IGNORECASE)]
+        reason = errors[-1] if errors else ""
+    if not reason:
+        reason = ("进程退出后未生成结果文件" if returncode == 0 else "子进程未返回具体异常")
+        advice = "请发送本次任务报告和 MOSS 日志以定位原因。"
+    else:
+        lowered = reason.lower()
+        if "prompt/audio sequence exceeds max_length" in lowered:
+            advice = "音频超过单次输入上限。请更新长音频分段修订；临时可将素材拆短后分别识别。"
+        elif any(marker in lowered for marker in ("os error 1455", "winerror 1455", "paging file is too small", "页面文件太小")):
+            advice = "Windows 虚拟内存不足。关闭游戏等程序；将虚拟内存改为“系统管理的大小”，重启后再试。"
+        elif ("out of memory" in lowered and "cuda" in lowered) or "显存不足" in reason:
+            advice = "本次显存分配失败。先关闭占显存的程序再试；仍失败可改用 SenseVoice 轻量主稿。"
+        elif "no module named" in lowered or "dll load failed" in lowered:
+            advice = "MOSS 运行环境缺少或无法加载依赖，请在模型工坊重新检查并修复运行环境。"
+        else:
+            advice = "请发送本次任务报告和 MOSS 日志；急用可先改用 SenseVoice 轻量主稿。"
+    compact = " ".join(reason.split())
+    # Fit the existing completion summary while keeping full cause in the event.
+    compact = compact if len(compact) <= 110 else compact[:109] + "…"
+    return f"{compact.rstrip('。')}。{advice}", reason, phase
+
+
 def _read_moss_worker_payload(output_path, returncode, output_lines, label, recorder=None):
     if returncode != 0 or not os.path.isfile(output_path):
-        detail = "\n".join(output_lines[-30:])[-3000:]
+        detail, reason, phase = _moss_worker_failure(output_path, returncode, output_lines)
+        if callable(recorder):
+            recorder("moss_worker_failure", returncode=returncode, error=reason,
+                     failure_stage=phase, log_tail="\n".join(output_lines[-30:]))
         raise RuntimeError(f"{label}失败（退出码 {returncode}）：{detail}")
     with open(output_path, "r", encoding="utf-8") as file:
         payload = json.load(file)

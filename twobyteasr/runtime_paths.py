@@ -4,7 +4,9 @@ INSTALL_ROOT is the program location and may be read-only. Mutable data lives
 under USER_DATA_ROOT (%LOCALAPPDATA%\\2ByteASR). MODEL_ROOT is discovered once
 and persisted so ``python -m twobyteasr`` and ``2ByteASR.exe`` see the same
 installed models. Existing multi-gigabyte model trees are registered in place;
-they are never copied by default.
+they are never copied by default. RUNTIME_ROOT (uv, private Pythons, the
+per-role environments and their registry) is chosen and persisted the same
+way (2026-10-17, see :func:`managed_runtime_root`).
 """
 
 from __future__ import annotations
@@ -25,8 +27,14 @@ SCHEMA_VERSION = 1
 MODEL_ROOT_ENV = "2BYTEASR_MODEL_ROOT"
 INSTALL_ROOT_ENV = "2BYTEASR_INSTALL_ROOT"
 USER_DATA_ENV = "2BYTEASR_USER_DATA_ROOT"
+RUNTIME_ROOT_ENV = "2BYTEASR_RUNTIME_ROOT"
+RUNTIMES_FOLDER = "runtimes"
+# Anything here means runtimes were already prepared in that folder.
+_RUNTIME_MARKERS = ("registry.json", "tools", "python", "main", "moss", "firered-llm",
+                    "glm_asr", "canary", "mlx", "nemotron")
 
 _CACHE: "RuntimePaths | None" = None
+_RUNTIME_ROOT_CACHE: dict[tuple[str, ...], tuple[Path, str]] = {}
 
 
 def _local_app_data() -> Path:
@@ -90,9 +98,16 @@ class RuntimePaths:
     temp_root: Path
     model_root_source: str = "default"
     discovered_model_roots: tuple[str, ...] = ()
+    runtime_root: Path | None = None
+    runtime_root_source: str = ""
+
+    @property
+    def managed_runtime_root(self) -> Path:
+        """Runtime folder; hand-built paths without one use the user-data default."""
+        return self.runtime_root if self.runtime_root is not None else self.user_data_root / RUNTIMES_FOLDER
 
     def to_dict(self) -> dict[str, str]:
-        payload = {key: str(value) for key, value in asdict(self).items()}
+        payload = {key: "" if value is None else str(value) for key, value in asdict(self).items()}
         payload["schema_version"] = str(SCHEMA_VERSION)
         return payload
 
@@ -322,6 +337,104 @@ def _program_model_root(install_root: Path) -> Path | None:
         return None
 
 
+_AUTOMATIC_RUNTIME_SOURCES = ("default_program", "default_user_data", "legacy_user_data")
+
+
+def _read_persisted_runtime_root(data_root: Path) -> tuple[Path, str] | None:
+    """Registered runtime folder and how it was chosen."""
+    try:
+        payload = json.loads(_config_path(data_root).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or not str(payload.get("runtime_root") or "").strip():
+        return None
+    path = Path(os.path.abspath(Path(str(payload["runtime_root"]).strip()).expanduser()))
+    source = str(payload.get("runtime_root_source") or "persisted")
+    # An automatic choice that was never filled (or whose program folder was
+    # reinstalled elsewhere) is chosen again. A folder the user moved runtimes
+    # to is kept even while its disk is away: falling back would download
+    # ~5 GB per environment again onto another drive.
+    if source in _AUTOMATIC_RUNTIME_SOURCES and not path.is_dir():
+        return None
+    return path, source
+
+
+def _holds_runtimes(folder: Path) -> bool:
+    try:
+        return any((folder / name).exists() for name in _RUNTIME_MARKERS)
+    except OSError:
+        return False
+
+
+def _program_runtime_root(install_root: Path) -> Path | None:
+    """New Windows installs keep runtimes beside the program (2026-10-17).
+
+    Like :func:`_program_model_root`, but for the packaged app only: a source
+    checkout keeps its ``.venv-*`` and the user-data runtimes.
+    """
+    if os.name != "nt" or not getattr(sys, "frozen", False) or os.environ.get("TWOBYTEASR_TEST_ROOT"):
+        return None
+    root = Path(install_root)
+    if root.parent.name.lower() == "dist" and (root.parent.parent / ".git").exists():
+        return None
+    candidate = root / RUNTIMES_FOLDER
+    try:
+        import tempfile
+        with tempfile.TemporaryFile(dir=candidate if candidate.is_dir() else root):
+            pass
+        return candidate
+    except OSError:
+        return None
+
+
+def _pick_runtime_root(install_root: Path, data_root: Path) -> tuple[Path, str]:
+    """Runtime folder for ``data_root``: override, registered, existing, program, user data."""
+    env = os.environ.get(RUNTIME_ROOT_ENV, "").strip()
+    if env and _same_path(data_root, user_data_root()) and _inside_test_root(Path(env)):
+        return Path(os.path.abspath(Path(env).expanduser())), "environment"
+    persisted = _read_persisted_runtime_root(data_root)
+    if persisted is not None and _inside_test_root(persisted[0]):
+        return persisted
+    legacy = data_root / RUNTIMES_FOLDER
+    if _holds_runtimes(legacy):
+        return legacy, "legacy_user_data"
+    program = _program_runtime_root(install_root)
+    if program is not None:
+        return program, "default_program"
+    return legacy, "default_user_data"
+
+
+def _inside_test_root(path: Path) -> bool:
+    """Isolated runs never install into or clean a runtime folder outside their root."""
+    boundary = os.environ.get("TWOBYTEASR_TEST_ROOT", "").strip()
+    if not boundary:
+        return True
+    return Path(os.path.abspath(path)).is_relative_to(Path(os.path.abspath(boundary)))
+
+
+def _same_path(first: Path, second: Path) -> bool:
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+
+
+def managed_runtime_root(data_root: str | os.PathLike[str] | None = None) -> Path:
+    """Folder holding uv, private Pythons, per-role environments, registry and download cache.
+
+    The single source for every runtime path (registry, installers, cleanup,
+    storage page). Decided once and persisted with the model root; see
+    :func:`_pick_runtime_root` for the order.
+    """
+    data = Path(data_root) if data_root is not None else user_data_root()
+    current = _CACHE
+    if current is not None and current.runtime_root is not None and _same_path(data, current.user_data_root):
+        return current.runtime_root
+    install = current.install_root if current is not None else detect_install_root()
+    key = (os.path.normcase(os.path.abspath(data)), os.path.normcase(str(install)),
+           os.environ.get(RUNTIME_ROOT_ENV, ""), os.environ.get("TWOBYTEASR_TEST_ROOT", ""))
+    if key not in _RUNTIME_ROOT_CACHE:
+        _RUNTIME_ROOT_CACHE[key] = _pick_runtime_root(install, data)
+    return _RUNTIME_ROOT_CACHE[key][0]
+
+
 def _project_root(data_root: Path) -> Path:
     settings = data_root / "SubtitleStudioPreview" / "settings.json"
     try:
@@ -340,11 +453,16 @@ def build_runtime_paths(
     *,
     install_root: str | os.PathLike[str] | None = None,
     model_root: str | os.PathLike[str] | None = None,
+    runtime_root: str | os.PathLike[str] | None = None,
     persist: bool = False,
 ) -> RuntimePaths:
     install = detect_install_root(install_root)
     data = user_data_root()
     chosen, source, discovered = _pick_model_root(install, data, override=model_root)
+    if runtime_root is not None:
+        runtimes, runtime_source = Path(os.path.abspath(Path(runtime_root).expanduser())), "override"
+    else:
+        runtimes, runtime_source = _pick_runtime_root(install, data)
     paths = RuntimePaths(
         install_root=install,
         user_data_root=data,
@@ -357,6 +475,8 @@ def build_runtime_paths(
         temp_root=data / "tmp",
         model_root_source=source,
         discovered_model_roots=tuple(str(item) for item in discovered),
+        runtime_root=runtimes,
+        runtime_root_source=runtime_source,
     )
     if persist:
         persist_runtime_paths(paths)
@@ -366,6 +486,10 @@ def build_runtime_paths(
 def persist_runtime_paths(paths: RuntimePaths) -> Path:
     destination = _config_path(paths.user_data_root)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # An environment override is for this process only; keep what was registered.
+    runtime = ((_read_persisted_runtime_root(paths.user_data_root) or (None, ""))
+               if paths.runtime_root_source == "environment"
+               else (paths.runtime_root, paths.runtime_root_source))
     payload = {
         "schema_version": SCHEMA_VERSION,
         "install_root": str(paths.install_root),
@@ -380,6 +504,9 @@ def persist_runtime_paths(paths: RuntimePaths) -> Path:
         "temp_root": str(paths.temp_root),
         "discovered_model_roots": list(paths.discovered_model_roots),
     }
+    if runtime[0] is not None:
+        payload["runtime_root"] = str(runtime[0])
+        payload["runtime_root_source"] = runtime[1]
     import tempfile
     fd, temporary = tempfile.mkstemp(prefix='.runtime-paths-', suffix='.tmp', dir=destination.parent)
     try:
@@ -397,6 +524,7 @@ def persist_runtime_paths(paths: RuntimePaths) -> Path:
 def reset_runtime_paths() -> None:
     global _CACHE
     _CACHE = None
+    _RUNTIME_ROOT_CACHE.clear()
 
 
 def get_runtime_paths(*, refresh: bool = False) -> RuntimePaths:
@@ -440,6 +568,18 @@ def set_model_root(path: str | os.PathLike[str], *, persist: bool = True) -> Run
         model_root=path,
         persist=persist,
     )
+    _CACHE = paths
+    return paths
+
+
+def set_runtime_root(path: str | os.PathLike[str], *, source: str = "moved") -> RuntimePaths:
+    """Register a new runtime folder (after its contents were moved there)."""
+    global _CACHE
+    from dataclasses import replace
+    current = get_runtime_paths()
+    paths = replace(current, runtime_root=Path(os.path.abspath(Path(path).expanduser())), runtime_root_source=source)
+    persist_runtime_paths(paths)
+    _RUNTIME_ROOT_CACHE.clear()
     _CACHE = paths
     return paths
 
@@ -509,6 +649,8 @@ def source_and_packaged_roots() -> dict[str, str]:
         "user_data_root": str(paths.user_data_root),
         "model_root": str(paths.model_root),
         "model_root_source": paths.model_root_source,
+        "runtime_root": str(paths.managed_runtime_root),
+        "runtime_root_source": paths.runtime_root_source,
         "project_root": str(paths.project_root),
         "config_root": str(paths.config_root),
         "cache_root": str(paths.cache_root),
@@ -526,11 +668,14 @@ __all__ = [
     "discover_legacy_model_roots",
     "get_runtime_paths",
     "iter_model_dir_candidates",
+    "managed_runtime_root",
     "model_folder_name",
     "persist_runtime_paths",
     "reset_runtime_paths",
     "resolve_model_dir",
+    "RUNTIME_ROOT_ENV",
     "set_model_root",
+    "set_runtime_root",
     "source_and_packaged_roots",
     "user_data_root",
 ]

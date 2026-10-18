@@ -109,7 +109,7 @@ def start(window, out):
             from .studio_speaker_manager import SpeakerManagerDialog
             dialog=SpeakerManagerDialog(page);dialog.show();pump(.2)
             dialog.grab().save(str(out/(phase+'-speaker-manager.png')))
-            check('speaker manager uses display identity',all(dialog.table.item(i,1).text() in before_names.values() for i in range(dialog.table.rowCount())))
+            check('speaker manager uses display identity',all(card.name_edit.text() in before_names.values() for card in dialog.cards.values() if card.data.get('present')))
             dialog.close();dialog.deleteLater();pump(.1)
             sample(phase+'-mp3-1x', 20, 1)
             sample(phase+'-mp3-2x', 45, 2)

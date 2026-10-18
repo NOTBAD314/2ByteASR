@@ -4,7 +4,7 @@
 
 版权字段仅展示可定位到组件专属授权前言或核对过的源文件头的声明，不代表穷尽全部权利人。通用许可起草者、字体例外和条约句子不作为组件权利人；未核实项保留状态，完整原文不裁剪。
 
-基于品牌Setup `0d2796a1…c88878c`。本目录记录新补到源码树的材料，不表示旧Setup已含这些文件，也不代表发行兼容性已获批准。622条为分层记录（2026-10-13 补 0.7.0 新增 18 条：MCP 依赖链 17 个随包 Python 组件与日语 CTC 对齐模型；另 8 个原离线 wheel 组件同时进入主程序 PYZ），含重复依赖及未查明原生库。各项保持原审计证据等级。
+基于品牌Setup `0d2796a1…c88878c`。本目录记录新补到源码树的材料，不表示旧Setup已含这些文件，也不代表发行兼容性已获批准。624条为分层记录（2026-10-13 补 0.7.0 新增 18 条：MCP 依赖链 17 个随包 Python 组件与日语 CTC 对齐模型；另 8 个原离线 wheel 组件同时进入主程序 PYZ；2026-10-17 补 0.7.5 的 pylatexenc（623）与 mpv 的 Vulkan 运行库兜底（624）），含重复依赖及未查明原生库。各项保持原审计证据等级。
 
 A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发包）；C＝首次准备下载；D＝用户另配；E＝仅开发。自有代码现采用GPL-3.0-only；独立第三方许可不变，旧禁售目标已经撤销。
 
@@ -6243,3 +6243,12 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 - 用途/集成：PyInstaller PYZ模块；字幕数学公式（`$…$`）转成 Unicode 文字；修改/补丁：无。
 - 源码与配套义务：保留许可全文与版权声明（已随包）。
 - 证据/兼容性：MIT 与自有 GPL-3.0-only 兼容；0.7.5 起随正式版发布（2026-10-16 起在本机日常程序里）。
+## 624. Khronos Vulkan-Loader（LunarG Vulkan Runtime，`vulkan-1.dll`）— 1.4.363.0
+
+- 范围/位置：B；`third_party/vulkan-loader/vulkan-1.dll`、`third_party/vulkan-loader/VulkanRT-License.txt`（源码树由 `scripts/collect_tools.ps1` 放在 `tools/vulkan-loader/`）。2026-10-17 起，下一版安装包随附；已发布的安装包都没有。
+- 许可：Apache-2.0 AND MIT AND HPND-Kevlin-Henney。组件版权声明：The Khronos Group Inc.、LunarG, Inc.、Valve Corporation（2015-2026）；cJSON 为 Dave Gamble（2009）；另有 joseph werle（2014）；`dirent_on_windows` 为 Kevlin Henney（1997, 2003, 2012）。版权行不代表穷尽全部权利人。
+- 来源：[LunarG Runtime 组件包 1.4.363.0](https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/VulkanRT-X64-1.4.363.0-Components.zip)（SHA-256 `a25a927a…5769a`），只取 `x64/vulkan-1.dll`（SHA-256 `e1fcfc94…314a3`，LunarG, Inc. Authenticode 签名有效）；[上游固定标签 v1.4.363](https://github.com/KhronosGroup/Vulkan-Loader/tree/v1.4.363)（`9e9518d2`）。版本依据及 SHA 见机器索引对应 `runtime:vulkan-loader` 和 `dependencies.lock.json` 的 `tools.vulkan_loader`。
+- 完整原文及现有材料：[VulkanRT-License.txt](materials/vulkan-loader/1.4.363.0/VulkanRT-License.txt)（LunarG 包内原文，含两段 MIT）；[Vulkan-Loader-LICENSE.txt](materials/vulkan-loader/1.4.363.0/Vulkan-Loader-LICENSE.txt)（上游 Apache-2.0 全文）；[HPND-Kevlin-Henney.txt](materials/vulkan-loader/1.4.363.0/HPND-Kevlin-Henney.txt)；[apache-2.0.txt](materials/common/apache-2.0.txt)
+- 用途/集成：随包 `mpv.exe` 的导入表直接依赖 `vulkan-1.dll`，它只随显卡驱动安装。Windows 工作台启动 mpv 时把这个文件夹追加到 mpv 进程 PATH 的末尾，所以系统 System32 里有（显卡驱动带的）就用系统的，只有没有时才用这份。mpv 只用 D3D11，不创建 Vulkan 实例。修改/补丁：无，官方签名二进制原样随附。
+- 源码与配套义务：Apache-2.0、MIT、HPND 都不要求提供源码；随附许可全文与版权声明、写明来源与版本即可。上游仓库没有 NOTICE 文件，Apache-2.0 第 4(d) 条不适用。
+- 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；Apache-2.0 与 GPLv3 兼容，且是独立 DLL；当前组合与源码问题见GPL3_ROUTE.md。待查：固定标签与二进制的逐字节对应未自行重建核实。

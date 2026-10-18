@@ -46,6 +46,7 @@ def start(owner, output):
                 check('approved official provider exists',selected>=0)
                 page.ai_service_combo.setCurrentIndex(selected)
                 page.ai_model_combo.setCurrentText('deepseek-v4-pro')
+                QTest.mouseClick(page.ai_menu_button,Qt.MouseButton.LeftButton)  # 2026-10-17: 「AI 更新 ▾」 menu
                 check('one direct full-build button',page.ai_full_button.text()=='AI 完整建库' and page.ai_full_button.menu() is None)
                 check('conservative numeric label',owner.prefer_arabic_numbers.text()=='数字规范化（保留口语小数字）')
                 manager=page._ensure_task_manager();state['manager']=manager

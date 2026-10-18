@@ -48,17 +48,24 @@ def requires_video_composition(graph: dict) -> bool:
     return bool(graph.get("video_tracks"))
 
 
-def paint_layer(painter: QPainter, width: int, height: int, image: QImage, clip: dict) -> None:
+def paint_layer(painter: QPainter, width: int, height: int, image: QImage, clip: dict, fx: dict | None = None) -> None:
     effects = clip.get("effects") or {}
     chroma = effects.get("chromaKey") or {}
     if chroma.get("enabled"):
         image = apply_chroma_key(image, chroma)
     transform = clip.get("transform") or {}
     local, matrix = layer_geometry(width, height, clip, image.width(), image.height())
+    mode = _BLEND_COMPOSITION_MODES.get(effects.get("blendMode", "normal"),
+                                        QPainter.CompositionMode.CompositionMode_SourceOver)
+    if fx:
+        # A transition look on this frame: the preview's painter, export size.
+        from .transition_looks import paint_with_effects
+        paint_with_effects(painter, (width, height), image, local, matrix, fx,
+                           opacity=float(transform.get("opacity", 1.)), mode=mode)
+        return
     painter.save()
     painter.setOpacity(max(0., min(1., float(transform.get("opacity", 1.)))))
-    painter.setCompositionMode(_BLEND_COMPOSITION_MODES.get(effects.get("blendMode", "normal"),
-                                                           QPainter.CompositionMode.CompositionMode_SourceOver))
+    painter.setCompositionMode(mode)
     painter.setTransform(matrix)
     painter.drawImage(local, image)
     painter.restore()
@@ -119,7 +126,7 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
     clips = [dict(c,track_id=t["id"]) for t in sorted(graph["video_tracks"], key=lambda t: (t.get("z_index", 0), t["id"]))
              if t.get("enabled", True) for c in t.get("clips", []) if c.get("enabled", True)
              and (assets[c["asset_id"]].get("video_metadata") or {}).get("has_video") is not False]
-    from .studio_transitions import transition_windows, transition_gain
+    from .studio_transitions import transition_windows, transition_effect, transition_fx_active
     windows = transition_windows(graph, "video")
     clips = [dict(c, **{k:v for k,v in windows.get((c["track_id"],c["id"]),windows.get(c["id"], {})).items() if k != "id"}) for c in clips]
     command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y", "-nostdin",
@@ -192,8 +199,9 @@ def compose_video(ffmpeg: Path, job, output: Path, *, cancelled=None, progress=N
                         layer = QImage(pixels, fw, fh, fw * 4,
                                        QImage.Format.Format_ARGB32)
                         sampled = dict(clip, transform=dict(clip.get("transform") or {}))
-                        sampled["transform"]["opacity"] = float(sampled["transform"].get("opacity",1.)) * transition_gain(clip.get("envelopes",[]),timeline_ms)
-                        paint_layer(painter, width, height, layer, sampled)
+                        fx = transition_effect(clip.get("envelopes",[]),timeline_ms)
+                        sampled["transform"]["opacity"] = float(sampled["transform"].get("opacity",1.)) * fx["opacity"]
+                        paint_layer(painter, width, height, layer, sampled, fx if transition_fx_active(fx) else None)
                 finally:
                     painter.end()
                 process.stdin.write(image.constBits())

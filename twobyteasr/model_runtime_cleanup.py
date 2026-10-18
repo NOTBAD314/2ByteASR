@@ -88,8 +88,8 @@ def _legacy_runtime_files(runtime: Path, receipt: dict) -> list[str]:
 
 
 def scan_unused_model_runtimes(*, data_root: Path | None = None) -> list[RuntimeRemovalPlan]:
-    from .runtime_paths import user_data_root
-    managed = _lexical((data_root or user_data_root()) / 'runtimes')
+    from .runtime_paths import managed_runtime_root
+    managed = _lexical(managed_runtime_root(data_root))
     if not managed.is_dir() or any(_link(p) for p in (managed, *managed.parents)): return []
     registry = _registry(managed)
     try: running = _running_paths(); process_error = ''
@@ -143,9 +143,9 @@ def scan_unused_model_runtimes(*, data_root: Path | None = None) -> list[Runtime
 
 def remove_unused_model_runtime(plan: RuntimeRemovalPlan, *, install_root: Path,
                                 data_root: Path | None = None, busy=lambda: False) -> RemovalResult:
-    from .runtime_paths import user_data_root
+    from .runtime_paths import managed_runtime_root
     from .runtime_download_cache import bootstrap_guard, _healthy_runtimes, _run
-    managed = _lexical((data_root or user_data_root()) / 'runtimes')
+    managed = _lexical(managed_runtime_root(data_root))
     if plan.protected_reason or plan.removal is None:
         return RemovalResult(failures={str(plan.root): plan.protected_reason or '归属未确认'})
     if busy(): return RemovalResult(failures={str(plan.root): '模型任务正在运行；等待占用释放'})

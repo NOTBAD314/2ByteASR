@@ -202,12 +202,14 @@ class SceneRasterizer:
             composite_live_scene_layers, composition_pivot_for_snapshot)
         from .studio_live_canvas import compiled_scene_for_snapshot
         snapshot = prepared.snapshot
-        key = (prepared.snapshot_hash, width, height)
+        from .word_animation import word_state
+        plan = getattr(snapshot, 'word_animation', None) or {}
+        key = (prepared.snapshot_hash, width, height, word_state(plan, relative))
         cached = self.rasters.get(key)
         if cached is None:
             scene = compiled_scene_for_snapshot(snapshot)
-            layers = render_live_layers(snapshot, width=width, height=height) if scene and scene.tracks else None
-            image = render_live_snapshot(snapshot, width=width, height=height) if layers is None else None
+            layers = render_live_layers(snapshot, width=width, height=height, word_time_ms=relative) if scene and scene.tracks else None
+            image = render_live_snapshot(snapshot, width=width, height=height, word_time_ms=relative) if layers is None else None
             cached = (scene, layers, image)
             self.rasters[key] = cached
             def size(value):
@@ -229,6 +231,8 @@ def animated_caption(prepared):
     from .caption_playback_cache import FailedCaption
     if prepared is None or isinstance(prepared,FailedCaption):return False
     snapshot=prepared.snapshot
+    if any((getattr(snapshot, 'word_animation', None) or {}).get(key) for key in ('spans','units')):
+        return True
     if prepared.web:
         theme=snapshot.style_recipe.get('webTheme',{})
         return bool(theme.get('motionSpec',{}).get('tracks') or any(
@@ -290,7 +294,9 @@ class CaptionScene(QObject):
         audio_tail = getattr(page, '_audio_tail_visual_active', lambda:False)()
         from .studio_caption_timeline import independent_captions
         independent = independent_captions(page.project)
-        if not self.active and len(cues) < 2 and not raster_only and not audio_tail and not independent:
+        from .word_animation import word_part
+        timed = any(word_part(page.project.effects.get(c.effect_id, {})) for c in cues)
+        if not self.active and len(cues) < 2 and not raster_only and not audio_tail and not independent and not timed:
             return False
         if not self.active:
             self.active = True

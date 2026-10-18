@@ -169,6 +169,9 @@ class StudioCueController:
         refresh = getattr(page, '_refresh_ai_design_target', None)
         if callable(refresh):
             refresh()
+        sync_jump = getattr(page, '_sync_jump_position', None)
+        if callable(sync_jump):
+            sync_jump()  # playback and seeks move the 跳转 number too (2026-10-18)
 
     def cancel_selection(self) -> None:
         # Remember what the clock sees, but clear the retained target. Repeated
@@ -482,6 +485,9 @@ class StudioCueController:
                     tr("选中字幕（{count}）", count=page.selection_model.selected_count()),
                 )
         mark("selection_scope_timeline")
+        sync_jump = getattr(page, "_sync_jump_position", None)
+        if callable(sync_jump):
+            sync_jump()  # 跳转 box follows the selection (2026-10-18)
         playing_follow = not hydrate or getattr(page,'_review_fast_select',False)
         page._selection_needs_hydration = playing_follow
         cursor_position = page.cue_text.textCursor().position() if not playing_follow else 0

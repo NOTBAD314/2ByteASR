@@ -258,6 +258,38 @@ def test_submission_sends_only_confirmed_rows_without_private_fields(learned):
     assert hub.issue_url("gitcode", document, findings) == hub.ISSUE_PAGES["gitcode"]
 
 
+def test_submit_lists_every_library_and_leaves_unticked_rows_home(learned):
+    # 2026-10-18 redesign: step 1 lists the user's libraries, step 2 may untick rows.
+    rock = legacy.create_learned_content("洛克王国：世界", create_new=True)
+    legacy.add_learned_mapping(rock, "迪莫", "迪莫", category="角色", origin="手动")
+    legacy.add_learned_mapping(rock, "迪毛", "迪莫", category="角色", origin="手动")
+    legacy.persist_learned_mappings(rock, [{"from": "候选", "to": "候选词", "confirmed": False,
+                                            "provenance": "candidate"}])
+    genshin = legacy.create_learned_content("原神", create_new=True)
+    legacy.add_learned_mapping(genshin, "芙宁娜", "芙宁娜", category="角色", origin="手动")
+    payload = legacy.load_learned_term_payload()
+    payload["games"][genshin]["hub"] = {"id": "genshin", "title": "原神（至冬 7.x）", "version": 1}
+    legacy.atomic_write_json(legacy.LEARNED_TERMS_PATH, payload)
+    libraries = {item.key: item for item in hub.submittable_libraries()}
+    assert (libraries[rock].game, libraries[rock].rows, libraries[rock].aliases,
+            libraries[rock].unconfirmed, libraries[rock].hub_title) == ("洛克王国：世界", 2, 1, 1, "")
+    assert libraries[genshin].hub_title == "原神（至冬 7.x）"
+    document, _findings = hub.build_submission(rock, excluded={"迪毛→迪莫"})
+    assert [(row["from"], row["to"]) for row in document["mappings"]] == [("迪莫", "迪莫")]
+
+
+def test_findings_of_one_kind_are_grouped_blocking_kinds_first():
+    # The user saw 37 identical "两字以内的改字规则" lines; the sheet now says it once.
+    rows = [{"from": "迪毛", "to": "迪莫", "verified_audio": True}, {"from": "火深", "to": "火神", "verified_audio": True},
+            {"from": "雷吉", "to": "雷姬"}, {"from": "史来姆", "to": "史莱姆"}, {"from": "史来姆", "to": "史莱母"}]
+    groups = hub.group_findings(lint.lint_rows(rows), rows)
+    assert (groups[0].level, groups[0].code, groups[0].keys) == (
+        lint.BLOCK, "conflict", [("史来姆", "史莱姆"), ("史来姆", "史莱母")])
+    short = [group for group in groups if group.code == "short_cjk"]
+    assert len(short) == 1 and short[0].count == 3 and short[0].verified == 2
+    assert short[0].keys[0] == ("迪毛", "迪莫")
+
+
 def test_parse_library_never_trusts_provenance_from_the_file():
     data = json.dumps(_library_doc([{"from": "派蒙", "to": "派蒙", "provenance": "user_confirmed",
                                      "confirmed": True, "hub": "x@9", "reason": "r"}])).encode("utf-8")

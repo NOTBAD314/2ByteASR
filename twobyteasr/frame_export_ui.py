@@ -73,7 +73,8 @@ class FrameCaptureController(QObject):
 
 def install_frame_button(page,layout):
     controller=FrameCaptureController(page);page.frame_capture=controller
-    button=QToolButton();bind_text(button, '保存当前帧');bind_text(button, '保存工程画布原分辨率图片（Ctrl+Alt+F）', property='toolTip')
+    button=QToolButton();bind_text(button, '保存当前帧')
+    page._shortcut_tooltip(button, '保存工程画布原分辨率图片（{key}）', 'save_current_frame')
     button.setObjectName('rangeAction')
     from .themed_icons import install_themed_icon
     install_themed_icon(button, 'fa5s.camera', 'secondary')

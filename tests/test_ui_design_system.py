@@ -42,9 +42,9 @@ def test_main_shell_fits_compact_desktop_density():
     win.show()
     QApplication.processEvents()
     assert win.settings_surface.height() >= win.settings_surface.minimumHeight()
-    assert all(card.minimumHeight() == 228 for card in win.recognition_plan.cards.values())
-    assert all(card.height() >= 228 for card in win.recognition_plan.cards.values())
-    assert all(tile.minimumHeight() == 88 for tile in win.setting_tiles.values())
+    # Home C′ (2026-10-17): compact model cards and a one-line AI row.
+    assert all(card.height() >= card.minimumHeight() >= 130 for card in win.recognition_plan.cards.values())
+    assert all(tile.minimumHeight() == 60 for tile in win.setting_tiles.values())
     assert win.bottom_bar.isVisible()
     win.close()
 

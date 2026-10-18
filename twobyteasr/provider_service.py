@@ -1199,6 +1199,11 @@ class ProviderService:
         if category not in {
             "cancelled", "authentication_required", "structured_output", "structured_output_schema",
             "structured_json_parse_error", "schema", "quality_validator",
+            # A length-limited/empty structured answer is a batch quality
+            # failure. Let the caller retry with its output reserve; do not
+            # poison every later translation batch by opening the circuit.
+            "structured_output_truncated", "structured_output_truncated_before_answer",
+            "structured_empty_response",
             # timeout 是延迟信号（CLI 账号会话常见长尾），不是供应商死亡。
             # 计入熔断会让并行批次的正常慢批连锁击穿（2026-09-03 断句 9/13
             # 回退取证）；调用方已有自己的重试与本地回退。

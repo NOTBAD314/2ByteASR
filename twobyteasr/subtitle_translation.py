@@ -28,6 +28,7 @@ import copy
 import hashlib
 import json
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1209,6 +1210,7 @@ def _protected(record: Mapping | None, overwrite_manual: bool, overwrite_legacy:
 
 
 _SPLIT_CATEGORIES = frozenset({"request_too_large", "payload_too_large", "transport_length"})
+_TRUNCATED_CATEGORIES = frozenset({"structured_output_truncated", "structured_output_truncated_before_answer"})
 
 
 def _restore_formulas(source: TranslationSource, accepted: Mapping[str, str],
@@ -1243,7 +1245,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
               cache: MutableMapping[str, Any] | None = None, overwrite_manual: bool = False,
               overwrite_legacy: bool = False, suggest_for_manual: bool = True,
               max_items: int = 40, max_chars: int = 2400, context_cues: int = 3, timeout: float = 180.0,
-              retry_wait: Callable[[float], bool] | None = None) -> TranslationResult:
+              retry_wait: Callable[[float], bool] | None = None,
+              event: Callable[[dict], None] | None = None) -> TranslationResult:
     """Translate cues in timeline-ordered batches; never mutates the project.
 
     ``project`` may be a ``SubtitleProject`` or a ``TranslationSource`` (build
@@ -1286,6 +1289,22 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     contexts: dict[str, str] = {}
     fresh: dict[str, str] = {}
 
+    def emit(kind: str, **fields) -> None:
+        if event is not None:
+            from .provider_diagnostics import redact_diagnostics
+            try:
+                event(redact_diagnostics(dict(event=kind, at=_now(), provider=provider_id,
+                                             model=model, target=target, **fields)))
+            except Exception:
+                pass  # Diagnostics must never discard a finished translation.
+
+    def evidence(exc=None) -> dict:
+        from .subtitle_rules.translation_diagnostics import provider_evidence
+        return provider_evidence(provider, exc)
+
+    emit("started", requested=len(requested), source_language=source_language,
+         prompt_version=prompt_version)
+
     def report(message: str) -> None:
         if progress is not None:
             done = len(result.translations) + len(result.suggestions) + len(result.failed)
@@ -1313,6 +1332,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             succeed(cue_id, clean_translation(hit), True)
     if result.cache_hits:
         report(f"缓存命中 {len(result.cache_hits)} 条")
+        emit("cache", count=len(result.cache_hits))
 
     def resolved(cue_id: str) -> bool:
         return cue_id in result.translations or cue_id in result.suggestions or cue_id in result.failed
@@ -1323,7 +1343,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
 
     batch_counter = [0]
 
-    def run(batch: TranslationBatch, retries_left: int) -> None:
+    def run(batch: TranslationBatch, retries_left: int, output_floor: int = 0) -> None:
         if result.cancelled or result.fatal_error:
             return
         if check():
@@ -1332,7 +1352,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         ids = list(batch.target_ids)
         messages = build_messages(batch, target=target, game_context=game_context, glossary_pairs=pairs,
                                   speaker_names=speaker_names, source_language=source_language, math=math)
-        max_tokens = _max_tokens(batch)
+        max_tokens = max(_max_tokens(batch), min(8192, output_floor))
         try:
             prepare_input(messages, schema=RESPONSE_SCHEMA, max_tokens=max_tokens, operation=BUDGET_OPERATION)
         except InputBudgetError:
@@ -1341,12 +1361,19 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         batch_counter[0] += 1
         batch_no = batch_counter[0]
         result.requests += 1
+        report(f"第 {batch_no} 批：请求翻译 {len(ids)} 条，等待模型返回…")
+        emit("request", batch=batch_no, ids=ids, max_tokens=max_tokens,
+             timeout=timeout, messages=messages, schema=RESPONSE_SCHEMA)
+        started = time.monotonic()
+        retry_output_floor = output_floor
         delay = None
         try:
             payload = _call_provider(provider, messages, max_tokens=max_tokens, timeout=timeout,
                                      cancel_check=check)
         except Exception as exc:  # noqa: BLE001 - classified below, reported per cue
             category = failure_category(exc)
+            emit("error", batch=batch_no, category=category, error=str(exc),
+                 elapsed_seconds=round(time.monotonic() - started, 3), **evidence(exc))
             if category == "cancelled" or check():
                 result.cancelled = True
                 return
@@ -1354,7 +1381,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                 split(batch, ids, retries_left, category)
                 return
             from .provider_diagnostics import redact_diagnostics
-            reason = f"provider_error:{category}: {str(redact_diagnostics(str(exc)))[:160]}"
+            reason = f"provider_error:{category}: {str(redact_diagnostics(str(exc)))[:600]}"
             if category in DETERMINISTIC_FAILURES:
                 result.fatal_error = reason
                 for cue_id in ids:
@@ -1363,10 +1390,18 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                 return
             accepted, problems = {}, {cue_id: reason for cue_id in ids}
             delay = retry_delay(exc, 1)
+            if category in _TRUNCATED_CATEGORIES:
+                # Smaller batches need fewer answer tokens, but reasoning still
+                # needs room. Never shrink the output reserve after truncation.
+                retry_output_floor = min(8192, max(4096, max_tokens * 2))
+                delay = None
         else:
+            emit("response", batch=batch_no, output=payload,
+                 elapsed_seconds=round(time.monotonic() - started, 3), **evidence())
             accepted, problems = validate_response(batch, payload, target, source_language)
             if math:
                 accepted, problems = _restore_formulas(source, accepted, problems)
+            emit("validated", batch=batch_no, accepted=len(accepted), problems=problems)
         for cue_id, text in accepted.items():
             succeed(cue_id, text, False)
         note(batch_no, problems)
@@ -1375,6 +1410,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         if not remaining:
             return
         if retries_left > 0:
+            emit("retry", batch=batch_no, ids=remaining, wait_seconds=delay or 0,
+                 output_floor=retry_output_floor)
             if delay:
                 waiter = retry_wait or (lambda seconds: wait_retry(seconds, check))
                 if not waiter(delay):
@@ -1384,13 +1421,14 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             size = max(1, len(ids) // 2)
             for sub in plan_batches(source, remaining, max_items=size, max_chars=max_chars,
                                     context_cues=context_cues, known_translations=fresh):
-                run(sub, retries_left - 1)
+                run(sub, retries_left - 1, retry_output_floor)
             return
         for cue_id in remaining:
             result.failed[cue_id] = problems.get(cue_id) or "missing"
         report(f"失败 {len(result.failed)} 条")
 
     def split(batch: TranslationBatch, ids: list[str], retries_left: int, reason: str) -> None:
+        emit("split", ids=ids, reason=reason)
         if len(ids) <= 1:
             for cue_id in ids:
                 result.failed[cue_id] = reason
@@ -1413,6 +1451,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         leftover = []
     result.pending = tuple(leftover)
     report("已取消" if result.cancelled else "完成")
+    emit("finished", summary=result.summary(), failed=result.failed)
     return result
 
 

@@ -36,9 +36,15 @@ class MotionPreset:
         if not isinstance(self.motion, Mapping):
             raise ValueError("motion preset payload must be an object")
         json.dumps(self.motion, ensure_ascii=False)
+        if 'nativeEffect' in self.motion:
+            if not isinstance(self.motion['nativeEffect'], Mapping):
+                raise ValueError('native motion must be an object')
+            validate_effect(self.motion['nativeEffect'])
         if self.preview_effect_id not in builtin_effects():
             raise ValueError("motion preview effect is unknown")
         if self.native_effect_id:
+            if self.native_effect_id not in builtin_effects():
+                raise ValueError('native motion is unknown')
             validate_effect(builtin_effects()[self.native_effect_id])
         return self
 
@@ -111,6 +117,29 @@ SYSTEM_MOTIONS = {
         MotionPreset("shake", "Shake", _motion("shake", duration=260, hold={"amplitude": 4}), "punch"),
     )
 }
+
+# The main library offers effects with an honest native preview and export.
+# Historical authored presets remain available under the legacy filter.
+for _id, _label, _description in (
+    ('none', '无入退场', '直接显示，适合对白'),
+    ('soft_fade', '柔和淡入', '自然进入，轻微淡出'),
+    ('bounce', '轻盈回弹', '短促弹入，适合提示'),
+    ('punch', '重点强调', '放大回落，适合高能瞬间'),
+    ('float', '轻微上浮', '向上进入，适合旁白'),
+    ('slide', '侧边滑入', '从左滑入'),
+    ('word_reveal', '逐词出现', '按语音时间逐字／词显示'),
+    ('karaoke_highlight', '卡拉 OK', '已读的字词依次点亮'),
+    ('word_current', '当前词高亮', '只突出正在说的字词'),
+):
+    _native = {'bounce': 'bounce_lite', 'float': 'float_up', 'slide': 'slide_soft'}.get(_id, _id)
+    SYSTEM_MOTIONS[_id] = MotionPreset(_id, _label, _motion(_native), _native, _native,
+                                      description=_description, category='常用')
+
+
+from .letter_motion import PRESETS as LETTER_PRESETS
+for _id, (_label, _description, _color) in LETTER_PRESETS.items():
+    SYSTEM_MOTIONS[_id] = MotionPreset(_id, _label, _motion(_id), _id, _id,
+        description=_description, category='精选字效')
 
 
 class MotionPresetStore:

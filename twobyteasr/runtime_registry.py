@@ -6,11 +6,15 @@ and update. Resolution order (first existing interpreter wins):
 
 1. explicit environment override (``TWOBYTEASR_<ROLE>_PYTHON`` and the
    historical ``TWOBYTEASR_MAIN_PYTHON``),
-2. the persisted registry (``%LOCALAPPDATA%\\2ByteASR\\runtimes\\registry.json``),
+2. the persisted registry (``<runtime root>\\registry.json``),
 3. legacy in-place venvs (source checkout next to the install root, install
    parent directories, the historical Desktop checkout),
-4. the stable per-role root (``%LOCALAPPDATA%\\2ByteASR\\runtimes\\<role>``),
-   which is also the only location "repair" is allowed to create.
+4. the stable per-role root (``<runtime root>\\<role>``), which is also the
+   only location "repair" is allowed to create.
+
+The runtime root is ``runtime_paths.managed_runtime_root()``: the program
+folder's ``runtimes`` for new Windows installs, ``%LOCALAPPDATA%\\2ByteASR\\
+runtimes`` where runtimes already are, or wherever the user moved them.
 
 Existing healthy environments are registered in place; nothing is copied or
 re-downloaded. Source mode and packaged mode resolve the same runtimes.
@@ -25,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from twobyteasr.runtime_paths import user_data_root
+from twobyteasr.runtime_paths import managed_runtime_root
 
 # "mlx": Apple Silicon MLX speech runtime without PyTorch (2026-10-13).
 RUNTIME_ROLES = ("main", "moss", "firered_llm", "glm_asr", "canary", "mlx")
@@ -71,7 +75,7 @@ class RuntimeRegistration:
 
 
 def runtimes_root() -> Path:
-    return Path(user_data_root()) / "runtimes"
+    return Path(managed_runtime_root())
 
 
 def stable_runtime_root(role: str) -> Path:

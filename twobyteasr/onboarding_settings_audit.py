@@ -562,7 +562,7 @@ def start(window, output: Path):
             QTest.keyClick(editor, Qt.Key.Key_Q)              # Q is 字幕起点至播放头: same scope
             QApplication.processEvents()
             result['conflict_text'] = panel.conflict_label.text()
-            result['save_enabled_in_conflict'] = panel._save_button.isEnabled()
+            result['save_enabled_in_conflict'] = not panel.has_blocking_conflicts()
             result['resolve_visible'] = panel.resolve_button.isVisible()
             grab(dialog, 'S1-shortcut-conflict')
             editor.clear()
@@ -571,7 +571,7 @@ def start(window, output: Path):
             QApplication.processEvents()
             result['after_rebind'] = panel.conflict_label.text()
             grab(dialog, 'S2-shortcut-rebound')
-            QTest.mouseClick(panel._save_button, Qt.MouseButton.LeftButton)
+            dialog._save_shortcuts()                         # what 保存更改 runs first (2026-10-17)
             QApplication.processEvents()
             dialog.reject()
         on_modal(QDialog, settings, 'shortcut-settings')

@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 from .effect_dsl import POSITION_EFFECT_TYPES, STRENGTH_PRESETS, validate_effect
 from .style_recipe import FillSpec
 from .studio_helpers import _preview_color, render_style_sample
-from .studio_theme import STYLE_FIELD_HEIGHT
+from .studio_theme import STYLE_FIELD_HEIGHT, StudioComboBox
 from .theme_manager import theme_key
 from .ui_theme import theme_definition
 
@@ -107,6 +107,148 @@ class _PropertyChip(QWidget):
         painter.end()
 
 
+# One grid for the whole style tab (2026-10-17, user: "文字元素不太整齊"):
+# every left label shares one column (at least STYLE_LABEL_WIDTH, wider for
+# longer translations) and every control starts STYLE_LABEL_GAP after it;
+# on/off switches sit in one trailing slot.  Property rows indent their
+# title by STYLE_ROW_INSET (3 px accent border + 10 px margin), so labels
+# outside a section pass that inset as ``extra`` to end on the same line.
+STYLE_LABEL_WIDTH = 40
+STYLE_LABEL_MAX_WIDTH = 112
+STYLE_LABEL_GAP = 8
+STYLE_ROW_INSET = 13
+STYLE_SWITCH_SLOT = 34
+
+
+class StyleGridLabel(QLabel):
+    """Left-column label; tells its column when its (translated) text changes."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("stylePropertyRowTitle")
+        self._label_column = None
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt API
+        super().setText(text)
+        column = getattr(self, "_label_column", None)
+        if column is not None:
+            column.refresh()
+
+
+class StyleLabelColumn:
+    """Keeps every left label of the style tab as wide as the widest one."""
+
+    def __init__(self) -> None:
+        self._labels: list[tuple[QLabel, int]] = []
+        self._rows: list[StylePropertyRow] = []
+        self._indents: list[tuple[QWidget, int]] = []
+        self.width = STYLE_LABEL_WIDTH
+
+    def control_indent(self, *, extra: int = 0) -> QWidget:
+        """Empty label cell: a widget after it starts in the control column."""
+        indent = QWidget()
+        self._indents.append((indent, int(extra)))
+        indent.setFixedWidth(self.width + int(extra) + STYLE_LABEL_GAP)
+        return indent
+
+    def add(self, label: QLabel, *, extra: int = 0) -> QLabel:
+        label._label_column = self
+        self._labels.append((label, int(extra)))
+        self.refresh()
+        return label
+
+    def add_row(self, row: "StylePropertyRow") -> "StylePropertyRow":
+        self._rows.append(row)
+        self.add(row.title_label)
+        return row
+
+    @staticmethod
+    def _text_width(label: QLabel) -> int:
+        # Measured with the style-sheet font (13 px, semibold) so the column
+        # is right before the label is first polished and shown.
+        font = QFont(label.font())
+        font.setPixelSize(13)
+        font.setWeight(QFont.Weight.DemiBold)
+        return QFontMetrics(font).horizontalAdvance(label.text()) + 4
+
+    def refresh(self) -> None:
+        live = []
+        for label, extra in self._labels:
+            try:
+                label.text()
+            except RuntimeError:  # deleted with its page
+                continue
+            live.append((label, extra))
+        self._labels = live
+        widest = max((self._text_width(label) for label, _extra in live), default=0)
+        self.width = max(STYLE_LABEL_WIDTH, min(STYLE_LABEL_MAX_WIDTH, widest))
+        for label, extra in live:
+            label.setFixedWidth(self.width + extra)
+        for indent, extra in tuple(self._indents):
+            try:
+                indent.setFixedWidth(self.width + extra + STYLE_LABEL_GAP)
+            except RuntimeError:
+                self._indents.remove((indent, extra))
+        for row in self._rows:
+            try:
+                row.set_label_width(self.width)
+            except RuntimeError:
+                continue
+
+
+class ElidedLabel(QLabel):
+    """Single-line label that ends in "…" instead of cutting a glyph."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt API
+        self._full_text = str(text)
+        self.setToolTip(self._full_text)
+        self._apply_elision()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_elision()
+
+    def _apply_elision(self) -> None:
+        width = max(0, self.contentsRect().width())
+        shown = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, width)
+        if shown != super().text():
+            super().setText(shown)
+
+
+class ElidedComboBox(StudioComboBox):
+    """Combo box whose current item ends in "…" when narrow; Qt clips it
+    mid-glyph. The popup list still shows every full name."""
+
+    def displayed_text(self) -> str:
+        from PySide6.QtWidgets import QStyle, QStyleOptionComboBox
+
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        field = self.style().subControlRect(
+            QStyle.ComplexControl.CC_ComboBox, option, QStyle.SubControl.SC_ComboBoxEditField, self)
+        icon = option.iconSize.width() + 4 if not option.currentIcon.isNull() else 0
+        return self.fontMetrics().elidedText(
+            option.currentText, Qt.TextElideMode.ElideRight, max(0, field.width() - icon - 4))
+
+    def paintEvent(self, event) -> None:
+        from PySide6.QtWidgets import QStyle, QStyleOptionComboBox, QStylePainter
+
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        option.currentText = self.displayed_text()
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+
+
 class StylePropertyRow(QFrame):
     """Collapsible visual-property row: title + summary, click to expand.
 
@@ -131,15 +273,15 @@ class StylePropertyRow(QFrame):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(8)
-        self.title_label = QLabel(title)
-        self.title_label.setObjectName("stylePropertyRowTitle")
+        self.title_label = StyleGridLabel(title)
+        self._label_width = STYLE_LABEL_WIDTH
         header_layout.addWidget(self.title_label)
         # Inline controls and summary (M16 one-line rows); empty otherwise.
         self._inline = QHBoxLayout()
         self._inline.setContentsMargins(0, 0, 0, 0)
         self._inline.setSpacing(6)
         header_layout.addLayout(self._inline)
-        self.inline_summary = QLabel("")
+        self.inline_summary = ElidedLabel("")
         self.inline_summary.setObjectName("stylePropertyRowSummary")
         self.inline_summary.setMinimumWidth(0)
         self.inline_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -148,6 +290,7 @@ class StylePropertyRow(QFrame):
         self._header_stretch = header_layout.count()
         header_layout.addStretch(1)
         self._header_layout = header_layout
+        self._header = header
         self.chip = _PropertyChip()
         header_layout.addWidget(self.chip)
         self.chevron = QLabel("▸")
@@ -155,6 +298,16 @@ class StylePropertyRow(QFrame):
         header_layout.addWidget(self.chevron)
         if on_activate is not None:
             self.chevron.setText("✎")
+        # On/off switch slot, kept (empty) on every inline row so swatches,
+        # captions and chevrons line up row to row.
+        self.trailing = QWidget()
+        self.trailing.setObjectName("stylePropertyRowTrailing")
+        trailing_layout = QHBoxLayout(self.trailing)
+        trailing_layout.setContentsMargins(0, 0, 0, 0)
+        trailing_layout.setSpacing(0)
+        self.trailing.setFixedWidth(STYLE_SWITCH_SLOT)
+        self.trailing.hide()
+        header_layout.addWidget(self.trailing)
         outer.addWidget(header)
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("stylePropertyRowSummary")
@@ -178,12 +331,18 @@ class StylePropertyRow(QFrame):
     def inline_layout(self) -> QHBoxLayout:
         return self._inline
 
+    def set_trailing(self, widget: QWidget) -> None:
+        """Put the row's on/off switch in the shared trailing slot."""
+        self.trailing.layout().addWidget(widget, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
     def set_inline(self, inline: bool = True, *, summary: bool = True, expandable: bool = True) -> None:
         """One line: title, the property's own controls, a short summary and
         (only when there is more) a chevron (2026-10-09, M16, user)."""
         self._inline_mode = bool(inline)
         self._expandable = bool(expandable)
-        self.title_label.setFixedWidth(40 if inline else self.title_label.sizeHint().width())
+        self._header_layout.setSpacing(STYLE_LABEL_GAP)
+        self.trailing.setVisible(bool(inline))
+        self.set_label_width(self._label_width)
         self.summary_label.setVisible(not inline)
         self.inline_summary.setVisible(inline and summary)
         self.chip.set_colors([])
@@ -195,6 +354,14 @@ class StylePropertyRow(QFrame):
             self.chevron.setText("更多 ▸")
         layout = self.layout()
         layout.setContentsMargins(10, 5, 8, 5)
+
+    def set_label_width(self, width: int) -> None:
+        """Title column width; expanded editors start in the control column."""
+        self._label_width = int(width)
+        inline = getattr(self, "_inline_mode", False)
+        self.title_label.setFixedWidth(self._label_width if inline else self.title_label.sizeHint().width())
+        self._content_layout.setContentsMargins(
+            (self._label_width + STYLE_LABEL_GAP) if inline else 4, 4, 0, 4)
 
     def set_summary(self, text: str) -> None:
         self.summary_label.setText(tr(str(text)))
@@ -211,8 +378,38 @@ class StylePropertyRow(QFrame):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        # The chip owns the actual style color. Keep the surrounding control
-        # on the shared surface, even for white or multicolor subtitle fills.
+        # 2026-10-18 (user): an active property shows its color at the row's
+        # right edge, fading to transparent (it was a left-edge tint before
+        # 2026-09). Rows that are off pass no colors.
+        if not self._tint_colors or not getattr(self, "_inline_mode", False):
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Only the row's own line: an expanded editor below stays on the surface.
+        header = self._header.geometry()
+        rect = QRectF(0.0, 0.0, float(self.width()), float(min(self.height(), header.bottom() + header.top() + 1)))
+        gradient = QLinearGradient(rect.topRight(), rect.topLeft())
+        colors = [QColor(value) for value in self._tint_colors]
+        reach = 0.6  # share of the row width the fade covers
+        if len(colors) == 1:
+            colors = colors * 2
+        # Black on a light theme or white on a dark one would read as a grey
+        # band; scale the strength down by the contrast with the panel.
+        surface = QColor(theme_definition(theme_key()).surface)
+        for index, color in enumerate(colors):
+            tinted = QColor(color)
+            contrast = abs(tinted.lightnessF() - surface.lightnessF())
+            strength = 1.0 - 0.62 * max(0.0, contrast - 0.25) / 0.75
+            tinted.setAlpha(int((46 * (1.0 - index / max(1, len(colors))) + 18) * strength))
+            gradient.setColorAt(reach * 0.5 * index / max(1, len(colors) - 1), tinted)
+        clear = QColor(colors[-1])
+        clear.setAlpha(0)
+        gradient.setColorAt(reach, clear)
+        gradient.setColorAt(1.0, clear)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(gradient)
+        painter.drawRect(rect)
+        painter.end()
 
     def set_expanded(self, expanded: bool) -> None:
         expanded = bool(expanded)
@@ -401,57 +598,60 @@ class StyleColorButton(QToolButton):
         self.update()
 
     def paintEvent(self, event) -> None:
+        # 2026-10-18 (user: "颜色卡外面还有一层框实在太难看"): the color is the
+        # control itself; no field around an inner chip. A switched-off
+        # property (background) keeps its color, dimmed.
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = self.rect().adjusted(1, 1, -1, -1)
         theme = theme_definition(theme_key())
-        painter.setPen(QPen(QColor(theme.border_strong), 1))
-        painter.setBrush(QColor(theme.input_surface or theme.surface_elevated))
-        painter.drawRoundedRect(rect, 5, 5)
-        swatch_size = min(27.0, max(24.0, rect.height() - 10.0))
-        swatch = QRectF(
-            rect.left() + 8,
-            rect.center().y() - swatch_size / 2,
-            swatch_size,
-            swatch_size,
-        )
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        radius = 7.0
         if not self._enabled_state:
-            painter.setBrush(QColor("#ebe5d9"))
-            painter.drawRoundedRect(swatch, 6, 6)
-            painter.setPen(QColor("#8b8a83"))
-            painter.drawLine(swatch.topLeft(), swatch.bottomRight())
-            painter.drawLine(swatch.topRight(), swatch.bottomLeft())
-        else:
-            if self._fill_spec.kind != "solid":
-                if self._fill_spec.kind == "radial-gradient":
-                    gradient = QRadialGradient(swatch.center(), max(1.0, swatch.width() / 2))
-                else:
-                    gradient = QLinearGradient(swatch.left(), swatch.top(), swatch.right(), swatch.bottom())
-                for stop in self._fill_spec.stops:
-                    gradient.setColorAt(
-                        max(0.0, min(1.0, float(stop.get("position", stop.get("pos", 0)) or 0))),
-                        QColor(str(stop.get("color") or "#FFFFFFFF")),
-                    )
-                painter.setBrush(gradient)
-                painter.drawRoundedRect(swatch, 6, 6)
-            elif self._color.alpha() == 0:
-                painter.setBrush(QColor("#e9e4d9"))
-                painter.drawRoundedRect(swatch, 6, 6)
-                painter.setBrush(QColor("#c9c3b7"))
-                tile = 5
-                for row in range(4):
-                    for column in range(4):
-                        if (row + column) % 2 == 0:
-                            painter.drawRect(QRectF(swatch.left() + column * tile, swatch.top() + row * tile, tile, tile))
+            painter.setOpacity(0.38)
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, radius, radius)
+        painter.setClipPath(clip)
+        if self._fill_spec.kind != "solid":
+            if self._fill_spec.kind == "radial-gradient":
+                gradient = QRadialGradient(rect.center(), max(1.0, max(rect.width(), rect.height()) / 2))
             else:
-                painter.setBrush(self._color)
-                painter.drawRoundedRect(swatch, 6, 6)
-        painter.setPen(QColor(theme.text if self._enabled_state else theme.disabled))
-        font = painter.font()
-        font.setPointSize(9)
-        font.setWeight(QFont.Weight.DemiBold)
-        painter.setFont(font)
-        painter.drawText(QRectF(swatch.right() + 7, rect.top(), rect.width() - swatch.right() - 13, rect.height()), Qt.AlignmentFlag.AlignVCenter, self._label if self._enabled_state else "关闭")
+                gradient = QLinearGradient(rect.left(), rect.top(), rect.right(), rect.bottom())
+            for stop in self._fill_spec.stops:
+                gradient.setColorAt(
+                    max(0.0, min(1.0, float(stop.get("position", stop.get("pos", 0)) or 0))),
+                    QColor(str(stop.get("color") or "#FFFFFFFF")),
+                )
+            painter.fillRect(rect, QBrush(gradient))
+        else:
+            if self._color.alpha() < 255:
+                # Checkerboard behind see-through colors.
+                painter.fillRect(rect, QColor("#e9e4d9"))
+                tile = 6.0
+                y = rect.top()
+                row = 0
+                while y < rect.bottom():
+                    x = rect.left() + (tile if row % 2 else 0.0)
+                    while x < rect.right():
+                        painter.fillRect(QRectF(x, y, tile, tile), QColor("#c9c3b7"))
+                        x += tile * 2
+                    y += tile
+                    row += 1
+            painter.fillRect(rect, self._color)
+        painter.setClipping(False)
+        painter.setOpacity(1.0)
+        hovered = self.underMouse() and self.isEnabled()
+        painter.setPen(QPen(QColor(theme.accent if hovered else theme.border_strong), 1.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.end()
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self.update()
 
 
 class StylePreview(QWidget):

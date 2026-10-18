@@ -882,6 +882,12 @@ def rank_candidates_with_llm(
         loaded = load_runtime_settings()
         settings = loaded[0] if isinstance(loaded, tuple) else loaded
     settings = _apply_ai_override(settings, ai_service, model)
+    if post is None:
+        from .llm_config import text_ai_key_missing
+        if text_ai_key_missing(settings, "polish"):
+            # 2026-10-15: nothing is sent; analyze_highlights keeps the local
+            # candidates and the note says why in plain words.
+            raise RuntimeError("没填 API Key")
     adapter = skill or HighlightSkillAdapter.discover()
     system = GENERIC_SYSTEM_PROMPT
     windows = [window_payload(project, item) for item in locals_[:50]]

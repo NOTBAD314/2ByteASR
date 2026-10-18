@@ -131,11 +131,6 @@ class ThemeDefinition:
         return self.traits.family or ("light" if self.is_light else "dark")
 
     @property
-    def mood(self) -> dict[str, str]:
-        """One short localized line describing the look (appearance picker)."""
-        return self.traits.mood
-
-    @property
     def text_on_accent(self) -> str:
         if self.traits.text_on_accent:
             return self.traits.text_on_accent
@@ -266,7 +261,9 @@ class ThemeDefinition:
             return dict(self.traits.role_colors)
         if self.is_light:
             return {"primary": "#4a6fc2", "timeline": "#b44d7a", "review": "#a8841c"}
-        return {"primary": "#a48ad9", "timeline": "#d6957c", "review": "#c48cb4"}
+        # 2026-10-17 (user): the salmon timeline hue drew the eye on dark;
+        # a twilight blue sits with the dusty violet and pink instead.
+        return {"primary": "#a48ad9", "timeline": "#8fa6d8", "review": "#c48cb4"}
 
     @property
     def role_wash(self) -> tuple[float, float, float]:
@@ -371,8 +368,8 @@ THEMES = {
     # 品牌莓果色只承担主操作/选中指示；成功/警告/错误/信息使用可区分的色相，
     # 不再与品牌粉紫混在一起。
     "grape": ThemeDefinition(
-        key="grape", label="Grape Nocturne",
-        labels={"zh": "葡萄夜幕", "zh-Hant": "葡萄夜幕", "en": "Grape Nocturne", "ja": "グレープ・ノクターン", "ko": "그레이프 녹턴"},
+        key="grape", label="Dark purple / Berry",
+        labels={"zh": "深紫 / 莓红", "zh-Hant": "深紫 / 莓紅", "en": "Dark purple / Berry", "ja": "ダークパープル / ベリー", "ko": "짙은 보라 / 베리"},
         app_background="#19151c", surface="#252028", surface_elevated="#2f2935",
         panel="#1e1a22", input_surface="#1b171e", selected="#3a3241",
         # 2026-10-14: border_strong #4a4152 -> #574c60 so input edges read (1.8 -> 2.2:1).
@@ -384,8 +381,8 @@ THEMES = {
         focus="#86b4f7", disabled="#716779",
     ),
     "warm": ThemeDefinition(
-        key="warm", label="Cream Garden",
-        labels={"zh": "奶油花园", "zh-Hant": "奶油花園", "en": "Cream Garden", "ja": "クリームガーデン", "ko": "크림 가든"},
+        key="warm", label="Cream / Green",
+        labels={"zh": "奶白 / 绿", "zh-Hant": "奶白 / 綠", "en": "Cream / Green", "ja": "クリーム / グリーン", "ko": "크림 / 초록"},
         app_background=BACKGROUND, surface=SURFACE, surface_elevated=SURFACE_RAISED,
         panel=SURFACE_MUTED, input_surface="#f3eee5", selected=GREEN_SOFT,
         # 2026-10-14 readability: input edge, warning text and focus ring were
@@ -401,8 +398,8 @@ THEMES = {
     # 暖夜炭底 + 奶油文字 + 低饱和绿功能色，surface 层级/border 对比按暗色
     # 独立设计，不再复用亮色体系的映射结果。
     "plum": ThemeDefinition(
-        key="plum", label="Ember Night",
-        labels={"zh": "炉火暖夜", "zh-Hant": "爐火暖夜", "en": "Ember Night", "ja": "エンバーナイト", "ko": "엠버 나이트"},
+        key="plum", label="Charcoal / Sage",
+        labels={"zh": "炭灰 / 灰绿", "zh-Hant": "炭灰 / 灰綠", "en": "Charcoal / Sage", "ja": "チャコール / セージ", "ko": "차콜 / 세이지"},
         app_background="#262420", surface="#302c26", surface_elevated="#3a352d",
         panel="#2b2722", input_surface="#201d19", selected="#3b4634",
         timeline="#242220", media="#161411", border="#46413a", border_strong="#5b5548",
@@ -412,8 +409,8 @@ THEMES = {
         focus="#9db892", disabled="#857e6e",
     ),
     "lavender": ThemeDefinition(
-        key="lavender", label="Lavender Dusk",
-        labels={"zh": "薰衣暮色", "zh-Hant": "薰衣暮色", "en": "Lavender Dusk", "ja": "ラベンダー・ダスク", "ko": "라벤더 더스크"},
+        key="lavender", label="Grey violet / Lilac",
+        labels={"zh": "灰紫 / 淡紫", "zh-Hant": "灰紫 / 淡紫", "en": "Grey violet / Lilac", "ja": "グレーパープル / ライラック", "ko": "회보라 / 라일락"},
         app_background="#29263a", surface="#49445f", surface_elevated="#5a5474",
         panel="#353149", input_surface="#514b6a", selected="#716b91",
         timeline="#302d43", media="#171725", border="#817aa4", border_strong="#9b93bf",
@@ -423,8 +420,8 @@ THEMES = {
         focus="#9b93bf", disabled="#8d88a6",
     ),
     "slate": ThemeDefinition(
-        key="slate", label="Slate Editorial",
-        labels={"zh": "岩灰编辑部", "zh-Hant": "岩灰編輯部", "en": "Slate Editorial", "ja": "スレート・エディトリアル", "ko": "슬레이트 에디토리얼"},
+        key="slate", label="Blue grey / Apricot",
+        labels={"zh": "蓝灰 / 杏橙", "zh-Hant": "藍灰 / 杏橙", "en": "Blue grey / Apricot", "ja": "ブルーグレー / アプリコット", "ko": "블루그레이 / 살구색"},
         app_background="#20272b", surface="#303b41", surface_elevated="#3c4a51",
         panel="#273238", input_surface="#37454c", selected="#4c626c",
         timeline="#202a2f", media="#10171a", border="#5d747d", border_strong="#76909a",
@@ -438,8 +435,8 @@ THEMES = {
     # >= 4.5:1, button text >= 4.5:1, status text on its own wash >= 4.5:1,
     # input edge >= 2.2:1 (tests/test_theme_catalog.py holds the bar).
     "frost": ThemeDefinition(  # white tech: silver layers, ice-blue actions
-        key="frost", label="Frost Engine",
-        labels={"zh": "霜白引擎", "zh-Hant": "霜白引擎", "en": "Frost Engine", "ja": "フロスト・エンジン", "ko": "프로스트 엔진"},
+        key="frost", label="Silver / Blue",
+        labels={"zh": "银白 / 蓝", "zh-Hant": "銀白 / 藍", "en": "Silver / Blue", "ja": "シルバー / ブルー", "ko": "실버 / 파랑"},
         app_background="#e7ebf0", surface="#f8fafc", surface_elevated="#ffffff",
         panel="#eef1f5", input_surface="#f1f4f8", selected="#dde6f2",
         timeline="#edf0f4", media="#161b22", border="#cfd7e1", border_strong="#95a3b4",
@@ -450,8 +447,8 @@ THEMES = {
         focus="#1f7fe0", disabled="#97a2b0",
     ),
     "obsidian": ThemeDefinition(  # yellow/black: layered graphite, signal yellow only for key actions
-        key="obsidian", label="Obsidian Signal",
-        labels={"zh": "黑曜警戒", "zh-Hant": "黑曜警戒", "en": "Obsidian Signal", "ja": "オブシディアン・シグナル", "ko": "옵시디언 시그널"},
+        key="obsidian", label="Black / Yellow",
+        labels={"zh": "黑 / 黄", "zh-Hant": "黑 / 黃", "en": "Black / Yellow", "ja": "ブラック / イエロー", "ko": "검정 / 노랑"},
         app_background="#111214", surface="#1d1f23", surface_elevated="#272a2f",
         panel="#16171a", input_surface="#131417", selected="#32363c",
         timeline="#101113", media="#08090a", border="#34383f", border_strong="#525861",
@@ -462,8 +459,8 @@ THEMES = {
         focus="#ffd84f", disabled="#62656b",
     ),
     "midnight": ThemeDefinition(  # deep navy workbench, sky blue + ice cyan
-        key="midnight", label="Night Blueprint",
-        labels={"zh": "夜航蓝图", "zh-Hant": "夜航藍圖", "en": "Night Blueprint", "ja": "ナイト・ブループリント", "ko": "나이트 블루프린트"},
+        key="midnight", label="Navy / Sky blue",
+        labels={"zh": "深蓝 / 天蓝", "zh-Hant": "深藍 / 天藍", "en": "Navy / Sky blue", "ja": "ネイビー / スカイブルー", "ko": "네이비 / 하늘색"},
         app_background="#0e1525", surface="#172136", surface_elevated="#1f2b44",
         panel="#121a2c", input_surface="#0f1729", selected="#26375a",
         timeline="#0d1422", media="#060a13", border="#28385a", border_strong="#465b87",
@@ -474,8 +471,8 @@ THEMES = {
         focus="#7dd3fc", disabled="#56627f",
     ),
     "verdant": ThemeDefinition(  # ink green, mineral teal: a quiet pro tool
-        key="verdant", label="Teal Workshop",
-        labels={"zh": "青岚工坊", "zh-Hant": "青嵐工坊", "en": "Teal Workshop", "ja": "ティール・ワークショップ", "ko": "틸 워크숍"},
+        key="verdant", label="Ink green / Teal",
+        labels={"zh": "墨绿 / 青绿", "zh-Hant": "墨綠 / 青綠", "en": "Ink green / Teal", "ja": "深緑 / ティール", "ko": "짙은 녹색 / 청록"},
         app_background="#101917", surface="#192522", surface_elevated="#21302c",
         panel="#141e1b", input_surface="#111a18", selected="#293c37",
         timeline="#0f1715", media="#060b0a", border="#2a3c37", border_strong="#45615a",
@@ -486,8 +483,8 @@ THEMES = {
         focus="#7cc4ea", disabled="#5a706a",
     ),
     "neon": ThemeDefinition(  # violet black, electric violet + neon cyan focus
-        key="neon", label="Violet Core",
-        labels={"zh": "紫电核心", "zh-Hant": "紫電核心", "en": "Violet Core", "ja": "バイオレット・コア", "ko": "바이올렛 코어"},
+        key="neon", label="Violet black / Bright violet",
+        labels={"zh": "紫黑 / 亮紫", "zh-Hant": "紫黑 / 亮紫", "en": "Violet black / Bright violet", "ja": "紫黒 / バイオレット", "ko": "보랏빛 검정 / 바이올렛"},
         app_background="#0d0a14", surface="#1c162b", surface_elevated="#282040",
         panel="#140f20", input_surface="#110d1b", selected="#33294f",
         timeline="#0e0b16", media="#06040b", border="#372c53", border_strong="#58497d",
@@ -498,8 +495,8 @@ THEMES = {
         focus="#4fd8ff", disabled="#5e5579",
     ),
     "cinema": ThemeDefinition(  # wine-brown darkroom, copper actions
-        key="cinema", label="Darkroom Grade",
-        labels={"zh": "暗房调色", "zh-Hant": "暗房調色", "en": "Darkroom Grade", "ja": "ダークルーム・グレード", "ko": "다크룸 그레이드"},
+        key="cinema", label="Dark brown / Copper",
+        labels={"zh": "深棕 / 铜橙", "zh-Hant": "深棕 / 銅橙", "en": "Dark brown / Copper", "ja": "ダークブラウン / カッパー", "ko": "짙은 갈색 / 구리색"},
         app_background="#150f10", surface="#241b1c", surface_elevated="#2f2425",
         panel="#1b1415", input_surface="#171112", selected="#3f2e2f",
         timeline="#140f10", media="#090606", border="#413132", border_strong="#684f50",
@@ -510,8 +507,8 @@ THEMES = {
         focus="#8fb4ea", disabled="#6d595a",
     ),
     "graphite": ThemeDefinition(  # neutral minimal editor, monochrome actions, one blue focus
-        key="graphite", label="Graphite Minimal",
-        labels={"zh": "石墨极简", "zh-Hant": "石墨極簡", "en": "Graphite Minimal", "ja": "グラファイト・ミニマル", "ko": "그래파이트 미니멀"},
+        key="graphite", label="Dark grey / White",
+        labels={"zh": "深灰 / 白", "zh-Hant": "深灰 / 白", "en": "Dark grey / White", "ja": "ダークグレー / ホワイト", "ko": "짙은 회색 / 흰색"},
         app_background="#1a1a1b", surface="#242426", surface_elevated="#2d2d30",
         panel="#1e1e20", input_surface="#1b1b1d", selected="#3a3a3e",
         timeline="#18181a", media="#0c0c0d", border="#3b3b3f", border_strong="#5c5c61",
@@ -522,8 +519,8 @@ THEMES = {
         focus="#8ab4f8", disabled="#646468",
     ),
     "sand": ThemeDefinition(  # warm sand paper, terracotta: soft creative light
-        key="sand", label="Sandstone Atelier",
-        labels={"zh": "砂岩画室", "zh-Hant": "砂岩畫室", "en": "Sandstone Atelier", "ja": "サンドストーン・アトリエ", "ko": "샌드스톤 아틀리에"},
+        key="sand", label="Sand / Terracotta",
+        labels={"zh": "砂色 / 陶土红", "zh-Hant": "砂色 / 陶土紅", "en": "Sand / Terracotta", "ja": "サンド / テラコッタ", "ko": "모래색 / 테라코타"},
         app_background="#ebe4d9", surface="#f7f2ea", surface_elevated="#fcf9f4",
         panel="#f0eae0", input_surface="#f2ebe1", selected="#e8dccb",
         timeline="#eee7dc", media="#28221d", border="#dacebd", border_strong="#a99984",
@@ -534,8 +531,8 @@ THEMES = {
         focus="#3a6fb2", disabled="#a39686",
     ),
     "paper": ThemeDefinition(  # high-legibility light: clean paper, ink buttons, crisp edges
-        key="paper", label="Ink on Paper",
-        labels={"zh": "白纸黑字", "zh-Hant": "白紙黑字", "en": "Ink on Paper", "ja": "白紙に墨", "ko": "흰 종이 검은 글씨"},
+        key="paper", label="White / Black",
+        labels={"zh": "白 / 黑", "zh-Hant": "白 / 黑", "en": "White / Black", "ja": "ホワイト / ブラック", "ko": "흰색 / 검정"},
         app_background="#f1f1ee", surface="#fafaf8", surface_elevated="#ffffff",
         panel="#f6f6f3", input_surface="#ffffff", selected="#e5e5e1",
         timeline="#f3f3f0", media="#161616", border="#bdbdb8", border_strong="#6f6f6a",
@@ -546,8 +543,8 @@ THEMES = {
         focus="#0a5bd3", disabled="#85857f",
     ),
     "contrast": ThemeDefinition(  # high-contrast dark: black, white text, bright edges, yellow focus
-        key="contrast", label="Polar Night Contrast",
-        labels={"zh": "极夜高对比", "zh-Hant": "極夜高對比", "en": "Polar Night Contrast", "ja": "極夜ハイコントラスト", "ko": "극야 고대비"},
+        key="contrast", label="Black / Cyan",
+        labels={"zh": "纯黑 / 亮青", "zh-Hant": "純黑 / 亮青", "en": "Black / Cyan", "ja": "ブラック / シアン", "ko": "검정 / 시안"},
         app_background="#050505", surface="#161616", surface_elevated="#242424",
         panel="#0b0b0b", input_surface="#000000", selected="#2e2e2e",
         timeline="#080808", media="#000000", border="#6a6a6a", border_strong="#a8a8a8",
@@ -572,7 +569,6 @@ class ThemeTraits:
     """
 
     family: str = ""
-    mood: dict[str, str] = field(default_factory=dict)
     text_on_accent: str = ""
     accent_text: str = ""
     info: str = ""
@@ -605,15 +601,11 @@ THEME_ORDER = ("frost", "sand", "warm", "grape", "obsidian", "midnight", "verdan
 THEME_TRAITS: dict[str, ThemeTraits] = {
     # Existing five: the values their key branches used to return, unchanged.
     "grape": ThemeTraits(
-        mood={"zh": "深葡萄紫底，莓果色点缀", "zh-Hant": "深葡萄紫底，莓果色點綴",
-              "en": "Deep grape graphite with a berry accent", "ja": "深いグレープに、ベリー色のアクセント", "ko": "깊은 포도빛 바탕에 베리색 포인트"},
         text_on_accent="#fff6f9", accent_text="#ec8db0", overlay_scrim="rgba(0, 0, 0, 140)",
-        role_colors={"primary": "#a48ad9", "timeline": "#d6957c", "review": "#c48cb4"},
+        role_colors={"primary": "#a48ad9", "timeline": "#8fa6d8", "review": "#c48cb4"},  # timeline was #d6957c (10-17)
         log_text="#e8e3de",
     ),
     "warm": ThemeTraits(
-        mood={"zh": "暖奶油纸面，森林绿操作", "zh-Hant": "暖奶油紙面，森林綠操作",
-              "en": "Warm cream paper with forest-green actions", "ja": "温かいクリーム地に、フォレストグリーン", "ko": "따뜻한 크림색 바탕에 포레스트 그린"},
         text_on_accent="#ffffff", accent_text="#4f8557", overlay_scrim="rgba(41, 42, 39, 92)",
         role_colors={"primary": "#4a6fc2", "timeline": "#b44d7a", "review": "#a8841c"},
         zone_colors={"studio": "#b25a80", "ai": "#9a5aa6", "content": "#557e8e"},
@@ -621,8 +613,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_background="#2b2d29", log_text="#ecebe4",
     ),
     "plum": ThemeTraits(
-        mood={"zh": "暖炭灰底，奶油字与鼠尾草绿", "zh-Hant": "暖炭灰底，奶油字與鼠尾草綠",
-              "en": "Warm charcoal, cream text and sage green", "ja": "暖かいチャコールに、クリームとセージ", "ko": "따뜻한 차콜 바탕, 크림색 글자와 세이지 그린"},
         text_on_accent="#262420", accent_text="#a9d1a6", overlay_scrim="rgba(16, 15, 12, 160)",
         role_colors={"primary": "#bc8fb0", "timeline": "#86b3b4", "review": "#d0a07c"},
         zone_colors={"studio": "#cc7f9e", "ai": "#b585c4", "content": "#8aa5b8"},
@@ -630,8 +620,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#e8e3de",
     ),
     "lavender": ThemeTraits(
-        mood={"zh": "柔和紫灰，层次明亮", "zh-Hant": "柔和紫灰，層次明亮",
-              "en": "Soft violet-grey with bright layers", "ja": "やわらかな紫グレー、明るい階層", "ko": "부드러운 보랏빛 회색, 밝은 레이어"},
         text_on_accent="#29263a", accent_text="#dcc3f7", overlay_scrim="rgba(15, 14, 28, 150)",
         role_colors={"primary": "#93bbe4", "timeline": "#e3a68c", "review": "#d9c78f"},
         zone_colors={"studio": "#cc7f9e", "ai": "#b585c4", "content": "#8aa5b8"},
@@ -639,8 +627,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#e8e3de",
     ),
     "slate": ThemeTraits(
-        mood={"zh": "蓝灰岩面，杏橙强调", "zh-Hant": "藍灰岩面，杏橙強調",
-              "en": "Blue-grey slate with an apricot accent", "ja": "青みのスレートに、アプリコット", "ko": "청회색 슬레이트에 살구색 포인트"},
         text_on_accent="#20272b", accent_text="#f2b896", overlay_scrim="rgba(9, 14, 16, 150)",
         role_colors={"primary": "#86bfb7", "timeline": "#d3a2b9", "review": "#b5a7da"},
         zone_colors={"studio": "#cc7f9e", "ai": "#b585c4", "content": "#8aa5b8"},
@@ -649,9 +635,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
     ),
     # 2026-10-14 new themes.
     "frost": ThemeTraits(
-        mood={"zh": "银白冷灰分层，冰蓝操作，精密工具感", "zh-Hant": "銀白冷灰分層，冰藍操作，精密工具感",
-              "en": "Silver-white layers, ice-blue actions, a precision tool",
-              "ja": "シルバーホワイトの階層とアイスブルー、精密ツールの質感", "ko": "은백색 레이어와 아이스 블루, 정밀 도구 느낌"},
         text_on_accent="#ffffff",
         role_colors={"primary": "#2f6fd0", "timeline": "#0f8584", "review": "#7657c9"},
         zone_colors={"studio": "#3a6cc8", "ai": "#7656c4", "content": "#2b8494"},
@@ -659,9 +642,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_background="#161b22", log_text="#dfe6ee",
     ),
     "obsidian": ThemeTraits(
-        mood={"zh": "分层石墨黑，信号黄只给关键操作", "zh-Hant": "分層石墨黑，信號黃只給關鍵操作",
-              "en": "Layered graphite black; signal yellow only where it matters",
-              "ja": "階層のあるグラファイトブラック、要所だけシグナルイエロー", "ko": "레이어드 그래파이트 블랙, 핵심 버튼에만 시그널 옐로"},
         text_on_accent="#16140c", info="#6cc4ff", tint_amount=0.13,
         role_colors={"primary": "#d9b45a", "timeline": "#6fb3c9", "review": "#c98f6d"},
         zone_colors={"studio": "#d4a73c", "ai": "#9d8fd0", "content": "#7aa7b8"},
@@ -669,9 +649,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#e9e6dc",
     ),
     "midnight": ThemeTraits(
-        mood={"zh": "深海军蓝工作台，天蓝与冰青点亮", "zh-Hant": "深海軍藍工作台，天藍與冰青點亮",
-              "en": "Deep navy workbench lit by sky blue and ice cyan",
-              "ja": "深いネイビーの作業台に、スカイブルーとアイスシアン", "ko": "짙은 네이비 작업 공간에 스카이 블루와 아이스 시안"},
         text_on_accent="#06101f",
         role_colors={"primary": "#7aa8ff", "timeline": "#5fc8c0", "review": "#b49cf0"},
         zone_colors={"studio": "#6f9cf0", "ai": "#a690e8", "content": "#62b8c8"},
@@ -679,9 +656,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#dbe4f5",
     ),
     "verdant": ThemeTraits(
-        mood={"zh": "墨绿底，矿物青绿操作，安静的专业工具", "zh-Hant": "墨綠底，礦物青綠操作，安靜的專業工具",
-              "en": "Ink green with mineral-teal actions; a quiet pro tool",
-              "ja": "墨緑の地にミネラルティール、静かなプロツール", "ko": "짙은 녹색 바탕에 미네랄 틸, 차분한 전문 도구"},
         text_on_accent="#05201a",
         role_colors={"primary": "#5fc7a8", "timeline": "#d8b26a", "review": "#8fb8e0"},
         zone_colors={"studio": "#4fbf9f", "ai": "#9ab0dc", "content": "#c8b070"},
@@ -689,9 +663,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#dcebe5",
     ),
     "neon": ThemeTraits(
-        mood={"zh": "紫黑底，电光紫操作，霓虹青焦点", "zh-Hant": "紫黑底，電光紫操作，霓虹青焦點",
-              "en": "Violet-black, electric-violet actions, neon-cyan focus",
-              "ja": "紫がかった黒にエレクトリックバイオレット、ネオンシアンのフォーカス", "ko": "보랏빛 검정에 일렉트릭 바이올렛, 네온 시안 포커스"},
         text_on_accent="#12092a",
         role_colors={"primary": "#a98cf0", "timeline": "#4fc8e6", "review": "#e58ac4"},
         zone_colors={"studio": "#d27fd0", "ai": "#9f84f0", "content": "#5cbfe0"},
@@ -699,9 +670,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#e6e0f7",
     ),
     "cinema": ThemeTraits(
-        mood={"zh": "酒红棕暗房，铜橙操作，像电影调色台", "zh-Hant": "酒紅棕暗房，銅橙操作，像電影調色台",
-              "en": "Wine-brown darkroom with copper actions, like a grading suite",
-              "ja": "ワインブラウンの暗室に銅色、グレーディング卓のように", "ko": "와인 브라운 암실에 구리색, 색보정 데스크처럼"},
         text_on_accent="#1f0f09",
         role_colors={"primary": "#d9a06c", "timeline": "#c9787e", "review": "#9fb0d8"},
         zone_colors={"studio": "#d4806e", "ai": "#c28fb5", "content": "#8fb0c4"},
@@ -709,9 +677,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#efe2dc",
     ),
     "graphite": ThemeTraits(
-        mood={"zh": "中性石墨灰，黑白操作，只留一抹蓝做焦点", "zh-Hant": "中性石墨灰，黑白操作，只留一抹藍做焦點",
-              "en": "Neutral graphite, monochrome actions, one blue for focus",
-              "ja": "ニュートラルなグラファイト、モノクロ操作、フォーカスだけ青", "ko": "중립적인 그래파이트, 흑백 버튼, 포커스만 파란색"},
         text_on_accent="#18181a", accent_text="#e8e8ea", tint_amount=0.14,
         role_colors={"primary": "#9fb4d1", "timeline": "#c9b08f", "review": "#b6a3c9"},
         zone_colors={"studio": "#b8a2b4", "ai": "#a3a6cc", "content": "#93b2b8"},
@@ -719,9 +684,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
         log_text="#e4e4e4",
     ),
     "sand": ThemeTraits(
-        mood={"zh": "暖灰砂色纸面，陶土红操作，柔和不刺眼", "zh-Hant": "暖灰砂色紙面，陶土紅操作，柔和不刺眼",
-              "en": "Warm sand paper with terracotta actions, easy on the eyes",
-              "ja": "温かな砂色の紙面にテラコッタ、目にやさしい", "ko": "따뜻한 모래색 바탕에 테라코타, 눈이 편안함"},
         text_on_accent="#ffffff",
         role_colors={"primary": "#4b6fa8", "timeline": "#9a5a3c", "review": "#7a6a2a"},
         zone_colors={"studio": "#a8573a", "ai": "#8a5f8f", "content": "#4f7c82"},
@@ -730,9 +692,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
     ),
     "paper": ThemeTraits(
         family="contrast",
-        mood={"zh": "高可读浅色：纯净纸面，墨黑按钮，清晰边线", "zh-Hant": "高可讀淺色：純淨紙面，墨黑按鈕，清晰邊線",
-              "en": "High-legibility light: clean paper, ink buttons, crisp edges",
-              "ja": "高可読ライト：白い紙面、墨色ボタン、くっきりした境界", "ko": "고가독성 라이트: 흰 종이 바탕, 먹색 버튼, 또렷한 테두리"},
         text_on_accent="#ffffff", tint_amount=0.12,
         role_colors={"primary": "#2c5aa8", "timeline": "#8a3f62", "review": "#6b5a14"},
         zone_colors={"studio": "#8a3f62", "ai": "#5f4a96", "content": "#2c6a78"},
@@ -741,9 +700,6 @@ THEME_TRAITS: dict[str, ThemeTraits] = {
     ),
     "contrast": ThemeTraits(
         family="contrast",
-        mood={"zh": "高对比深色：黑底白字，亮边框，黄色焦点", "zh-Hant": "高對比深色：黑底白字，亮邊框，黃色焦點",
-              "en": "High-contrast dark: black, white text, bright edges, yellow focus",
-              "ja": "ハイコントラスト・ダーク：黒地に白文字、明るい境界、黄色フォーカス", "ko": "고대비 다크: 검은 바탕에 흰 글자, 밝은 테두리, 노란색 포커스"},
         text_on_accent="#000000", info="#3cd0ff", overlay_scrim="rgba(0, 0, 0, 190)",
         role_colors={"primary": "#3cd0ff", "timeline": "#ffb02e", "review": "#ff7ad9"},
         zone_colors={"studio": "#ff8ad8", "ai": "#b4a7ff", "content": "#5fd8ff"},
@@ -838,16 +794,6 @@ def theme_display_label(theme: ThemeDefinition, language: str | None = None) -> 
         from .i18n import ui_literal
         return ui_literal(theme.labels["zh"], language)
     return theme.label
-
-
-def theme_mood(theme: ThemeDefinition, language: str | None = None) -> str:
-    """Localized one-line style description shown under the theme name."""
-    if language is None:
-        from .i18n import current_language
-
-        language = current_language()
-    mood = theme.mood
-    return mood.get(str(language)) or mood.get("en") or mood.get("zh", "")
 
 
 def theme_family_label(family: str, language: str | None = None) -> str:

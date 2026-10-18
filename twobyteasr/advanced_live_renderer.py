@@ -813,6 +813,7 @@ def render_live_snapshot(
     device_pixel_ratio: float = 1.0,
     layers: frozenset[str] | None = None,
     graph_layer_ids: frozenset[str] | None = None,
+    word_time_ms: float | None = None,
 ) -> QImage:
     """Render an immediately correct gradient/layout approximation."""
     dpr = max(0.5, float(device_pixel_ratio))
@@ -855,6 +856,44 @@ def render_live_snapshot(
     path.translate(local_x, local_y)
     local_bounds = path.boundingRect()
 
+    highlight_path = QPainterPath()
+    animated_pieces = []
+    word_plan = getattr(snapshot, 'word_animation', None) or {}
+    if word_time_ms is not None and word_plan.get('units'):
+        char_offset = 0
+        for line_index, line in enumerate(lines):
+            for unit in word_plan['units']:
+                a, b = max(char_offset, unit['char_start']), min(char_offset+len(line), unit['char_end'])
+                if a >= b:
+                    continue
+                part = QPainterPath()
+                x = (widest-widths[line_index])*float(snapshot.anchor_x)+metrics.horizontalAdvance(line[:a-char_offset])
+                part.addText(QPointF(x,metrics.ascent()+line_index*line_height),font,line[a-char_offset:b-char_offset])
+                part.translate(local_x,local_y)
+                animated_pieces.append((part,unit,word_time_ms))
+            char_offset += len(line)+1
+    elif word_time_ms is not None and word_plan.get('spans'):
+        from .word_animation import word_state
+        states = word_state(word_plan, word_time_ms)
+        partial = QPainterPath()
+        char_offset = 0
+        for line_index, line in enumerate(lines):
+            line_end = char_offset + len(line)
+            line_x = (widest-widths[line_index])*float(snapshot.anchor_x)
+            for span, state in zip(word_plan['spans'], states):
+                a, b = max(char_offset, span['char_start']), min(line_end, span['char_end'])
+                if a >= b or state != 2:
+                    continue
+                x = line_x + metrics.horizontalAdvance(line[:a-char_offset])
+                partial.addText(QPointF(x, metrics.ascent()+line_index*line_height), font,
+                                line[a-char_offset:b-char_offset])
+            char_offset = line_end+1
+        partial.translate(local_x, local_y)
+        if word_plan['mode'] == 'word_reveal':
+            path = partial
+        else:
+            highlight_path = partial
+
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -883,6 +922,14 @@ def render_live_snapshot(
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(_color(background.get("color"), "#99000000", opacity=opacity))
         painter.drawRoundedRect(local_bounds.adjusted(-padding, -padding, padding, padding), radius, radius)
+
+    if animated_pieces:
+        from .letter_motion_live import paint_units
+        if text_layer or effects_layer:
+            paint_units(painter,animated_pieces,snapshot,local_bounds,float(snapshot.font_size)*type_scale,
+                        type_scale,text_layer,effects_layer)
+        painter.end()
+        return image
 
     glow = snapshot.glow if isinstance(snapshot.glow, Mapping) else {}
     if effects_layer and glow and bool(glow.get("enabled", _number(glow, "strength", default=0.0) > 0.0)):
@@ -937,6 +984,9 @@ def render_live_snapshot(
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(resolve_fill_brush(snapshot.fill, local_bounds))
         painter.drawPath(path)
+        if not highlight_path.isEmpty():
+            painter.setBrush(_color(word_plan.get('color'), '#FFFFD166'))
+            painter.drawPath(highlight_path)
     painter.end()
     return image
 
@@ -947,6 +997,7 @@ def render_live_layers(
     width: int,
     height: int,
     device_pixel_ratio: float = 1.0,
+    word_time_ms: float | None = None,
 ) -> dict[str, QImage]:
     """Compile graph pixels once into separately cacheable compositing layers."""
     graph = _graph_for_snapshot(snapshot)
@@ -955,7 +1006,7 @@ def render_live_layers(
             snapshot,
             width=width,
             height=height,
-            device_pixel_ratio=device_pixel_ratio,
+            device_pixel_ratio=device_pixel_ratio, word_time_ms=word_time_ms,
         )}
     result: dict[str, QImage] = {}
     back_layers = [
@@ -968,25 +1019,25 @@ def render_live_layers(
     ]
     for layer in back_layers:
         result[layer.id] = render_live_snapshot(
-            snapshot, width=width, height=height, device_pixel_ratio=device_pixel_ratio,
+            snapshot, width=width, height=height, device_pixel_ratio=device_pixel_ratio, word_time_ms=word_time_ms,
             layers=frozenset({"backdrop"}), graph_layer_ids=frozenset({layer.id}),
         )
     result[graph.panel_layer.id] = render_live_snapshot(
-        snapshot, width=width, height=height, device_pixel_ratio=device_pixel_ratio,
+        snapshot, width=width, height=height, device_pixel_ratio=device_pixel_ratio, word_time_ms=word_time_ms,
         layers=frozenset({"backdrop"}), graph_layer_ids=frozenset({graph.panel_layer.id}),
     )
     for layer in front_layers:
         result[layer.id] = render_live_snapshot(
-            snapshot, width=width, height=height, device_pixel_ratio=device_pixel_ratio,
+            snapshot, width=width, height=height, device_pixel_ratio=device_pixel_ratio, word_time_ms=word_time_ms,
             layers=frozenset({"backdrop"}), graph_layer_ids=frozenset({layer.id}),
         )
     result["effects"] = render_live_snapshot(
             snapshot, width=width, height=height,
-            device_pixel_ratio=device_pixel_ratio, layers=frozenset({"effects"}),
+            device_pixel_ratio=device_pixel_ratio, layers=frozenset({"effects"}), word_time_ms=word_time_ms,
         )
     result[graph.text_layer.id] = render_live_snapshot(
             snapshot, width=width, height=height,
-            device_pixel_ratio=device_pixel_ratio, layers=frozenset({"text"}),
+            device_pixel_ratio=device_pixel_ratio, layers=frozenset({"text"}), word_time_ms=word_time_ms,
         )
     source = next((image for image in result.values() if not image.isNull()), QImage())
     return LiveLayerImages(result, canvas_size=source.size(), snapshot=snapshot)

@@ -723,16 +723,27 @@ class VideoCompositionScene(QWidget):
                     chroma = effects.get("chromaKey") if isinstance(effects, Mapping) else None
                     if isinstance(chroma, Mapping) and chroma.get("enabled"):
                         image = self._chroma_keyed_image(clip_id, image, chroma, pts)
-                    painter.save()
-                    painter.setOpacity(max(0.0, min(1.0, float(transform.get("opacity", 1.0)))))
                     blend = _BLEND_COMPOSITION_MODES.get(
                         str((effects or {}).get("blendMode") or "normal")
                     )
-                    if blend is not None and blend != QPainter.CompositionMode.CompositionMode_SourceOver:
-                        painter.setCompositionMode(blend)
-                    painter.setTransform(matrix * raster_scale, combine=False)
-                    painter.drawImage(local, image)
-                    painter.restore()
+                    transition_fx = layer.get("transition_fx")
+                    if transition_fx:
+                        # Push/zoom/flash/glitch/stretch: same painter as export.
+                        from .transition_looks import paint_with_effects
+                        paint_with_effects(
+                            painter, (raster_size.width(), raster_size.height()), image, local,
+                            matrix * raster_scale, transition_fx,
+                            opacity=float(transform.get("opacity", 1.0)),
+                            mode=blend or QPainter.CompositionMode.CompositionMode_SourceOver,
+                        )
+                    else:
+                        painter.save()
+                        painter.setOpacity(max(0.0, min(1.0, float(transform.get("opacity", 1.0)))))
+                        if blend is not None and blend != QPainter.CompositionMode.CompositionMode_SourceOver:
+                            painter.setCompositionMode(blend)
+                        painter.setTransform(matrix * raster_scale, combine=False)
+                        painter.drawImage(local, image)
+                        painter.restore()
                     if clip_id == self._selected_clip_id:
                         selected_polygon = polygon
             self._samples.append(

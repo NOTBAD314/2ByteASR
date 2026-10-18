@@ -94,9 +94,15 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
     def progress(done, total, message=""):
         print(f"   [翻译] {done}/{total} {message}".rstrip())
 
+    from .subtitle_rules.translation_diagnostics import TranslationLog
+    request_log = TranslationLog()
+    print(f"   [翻译] 请求日志（含字幕文字，不含 API Key）：{request_log.path}")
     result = translate(translation_source(fake), None, provider, target=target,
                        game_context=str(getattr(runtime_context, "game_name", "") or ""),
-                       cancel_check=(lambda: bool(token and token.is_cancelled)), progress=progress, cache=cache)
+                       cancel_check=(lambda: bool(token and token.is_cancelled)), progress=progress, cache=cache,
+                       event=request_log)
+    if request_log.error:
+        print(f"   [翻译] 请求日志写入失败：{request_log.error}")
     try:
         save_cache(cache)
     except OSError:

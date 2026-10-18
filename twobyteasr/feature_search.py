@@ -90,7 +90,7 @@ def entries(window) -> list[Entry]:
         Entry('MOSS Pro 云端（MOSI）', ('moss', 'mosi', '云端', '说话人'), '申请与设置 API → MOSI', _api(window, 'mosi_moss_pro')),
         Entry('申请与设置 API（所有服务商）', ('api', 'key', '密钥', '云端', '在线', '服务商', '测试连接'),
               '申请与设置 API', _api(window)),
-        Entry('文字 AI（断句、校对、翻译）', ('ai', 'deepseek', 'openai', 'gemini', 'grok', '断句', '校对', '翻译', '文字ai'),
+        Entry('文字 AI（断句、校对、翻译）', ('ai', 'deepseek', 'openai', 'gemini', 'grok', 'claude', 'anthropic', '断句', '校对', '翻译', '文字ai'),
               'AI 智能断句设置', lambda: window._open_ai_settings_dialog()),
         Entry('识别方式（本机 / 云端 / 轻量）', ('方式', '方案', '识别', '模型', '显卡', 'cuda', 'nvidia', 'mac', 'cpu', '本机'),
               '说明 → 选择识别方式', lambda: window._next_step_action('choose_plan')),

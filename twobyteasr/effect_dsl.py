@@ -11,13 +11,22 @@ import re
 from typing import Any, Mapping
 
 
+from .letter_motion import PRESETS as LETTER_PRESETS, BEAT_MODES
+from .motion_catalog import RICH_ENTRY, RICH_EXIT, RICH_LOOP, DIRECTIONS, spec as motion_spec
+
 EFFECT_TYPES = {
     "none",
     "fade", "pop", "slide", "scale",  # P24 compatibility
     "soft_fade", "soft_pop", "punch", "float_up", "drop_in",
     "slide_soft", "blur_reveal", "emphasis", "karaoke_highlight",
-    "bounce_lite",
+    "bounce_lite", "word_reveal", "word_current", "karaoke_wipe",
+    "loop_breathe", "loop_float", "loop_sway",
 }
+EFFECT_TYPES.update(LETTER_PRESETS)
+EFFECT_TYPES.update(BEAT_MODES)
+EFFECT_TYPES.update(RICH_ENTRY | RICH_EXIT | RICH_LOOP)
+#: Curated presets rendered through per-unit keyframes (motion_catalog).
+RICH_TYPES = RICH_ENTRY | RICH_EXIT
 EASING_PRESETS = {
     "linear": 1.0,
     "soft": 0.72,
@@ -29,7 +38,14 @@ EASING_PRESETS = {
 }
 STRENGTH_PRESETS = {"low": 0.72, "medium": 1.0, "high": 1.28}
 POSITION_EFFECT_TYPES = {"slide", "float_up", "drop_in", "slide_soft"}
-TEXT_EFFECT_TYPES = {"emphasis", "karaoke_highlight"}
+TEXT_EFFECT_TYPES = {"emphasis", "karaoke_highlight", "word_reveal", "word_current", "karaoke_wipe"}
+LOOP_EFFECT_TYPES = {"loop_breathe", "loop_float", "loop_sway"} | RICH_LOOP
+TEXT_EFFECT_TYPES.update(LETTER_PRESETS)
+TEXT_EFFECT_TYPES.update(BEAT_MODES)
+EFFECT_TYPES.update(BEAT_MODES)
+EFFECT_TYPES.update(RICH_ENTRY | RICH_EXIT | RICH_LOOP)
+#: Curated presets rendered through per-unit keyframes (motion_catalog).
+RICH_TYPES = RICH_ENTRY | RICH_EXIT
 _HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 
 
@@ -94,7 +110,7 @@ def validate_effect_part(value: Mapping[str, Any] | None) -> dict[str, Any]:
     allowed = {
         "type", "duration", "delay", "easing", "accel", "strength",
         "scale_from", "scale_to", "overshoot", "offset_x", "offset_y",
-        "blur", "color", "terms", "granularity",
+        "blur", "color", "terms", "granularity", "direction", "stagger",
     }
     unknown = set(payload) - allowed
     if unknown:
@@ -103,7 +119,11 @@ def validate_effect_part(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if effect_type == "none":
         return result
 
-    result["duration"] = _bounded_int(payload.get("duration", 180), "duration", 1, 4000)
+    looping = effect_type in LOOP_EFFECT_TYPES
+    curated = motion_spec("loop" if looping else "exit" if effect_type in RICH_EXIT - RICH_ENTRY else "entry", effect_type)
+    default_duration = curated.duration if curated and not curated.legacy else (1200 if looping else 180)
+    result["duration"] = _bounded_int(payload.get("duration", default_duration),
+                                      "duration", 120 if looping else 1, 4000)
     result["delay"] = _bounded_int(payload.get("delay", 0), "delay", 0, 2000)
     result["easing"] = _choice(payload.get("easing"), "easing", set(EASING_PRESETS), "soft")
     result["accel"] = _bounded_float(
@@ -131,8 +151,14 @@ def validate_effect_part(value: Mapping[str, Any] | None) -> dict[str, Any]:
         result["offset_y"] = _bounded_int(payload.get("offset_y", defaults[1]), "offset_y", -1000, 1000)
     if effect_type == "blur_reveal":
         result["blur"] = _bounded_float(payload.get("blur", 6.0), "blur", 0.0, 30.0)
+    if effect_type in RICH_TYPES:
+        directional = ((motion_spec("entry", effect_type) or motion_spec("exit", effect_type)).directional)
+        if directional or payload.get("direction") is not None:
+            result["direction"] = _choice(payload.get("direction"), "direction", set(DIRECTIONS), directional or "left")
+        if payload.get("stagger") is not None:
+            result["stagger"] = _bounded_int(payload.get("stagger"), "stagger", 0, 600)
     if effect_type in TEXT_EFFECT_TYPES:
-        result["color"] = _color(payload.get("color"), "color", "#FFD166")
+        result["color"] = _color(payload.get("color"), "color", "#4D9FFF" if effect_type == "karaoke_wipe" else "#FFD166")
     if effect_type == "emphasis":
         result["terms"] = _terms(payload.get("terms"))
     if effect_type == "karaoke_highlight":
@@ -144,18 +170,25 @@ def validate_effect_part(value: Mapping[str, Any] | None) -> dict[str, Any]:
 
 def validate_effect(value: Mapping[str, Any] | None) -> dict[str, Any]:
     payload = dict(value or {})
-    if "entry" in payload or "exit" in payload or "word_highlight" in payload:
-        unknown = set(payload) - {"entry", "exit", "word_highlight"}
+    if any(key in payload for key in ("entry", "exit", "word_highlight", "loop")):
+        unknown = set(payload) - {"entry", "exit", "loop", "word_highlight", "motion_override"}
         if unknown:
             raise EffectValidationError(f"unknown effect fields: {sorted(unknown)}")
         result = {
             "entry": validate_effect_part(payload.get("entry")),
             "exit": validate_effect_part(payload.get("exit")),
         }
+        if "motion_override" in payload:
+            result["motion_override"] = bool(payload["motion_override"])
+        if "loop" in payload:
+            loop = validate_effect_part(payload["loop"])
+            if loop["type"] not in LOOP_EFFECT_TYPES | {"none"}:
+                raise EffectValidationError("unsupported loop effect")
+            result["loop"] = loop
         if "word_highlight" in payload:
             highlight = validate_effect_part(payload.get("word_highlight"))
             if highlight["type"] not in TEXT_EFFECT_TYPES | {"none"}:
-                raise EffectValidationError("word_highlight must be emphasis or karaoke_highlight")
+                raise EffectValidationError("unsupported word display effect")
             result["word_highlight"] = highlight
         return result
     return {"entry": validate_effect_part(payload), "exit": {"type": "none"}}
@@ -178,9 +211,25 @@ def builtin_effects() -> dict[str, dict[str, Any]]:
         "blur_reveal": {"entry": {"type": "blur_reveal", "duration": 240, "blur": 6}, "exit": {"type": "soft_fade", "duration": 140}},
         "emphasis": {"entry": {"type": "emphasis", "duration": 240, "color": "#FFD166"}, "exit": {"type": "none"}},
         "karaoke_highlight": {"entry": {"type": "karaoke_highlight", "duration": 180, "color": "#7DD3FC"}, "exit": {"type": "none"}},
+        "word_reveal": {"entry": {"type": "word_reveal"}, "exit": {"type": "none"}},
+        "word_current": {"entry": {"type": "word_current", "color": "#FFD166"}, "exit": {"type": "none"}},
+        "karaoke_wipe": {"entry": {"type": "karaoke_wipe", "color": "#4D9FFF"}, "exit": {"type": "none"}},
         "bounce_lite": {"entry": {"type": "bounce_lite", "duration": 280}, "exit": {"type": "soft_fade", "duration": 130}},
     }
+    raw.update({key: {'entry': {'type': key, 'color': item[2]}, 'exit': {'type': 'none'}}
+                for key, item in LETTER_PRESETS.items()})
     return {effect_id: validate_effect(value) for effect_id, value in raw.items()}
+
+
+def preset_effect(effect_id: str) -> dict[str, Any] | None:
+    """A built-in or curated entry preset. Curated ones are deliberately not in
+    :func:`builtin_effects`, which seeds every new project's effects table."""
+    builtin = builtin_effects().get(effect_id)
+    if builtin is not None:
+        return builtin
+    if effect_id in RICH_ENTRY:
+        return validate_effect({'entry': {'type': effect_id}, 'exit': {'type': 'none'}})
+    return None
 
 
 def _number(value: float) -> str:

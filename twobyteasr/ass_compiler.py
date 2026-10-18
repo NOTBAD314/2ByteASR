@@ -165,7 +165,7 @@ def _style_anchor_position(
 
 
 def _dialogue_line(
-    *, start_ms: int, end_ms: int, style_id: str, speaker: str, text: str, frame_rate=None
+    *, start_ms: int, end_ms: int, style_id: str, speaker: str, text: str, frame_rate=None, layer: int = 0
 ) -> str:
     from .caption_frame_time import ass_frame_ms
     display_start=ass_frame_ms(start_ms,frame_rate)
@@ -184,7 +184,8 @@ def _dialogue_line(
             text=re.sub(r'\\fad\(\d+,\d+\)','',text)
             text=('{'+rf'\fade(255,0,255,{offset},{min(stop,offset+fade_in)},'
                   +f'{max(offset,stop-fade_out)},{stop})'+'}'+text)
-    return "Dialogue: 0,{start},{end},{style},{speaker},0,0,0,,{text}".format(
+    return "Dialogue: {layer},{start},{end},{style},{speaker},0,0,0,,{text}".format(
+        layer=int(layer),
         start=_ass_time(display_start),
         end=_ass_time(display_end),
         style=_ass_style_name(style_id),
@@ -200,6 +201,10 @@ def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any
     from .bilingual_layout import project_display_cues
     from .caption_frame_time import project_frame_rate
     if frame_rate is None:frame_rate=project_frame_rate(project)
+    from .word_animation import build_word_animation, needs_word_plan
+    word_plans = {c.id: build_word_animation(project, c) for c in (cues if cues is not None else project.cues)
+                  if needs_word_plan(project.effects.get(c.effect_id, {}))}
+    word_plans.update(getattr(project, '_word_animation_plans', {}))
     return _compile_ass_records(
         # Original / translation / bilingual: the same layout the live preview draws.
         cues=project_display_cues(project, cues if cues is not None else project.cues),
@@ -212,6 +217,7 @@ def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any
         play_res_y=play_res_y,
         translations=None,
         stacking_enabled=project.studio_state.get('auto_subtitle_stacking',True),
+        word_animations=word_plans,
     )
 
 
@@ -252,6 +258,7 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
         play_res_y=revision.play_res_y,
         translations=None,
         stacking_enabled=state.get('auto_subtitle_stacking',True),
+        word_animations=thaw_json(getattr(revision, 'word_animations', None)) or {},
     )
 
 
@@ -268,6 +275,7 @@ def _compile_ass_records(
     frame_rate=None,
     stacking_enabled=True,
     stack_offsets=None,
+    word_animations=None,
 ) -> str:
     styles = sorted(styles, key=lambda item: (item.id != "default", item.id))
     known_styles = {style.id for style in styles}
@@ -324,7 +332,17 @@ def _compile_ass_records(
         )
         effect = effects.get(cue.effect_id, effects.get("none", {}))
         cue_duration = cue.end_ms - cue.start_ms
-        text = compile_effect_text(text, effect, cue_duration_ms=cue_duration)
+        from .word_animation import compile_word_ass, word_part
+        plan = (word_animations or {}).get(cue.id, {})
+        if plan.get('units'):
+            from .letter_motion_ass import compile_letter_events
+            lines.extend(compile_letter_events(cue,caption,cue_styles[cue.id],plan,play_res_x,play_res_y,speaker,frame_rate,effect))
+            continue
+        def animated_text(offset=0):
+            if word_part(effect):
+                return compile_word_ass(plan, caption.text, cue_styles[cue.id].primary_color, offset_ms=offset)
+            return compile_effect_text(escape_ass_text(caption.text), effect, cue_duration_ms=cue_duration)
+        text = animated_text()
         resolved_style = cue_styles[cue.id]
         lines.append(f"; CaptionStyle cue={cue.id} hash={caption.style_hash} lines={caption.line_count} width={caption.measured_width:g}")
         # Static appearance belongs to the resolved style; legacy recipe tags
@@ -338,7 +356,7 @@ def _compile_ass_records(
         )
         if motion_segments:
             for relative_start, relative_end, segment_override in motion_segments:
-                segment_text = "{" + ass_override + segment_override + "}" + text
+                segment_text = "{" + ass_override + segment_override + "}" + animated_text(relative_start)
                 lines.append(
                     _dialogue_line(
                         start_ms=cue.start_ms + relative_start,
@@ -368,7 +386,7 @@ def _compile_ass_records(
                 settled_override = ass_override + settled_override
                 settled_override = _cue_transform_override(cue, settled_override, resolved_style) + settled_override
                 settled_override = _style_position_override(resolved_style, settled_override) + settled_override
-                settled_text = ("{" + settled_override + "}" + text) if settled_override else text
+                settled_text = ("{" + settled_override + "}" + animated_text(settled_at)) if settled_override else animated_text(settled_at)
                 lines.append(
                     _dialogue_line(
                         start_ms=cue.start_ms + settled_at,

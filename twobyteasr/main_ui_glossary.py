@@ -20,6 +20,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QSizePolicy,
+    QStackedWidget,
     QTableView,
     QTableWidget,
     QTableWidgetItem,
@@ -171,7 +173,7 @@ class TermGameListRow(QFrame):
         self.setProperty("selected", False)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(9, 7, 9, 7)
+        layout.setContentsMargins(12, 7, 10, 7)
         layout.setSpacing(8)
         self.icon_label = QLabel()
         self.icon_label.setObjectName("termGameRowIcon")
@@ -179,6 +181,7 @@ class TermGameListRow(QFrame):
         self.icon_label.setFixedSize(24, 24)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignTop)
+        self.icon_label.hide()  # 2026-10-17 v2: a flat list, the name carries the row
         text = QVBoxLayout()
         text.setSpacing(2)
         self.name_label = QLabel(name)
@@ -302,6 +305,9 @@ class _TermMappingsModel(QAbstractTableModel):
             return str(r.get("status", ""))
         if role == Qt.ItemDataRole.ToolTipRole:
             return r.get("tooltip", "")
+        if role == Qt.ItemDataRole.ForegroundRole and col in (1, 2, 4):
+            theme = _glossary_theme()
+            return QColor(theme.text_secondary if col == 1 else theme.text_muted)
         return None
 
     def data_for_row(self, row: int):
@@ -803,6 +809,8 @@ class TermLibraryDialog(QWidget):
         return {key: translate(value, current_language()) for key, value in labels.items()}
 
     def _focus_new_game(self):
+        self.show_page("mine")
+        self.new_library_panel.show()
         self.game_input.setFocus()
         self.game_input.selectAll()
 
@@ -816,54 +824,113 @@ class TermLibraryDialog(QWidget):
     # ------------------------------------------------------------ build
 
     def _build(self, games):
+        # 2026-10-17 redesign v2 (plan docs/exec-plans/completed/2026-10-17-glossary-page-redesign.md):
+        # one accent color, underline tabs on a hairline, a flat library list,
+        # and one content card whose sections are split by hairlines instead of
+        # nested boxes.  Older control names stay (tests and acceptance scripts
+        # click them); rarely used controls live in the 「AI 更新 ▾」 and 「⋯」 menus.
+        from .glossary_page_parts import ActionPopup, PageTab, StatusDotDelegate
+        from .ui_widgets import SwitchControl
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 10)
-        layout.setSpacing(8)
+        layout.setSpacing(0)
 
-        # C1 Header：标题 + 计数 badge + 一句副文案 + [?] + 🔍
         heading = QHBoxLayout()
-        heading_text = QVBoxLayout()
-        heading_text.setSpacing(2)
-        title_row = QHBoxLayout()
+        heading.setSpacing(14)
         title = QLabel("术语库")
         title.setObjectName("termLibraryTitle")
         from twobyteasr.ui_navigation import style_workspace_page_title
         style_workspace_page_title(title)
-        title_row.addWidget(title)
-        self.library_badge = QLabel()
-        self.library_badge.setObjectName("termLibraryBadge")
-        title_row.addWidget(self.library_badge)
-        title_row.addStretch(1)
-        heading_text.addLayout(title_row)
-        intro = QLabel("让角色名、技能和游戏专名更容易识别正确。")
-        intro.setObjectName("muted")
-        heading_text.addWidget(intro)
-        # P0: show skeleton immediately; heavy list population happens after show() via refresh_current_game / timers.
-        heading.addLayout(heading_text, 1)
-        self.help_button = AnimatedButton("?")
-        self.help_button.setObjectName("flat")
-        self.help_button.setFixedSize(30, 30)
-        bind_text(self.help_button, '已确认/学习映射会参与纠错；内置词库只提供弱候选，不会仅凭名字相似强制改字。', property='toolTip')
-        self.help_button.clicked.connect(
-            lambda: QMessageBox.information(
-                self,
-                tr('术语库说明'),
-                tr('已确认/学习映射会参与纠错；内置词库只提供弱候选，不会仅凭名字相似强制改字。\n\n专名 → 专名：拼写候选，只有读音和上下文支持时才修正；\n常见错词 → 正确词：保存明确纠错关系。'),
-            )
-        )
-        heading.addWidget(self.help_button)
-        self.search_toggle = AnimatedButton("")
-        self.search_toggle.setObjectName("flat")
-        self.search_toggle.setIcon(_icon("fa5s.search"))
-        self.search_toggle.setFixedSize(30, 30)
-        bind_text(self.search_toggle, '搜索术语', property='toolTip')
-        self.search_toggle.clicked.connect(self._toggle_search)
-        heading.addWidget(self.search_toggle)
+        heading.addWidget(title, 0, Qt.AlignmentFlag.AlignBottom)
+        intro = QLabel("让角色名、技能和游戏专名更容易识别正确")
+        intro.setObjectName("termPageIntro")
+        heading.addWidget(intro, 1, Qt.AlignmentFlag.AlignBottom)
         layout.addLayout(heading)
+        layout.addSpacing(16)
 
-        # C2 顶部 toolbar：创建游戏 + 删除当前游戏
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
+        tab_bar = QFrame()
+        tab_bar.setObjectName("termTabBar")
+        tabs = QHBoxLayout(tab_bar)
+        tabs.setContentsMargins(0, 0, 0, 0)
+        tabs.setSpacing(32)
+        self.my_tab_button = PageTab("我的词库")
+        self.my_tab_button.setChecked(True)
+        self.my_tab_button.clicked.connect(lambda: self.show_page("mine"))
+        tabs.addWidget(self.my_tab_button, 0, Qt.AlignmentFlag.AlignBottom)
+        self.hub_tab_button = PageTab("线上词库")
+        bind_text(self.hub_tab_button, '下载别人整理好的词库，或投稿你的词库', property='toolTip')
+        self.hub_tab_button.clicked.connect(lambda: self.show_page("hub"))
+        tabs.addWidget(self.hub_tab_button, 0, Qt.AlignmentFlag.AlignBottom)
+        tabs.addStretch(1)
+        self.hub_button = self.hub_tab_button  # name before the redesign
+        self._tab_group = QButtonGroup(self)
+        self._tab_group.setExclusive(True)
+        self._tab_group.addButton(self.my_tab_button)
+        self._tab_group.addButton(self.hub_tab_button)
+        layout.addWidget(tab_bar)
+        layout.addSpacing(18)
+        # The library count once lived in a badge; the 「我的词库」 tab shows it now.
+        self.library_badge = QLabel(self)
+        self.library_badge.hide()
+
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("termPageStack")
+        layout.addWidget(self.page_stack, 1)
+        mine_page = QWidget()
+        mine_page.setObjectName("termMinePage")
+        self.mine_page = mine_page
+        body = QHBoxLayout(mine_page)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(20)
+        self.page_stack.addWidget(mine_page)
+        self.hub_page = QWidget()
+        self.hub_page.setObjectName("termHubPage")
+        self.hub_page_layout = QVBoxLayout(self.hub_page)
+        self.hub_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.page_stack.addWidget(self.hub_page)
+        self.hub_panel = None  # built on first open (glossary_hub_ui.HubPanel)
+
+        # ---- left: my libraries, a flat list
+        sidebar = QFrame()
+        sidebar.setObjectName("termLibrarySidebar")
+        sidebar.setMinimumWidth(220)
+        sidebar.setMaximumWidth(264)
+        sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self.library_sidebar = sidebar
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(10)
+        sidebar_head = QHBoxLayout()
+        sidebar_head.setSpacing(8)
+        self.game_search = QLineEdit()
+        self.game_search.setObjectName("termSidebarSearch")
+        bind_text(self.game_search, '搜索词库', property='placeholderText')
+        self.game_search.setClearButtonEnabled(True)
+        self.game_search.textChanged.connect(self._filter_games)
+        sidebar_head.addWidget(self.game_search, 1)
+        self.sidebar_new_button = AnimatedButton("新建")
+        self.sidebar_new_button.setObjectName("termToolButton")
+        bind_text(self.sidebar_new_button, '新建游戏 / 内容词库', property='toolTip')
+        self.sidebar_new_button.clicked.connect(self._focus_new_game)
+        sidebar_head.addWidget(self.sidebar_new_button)
+        sidebar_layout.addLayout(sidebar_head)
+        # The list search is always shown now; the old toggle stays hidden.
+        self.sidebar_search_button = AnimatedButton("")
+        bind_text(self.sidebar_search_button, '搜索我的词库', property='toolTip')
+        self.sidebar_search_button.clicked.connect(self._toggle_game_search)
+        self.sidebar_search_button.setParent(sidebar)
+        self.sidebar_search_button.hide()
+        # 新建词库：点「新建」才展开的小表单。
+        self.new_library_panel = QFrame()
+        self.new_library_panel.setObjectName("termNewLibrary")
+        new_library = QVBoxLayout(self.new_library_panel)
+        new_library.setContentsMargins(10, 10, 10, 10)
+        new_library.setSpacing(8)
+        self.game_input = QLineEdit()
+        bind_text(self.game_input, '输入游戏 / 内容名称', property='placeholderText')
+        self.game_input.returnPressed.connect(self.create_game)
+        new_library.addWidget(self.game_input)
         self.content_type = FramelessPopupCombo()
         for label, value in (
             ("游戏", "game"),
@@ -873,77 +940,31 @@ class TermLibraryDialog(QWidget):
             ("其它内容", "other"),
         ):
             self.content_type.addItem(label, value)
-        self.content_type.setMaximumWidth(180)  # soft cap; allow CN text to breathe
-        toolbar.addWidget(self.content_type)
-        self.game_input = QLineEdit()
-        bind_text(self.game_input, '输入游戏 / 内容名称', property='placeholderText')
-        self.game_input.returnPressed.connect(self.create_game)
-        toolbar.addWidget(self.game_input, 1)
-        self.add_game_button = AnimatedButton("")
-        self.add_game_button.setObjectName("outline")
-        self.add_game_button.setIcon(_icon("fa5s.plus", GREEN))
+        new_library.addWidget(self.content_type)
+        new_library_actions = QHBoxLayout()
+        new_library_actions.setSpacing(6)
+        new_library_actions.addStretch(1)
+        cancel_new = AnimatedButton("取消")
+        cancel_new.setObjectName("termGhostButton")
+        cancel_new.clicked.connect(self.new_library_panel.hide)
+        new_library_actions.addWidget(cancel_new)
+        self.add_game_button = AnimatedButton("创建")
+        self.add_game_button.setObjectName("termAccentButton")
         bind_text(self.add_game_button, '创建该游戏 / 内容的术语库', property='toolTip')
         self.add_game_button.clicked.connect(self.create_game)
-        toolbar.addWidget(self.add_game_button)
-        layout.addLayout(toolbar)
-        # 术语搜索：常显（统一主列表的搜索+筛选入口）
-        self.search = QLineEdit()
-        bind_text(self.search, '搜索术语、错词、正确写法或来源…', property='placeholderText')
-        self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self.apply_filter)
-        layout.addWidget(self.search)
-
-        body = QHBoxLayout()
-        body.setSpacing(12)
-
-        # C3 左栏：左列相对固定，右侧自适应增长（P0 responsive）。用 min/max + Preferred 取代硬 setFixed* 以支持窗口自由缩放。
-        # Restore classic two-pane visual with clear separation (sidebar list + main content card area).
-        sidebar = QFrame()
-        sidebar.setObjectName("termLibrarySidebar")
-        sidebar.setMinimumWidth(210)
-        sidebar.setMaximumWidth(260)
-        sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        self.library_sidebar = sidebar
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(10, 10, 10, 10)
-        sidebar_layout.setSpacing(6)
-        sidebar_head = QHBoxLayout()
-        sidebar_head.setSpacing(4)
-        games_title = QLabel("我的词库")
-        games_title.setObjectName("termLibrarySectionTitle")
-        sidebar_head.addWidget(games_title, 1)
-        self.sidebar_new_button = AnimatedButton("新建")
-        self.sidebar_new_button.setObjectName("flat")
-        self.sidebar_new_button.setIcon(_icon("fa5s.plus", GREEN))
-        bind_text(self.sidebar_new_button, '新建游戏 / 内容词库', property='toolTip')
-        self.sidebar_new_button.clicked.connect(self._focus_new_game)
-        sidebar_head.addWidget(self.sidebar_new_button)
-        self.sidebar_search_button = AnimatedButton("")
-        self.sidebar_search_button.setObjectName("flat")
-        self.sidebar_search_button.setIcon(_icon("fa5s.search", MUTED))
-        self.sidebar_search_button.setFixedSize(28, 28)
-        bind_text(self.sidebar_search_button, '搜索我的词库', property='toolTip')
-        self.sidebar_search_button.clicked.connect(self._toggle_game_search)
-        sidebar_head.addWidget(self.sidebar_search_button)
-        sidebar_layout.addLayout(sidebar_head)
-        self.game_search = QLineEdit()
-        bind_text(self.game_search, '搜索游戏…', property='placeholderText')
-        self.game_search.setClearButtonEnabled(True)
-        self.game_search.hide()
-        self.game_search.textChanged.connect(self._filter_games)
-        sidebar_layout.addWidget(self.game_search)
+        new_library_actions.addWidget(self.add_game_button)
+        new_library.addLayout(new_library_actions)
+        self.new_library_panel.hide()
+        sidebar_layout.addWidget(self.new_library_panel)
         self.game_list = QListWidget()
         self.game_list.setObjectName("termGameList")
         self.game_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.game_list.setSpacing(1)
         self.game_list.currentItemChanged.connect(self.select_game)
         sidebar_layout.addWidget(self.game_list, 1)
-        self.sidebar_sync = QLabel("官方词库已同步")
-        self.sidebar_sync.setObjectName("termSidebarSync")
-        self.sidebar_sync.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sidebar_layout.addWidget(self.sidebar_sync)
         body.addWidget(sidebar)
 
-        # 右侧内容区：包一个视觉 Card 容器，恢复旧参考的清晰边界和层级。
+        # ---- right: the selected library, one card
         content = QFrame()
         content.setObjectName("termLibraryContent")
         self.library_content = content
@@ -956,103 +977,163 @@ class TermLibraryDialog(QWidget):
         content_header.setObjectName("termLibraryContentHeader")
         content_header_layout = QVBoxLayout(content_header)
         content_header_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        content_header_layout.setContentsMargins(16, 11, 16, 11)
-        content_header_layout.setSpacing(9)
+        content_header_layout.setContentsMargins(24, 20, 24, 18)
+        content_header_layout.setSpacing(16)
 
         selected_row = QHBoxLayout()
+        selected_row.setSpacing(8)
+        title_column = QVBoxLayout()
+        title_column.setSpacing(3)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(10)
         self.selected_title = QLabel("请选择游戏")
-        self.selected_title.setObjectName("termGameTitle")
-        selected_row.addWidget(self.selected_title, 1)
+        self.selected_title.setObjectName("termLibraryName")
+        name_row.addWidget(self.selected_title)
+        self.selected_type = QLabel()
+        self.selected_type.setObjectName("termTypeTag")
+        self.selected_type.hide()
+        name_row.addWidget(self.selected_type, 0, Qt.AlignmentFlag.AlignVCenter)
+        name_row.addStretch(1)
+        title_column.addLayout(name_row)
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(6)
         self.selected_stats = QLabel()
-        self.selected_stats.setObjectName("termLibraryBadge")
+        self.selected_stats.setObjectName("termMeta")
         bind_text(self.selected_stats, translate('尚未选择', current_language()))
-        selected_row.addWidget(self.selected_stats)
+        meta_row.addWidget(self.selected_stats)
+        self._meta_dot = QLabel("·")
+        self._meta_dot.setObjectName("termMeta")
+        meta_row.addWidget(self._meta_dot)
         self.official_stats = QLabel("0 条参考")
-        self.official_stats.setObjectName("statusBadgeMuted")
-        selected_row.addWidget(self.official_stats)
-        self.delete_game_button = AnimatedButton("")
-        self.delete_game_button.setObjectName("flat")
-        self.delete_game_button.setIcon(
-            qta.icon("fa5s.trash-alt", color="#8a5a4c", color_disabled="#8a5a4c")
-        )
-        bind_text(self.delete_game_button, '删除当前游戏及其术语', property='toolTip')
-        self.delete_game_button.setEnabled(False)
-        self.delete_game_button.setFixedSize(30, 30)
-        self.delete_game_button.clicked.connect(self.delete_current_game)
+        self.official_stats.setObjectName("termMeta")
+        meta_row.addWidget(self.official_stats)
+        self._meta_dot_batch = QLabel("·")
+        self._meta_dot_batch.setObjectName("termMeta")
+        meta_row.addWidget(self._meta_dot_batch)
+        self.selected_batch = QLabel()
+        self.selected_batch.setObjectName("termMeta")
+        meta_row.addWidget(self.selected_batch)
+        meta_row.addStretch(1)
+        title_column.addLayout(meta_row)
+        selected_row.addLayout(title_column, 1)
+        self.share_button = AnimatedButton("分享到线上词库")
+        self.share_button.setObjectName("termToolButton")
+        bind_text(self.share_button, '把这个词库投稿到线上词库：先检查，再打开 GitHub 或 GitCode 的投稿页', property='toolTip')
+        self.share_button.clicked.connect(self.open_glossary_submit)
+        selected_row.addWidget(self.share_button, 0, Qt.AlignmentFlag.AlignTop)
+        self.submit_terms = self.share_button  # name before the redesign
+        self.more_button = AnimatedButton("⋯")
+        self.more_button.setObjectName("termIconButton")
+        self.more_button.setFixedSize(34, 34)
+        bind_text(self.more_button, '改名、给 AI 的说明、导出、删除', property='toolTip')
+        selected_row.addWidget(self.more_button, 0, Qt.AlignmentFlag.AlignTop)
         self.rename_game_button = AnimatedButton("改名")
-        self.rename_game_button.setObjectName("flat")
         self.rename_game_button.clicked.connect(self.rename_current_game)
-        selected_row.addWidget(self.rename_game_button)
         # 2026-10-16 (ADR 0124): the user's own note sent to AI with this library.
         self.ai_note_button = AnimatedButton("给 AI 的说明")
-        self.ai_note_button.setObjectName("flat")
         bind_text(self.ai_note_button, 'AI 校对时，把你写的这段说明和这个术语库一起发给 AI', property='toolTip')
         self.ai_note_button.clicked.connect(self.edit_ai_note)
-        selected_row.addWidget(self.ai_note_button)
-        selected_row.addWidget(self.delete_game_button)
+        self.export_terms = AnimatedButton("导出词库")
+        self.export_terms.clicked.connect(self.export_current_library)
+        self.delete_game_button = AnimatedButton("删除词库")
+        bind_text(self.delete_game_button, '删除当前游戏及其术语', property='toolTip')
+        self.delete_game_button.setEnabled(False)
+        self.delete_game_button.clicked.connect(self.delete_current_game)
+        self.more_popup = ActionPopup(self.more_button, min_width=200)
+        self.more_popup.add_button(self.rename_game_button)
+        self.more_popup.add_button(self.ai_note_button)
+        self.more_popup.add_button(self.export_terms)
+        self.more_popup.add_separator()
+        self.more_popup.add_button(self.delete_game_button, danger=True)
         content_header_layout.addLayout(selected_row)
 
-        # C4 添加术语：右侧第一个输入
-        quick_add_panel = QFrame()
+        # 分享提示：已确认词够多、这个游戏线上还没有词库时提示一次（可关掉）。
+        self.share_nudge = QFrame()
+        self.share_nudge.setObjectName("termNotice")
+        nudge_layout = QHBoxLayout(self.share_nudge)
+        nudge_layout.setContentsMargins(14, 8, 10, 8)
+        nudge_layout.setSpacing(10)
+        nudge_dot = QLabel()
+        nudge_dot.setObjectName("termDot")
+        nudge_dot.setFixedSize(8, 8)
+        nudge_layout.addWidget(nudge_dot)
+        self.share_nudge_text = QLabel()
+        self.share_nudge_text.setWordWrap(True)
+        nudge_layout.addWidget(self.share_nudge_text, 1)
+        self.share_nudge_button = AnimatedButton("分享")
+        self.share_nudge_button.setObjectName("termAccentButton")
+        self.share_nudge_button.clicked.connect(self.open_glossary_submit)
+        nudge_layout.addWidget(self.share_nudge_button)
+        self.share_nudge_later = AnimatedButton("以后再说")
+        self.share_nudge_later.setObjectName("termGhostButton")
+        self.share_nudge_later.clicked.connect(self._dismiss_share_nudge)
+        nudge_layout.addWidget(self.share_nudge_later)
+        self.share_nudge.hide()
+        content_header_layout.addWidget(self.share_nudge)
+
+        # 加词：一条输入栏（听错的写法 → 正确写法 · 分类 · 添加）
+        quick_add_panel = QWidget()
         quick_add_panel.setObjectName("termQuickAdd")
         quick_add = QVBoxLayout(quick_add_panel)
         quick_add.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        quick_add.setContentsMargins(10, 7, 8, 7)
-        quick_add.setSpacing(5)
-        quick_add_title = QLabel("添加术语")
-        quick_add_title.setObjectName("termQuickAddTitle")
-        quick_title_row = QHBoxLayout()
-        quick_title_row.addWidget(quick_add_title, 1)
-        self.term_try_toggle = AnimatedButton('试一下')
-        self.term_try_toggle.setObjectName('flat')
-        self.term_try_toggle.clicked.connect(self._toggle_try_panel)
-        quick_title_row.addWidget(self.term_try_toggle)
-        self.quick_mapping_button = AnimatedButton('快捷纠错 / 批量映射…')
-        self.quick_mapping_button.setObjectName('flat')
-        self.quick_mapping_button.clicked.connect(lambda: self.show_import_dialog(mapping_mode=True))
-        quick_title_row.addWidget(self.quick_mapping_button)
-        quick_add.addLayout(quick_title_row)
-        quick_add_row = QHBoxLayout()
-        quick_add_row.setSpacing(7)
-        self.term_editor = QLineEdit()
-        bind_text(self.term_editor, '规范写法 / 最终输出（保留大小写）', property='placeholderText')
-        self.term_editor.setAccessibleName('规范写法 / 最终输出')
-        self.term_editor.returnPressed.connect(self.add_single_term)
+        quick_add.setContentsMargins(0, 0, 0, 0)
+        quick_add.setSpacing(8)
+        composer = QFrame()
+        composer.setObjectName("termComposer")
+        composer_row = QHBoxLayout(composer)
+        composer_row.setContentsMargins(0, 0, 4, 0)
+        composer_row.setSpacing(0)
         self.term_alias_editor = QLineEdit()
-        self.term_alias_editor.setPlaceholderText("别名 / 常见错词（可选，顿号分隔）")
+        self.term_alias_editor.setObjectName("termComposerInput")
+        bind_text(self.term_alias_editor, '听错的写法（可选，多个用顿号）', property='placeholderText')
         self.term_alias_editor.setAccessibleName('别名 / 常见错词')
         self.term_alias_editor.returnPressed.connect(self.add_single_term)
-        for editor, label in ((self.term_alias_editor, '别名 / 常见错词'),
-                              (self.term_editor, '规范写法 / 最终输出')):
-            group = QWidget()
-            group_box = QVBoxLayout(group)
-            group_box.setContentsMargins(0, 0, 0, 0)
-            group_box.setSpacing(3)
-            caption = bind_text(QLabel(), label)
-            caption.setObjectName('muted')
-            caption.setBuddy(editor)
-            group_box.addWidget(caption)
-            group_box.addWidget(editor)
-            quick_add_row.addWidget(group, 1)
-            if editor is self.term_alias_editor:
-                direction = QLabel('→')
-                direction.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                quick_add_row.addWidget(direction)
+        composer_row.addWidget(self.term_alias_editor, 1)
+        arrow = QLabel('→')
+        arrow.setObjectName("termComposerArrow")
+        composer_row.addWidget(arrow)
+        self.term_editor = QLineEdit()
+        self.term_editor.setObjectName("termComposerInput")
+        bind_text(self.term_editor, '正确写法（保留大小写）', property='placeholderText')
+        self.term_editor.setAccessibleName('规范写法 / 最终输出')
+        self.term_editor.returnPressed.connect(self.add_single_term)
+        composer_row.addWidget(self.term_editor, 1)
+        divider = QFrame()
+        divider.setObjectName("termComposerDivider")
+        divider.setFixedSize(1, 24)
+        composer_row.addWidget(divider)
         QWidget.setTabOrder(self.term_alias_editor, self.term_editor)
         self.term_category = FramelessPopupCombo()
+        self.term_category.setObjectName("termComposerCombo")
         for category in ("选手 ID", "人物", "角色", "Boss", "物品", "方块", "阵营", "地点", "模型", "技能", "事件", "其他"):
             self.term_category.addItem(category, category)
-        self.term_category.setMaximumWidth(140)  # soft; CN labels must not truncate
-        quick_add_row.addWidget(self.term_category)
-        self.add_term_button = AnimatedButton("添加术语")
-        self.add_term_button.setIcon(_icon("fa5s.plus"))
+        self.term_category.setMaximumWidth(130)  # soft; CN labels must not truncate
+        composer_row.addWidget(self.term_category)
+        self.add_term_button = AnimatedButton("添加")
+        self.add_term_button.setObjectName("termAccentButton")
         self.add_term_button.clicked.connect(self.add_single_term)
-        quick_add_row.addWidget(self.add_term_button)
+        composer_row.addWidget(self.add_term_button)
         QWidget.setTabOrder(self.term_editor, self.term_category)
         QWidget.setTabOrder(self.term_category, self.add_term_button)
-        quick_add.addLayout(quick_add_row)
+        quick_add.addWidget(composer)
+        hint_row = QHBoxLayout()
+        hint_row.setSpacing(4)
+        hint = QLabel("只填正确写法 = 帮识别写对；两边都填 = 把听错的改成正确写法")
+        hint.setObjectName("termHint")
+        hint.setWordWrap(True)
+        hint_row.addWidget(hint, 1)
+        self.quick_mapping_button = AnimatedButton('批量映射…')
+        self.quick_mapping_button.setObjectName('termLinkButton')
+        bind_text(self.quick_mapping_button, '一次贴上多行「听错的写法 -> 正确写法」', property='toolTip')
+        self.quick_mapping_button.clicked.connect(lambda: self.show_import_dialog(mapping_mode=True))
+        hint_row.addWidget(self.quick_mapping_button)
+        self.term_try_toggle = AnimatedButton('试一句字幕')
+        self.term_try_toggle.setObjectName('termLinkButton')
+        self.term_try_toggle.clicked.connect(self._toggle_try_panel)
+        hint_row.addWidget(self.term_try_toggle)
+        quick_add.addLayout(hint_row)
         self.term_parse_preview = QLabel("规范词原样保存；只有已确认的别名才用于纠错。")
-        self.term_parse_preview.setObjectName("muted")
+        self.term_parse_preview.setObjectName("termHint")
         self.term_parse_preview.setWordWrap(True)
         self.term_editor.textChanged.connect(self._refresh_term_parse_preview)
         self.term_alias_editor.textChanged.connect(self._refresh_term_parse_preview)
@@ -1062,12 +1143,13 @@ class TermLibraryDialog(QWidget):
         try_layout = QVBoxLayout(self.term_try_panel)
         try_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         try_layout.setContentsMargins(0, 0, 0, 0)
-        try_layout.setSpacing(3)
+        try_layout.setSpacing(6)
         try_row = QHBoxLayout()
         self.term_try_input = QLineEdit()
         self.term_try_input.setPlaceholderText("输入一句字幕，检查当前本批词库是否实际生效")
         try_row.addWidget(self.term_try_input, 1)
         try_button = AnimatedButton("检查")
+        try_button.setObjectName("termToolButton")
         try_button.clicked.connect(self.try_sentence)
         self.term_try_input.returnPressed.connect(self.try_sentence)
         try_row.addWidget(try_button)
@@ -1077,121 +1159,86 @@ class TermLibraryDialog(QWidget):
         self.term_try_expected.setPlaceholderText('期望规范词（可选，用于区分缺词条或别名未关联）')
         association_row.addWidget(self.term_try_expected, 1)
         self.term_association_button = AnimatedButton('关联别名…')
+        self.term_association_button.setObjectName("termToolButton")
         self.term_association_button.clicked.connect(self._show_association_sheet)
         association_row.addWidget(self.term_association_button)
         try_layout.addLayout(association_row)
         self.term_try_result = QLabel()
-        self.term_try_result.setObjectName("muted")
+        self.term_try_result.setObjectName("termHint")
         self.term_try_result.setWordWrap(True)
         self.term_try_result.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         try_layout.addWidget(self.term_try_result)
         quick_add.addWidget(self.term_try_panel)
         self.term_try_panel.hide()
         content_header_layout.addWidget(quick_add_panel)
-
-        # C4b AI 更新：页面直接选 AI（复用已配置凭证，仅本次覆盖）→ 联网建立/更新词库
-        ai_panel = QFrame()
-        ai_panel.setObjectName("termQuickAdd")
-        ai_layout = QVBoxLayout(ai_panel)
-        ai_layout.setContentsMargins(10, 7, 8, 7)
-        ai_layout.setSpacing(5)
-        ai_title_row = QHBoxLayout()
-        self.ai_update_title = QLabel("AI 联网更新")
-        self.ai_update_title.setObjectName("termQuickAddTitle")
-        ai_title_row.addWidget(self.ai_update_title)
-        self.ai_capability_label = QLabel()
-        self.ai_capability_label.setObjectName("statusBadgeMuted")
-        ai_title_row.addStretch(1)
-        ai_title_row.addWidget(self.ai_capability_label)
-        ai_layout.addLayout(ai_title_row)
-        ai_row = QHBoxLayout()
-        ai_row.setSpacing(7)
-        self.ai_service_combo = FramelessPopupCombo()
-        bind_text(self.ai_service_combo, '使用哪个 AI 执行本次检索整理（复用已配置的登录/密钥，不改动全局设置）', property='toolTip')
-        self.ai_service_combo.setMaximumWidth(170)
-        self.ai_service_combo.currentIndexChanged.connect(self._on_ai_service_changed)
-        ai_title_row.insertWidget(1, self.ai_service_combo)
-        self.ai_model_combo = FramelessPopupCombo()
-        self.ai_model_combo.setEditable(True)
-        self.ai_model_combo.setMaximumWidth(190)
-        self.ai_model_combo.currentIndexChanged.connect(self._refresh_ai_capability_label)
-        ai_title_row.insertWidget(2, self.ai_model_combo)
-        self.ai_full_button = AnimatedButton("AI 完整建库")
-        self.ai_full_button.setObjectName("outline")
-        self.ai_full_button.setIcon(_icon("fa5s.book-open", GREEN))
-        bind_text(self.ai_full_button, '查询资料与有效缓存 → AI 提取和梳理 → 补充核对 → 去重与实用筛选 → 选择应用；保留已确认写法', property='toolTip')
-        self.ai_full_button.clicked.connect(lambda: self._start_ai_update("full"))
-        ai_row.addWidget(self.ai_full_button)
-        self.ai_update_button = AnimatedButton("日常增量更新")
-        self.ai_update_button.setObjectName("primary")
-        self.ai_update_button.setIcon(_icon("fa5s.globe", SURFACE))
-        bind_text(self.ai_update_button, '版本增量：检索最近版本新增与高频术语（单轮，适合已建库词库）', property='toolTip')
-        self.ai_update_button.clicked.connect(lambda: self._start_ai_update("incremental"))
-        ai_row.addWidget(self.ai_update_button)
-        self.ai_batch_button = AnimatedButton("批量更新…")
-        self.ai_batch_button.setObjectName("outline")
-        self.ai_batch_button.setIcon(_icon("fa5s.layer-group", GREEN))
-        self.ai_batch_button.clicked.connect(self._open_batch_update)
-        ai_row.addWidget(self.ai_batch_button)
-        self.ai_history_button = AnimatedButton("更新记录")
-        self.ai_history_button.setObjectName("flat")
-        self.ai_history_button.clicked.connect(self._open_update_history)
-        ai_row.addWidget(self.ai_history_button)
-        ai_layout.addLayout(ai_row)
-        self.ai_task_strip = None  # 延迟创建：需要 manager（见 _ensure_task_manager）
-        self.ai_update_status = QLabel("")
-        self.ai_update_status.setObjectName("termReferencePolicy")
-        self.ai_update_status.hide()
-        ai_layout.addWidget(self.ai_update_status)
-        content_header_layout.addWidget(ai_panel)
         content_layout.addWidget(content_header)
 
-        content_body = QWidget()
+        content_body = QFrame()
         content_body.setObjectName("termLibraryBody")
         content_body_layout = QVBoxLayout(content_body)
         content_body_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        content_body_layout.setContentsMargins(16, 10, 16, 10)
-        content_body_layout.setSpacing(8)
+        content_body_layout.setContentsMargins(24, 12, 24, 8)
+        content_body_layout.setSpacing(10)
 
+        # 一排工具：AI 更新 ▾ · 批量导入 ……… 搜索 · 分类 · 状态
         term_tools = QHBoxLayout()
         self.term_tools_layout = term_tools
-        term_tools.setSpacing(6)
+        term_tools.setSpacing(8)
+        self.ai_menu_button = AnimatedButton("AI 更新 ▾")
+        self.ai_menu_button.setObjectName("termToolButton")
+        bind_text(self.ai_menu_button, 'AI 联网查资料，建立或更新这个词库', property='toolTip')
+        term_tools.addWidget(self.ai_menu_button)
+        self.ai_update_button = AnimatedButton("日常增量更新")
+        bind_text(self.ai_update_button, '版本增量：检索最近版本新增与高频术语（单轮，适合已建库词库）', property='toolTip')
+        self.ai_update_button.clicked.connect(lambda: self._start_ai_update("incremental"))
+        self.ai_full_button = AnimatedButton("AI 完整建库")
+        bind_text(self.ai_full_button, '查询资料与有效缓存 → AI 提取和梳理 → 补充核对 → 去重与实用筛选 → 选择应用；保留已确认写法', property='toolTip')
+        self.ai_full_button.clicked.connect(lambda: self._start_ai_update("full"))
         self.smart_build_button = AnimatedButton("智能建词")
-        self.smart_build_button.setObjectName("outline")
-        self.smart_build_button.setIcon(_icon("fa5s.magic", GREEN))
         self.smart_build_button.clicked.connect(self.open_smart_build)
-        term_tools.addWidget(self.smart_build_button)
+        self.ai_batch_button = AnimatedButton("批量更新…")
+        self.ai_batch_button.clicked.connect(self._open_batch_update)
+        self.ai_history_button = AnimatedButton("更新记录")
+        self.ai_history_button.clicked.connect(self._open_update_history)
+        self.ai_service_combo = FramelessPopupCombo()
+        bind_text(self.ai_service_combo, '使用哪个 AI 执行本次检索整理（复用已配置的登录/密钥，不改动全局设置）', property='toolTip')
+        self.ai_service_combo.currentIndexChanged.connect(self._on_ai_service_changed)
+        self.ai_model_combo = FramelessPopupCombo()
+        self.ai_model_combo.setEditable(True)
+        self.ai_model_combo.currentIndexChanged.connect(self._refresh_ai_capability_label)
+        self.ai_capability_label = QLabel()
+        self.ai_capability_label.setObjectName("termHint")
+        self.ai_popup = ActionPopup(self.ai_menu_button, min_width=280)
+        for button in (self.ai_update_button, self.ai_full_button, self.smart_build_button,
+                       self.ai_batch_button, self.ai_history_button):
+            self.ai_popup.add_button(button)
+        self.ai_popup.add_separator()
+        self.ai_popup.add_caption("使用的 AI")
+        self.ai_popup.add_widget(self.ai_service_combo)
+        self.ai_popup.add_widget(self.ai_model_combo)
+        self.ai_popup.add_widget(self.ai_capability_label)
         self.import_terms = AnimatedButton("批量导入")
-        self.import_terms.setIcon(_icon("fa5s.file-import"))
+        self.import_terms.setObjectName("termGhostButton")
         self.import_terms.clicked.connect(self.show_import_dialog)
         term_tools.addWidget(self.import_terms)
-        self.export_terms = AnimatedButton("导出词库")
-        self.export_terms.setObjectName("flat")
-        self.export_terms.clicked.connect(self.export_current_library)
-        term_tools.addWidget(self.export_terms)
-        # 2026-10-17 online glossary hub (glossary_hub_ui.py): browse/install and submit.
-        self.hub_button = AnimatedButton("线上词库")
-        self.hub_button.setObjectName("outline")
-        self.hub_button.setIcon(_icon("fa5s.cloud-download-alt"))
-        self.hub_button.clicked.connect(self.open_glossary_hub)
-        term_tools.addWidget(self.hub_button)
-        self.submit_terms = AnimatedButton("投稿")
-        self.submit_terms.setObjectName("flat")
-        self.submit_terms.clicked.connect(self.open_glossary_submit)
-        term_tools.addWidget(self.submit_terms)
         term_tools.addStretch(1)
-        content_body_layout.addLayout(term_tools)
-
-        # 统一筛选行：分类 + 状态（内置参考默认展示，不再藏在折叠区）
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(6)
-        filter_row.addWidget(QLabel("筛选"))
+        # 术语搜索：常显，只搜当前词库
+        self.search = QLineEdit()
+        self.search.setObjectName("termToolSearch")
+        bind_text(self.search, '搜索词条', property='placeholderText')
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(170)
+        self.search.setMaximumWidth(260)
+        self.search.textChanged.connect(self.apply_filter)
+        term_tools.addWidget(self.search, 1)
         self.filter_category = FramelessPopupCombo()
+        self.filter_category.setObjectName("termToolCombo")
         self.filter_category.addItem("全部分类", "")
-        self.filter_category.setMinimumWidth(110)
+        self.filter_category.setMinimumWidth(104)
         self.filter_category.currentIndexChanged.connect(self.apply_filter)
-        filter_row.addWidget(self.filter_category)
+        term_tools.addWidget(self.filter_category)
         self.filter_status = FramelessPopupCombo()
+        self.filter_status.setObjectName("termToolCombo")
         for label, value in (
             ("全部状态", ""),
             ("已确认", "confirmed"),
@@ -1199,115 +1246,155 @@ class TermLibraryDialog(QWidget):
             ("已隐藏", "hidden"),
         ):
             self.filter_status.addItem(label, value)
-        self.filter_status.setMinimumWidth(110)
+        self.filter_status.setMinimumWidth(104)
         self.filter_status.currentIndexChanged.connect(self.apply_filter)
-        filter_row.addWidget(self.filter_status)
-        filter_row.addStretch(1)
-        self.select_visible = AnimatedButton("全选可见行")
-        self.select_visible.setObjectName("flat")
-        self.select_visible.clicked.connect(lambda: self.listing.selectAll())
-        filter_row.addWidget(self.select_visible)
-        self.clear_selection = AnimatedButton("取消选择")
-        self.clear_selection.setObjectName("flat")
-        self.clear_selection.clicked.connect(lambda: self.listing.clearSelection())
-        filter_row.addWidget(self.clear_selection)
-        self.bulk_confirm = AnimatedButton("确认所选参考")
-        self.bulk_confirm.setObjectName("outline")
-        self.bulk_confirm.setIcon(_icon("fa5s.check", GREEN))
-        self.bulk_confirm.clicked.connect(self.confirm_selected_references)
-        self.bulk_confirm.setEnabled(False)
-        filter_row.addWidget(self.bulk_confirm)
-        self.bulk_hide = AnimatedButton("隐藏所选")
-        self.bulk_hide.setObjectName("flat")
-        self.bulk_hide.clicked.connect(self.hide_selected_references)
-        self.bulk_hide.setEnabled(False)
-        filter_row.addWidget(self.bulk_hide)
-        content_body_layout.addLayout(filter_row)
+        term_tools.addWidget(self.filter_status)
+        content_body_layout.addLayout(term_tools)
 
+        # AI 任务进度与失败说明（任务栏在第一次需要时插到这里）。
+        self.ai_status_area = QWidget()
+        ai_status_layout = QVBoxLayout(self.ai_status_area)
+        ai_status_layout.setContentsMargins(0, 0, 0, 0)
+        ai_status_layout.setSpacing(4)
+        self.ai_task_strip = None  # 延迟创建：需要 manager（见 _ensure_task_manager）
+        self.ai_update_status = QLabel("")
+        self.ai_update_status.setObjectName("termReferencePolicy")
+        self.ai_update_status.setWordWrap(True)
+        self.ai_update_status.hide()
+        ai_status_layout.addWidget(self.ai_update_status)
+        content_body_layout.addWidget(self.ai_status_area)
+
+        # 待学习：一行提示，点「逐条确认」才展开清单。
         self.learning_panel = QFrame()
-        self.learning_panel.setObjectName("termLearningSuggestions")
-        self.learning_panel.setMinimumHeight(92)
+        self.learning_panel.setObjectName("termNotice")
         learning_layout = QVBoxLayout(self.learning_panel)
-        learning_layout.setContentsMargins(10, 9, 10, 9)
+        learning_layout.setContentsMargins(14, 7, 10, 7)
         learning_layout.setSpacing(7)
         learning_head = QHBoxLayout()
-        self.learning_title = QLabel("待学习")
-        self.learning_title.setObjectName("termLearnedTitle")
-        learning_head.addWidget(self.learning_title, 1)
+        learning_head.setSpacing(10)
+        learning_dot = QLabel()
+        learning_dot.setObjectName("termDot")
+        learning_dot.setFixedSize(8, 8)
+        learning_head.addWidget(learning_dot)
         self.learning_count = QLabel()
-        self.learning_count.setObjectName("statusBadgeMuted")
+        self.learning_count.setObjectName("termNoticeStrong")
         learning_head.addWidget(self.learning_count)
+        self.learning_title = QLabel("你在字幕里手动改过的词，确认后才加入词库")
+        self.learning_title.setObjectName("termHint")
+        learning_head.addWidget(self.learning_title, 1)
+        self.learning_toggle = AnimatedButton("逐条确认")
+        self.learning_toggle.setObjectName("termLinkButton")
+        self.learning_toggle.clicked.connect(self._toggle_learning_list)
+        learning_head.addWidget(self.learning_toggle)
         learning_layout.addLayout(learning_head)
+        self.learning_box = QWidget()
+        learning_box = QVBoxLayout(self.learning_box)
+        learning_box.setContentsMargins(0, 0, 0, 0)
+        learning_box.setSpacing(6)
         self.learning_list = QListWidget()
         self.learning_list.setObjectName("termLearningList")
         self.learning_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.learning_list.setFixedHeight(40)
+        learning_box.addWidget(self.learning_list)
         learning_actions = QHBoxLayout()
-        learning_actions.addWidget(self.learning_list, 1)
-        self.learning_accept_project = AnimatedButton("加入项目词库")
-        self.learning_accept_project.setObjectName("outline")
+        learning_actions.addStretch(1)
+        self.learning_accept_button = AnimatedButton("加入词库 ▾")
+        self.learning_accept_button.setObjectName("termToolButton")
+        learning_actions.addWidget(self.learning_accept_button)
+        self.learning_accept_project = AnimatedButton("加入当前工程关联的词库")
         bind_text(self.learning_accept_project, '批量接受所选建议并加入当前项目关联词库', property='toolTip')
         self.learning_accept_project.clicked.connect(lambda: self._accept_learning_suggestions("project"))
-        learning_actions.addWidget(self.learning_accept_project)
-        self.learning_accept_profile = AnimatedButton("加入 Profile 词库")
-        self.learning_accept_profile.setObjectName("outline")
+        self.learning_accept_profile = AnimatedButton("加入当前 Profile 的词库")
         bind_text(self.learning_accept_profile, '批量接受所选建议并加入当前 Profile 使用的词库', property='toolTip')
         self.learning_accept_profile.clicked.connect(lambda: self._accept_learning_suggestions("profile"))
-        learning_actions.addWidget(self.learning_accept_profile)
+        self.learning_popup = ActionPopup(self.learning_accept_button, min_width=220)
+        self.learning_popup.add_button(self.learning_accept_project)
+        self.learning_popup.add_button(self.learning_accept_profile)
         self.learning_ignore = AnimatedButton("忽略")
-        self.learning_ignore.setObjectName("flat")
+        self.learning_ignore.setObjectName("termGhostButton")
         self.learning_ignore.clicked.connect(self._ignore_learning_suggestions)
         learning_actions.addWidget(self.learning_ignore)
-        learning_layout.addLayout(learning_actions)
+        learning_box.addLayout(learning_actions)
+        self.learning_box.hide()
+        learning_layout.addWidget(self.learning_box)
         content_body_layout.addWidget(self.learning_panel)
 
+        # 选了词条才出现：确认 / 隐藏 / 删除。
+        self.selection_bar = QFrame()
+        self.selection_bar.setObjectName("termNotice")
+        selection_layout = QHBoxLayout(self.selection_bar)
+        selection_layout.setContentsMargins(14, 5, 8, 5)
+        selection_layout.setSpacing(6)
+        self.selection_label = QLabel()
+        self.selection_label.setObjectName("termNoticeStrong")
+        selection_layout.addWidget(self.selection_label)
+        selection_layout.addStretch(1)
+        self.bulk_confirm = AnimatedButton("确认所选参考")
+        self.bulk_confirm.setObjectName("termToolButton")
+        self.bulk_confirm.clicked.connect(self.confirm_selected_references)
+        self.bulk_confirm.setEnabled(False)
+        selection_layout.addWidget(self.bulk_confirm)
+        self.bulk_hide = AnimatedButton("隐藏所选")
+        self.bulk_hide.setObjectName("termToolButton")
+        self.bulk_hide.clicked.connect(self.hide_selected_references)
+        self.bulk_hide.setEnabled(False)
+        selection_layout.addWidget(self.bulk_hide)
+        self.remove_terms = AnimatedButton("删除所选术语")
+        self.remove_terms.setObjectName("termDangerButton")
+        self.remove_terms.setEnabled(False)
+        self.remove_terms.clicked.connect(self.remove_selected_terms)
+        selection_layout.addWidget(self.remove_terms)
+        self.clear_selection = AnimatedButton("取消选择")
+        self.clear_selection.setObjectName("termGhostButton")
+        self.clear_selection.clicked.connect(lambda: self.listing.clearSelection())
+        selection_layout.addWidget(self.clear_selection)
+        self.selection_bar.hide()
+        content_body_layout.addWidget(self.selection_bar)
+
         # 统一术语表 — P0-5: QTableView + model + delegate (no per-row QWidget for 650 rows)
-        # 内置参考与已确认词条同表展示：来源/状态分列，隐藏词通过筛选可见可恢复。
         self.learned_title = QLabel("术语列表")
-        self.learned_title.setObjectName("termLearnedTitle")
+        self.learned_title.setObjectName("termTableTitle")
+        bind_text(self.learned_title, '已确认/学习映射会参与纠错；内置词库只提供弱候选，不会仅凭名字相似强制改字。', property='toolTip')
         content_body_layout.addWidget(self.learned_title)
         self.listing = QTableView()
         self.listing.setObjectName("termMappingTable")
         self._term_model = _TermMappingsModel(self)
         self.listing.setModel(self._term_model)
-        self.listing.setItemDelegateForColumn(1, _CategoryPillDelegate(self.listing))
-        self.listing.setItemDelegateForColumn(3, _StatusPillDelegate(self.listing))
+        self.listing.setItemDelegateForColumn(3, StatusDotDelegate(self.listing))
         self.listing.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.listing.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.listing.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.listing.setShowGrid(False)
-        self.listing.setMinimumHeight(160)
+        self.listing.setFrameShape(QFrame.Shape.NoFrame)
+        self.listing.setMinimumHeight(240)
         self.listing.verticalHeader().hide()
-        # Double-click row to edit (no per-cell editors)
         self.listing.doubleClicked.connect(self._on_table_double_click)
-        # Click on the "操作" column (col 4) triggers the primary row action.
         self.listing.clicked.connect(self._on_table_clicked)
         header = self.listing.horizontalHeader()
-        # Term stretches; category/status fixed wide enough for full labels
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        header.setHighlightSections(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         header.setMinimumSectionSize(48)
-        header.setFixedHeight(38)
-        self.listing.setColumnWidth(1, 86)   # P0-5: >=72-88px guarantees full "其他/角色/Boss/物品/技能/阵营/地点"
-        self.listing.setColumnWidth(3, 84)
-        self.listing.setColumnWidth(4, 110)
-        # Reasonable row height so it doesn't look collapsed (QTableView has no per-row setRowHeight on model rows easily; use vertical header default + stylesheet hint)
-        self.listing.verticalHeader().setDefaultSectionSize(36)
-        # Selection change still drives toolbar enablement
+        header.setFixedHeight(36)
+        self.listing.setColumnWidth(1, 96)
+        self.listing.setColumnWidth(2, 180)
+        self.listing.setColumnWidth(3, 96)
+        self.listing.setColumnWidth(4, 96)
+        self.listing.verticalHeader().setDefaultSectionSize(44)
         try:
             self.listing.selectionModel().selectionChanged.connect(self.update_remove_action)
         except Exception:
             pass
         content_body_layout.addWidget(self.listing, 3)
-        # 空态：区分"还没有词库内容"与"没有符合筛选条件的词条"
+        # 空态：没有词条时给两个起点（线上词库 / 自己整理）；筛选后没词时只说明
         self.listing_empty = QWidget()
         self.listing_empty.setObjectName("termMappingEmpty")
         empty_layout = QVBoxLayout(self.listing_empty)
-        empty_layout.setContentsMargins(12, 24, 12, 24)
-        empty_layout.setSpacing(6)
+        empty_layout.setContentsMargins(12, 18, 12, 18)
+        empty_layout.setSpacing(8)
         empty_layout.addStretch(1)
         self.listing_empty_title = QLabel("让识别更懂你的游戏")
         self.listing_empty_title.setObjectName("termEmptyTitle")
@@ -1318,79 +1405,101 @@ class TermLibraryDialog(QWidget):
         self.listing_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.listing_empty_label.setWordWrap(True)
         empty_layout.addWidget(self.listing_empty_label)
+        self.start_cards = QWidget()
+        start_layout = QHBoxLayout(self.start_cards)
+        start_layout.setContentsMargins(0, 10, 0, 0)
+        start_layout.setSpacing(16)
+        hub_card = QFrame()
+        hub_card.setObjectName("termStartCardHub")
+        hub_card_layout = QVBoxLayout(hub_card)
+        hub_card_layout.setContentsMargins(20, 18, 20, 18)
+        hub_card_layout.setSpacing(8)
+        hub_card_head = QHBoxLayout()
+        hub_card_head.setSpacing(8)
+        hub_card_title = QLabel("从线上词库下载")
+        hub_card_title.setObjectName("termStartTitle")
+        hub_card_head.addWidget(hub_card_title)
+        hub_card_pill = QLabel("推荐")
+        hub_card_pill.setObjectName("termStartPill")
+        hub_card_head.addWidget(hub_card_pill)
+        hub_card_head.addStretch(1)
+        hub_card_layout.addLayout(hub_card_head)
+        hub_card_text = QLabel("别的玩家已经整理好的词库，先预览再一键安装。")
+        hub_card_text.setObjectName("termStartText")
+        hub_card_text.setWordWrap(True)
+        hub_card_layout.addWidget(hub_card_text)
+        hub_card_layout.addStretch(1)
+        self.listing_empty_hub = AnimatedButton("浏览线上词库")
+        self.listing_empty_hub.setObjectName("termAccentButton")
+        self.listing_empty_hub.clicked.connect(lambda: self.show_page("hub"))
+        hub_card_layout.addWidget(self.listing_empty_hub, 0, Qt.AlignmentFlag.AlignLeft)
+        start_layout.addWidget(hub_card, 1)
+        own_card = QFrame()
+        own_card.setObjectName("termStartCard")
+        own_card_layout = QVBoxLayout(own_card)
+        own_card_layout.setContentsMargins(20, 18, 20, 18)
+        own_card_layout.setSpacing(8)
+        own_card_title = QLabel("自己整理")
+        own_card_title.setObjectName("termStartTitle")
+        own_card_layout.addWidget(own_card_title)
+        own_card_text = QLabel("在上面添加错词和正确写法；也可以批量导入，或让 AI 帮你查资料。")
+        own_card_text.setObjectName("termStartText")
+        own_card_text.setWordWrap(True)
+        own_card_layout.addWidget(own_card_text)
+        own_card_layout.addStretch(1)
         empty_actions = QHBoxLayout()
-        empty_actions.addStretch(1)
+        empty_actions.setSpacing(6)
         self.listing_empty_build = AnimatedButton("新建词库")
-        self.listing_empty_build.setObjectName("outline")
-        self.listing_empty_build.setIcon(_icon("fa5s.plus", GREEN))
+        self.listing_empty_build.setObjectName("termToolButton")
         self.listing_empty_build.clicked.connect(self._focus_new_game)
         empty_actions.addWidget(self.listing_empty_build)
         self.listing_empty_import = AnimatedButton("导入词库")
-        self.listing_empty_import.setObjectName("outline")
-        self.listing_empty_import.setIcon(_icon("fa5s.file-import", GREEN))
+        self.listing_empty_import.setObjectName("termGhostButton")
         self.listing_empty_import.clicked.connect(self.show_import_dialog)
         empty_actions.addWidget(self.listing_empty_import)
         self.listing_empty_smart = AnimatedButton("智能建词")
-        self.listing_empty_smart.setObjectName("outline")
-        self.listing_empty_smart.setIcon(_icon("fa5s.magic", GREEN))
+        self.listing_empty_smart.setObjectName("termGhostButton")
         self.listing_empty_smart.clicked.connect(self.open_smart_build)
         empty_actions.addWidget(self.listing_empty_smart)
-        self.listing_empty_actions = empty_actions
         empty_actions.addStretch(1)
-        empty_layout.addLayout(empty_actions)
+        self.listing_empty_actions = empty_actions
+        own_card_layout.addLayout(empty_actions)
+        start_layout.addWidget(own_card, 1)
+        empty_layout.addWidget(self.start_cards)
         empty_layout.addStretch(1)
         self.listing_empty.hide()
         content_body_layout.addWidget(self.listing_empty, 3)
         content_layout.addWidget(content_body, 1)
 
-        # C7 + D1：本批词库状态 + 底部动作行（删除术语与删除游戏分离）
+        # 页底：一个开关决定这个词库用不用在本批字幕
         footer = QFrame()
         footer.setObjectName("termLibraryFooter")
         self.library_footer = footer
-        footer_layout = QVBoxLayout(footer)
-        footer_layout.setContentsMargins(16, 9, 16, 10)
-        footer_layout.setSpacing(7)
-        batch_strip = QFrame()
-        batch_strip.setObjectName("batchStrip")
-        batch_bar = QHBoxLayout(batch_strip)
-        batch_bar.setContentsMargins(10, 6, 10, 6)
-        batch_bar.setSpacing(8)
-        self.batch_status = QLabel()
-        self.batch_status.setObjectName("muted")
-        batch_bar.addWidget(self.batch_status, 1)
-        self.batch_toggle = AnimatedButton("加入本批")
-        self.batch_toggle.setObjectName("outline")
-        self.batch_toggle.clicked.connect(self.toggle_current_game_in_batch)
-        batch_bar.addWidget(self.batch_toggle)
-        footer_layout.addWidget(batch_strip)
-        actions = QHBoxLayout()
-        actions.setSpacing(6)
-        self.remove_terms = AnimatedButton("删除所选术语")
-        self.remove_terms.setObjectName("danger")
-        self.remove_terms.setIcon(_icon("fa5s.trash-alt"))
-        self.remove_terms.setEnabled(False)
-        self.remove_terms.clicked.connect(self.remove_selected_terms)
-        actions.addWidget(self.remove_terms)
-        actions.addStretch(1)
-        self.use_game = AnimatedButton("用于本批字幕")
-        self.use_game.setObjectName("primary")
-        self.use_game.setIcon(_icon("fa5s.check", SURFACE))
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(24, 8, 24, 8)
+        footer_layout.setSpacing(12)
+        self.use_game = SwitchControl("本批字幕使用这个词库")
         self.use_game.setEnabled(False)
-        self.use_game.clicked.connect(self.use_selected_game)
-        actions.addWidget(self.use_game)
+        self.use_game.clicked.connect(self._on_batch_switch)
+        footer_layout.addWidget(self.use_game)
+        self.batch_toggle = self.use_game  # name before the redesign
+        self.batch_status = QLabel()
+        self.batch_status.setObjectName("termHint")
+        self.batch_status.setWordWrap(True)
+        self.batch_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        footer_layout.addWidget(self.batch_status, 1)
         if not self.page_mode:
             close = AnimatedButton("关闭")
-            close.setObjectName("outline")
+            close.setObjectName("termToolButton")
             close.clicked.connect(self._close_hosted)
-            actions.addWidget(close)
-        footer_layout.addLayout(actions)
+            footer_layout.addWidget(close)
         content_layout.addWidget(footer)
         self.library_content_scroll = QScrollArea()
+        self.library_content_scroll.setObjectName("termContentScroll")
         self.library_content_scroll.setWidgetResizable(True)
         self.library_content_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.library_content_scroll.setWidget(content)
         body.addWidget(self.library_content_scroll, 1)
-        layout.addLayout(body, 1)
 
         self.refresh_learning_suggestions()
         self._refresh_ai_choices()
@@ -1398,6 +1507,122 @@ class TermLibraryDialog(QWidget):
         for game_name in games:
             self.add_game_item(game_name)
         (bind_text(self.library_badge, f'{self.game_list.count()} games') if current_language() == 'en' else bind_text(self.library_badge, '{value0} 个游戏', value0=self.game_list.count()))
+        self._sync_tab_counts()
+        self._apply_cached_hub_counts()
+
+    # ------------------------------------------------------------ pages, hub, sharing
+
+    def show_page(self, page: str):
+        """「我的词库」(page="mine") or 「线上词库」(page="hub")."""
+        if page == "hub":
+            if self.hub_panel is None:
+                from .glossary_hub_ui import HubPanel
+                self.hub_panel = HubPanel(self, self.hub_page)
+                self.hub_panel.counts_changed.connect(self._set_hub_counts)
+                self.hub_page_layout.addWidget(self.hub_panel)
+            self.page_stack.setCurrentWidget(self.hub_page)
+            self.hub_tab_button.setChecked(True)
+            if not self.hub_panel.loaded_once:
+                self.hub_panel.load(force=False)
+            return
+        self.page_stack.setCurrentWidget(self.mine_page)
+        self.my_tab_button.setChecked(True)
+
+    def _sync_tab_counts(self):
+        self.my_tab_button.setCount(str(self.game_list.count()))
+
+    def _set_hub_counts(self, libraries: int, updates: int):
+        if libraries:
+            bind_text(self.hub_tab_button, '{count} 个社区词库', property='count', count=libraries)
+        else:
+            self.hub_tab_button.setCount("")
+        if updates:
+            bind_text(self.hub_tab_button, '{count} 个可更新', property='note', count=updates)
+        else:
+            self.hub_tab_button.setNote("")
+
+    def _apply_cached_hub_counts(self):
+        try:
+            from .glossary_hub_ui import cached_counts
+            counts = cached_counts(self.legacy)
+        except Exception:  # noqa: BLE001 - the tab count is informative only
+            counts = None
+        if counts is not None:
+            self._set_hub_counts(*counts)
+
+    def showEvent(self, event):  # noqa: N802 - Qt API
+        super().showEvent(event)
+        if getattr(self, "_hub_counts_checked", False):
+            return
+        self._hub_counts_checked = True
+        from . import glossary_hub as hub
+        if hub.catalog_is_fresh(hub.cached_catalog(self.legacy)) or not hub.TRUSTED_HUB_KEYS:
+            return
+        from .glossary_hub_ui import _run_async
+
+        def counted(catalog, error):
+            if error is None and (self.hub_panel is None or not self.hub_panel.loaded_once):
+                self._apply_cached_hub_counts()
+            if error is None:
+                self._refresh_share_nudge()
+        _run_async(self, lambda: hub.fetch_catalog(legacy=self.legacy), counted)
+
+    def _set_selected_header(self, game_name: str, type_label: str):
+        if game_name:
+            self.selected_title.setText(game_name)
+            self.selected_type.setText(type_label)
+        else:
+            bind_text(self.selected_title, translate('请选择游戏 / 内容', current_language()))
+        self.selected_type.setVisible(bool(game_name and type_label))
+
+    def _refresh_share_nudge(self):
+        from . import glossary_hub as hub
+        game = self.state.get("game", "")
+        key = self._library_key() if game else ""
+        confirmed = len(self.state.get("mappings") or [])
+        show = False
+        if game and key and confirmed >= hub.SHARE_PROMPT_MIN_ROWS and not hub.share_prompt_done(key, legacy=self.legacy):
+            # Only once the online catalog is known: a game that already has a
+            # community library is not worth a prompt (an update goes by 投稿 anyway).
+            catalog = hub.cached_catalog(self.legacy)
+            if catalog is not None:
+                entry = (self.legacy.load_learned_term_payload().get("games") or {}).get(key)
+                on_hub = any(self._game_identity(item.get("game", "")) == self._game_identity(game)
+                             for item in catalog.entries)
+                show = isinstance(entry, dict) and not entry.get("hub") and not on_hub
+        if show:
+            bind_text(self.share_nudge_text, '这个词库有 {count} 条确认过的词。分享到线上词库，别的玩家就不用再整理一次。',
+                      count=confirmed)
+        self.share_nudge.setVisible(show)
+
+    def _dismiss_share_nudge(self):
+        from . import glossary_hub as hub
+        key = self._library_key()
+        if key:
+            hub.mark_share_prompt_done(key, legacy=self.legacy)
+        self.share_nudge.hide()
+
+    def _toggle_learning_list(self):
+        visible = self.learning_box.isHidden()
+        self.learning_box.setVisible(visible)
+        bind_text(self.learning_toggle, '收起' if visible else '逐条确认')
+
+    def _sync_batch_switch(self):
+        in_batch = bool(self.state.get("game")) and self._current_game_in_batch()
+        blocked = self.use_game.blockSignals(True)
+        self.use_game.setChecked(in_batch)
+        self.use_game.blockSignals(blocked)
+        has_game = bool(self.state.get("game"))
+        bind_text(self.selected_batch, '本批使用中' if in_batch else '本批未使用')
+        self.selected_batch.setVisible(has_game)
+        self._meta_dot_batch.setVisible(has_game)
+
+    def _on_batch_switch(self, *_args):
+        if self.use_game.isChecked():
+            self.use_selected_game()
+        elif self._current_game_in_batch():
+            self.toggle_current_game_in_batch()
+        self._sync_batch_switch()
 
     def _close_hosted(self):
         if not self.prepare_for_task():
@@ -1468,7 +1693,7 @@ class TermLibraryDialog(QWidget):
         item.setData(Qt.ItemDataRole.UserRole, game_name)
         item.setData(Qt.ItemDataRole.UserRole + 1, identity)
         item.setToolTip(self._game_item_tooltip(game_name))
-        item.setSizeHint(QSize(0, 58))
+        item.setSizeHint(QSize(0, 54))
         self.game_list.addItem(item)
         row = TermGameListRow(
             game_name,
@@ -1479,6 +1704,8 @@ class TermLibraryDialog(QWidget):
         )
         row.clicked.connect(lambda target=item: self.game_list.setCurrentItem(target))
         self.game_list.setItemWidget(item, row)
+        if hasattr(self, "my_tab_button"):
+            self._sync_tab_counts()
         if select:
             self.game_list.setCurrentItem(item)
         return item
@@ -1753,23 +1980,13 @@ class TermLibraryDialog(QWidget):
         if rows:
             bind_text(self.listing_empty_title, '没有符合筛选条件的词条')
             bind_text(self.listing_empty_label, '调整搜索词或筛选条件，即可看到全部词条。')
-            for button in (
-                getattr(self, "listing_empty_build", None),
-                getattr(self, "listing_empty_import", None),
-                getattr(self, "listing_empty_smart", None),
-            ):
-                if button is not None:
-                    button.hide()
+            self.start_cards.hide()
         else:
             bind_text(self.listing_empty_title, '让识别更懂你的游戏')
             bind_text(self.listing_empty_label, '加入角色名、地点和专有词，可以减少同音词误识别。')
-            for button in (
-                getattr(self, "listing_empty_build", None),
-                getattr(self, "listing_empty_import", None),
-                getattr(self, "listing_empty_smart", None),
-            ):
-                if button is not None:
-                    button.show()
+            self.start_cards.show()
+            self.listing_empty_import.setVisible(bool(game_name))
+            self.listing_empty_smart.setVisible(bool(game_name))
         _t_rows1 = _t.perf_counter()
         try:
             if GUI_PROFILE_ENABLED:
@@ -1819,6 +2036,10 @@ class TermLibraryDialog(QWidget):
             self.learning_list.addItem(item)
         bind_text(self.learning_count, '{value0} 条待学习', value0=len(pending))
         self.learning_panel.setVisible(bool(pending))
+        rows = min(max(len(pending), 1), 5)
+        self.learning_list.setFixedHeight(rows * (self.learning_list.fontMetrics().lineSpacing() + 14) + 8)
+        if not pending and not self.learning_box.isHidden():
+            self._toggle_learning_list()
         if pending:
             self.learning_list.selectAll()
 
@@ -1971,7 +2192,7 @@ class TermLibraryDialog(QWidget):
             if game_name
             else ""
         )
-        (bind_text(self.selected_title, f"{game_name}  ·  {type_labels.get(selected_type, translate('其它内容', current_language()))}") if game_name else bind_text(self.selected_title, translate('请选择游戏 / 内容', current_language())))
+        self._set_selected_header(game_name, type_labels.get(selected_type, translate('其它内容', current_language())))
         # P0-5: MUST profile real timings for "点击 原神 → 650 条首次显示".
         # Segments (as requested): click handler, disk read, JSON parse (if any inside legacy), library lookup,
         # model reset (state), row creation (model list), style/polish (delegate paint), first paint.
@@ -2072,23 +2293,21 @@ class TermLibraryDialog(QWidget):
         # AI 更新按钮语义由全局任务管理器推导（VII 轮）：切游戏不得把运行中任务刷没。
         self._ensure_task_manager()
         self._refresh_ai_update_buttons()
-        is_current = enabled and self._current_game_in_batch()
-        self.use_game.setEnabled(enabled and not is_current)
-        ((bind_text(self.use_game, '✓ Used in this batch') if is_current else bind_text(self.use_game, 'Use in this batch')) if current_language() == 'en' else (bind_text(self.use_game, '✓ 已用于本批字幕') if is_current else bind_text(self.use_game, '用于本批字幕')))
+        self.use_game.setEnabled(enabled)
+        self._sync_batch_switch()
+        self.share_button.setEnabled(enabled and bool(self.state.get("mappings")))
+        self.more_button.setEnabled(enabled)
         # 删除游戏只对非保护游戏可用（C7 与删除术语分离）
         protected = self._game_identity(game_name) in self.protected_game_ids
         self.delete_game_button.setEnabled(enabled and not protected)
         self.rename_game_button.setEnabled(enabled and not protected)
-        self.delete_game_button.setIcon(
-            qta.icon("fa5s.trash-alt", color="#8a5a4c", color_disabled="#8a5a4c")
-        )
         bind_text(self.delete_game_button, translate('内置/受保护游戏不可删除' if protected else '删除当前游戏及其术语', current_language()), property='toolTip')
         (bind_text(self.library_badge, f'{self.game_list.count()} games') if current_language() == 'en' else bind_text(self.library_badge, '{value0} 个游戏', value0=self.game_list.count()))
-        # 游戏搜索仅在列表较多时出现（C5 搜索降级）
-        self.game_search.setVisible(self.game_list.count() > 8)
+        self._sync_tab_counts()
         self._refresh_game_item_counts()
         self._refresh_batch_bar()
         self.update_remove_action()
+        self._refresh_share_nudge()
 
     def update_remove_action(self):
         by_status = self._selected_rows_by_status()
@@ -2104,6 +2323,14 @@ class TermLibraryDialog(QWidget):
         if hasattr(self, "bulk_hide"):
             (bind_text(self.bulk_hide, '恢复所选') if hidden_rows and (not reference_rows) else bind_text(self.bulk_hide, '隐藏所选'))
             self.bulk_hide.setEnabled(bool(reference_rows or hidden_rows))
+        rows = len(self.listing.selectionModel().selectedRows(0)) if self.listing.selectionModel() else 0
+        bar = getattr(self, "selection_bar", None)
+        if bar is not None:
+            bind_text(self.selection_label, '已选 {count} 条', count=rows)
+            self.bulk_confirm.setVisible(bool(reference_rows))
+            self.bulk_hide.setVisible(bool(reference_rows or hidden_rows))
+            self.remove_terms.setVisible(bool(confirmed_rows))
+            bar.setVisible(rows > 0)
 
     # ------------------------------------------------------------ 交互
 
@@ -2123,7 +2350,7 @@ class TermLibraryDialog(QWidget):
             getattr(self.legacy, "learned_content_type", lambda _name: "game")(game_name)
             if game_name else ""
         )
-        (bind_text(self.selected_title, f"{game_name}  ·  {type_labels.get(selected_type, translate('其它内容', current_language()))}") if game_name else bind_text(self.selected_title, translate('请选择游戏 / 内容', current_language())))
+        self._set_selected_header(game_name, type_labels.get(selected_type, translate('其它内容', current_language())))
         # Use cached counts if available for instant badge
         mcount = len(self._mappings_cache.get(game_name, [])) if game_name else 0
         cached_builtin = self._builtin_cache.get(game_name)
@@ -2172,6 +2399,8 @@ class TermLibraryDialog(QWidget):
         self._notify_library_changed()
         self.add_game_item(game_name, select=True)
         self.game_input.clear()
+        self.new_library_panel.hide()
+        self._sync_tab_counts()
         (bind_text(self.library_badge, f'{self.game_list.count()} games') if current_language() == 'en' else bind_text(self.library_badge, '{value0} 个游戏', value0=self.game_list.count()))
         (bind_text(self.owner.term_hint, f'Created the {game_name} term library') if current_language() == 'en' else bind_text(self.owner.term_hint, '已创建《{value0}》术语库', value0=game_name))
 
@@ -3077,8 +3306,8 @@ class TermLibraryDialog(QWidget):
         self._import_submit = _save
 
     def open_glossary_hub(self):
-        from .glossary_hub_ui import open_hub_sheet
-        open_hub_sheet(self)
+        """The 「线上词库」 tab (the redesign replaced the hub sheet)."""
+        self.show_page("hub")
 
     def open_glossary_submit(self):
         from .glossary_hub_ui import open_submit_sheet
@@ -3155,11 +3384,8 @@ class TermLibraryDialog(QWidget):
                 if in_batch:
                     label += "（已加入本批，但请先添加或确认词条）"
         self.batch_status.setText(label)
-        if in_batch:
-            bind_text(self.batch_toggle, translate('从本批移除', current_language()))
-        else:
-            bind_text(self.batch_toggle, translate('加入本批', current_language()))
-        self.batch_toggle.setEnabled(bool(self.state["game"]))
+        self.use_game.setEnabled(bool(self.state["game"]))
+        self._sync_batch_switch()
 
     def toggle_current_game_in_batch(self):
         if not self.prepare_for_task():
@@ -3275,6 +3501,15 @@ class TermLibraryDialog(QWidget):
             bind_text(self.ai_capability_label, '○ 无服务端搜索')
             bind_text(self.ai_capability_label, '{value0}；AI 完整建库仍可抓取资料并调用模型整理文本。', property='toolTip', value0=capability['reason'])
 
+    def _ai_update_needs_key(self, settings) -> bool:
+        """The chosen AI service has no key: explain before a task is queued (2026-10-15)."""
+        from .api_key_explainer import ask_for_key_if_missing
+
+        def status():
+            bind_text(self.ai_update_status, 'AI 建库没有运行：还没填 API Key')
+            self.ai_update_status.show()
+        return ask_for_key_if_missing(self, settings, "polish", status=status)
+
     def _ai_update_settings(self) -> dict:
         from .glossary_skill import settings_with_service_override
 
@@ -3342,6 +3577,8 @@ class TermLibraryDialog(QWidget):
         if task is None:
             return
         settings = self._ai_update_settings()
+        if self._ai_update_needs_key(settings):
+            return
         new_id, created = manager.submit(
             task.game,
             "full",
@@ -3451,8 +3688,10 @@ class TermLibraryDialog(QWidget):
         if not game_name:
             self._show_toast("请先选择要更新的游戏词库。")
             return
-        manager = self._ensure_task_manager()
         settings = self._ai_update_settings()
+        if self._ai_update_needs_key(settings):
+            return
+        manager = self._ensure_task_manager()
         import copy
         settings = copy.deepcopy(settings)
         if mode == 'full':

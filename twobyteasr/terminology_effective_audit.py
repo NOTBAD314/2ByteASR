@@ -45,6 +45,7 @@ def run_glossary_checks(owner, output):
     owner.legacy.RUNTIME_SETTINGS.setdefault('glossary', {})['enabled_glossary_ids'] = []
     owner._save_glossary_settings()
 
+    click(page.sidebar_new_button)  # 2026-10-17: 「新建」 opens the small form
     page.game_input.setText('验收瓦罗兰特')
     click(page.add_game_button)
     primary_id = page._library_key()
@@ -86,9 +87,12 @@ def run_glossary_checks(owner, output):
         dict(text=label.text(), clipped=clipped))
     quick = page.term_try_panel.parentWidget()
     header = quick.parentWidget()
-    ai_panel = header.layout().itemAt(header.layout().count() - 1).widget()
-    check('AI panel does not cover trial result', ai_panel.geometry().top() > quick.geometry().bottom(),
-        dict(quick_bottom=quick.geometry().bottom(), ai_top=ai_panel.geometry().top()))
+    # 2026-10-17 redesign v2: the AI card left the header; the tool row below
+    # it (content body) must still start under the grown trial.
+    below = header.parentWidget().layout().itemAt(1).widget()
+    check('tools below do not cover trial result',
+        quick.geometry().bottom() <= header.height() and below.geometry().top() >= header.geometry().bottom(),
+        dict(quick_bottom=quick.geometry().bottom(), header_height=header.height(), below_top=below.geometry().top()))
     last_row = page.listing.model().index(2, 0)
     check('all three fixture rows fit the visible table', page.listing.viewport().rect().contains(page.listing.visualRect(last_row)),
         dict(row=str(page.listing.visualRect(last_row)), viewport=str(page.listing.viewport().rect())))
@@ -121,6 +125,7 @@ def run_glossary_checks(owner, output):
     exported = json.loads(export_path.read_text('utf8'))
     check('export canonical fields match stored evidence', exported['mappings'] == owner.legacy.learned_mappings_for_game(primary_id))
 
+    click(page.sidebar_new_button)
     page.game_input.setText('验收另一个词库')
     click(page.add_game_button)
     second_id = page._library_key()
