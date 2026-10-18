@@ -147,6 +147,7 @@ def test_direct_complete_button_without_native_search_freezes_full_mode_and_targ
     _stub_engine(monkeypatch, gate=gate)
     monkeypatch.setattr('twobyteasr.glossary_skill.detect_search_capability', lambda _: dict(
         provider_search=False, service='deepseek', model='deepseek-v4-pro', reason='无原生搜索'))
+    dialog._ai_update_needs_key = lambda settings: False   # a configured service (no-key note, 2026-10-15)
     dialog.state['game'] = '瓦罗兰特'
     dialog._refresh_ai_update_buttons()
     assert dialog.ai_full_button.menu() is None

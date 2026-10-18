@@ -105,6 +105,7 @@ def test_new_generate_preflight_visible_identity_and_recovery(app,project,tmp_pa
   def _scroll_ai_panel_into_view(self,*args):pass
   def _launch_ai_suggestion(self,**kwargs):self.launches.append(kwargs);raise RuntimeError('worker 创建失败')
  page=Page();page.project=project;page.selected_cue_id='';page._ai_request_active=False;page._ai_cancel_event=None
+ page._ai_needs_key=lambda settings:False  # a configured design service (no-key note, 2026-10-15)
  page.ai_generate=QPushButton();page.ai_suggestion_card=QLabel();page.ai_suggestion_title=QLabel();page.ai_confidence=QLabel();page.ai_preview=QPlainTextEdit();page.launches=[]
  page.ai_generate.clicked.connect(page._request_ai_suggestion)
  page.ai_generate.click();first=page._ai_last_start['request_id'];assert page.ai_generate.text()=='取消准备'

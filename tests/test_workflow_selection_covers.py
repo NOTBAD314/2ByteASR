@@ -24,6 +24,7 @@ def design_page(project):
     p.selected_cue_id = projected_cues(project)[0].id
     p._ai_request_active = False
     p.launches = []
+    p._ai_needs_key = lambda settings: False   # a configured design service (no-key note, 2026-10-15)
     return p
 
 def edited_project():
