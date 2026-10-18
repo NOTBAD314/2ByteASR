@@ -15,15 +15,15 @@
 
 ## 다운로드
 
-현재 버전: **0.7.5**(2026-10-17). 내 컴퓨터에 맞는 설치 프로그램을 하나 고르세요.
+현재 버전: **0.8.0**(2026-10-18). 내 컴퓨터에 맞는 설치 프로그램을 하나 고르세요.
 
 | 내 컴퓨터 | 다운로드 |
 | --- | --- |
-| **Windows 10 22H2 이상(64비트)**<br>정식 버전 | **[2ByteASR-Setup-0.7.5.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-Setup-0.7.5.exe)**(약 1 GB)<br>설치 프로그램에 코드 서명이 없어서 Windows가 “알 수 없는 게시자” 경고를 표시할 수 있습니다. [Windows에 설치하기](docs/product-guide.ko.md#windows에-설치하기)를 참고하세요. |
-| **Apple 실리콘(M1 이후) Mac, macOS 15 이상**<br>**실험판** | **[2ByteASR-0.7.5-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-0.7.5-macos-arm64-Setup.dmg)**(약 0.5 GB)<br>GitHub의 가상 Mac에서만 확인했습니다. **Intel Mac은 지원하지 않습니다.** Apple 공증을 받지 않았으므로 처음 여는 방법은 [Mac에 설치하기](docs/product-guide.ko.md#mac에-설치하기실험판)를 참고하세요. |
+| **Windows 10 1809 이상(64비트)**<br>정식 버전 | **[2ByteASR-Setup-0.8.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.0/2ByteASR-Setup-0.8.0.exe)**(약 1 GB)<br>설치 프로그램에 코드 서명이 없어서 Windows가 “알 수 없는 게시자” 경고를 표시할 수 있습니다. [Windows에 설치하기](docs/product-guide.ko.md#windows에-설치하기)를 참고하세요. |
+| **Apple 실리콘(M1 이후) Mac, macOS 15 이상**<br>**실험판** | **[2ByteASR-0.8.0-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.0/2ByteASR-0.8.0-macos-arm64-Setup.dmg)**(약 0.5 GB)<br>GitHub의 가상 Mac에서만 확인했습니다. **Intel Mac은 지원하지 않습니다.** Apple 공증을 받지 않았으므로 처음 여는 방법은 [Mac에 설치하기](docs/product-guide.ko.md#mac에-설치하기실험판)를 참고하세요. |
 
-- **중국 본토에서 다운로드가 느리거나 안 된다면:** 먼저 GitCode 미러에서 [Windows 설치 프로그램](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.7.5/2ByteASR-Setup-0.7.5.exe) · [Mac 설치 파일](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.7.5/2ByteASR-0.7.5-macos-arm64-Setup.dmg)을 받으세요. 그래도 안 되면 제3자 가속 서비스 gh-proxy: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-Setup-0.7.5.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.5/2ByteASR-0.7.5-macos-arm64-Setup.dmg). 어느 곳에서 받아도 파일은 같으며 `SHA256SUMS.txt`로 확인할 수 있습니다.
-- **이미 0.6.5, 0.7.0, 0.7.1, 0.7.2, 0.7.3, 0.7.4를 쓰고 있다면:** 앱 오른쪽 위의 “업데이트 확인”을 누르면 바뀐 부분만 내려받습니다. 0.6.0 이하라면 기존 버전을 제거하지 말고 새 설치 프로그램을 실행해 덮어 설치하세요.
+- **중국 본토에서 다운로드가 느리거나 안 된다면:** 먼저 GitCode 미러에서 [Windows 설치 프로그램](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.0/2ByteASR-Setup-0.8.0.exe) · [Mac 설치 파일](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.0/2ByteASR-0.8.0-macos-arm64-Setup.dmg)을 받으세요. 그래도 안 되면 제3자 가속 서비스 gh-proxy: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.0/2ByteASR-Setup-0.8.0.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.0/2ByteASR-0.8.0-macos-arm64-Setup.dmg). 어느 곳에서 받아도 파일은 같으며 `SHA256SUMS.txt`로 확인할 수 있습니다.
+- **이미 0.6.5, 0.7.0–0.7.5를 쓰고 있다면:** 앱 오른쪽 위의 “업데이트 확인”을 누르면 바뀐 부분만 내려받습니다. 0.6.0 이하라면 기존 버전을 제거하지 말고 새 설치 프로그램을 실행해 덮어 설치하세요.
 - **다른 첨부 파일은 받지 않아도 됩니다.** [Releases 페이지](https://github.com/NOTBAD314/2ByteASR/releases/latest)의 `Source`, `ThirdParty`, `update`, `.sig` 등은 소스 코드, 라이선스 자료, 앱 내 업데이트용 파일입니다. 내려받은 파일이 온전한지는 `SHA256SUMS.txt`로 확인할 수 있습니다.
 
 <img src="docs/assets/readme/hero-ko.png" width="100%" alt="한국어 인터페이스로 실행한 2ByteASR 0.7.2의 자막 스튜디오: 왼쪽에 자막 목록, 가운데에 자막이 표시된 동영상 미리보기, 오른쪽에 스타일 패널이 있고, 아래 타임라인에는 스트리머와 팀원의 자막 트랙이 하나씩, 그리고 비디오 트랙과 오디오 파형이 있습니다. 뒤쪽에는 홈 창이 보입니다">
@@ -153,7 +153,7 @@
 - [사용 가이드](docs/product-guide.ko.md): 설치, 첫 실행, 인식 방식 고르기, 비용과 개인정보, 업데이트, 자주 묻는 질문, 소스에서 실행하기
 - [인터페이스 둘러보기](docs/product-demo.ko.md): 인식 진행, 완료 화면, 모델 워크숍, 내보내기, 테마 등 더 많은 스크린샷(0.7.2 한국어 화면, 일부는 0.7.1 중국어 화면)
 - [API 신청 및 설정](docs/api-setup/README.md)(중국어): 클라우드 인식과 텍스트 AI 서비스별 신청 절차와 요금 안내
-- [Mac 실험판 안내](docs/deployment/macos-experimental.zh-CN.md)(중국어) · [업데이트 방법](UPDATING.md)(중국어) · [0.7.5 릴리스 노트](docs/releases/0.7.5.md)(중국어·영어·일본어·한국어) · [변경 기록](CHANGELOG.md) · [기여 안내](CONTRIBUTING.md)
+- [Mac 실험판 안내](docs/deployment/macos-experimental.zh-CN.md)(중국어) · [업데이트 방법](UPDATING.md)(중국어) · [0.8.0 릴리스 노트](docs/releases/0.8.0.md)(중국어·영어·일본어·한국어) · [변경 기록](CHANGELOG.md) · [기여 안내](CONTRIBUTING.md)
 
 ## 인식 과정
 
@@ -212,4 +212,4 @@ AI 교정(선택)
 
 프로젝트 자체 코드는 **GPL-3.0-only** 라이선스를 따릅니다([영어 원문](LICENSE), [적용 범위](PROJECT_LICENSE.md)). 공식 버전은 무료로 제공됩니다. GPL에 따라 상업적 이용, 수정, 유료 배포가 허용되며, 배포할 때는 해당 소스 코드 제공 등의 조건을 지켜야 합니다. 개인적으로 수정한 내용은 공개하지 않아도 되며, 일반적인 자막, 영상, 이미지는 이 소프트웨어로 만들었다는 이유만으로 GPL이 적용되지 않습니다. 서드파티 구성 요소는 각자의 라이선스를 따릅니다. 고품질 렌더러에 쓰이는 Remotion은 개인과 직원 3명 이하의 영리 조직에는 무료이며, 그보다 큰 영리 조직은 Remotion의 Company License를 별도로 구매해야 합니다. GSAP는 표준 라이선스 조건을 따릅니다. 자세한 내용은 [서드파티 고지](THIRD_PARTY_NOTICES.md)와 [모델 라이선스 표](licenses/MODELS.md)를 참고하세요. 전체 설치 패키지의 배포 자료는 아직 정리 중입니다([배포 현황](licenses/DISTRIBUTION-STATUS.md)).
 
-소스: `main` 브랜치에 앱 소스가 있습니다. 0.7.5 설치 프로그램의 빌드 소스는 태그 `v0.7.5`이며, 전체 빌드 입력은 릴리스의 `2ByteASR-Source-0.7.5.zip`에 있습니다([0.7.5 릴리스 노트](docs/releases/0.7.5.md#소스와-검증)의 “소스와 검증” 참고). [SOURCE_DELIVERY.md](SOURCE_DELIVERY.md)는 0.5.0 때 작성되었으며 0.7.5에 맞춰 갱신되지 않았습니다.
+소스: `main` 브랜치에 앱 소스가 있습니다. 0.8.0 설치 프로그램의 빌드 소스는 태그 `v0.8.0`이며, 전체 빌드 입력은 릴리스의 `2ByteASR-Source-0.8.0.zip`에 있습니다([0.8.0 릴리스 노트](docs/releases/0.8.0.md#소스와-검증)의 “소스와 검증” 참고). [SOURCE_DELIVERY.md](SOURCE_DELIVERY.md)는 0.5.0 때 작성되었으며 0.8.0에 맞춰 갱신되지 않았습니다.
