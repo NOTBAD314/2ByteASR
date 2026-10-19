@@ -2,7 +2,7 @@
 
 基于公开 `v0.8.1`（`83f928c1`），通过浏览器操作原有界面，声音由 Selkies 传输。镜像标签为 `2byteasr:0.8.1-docker.1`，平台为 `linux/amd64`。
 
-默认推荐 **MOSS Pro 云端转写 + Qwen3 本地字级对齐**。填写自己的 MOSI API Key 后，云端生成文字与说话人，本机 CPU 补充逐字时间；AI 校对和 AI 断句默认关闭，可另行配置。首次打开模型工坊进入「在线 API」，Qwen3 是字幕时间轴的推荐项。已有数据卷中的设置不会被改写。
+默认推荐 **MOSS Pro 云端转写 + Qwen3 本地字级对齐**。填写自己的 MOSI API Key 后，云端生成文字与说话人，本机 CPU 补充逐字时间；AI 校对和 AI 断句默认关闭，可另行配置。首次引导默认选中「云端识别 + 字级对齐」，确认后保留对齐模型；首次打开模型工坊进入「在线 API」，Qwen3 是字幕时间轴的推荐项。已有数据卷中的设置不会被改写。
 
 本地字级时间戳可选 Qwen3-ForcedAligner、Whisper large-v3-turbo、Paraformer，另有日语 CTC 句首校正。离线转写保留 SenseVoice、Paraformer 和 Fun-ASR Nano。FireRed、其他 NVIDIA 专属引擎及 Apple MLX 不在这份 CPU 镜像里；0.8.1 之后新增的 MFA 等日常功能未混入。
 
@@ -76,6 +76,6 @@ docker compose exec -u abc twobyteasr /opt/venv/bin/python -m twobyteasr.contain
 
 已完成：SenseVoice 真实中文识别、Qwen3 CPU 字级对齐、日语 CTC 推理冒烟、云端上传/轮询协议回环、X11 视频画面与播放、PulseAudio 实际声音、中文编辑/剪切/撤销、保存重开、四种字幕格式与 MP4 导出。云端协议验收使用本机模拟服务，未调用真实付费 API；CTC 冒烟不评价日语准确率，Whisper/Paraformer/Fun-ASR Nano 尚未逐模型跑真实样本。
 
-完整执行记录见 [本轮计划](docs/exec-plans/active/2026-10-19-docker-081.md)。构建成功、界面可见、模型下载、实际识别与导出分别验收；未实际跑过的模型和硬件不算已验证。CPU 的长视频识别速度取决于主机；浏览器视频是远程桌面画面，不代表导出画质。
+完整执行记录见 [本轮计划](docs/exec-plans/completed/2026-10-19-docker-081.md)。构建成功、界面可见、模型下载、实际识别与导出分别验收；未实际跑过的模型和硬件不算已验证。CPU 的长视频识别速度取决于主机；浏览器视频是远程桌面画面，不代表导出画质。
 
 源码沿用 GPL-3.0-only；第三方组件保留各自许可。Selkies 基础镜像的 [官方使用说明](https://docs.linuxserver.io/selkies/developer-guide/building-images/) 说明了应用启动、声音与持久化机制。
