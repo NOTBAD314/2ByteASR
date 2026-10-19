@@ -3185,7 +3185,7 @@ class ModelDownloadDialog(QDialog):
                     'This macOS build supports SenseVoice CPU, MLX, MOSS and FireRed. Other local models are not yet adapted.',
                     '今回の macOS 版は SenseVoice CPU・MLX・MOSS・FireRed に対応しています。他のローカルモデルは未対応です。'))
                 return
-        elif os.name != "nt":
+        elif os.name != "nt" and os.environ.get("TWOBYTEASR_CONTAINER") != "1":
             self.log.appendPlainText(
                 "The automatic model workshop installer requires Windows. "
                 "For the macOS experiment use scripts/macos_prepare_runtime.py "
@@ -3220,6 +3220,20 @@ class ModelDownloadDialog(QDialog):
                 self._start_macos_local()
             else:
                 self._start_macos_cpu()
+            return
+        if os.environ.get("TWOBYTEASR_CONTAINER") == "1":
+            from .container.models import SUPPORTED_MODELS
+            if not set(self.download_keys) <= SUPPORTED_MODELS:
+                self._finish_with_error("Docker 本地模型目前支持 SenseVoice、Paraformer、Fun-ASR Nano；其他模型尚未适配。")
+                return
+            from .runtime_paths import get_runtime_paths
+            self.process.setWorkingDirectory(str(self.root))
+            self.process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
+            self.process.start(sys.executable, ["-m", "twobyteasr.container.models",
+                "--keys", ",".join(self.download_keys), "--models", str(get_runtime_paths().model_root),
+                "--source", str(self.source_combo.currentData() or "AUTO")])
+            if not self.process.waitForStarted(5000):
+                self._finish_with_error("无法启动 Docker 模型下载器。")
             return
         script = self.root / "scripts" / "download_models.ps1"
         powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"

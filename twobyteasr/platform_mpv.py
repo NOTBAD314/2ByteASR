@@ -25,6 +25,10 @@ def native_video_arguments(window_id: int, *, platform: str | None = None) -> li
         if int(window_id) <= 0:
             raise ValueError("window_id must be a positive native HWND")
         return ["--gpu-api=d3d11", f"--wid={int(window_id)}"]
+    if platform.startswith("linux") and os.environ.get("TWOBYTEASR_CONTAINER") == "1":
+        if int(window_id) <= 0:
+            raise ValueError("window_id must be a positive X11 window")
+        return ["--vo=x11", "--hwdec=no", f"--wid={int(window_id)}"]
     # A native Qt winId on Cocoa is not a cross-process NSView. Never pass it
     # to --wid. Linux also defaults to a separate window, avoiding the same
     # assumption under Wayland. Studio retains playback/PCM ownership.

@@ -219,6 +219,9 @@ def _blob(data: bytes) -> tuple[_DataBlob, ctypes.Array]:
 
 
 def _dpapi(operation: str, data: bytes) -> bytes:
+    if sys.platform.startswith("linux") and os.environ.get("TWOBYTEASR_CONTAINER") == "1":
+        from .container.secrets import transform
+        return transform(operation, data, secrets_path())
     if os.name != "nt":
         raise RuntimeError("本机密钥存储只支持 Windows DPAPI。")
     source, source_buffer = _blob(data)
@@ -386,7 +389,8 @@ def read_secret_value(*names: str) -> tuple[str, str]:
         value = str(payload.get(name, "") or "").strip()
         if value:
             label = ('macOS 钥匙串' if keychain_storage_enabled() else
-                     '当前会话' if session_credentials_enabled() else 'Windows DPAPI')
+                     '当前会话' if session_credentials_enabled() else
+                     'Docker 本机密钥文件' if os.environ.get('TWOBYTEASR_CONTAINER') == '1' else 'Windows DPAPI')
             return value, f"{label} / {name}"
     for name in names:
         value = str(os.environ.get(name, "") or "").strip()
