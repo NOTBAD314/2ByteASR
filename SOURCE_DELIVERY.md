@@ -1,3 +1,5 @@
+> 2026-10-19 Docker 补充：0.8.1 Docker 的构建、下载和准确镜像源码见 [Docker 使用说明](README.docker.md) 与独立 Docker Release。本文件下方保留旧桌面分发的历史记录；其中旧版 Docker 历史定位不描述本次新增包。容器使用的基础镜像及依赖版本由 Dockerfile 和 packaging/docker/constraints.txt 固定，第三方组件仍遵循各自许可，未宣称旧许可材料缺项已全部解决。
+
 # 0.5.0 对应源码与材料交付 / Source delivery
 
 项目自有代码延续 GPL-3.0-only；最初从0.2.6-test.3生效的历史分界保持。0.5.0是本轮实际版本选择，本地构建不代表已经公开发布或许可缺口全部关闭。

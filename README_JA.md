@@ -26,6 +26,10 @@
 - **0.6.5 / 0.7.x / 0.8.0 をお使いの場合：** アプリ右上の「更新を確認」から、変わった部分だけをダウンロードできます。0.6.0 以前は、アンインストールせずに新しいインストーラーで上書きしてください。
 - **ほかの添付ファイルは不要です。** [Releases ページ](https://github.com/NOTBAD314/2ByteASR/releases/latest)の `Source`、`ThirdParty`、`update`、`.sig` などは、ソースコード、ライセンス資料、アプリ内更新のためのものです。`SHA256SUMS.txt` でダウンロードしたファイルが完全かどうか確認できます。
 
+### Docker（Linux amd64 / CPU）
+
+**[Docker 0.8.1 をダウンロード](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) · [ビルド・起動手順](README.docker.md)**。ブラウザーで従来の画面、音声再生、字幕編集と書き出しを利用できます。初期設定は MOSS Pro クラウド API とローカル Qwen3 の単語時刻アラインメントです。API キーは各自で設定し、モデルは別途ダウンロードします。NVIDIA GPU は不要です。
+
 <img src="docs/assets/readme/hero-ja.png" width="100%" alt="日本語表示の 2ByteASR 0.7.1 字幕スタジオ：左に字幕リスト、中央に字幕付きの動画プレビュー、右にスタイルパネル、下のタイムラインには配信者と相方の字幕トラック、映像トラック、音声波形が並び、背後にホーム画面のウィンドウがある">
 
 <sub>0.7.1 の実際の画面です。サンプルはプロジェクトで作ったテストカード映像と 2 人分の中国語合成音声で、NVIDIA GPU 上のローカル MOSS + FireRedASR2-AED + Qwen3-ASR で認識しました。話者名は話者管理で変更しています。</sub>

@@ -26,6 +26,10 @@
 - **이미 0.6.5, 0.7.x, 0.8.0을 쓰고 있다면:** 앱 오른쪽 위의 “업데이트 확인”을 누르면 바뀐 부분만 내려받습니다. 0.6.0 이하라면 기존 버전을 제거하지 말고 새 설치 프로그램을 실행해 덮어 설치하세요.
 - **다른 첨부 파일은 받지 않아도 됩니다.** [Releases 페이지](https://github.com/NOTBAD314/2ByteASR/releases/latest)의 `Source`, `ThirdParty`, `update`, `.sig` 등은 소스 코드, 라이선스 자료, 앱 내 업데이트용 파일입니다. 내려받은 파일이 온전한지는 `SHA256SUMS.txt`로 확인할 수 있습니다.
 
+### Docker (Linux amd64 / CPU)
+
+**[Docker 0.8.1 다운로드](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) · [빌드 및 실행 방법](README.docker.md)**. 브라우저에서 기존 화면, 오디오 재생, 자막 편집과 내보내기를 사용할 수 있습니다. 기본 조합은 MOSS Pro 클라우드 API와 로컬 Qwen3 단어 시간 정렬입니다. API 키는 직접 설정하고 모델은 별도로 내려받습니다. NVIDIA GPU는 필요하지 않습니다.
+
 <img src="docs/assets/readme/hero-ko.png" width="100%" alt="한국어 인터페이스로 실행한 2ByteASR 0.7.2의 자막 스튜디오: 왼쪽에 자막 목록, 가운데에 자막이 표시된 동영상 미리보기, 오른쪽에 스타일 패널이 있고, 아래 타임라인에는 스트리머와 팀원의 자막 트랙이 하나씩, 그리고 비디오 트랙과 오디오 파형이 있습니다. 뒤쪽에는 홈 창이 보입니다">
 
 <sub>한국어 인터페이스로 찍은 실제 0.7.2 화면입니다. 예제는 프로젝트에서 직접 만든 테스트 카드 영상과 두 사람의 중국어 합성 음성이며, NVIDIA GPU에서 로컬 MOSS + FireRedASR2-AED + Qwen3-ASR로 인식했습니다. 화자 이름 “스트리머”와 “팀원”은 화자 관리에서 바꾼 것입니다.</sub>

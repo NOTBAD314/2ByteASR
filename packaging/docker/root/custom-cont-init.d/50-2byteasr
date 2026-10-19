@@ -1,0 +1,5 @@
+#!/bin/bash
+set -eu
+mkdir -p /models /media/input /media/output
+# Do not recursively take ownership of host media or existing model trees.
+chown abc:abc /models /media/input /media/output

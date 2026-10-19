@@ -19,7 +19,7 @@ jobs:
       - name: Install lightweight test deps
         run: |
           python -m pip install -U pip
-          python -m pip install pytest==9.1.1 pypinyin==0.55.0 requests==2.33.0 jieba==0.42.1 numpy==2.2.6 PySide6==6.9.2 QtAwesome==1.4.0
+          python -m pip install pytest==9.1.1 pypinyin==0.55.0 requests==2.33.0 jieba==0.42.1 numpy==2.2.6 PySide6==6.9.2 QtAwesome==1.4.0 cryptography==50.0.2
       - name: Py compile
         run: |
           python -m py_compile auto_asr.py moss_firered_pipeline.py subtitle_core.py moss_worker.py firered_llm_worker.py register_host_voiceprint.py twobyteasr/service.py
