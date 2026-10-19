@@ -11,14 +11,16 @@ def test_existing_settings_are_preserved_byte_for_byte(tmp_path):
     seed_settings(target)
     assert target.read_bytes() == original
 
-def test_first_launch_uses_an_available_cpu_engine(tmp_path):
+def test_first_launch_recommends_cloud_and_local_word_alignment(tmp_path):
     from twobyteasr.container.launch import seed_settings
     target = tmp_path / "2byteasr_settings.json"
     seed_settings(target)
     settings = json.loads(target.read_text("utf8"))
-    assert settings["models"]["primary_asr_backend"] == "sensevoice"
+    assert settings["models"]["primary_asr_backend"] == "api"
     assert settings["models"]["speaker_source"] == "native"
-    assert not settings["switches"]["enable_firered_boundary_refinement"]
+    assert settings["models"]["qwen_asr_api_provider"] == "mosi_moss_pro"
+    assert settings["models"]["firered_asr_backend"] == "qwen_aligner"
+    assert settings["switches"]["enable_firered_boundary_refinement"]
     assert not settings["switches"]["enable_qwen_asr_reference"]
 
 def test_launch_respects_explicit_roots(tmp_path, monkeypatch):
@@ -61,3 +63,12 @@ def test_container_credentials_roundtrip_and_tamper(tmp_path):
     with pytest.raises(RuntimeError):
         transform("unprotect", encrypted, store)
     assert not key.exists()
+
+
+def test_container_model_choices_keep_cpu_timing_and_cloud(monkeypatch):
+    from twobyteasr import model_workshop as workshop
+    monkeypatch.setenv("TWOBYTEASR_CONTAINER", "1")
+    monkeypatch.setattr(workshop.sys, "platform", "linux")
+    visible = {model.key for model in workshop.MODELS if workshop.model_platform_available(model)}
+    assert {"qwen_aligner", "ja_ctc_aligner", "whisper", "paraformer", "mosi_moss_pro"} <= visible
+    assert not ({"moss", "firered", "mlx_qwen_aligner", "qwen_local"} & visible)

@@ -24,8 +24,13 @@ def seed_settings(path: Path | None = None) -> None:
     if path.exists():
         return
     settings = deepcopy(DEFAULT_SETTINGS)
-    settings["models"].update(primary_asr_backend="sensevoice", speaker_source="native")
-    for key in ("enable_qwen_asr_reference", "enable_firered_boundary_refinement",
+    settings["models"].update(
+        primary_asr_backend="api", speaker_source="native",
+        qwen_asr_api_provider="mosi_moss_pro", qwen_asr_api_protocol="mosi_transcriptions",
+        qwen_asr_api_model="moss-transcribe-diarize-pro", qwen_asr_api_url="https://api.mosi.cn/v1",
+        firered_asr_backend="qwen_aligner", qwen_asr_backend="off")
+    settings["switches"]["enable_firered_boundary_refinement"] = True
+    for key in ("enable_qwen_asr_reference",
                 "enable_ai_polish", "use_ai_grouping"):
         settings["switches"][key] = False
     save_runtime_settings(settings, project_root=path.parent)

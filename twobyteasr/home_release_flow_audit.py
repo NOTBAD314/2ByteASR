@@ -41,6 +41,13 @@ def start(window, out):
         if errors: raise RuntimeError(str(errors))
 
     def preview(page, label):
+        import os
+        if sys.platform.startswith("linux") and os.environ.get("TWOBYTEASR_CONTAINER") == "1":
+            from .acceptance.container_preview import preserve_preview
+            record = preserve_preview(page, out, label, pump, check)
+            result.setdefault("studio_preview", {})[label] = record
+            save()
+            return
         if sys.platform != 'darwin':
             return
         controller = page.video.controller
@@ -85,6 +92,7 @@ def start(window, out):
                 reference = json.loads(Path(config['loopback_mosi_reference']).read_text('utf8'))
                 server, loopback = start_loopback(reference)
                 result['loopback'] = loopback
+                result.update(cloud_transport='loopback', injected_transcript=True, actual_cloud_recognition=False)
                 api = dict(provider='mosi_moss_pro', model='moss-transcribe-diarize-pro',
                            url=f'http://127.0.0.1:{server.server_port}/v1', key='sk-loopback-test', **api)
             if api:

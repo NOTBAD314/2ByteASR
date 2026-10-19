@@ -1,7 +1,4 @@
-# Small workbench runtime.  ASR engines are deliberately not installed here:
-# clicking Download in the model workshop installs that model's Python runtime
-# together with its weights.  This keeps first setup usable without MOSS,
-# FireRed, Qwen, FunASR or an NVIDIA GPU.
+# Docker GUI and CPU recognition/alignment runtime; based on v0.8.1 pins.
 numpy==2.2.6
 pypinyin==0.55.0
 requests==2.33.0
@@ -38,3 +35,6 @@ funasr==1.4.1
 sentencepiece==0.2.1
 Pillow==12.3.0
 PyYAML==6.0.3
+
+qwen-asr==0.0.6
+nagisa==0.2.11

@@ -292,7 +292,7 @@ def _compute_build_identity(
     payload: dict[str, object] = {}
     if metadata_path is not None:
         payload = _read_metadata(metadata_path)
-    elif frozen:
+    elif frozen or os.environ.get("TWOBYTEASR_CONTAINER") == "1":
         for candidate in _metadata_candidates(root, executable):
             payload = _read_metadata(candidate)
             if payload:

@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VCS_REF: "${VCS_REF:-docker-local}"
     platform: linux/amd64
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:3000"

@@ -3,19 +3,20 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-SUPPORTED_MODELS = frozenset({"sensevoice", "paraformer", "funasr_nano"})
+SUPPORTED_MODELS = frozenset({"sensevoice", "paraformer", "funasr_nano",
+                              "qwen_aligner", "ja_ctc_aligner", "whisper_turbo"})
 
 def prepare(keys: list[str], source: str, destination: Path) -> None:
     unsupported = set(keys) - SUPPORTED_MODELS
     if not keys or unsupported:
-        raise ValueError("Docker 本地模型目前支持 SenseVoice、Paraformer、Fun-ASR Nano；其他模型尚未适配。")
+        raise ValueError("Docker CPU 版支持 Qwen3 强制对齐、日语 CTC、Whisper、Paraformer、SenseVoice、Fun-ASR Nano；此模型需要其他运行环境。")
     from twobyteasr.model_integrity import locked_model, verify_model_files
     from twobyteasr.repository_download import download_model
     from twobyteasr.runtime_paths import detect_install_root
     root = detect_install_root()
     for key in dict.fromkeys(keys):
         spec = locked_model(key, root=root)
-        target = destination / Path(spec["path"].replace("\\\\", "/")).name
+        target = destination / Path(spec["path"].replace("\\", "/")).name
         print(f"[Docker] 下载并校验 {key}: {target}", flush=True)
         download_model(model_key=key, spec=spec, destination=target, mode=source,
                        staging_root=destination / ".download-staging")
