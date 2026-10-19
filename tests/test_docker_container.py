@@ -72,3 +72,19 @@ def test_container_model_choices_keep_cpu_timing_and_cloud(monkeypatch):
     visible = {model.key for model in workshop.MODELS if workshop.model_platform_available(model)}
     assert {"qwen_aligner", "ja_ctc_aligner", "whisper", "paraformer", "mosi_moss_pro"} <= visible
     assert not ({"moss", "firered", "mlx_qwen_aligner", "qwen_local"} & visible)
+
+def test_container_first_run_keeps_cloud_and_word_alignment(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    from twobyteasr import quick_setup
+    monkeypatch.setenv("TWOBYTEASR_CONTAINER", "1")
+    monkeypatch.setattr(quick_setup.sys, "platform", "linux")
+    app = QApplication.instance() or QApplication([])
+    dialog = quick_setup.QuickSetupDialog(size_of=lambda backends: 1.8)
+    assert set(dialog.cards) == {"cloud", "light"}
+    assert dialog.choice == "cloud"
+    dialog.go_button.click()
+    assert dialog.backends == ("api", "qwen_aligner", "off")
+    dialog.close()
+    dialog.deleteLater()
+    app.processEvents()
+    assert quick_setup.plans_for_this_computer(platform="win32") == ["local", "cloud", "light"]

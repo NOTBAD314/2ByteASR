@@ -11,9 +11,10 @@ calm and slow (blue). Nothing downloads until the main button is pressed.
 from __future__ import annotations
 
 import math
+import os
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QEasingCurve, QObject, QPointF, QRectF, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
@@ -50,6 +51,16 @@ PLANS = {
                        ('sensevoice', 'off', 'off'), 'light', ('SenseVoice',)),
 }
 
+def plan_for_this_computer(key: str) -> QuickPlan:
+    plan = PLANS[key]
+    if key == "cloud" and sys.platform.startswith("linux") and os.environ.get("TWOBYTEASR_CONTAINER") == "1":
+        return replace(plan, title="云端识别 + 字级对齐",
+                       line="云端识别文字，本机 CPU 补充字级时间",
+                       backends=("api", "qwen_aligner", "off"),
+                       models=("MOSS Pro 云端", "Qwen3 字级对齐"))
+    return plan
+
+
 # Captions of the demonstrations (what the picture is showing right now).
 LOCAL_DEMOS = ('分说话人', '三路审核', '字级时间')
 REVIEW_ROWS = (('MOSS', '今天来玩新版本', -1), ('FireRed', '今天来玩新版本', -1), ('Qwen3', '今天来完新版本', 3))
@@ -59,6 +70,8 @@ WORD_SAMPLE = '今天我们来玩'
 def plans_for_this_computer(platform: str | None = None, apple_silicon: bool | None = None) -> list[str]:
     """Cards this computer can use: no CUDA card on a Mac, no local card on an Intel Mac."""
     platform = platform or sys.platform
+    if platform.startswith("linux") and os.environ.get("TWOBYTEASR_CONTAINER") == "1":
+        return ["cloud", "light"]
     if platform == 'darwin':
         if apple_silicon is None:
             from .mlx_backend import platform_supported
@@ -570,7 +583,7 @@ class QuickSetupDialog(SpringDialog):
         row.setSpacing(14)
         self.cards: dict[str, PlanCard] = {}
         for key in plan_keys or plans_for_this_computer():
-            card = PlanCard(PLANS[key], self)
+            card = PlanCard(plan_for_this_computer(key), self)
             card.setProperty('plan', key)
             card.scene.set_palette(theme.text_muted, theme.surface, theme.text)
             card.clicked.connect(self.select)
@@ -604,7 +617,7 @@ class QuickSetupDialog(SpringDialog):
         footer.addWidget(self.go_button)
         outer.addLayout(footer)
         for key, card in self.cards.items():
-            backends = PLANS[key].backends
+            backends = plan_for_this_computer(key).backends
             size = self._size_of(backends)
             card.set_status(tr('需要 API Key（先充值）· 会上传音频') if key == 'cloud' else tr('下载约 {size:.1f} GB', size=size))
         self.cuda_ready.connect(self._cuda_checked)
@@ -628,7 +641,7 @@ class QuickSetupDialog(SpringDialog):
         if key == 'cloud':
             bind_text(self.go_button, '去设置 API Key')
         else:
-            bind_text(self.go_button, '下载并开始（约 {size:.1f} GB）', size=self._size_of(PLANS[key].backends))
+            bind_text(self.go_button, '下载并开始（约 {size:.1f} GB）', size=self._size_of(plan_for_this_computer(key).backends))
 
     def _cuda_checked(self, status) -> None:
         self._cuda = status
@@ -651,7 +664,7 @@ class QuickSetupDialog(SpringDialog):
     def _go(self) -> None:
         if self.choice is None:
             return
-        self.backends = PLANS[self.choice].backends
+        self.backends = plan_for_this_computer(self.choice).backends
         self.accept()
 
     def _explain_api_key(self) -> None:
