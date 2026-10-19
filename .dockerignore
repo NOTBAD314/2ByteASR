@@ -33,3 +33,4 @@ renderer/out/**
 renderer/build/**
 renderer/.cache/**
 packaging/docker/evidence/**
+packaging/docker/release/**

@@ -26,6 +26,10 @@ Current release: **0.8.1** (2026-10-18). Pick the one installer for your compute
 - **Already on 0.6.5, 0.7.x or 0.8.0?** Use "Check for updates" in the app; it downloads only what changed. For 0.6.0 or earlier, run the new installer over the old one without uninstalling first.
 - **You don't need the other files.** The `Source`, `ThirdParty`, `update` and `.sig` files on the [Releases page](https://github.com/NOTBAD314/2ByteASR/releases/latest) are for source code, licence materials and in-app updates. `SHA256SUMS.txt` lets you check that a download is complete.
 
+### Docker (Linux amd64 / CPU)
+
+**[Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) · [Build and run](README.docker.md)**. Use the original desktop in a browser, with audio, subtitle editing and export. The default is MOSS Pro cloud API plus local Qwen3 word alignment. Bring your own API key; download model weights separately. No NVIDIA GPU is required.
+
 <img src="docs/assets/readme/hero-en.png" width="100%" alt="Subtitle Studio in 2ByteASR 0.7.1 with the English interface: captions list on the left, video preview with a subtitle in the middle, style panel on the right, and a timeline with one subtitle track each for Host and Teammate, a video track and the audio waveform; the home window sits behind it">
 
 <sub>Real 0.7.1 screenshot. The sample is a self-made test card with two synthetic Chinese voices, transcribed locally with MOSS + FireRedASR2-AED + Qwen3-ASR on an NVIDIA GPU. The speaker names were set in Speaker Management.</sub>

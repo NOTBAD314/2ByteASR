@@ -26,6 +26,10 @@
 - **已经装了 0.6.5、0.7.x 或 0.8.0：** 在程序右上角“检查更新”，只下载有变化的部分。0.6.0 及更早版本：直接运行新的安装程序覆盖安装，不要先卸载。
 - **其他附件不用下载。** [Releases 页面](https://github.com/NOTBAD314/2ByteASR/releases/latest)里的 `Source`、`ThirdParty`、`update`、`.sig` 等文件是给源码、许可材料和程序内更新用的。下载后可用 `SHA256SUMS.txt` 核对文件是否完整。
 
+### Docker（Linux amd64 / CPU）
+
+**[下载 Docker 版 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) · [构建与使用说明](README.docker.md)**。浏览器中操作原界面，默认推荐 MOSS Pro 云端 API + Qwen3 本地字级对齐；自备 API Key，模型按需下载。支持声音、字幕编辑与导出。无需 NVIDIA 显卡。
+
 <img src="docs/assets/readme/hero.png" width="100%" alt="兔白字幕 0.7.1 的字幕工作台：左边是字幕列表，中间是视频预览和字幕，右边是样式面板，下方时间轴按“主播”“队友”分成两条字幕轨，并有视频轨和音频波形；后方是首页窗口，显示识别方案一栏">
 
 <sub>0.7.1 真实界面截图。示例素材是项目自制的测试卡画面和两段合成语音；字幕由本机 MOSS + FireRedASR2-AED + Qwen3-ASR 识别（NVIDIA 显卡），说话人名称“主播”“队友”是在说话人管理里改的。</sub>

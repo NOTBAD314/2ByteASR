@@ -6,22 +6,59 @@
 
 本地字级时间戳可选 Qwen3-ForcedAligner、Whisper large-v3-turbo、Paraformer，另有日语 CTC 句首校正。离线转写保留 SenseVoice、Paraformer 和 Fun-ASR Nano。FireRed、其他 NVIDIA 专属引擎及 Apple MLX 不在这份 CPU 镜像里；0.8.1 之后新增的 MFA 等日常功能未混入。
 
+![Docker 浏览器实际界面](docs/assets/readme/docker-081.png)
+
 ## 启动
 
-需要 Docker Engine 或已切到 Linux containers 的 Docker Desktop，以及 Docker Compose。CPU 对齐建议给 Docker 至少 8 GB 内存；模型按需下载，Qwen3 约 1.8 GB、日语 CTC 约 1.3 GB，不含在镜像内。
+需要 Docker Engine 或已切到 Linux containers 的 Docker Desktop，以及 Docker Compose。平台为 **linux/amd64 / CPU**；建议给 Docker 至少 8 GB 内存，准备至少 20 GB 磁盘空间。模型按需下载，Qwen3 约 1.8 GB、日语 CTC 约 1.3 GB，不含在镜像内。
 
-如果拿到随包镜像：
+### 从源码构建
+
+复制下面命令，构建固定发布标签：
 
 ```sh
+git clone --depth 1 --branch v0.8.1-docker.1 https://github.com/NOTBAD314/2ByteASR.git 2ByteASR-docker
+cd 2ByteASR-docker
+docker compose up -d --build
+```
+
+需要记录精确构建提交时，先运行 `docker compose build --build-arg VCS_REF=$(git rev-parse HEAD)`，再运行 `docker compose up -d --no-build`。
+
+### 下载预构建镜像
+
+从 [Docker Release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) 下载启动包、两个镜像分片和校验文件：
+
+- `2byteasr-0.8.1-docker-start.zip`
+- `2byteasr-0.8.1-docker.1.tar.part01`
+- `2byteasr-0.8.1-docker.1.tar.part02`
+- `SHA256SUMS.txt`
+
+解压启动包，把两个分片放到与 `compose.yaml` 相同的目录。GitHub 附件限制为每个小于 2 GiB，所以镜像分成两段；导入脚本先核对两段和重组文件的 SHA-256，再交给 Docker，不会下载或覆盖已有配置。
+
+Linux（也可在支持 amd64 容器的 macOS 上构建，但本轮未验证 Apple 芯片的模拟运行）：
+
+```sh
+sh load-image.sh
+docker compose up -d --no-build
+```
+
+Windows PowerShell：
+
+```powershell
+powershell -NoProfile -File .\load-image.ps1
+docker compose up -d --no-build
+```
+
+若系统策略不允许运行脚本，可手动合并后核对 SHA-256，再导入：
+
+```powershell
+cmd /c copy /b 2byteasr-0.8.1-docker.1.tar.part01+2byteasr-0.8.1-docker.1.tar.part02 2byteasr-0.8.1-docker.1.tar
+Get-FileHash .\2byteasr-0.8.1-docker.1.tar -Algorithm SHA256
 docker load -i 2byteasr-0.8.1-docker.1.tar
 docker compose up -d --no-build
 ```
 
-如果拿到源码包，在含 Dockerfile 的目录：
-
-```sh
-docker compose up -d --build
-```
+完整镜像 SHA-256：`1c2dcb24f5d74f6dd7cd6d469c78209165b10bb754f13895c58abd81256561c5`。已持有完整 `.tar` 时直接 `docker load -i 2byteasr-0.8.1-docker.1.tar` 即可。
 
 打开 [http://localhost:3000](http://localhost:3000)。初始化完毕后会出现兔白界面。关闭浏览器不会停止任务；关闭兔白窗口后，可用 `docker compose restart` 重新打开。
 
