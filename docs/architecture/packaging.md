@@ -28,3 +28,9 @@ Linux 模型工坊的下载对话框启动 QProcess，执行 container.models，
 最终镜像 38 项正常 GUI 检查涵盖真实识别、字级时间、X11 变化画面、实际 PulseAudio 声音、编辑剪切、保存重开、字幕与视频导出。9 项工坊检查实际点击标签和下载按钮；4 项跨容器检查核对文件摘要、工程加载与测试密钥解密。云端协议使用明确标记的本机模拟服务，不能当作真实云端准确率测试。
 
 源入口验证通过专用容器、专用卷、独立临时 profile 完成。所有素材均为本轮合成短音视频，不读取用户工程或日常配置。持久化与启动方式见 [使用说明](../../README.docker.md)，长期边界见 [ADR 0136](../adr/0136-docker-browser-desktop-and-container-data.md)。
+
+## GitHub 分发
+
+固定标签 [v0.8.1-docker.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) 提供源码构建入口；main 首页链接同一使用说明。预构建镜像归档分为 1,500,000,000 与 1,163,312,896 字节两段，每段低于 GitHub 单附件限制。启动包导入器先验证两段与合并归档 SHA-256，再执行 docker load；损坏分片不会被导入。另附对应源码 ZIP、启动 ZIP 和 SHA256SUMS。公开源码 a2a7e2b4 与镜像 76e9bdb7 的 821 项运行源码逐项一致。
+
+这个 Release 不改变桌面版 v0.8.1 的 Latest 标记；不依赖 GHCR / Docker Hub，也没有把模型权重写进镜像。Windows / Linux 重组验证与五个远端附件摘要、匿名下载已通过；仓库原有全量 CI 收集失败仍单列保留。
