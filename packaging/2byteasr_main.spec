@@ -23,8 +23,8 @@ if not build_metadata.is_file():
 datas.append((str(build_metadata), "."))
 # Public bundles always ship factory defaults, never this machine's settings.
 sys.path.insert(0, str(ROOT))
-from twobyteasr.settings import DEFAULT_SETTINGS
-from twobyteasr.build_identity import is_current_delivery_file
+from twobyteasr.storage.settings import DEFAULT_SETTINGS
+from twobyteasr.diagnostics.build_identity import is_current_delivery_file
 defaults_dir = ROOT / 'tmp' / 'frozen-defaults'
 defaults_dir.mkdir(parents=True, exist_ok=True)
 (defaults_dir / '2byteasr_settings.json').write_text(
@@ -97,6 +97,7 @@ for filename in (
     "firered_vad_worker.py",
     "qwen_asr_worker.py",
     "qwen_aligner_worker.py",
+    "mfa_aligner_worker.py",
     "glm_asr_worker.py",
     "sensevoice_worker.py",
     "asr_api_worker.py",
@@ -121,9 +122,15 @@ if _probe_source.is_file():
 # EXTERNAL venv pythons and import twobyteasr.model_integrity (stdlib-only
 # chain). Ship the package as real sources so those imports resolve from the
 # install root; the frozen GUI itself keeps using the compiled archive.
-for _source_file in sorted((ROOT / "twobyteasr").glob("*.py")):
-    if is_current_delivery_file(_source_file.relative_to(ROOT).as_posix()):
-        datas.append((str(_source_file), "twobyteasr"))
+# 2026-10-15: the package has feature subfolders (twobyteasr/<feature>/),
+# and those imports follow them (e.g. runtime_paths -> local_models), so the
+# whole tree is copied with its folder structure.
+for _source_file in sorted((ROOT / "twobyteasr").rglob("*.py")):
+    if "__pycache__" in _source_file.parts:
+        continue
+    _relative = _source_file.relative_to(ROOT)
+    if is_current_delivery_file(_relative.as_posix()):
+        datas.append((str(_source_file), _relative.parent.as_posix()))
 # UI translation catalogs, read by twobyteasr.i18n next to its own module.
 for _locale_file in sorted((ROOT / "twobyteasr" / "locales").glob("*.json")):
     datas.append((str(_locale_file), "twobyteasr/locales"))
@@ -146,7 +153,7 @@ if _speaker_embed_worker.is_file():
 # P9A-R7: real local FireRed-AED and Qwen3-ASR launchers.  Keep copies in the
 # pyd-free workers directory as well as the install root because packaged
 # startup resolves their paths from both locations across older bundles.
-for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "qwen_aligner_worker.py", ROOT / "ctc_aligner_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
+for _asr_worker in (ROOT / "firered_aed_worker.py", ROOT / "firered_vad_worker.py", ROOT / "qwen_asr_worker.py", ROOT / "qwen_aligner_worker.py", ROOT / "ctc_aligner_worker.py", ROOT / "mfa_aligner_worker.py", ROOT / "sensevoice_worker.py", ROOT / "asr_api_worker.py"):
     if _asr_worker.is_file():
         datas.append((str(_asr_worker), "."))
         datas.append((str(_asr_worker), "workers"))

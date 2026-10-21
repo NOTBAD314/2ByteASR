@@ -14,8 +14,8 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(output)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
+    from twobyteasr.system.processes import run_hidden_subprocess
     fixture=output/'synthetic.mp4'
     run_hidden_subprocess([root/'tools/ffmpeg/bin/ffmpeg.exe','-v','error','-y','-f','lavfi','-i','color=blue:s=320x180:r=12:d=2','-c:v','libx264',fixture],purpose='release fixture',check=True,timeout=30)
     p=SubtitleProject(media=StudioMedia(path=str(fixture),duration_ms=2000,width=320,height=180),cues=[StudioCue('cue',100,1600,'合成验收')])

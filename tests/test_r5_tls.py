@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from twobyteasr import network_policy as net
+from twobyteasr.providers import network_policy as net
 
 
 @pytest.fixture
@@ -69,8 +69,8 @@ def test_frozen_ca_resolution_does_not_use_cwd(monkeypatch,tmp_path):
 
 
 def test_tls_never_suggests_manual_id_as_workaround(monkeypatch):
-    from twobyteasr.ai_providers import OpenAICompatibleProvider,AIProviderError
-    monkeypatch.setattr('twobyteasr.ai_providers.fetch_openai_compatible_models',lambda *a,**k:(_ for _ in ()).throw(net.NetworkTrustError('证书失败')))
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider,AIProviderError
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.fetch_openai_compatible_models',lambda *a,**k:(_ for _ in ()).throw(net.NetworkTrustError('证书失败')))
     provider=OpenAICompatibleProvider(dict(provider='deepseek',base_url='https://api.deepseek.com/v1',model='saved',api_key='dummy'))
     with pytest.raises(AIProviderError) as error:provider.discover_models(refresh=True)
     assert error.value.category=='tls_certificate' and '手动输入' not in str(error.value)

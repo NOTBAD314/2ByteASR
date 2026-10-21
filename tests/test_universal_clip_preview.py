@@ -9,13 +9,13 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, save_project, load_project, sync_linked_av_contract
-from twobyteasr.studio_media_pool import add_media_asset, add_video_clip, create_video_track
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_clip_edit import reassign_clips_command, clip_edit_command
-from twobyteasr.studio_timeline import WaveformTimeline
-from twobyteasr.audio_graph import capture_audio_graph, preview_audio_layers
-from twobyteasr.clip_time_mapper import project_to_source
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, save_project, load_project, sync_linked_av_contract
+from twobyteasr.timeline.studio_media_pool import add_media_asset, add_video_clip, create_video_track
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.timeline.studio_clip_edit import reassign_clips_command, clip_edit_command
+from twobyteasr.studio.studio_timeline import WaveformTimeline
+from twobyteasr.playback.audio_graph import capture_audio_graph, preview_audio_layers
+from twobyteasr.timeline.clip_time_mapper import project_to_source
 
 
 def sample():
@@ -24,7 +24,7 @@ def sample():
     p.video_tracks[0].locked = sequence_of(p).video_track_locked = False
     a = p.video_tracks[0].clips[0]
     a.source_in_ms, a.source_out_ms, a.timeline_out_ms = 30000, 40000, 10000
-    from twobyteasr.studio_edit_sequence import VideoSegment
+    from twobyteasr.timeline.studio_edit_sequence import VideoSegment
     sequence_of(p).segments = [VideoSegment(a.id, p.media.path, 30000, 40000, 0, 10000)]
     asset = add_media_asset(p, 'B.mp4', duration_ms=120000)
     create_video_track(p, 'V2')

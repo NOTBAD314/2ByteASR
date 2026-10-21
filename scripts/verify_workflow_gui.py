@@ -16,8 +16,8 @@ def main():
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
+    from twobyteasr.system.processes import run_hidden_subprocess
     media=out/'fixture.mp4'
     run_hidden_subprocess([str(root/'tools/ffmpeg/bin/ffmpeg.exe'),'-v','error','-f','lavfi','-i','color=navy:s=640x360:r=30:d=8',
         '-c:v','libx264','-preset','ultrafast',str(media)],purpose='isolated GUI fixture',check=True,timeout=30)

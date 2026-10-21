@@ -3,11 +3,11 @@ import threading
 from types import SimpleNamespace
 
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
-from twobyteasr.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry
-from twobyteasr.studio_find_replace import PreviewBinding, apply_occurrences
-from twobyteasr.studio_glossary_service import preview_glossary_correction
-from twobyteasr.runtime import RuntimeContext, activate_runtime_context, get_runtime_context
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
+from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry
+from twobyteasr.studio.studio_find_replace import PreviewBinding, apply_occurrences
+from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context, get_runtime_context
 
 
 def snapshot():
@@ -23,8 +23,8 @@ def project():
 
 def fake_provider(monkeypatch, edited=True):
     import subtitle_core
-    import twobyteasr.polishing as polish
-    import twobyteasr.asr_provider_snapshot as provider
+    import twobyteasr.subtitle_rules.polishing as polish
+    import twobyteasr.providers.asr_provider_snapshot as provider
     monkeypatch.setattr(provider,'resolve_provider_snapshot', lambda *_a,**_kw:
         SimpleNamespace(public_identity=lambda:{'provider':'test','model':'test'}))
     seen=[]
@@ -90,7 +90,7 @@ def test_old_preview_rejects_new_manual_edit(monkeypatch):
 
 def test_rejected_queue_cannot_apply_legacy_settings(monkeypatch):
     import subtitle_core as core
-    from twobyteasr.service import RunOptions, run_media_queue
+    from twobyteasr.recognition.service import RunOptions, run_media_queue
     applied=[]
     monkeypatch.setattr(RunOptions,'apply',lambda *args: applied.append(True))
     errors=[]
@@ -108,7 +108,7 @@ def test_rejected_queue_cannot_apply_legacy_settings(monkeypatch):
 
 def test_configuration_error_releases_queue_ownership(monkeypatch):
     import subtitle_core as core
-    from twobyteasr.service import RunOptions, run_media_queue
+    from twobyteasr.recognition.service import RunOptions, run_media_queue
     before=get_runtime_context()
     def fail(*args):
         raise ValueError('invalid fixed configuration')

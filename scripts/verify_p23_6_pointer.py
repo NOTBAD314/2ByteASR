@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 USER32 = ctypes.windll.user32 if os.name == "nt" else None

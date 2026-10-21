@@ -38,9 +38,9 @@ from PySide6.QtWidgets import QApplication
 
 import subtitle_core  # type: ignore
 import moss_firered_pipeline  # type: ignore
-import twobyteasr.ui as ui  # type: ignore
-from twobyteasr.model_workshop import ModelWorkshopPage, ModelTechnicalDialog, MODELS  # type: ignore
-from twobyteasr.ui import (
+import twobyteasr.app.ui as ui  # type: ignore
+from twobyteasr.local_models.model_workshop import ModelWorkshopPage, ModelTechnicalDialog, MODELS  # type: ignore
+from twobyteasr.app.ui import (
     MainWindow,
     SpringDialog,
     TermLibraryDialog,

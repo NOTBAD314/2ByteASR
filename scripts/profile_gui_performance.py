@@ -25,15 +25,15 @@ from PySide6.QtWidgets import QApplication, QScrollArea, QWidget  # noqa: E402
 
 import moss_firered_pipeline  # noqa: E402
 import subtitle_core  # noqa: E402
-import twobyteasr.ui as ui  # noqa: E402
-from twobyteasr.studio_project import (  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_render_ui import StudioRenderDialog  # noqa: E402
+from twobyteasr.exports.studio_render_ui import StudioRenderDialog  # noqa: E402
 
 
 class EventCounter(QObject):

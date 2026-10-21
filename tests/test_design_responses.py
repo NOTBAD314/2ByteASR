@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from twobyteasr.llm_adapter import post_responses, get_last_llm_response_diagnostics, LLMRequestError
+from twobyteasr.providers.llm_adapter import post_responses, get_last_llm_response_diagnostics, LLMRequestError
 
 
 def test_design_json_mode_preserves_usage_without_unsupported_schema(monkeypatch):
@@ -62,7 +62,7 @@ def sse_packets(events):
 
 
 def test_responses_sse_utf8_completion_usage_and_identity():
-    from twobyteasr.provider_stream import responses_body
+    from twobyteasr.providers.provider_stream import responses_body
     diagnostic={}; seen=[]
     assert responses_body(sse_packets(response_events()),diagnostic,lambda *args:seen.append(args))=='{"作品":"方块"}'
     assert diagnostic['request_id']=='resp-real' and diagnostic['total_tokens']==100
@@ -72,7 +72,7 @@ def test_responses_sse_utf8_completion_usage_and_identity():
 
 @pytest.mark.parametrize('failure', ['missing_terminal','truncated','mismatched_text','mismatched_identity','tool'])
 def test_responses_sse_never_accepts_partial_or_conflicting_body(failure):
-    from twobyteasr.provider_stream import responses_body,StreamProtocolError
+    from twobyteasr.providers.provider_stream import responses_body,StreamProtocolError
     events=response_events(); diagnostic={}
     if failure=='missing_terminal': events.pop()
     if failure=='truncated': events=response_events(status='incomplete')
@@ -102,7 +102,7 @@ def test_responses_single_http_request_sse_or_same_response_json(monkeypatch,str
 
 
 def test_responses_fine_grained_events_allow_overhead_but_bound_body():
-    from twobyteasr.provider_stream import responses_body,StreamProtocolError
+    from twobyteasr.providers.provider_stream import responses_body,StreamProtocolError
     # Reproduce the measured 15k-event, >4MiB envelope with a tiny body.
     packets=response_events(text='a'*16000)
     events=[packets[0]]+[dict(type='response.output_text.delta',delta='a',obfuscation='x'*250) for _ in range(16000)]+[packets[-1]]

@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import shortcut_registry as reg
+from twobyteasr.studio import shortcut_registry as reg
 
 ADDED_STUDIO = ("jump_start", "jump_end", "seek_back", "seek_forward", "loop_cue", "speed_down", "speed_up",
                 "speed_reset", "nudge_earlier", "nudge_later", "smart_align", "reasr_current", "timeline_zoom_in",
@@ -50,7 +50,7 @@ def _install_shortcut_ids():
     """Ids in the literal callback map of SubtitleStudioPage._install_shortcuts."""
     import inspect
     import textwrap
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
     tree = ast.parse(textwrap.dedent(inspect.getsource(SubtitleStudioPage._install_shortcuts)))
     for child in ast.walk(tree):
         if (isinstance(child, ast.Assign) and isinstance(child.value, ast.Dict)
@@ -83,16 +83,16 @@ def _fake_page(**overrides):
 
 
 def test_every_studio_action_has_a_command(qapp):
-    from twobyteasr.studio_shortcut_actions import extra_command_callbacks
+    from twobyteasr.studio.studio_shortcut_actions import extra_command_callbacks
     handled = _install_shortcut_ids() | set(extra_command_callbacks(_fake_page()))
     studio_ids = {action.id for action in reg.ACTIONS if action.scope in ("studio", "studio.review")}
     assert studio_ids <= handled, sorted(studio_ids - handled)
 
 
 def test_added_commands_call_the_existing_features(qapp, monkeypatch):
-    from twobyteasr.studio_shortcut_actions import extra_command_callbacks
-    from twobyteasr import studio_edit_sequence
-    from twobyteasr import project_range
+    from twobyteasr.studio.studio_shortcut_actions import extra_command_callbacks
+    from twobyteasr.timeline import studio_edit_sequence
+    from twobyteasr.projects import project_range
     monkeypatch.setattr(studio_edit_sequence, "timeline_duration_ms", lambda project: 60_000)
     monkeypatch.setattr(project_range, "effective_range", lambda project: (2_000, 9_000))
     page = _fake_page()
@@ -124,7 +124,7 @@ def test_added_commands_call_the_existing_features(qapp, monkeypatch):
 
 
 def test_added_commands_do_nothing_without_a_project(qapp):
-    from twobyteasr.studio_shortcut_actions import extra_command_callbacks
+    from twobyteasr.studio.studio_shortcut_actions import extra_command_callbacks
     page = _fake_page(project=None)
     run = extra_command_callbacks(page)
     for name in ("jump_start", "jump_end", "seek_forward", "nudge_later", "go_to_in", "smart_align",
@@ -146,7 +146,7 @@ def test_added_keys_dispatch_in_studio(qapp):
 
 
 def test_key_caps_name_each_key(qapp):
-    from twobyteasr.studio_shortcuts import key_caps
+    from twobyteasr.studio.studio_shortcuts import key_caps
     assert key_caps("Ctrl+Shift+S", "win32") == ["Ctrl", "Shift", "S"]
     assert key_caps("Ctrl++", "win32") == ["Ctrl", "+"]
     assert key_caps("Alt+Left", "win32") == ["Alt", "←"]
@@ -158,7 +158,7 @@ def test_key_caps_name_each_key(qapp):
 
 
 def _panel(embedded=False):
-    from twobyteasr.studio_shortcuts import ShortcutSettingsPanel
+    from twobyteasr.studio.studio_shortcuts import ShortcutSettingsPanel
     scopes = tuple(reg.SCOPE_LABELS) if embedded else ("studio", "studio.review")
     return ShortcutSettingsPanel(reg.platform_defaults(), None, scopes=scopes, embedded=embedded)
 
@@ -230,7 +230,7 @@ def test_escape_cancels_recording_and_tab_is_not_recorded(qapp):
 
 
 def test_caps_are_styled_labels_not_painted_text(qapp):
-    # Painted QFont text fell back to SimSun's serif letters in the packaged app (2026-10-17).
+    # Caps, the recording prompt and 未设置 are labels styled by the panel sheet.
     from PySide6.QtGui import QKeySequence
     panel = _panel()
     assert panel._editors["split"].cap_texts() == ["Ctrl", "Shift", "S"]
@@ -274,7 +274,7 @@ def test_narrow_drawer_puts_the_keys_under_the_name(qapp):
 
 def test_settings_page_has_one_scroll_area_and_one_save(qapp, tmp_path):
     from PySide6.QtWidgets import QScrollArea
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     dialog = ApplicationSettingsDialog(None, {}, tmp_path / "Projects", browse=lambda *a: None,
                                        clear_recent=lambda: None, reset_layout=lambda: None)
     panel = dialog.shortcut_panel

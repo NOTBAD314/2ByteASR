@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.web_theme import WebThemeDocument, export_theme_archive, import_theme_archive
-from twobyteasr.theme_metadata import recover_generated_names, validate_theme_before_save
-from twobyteasr.structured_output import response_object
+from twobyteasr.caption_design.web_theme import WebThemeDocument, export_theme_archive, import_theme_archive
+from twobyteasr.caption_design.theme_metadata import recover_generated_names, validate_theme_before_save
+from twobyteasr.providers.structured_output import response_object
 
 
 def theme():
@@ -125,9 +125,9 @@ def test_fallback_can_be_renamed_saved_and_reopened(tmp_path):
 
 
 def test_library_validates_full_theme_before_atomic_write(tmp_path):
-    from twobyteasr.style_presets import StylePresetStore
-    from twobyteasr.studio_project import SubtitleStyle
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_style.style_presets import StylePresetStore
+    from twobyteasr.projects.studio_project import SubtitleStyle
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
     store=StylePresetStore(tmp_path)
     recipe=StyleRecipe(name='正常',engine='remotion',web_theme=theme()).to_dict()
     style=SubtitleStyle(id='ai-contract',name='正常')
@@ -140,9 +140,9 @@ def test_library_validates_full_theme_before_atomic_write(tmp_path):
 
 
 def test_library_rename_updates_theme_name_and_keeps_id(tmp_path):
-    from twobyteasr.style_presets import StylePresetStore
-    from twobyteasr.studio_project import SubtitleStyle
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_style.style_presets import StylePresetStore
+    from twobyteasr.projects.studio_project import SubtitleStyle
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
     store=StylePresetStore(tmp_path)
     theme_value=WebThemeDocument.from_dict(theme()).to_dict()
     store.upsert(SubtitleStyle(id='ai-contract',name=theme_value['name']),
@@ -154,7 +154,7 @@ def test_library_rename_updates_theme_name_and_keeps_id(tmp_path):
 
 
 def test_provider_schema_requires_nested_name_and_boundary_unwraps(tmp_path):
-    from twobyteasr.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA,ThemeLedger,accept_authored_set
+    from twobyteasr.caption_design.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA,ThemeLedger,accept_authored_set
     from scripts.author_balatro_candidates import candidates
     assert 'name' in AUTHORED_OUTPUT_SCHEMA['properties']['candidates']['items']['properties']['generated_source']['required']
     item=AUTHORED_OUTPUT_SCHEMA['properties']['candidates']['items']
@@ -182,7 +182,7 @@ def test_changed_staging_file_cannot_be_published(tmp_path):
 def test_duplicate_or_late_repair_ready_does_not_replace_ui(phase):
     import threading
     from types import SimpleNamespace
-    from twobyteasr.studio_theme_draft import StudioThemeDraftController
+    from twobyteasr.caption_design.studio_theme_draft import StudioThemeDraftController
     project=object();calls=[]
     controller=SimpleNamespace(phase=phase,operation='repair-result',cancel_event=threading.Event(),
         page=SimpleNamespace(project=project),project=project,current=SimpleNamespace(content_hash='same'),
@@ -193,9 +193,9 @@ def test_duplicate_or_late_repair_ready_does_not_replace_ui(phase):
 
 def test_normal_provider_route_repairs_names_once_and_keeps_authored_source(tmp_path,monkeypatch):
     from types import SimpleNamespace
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.caption_creative_pipeline import request_creative_options
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design.caption_creative_pipeline import request_creative_options
     from tests.test_authored_generation import fixture
     rows,directions=fixture()
     # Name repair tests keep the first caption frame readable, an independent gate.
@@ -213,7 +213,7 @@ def test_normal_provider_route_repairs_names_once_and_keeps_authored_source(tmp_
             return json.dumps(rows[len(calls)-2]['generated_source'])
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY,'selection',lambda *a,**k:SimpleNamespace(provider='test',model='fake'))
     monkeypatch.setattr(GLOBAL_PROVIDER_SERVICE,'client_for_stage',lambda *a,**k:Client())
-    monkeypatch.setattr('twobyteasr.authored_preview.render_candidate_preview',lambda *a,**kw:dict(
+    monkeypatch.setattr('twobyteasr.caption_design.authored_preview.render_candidate_preview',lambda *a,**kw:dict(
         motion={'status':'motion_ready'},picture='fixture.png',full_frame='fixture.png',elapsed_seconds=0))
     result=request_creative_options(SimpleNamespace(cues=[SimpleNamespace(id='x',text='合成字幕')]),
         'x','Balatro',{},ledger_root=tmp_path,request_id='fbbc674b-synthetic')
@@ -227,7 +227,7 @@ def test_normal_provider_route_repairs_names_once_and_keeps_authored_source(tmp_
 
 
 def test_motion_numeric_failure_reports_exact_field_path():
-    from twobyteasr.theme_motion import validate_motion_spec
+    from twobyteasr.caption_design.theme_motion import validate_motion_spec
     motion=dict(version=1,runtime='gsap',tracks=[dict(selector='.card',phase='build',start=0,end=1,
         **{'from':{'rotationY':0},'to':{'rotationY':180}})])
     with pytest.raises(ValueError,match=r'motionSpec\.tracks\[0\]\.to\.rotationY'):
@@ -236,7 +236,7 @@ def test_motion_numeric_failure_reports_exact_field_path():
 
 def test_provider_schema_rejects_blank_names():
     import jsonschema
-    from twobyteasr.theme_metadata import NAME_SCHEMA
+    from twobyteasr.caption_design.theme_metadata import NAME_SCHEMA
     with pytest.raises(jsonschema.ValidationError):jsonschema.validate('   ',NAME_SCHEMA)
 
 
@@ -251,7 +251,7 @@ def test_duplicate_final_packets_cannot_override_repaired_metadata():
 
 def test_missing_outer_candidate_name_reuses_valid_inner_metadata(tmp_path):
     from scripts.author_balatro_candidates import candidates
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set
     rows=candidates()
     for row in rows:row.pop('name')
     result=accept_authored_set({'candidates':rows},ThemeLedger(tmp_path,'Balatro'),'test','fake')
@@ -259,8 +259,8 @@ def test_missing_outer_candidate_name_reuses_valid_inner_metadata(tmp_path):
 
 
 def test_deepseek_chat_uses_supported_json_mode_not_strict_schema():
-    from twobyteasr.ai_providers import OpenAICompatibleProvider
-    from twobyteasr.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider
+    from twobyteasr.caption_design.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA
     calls=[]
     provider=OpenAICompatibleProvider(dict(provider='deepseek',model='synthetic-model',api_key='synthetic',
         url='https://unused.invalid/chat/completions'),sender=lambda messages,**kwargs:calls.append(kwargs) or '{}')
@@ -269,8 +269,8 @@ def test_deepseek_chat_uses_supported_json_mode_not_strict_schema():
 
 
 def test_responses_transport_receives_full_schema(monkeypatch):
-    from twobyteasr import ai_providers
-    from twobyteasr.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA
+    from twobyteasr.providers import ai_providers
+    from twobyteasr.caption_design.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA
     calls=[]
     monkeypatch.setattr(ai_providers,'post_responses',lambda messages,**kwargs:calls.append(kwargs) or '{}')
     provider=ai_providers.OpenAICompatibleProvider(dict(provider='custom',model='synthetic-model',api_key='synthetic',
@@ -280,7 +280,7 @@ def test_responses_transport_receives_full_schema(monkeypatch):
 
 
 def test_raw_provider_provenance_hashes_actual_bytes_on_windows(tmp_path):
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,digest
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,digest
     raw='```json\n{"name":"合成名称"}\n```'
     ledger=ThemeLedger(tmp_path,'synthetic prompt');ledger.raw_response(raw,'fixture','fixture')
     actual=(tmp_path/'provider-original.txt').read_bytes()

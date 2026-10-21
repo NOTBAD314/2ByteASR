@@ -1,11 +1,11 @@
 """Same-name danmaku XML discovery and per-source binding (2026-10-11)."""
 import unicodedata
 
-from twobyteasr.danmaku_binding import (
+from twobyteasr.media.danmaku_binding import (
     apply_discovery, bind_manual, binding_of, describe, discover_for_source,
     effective_path, needs_discovery, unbind)
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_project import StudioMedia, SubtitleProject
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
 
 XML = '<?xml version="1.0" encoding="UTF-8"?><i><d p="1.5,1,25,16777215">哈哈哈</d><d p="3.0,1,25,1">好</d></i>'
 

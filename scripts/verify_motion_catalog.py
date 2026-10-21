@@ -29,7 +29,7 @@ def main():
     sys.path.insert(0, str(ROOT))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr import motion_catalog_audit as audit
+    from twobyteasr.acceptance import motion_catalog_audit as audit
     parts = ('sheets', 'ass', 'remotion', 'gallery') if args.part == 'all' else (args.part,)
     for part in parts:
         target = output/part

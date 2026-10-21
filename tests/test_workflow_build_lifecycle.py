@@ -1,11 +1,11 @@
 import pytest
 from tests.test_glossary_skill import _FakeLegacy, _grok_settings
-from twobyteasr import glossary_build as gb
-from twobyteasr.glossary_skill import GlossarySearchError
+from twobyteasr.glossary import glossary_build as gb
+from twobyteasr.glossary.glossary_skill import GlossarySearchError
 
 def setup_build(monkeypatch):
     monkeypatch.setattr(gb,'is_safe_web_url',lambda url:(True,''))
-    monkeypatch.setattr('twobyteasr.glossary_skill.is_safe_web_url',lambda url:(True,''))
+    monkeypatch.setattr('twobyteasr.glossary.glossary_skill.is_safe_web_url',lambda url:(True,''))
     monkeypatch.setattr(gb,'load_model_cache',lambda:{})
     monkeypatch.setattr(gb,'other_game_canonical_terms',lambda *a:[])
     def request(*args,**kw):

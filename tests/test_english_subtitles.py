@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import english_segmentation as seg
-from twobyteasr import english_text as en
-from twobyteasr.language_rules import EN, JA, ZH, detect_language, normalize_language, qwen_language_name, \
+from twobyteasr.subtitle_rules import english_segmentation as seg
+from twobyteasr.subtitle_rules import english_text as en
+from twobyteasr.subtitle_rules.language_rules import EN, JA, ZH, detect_language, normalize_language, qwen_language_name, \
     resolve_task_language
 
 
@@ -26,9 +26,9 @@ def test_english_is_a_task_language_and_auto_recognizes_it():
 
 
 def test_settings_and_run_options_accept_english():
-    from twobyteasr.service import RunOptions
+    from twobyteasr.recognition.service import RunOptions
     import copy
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
     payload = copy.deepcopy(DEFAULT_SETTINGS)
     payload["subtitle_language"]["recognition_language"] = "en"
     merged, warnings = _merge_known_settings(DEFAULT_SETTINGS, payload)
@@ -37,7 +37,7 @@ def test_settings_and_run_options_accept_english():
     options = RunOptions(recognition_language="en", subtitle_output="bilingual")
     assert options.recognition_language == "en"
     with pytest.raises(ValueError):
-        RunOptions(recognition_language="fr")
+        RunOptions(recognition_language="xx")   # fr is a language since 2026-10-19
 
 
 def test_english_cleanup_keeps_apostrophes_and_spaces():
@@ -105,8 +105,8 @@ def test_ai_breaks_are_used_only_when_valid():
 
 
 def test_cleanup_inside_an_english_task_keeps_punctuation_chinese_unchanged():
-    from twobyteasr.language_rules import language_scope
-    from twobyteasr.text_rules import clean_subtitle_text
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+    from twobyteasr.subtitle_rules.text_rules import clean_subtitle_text
     with language_scope("en"):
         assert clean_subtitle_text("Wait, don't go — it's a trap!") == "Wait, don't go — it's a trap!"
     with language_scope("zh"):
@@ -114,7 +114,7 @@ def test_cleanup_inside_an_english_task_keeps_punctuation_chinese_unchanged():
 
 
 def test_english_translation_prompt_and_validation():
-    from twobyteasr import subtitle_translation as st
+    from twobyteasr.subtitle_rules import subtitle_translation as st
     assert st.validate_translation("GG", "GG") is None                                   # short token may stay
     assert st.validate_translation("We need to grab the shield first", "我们得先拿护盾") is None
     assert st.validate_translation("We need to grab the shield first", "We need to grab the shield first") == "echo_source"
@@ -128,8 +128,8 @@ def test_english_translation_prompt_and_validation():
 
 
 def test_studio_refine_splits_english_only_at_spaces():
-    from twobyteasr.language_rules import language_scope
-    from twobyteasr.sentence_refine import refine_system_prompt, validate_action
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+    from twobyteasr.subtitle_rules.sentence_refine import refine_system_prompt, validate_action
     text = "Okay so the plan is simple, we go left and grab the shield"
     with language_scope("en"):
         good = validate_action(text, {"cue_id": "1", "action": "split", "split_after_chars": [text.index(",")]})
@@ -140,9 +140,9 @@ def test_studio_refine_splits_english_only_at_spaces():
 
 
 def test_english_projects_get_english_reading_checks_and_merges():
-    from twobyteasr.studio_commands import merge_cues_command
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-    from twobyteasr.studio_qc import SubtitleQCEngine
+    from twobyteasr.timeline.studio_commands import merge_cues_command
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.subtitle_rules.studio_qc import SubtitleQCEngine
 
     def project(code):
         cues = [StudioCue("a", 0, 2000, "This line is a normal English subtitle"),

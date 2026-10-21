@@ -1,1 +1,1 @@
-"""Subtitle translation diagnostics."""
+"""辨識後整理字幕條的規則：斷句、校對、標點、數字、清理、翻譯與字幕時長。"""

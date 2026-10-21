@@ -5,7 +5,8 @@ import pytest
 
 @pytest.mark.parametrize('cache_hit',[False,True])
 def test_nemotron_completion_reaches_persisted_model_summary(monkeypatch,cache_hit):
-    from twobyteasr import nemotron_diarization as module,cache
+    from twobyteasr import nemotron_diarization as module
+    from twobyteasr.recognition import cache
     from moss_firered_pipeline import _model_stage_summary
     events=[]
     monkeypatch.setattr(cache,'record_run_event',lambda event,**data:events.append(dict(event=event,**data)))
@@ -19,7 +20,8 @@ def test_nemotron_completion_reaches_persisted_model_summary(monkeypatch,cache_h
 
 
 def test_nemotron_failure_is_not_recorded_as_completed(monkeypatch):
-    from twobyteasr import nemotron_diarization as module,cache
+    from twobyteasr import nemotron_diarization as module
+    from twobyteasr.recognition import cache
     from moss_firered_pipeline import _model_stage_summary
     events=[]
     monkeypatch.setattr(cache,'record_run_event',lambda event,**data:events.append(dict(event=event,**data)))
@@ -32,8 +34,8 @@ def test_nemotron_failure_is_not_recorded_as_completed(monkeypatch):
 
 
 def test_real_firered_primary_contract_uses_canonical_tokens(monkeypatch):
-    from twobyteasr import asr
-    from twobyteasr.asr_schema import normalize_firered_worker_result
+    from twobyteasr.recognition import asr
+    from twobyteasr.recognition.asr_schema import normalize_firered_worker_result
     canonical=normalize_firered_worker_result({'results':[{'text':'你好','timestamp':[['你',0,0.4],['好',0.4,0.8]]}]},[{'offset':0}])
     monkeypatch.setattr(asr,'transcribe_firered_reference',lambda *a,**k:canonical)
     rows=asr.transcribe_primary_reference('firered','unused.wav',[dict(start=0,end=1)],None,1)
@@ -41,9 +43,9 @@ def test_real_firered_primary_contract_uses_canonical_tokens(monkeypatch):
 
 
 def test_anonymous_review_keeps_unconfirmed_and_unknown_lanes(tmp_path):
-    from twobyteasr.speaker_recovery import candidate_snapshot,rebuild_selected_speakers,recovery_preview
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,save_project,load_project
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
+    from twobyteasr.recognition.speaker_recovery import candidate_snapshot,rebuild_selected_speakers,recovery_preview
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,save_project,load_project
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
     labels=['NEMO_01','NEMO_02','S00']
     p=SubtitleProject(media=StudioMedia('fixture.mp4',duration_ms=3000),speakers=[StudioSpeaker(x) for x in labels],
         cues=[StudioCue(str(i),i*1000,i*1000+900,'人工编辑'+str(i),x) for i,x in enumerate(labels)])

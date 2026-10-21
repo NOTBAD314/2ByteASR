@@ -12,30 +12,30 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from twobyteasr.studio_ai import (
+from twobyteasr.caption_design.studio_ai import (
     AIDesignSuggestion,
     request_style_design,
     visual_design_variants,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.visual_design_graph import (
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_design.visual_design_graph import (
     comic_burst_graph,
     glitch_graph,
     streamer_gaming_graph,
 )
-from twobyteasr.studio_qc import SubtitleQCEngine
-from twobyteasr.studio_ui import MpvCanvas, SubtitleStudioPage
-from twobyteasr.runtime_trace import RuntimeTraceWriter
-from twobyteasr.resource_governor import ResourceGovernor, ResourceKind
-from twobyteasr.model_workshop import ModelWorkshopPage
-from twobyteasr.renderer_service import (
+from twobyteasr.subtitle_rules.studio_qc import SubtitleQCEngine
+from twobyteasr.studio.studio_ui import MpvCanvas, SubtitleStudioPage
+from twobyteasr.diagnostics.runtime_trace import RuntimeTraceWriter
+from twobyteasr.system.resource_governor import ResourceGovernor, ResourceKind
+from twobyteasr.local_models.model_workshop import ModelWorkshopPage
+from twobyteasr.rendering.renderer_service import (
     RendererJob,
     RendererRequestHandle,
     RendererService,
     RendererServiceError,
 )
-from twobyteasr.ui import MainWindow
-from twobyteasr.waveform_cache import _decode_level0
+from twobyteasr.app.ui import MainWindow
+from twobyteasr.playback.waveform_cache import _decode_level0
 
 
 APP = QApplication.instance() or QApplication([])
@@ -107,7 +107,7 @@ def test_ai_validation_retry_uses_one_absolute_deadline(monkeypatch):
             time.sleep(0.08)
             return copy.deepcopy(responses.pop(0))
 
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
     suggestion = request_style_design(
         _project(), "cue", instruction, {"models": {"polish": "fixture"}}, deadline_seconds=0.3
     )
@@ -129,7 +129,7 @@ def test_ai_expired_validation_retry_becomes_typed_fallback(monkeypatch):
             time.sleep(0.12)
             return {"design_intent": "generic", "variants": []}
 
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
     suggestion = request_style_design(
         _project(), "cue", "复古动画", {"models": {"polish": "fixture"}}, deadline_seconds=0.1
     )
@@ -150,7 +150,7 @@ def test_ai_uses_configured_model_deadline_without_ui_override(monkeypatch):
             return _valid_design_payload("复古动画")
 
     monkeypatch.setattr(
-        "twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: Provider()
+        "twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: Provider()
     )
     suggestion = request_style_design(
         _project(),
@@ -221,7 +221,7 @@ def test_close_with_active_asr_hides_before_background_shutdown(monkeypatch):
     owner._maybe_finalize_close = MethodType(MainWindow._maybe_finalize_close, owner)
     event = SimpleNamespace(ignore=lambda: calls.append("ignore"), accept=lambda: calls.append("accept"))
     monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes)
-    monkeypatch.setattr("twobyteasr.ui.QTimer.singleShot", lambda *_a, **_k: None)
+    monkeypatch.setattr("twobyteasr.app.ui.QTimer.singleShot", lambda *_a, **_k: None)
 
     started = time.perf_counter()
     MainWindow.closeEvent(owner, event)
@@ -351,7 +351,7 @@ def test_model_workshop_temp_cleanup_never_scans_on_gui_thread(monkeypatch, tmp_
         release.wait(1.0)
 
     monkeypatch.setattr(
-        "twobyteasr.model_workshop.cleanup_orphan_download_temps",
+        "twobyteasr.local_models.model_workshop.cleanup_orphan_download_temps",
         blocking_cleanup,
     )
     owner = SimpleNamespace(
@@ -410,7 +410,7 @@ def test_waveform_decode_cancellation_interrupts_blocked_stdout(monkeypatch, tmp
 
     process = FakeProcess()
     monkeypatch.setattr(
-        "twobyteasr.waveform_cache.popen_hidden_subprocess",
+        "twobyteasr.playback.waveform_cache.popen_hidden_subprocess",
         lambda *_args, **_kwargs: process,
     )
     cancelled = threading.Event()

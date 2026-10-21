@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from twobyteasr.processes import (
+from twobyteasr.system.processes import (
     python_utf8_command,
     utf8_worker_environment,
 )

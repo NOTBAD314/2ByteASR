@@ -1,9 +1,9 @@
 """Source → empty project interval is an atomic clock-domain transition."""
 from types import SimpleNamespace
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_video_canvas import MpvCanvas
-from twobyteasr.studio_video_flow import StudioVideoFlowMixin
-from twobyteasr.studio_project import SubtitleProject, StudioMedia
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
+from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia
 
 
 def test_proxy_preview_target_keeps_asset_identity_for_source_clock_duration():

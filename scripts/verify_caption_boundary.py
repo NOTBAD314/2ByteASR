@@ -29,7 +29,7 @@ def main():
                TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),
                TWOBYTEASR_STARTUP_OPEN_STUDIO='1', TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1')
     os.environ.update({key: env[key] for key in ('LOCALAPPDATA', 'APPDATA','TEMP','TMP')})
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     ffmpeg = str(root/'tools/ffmpeg/bin/ffmpeg.exe')
     duration=4 if args.count==2 else 2+(args.count-2)*.05+1
     filters = [f'color=c=0x2c145c:s=1280x720:r={args.fps}:d={duration}',
@@ -45,11 +45,11 @@ def main():
             '-f','lavfi','-i','anullsrc=r=48000:cl=stereo','-t',str(duration),'-c:v','libx264',
             '-preset','ultrafast','-crf','12','-pix_fmt','yuv420p','-c:a','aac',str(media)],
             check=True, timeout=45, purpose='four-second no-animation caption boundary fixture')
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,SubtitleStyle,save_project,hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.visual_design_graph import glitch_graph,MotionGraph
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,SubtitleStyle,save_project,hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.visual_design_graph import glitch_graph,MotionGraph
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     media_identity=probe_media_identity(str(media))
     if args.media and media_identity.get('duration_ms',0)<duration*1000:
         raise ValueError('Reused media is shorter than the complete audit')

@@ -41,9 +41,9 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(out / 'builder')  # building the project never touches real data
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
+    from twobyteasr.projects.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
                                                     save_project)
-    from twobyteasr.math_text import caption_text
+    from twobyteasr.subtitle_rules.math_text import caption_text
     cues = [StudioCue(f'c{index}', index * 3000 + 200, index * 3000 + 2800, text, speaker_id='S00')
             for index, text in enumerate(TEXTS)]
     project = SubtitleProject(media=StudioMedia(path=str(media), duration_ms=12000, width=1280, height=720),

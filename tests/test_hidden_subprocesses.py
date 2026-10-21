@@ -1,6 +1,6 @@
 ﻿import os
 
-from twobyteasr.processes import hidden_subprocess_kwargs
+from twobyteasr.system.processes import hidden_subprocess_kwargs
 
 
 def test_hidden_subprocess_options_are_platform_safe():

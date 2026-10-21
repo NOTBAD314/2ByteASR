@@ -5,7 +5,7 @@ from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.p8a_r1_runtime_audit import image_metrics
+from twobyteasr.acceptance.p8a_r1_runtime_audit import image_metrics
 
 
 def _app() -> QApplication:

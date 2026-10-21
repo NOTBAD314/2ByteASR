@@ -1,4 +1,4 @@
-from twobyteasr.caption_text_layout import normalized_caption_text,wrap_caption_text
+from twobyteasr.caption_style.caption_text_layout import normalized_caption_text,wrap_caption_text
 
 
 def test_explicit_blank_lines_and_literal_ass_escape_are_preserved():

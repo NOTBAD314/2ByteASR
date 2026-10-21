@@ -18,7 +18,7 @@ def main():
     for directory in ('local','roaming','temp'):(out/directory).mkdir(exist_ok=True)
     cmd=[str(args.exe.resolve())] if args.exe else [sys.executable,'-X','utf8','-B',str(root/'quick_start.py')]
     sys.path.insert(0,str(root))
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     with (out/'application.log').open('wb') as log:
         result=run_hidden_subprocess(cmd,cwd=root,env=env,stdout=log,stderr=log,timeout=420,purpose='offline GIMP cover acceptance')
     deadline=time.monotonic()+360

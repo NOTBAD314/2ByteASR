@@ -2,7 +2,7 @@ import base64
 import io
 import json
 from PIL import Image
-from twobyteasr.ai_providers import CLIProvider,GrokCLIProvider
+from twobyteasr.providers.ai_providers import CLIProvider,GrokCLIProvider
 
 
 def test_tool_use_message_is_not_final_then_real_answer_completes():
@@ -32,7 +32,7 @@ def test_grok_screenshot_uses_acp_image_block_and_bounded_command():
 
 
 def test_theme_inline_markers_preserve_values_and_normal_multiline():
-    from twobyteasr.web_theme import parse_web_theme_sections
+    from twobyteasr.caption_design.web_theme import parse_web_theme_sections
     for separator in ('','\n'):
         result=parse_web_theme_sections('===NAME==='+separator+'雪绒\n===PALETTE==='+separator+'primary=#FFFFFF text=#AABBCC\n===CUE_CSS===\n.x {opacity:1}')
         assert result['name']=='雪绒'
@@ -41,7 +41,7 @@ def test_theme_inline_markers_preserve_values_and_normal_multiline():
 
 
 def test_grok_structured_result_is_the_payload_not_the_wrapper():
-    from twobyteasr.ai_providers import _extract_cli_text
+    from twobyteasr.providers.ai_providers import _extract_cli_text
     value={'candidates':[{'id':'A'}]}
     packet={'type':'result','result':'','structured_output':value}
     assert json.loads(_extract_cli_text(json.dumps(packet)))==value

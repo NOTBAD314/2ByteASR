@@ -17,7 +17,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QGroupBox
 
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 RESULTS: list[tuple[str, bool, str]] = []
 

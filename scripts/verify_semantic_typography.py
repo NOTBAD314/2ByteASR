@@ -8,9 +8,9 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 
 
 def main():
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.theme_draft import ThemeDraft,validate_draft_frames
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.theme_draft import ThemeDraft,validate_draft_frames
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
     parser=argparse.ArgumentParser();parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
     out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     theme=WebThemeDocument.from_dict(dict(name='语义排字运行验证',concept='测试字组，不是交付作品',

@@ -3,11 +3,11 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from tests.test_caption_creative_pipeline import authored,candidates
-from twobyteasr.authored_visual_revision import revise_candidate
+from twobyteasr.caption_design.authored_visual_revision import revise_candidate
 
 
 def test_local_revision_restores_frozen_font_without_changing_geometry():
-    from twobyteasr.authored_visual_revision import preserve_typography
+    from twobyteasr.caption_design.authored_visual_revision import preserve_typography
     before='.a{font-size:52px;font-family:"Cubic";width:800px}'
     proposed='.a{font-size:72px;font-family:"Cubic";width:400px}'
     fixed,changes=preserve_typography(before,proposed)
@@ -17,8 +17,8 @@ def test_local_revision_restores_frozen_font_without_changing_geometry():
 
 
 def test_redo_keeps_artwork_and_request_owned_candidate_identity(tmp_path):
-    from twobyteasr.authored_visual_revision import normalize_redo_response
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.authored_visual_revision import normalize_redo_response
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
     fresh=copy.deepcopy(candidates()[0]);source=fresh['generated_source']
     fresh['id']='new-theme';source['id']='new-theme'
     ledger=ThemeLedger(tmp_path,'a new direction')
@@ -29,7 +29,7 @@ def test_redo_keeps_artwork_and_request_owned_candidate_identity(tmp_path):
 
 
 def test_missing_motion_target_repair_receives_existing_targets():
-    from twobyteasr.authored_repair import local_context,compact_patch_context
+    from twobyteasr.caption_design.authored_repair import local_context,compact_patch_context
     value=local_context({'cueHtml':'<div class="cluster"><svg class="bear-svg"/></div>','cueCss':''},'.bear')
     assert value['available_nodes']==[{'tag':'div','classes':'cluster','parent_classes':''},
         {'tag':'svg','classes':'bear-svg','parent_classes':'cluster'}]
@@ -38,8 +38,8 @@ def test_missing_motion_target_repair_receives_existing_targets():
 
 
 def test_metadata_syntax_repair_never_sends_or_changes_valid_artwork(tmp_path):
-    from twobyteasr.authored_visual_revision import parse_redo_response
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,AUTHORED_OUTPUT_SCHEMA
+    from twobyteasr.caption_design.authored_visual_revision import parse_redo_response
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,AUTHORED_OUTPUT_SCHEMA
     fresh=copy.deepcopy(candidates()[0]);source=fresh['generated_source']
     broken=json.dumps({'candidate':fresh}).replace('"name": "','"name": "bad"quote',1)
     schema=dict(type='object',required=['candidate'],properties={'candidate':copy.deepcopy(AUTHORED_OUTPUT_SCHEMA['properties']['candidates']['items'])})
@@ -52,15 +52,15 @@ def test_metadata_syntax_repair_never_sends_or_changes_valid_artwork(tmp_path):
     result=parse_redo_response(broken,ledger,Client(),schema,timeout=60)
     assert result['candidate']['generated_source']==source
     ledger.raw_response(broken,'test','test')
-    from twobyteasr.authored_visual_revision import saved_payload
+    from twobyteasr.caption_design.authored_visual_revision import saved_payload
     assert saved_payload(ledger)==result
 
 
 def test_full_redo_changes_art_direction_preserves_peers_and_real_provenance(tmp_path,monkeypatch):
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.authored_visual_revision import redesign_candidate,saved_payload
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design.authored_visual_revision import redesign_candidate,saved_payload
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
     prior,result=authored(tmp_path/'prior');prior.raw_response(json.dumps({'candidates':candidates()}),'test','test')
     fresh=copy.deepcopy(candidates()[0]);fresh['name']='全新方向';fresh['generated_source']['name']='全新作品'
     fresh['generated_source']['cueCss']+=' .new-art{color:#FFFFFF}'
@@ -69,7 +69,7 @@ def test_full_redo_changes_art_direction_preserves_peers_and_real_provenance(tmp
     class Client:
         def complete(self,messages,**kwargs):
             assert kwargs['operation_kind']=='generate'
-            from twobyteasr.source_artifact import from_theme
+            from twobyteasr.caption_design.source_artifact import from_theme
             assert kwargs['response_kind']=='source_artifact' and kwargs['json_schema'] is None
             return from_theme(fresh['generated_source'],'test/A/redo')
         def invocation_trace(self):return {'request_id':'new-real-request'}
@@ -86,8 +86,8 @@ def test_full_redo_changes_art_direction_preserves_peers_and_real_provenance(tmp
 
 @pytest.mark.parametrize('font_change',[False,True])
 def test_revision_preserves_peers_and_rejects_unrelated_font(tmp_path,monkeypatch,font_change):
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     prior,result=authored(tmp_path/'prior');prior.raw_response(json.dumps({'candidates':candidates()}),'test','test')
     source=copy.deepcopy(prior.value['candidates'][0]['generated_source'])
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY,'selection',lambda *a,**k:SimpleNamespace(provider='test',model='test'))

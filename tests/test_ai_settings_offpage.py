@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 def test_ai_panel_is_hidden_on_the_home_page_and_shown_in_its_dialog():
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     app = QApplication.instance() or QApplication([])
     window = MainWindow([], legacy, object(), None)

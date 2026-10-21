@@ -25,7 +25,7 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     assets=root/'tmp/timeline-edit-20260928/assets'
     assets.mkdir(parents=True,exist_ok=True)
     long=assets/'synthetic-60min.mp4'
@@ -41,9 +41,9 @@ def main():
         run_hidden_subprocess([ffmpeg,'-v','error','-f','lavfi','-i','color=c=yellow:s=320x180:r=25:d=20',
             '-f','lavfi','-i','sine=frequency=1100:sample_rate=16000:duration=20','-c:v','libx264','-preset','ultrafast',
             '-c:a','aac','-shortest',overlay],purpose='isolated overlay source',check=True,timeout=30)
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
-    from twobyteasr.studio_edit_sequence import sequence_of
-    from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip
     p=SubtitleProject(media=StudioMedia(path=str(long),duration_ms=3600000,width=320,height=180),
         cues=[StudioCue('first',1000,3000,'SOURCE START'),StudioCue('cross',1799000,1801500,'SOURCE 30 MIN'),
               StudioCue('retained',2100000,2102000,'AUTHORED CAPTION')])

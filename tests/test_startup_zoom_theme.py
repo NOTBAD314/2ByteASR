@@ -13,15 +13,15 @@ APP = QApplication.instance() or QApplication([])
 
 
 def _reset_zoom():
-    from twobyteasr import ui_zoom
+    from twobyteasr.app import ui_zoom
     ui_zoom.set_zoom_percent(100)
 
 
 def test_dark_themes_never_leave_input_states_white():
     """The home content-name box turned white on hover/focus/open (background-color)."""
-    from twobyteasr.main_ui_theme import APP_QSS
-    from twobyteasr.qss_retheme import retheme_qss
-    from twobyteasr.ui_theme import THEMES
+    from twobyteasr.design.main_ui_theme import APP_QSS
+    from twobyteasr.design.qss_retheme import retheme_qss
+    from twobyteasr.design.ui_theme import THEMES
     assert "background-color: #ffffff" in APP_QSS
     for key, theme in THEMES.items():
         sheet = retheme_qss(APP_QSS, theme)
@@ -31,7 +31,7 @@ def test_dark_themes_never_leave_input_states_white():
 
 
 def test_zoom_scales_stylesheet_geometry_but_keeps_hairlines():
-    from twobyteasr.ui_zoom import scale_qss
+    from twobyteasr.app.ui_zoom import scale_qss
     sheet = "QPushButton { font-size: 14px; padding: 6px 16px; border: 1px solid #fff; min-height: 30px; }"
     assert scale_qss(sheet, 1.5) == ("QPushButton { font-size: 21px; padding: 9px 24px; border: 1px solid #fff;"
                                      " min-height: 45px; }")
@@ -40,7 +40,7 @@ def test_zoom_scales_stylesheet_geometry_but_keeps_hairlines():
 
 
 def test_zoom_round_trip_restores_code_sizes_and_skips_stylesheet_minimums():
-    from twobyteasr import ui_zoom
+    from twobyteasr.app import ui_zoom
     root = QWidget()
     layout = QVBoxLayout(root)
     layout.setContentsMargins(10, 12, 10, 12)
@@ -78,7 +78,7 @@ def test_zoom_round_trip_restores_code_sizes_and_skips_stylesheet_minimums():
 
 
 def test_set_size_keeps_logical_values_for_responsive_code():
-    from twobyteasr import ui_zoom
+    from twobyteasr.app import ui_zoom
     root = QWidget()
     widget = QWidget(root)
     try:
@@ -98,8 +98,8 @@ def test_set_size_keeps_logical_values_for_responsive_code():
 def test_zoomed_page_takes_the_layout_of_a_smaller_window():
     """At 200% on a maximized window the role cards kept the wide-window
     profile, doubled, and clipped the model name (EXE check, 2026-10-10)."""
-    from twobyteasr import ui_zoom
-    from twobyteasr.ui_recognition import RecognitionPlanWidget
+    from twobyteasr.app import ui_zoom
+    from twobyteasr.app.ui_recognition import RecognitionPlanWidget
     plan = RecognitionPlanWidget()
     plan.resize(1400, 480)
     plan.show()
@@ -120,7 +120,7 @@ def test_zoomed_page_takes_the_layout_of_a_smaller_window():
 
 
 def test_studio_and_canvases_keep_their_own_ctrl_wheel():
-    from twobyteasr.ui_zoom import _zoomable
+    from twobyteasr.app.ui_zoom import _zoomable
     window = QWidget()
     studio = QWidget(window)
     studio.setObjectName("subtitleStudio")
@@ -135,7 +135,7 @@ def test_studio_and_canvases_keep_their_own_ctrl_wheel():
 
 
 def test_studio_sheet_shields_it_from_the_scaled_window_sheet():
-    from twobyteasr import ui_zoom
+    from twobyteasr.app import ui_zoom
     APP._theme_window_qss = "QPushButton { padding: 8px; }"
     window = QWidget()
     studio = QWidget(window)
@@ -155,7 +155,7 @@ def test_studio_sheet_shields_it_from_the_scaled_window_sheet():
 
 
 def test_dialogs_grow_with_the_zoom_within_the_screen():
-    from twobyteasr import ui_zoom
+    from twobyteasr.app import ui_zoom
     dialog = QDialog()
     QHBoxLayout(dialog).addWidget(QLabel("设置"))
     dialog.resize(600, 400)
@@ -195,8 +195,8 @@ def test_main_window_builds_heavy_pages_on_first_use():
     """Studio, the model workshop and history were ~82% of start-up widgets."""
     import moss_firered_pipeline
     import subtitle_core as legacy
-    from twobyteasr.lazy_pages import existing_page
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.lazy_pages import existing_page
+    from twobyteasr.app.ui import MainWindow
     window = MainWindow([], legacy, moss_firered_pipeline, None)
     try:
         for name in ("studio", "workshop", "history"):

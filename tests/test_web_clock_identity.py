@@ -1,7 +1,7 @@
 from types import SimpleNamespace
-from twobyteasr.live_web_preview import LiveWebPreviewWorker, WebFrame
-from twobyteasr.web_theme import builtin_web_themes, theme_archive_html
-from twobyteasr.studio_advanced_flow import StudioAdvancedFlowMixin
+from twobyteasr.rendering.live_web_preview import LiveWebPreviewWorker, WebFrame
+from twobyteasr.caption_design.web_theme import builtin_web_themes, theme_archive_html
+from twobyteasr.studio.studio_advanced_flow import StudioAdvancedFlowMixin
 
 
 def test_duration_and_speaker_changes_keep_page_but_invalidate_frame():

@@ -1,7 +1,7 @@
 """Queued completion/progress/finished signals cannot change a different job."""
 from types import SimpleNamespace
 
-from twobyteasr.ui import MainWindow
+from twobyteasr.app.ui import MainWindow
 
 
 def test_late_signal_owner_is_checked_before_any_ui_mutation():

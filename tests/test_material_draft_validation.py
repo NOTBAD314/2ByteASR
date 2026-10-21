@@ -1,4 +1,4 @@
-from twobyteasr.theme_draft import _caption_runs,_bound_text_phases
+from twobyteasr.caption_design.theme_draft import _caption_runs,_bound_text_phases
 
 
 def test_decorative_copies_are_not_the_reading_text():

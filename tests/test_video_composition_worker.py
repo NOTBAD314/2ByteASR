@@ -4,13 +4,13 @@ import threading
 import time
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage
-from twobyteasr.video_composition_worker import VideoCompositionWorker
-from twobyteasr.video_decode_pipe import PipeFrame
+from twobyteasr.playback.video_composition_worker import VideoCompositionWorker
+from twobyteasr.playback.video_decode_pipe import PipeFrame
 
 
 def test_worker_pixels_match_gui_compositor_and_reject_old_generation():
     from types import SimpleNamespace
-    from twobyteasr.video_compositor import VideoCompositionScene
+    from twobyteasr.playback.video_compositor import VideoCompositionScene
     app=QApplication.instance() or QApplication([])
     image=QImage(320,180,QImage.Format_ARGB32);image.fill(0xff35a872)
     layer=dict(clip_id='clip',path='fixture',generation=4,decode_epoch=2,source_ms=1000,transform=dict(scale_x=.45,scale_y=.45,

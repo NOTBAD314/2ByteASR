@@ -4,13 +4,13 @@ import json
 from types import SimpleNamespace
 import pytest
 
-from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
-from twobyteasr.speaker_strategy import resolve
-from twobyteasr.service import RunOptions
-from twobyteasr.speaker_recovery import candidate_snapshot
-from twobyteasr.studio_project import project_from_runtime_cues, load_project, save_project
-from twobyteasr.speaker_organization import organize
-from twobyteasr.project_profiles import ProjectProfileStore, ProjectProfile
+from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
+from twobyteasr.recognition.speaker_strategy import resolve
+from twobyteasr.recognition.service import RunOptions
+from twobyteasr.recognition.speaker_recovery import candidate_snapshot
+from twobyteasr.projects.studio_project import project_from_runtime_cues, load_project, save_project
+from twobyteasr.projects.speaker_organization import organize
+from twobyteasr.recognition.recognition_profiles import ProjectProfileStore, ProjectProfile
 
 @pytest.mark.parametrize('backend,expected', [('moss','moss'),('api','native'),('sensevoice','native')])
 @pytest.mark.parametrize('retired', ['single','nemotron','moss','ecapa'])
@@ -34,7 +34,7 @@ def test_frozen_options_use_primary_even_with_stale_single_snapshot():
 
 @pytest.mark.parametrize('labels', [('S01',),('S01','S02')])
 def test_native_low_frequency_rows_survive_old_single_bookmark_and_editorial_merge(tmp_path,labels):
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
     rows=[dict(start=i*2,end=i*2+1,text=f'保留人工{i} 22',speaker=s) for i,s in enumerate(labels)]
     evidence=candidate_snapshot(rows,source='single')
     evidence['processing']={'mode':'single','primary_backend':'moss'}
@@ -66,7 +66,7 @@ def test_profile_snapshot_roles_are_authoritative_and_manual_change_marked_custo
     assert reloaded.primary_asr=='moss'
 
 def test_model_without_native_speakers_is_still_selectable():
-    from twobyteasr.cloud_asr_jobs import validate_speaker_strategy
-    from twobyteasr.spark_asr import MODEL
+    from twobyteasr.providers.cloud_asr_jobs import validate_speaker_strategy
+    from twobyteasr.providers.spark_asr import MODEL
     endpoint={'model':MODEL,'speaker_source':'native'}
     assert validate_speaker_strategy(endpoint) is endpoint

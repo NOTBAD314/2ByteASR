@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.export_filtergraph import compile_video_filtergraph
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.studio_render import RenderJob, RenderSettings
+from twobyteasr.exports.export_filtergraph import compile_video_filtergraph
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings
 
 
 FFMPEG = Path(__file__).resolve().parents[1] / 'tools/ffmpeg/bin/ffmpeg.exe'

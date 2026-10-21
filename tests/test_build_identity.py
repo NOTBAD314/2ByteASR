@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from twobyteasr.build_identity import (
+from twobyteasr.diagnostics.build_identity import (
     _is_source_file,
     about_build_text,
     load_build_identity,

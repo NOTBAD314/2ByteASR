@@ -26,14 +26,14 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 OUT = ROOT / "tmp" / "verify-razor-merge"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -296,7 +296,7 @@ def main() -> int:
     check("ripple selection lands on merged cue", page.selected_cue_id == "a")
 
     # ---- shortcut settings dialog opens and merge tool is B ------------------
-    from twobyteasr.studio_shortcuts import ShortcutSettingsDialog
+    from twobyteasr.studio.studio_shortcuts import ShortcutSettingsDialog
 
     dialog = ShortcutSettingsDialog(page._shortcut_values, page)
     check("shortcut dialog constructs", dialog.table.rowCount() > 0)

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage,QPixmap,QColor
-from twobyteasr.ai_providers import CLIProvider,AIProviderError
+from twobyteasr.providers.ai_providers import CLIProvider,AIProviderError
 
 
 @pytest.fixture(autouse=True)
@@ -15,7 +15,7 @@ def isolated_provider_logs(tmp_path,monkeypatch):
 
 
 def test_valid_section_bundle_ends_before_cli_eof(tmp_path):
-    from twobyteasr.ai_providers import GrokCLIProvider
+    from twobyteasr.providers.ai_providers import GrokCLIProvider
     source=Path(__file__).parent/'fixtures/death_stranding_original.txt'
     script=tmp_path/'section_stream.py'
     script.write_text('import json,sys,time\nfrom pathlib import Path\ntext=Path(sys.argv[1]).read_text(encoding="utf8")\n'
@@ -28,7 +28,7 @@ def test_valid_section_bundle_ends_before_cli_eof(tmp_path):
 
 
 def test_cli_terminal_thinking_without_body_has_actionable_error(tmp_path):
-    from twobyteasr.ai_providers import GrokCLIProvider
+    from twobyteasr.providers.ai_providers import GrokCLIProvider
     script=tmp_path/'empty_stream.py'
     script.write_text('import json,time\nprint(json.dumps({"type":"stream_event","event":{"delta":{"thinking":"thought"}}}),flush=True)\n'
         'print(json.dumps({"type":"result","result":""}),flush=True)\ntime.sleep(20)\n',encoding='utf8')
@@ -57,7 +57,7 @@ def test_finished_thinking_without_body_is_explicit():
 @pytest.mark.parametrize('elapsed,category',[(241.,'provider_inactivity_timeout'),(901.,'provider_total_timeout')])
 def test_stage_timeouts_are_distinct_and_keep_design(monkeypatch,elapsed,category):
     from tests.test_hero_theme_compiler import setup,design as make_design
-    from twobyteasr import studio_ai,web_theme_compiler
+    from twobyteasr.caption_design import studio_ai, web_theme_compiler
     def stalled(kwargs):
         start=web_theme_compiler.time.monotonic()
         web_theme_compiler.time.monotonic=lambda:start+elapsed
@@ -74,7 +74,7 @@ def test_stage_timeouts_are_distinct_and_keep_design(monkeypatch,elapsed,categor
 
 def test_subtitle_prompt_keeps_one_concept_and_has_fresh_long_stage(monkeypatch):
     from tests.test_hero_theme_compiler import setup,design as make_design,hero
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
     design=make_design('b')
     p,settings,calls,traces=setup(monkeypatch,[json.dumps(hero(True))])
     settings.setdefault("models",{})["ai_design_cli_timeout_seconds"]=900
@@ -88,7 +88,7 @@ def test_subtitle_prompt_keeps_one_concept_and_has_fresh_long_stage(monkeypatch)
 
 @pytest.mark.parametrize('stride',[1,2,3])
 def test_vector_pixel_gates_match_scalar_reference(stride):
-    from twobyteasr.studio_live_canvas import _count_stroke_pixels,_pixmap_alpha_metrics
+    from twobyteasr.rendering.studio_live_canvas import _count_stroke_pixels,_pixmap_alpha_metrics
     app=QApplication.instance() or QApplication([])
     image=QImage(97,53,QImage.Format_RGBA8888)
     for y in range(image.height()):
@@ -110,8 +110,8 @@ def test_vector_pixel_gates_match_scalar_reference(stride):
 
 @pytest.mark.parametrize('concept',['goggle-peek','ski-slide','powder-shake'])
 def test_local_polar_template_is_valid_and_marked(concept):
-    from twobyteasr.local_subtitle_theme import local_subtitle_theme
-    from twobyteasr.web_theme_compiler import code_gate
+    from twobyteasr.caption_style.local_subtitle_theme import local_subtitle_theme
+    from twobyteasr.caption_design.web_theme_compiler import code_gate
     design=json.loads((Path(__file__).parent/'fixtures/polar_bear_f38c393_concepts.json').read_text('utf-8-sig'))
     design['selected_concept_id']=concept
     theme=local_subtitle_theme(design)

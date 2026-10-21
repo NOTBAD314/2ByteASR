@@ -1,6 +1,6 @@
 """Owned API request process. Credentials arrive only through stdin, never argv/disk.
 
-Source-checkout launcher for ``twobyteasr.cloud_api_worker``; the packaged app
+Source-checkout launcher for ``twobyteasr.providers.cloud_api_worker``; the packaged app
 runs the same body as ``2ByteASR.exe --asr-api-worker``.
 """
 import sys
@@ -15,7 +15,7 @@ def main():
     # over loose files beside an installed app.
     if str(root) not in sys.path:
         sys.path.append(str(root))
-    from twobyteasr.cloud_api_worker import main as worker_main
+    from twobyteasr.providers.cloud_api_worker import main as worker_main
     return worker_main()
 
 

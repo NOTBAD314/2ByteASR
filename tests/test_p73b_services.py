@@ -7,13 +7,13 @@ import time
 
 import pytest
 
-from twobyteasr.ai_providers import AIProviderError, AITransport, ProviderStatus
-from twobyteasr.processes import popen_hidden_subprocess
-from twobyteasr.provider_service import (
+from twobyteasr.providers.ai_providers import AIProviderError, AITransport, ProviderStatus
+from twobyteasr.system.processes import popen_hidden_subprocess
+from twobyteasr.providers.provider_service import (
     ProviderHealthState,
     ProviderService,
 )
-from twobyteasr.resource_governor import ResourceGovernor
+from twobyteasr.system.resource_governor import ResourceGovernor
 
 
 def _settings(**extra):
@@ -58,7 +58,7 @@ class _FakeAdapter:
 
 def _service_with(monkeypatch, adapter, **kwargs):
     monkeypatch.setattr(
-        "twobyteasr.provider_service.adapter_for_stage",
+        "twobyteasr.providers.provider_service.adapter_for_stage",
         lambda *_args, **_named: adapter,
     )
     return ProviderService(governor=ResourceGovernor(), **kwargs)

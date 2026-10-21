@@ -13,9 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr.punctuation_style import (MODE_ADD, MODE_NONE, MODE_ORIGINAL, project_mode, state_value,
+from twobyteasr.subtitle_rules.punctuation_style import (MODE_ADD, MODE_NONE, MODE_ORIGINAL, project_mode, state_value,
                                           style_cues, style_text)
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 TEXTS = ["大家好 今天来玩 v1.2.3 版本 胜率 98.5% 了", "真的吗？我们上 bilibili.com 看看，好不好。",
          "S0pp 和 Zhe 还有 CHIOCHOO 一个", "温度 -5 度，价格 1,000 元。"]
@@ -85,7 +85,7 @@ def test_glossary_terms_with_symbols_are_protected():
 
 
 def test_old_project_without_choice_exports_exactly_as_before(tmp_path):
-    from twobyteasr import studio_subtitle_export as export
+    from twobyteasr.exports import studio_subtitle_export as export
     project = make_project()
     assert project_mode(project) == MODE_ORIGINAL
     options = export.SubtitleExportOptions(formats=frozenset({"srt", "txt", "json", "ass"}))
@@ -99,8 +99,8 @@ def test_old_project_without_choice_exports_exactly_as_before(tmp_path):
 @pytest.mark.parametrize("mode", [MODE_ADD, MODE_NONE])
 def test_every_export_follows_the_choice_and_the_project_is_untouched(tmp_path, mode):
     import copy
-    from twobyteasr import studio_subtitle_export as export
-    from twobyteasr.ass_compiler import compile_ass
+    from twobyteasr.exports import studio_subtitle_export as export
+    from twobyteasr.rendering.ass_compiler import compile_ass
     project = make_project(mode)
     before = copy.deepcopy(project.to_dict())
     expected = [style_text(text, mode).text for text in TEXTS]
@@ -132,8 +132,8 @@ def test_every_export_follows_the_choice_and_the_project_is_untouched(tmp_path, 
 
 
 def test_language_layers_strip_translation_marks_only_for_no_punctuation(tmp_path):
-    from twobyteasr import studio_subtitle_export as export
-    from twobyteasr import subtitle_translation as st
+    from twobyteasr.exports import studio_subtitle_export as export
+    from twobyteasr.subtitle_rules import subtitle_translation as st
     for mode in (MODE_NONE, MODE_ADD):
         project = make_project(mode)
         project.generation_metadata["language"] = {"code": "ja"}
@@ -151,24 +151,24 @@ def test_language_layers_strip_translation_marks_only_for_no_punctuation(tmp_pat
 
 
 def test_burn_in_snapshot_and_preview_revision_use_the_choice():
-    from twobyteasr.export_timeline import export_project_snapshot
+    from twobyteasr.exports.export_timeline import export_project_snapshot
     project = make_project(MODE_NONE)
     snapshot = export_project_snapshot(project)
     assert [cue.text for cue in snapshot.cues] == [style_text(text, MODE_NONE).text for text in TEXTS]
     assert [cue.text for cue in project.cues] == TEXTS
-    from twobyteasr.ass_compiler import compile_ass_revision
-    from twobyteasr.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.ass_compiler import compile_ass_revision
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
     text = compile_ass_revision(StudioRevisionStore(project).render)  # the native preview path
     assert "看看 好不好" in text and "，" not in text.split("[Events]")[1]
 
 
 def test_style_cues_returns_copies_and_handles_frozen_render_dtos():
-    from twobyteasr.studio_revisions import RenderCueDTO
+    from twobyteasr.projects.studio_revisions import RenderCueDTO
     project = make_project(MODE_ADD)
     copies = style_cues(project, project.cues)
     assert copies[0] is not project.cues[0] and project.cues[0].text == TEXTS[0]
     dto = RenderCueDTO.capture(project.cues[0])
-    from twobyteasr.punctuation_style import style_cues_for_state
+    from twobyteasr.subtitle_rules.punctuation_style import style_cues_for_state
     [styled] = style_cues_for_state(project.studio_state, [dto])
     assert styled.text.endswith("。") and dto.text == TEXTS[0]
 
@@ -176,7 +176,7 @@ def test_style_cues_returns_copies_and_handles_frozen_render_dtos():
 def test_switch_is_one_undo_step_and_rewrite_keeps_timings(qapp):
     from PySide6.QtGui import QUndoStack
     from types import SimpleNamespace
-    from twobyteasr.studio_punctuation import (SetPunctuationStyleCommand, WritePunctuationCommand, apply_style,
+    from twobyteasr.studio.studio_punctuation import (SetPunctuationStyleCommand, WritePunctuationCommand, apply_style,
                                                permanent_changes)
     project = make_project()
     stack = QUndoStack()
@@ -198,8 +198,8 @@ def test_switch_is_one_undo_step_and_rewrite_keeps_timings(qapp):
 
 def test_rewrite_moves_caption_receipt_indices_with_the_text(qapp):
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_caption_timeline import KEY
-    from twobyteasr.studio_punctuation import WritePunctuationCommand, permanent_changes
+    from twobyteasr.timeline.studio_caption_timeline import KEY
+    from twobyteasr.studio.studio_punctuation import WritePunctuationCommand, permanent_changes
     project = make_project(MODE_NONE)
     project.cues[1].text = "好，走"
     project.studio_state[KEY] = {"version": 1, "instances": {"c1": {
@@ -214,8 +214,8 @@ def test_rewrite_moves_caption_receipt_indices_with_the_text(qapp):
 
 
 def test_new_task_default_reaches_new_projects_only():
-    from twobyteasr.punctuation_style import default_mode_for_new_tasks
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.subtitle_rules.punctuation_style import default_mode_for_new_tasks
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     assert DEFAULT_SETTINGS["switches"]["subtitle_punctuation"] == MODE_ORIGINAL
     assert default_mode_for_new_tasks({"switches": {"subtitle_punctuation": "add"}}) == MODE_ADD
     assert default_mode_for_new_tasks({"switches": {"subtitle_punctuation": "bogus"}}) == MODE_ORIGINAL

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 
-from twobyteasr import caption_creative_pipeline as pipeline
-from twobyteasr.web_theme import WebThemeDocument
+from twobyteasr.caption_design import caption_creative_pipeline as pipeline
+from twobyteasr.caption_design.web_theme import WebThemeDocument
 
 
 def valid_source():
@@ -72,10 +72,10 @@ def test_schema_rejects_empty_semantic_motion(phase):
 
 
 def test_actual_provider_prompt_includes_complete_authored_constraints(tmp_path, monkeypatch):
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.caption_design_trials import CaptionPreferences
-    from twobyteasr import font_system
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design.caption_design_trials import CaptionPreferences
+    from twobyteasr.caption_style import font_system
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY, 'selection',
         lambda *a, **k: SimpleNamespace(provider='test', model='test'))
     monkeypatch.setattr(CaptionPreferences, 'read', lambda *a: {})
@@ -93,7 +93,7 @@ def test_actual_provider_prompt_includes_complete_authored_constraints(tmp_path,
     assert len(calls) == 1
     planning_prompt = calls[0][0][0]['content']
     assert '不生成源码' in planning_prompt
-    from twobyteasr.authored_prompt import assemble
+    from twobyteasr.caption_design.authored_prompt import assemble
     prompt,_ = assemble(pipeline.ThemeLedger.open(tmp_path/'ledger.json'),direction={'id':'test','name':'测试方向'})
     for required in ('不得自行创建宿主', '32768', '400',
                      'HTML 白名单', 'style 属性', 'HTML 注释', '{{words}}', '.wt-w',
@@ -101,14 +101,14 @@ def test_actual_provider_prompt_includes_complete_authored_constraints(tmp_path,
                      'aria-hidden', 'data-semantic-text', '0.03', '0.97', '0.98',
                      '2BYTE-ARTWORK/1', 'data-emphasis'):
         assert required in prompt
-    from twobyteasr.authored_generation import direction_schema
+    from twobyteasr.caption_design.authored_generation import direction_schema
     assert calls[0][1]['json_schema'] == direction_schema(1)
     for required in ('data-block','4096字节'):
         assert required in prompt
-    from twobyteasr.design_guidance import load_design_guidance
+    from twobyteasr.caption_design.design_guidance import load_design_guidance
     guidance,_=load_design_guidance('三个独立视觉方向')
     assert '在现有六段design_spec、art_direction_contract、MotionContract中记录' not in prompt
     assert 'example-carrier' not in prompt
     ledger=json.loads((tmp_path/'ledger.json').read_text('utf8'))
-    from twobyteasr.design_guidance import VERSION
+    from twobyteasr.caption_design.design_guidance import VERSION
     assert ledger['design_skills']['version']==VERSION

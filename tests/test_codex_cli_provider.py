@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.ai_providers import AIProviderError, AITransport, adapter_for_stage
-from twobyteasr.codex_cli_provider import CodexCLIProvider
-from twobyteasr.llm_config import activate_ai_service, active_service_values, update_active_profile
-from twobyteasr.settings import save_runtime_settings, load_runtime_settings
+from twobyteasr.providers.ai_providers import AIProviderError, AITransport, adapter_for_stage
+from twobyteasr.providers.codex_cli_provider import CodexCLIProvider
+from twobyteasr.providers.llm_config import activate_ai_service, active_service_values, update_active_profile
+from twobyteasr.storage.settings import save_runtime_settings, load_runtime_settings
 
 
 @pytest.fixture

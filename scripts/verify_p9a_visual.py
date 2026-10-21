@@ -21,12 +21,12 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from PySide6.QtWidgets import QScrollArea  # noqa: E402
 
-from twobyteasr.color_picker import SimpleColorDialog  # noqa: E402
-from twobyteasr.studio_export_ui import SubtitleExportDialog  # noqa: E402
-from twobyteasr.studio_highlight_ui import HighlightAssistantPanel  # noqa: E402
-from twobyteasr.studio_ui import SubtitleStudioPage  # noqa: E402
-from twobyteasr.theme_manager import apply_application_theme  # noqa: E402
-from twobyteasr.ui_recognition import RecognitionPlanWidget  # noqa: E402
+from twobyteasr.design.color_picker import SimpleColorDialog  # noqa: E402
+from twobyteasr.exports.studio_export_ui import SubtitleExportDialog  # noqa: E402
+from twobyteasr.studio.studio_highlight_ui import HighlightAssistantPanel  # noqa: E402
+from twobyteasr.studio.studio_ui import SubtitleStudioPage  # noqa: E402
+from twobyteasr.design.theme_manager import apply_application_theme  # noqa: E402
+from twobyteasr.app.ui_recognition import RecognitionPlanWidget  # noqa: E402
 
 
 def pump(app: QApplication, milliseconds: int = 80) -> None:
@@ -160,7 +160,7 @@ def main() -> int:
     try:
         import moss_firered_pipeline
         import subtitle_core
-        from twobyteasr.ui import MainWindow
+        from twobyteasr.app.ui import MainWindow
 
         home = MainWindow(
             [],

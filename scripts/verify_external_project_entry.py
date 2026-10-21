@@ -28,8 +28,8 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(output)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project
-    from twobyteasr.application_settings import save_hub_preferences
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project
+    from twobyteasr.app.application_settings import save_hub_preferences
     project=output/'中文 (选中两条)&校对.2byteproj'
     other=output/'另一个 & (缺素材).2byteproj'
     cues=([StudioCue('entity-a',0,1000,'So还在往里走',speaker_id='S00'),
@@ -55,7 +55,7 @@ def main():
     future.write_text(json.dumps(payload,ensure_ascii=False),'utf8')
     save_hub_preferences(str(output/'projects'),True,60,9,True,True,
                          startup_page='project_library' if args.case=='library' else 'recognition')
-    from twobyteasr.studio_project import studio_settings_path
+    from twobyteasr.projects.studio_project import studio_settings_path
     (output/'studio-settings.json').write_bytes(studio_settings_path().read_bytes())
     command=[str(args.exe.resolve())] if args.exe else [sys.executable,'-B',str(ROOT/'quick_start.py')]
     plan=dict(case=args.case,project=str(project),other_project=str(other),broken_project=str(broken),

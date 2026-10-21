@@ -18,15 +18,15 @@ if str(ROOT) not in sys.path:
 
 from PIL import Image, ImageDraw
 
-from twobyteasr.advanced_renderer import compile_composition_data
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.studio_project import (
+from twobyteasr.rendering.advanced_renderer import compile_composition_data
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     SubtitleStyle,
 )
-from twobyteasr.style_recipe import FillSpec, StyleRecipe, normalize_shadow_contract
+from twobyteasr.caption_style.style_recipe import FillSpec, StyleRecipe, normalize_shadow_contract
 
 
 WIDTH = 960

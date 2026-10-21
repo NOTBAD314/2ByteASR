@@ -104,7 +104,7 @@ def test_launch_services_psn_argument_does_not_disable_startup_smoke(tmp_path):
 def test_startup_probe_unwinds_first_run_modal_before_application_loop():
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication,QDialog,QWidget
-    from twobyteasr.main_ui_dialogs import SpringDialog
+    from twobyteasr.design.main_ui_dialogs import SpringDialog
     from scripts.macos_launch import finish_startup_event_loops
     app=QApplication.instance() or QApplication([])
     parent=QWidget();parent.show()
@@ -137,7 +137,7 @@ def test_timeout_preserves_visible_application_receipt_without_passing(tmp_path,
 def test_desktop_audit_escape_waits_for_real_guided_setup_completion(tmp_path):
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication,QDialog,QWidget
-    from twobyteasr.ui import GuidedSetupDialog
+    from twobyteasr.app.ui import GuidedSetupDialog
     from scripts.macos_launch import dismiss_first_wizard_for_desktop_audit
     app=QApplication.instance() or QApplication([])
     parent=QWidget();parent.show()
@@ -155,7 +155,7 @@ def test_home_audit_uses_normal_return_refresh_and_keeps_failure_receipt(tmp_pat
     from types import SimpleNamespace
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication, QComboBox, QWidget
-    from twobyteasr import home_release_flow_audit as audit
+    from twobyteasr.acceptance import home_release_flow_audit as audit
     app = QApplication.instance() or QApplication([])
     window = QWidget()
     returned = []

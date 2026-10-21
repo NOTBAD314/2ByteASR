@@ -15,17 +15,17 @@ def main():
     out.mkdir(parents=True)
     original_store=Path(os.environ['LOCALAPPDATA'])/'2ByteASR/secrets.dat'
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen')
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     reader=llm_config._read_secrets
     llm_config._read_secrets=lambda:reader(read_only_path=original_store)
-    from twobyteasr.settings import load_runtime_settings
+    from twobyteasr.storage.settings import load_runtime_settings
     settings,_,_=load_runtime_settings(args.trial/'config')
-    from twobyteasr.ai_design_call_budget import install_acceptance_budget
+    from twobyteasr.acceptance.ai_design_call_budget import install_acceptance_budget
     install_acceptance_budget(root/'tmp/ai-design-quality-20260916/call-budget.json')
-    from twobyteasr.caption_creative_pipeline import retry_saved_candidate
+    from twobyteasr.caption_design.caption_creative_pipeline import retry_saved_candidate
     ledger=next((args.trial/'local/2ByteASR/SubtitleStudioPreview/logs/theme-drafts').rglob('ledger.json'))
     if args.feedback:
-        from twobyteasr.authored_visual_revision import revise_candidate
+        from twobyteasr.caption_design.authored_visual_revision import revise_candidate
         result=revise_candidate(ledger,args.candidate,args.feedback,settings,ledger_root=out/'creative',request_id=out.name)
     else:result=retry_saved_candidate(ledger,args.candidate,settings,ledger_root=out/'creative',request_id=out.name)
     (out/'result.json').write_text(json.dumps(dict(concepts=[dict(id=c['id'],technical_status=c.get('technical_status','passed'),

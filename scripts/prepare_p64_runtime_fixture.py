@@ -12,14 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_danmaku import parse_danmaku_xml
-from twobyteasr.studio_edit_sequence import sequence_of, store_sequence
-from twobyteasr.studio_helpers import probe_media_identity
-from twobyteasr.studio_highlight_analyzer import (
+from twobyteasr.studio.studio_danmaku import parse_danmaku_xml
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, store_sequence
+from twobyteasr.studio.studio_helpers import probe_media_identity
+from twobyteasr.studio.studio_highlight_analyzer import (
     candidates_from_local,
     discover_local_candidates,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,

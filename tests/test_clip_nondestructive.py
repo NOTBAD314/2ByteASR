@@ -15,7 +15,7 @@ import pytest
 
 
 def _project(tmp_path, cue_count=40, span_ms=600_000):
-    from twobyteasr.studio_project import (
+    from twobyteasr.projects.studio_project import (
         StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project,
     )
 
@@ -31,7 +31,7 @@ def _project(tmp_path, cue_count=40, span_ms=600_000):
 
 
 def _accept(project, in_ms, out_ms, cid="h1"):
-    from twobyteasr.studio_edit_sequence import HighlightCandidate, sequence_of
+    from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate, sequence_of
 
     sequence_of(project).clip_candidates = [
         HighlightCandidate(id=cid, title="t", source_in_ms=in_ms,
@@ -40,8 +40,8 @@ def _accept(project, in_ms, out_ms, cid="h1"):
 
 
 def test_generate_keeps_full_cue_set_and_projects_view():
-    from twobyteasr.studio_edit_commands import generate_edit_command
-    from twobyteasr.studio_edit_sequence import projected_cues, sequence_of
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues, sequence_of
 
     project = _project(None, cue_count=40, span_ms=600_000)
     _accept(project, 120_000, 300_000)
@@ -63,15 +63,15 @@ def test_generate_keeps_full_cue_set_and_projects_view():
     assert all(c.start_ms >= 120_000 - 4000 for c in source_view)
     assert len(source_view) == len(expected)
     # 派生 id 可解析回源 id；命令查找作用于源 cue。
-    from twobyteasr.studio_edit_sequence import source_cue_id_of
-    from twobyteasr.studio_commands import cue_by_id
+    from twobyteasr.timeline.studio_edit_sequence import source_cue_id_of
+    from twobyteasr.timeline.studio_commands import cue_by_id
     assert source_cue_id_of(view_first.id) == source_first.id
     assert cue_by_id(project, view_first.id) is source_first
 
 
 def test_restore_returns_full_view_without_losing_cues():
-    from twobyteasr.studio_edit_commands import generate_edit_command, restore_full_sequence_command
-    from twobyteasr.studio_edit_sequence import projected_cues
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command, restore_full_sequence_command
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues
 
     project = _project(None)
     _accept(project, 120_000, 300_000)
@@ -85,7 +85,7 @@ def test_restore_returns_full_view_without_losing_cues():
 
 
 def test_roundtrip_ten_times_is_stable():
-    from twobyteasr.studio_edit_commands import generate_edit_command, restore_full_sequence_command
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command, restore_full_sequence_command
 
     project = _project(None)
     _accept(project, 120_000, 300_000)
@@ -99,9 +99,9 @@ def test_roundtrip_ten_times_is_stable():
 
 
 def test_clip_mode_edit_survives_restore():
-    from twobyteasr.studio_edit_commands import generate_edit_command, restore_full_sequence_command
-    from twobyteasr.studio_edit_sequence import projected_cues, source_cue_id_of
-    from twobyteasr.studio_commands import SetCueFieldsCommand
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command, restore_full_sequence_command
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues, source_cue_id_of
+    from twobyteasr.timeline.studio_commands import SetCueFieldsCommand
 
     project = _project(None)
     _accept(project, 120_000, 300_000)
@@ -116,9 +116,9 @@ def test_clip_mode_edit_survives_restore():
 
 
 def test_clip_mode_save_reload_and_return():
-    from twobyteasr.studio_edit_commands import generate_edit_command, restore_full_sequence_command
-    from twobyteasr.studio_project import load_project, save_project
-    from twobyteasr.studio_edit_sequence import projected_cues
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command, restore_full_sequence_command
+    from twobyteasr.projects.studio_project import load_project, save_project
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues
 
     project = _project(None)
     _accept(project, 120_000, 300_000)
@@ -139,7 +139,7 @@ def test_clip_mode_save_reload_and_return():
 
 
 def test_multi_segment_and_boundary_and_duplicate():
-    from twobyteasr.studio_edit_sequence import (
+    from twobyteasr.timeline.studio_edit_sequence import (
         VideoSegment, projected_cues, sequence_of, replace_runtime_sequence,
     )
 
@@ -156,7 +156,7 @@ def test_multi_segment_and_boundary_and_duplicate():
     sequence.segments = [seg1, seg2, seg3]
     replace_runtime_sequence(project, sequence, validate=False)
     # 一条跨入点边界的字幕：源 [115,125)。
-    from twobyteasr.studio_project import StudioCue
+    from twobyteasr.projects.studio_project import StudioCue
     project.cues.append(StudioCue(id="edge", start_ms=115_000, end_ms=125_000, text="跨界", speaker_id="S01"))
     view = projected_cues(project, domain="timeline")
     edge_rows = [c for c in view if c.id.startswith("edge#")]
@@ -174,8 +174,8 @@ def test_multi_segment_and_boundary_and_duplicate():
 
 
 def test_export_matches_active_sequence_domain():
-    from twobyteasr.studio_edit_commands import generate_edit_command
-    from twobyteasr.studio_subtitle_export import compile_srt, _compile_format
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command
+    from twobyteasr.exports.studio_subtitle_export import compile_srt, _compile_format
 
     project = _project(None)
     _accept(project, 120_000, 300_000)
@@ -189,8 +189,8 @@ def test_export_matches_active_sequence_domain():
 
 
 def test_revision_store_render_source_domain_and_persistence_full():
-    from twobyteasr.studio_edit_commands import generate_edit_command
-    from twobyteasr.studio_revisions import StudioRevisionStore
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
 
     project = _project(None)
     _accept(project, 120_000, 300_000)

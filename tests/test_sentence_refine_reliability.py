@@ -1,8 +1,8 @@
 import json
 from types import SimpleNamespace
-from twobyteasr.sentence_refine import refine_cues_with_llm
-from twobyteasr.studio_project import StudioCue, SubtitleProject, StudioMedia
-from twobyteasr.cue_word_alignment import cue_words
+from twobyteasr.subtitle_rules.sentence_refine import refine_cues_with_llm
+from twobyteasr.projects.studio_project import StudioCue, SubtitleProject, StudioMedia
+from twobyteasr.recognition.cue_word_alignment import cue_words
 
 
 def install(monkeypatch, answers):
@@ -16,7 +16,7 @@ def install(monkeypatch, answers):
         assert stage=='group'
         assert settings['models']['group_model']=='selected-group'
         return SimpleNamespace(complete=complete,provider_id='selected',model='selected-group')
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',provider)
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',provider)
     return calls
 
 
@@ -48,7 +48,7 @@ def test_cancel_before_request_issues_no_calls(monkeypatch):
 
 
 def test_one_attempt_budget_and_explicit_json_contract(monkeypatch):
-    from twobyteasr.sentence_refine import REFINE_SYSTEM_PROMPT,validate_action
+    from twobyteasr.subtitle_rules.sentence_refine import REFINE_SYSTEM_PROMPT,validate_action
     assert '"results"' in REFINE_SYSTEM_PROMPT and '"cue_id"' in REFINE_SYSTEM_PROMPT
     calls=install(monkeypatch,[ValueError('network')])
     outcome=refine_cues_with_llm([StudioCue('a',0,1000,'当前句')],runtime_settings=SETTINGS,max_attempts=1)

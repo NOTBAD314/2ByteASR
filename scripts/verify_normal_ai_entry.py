@@ -63,8 +63,8 @@ def main():
     # Install the inherited boundary before importing any application/Qt code.
     # Explicit QSettings constructors and spawned processes must be isolated too.
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
-    from twobyteasr import settings as settings_module
-    from twobyteasr.llm_config import activate_ai_service, update_active_profile, get_active_service, active_service_values
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.providers.llm_config import activate_ai_service, update_active_profile, get_active_service, active_service_values
     source = (args.settings or original_local_appdata/'2ByteASR'/settings_module.SETTINGS_FILENAME).resolve()
     original = source.read_bytes()
     settings, _ = settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS, json.loads(original))
@@ -153,12 +153,12 @@ def main():
     os.environ.update({key: env[key] for key in ('LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP')})
     if args.local_fixture:
         from urllib.parse import urlsplit
-        from twobyteasr.llm_config import save_api_key_for
+        from twobyteasr.providers.llm_config import save_api_key_for
         address=active_service_values(settings)['base_url']
         if urlsplit(address).hostname not in {'127.0.0.1','::1','localhost'}:
             raise ValueError('Local fixture must use a loopback endpoint')
         save_api_key_for('custom',address,'local-fixture-only')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     media = out/'synthetic.mp4'
     media_input=['-f','lavfi','-i','testsrc2=size=1280x720:rate=30']
     if args.game_scene:
@@ -172,8 +172,8 @@ def main():
     run_hidden_subprocess([root/'tools/ffmpeg/bin/ffmpeg.exe', '-v', 'error', '-y', *media_input,
         '-t', str(args.cue_seconds+3), '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-an', media],
         check=True, timeout=45, capture_output=True, purpose='synthetic media for normal AI design UI audit')
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
     project = SubtitleProject(media=StudioMedia(str(media), duration_ms=6000, width=1920 if args.game_scene else 1280, height=1080 if args.game_scene else 720),
         speakers=[StudioSpeaker('AUDIT', name='测试说话人')],
         cues=[StudioCue('audit-ai', 250, 250+args.cue_seconds*1000, args.cue_text, 'AUDIT'),

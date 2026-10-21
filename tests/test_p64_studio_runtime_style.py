@@ -12,14 +12,14 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from twobyteasr.ai_providers import AntigravityCLIProvider
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.color_picker import ColorPickerWidget
-from twobyteasr.studio_edit_sequence import HighlightCandidate
-from twobyteasr.studio_edit_sequence import sequence_of, store_sequence
-from twobyteasr.studio_highlight_ui import HighlightAssistantPanel
-from twobyteasr.p64_runtime_audit import parse_matrix_sizes
-from twobyteasr.studio_project import (
+from twobyteasr.providers.ai_providers import AntigravityCLIProvider
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.design.color_picker import ColorPickerWidget
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, store_sequence
+from twobyteasr.studio.studio_highlight_ui import HighlightAssistantPanel
+from twobyteasr.acceptance.p64_runtime_audit import parse_matrix_sizes
+from twobyteasr.projects.studio_project import (
     StudioMedia,
     SubtitleProject,
     SubtitleStyle,
@@ -27,12 +27,12 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.studio_ui import FillEditorDialog, SubtitleStudioPage
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_recipe import ASSRecipe, StyleRecipeValidationError
-from twobyteasr.theme_manager import apply_application_theme
-from twobyteasr.ui import AI_SERVICE_SPECS, EndpointEditor, ProviderConnectionTester
-from twobyteasr.ui_theme import THEMES
+from twobyteasr.studio.studio_ui import FillEditorDialog, SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_recipe import ASSRecipe, StyleRecipeValidationError
+from twobyteasr.design.theme_manager import apply_application_theme
+from twobyteasr.app.ui import AI_SERVICE_SPECS, EndpointEditor, ProviderConnectionTester
+from twobyteasr.design.ui_theme import THEMES
 
 
 def _app() -> QApplication:
@@ -96,7 +96,7 @@ def test_provider_connection_tester_retains_validated_models(monkeypatch):
         models=("model-a-2", "model-b-3"),
     )
     provider = SimpleNamespace(validate=lambda **_kwargs: status)
-    monkeypatch.setattr("twobyteasr.ui.provider_for_stage", lambda *_args: provider)
+    monkeypatch.setattr("twobyteasr.providers.endpoint_editor_ui.provider_for_stage", lambda *_args: provider)
     tester = ProviderConnectionTester({"models": {}}, "polish")
 
     tester.run()

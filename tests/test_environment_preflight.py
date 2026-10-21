@@ -37,7 +37,7 @@ pytestmark = pytest.mark.skipif(
     reason="需要 Windows 与本机主环境创建隔离 venv",
 )
 
-import twobyteasr.environment as env_module
+import twobyteasr.system.environment as env_module
 import twobyteasr.environment_probe as probe_module
 
 
@@ -376,7 +376,7 @@ def test_case_j_probe_timeout_is_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr(env_module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(env_module, "environment_interpreter",
                         lambda _role: str(PYTHON))
-    monkeypatch.setattr("twobyteasr.processes.subprocess.run", lambda *a, **k: None)
+    monkeypatch.setattr("twobyteasr.system.processes.subprocess.run", lambda *a, **k: None)
     env_module.reset_preflight_cache()
     result = env_module.deep_preflight("main")
     assert not result.ok
@@ -527,7 +527,7 @@ def _fake_pipeline(fail_check_runtime=False):
 
 def test_case_l_m_service_guard_blocks_and_no_fallback(tmp_path, monkeypatch):
     """L/M：坏环境 + guard → 任务在 pipeline 前被阻断；系统 Python 正常也不 fallback。"""
-    from twobyteasr import service as service_module
+    from twobyteasr.recognition import service as service_module
 
     bad_python = _make_venv(tmp_path, "guard_bad_main")
     _pip_offline(bad_python, ["numpy==2.2.6"])  # 缺 transformers
@@ -548,7 +548,7 @@ def test_case_l_m_service_guard_blocks_and_no_fallback(tmp_path, monkeypatch):
 
 def test_case_f_moss_broken_does_not_block_firered_only(tmp_path, monkeypatch):
     """F：main OK/moss bad 但配置不用 moss → 不阻断。"""
-    from twobyteasr import service as service_module
+    from twobyteasr.recognition import service as service_module
 
     main_python = _make_venv(tmp_path, "guard_ok_main")
     _pip_offline(main_python, MAIN_RUNTIME)

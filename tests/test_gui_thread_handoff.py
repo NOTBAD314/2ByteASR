@@ -1,6 +1,6 @@
 import sys
 import pytest
-from twobyteasr.gui_thread_handoff import GuiThreadHandoff
+from twobyteasr.studio.gui_thread_handoff import GuiThreadHandoff
 
 pytestmark=pytest.mark.skipif(sys.platform!='win32',reason='Windows GUI thread handoff policy')
 

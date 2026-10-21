@@ -49,7 +49,7 @@ def main() -> int:
     run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", str(media),
          "-c", "copy", str(optimized)])
 
-    from twobyteasr.waveform_cache import (
+    from twobyteasr.playback.waveform_cache import (
         WaveformCache, generate_progressive_waveform_cache,
     )
     stages = []
@@ -76,12 +76,12 @@ def main() -> int:
     # ---------------------------------------------------------------- widget
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
-    from twobyteasr.studio_project import (
+    from twobyteasr.projects.studio_project import (
         AudioClip, AudioTrack, AVTrackGroup, MediaAsset, StudioMedia,
         SubtitleProject, VideoClip, VideoTrack,
     )
-    from twobyteasr.studio_timeline import WaveformTimeline
-    from twobyteasr.timeline_theme import timeline_palette
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
+    from twobyteasr.design.timeline_theme import timeline_palette
 
     asset = MediaAsset(
         asset_id="asset-1", canonical_source=str(media.resolve()),

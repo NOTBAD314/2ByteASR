@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from twobyteasr.studio_media_pool import (
+from twobyteasr.timeline.studio_media_pool import (
     add_media_asset,
     add_video_clip,
     create_video_track,
@@ -24,7 +24,7 @@ from twobyteasr.studio_media_pool import (
     set_video_clip_effects,
     validate_media_graph,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
@@ -43,7 +43,7 @@ def _app() -> QApplication:
 def test_lane_order_matches_render_z():
     """四十五轮：z 序越高的轨道泳道越靠上（Premiere 语义），V1 永远最底。"""
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     page._create_blank_studio()
@@ -60,7 +60,7 @@ def test_lane_order_matches_render_z():
 
 def test_reassign_rejects_primary_and_accepts_secondary():
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     page._create_blank_studio()
@@ -75,7 +75,7 @@ def test_reassign_rejects_primary_and_accepts_secondary():
     add_video_clip(project, v2.id, asset.asset_id, timeline_in_ms=1_000)
     validate_media_graph(project)
     primary = primary_video_track_id(project)
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     next(t for t in project.video_tracks if t.id == primary).locked = sequence_of(project).video_track_locked = False
     moving = v2.clips[0].id
     reassign_video_clip(project, v2.id, primary, moving)
@@ -108,7 +108,7 @@ def test_clip_effects_contract_roundtrip_and_clamp():
 
 def test_set_video_clip_effects_writes_normalized():
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     page._create_blank_studio()
@@ -131,7 +131,7 @@ def test_set_video_clip_effects_writes_normalized():
 
 
 def test_chroma_key_alpha_mask():
-    from twobyteasr.video_compositor import apply_chroma_key
+    from twobyteasr.playback.video_compositor import apply_chroma_key
 
     image = QImage(4, 1, QImage.Format.Format_ARGB32)
     colors = [0xFF00FF00, 0xFF00E000, 0xFF102030, 0xFFFF00FF]  # 绿/近绿/深灰/品红
@@ -148,7 +148,7 @@ from PySide6.QtGui import qAlpha  # noqa: E402
 
 
 def test_blend_mode_mapping_covers_contract():
-    from twobyteasr.video_compositor import _BLEND_COMPOSITION_MODES
+    from twobyteasr.playback.video_compositor import _BLEND_COMPOSITION_MODES
     from PySide6.QtGui import QPainter
 
     assert set(_BLEND_COMPOSITION_MODES) == {"normal", "screen", "multiply", "overlay", "softLight", "addition"}

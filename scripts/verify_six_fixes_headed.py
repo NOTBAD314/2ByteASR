@@ -2,7 +2,7 @@
 
 Copies a project into a fresh owned tmp directory, isolates all app data
 (LOCALAPPDATA, APPDATA, user-data root, Qt settings, network) there, and runs
-the in-process `six-fixes` scenario (twobyteasr/six_fixes_audit.py) on a
+the in-process `six-fixes` scenario (twobyteasr/acceptance/six_fixes_audit.py) on a
 private Windows desktop. Use --exe for a frozen candidate or the root launcher.
 """
 import argparse

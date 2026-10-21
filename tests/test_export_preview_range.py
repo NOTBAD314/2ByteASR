@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.export_validation import validate_output
-from twobyteasr.processes import run_hidden_subprocess
+from twobyteasr.exports.export_validation import validate_output
+from twobyteasr.system.processes import run_hidden_subprocess
 
 
 @pytest.mark.parametrize('pixel_format', ['yuv420p', 'yuvj420p'])

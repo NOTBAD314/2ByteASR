@@ -1,6 +1,6 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-from twobyteasr.studio_speech_cut import pause_candidates, make_seam_preview
+from twobyteasr.studio.studio_speech_cut import pause_candidates, make_seam_preview
 import numpy as np
 import wave
 import pytest

@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 
 def child(out):
-    from twobyteasr.compact_overlap_audit import run
+    from twobyteasr.acceptance.compact_overlap_audit import run
     return run(out)
 
 

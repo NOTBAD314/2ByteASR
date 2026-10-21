@@ -32,14 +32,14 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import studio_ui as studio_ui_module
-from twobyteasr import ui
-from twobyteasr.media_service import GLOBAL_MEDIA_SERVICE, ProxySettings
-from twobyteasr.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
-from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-from twobyteasr.service import CancellationToken
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.visual_runtime import VisualOwner
+from twobyteasr.studio import studio_ui as studio_ui_module
+from twobyteasr.app import ui
+from twobyteasr.media.media_service import GLOBAL_MEDIA_SERVICE, ProxySettings
+from twobyteasr.projects.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
+from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+from twobyteasr.recognition.service import CancellationToken
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.rendering.visual_runtime import VisualOwner
 
 import verify_p73c_seek_matrix as seek_support
 

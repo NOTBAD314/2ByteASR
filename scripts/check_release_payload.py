@@ -6,13 +6,22 @@ import re
 from pathlib import Path
 
 
+def user_directory(relative: Path) -> bool:
+    """Code's projects subpackage is distinct from users' project folders."""
+    parts=tuple(s.lower() for s in relative.parts)
+    if set(parts).intersection({'.git','__pycache__','.pytest_cache','.mimosa','.cache','logs','reports'}):
+        return True
+    if parts and parts[0]=='models':return True
+    code_project=(len(parts)>=3 and parts[:2]==('twobyteasr','projects') and relative.suffix=='.py')
+    return 'projects' in parts and not code_project
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('payload',type=Path)
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args();root=args.payload.resolve()
     errors=[];files=[];texts=0
-    forbidden={'.git','__pycache__','.pytest_cache','.mimosa','.cache','logs','reports','projects','models'}
     forbidden_names={'secrets.json','secrets.dat','.env','2byteasr-qa-profile.marker','registry.json'}
     patterns={
         'credential': re.compile(rb'\b(?:sk-[A-Za-z0-9_-]{32,}|hf_[A-Za-z0-9]{30,}|gh[pousr]_[A-Za-z0-9]{32,}|AKIA[0-9A-Z]{16})\b'),
@@ -22,9 +31,9 @@ def main():
     text_ext={'.py','.ps1','.json','.txt','.md','.js','.mjs','.cjs','.html','.css','.yml','.yaml','.ini','.bat','.toml','.xml','.conf','.map'}
     for p in sorted(root.rglob('*')):
         if not p.is_file():continue
-        rel=p.relative_to(root);parts={s.lower() for s in rel.parts}
+        rel=p.relative_to(root)
         # Third-party source packages can legitimately contain a models code package.
-        if parts.intersection(forbidden-{'models'}) or rel.parts[0].lower()=='models':
+        if user_directory(rel):
             errors.append(dict(category='user_or_build_directory',path=rel.as_posix()))
         if p.name.lower() in forbidden_names or p.suffix.lower() in {'.log','.2byteasr','.2byteproj','.safetensors','.ckpt','.pt'}:
             errors.append(dict(category='user_or_weight_file',path=rel.as_posix()))
@@ -40,7 +49,7 @@ def main():
                 if pattern.search(data):errors.append(dict(category=category,path=rel.as_posix()))
     import sys
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     settings=json.loads((root/'2byteasr_settings.json').read_text('utf-8-sig'))
     if settings!=DEFAULT_SETTINGS:errors.append(dict(category='nonfactory_settings',path='2byteasr_settings.json'))
     result=dict(passed=not errors,file_count=len(files),text_count=texts,total_bytes=sum(x['bytes'] for x in files),errors=errors,files=files,

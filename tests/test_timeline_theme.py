@@ -11,10 +11,10 @@ pytestmark = pytest.mark.skipif(
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject  # noqa: E402
-from twobyteasr.studio_ui import WaveformTimeline, _speaker_color  # noqa: E402
-from twobyteasr.theme_manager import apply_application_theme  # noqa: E402
-from twobyteasr.timeline_theme import TIMELINE_PALETTES, mix, rgba_color, timeline_palette  # noqa: E402
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject  # noqa: E402
+from twobyteasr.studio.studio_ui import WaveformTimeline, _speaker_color  # noqa: E402
+from twobyteasr.design.theme_manager import apply_application_theme  # noqa: E402
+from twobyteasr.design.timeline_theme import TIMELINE_PALETTES, mix, rgba_color, timeline_palette  # noqa: E402
 
 
 def _app() -> QApplication:
@@ -37,7 +37,7 @@ def test_p3_every_theme_has_full_timeline_palette():
         "time_label", "clip_text", "clip_selected_border", "waveform",
         "waveform_background", "speaker_accents",
     }
-    from twobyteasr.ui_theme import THEMES
+    from twobyteasr.design.ui_theme import THEMES
     assert set(TIMELINE_PALETTES) == set(THEMES)
     for key, palette in TIMELINE_PALETTES.items():
         missing = required - {
@@ -95,7 +95,7 @@ def test_p5_preview_quality_tiers():
     app = _app()
     from PySide6.QtWidgets import QComboBox
 
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     try:

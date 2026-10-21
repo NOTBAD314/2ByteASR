@@ -5,7 +5,7 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 
 
 def main():
-    from twobyteasr.web_theme import theme_archive_html,WebThemeDocument
+    from twobyteasr.caption_design.web_theme import theme_archive_html,WebThemeDocument
     parser=argparse.ArgumentParser();parser.add_argument('theme',type=Path);parser.add_argument('output',type=Path)
     a=parser.parse_args();theme=WebThemeDocument.from_dict(json.loads(a.theme.read_text('utf8'))).to_dict()
     if not theme.get('motionSpec'):raise ValueError('The audit requires the production MotionSpec')

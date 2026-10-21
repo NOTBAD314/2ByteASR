@@ -13,13 +13,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from twobyteasr.qwen31_asr import ASRProtocolError
+from twobyteasr.providers.qwen31_asr import ASRProtocolError
 
 
 # --- speaker 0 -------------------------------------------------------------------
 
 def test_speaker_zero_words_stay_with_speaker_zero_inside_an_overlap():
-    from twobyteasr.asr import _api_transcription_rows
+    from twobyteasr.recognition.asr import _api_transcription_rows
     # Two diarized sentences overlap; speaker 0's word lies inside both.
     result = {'segments': [{'start': 0.0, 'end': 2.0, 'text': '你好世界', 'speaker': 0},
                            {'start': 0.5, 'end': 2.5, 'text': '再见', 'speaker': 1}],
@@ -37,7 +37,7 @@ def test_speaker_zero_words_stay_with_speaker_zero_inside_an_overlap():
 # --- Filetrans validation ---------------------------------------------------------
 
 def test_zero_length_provider_word_does_not_fail_the_paid_job():
-    from twobyteasr.cloud_asr_jobs import validate_filetrans_result
+    from twobyteasr.providers.cloud_asr_jobs import validate_filetrans_result
     sentence = {'begin_time': 100, 'end_time': 900, 'text': '好。',
                 'words': [{'begin_time': 400, 'end_time': 400, 'text': '好', 'punctuation': '。'}]}
     validate_filetrans_result({'transcripts': [{'sentences': [sentence]}]}, 1.0)
@@ -82,7 +82,7 @@ def endpoint():
 
 def test_mosi_uncertain_upload_is_resubmitted_only_after_explicit_confirmation(tmp_path):
     import requests
-    from twobyteasr.mosi_asr import transcribe
+    from twobyteasr.providers.mosi_asr import transcribe
     audio = np.zeros(16000, dtype=np.float32)
     lost = Mosi(error=requests.exceptions.ConnectionError('reset'))
     with pytest.raises(ASRProtocolError) as error:
@@ -100,7 +100,7 @@ def test_mosi_uncertain_upload_is_resubmitted_only_after_explicit_confirmation(t
 
 
 def test_worker_passes_the_confirmation_to_mosi(monkeypatch, tmp_path):
-    from twobyteasr import cloud_api_worker, mosi_asr
+    from twobyteasr.providers import cloud_api_worker, mosi_asr
     seen = {}
 
     def fake(audio, endpoint, cache, **kw):
@@ -108,7 +108,7 @@ def test_worker_passes_the_confirmation_to_mosi(monkeypatch, tmp_path):
         return []
 
     monkeypatch.setattr(mosi_asr, 'transcribe', fake)
-    monkeypatch.setattr('twobyteasr.llm_config.validate_qwen_asr_endpoint', lambda e: e)
+    monkeypatch.setattr('twobyteasr.providers.llm_config.validate_qwen_asr_endpoint', lambda e: e)
     np.save(tmp_path / 'a.npy', np.zeros(1600, dtype=np.float32))
     request = dict(audio_array=str(tmp_path / 'a.npy'), chunks=[], workers=1, settings={'models': {}},
                    job_id='j', native_job=True, endpoint=endpoint(), cancel_file=str(tmp_path / 'cancel'),
@@ -118,7 +118,7 @@ def test_worker_passes_the_confirmation_to_mosi(monkeypatch, tmp_path):
 
 
 def test_mosi_long_audio_is_cut_at_the_quietest_second_not_mid_speech():
-    from twobyteasr import mosi_asr
+    from twobyteasr.providers import mosi_asr
     rate = 16000
     rng = np.random.default_rng(7)
     seconds = 70 * 60
@@ -136,7 +136,7 @@ def test_mosi_long_audio_is_cut_at_the_quietest_second_not_mid_speech():
 # --- provider word granularity, estimates ------------------------------------------
 
 def _qwen3_rows():
-    from twobyteasr.asr import _api_transcription_rows, _filetrans_task_rows
+    from twobyteasr.recognition.asr import _api_transcription_rows, _filetrans_task_rows
     payload = {'transcripts': [{'text': '欢迎使用阿里云。', 'sentences': [
         {'begin_time': 100, 'end_time': 1900, 'text': '欢迎使用阿里云。', 'words': [
             {'begin_time': 100, 'end_time': 500, 'text': '欢迎', 'punctuation': ''},
@@ -164,8 +164,8 @@ def test_provider_words_are_kept_whole_as_measured_units():
 def test_project_evidence_stores_provider_words_not_the_even_split(tmp_path, monkeypatch):
     import subtitle_core as legacy
     import moss_firered_pipeline as pipeline
-    import twobyteasr.studio_project as storage
-    from twobyteasr.studio_project import create_studio_outputs, load_project
+    import twobyteasr.projects.studio_project as storage
+    from twobyteasr.projects.studio_project import create_studio_outputs, load_project
     monkeypatch.setattr(storage, 'project_library_root', lambda *a, **k: tmp_path / 'Projects')
     media = tmp_path / 'clip.wav'
     with wave.open(str(media), 'wb') as stream:
@@ -180,7 +180,7 @@ def test_project_evidence_stores_provider_words_not_the_even_split(tmp_path, mon
     assert [w['text'] for w in row['words']] == ['欢迎', '使用', '阿里云']
     assert 'measured_words' not in row['caption_arbitration']['word_timing']
     assert row['caption_arbitration']['word_timing']['measured_word_count'] == 3
-    from twobyteasr.word_timing_provenance import estimated_word_timing
+    from twobyteasr.recognition.word_timing_provenance import estimated_word_timing
     assert not estimated_word_timing(row)
 
 
@@ -210,7 +210,7 @@ def test_mlx_vad_window_rows_are_estimates_not_native_sentence_times():
 def test_disclosure_names_the_cloud_review_upload_and_mlx():
     # 2026-10-14: the review stage runs again (probe fix approved by the user);
     # a cloud review uploads the whole audio once more and is confirmed first.
-    from twobyteasr.recognition_choices import disclosure_text, run_disclosure
+    from twobyteasr.recognition.recognition_choices import disclosure_text, run_disclosure
     moss = {'models': {'primary_asr_backend': 'moss', 'firered_asr_backend': 'local', 'qwen_asr_backend': 'api',
                        'qwen_asr_api_provider': 'mosi_moss_pro'}, 'switches': {}}
     info = run_disclosure(moss)
@@ -227,7 +227,7 @@ def test_disclosure_names_the_cloud_review_upload_and_mlx():
 
 
 def test_unavailable_on_host_names_the_limit():
-    from twobyteasr.recognition_choices import HostProfile, unavailable_on_host
+    from twobyteasr.recognition.recognition_choices import HostProfile, unavailable_on_host
     no_gpu = HostProfile('win32', 'amd64', nvidia_tool=False, main_runtime=True, mlx_runtime=False)
     mac = HostProfile('darwin', 'arm64', nvidia_tool=False, main_runtime=False, mlx_runtime=True)
     assert unavailable_on_host('timeline', 'local', no_gpu) == '需要 NVIDIA 显卡'

@@ -9,9 +9,9 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.cover_document import CoverDocument
-from twobyteasr.cover_canvas import CoverSession, CoverView
-from twobyteasr.cover_psd import save_psd, load_local_psd, inspect_psd
+from twobyteasr.cover.cover_document import CoverDocument
+from twobyteasr.cover.cover_canvas import CoverSession, CoverView
+from twobyteasr.cover.cover_psd import save_psd, load_local_psd, inspect_psd
 
 
 @pytest.fixture(scope='module')
@@ -84,7 +84,7 @@ def test_real_psd_type_layers_original_assets_and_atomic_failure(tmp_path,app,mo
     assert result['children'][1]['text']['style']['font']['name']=='SourceHanSansSC-Heavy'
     assert load_local_psd(path).signature()==doc.signature()
     before=path.read_bytes()
-    import twobyteasr.cover_psd as module
+    import twobyteasr.cover.cover_psd as module
     monkeypatch.setattr(module.os,'replace',lambda *args: (_ for _ in ()).throw(PermissionError('readonly')))
     with pytest.raises(PermissionError): save_psd(doc,path)
     assert path.read_bytes()==before

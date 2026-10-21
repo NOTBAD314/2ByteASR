@@ -17,9 +17,9 @@ from PySide6.QtCore import Qt, QPoint
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import load_project
-from twobyteasr.studio_timing import recommend_many
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import load_project
+from twobyteasr.timeline.studio_timing import recommend_many
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def pump(app, rounds=3):

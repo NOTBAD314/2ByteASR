@@ -1,7 +1,7 @@
 """Only owned tiny files; exercise the frozen audit's real-data write gates."""
 import pytest
 from tests.test_storage_maintenance_ui import service
-from twobyteasr.real_storage_after_audit import readonly_service,small_file_fingerprint
+from twobyteasr.acceptance.real_storage_after_audit import readonly_service,small_file_fingerprint
 
 
 def test_real_after_service_reads_without_touching_db_and_blocks_all_mutations(service):

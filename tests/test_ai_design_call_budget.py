@@ -1,9 +1,10 @@
 import json
-from twobyteasr.ai_design_call_budget import install_acceptance_budget
+from twobyteasr.acceptance.ai_design_call_budget import install_acceptance_budget
 
 
 def test_render_repair_does_not_consume_an_unstarted_direction(tmp_path,monkeypatch):
-    from twobyteasr import provider_service,studio_acceptance_audit
+    from twobyteasr.providers import provider_service
+    from twobyteasr.acceptance import studio_acceptance_audit
     class Client:
         provider_id='test';model='exact-id'
         def complete(self,*a,**k):return 'actual fake transport result'

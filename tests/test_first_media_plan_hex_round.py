@@ -30,7 +30,7 @@ APP = QApplication.instance() or QApplication([])
 
 @pytest.fixture(scope="session", autouse=True)
 def _session_settings_isolation(tmp_path_factory):
-    import twobyteasr.settings as settings_module
+    import twobyteasr.storage.settings as settings_module
 
     redirected_root = tmp_path_factory.mktemp("fourfix-settings-root")
     settings_module.stable_settings_root = lambda: redirected_root
@@ -42,13 +42,13 @@ def _session_settings_isolation(tmp_path_factory):
 # ---------------------------------------------------------------------------
 
 def _timeline():
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
 
     return WaveformTimeline()
 
 
 def _project(tmp_path, name="p", duration_ms=60_000, playhead_ms=None):
-    from twobyteasr.studio_project import StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
 
     project = SubtitleProject(
         media=StudioMedia(path=str(tmp_path / "m.mp4"), duration_ms=duration_ms),
@@ -97,7 +97,7 @@ def test_second_media_drop_keeps_current_playhead(tmp_path):
     page = _studio_page(tmp_path)
     try:
         project = _project(tmp_path, "second")
-        from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+        from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
 
         media_file = tmp_path / "a.mp4"
         media_file.write_bytes(b"\0" * 16)
@@ -127,7 +127,7 @@ def test_second_media_drop_keeps_current_playhead(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _studio_page(tmp_path):
-    import twobyteasr.studio_ui as studio_ui
+    import twobyteasr.studio.studio_ui as studio_ui
 
     page = studio_ui.SubtitleStudioPage()
     return page
@@ -140,7 +140,7 @@ def test_rebind_storm_gate_defers_until_ready(tmp_path):
     page = _studio_page(tmp_path)
     try:
         project = _project(tmp_path, "gate")
-        from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+        from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
 
         media_file = tmp_path / "raw.flv"
         media_file.write_bytes(b"\0" * 16)
@@ -194,7 +194,7 @@ def test_rebind_storm_gate_defers_until_ready(tmp_path):
 
 def test_canvas_ready_transition_fires_retry(tmp_path):
     """画布 READY 转换触发 _retry_deferred_source_rebind（登记后补切）。"""
-    from twobyteasr.studio_video_canvas import MpvCanvas
+    from twobyteasr.studio.studio_video_canvas import MpvCanvas
 
     called = []
     stub_page = type("P", (), {
@@ -221,7 +221,7 @@ def isolated_main_window(monkeypatch, tmp_path):
     _app = QApplication.instance() or QApplication([])
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     original_settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
     window = ui_module.MainWindow([], legacy, object(), None)
@@ -240,7 +240,7 @@ def _combo_shows(window) -> str:
 def test_profile_selection_persists_across_recreate(isolated_main_window):
     """Test 6+7：选择 B → 重建窗口（≈重启）仍 B。"""
     window, legacy, ui_module = isolated_main_window
-    from twobyteasr.project_profiles import ProjectProfileStore
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
     store = ProjectProfileStore(Path(window.profile_store.path))
     b = store.create("B 方案", llm_enabled=True, llm_config_ref="")
@@ -272,7 +272,7 @@ def test_profile_selection_persists_across_recreate(isolated_main_window):
 def test_return_home_restores_global_plan_over_project_plan(isolated_main_window):
     """进 Studio 应用工程方案后返回主页：恢复全局 last_selected。"""
     window, legacy, ui_module = isolated_main_window
-    from twobyteasr.project_profiles import ProjectProfileStore
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
     store = ProjectProfileStore(Path(window.profile_store.path))
     global_plan = store.create("全局方案", llm_enabled=True, llm_config_ref="")
@@ -292,7 +292,7 @@ def test_return_home_restores_global_plan_over_project_plan(isolated_main_window
 def test_profile_refresh_keeps_selection(isolated_main_window):
     """Test 8：刷新方案列表（combo 重建）selection 不变。"""
     window, legacy, ui_module = isolated_main_window
-    from twobyteasr.project_profiles import ProjectProfileStore
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
     store = ProjectProfileStore(Path(window.profile_store.path))
     b = store.create("B 方案", llm_enabled=True, llm_config_ref="")
@@ -307,7 +307,7 @@ def test_profile_refresh_keeps_selection(isolated_main_window):
 def test_deleted_profile_falls_back_cleanly(isolated_main_window):
     """Test 9：B 被删除 → combo 回自定义方案，无无效 ID。"""
     window, legacy, ui_module = isolated_main_window
-    from twobyteasr.project_profiles import ProjectProfileStore
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
     store = ProjectProfileStore(Path(window.profile_store.path))
     b = store.create("将被删除", llm_enabled=True, llm_config_ref="")
@@ -327,7 +327,7 @@ def test_deleted_profile_falls_back_cleanly(isolated_main_window):
 # ---------------------------------------------------------------------------
 
 def _picker():
-    from twobyteasr.color_picker import ColorPickerWidget
+    from twobyteasr.design.color_picker import ColorPickerWidget
 
     widget = ColorPickerWidget(show_alpha=True)
     widget.set_color(QColor("#3366CC"))

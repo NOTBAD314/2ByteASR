@@ -12,8 +12,8 @@ from PySide6.QtWidgets import QApplication
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import twobyteasr.ui as ui  # noqa: E402
-from twobyteasr.studio_ui import SubtitleStudioPage  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
+from twobyteasr.studio.studio_ui import SubtitleStudioPage  # noqa: E402
 
 
 def main() -> int:

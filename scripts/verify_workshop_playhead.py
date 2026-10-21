@@ -21,8 +21,8 @@ def main():
     os.environ["TWOBYTEASR_TEST_ROOT"] = str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project
     ffmpeg = ROOT / "tools/ffmpeg/bin/ffmpeg.exe"
     media = out / "synthetic.mp4"
     run_hidden_subprocess([str(ffmpeg), "-y", "-v", "error", "-f", "lavfi", "-i",

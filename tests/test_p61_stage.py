@@ -9,9 +9,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog
 
-from twobyteasr.studio_find_replace import FindReplaceDialog
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_ui import SubtitleStudioPage, WaveformTimeline
+from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.studio.studio_ui import SubtitleStudioPage, WaveformTimeline
 
 
 def _app() -> QApplication:
@@ -66,7 +66,7 @@ def test_find_replace_live_search_fills_results(tmp_path, monkeypatch):
     page = SubtitleStudioPage()
     monkeypatch.setattr(page.video, "load", lambda *_a, **_k: None)
     monkeypatch.setattr(page, "_generate_waveform", lambda *_a, **_k: None)
-    from twobyteasr.studio_project import save_project
+    from twobyteasr.projects.studio_project import save_project
     path = save_project(_project(), tmp_path / "p61.2byteproj")
     page.open_project(path)
     dialog = FindReplaceDialog(page, page)
@@ -84,11 +84,11 @@ def test_new_project_opens_blank_studio_without_file_dialog(tmp_path, monkeypatc
     app = _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(
-        "twobyteasr.studio_project.project_library_root",
+        "twobyteasr.projects.studio_project.project_library_root",
         lambda _base=None: tmp_path / "library",
     )
     monkeypatch.setattr(
-        "twobyteasr.studio_project_controller.project_library_root",
+        "twobyteasr.projects.studio_project_controller.project_library_root",
         lambda _base=None: tmp_path / "library",
     )
     opened = {"dialog": False}
@@ -112,11 +112,11 @@ def test_hub_clip_assistant_creates_blank_and_opens_tab(tmp_path, monkeypatch):
     app = _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(
-        "twobyteasr.studio_project.project_library_root",
+        "twobyteasr.projects.studio_project.project_library_root",
         lambda _base=None: tmp_path / "library",
     )
     monkeypatch.setattr(
-        "twobyteasr.studio_project_controller.project_library_root",
+        "twobyteasr.projects.studio_project_controller.project_library_root",
         lambda _base=None: tmp_path / "library",
     )
     page = SubtitleStudioPage()
@@ -145,7 +145,7 @@ def test_home_cta_and_window_minimum_are_usable(tmp_path, monkeypatch):
     _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     window = MainWindow([], legacy, object(), None)
     assert window.minimumWidth() <= 1080
@@ -162,11 +162,11 @@ def test_blank_studio_shows_import_media_empty_state(tmp_path, monkeypatch):
     app = _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(
-        "twobyteasr.studio_project.project_library_root",
+        "twobyteasr.projects.studio_project.project_library_root",
         lambda _base=None: tmp_path / "library",
     )
     monkeypatch.setattr(
-        "twobyteasr.studio_project_controller.project_library_root",
+        "twobyteasr.projects.studio_project_controller.project_library_root",
         lambda _base=None: tmp_path / "library",
     )
     page = SubtitleStudioPage()

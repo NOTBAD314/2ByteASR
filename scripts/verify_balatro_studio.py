@@ -9,9 +9,9 @@ def main():
         TWOBYTEASR_ACCEPTANCE_DIR=str(out),TWOBYTEASR_ACCEPTANCE_SCENARIO='caption-runtime',TWOBYTEASR_CAPTION_AUDIT_MODE='balatro',
         TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),TWOBYTEASR_STARTUP_OPEN_STUDIO='1',TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         TWOBYTEASR_BALATRO_THEMES=str(a.themes.resolve()),TWOBYTEASR_BALATRO_IMPORT_FLOW='1' if a.import_flow else '0')
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
+    from twobyteasr.system.processes import run_hidden_subprocess
     media=ROOT/'tmp/visible-playback-v2/media/subtitle-safe/V1-30s.mp4'
     project=SubtitleProject(media=StudioMedia(str(media),duration_ms=30000,width=1920,height=1080),cues=[StudioCue('balatro',0,3000,'啊感觉他就是你看')])
     hydrate_media_contract(project,probe_media_identity(str(media)));save_project(project,out/'fixture.2byteproj')

@@ -7,10 +7,10 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication, QWidget
 
 import subtitle_core as legacy
-from twobyteasr.studio_find_replace import FindReplaceDialog
-from twobyteasr.studio_glossary_service import preview_glossary_correction
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
+from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
 
 APP = QApplication.instance() or QApplication([])
 
@@ -54,8 +54,8 @@ def test_local_preview_refuses_case_updated_library(monkeypatch, tmp_path):
 
 
 def test_review_receipt_identifies_original_project_snapshot(monkeypatch):
-    import twobyteasr.asr_provider_snapshot as provider
-    import twobyteasr.polishing as polish
+    import twobyteasr.providers.asr_provider_snapshot as provider
+    import twobyteasr.subtitle_rules.polishing as polish
     monkeypatch.setattr(provider, 'resolve_provider_snapshot', lambda *_a, **_kw:
         SimpleNamespace(public_identity=lambda: {'provider': 'test', 'model': 'test'},
             timeout_policy=SimpleNamespace(total=120)))
@@ -76,8 +76,8 @@ def test_review_receipt_identifies_original_project_snapshot(monkeypatch):
 
 
 def test_cancelled_review_never_invokes_provider(monkeypatch):
-    from twobyteasr.service import CancellationToken, CancelledError
-    import twobyteasr.polishing as polish
+    from twobyteasr.recognition.service import CancellationToken, CancelledError
+    import twobyteasr.subtitle_rules.polishing as polish
     calls = []
     monkeypatch.setattr(polish, 'call_correction_api', lambda *_a, **_kw: calls.append(True))
     token = CancellationToken()

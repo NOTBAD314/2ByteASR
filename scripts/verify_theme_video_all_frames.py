@@ -10,9 +10,9 @@ sys.path.insert(0,str(ROOT))
 def main():
     import numpy as np
     from PIL import Image
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     from fractions import Fraction
     parser=argparse.ArgumentParser()
     parser.add_argument('evidence',type=Path)

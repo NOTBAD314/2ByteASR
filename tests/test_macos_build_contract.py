@@ -64,11 +64,11 @@ def test_mac_dependencies_are_target_specific_and_have_official_arm64_evidence()
 
 def test_native_source_snapshot_does_not_copy_host_binaries_or_private_config(tmp_path):
     for name in ("renderer/src/index.ts","renderer/node_modules/win.dll","tools/mpv/mpv.exe","scripts/macos_build.py",
-                 "twobyteasr/platform_macos.py","assets/public.svg","assets/secrets.dat","models/weights.pt",
+                 "twobyteasr/system/platform_macos.py","assets/public.svg","assets/secrets.dat","models/weights.pt",
                  "private.2byteproj","2byteasr_version.json","2byteasr_settings.json"):
         path=tmp_path/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text("owned input",encoding="utf8")
     selected=[path.relative_to(tmp_path).as_posix() for path in macos_build.input_paths(tmp_path)]
-    assert selected==["2byteasr_version.json","assets/public.svg","renderer/src/index.ts","scripts/macos_build.py","twobyteasr/platform_macos.py"]
+    assert selected==["2byteasr_version.json","assets/public.svg","renderer/src/index.ts","scripts/macos_build.py","twobyteasr/system/platform_macos.py"]
     output=tmp_path/"snapshot"
     rows=macos_build.copy_snapshot(tmp_path,output)
     assert [row["path"] for row in rows]==selected

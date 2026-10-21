@@ -70,7 +70,7 @@ def test_padded_native_tail_is_traceable_and_clipped():
     assert raw[0]['end']==18.112
 
 def test_metadata_versions_and_auxiliary_licenses():
-    from twobyteasr.optional_models import metadata,consent_identity
+    from twobyteasr.recognition.optional_models import metadata,consent_identity
     meta=metadata(ROOT)
     assert meta['components']['diarizen']['repository'].endswith('-v2')
     assert meta['components']['diarizen_embedding']['weights_license']=='CC-BY-4.0'
@@ -81,8 +81,8 @@ def test_metadata_versions_and_auxiliary_licenses():
     assert len(consent_identity(ROOT))==64
 
 def test_follow_primary_and_explicit_source_preserved():
-    from twobyteasr.speaker_strategy import resolve
-    from twobyteasr.settings import _merge_known_settings,DEFAULT_SETTINGS
+    from twobyteasr.recognition.speaker_strategy import resolve
+    from twobyteasr.storage.settings import _merge_known_settings,DEFAULT_SETTINGS
     for key in ('vibevoice_1_5b','vibevoice_7b'):
         settings={'models':{'primary_asr_backend':key,'speaker_source':'diarizen'}}
         assert resolve(settings)=='diarizen'
@@ -92,7 +92,7 @@ def test_follow_primary_and_explicit_source_preserved():
     assert resolve({'models':{'primary_asr_backend':'moss','speaker_source':'native'}})=='moss'
 
 def test_family_card_single_entry_and_two_real_bindings(qtbot):
-    from twobyteasr.model_workshop import MODELS,ModelCard
+    from twobyteasr.local_models.model_workshop import MODELS,ModelCard
     families=[m for m in MODELS if m.key=='vibevoice'];assert len(families)==1
     card=ModelCard(families[0]);qtbot.addWidget(card)
     assert families[0].variants == ('vibevoice_1_5b', 'vibevoice_7b')
@@ -103,7 +103,7 @@ def test_family_card_single_entry_and_two_real_bindings(qtbot):
     assert not next(m for m in MODELS if m.key=='diarizen').recommended
 
 def test_strict_alignment_never_swaps_main_text_or_spreads_words():
-    from twobyteasr.optional_timing import exact_tokens
+    from twobyteasr.recognition.optional_timing import exact_tokens
     row=dict(start=0,end=3,text='20 20')
     wrong=[dict(start=.2,end=2,text='对对')]
     assert exact_tokens(row,wrong)==[]
@@ -112,8 +112,8 @@ def test_strict_alignment_never_swaps_main_text_or_spreads_words():
 
 def test_version_view_picker_and_selected_task_do_not_drift(qtbot,monkeypatch,tmp_path):
     from PySide6.QtCore import QSettings
-    from twobyteasr import optional_models
-    from twobyteasr.model_workshop import ModelWorkshopPage,ModelPickerPanel
+    from twobyteasr.recognition import optional_models
+    from twobyteasr.local_models.model_workshop import ModelWorkshopPage,ModelPickerPanel
     QSettings.setDefaultFormat(QSettings.IniFormat)
     QSettings.setPath(QSettings.IniFormat,QSettings.UserScope,str(tmp_path))
     monkeypatch.setattr(optional_models,'readiness',lambda key:'installed' if key=='vibevoice_1_5b' else 'missing')
@@ -135,7 +135,7 @@ def test_version_view_picker_and_selected_task_do_not_drift(qtbot,monkeypatch,tm
     assert page._selection_target(page._cards['vibevoice'].model,'primary')==('primary','vibevoice_1_5b')
 
 def test_about_uses_retained_license_text_and_original_documents(qtbot,monkeypatch,tmp_path):
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     from PySide6.QtWidgets import QLabel,QPushButton
     dialog=ApplicationSettingsDialog(None,{},ROOT,browse=lambda:None,clear_recent=lambda:None,reset_layout=lambda:None)
     qtbot.addWidget(dialog)
@@ -144,12 +144,12 @@ def test_about_uses_retained_license_text_and_original_documents(qtbot,monkeypat
     assert 'CC-BY-NC-4.0' in dialog.findChild(QLabel,'thirdPartyModelLicenseLabel').text()
     assert any('可选模型许可' in b.text() for b in dialog.findChildren(QPushButton))
     assert (ROOT/'licenses/optional-models/diarizen/UPSTREAM_README.md').read_bytes()==(ROOT/'third_party/DiariZen/README.md').read_bytes()
-    from twobyteasr.optional_models import license_details
+    from twobyteasr.recognition.optional_models import license_details
     details=license_details(ROOT)
     assert '60d858b518b4e19d404af3737f848fc185b30177' in details and 'CC-BY-NC-4.0' in details
 
 def test_license_cancel_writes_no_consent(qtbot,monkeypatch,tmp_path):
-    from twobyteasr import optional_models as models
+    from twobyteasr.recognition import optional_models as models
     from PySide6.QtWidgets import QMessageBox
     monkeypatch.setattr(models,'_consent_path',lambda:tmp_path/'consent.json')
     monkeypatch.setattr(QMessageBox,'warning',lambda *a,**kw:QMessageBox.StandardButton.Cancel)
@@ -157,7 +157,7 @@ def test_license_cancel_writes_no_consent(qtbot,monkeypatch,tmp_path):
     assert not (tmp_path/'consent.json').exists()
 
 def test_license_confirmation_bound_to_revision_and_repeat_quiet(qtbot,monkeypatch,tmp_path):
-    from twobyteasr import optional_models as models
+    from twobyteasr.recognition import optional_models as models
     from PySide6.QtWidgets import QMessageBox
     monkeypatch.setattr(models,'_consent_path',lambda:tmp_path/'consent.json')
     calls=[]
@@ -168,8 +168,8 @@ def test_license_confirmation_bound_to_revision_and_repeat_quiet(qtbot,monkeypat
 
 def test_unaligned_streaming_finalization_retains_long_text_and_native_bounds():
     from types import SimpleNamespace
-    from twobyteasr.optional_timing import finalize_streaming
-    from twobyteasr.models import SpeechSegment,SubtitleCue
+    from twobyteasr.recognition.optional_timing import finalize_streaming
+    from twobyteasr.recognition.transcript_data import SpeechSegment,SubtitleCue
     segment=SpeechSegment(1,0,2.933333,'这是一条超过旧断句显示长度限制但没有可靠字级对齐的完整流式文字',0,[],speaker='S_UNKNOWN',primary_source='vibevoice_1_5b')
     reviews=[];events=[]
     legacy=SimpleNamespace(SubtitleCue=SubtitleCue,add_review_item=lambda *a,**kw:reviews.append(a),record_run_event=lambda *a,**kw:events.append((a,kw)))
@@ -180,7 +180,8 @@ def test_unaligned_streaming_finalization_retains_long_text_and_native_bounds():
 
 def test_streaming_term_context_keeps_case_digits_and_task_identity(monkeypatch):
     from types import SimpleNamespace
-    from twobyteasr import optional_model_process as bridge,runtime,terminology,cache
+    from twobyteasr.recognition import optional_model_process as bridge, run_context as runtime, cache
+    from twobyteasr.glossary import terminology
     context=SimpleNamespace(job_id='frozen-job',media_identity={})
     monkeypatch.setattr(runtime,'get_runtime_context',lambda:context)
     monkeypatch.setattr(terminology,'runtime_snapshot',lambda:SimpleNamespace(canonical_terms=('Sable7Alias','B650','RTX5070Ti')))
@@ -197,8 +198,8 @@ def test_streaming_term_context_keeps_case_digits_and_task_identity(monkeypatch)
 def test_pending_version_action_chooses_sample_before_preparation(qtbot,monkeypatch,tmp_path):
     from types import SimpleNamespace
     from PySide6.QtWidgets import QFileDialog
-    from twobyteasr import optional_models
-    from twobyteasr.model_workshop import ModelWorkshopPage, ModelVersionDialog
+    from twobyteasr.recognition import optional_models
+    from twobyteasr.local_models.model_workshop import ModelWorkshopPage, ModelVersionDialog
     from PySide6.QtWidgets import QDialog
     monkeypatch.setattr(optional_models,'readiness',lambda key:'inference_pending')
     page=ModelWorkshopPage(ROOT,{'models':{'primary_asr_backend':'moss'}});qtbot.addWidget(page)
@@ -215,7 +216,7 @@ def test_pending_version_action_chooses_sample_before_preparation(qtbot,monkeypa
     assert seen==[['vibevoice_7b']] and dialog.verification_sample=='owned-sample.wav'
 
 def test_fixed_vendor_manifest_is_entirely_in_build_fingerprint():
-    from twobyteasr.build_identity import source_snapshot_files
+    from twobyteasr.diagnostics.build_identity import source_snapshot_files
     paths={p.relative_to(ROOT).as_posix() for p in source_snapshot_files(ROOT)}
     for vendor in ('DiariZen','VibeVoice'):
         provenance=json.loads((ROOT/'third_party'/vendor/'UPSTREAM_SOURCE.json').read_text('utf8'))

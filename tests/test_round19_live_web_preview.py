@@ -14,8 +14,8 @@ from PySide6.QtCore import QObject, Signal, QRectF
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.web_theme import (
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_design.web_theme import (
     WebThemeDocument,
     builtin_web_themes,
     theme_archive_html,
@@ -28,7 +28,7 @@ def _app() -> QApplication:
 
 
 def _doom_recipe_payload() -> dict:
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
 
     recipe = StyleRecipe(
         name="D95",
@@ -87,8 +87,8 @@ def test_archive_html_live_driver_variants():
 
 def test_live_worker_configure_dedup_and_gate(monkeypatch):
     _app()
-    from twobyteasr import live_web_preview as lwp
-    from twobyteasr.live_web_preview import LiveWebPreviewWorker
+    from twobyteasr.rendering import live_web_preview as lwp
+    from twobyteasr.rendering.live_web_preview import LiveWebPreviewWorker
 
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     assert lwp.live_preview_enabled() is False
@@ -117,8 +117,8 @@ def test_live_worker_configure_dedup_and_gate(monkeypatch):
 def test_ensure_web_live_preview_takeover_and_breaker(monkeypatch):
     """web cue 调度接管 + 失败熔断（offscreen 用 FORCE 开闸 + stub worker）。"""
     _app()
-    from twobyteasr import live_web_preview as lwp
-    from twobyteasr import studio_advanced_flow
+    from twobyteasr.rendering import live_web_preview as lwp
+    from twobyteasr.studio import studio_advanced_flow
 
     created: list[object] = []
 
@@ -212,7 +212,7 @@ def _tiny_png_bytes(color: str = "#2ECC71") -> bytes:
 
 def test_web_live_frame_publishes_and_fresh_guard():
     _app()
-    from twobyteasr import studio_advanced_flow
+    from twobyteasr.studio import studio_advanced_flow
 
     class _Overlay:
         def __init__(self) -> None:
@@ -251,7 +251,7 @@ def test_web_live_frame_publishes_and_fresh_guard():
 def test_native_visible_debounce_keeps_advanced_overlay():
     """字幕真身 overlay 在显示时，原生 True 请求被消抖吞掉（闪烁修复）。"""
     _app()
-    from twobyteasr.studio_video_canvas import MpvCanvas
+    from twobyteasr.studio.studio_video_canvas import MpvCanvas
 
     canvas = MpvCanvas()
     canvas._active_compositor_overlays.add(MpvCanvas.ADVANCED_OVERLAY_ID)
@@ -271,7 +271,7 @@ def test_native_visible_debounce_keeps_advanced_overlay():
 
 
 def test_invalid_svg_selection_rectangle_does_not_break_frame_alpha():
-    from twobyteasr.selection_geometry import alpha_bounds
+    from twobyteasr.studio.selection_geometry import alpha_bounds
     png=_tiny_png_bytes()
     assert alpha_bounds(png,[None,None,None,None]) is None
     assert alpha_bounds(png,[0,0,float('nan'),10]) is None

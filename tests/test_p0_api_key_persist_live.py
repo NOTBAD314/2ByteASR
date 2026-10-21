@@ -18,8 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.llm_config import save_api_key_for, read_api_key
-import twobyteasr.llm_config as lc
+from twobyteasr.providers.llm_config import save_api_key_for, read_api_key
+import twobyteasr.providers.llm_config as lc
 
 
 def main():
@@ -56,9 +56,9 @@ def main():
         "import sys\n"
         "from pathlib import Path\n"
         "sys.path.insert(0, r'" + str(ROOT).replace("\\", "/") + "')\n"
-        "import twobyteasr.llm_config as lc\n"
+        "import twobyteasr.providers.llm_config as lc\n"
         "lc.secrets_path = lambda: Path(r'" + str(secrets_file.resolve()).replace("\\", "/") + "')\n"
-        "from twobyteasr.llm_config import read_api_key\n"
+        "from twobyteasr.providers.llm_config import read_api_key\n"
         "k, src = read_api_key('custom', 'https://api.deepseek.com')\n"
         "print('RESTART_READ:', bool(k), src)\n"
         "print('KEY_HEAD:', (k[:8] if k else ''))\n"

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.real_glossary_repair_audit import project_ready, start, wait_state
+from twobyteasr.acceptance.real_glossary_repair_audit import project_ready, start, wait_state
 
 
 @pytest.fixture
@@ -15,9 +15,9 @@ def app():
 
 
 def test_actual_lazy_studio_page_can_be_sampled_before_project_entry(app, tmp_path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_readiness import StudioReadiness
-    from twobyteasr.studio_project import StudioMedia,SubtitleProject
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_readiness import StudioReadiness
+    from twobyteasr.projects.studio_project import StudioMedia,SubtitleProject
     page=SubtitleStudioPage()
     assert not hasattr(page,'_readiness')
     state=wait_state(SimpleNamespace(),page,'normal Home entry')

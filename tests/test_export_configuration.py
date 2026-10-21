@@ -4,9 +4,9 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 import pytest
 
-from twobyteasr import studio_export_ui
-from twobyteasr.studio_export_ui import StudioExportWorkspace
-from twobyteasr.studio_project import StudioMedia, SubtitleProject
+from twobyteasr.exports import studio_export_ui
+from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
 
 
 @pytest.fixture
@@ -72,7 +72,7 @@ def test_saved_preferences_keep_target_after_reopen(workspace):
 
 @pytest.mark.parametrize('measured,target_met', [(5000000,False),(None,None),(9900000,True)])
 def test_success_reports_independent_video_rate_and_preserves_outside_target_file(workspace, tmp_path, measured, target_met):
-    from twobyteasr.studio_render import RenderJob
+    from twobyteasr.exports.studio_render import RenderJob
     ui = workspace
     output = tmp_path/'成片.mp4'; output.write_bytes(b'published')
     job = RenderJob('', '', str(output), ui._render_settings())
@@ -87,6 +87,24 @@ def test_success_reports_independent_video_rate_and_preserves_outside_target_fil
     assert not ui.success_page.error.isHidden() if target_met is not True else ui.success_page.error.isHidden()
     assert ui.success_page.values['平均码率'].text() == '12.0 Mb/s'
     assert output.read_bytes() == b'published'
+
+
+def test_speed_choice_maps_to_numeric_svt_av1_presets(workspace, monkeypatch):
+    ui = workspace
+    assert ui._render_settings().preset == 'medium'  # Software x264 keeps its named presets.
+    monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices',
+        lambda _ffmpeg, codec: ['av1_nvenc', 'libsvtav1', 'libaom-av1'] if codec == 'av1' else ['libx264'])
+    ui.codec.setCurrentIndex(ui.codec.findData('av1'))
+    ui.encoder.setCurrentIndex(ui.encoder.findData('libsvtav1'))
+    expected = {'fastest': '12', 'fast': '10', 'balanced': '8', 'quality': '6', 'best': '4'}
+    for speed, preset in expected.items():
+        ui.encoder_preset.setCurrentIndex(ui.encoder_preset.findData(speed))
+        settings = ui._render_settings()
+        assert (settings.encoder, settings.preset) == ('libsvtav1', preset)
+    ui.encoder.setCurrentIndex(ui.encoder.findData('libaom-av1'))
+    assert ui._render_settings().preset == ''
+    ui.encoder.setCurrentIndex(ui.encoder.findData('av1_nvenc'))
+    assert ui._render_settings().preset == 'p7'
 
 
 def test_limited_average_and_maximum_are_independent_and_invalid_order_is_explicit(workspace):
@@ -108,7 +126,7 @@ def test_target_completion_dynamic_arguments_follow_language(workspace, tmp_path
                                                             language, requested_text, elapsed_text):
     from twobyteasr import i18n
     from twobyteasr.i18n_widgets import apply
-    from twobyteasr.studio_render import RenderJob
+    from twobyteasr.exports.studio_render import RenderJob
     monkeypatch.setattr(i18n, '_CURRENT_LANGUAGE_CACHE', language)
     ui = workspace
     output = tmp_path/'out.mp4'; output.write_bytes(b'published')

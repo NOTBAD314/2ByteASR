@@ -4,11 +4,11 @@ import subprocess
 
 import pytest
 
-from twobyteasr.ai_providers import (AIProviderError, CLIProvider, GrokCLIProvider,
+from twobyteasr.providers.ai_providers import (AIProviderError, CLIProvider, GrokCLIProvider,
                                     AntigravityCLIProvider, _extract_json_object, _extract_cli_text)
-from twobyteasr.llm_config import activate_ai_service, update_active_profile, resolved_service_values
-from twobyteasr.settings import DEFAULT_SETTINGS
-from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+from twobyteasr.providers.llm_config import activate_ai_service, update_active_profile, resolved_service_values
+from twobyteasr.storage.settings import DEFAULT_SETTINGS
+from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
 from tests.test_stage9_cache_and_budget import context
 
 SCHEMA = {'type': 'object', 'properties': {'text': {'type': 'string'}},
@@ -106,7 +106,7 @@ def test_saved_json_preference_is_part_of_recognition_snapshot():
 @pytest.mark.parametrize('reason,category', [('length', 'structured_output_truncated'),
     ('content_filter','provider_refusal'), ('tool_calls','provider_tool_request')])
 def test_http_terminal_reason_stays_distinct_even_with_valid_partial_json(reason, category):
-    from twobyteasr.provider_stream import chat_body, StreamProtocolError
+    from twobyteasr.providers.provider_stream import chat_body, StreamProtocolError
     packets = [dict(choices=[dict(index=0,delta={'content':'{"text":"兔白字幕"}'},finish_reason=reason)])]
     wire = ''.join('data: '+json.dumps(row)+'\n\n' for row in packets)+'data: [DONE]\n\n'
     with pytest.raises(StreamProtocolError) as caught:
@@ -115,7 +115,7 @@ def test_http_terminal_reason_stays_distinct_even_with_valid_partial_json(reason
 
 
 def test_http_explicit_refusal_does_not_become_json_body():
-    from twobyteasr.provider_stream import responses_final, StreamProtocolError
+    from twobyteasr.providers.provider_stream import responses_final, StreamProtocolError
     response = {'status':'completed','output':[{'type':'message','content':[
         {'type':'refusal','refusal':'declined'}]}]}
     with pytest.raises(StreamProtocolError) as caught:
@@ -124,8 +124,8 @@ def test_http_explicit_refusal_does_not_become_json_body():
 
 
 def test_retries_and_queue_policy_keep_one_wall_clock_deadline():
-    from twobyteasr.provider_input_budget import RetryBudget
-    from twobyteasr.asr_provider_snapshot import TimeoutPolicy
+    from twobyteasr.providers.provider_input_budget import RetryBudget
+    from twobyteasr.providers.asr_provider_snapshot import TimeoutPolicy
     clock = [100.]
     budget = RetryBudget(3, total_seconds=10, clock=lambda:clock[0])
     first = budget.request_policy(TimeoutPolicy())
@@ -141,11 +141,11 @@ def test_retries_and_queue_policy_keep_one_wall_clock_deadline():
 
 
 def test_production_polish_does_not_restart_time_after_timeout(context, monkeypatch):
-    from twobyteasr import polishing
-    from twobyteasr.provider_input_budget import RetryBudget
-    from twobyteasr.models import SpeechSegment
+    from twobyteasr.subtitle_rules import polishing
+    from twobyteasr.providers.provider_input_budget import RetryBudget
+    from twobyteasr.recognition.transcript_data import SpeechSegment
     _, owner, _ = context
-    monkeypatch.setattr('twobyteasr.asr_provider_snapshot.task_provider_snapshot',
+    monkeypatch.setattr('twobyteasr.providers.asr_provider_snapshot.task_provider_snapshot',
                         lambda *_:owner.provider_snapshot)
     clock = [100.]
     budget = RetryBudget(3,total_seconds=10,clock=lambda:clock[0])
@@ -155,7 +155,7 @@ def test_production_polish_does_not_restart_time_after_timeout(context, monkeypa
             calls.append(kwargs['_timeout_policy'])
             clock[0] = 111.
             raise AIProviderError('fixture timeout',category='total_timeout')
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**kw:Provider())
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**kw:Provider())
     first = SpeechSegment(1,0.,1.,'原始字幕一',.9,[])
     second = SpeechSegment(2,1.,2.,'原始字幕二',.9,[])
     def run(segment):
@@ -171,10 +171,11 @@ def test_production_polish_does_not_restart_time_after_timeout(context, monkeypa
 def test_editor_discards_stale_callback_after_draft_changes_back(monkeypatch):
     import copy
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import ui
+    from twobyteasr.app import ui
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr(ui.EndpointEditor,'_queue_model_discovery',lambda *a:None)
-    monkeypatch.setattr(ui,'read_api_key',lambda *a:('', 'fixture'))
+    from twobyteasr.providers import endpoint_editor_ui
+    monkeypatch.setattr(endpoint_editor_ui,'read_api_key',lambda *a:('', 'fixture'))
     settings=copy.deepcopy(DEFAULT_SETTINGS)
     activate_ai_service(settings,'grok_account',unified=True)
     editor=ui.EndpointEditor('fixture','#ac4169','group',settings)

@@ -1,9 +1,9 @@
 """The procedural contract survives storage and still uses normal ownership."""
 import copy
 import pytest
-from twobyteasr.motion_ownership import MotionOwnershipError, motion_schedule
-from twobyteasr.theme_motion import validate_motion_spec
-from twobyteasr.web_theme import WebThemeDocument
+from twobyteasr.caption_design.motion_ownership import MotionOwnershipError, motion_schedule
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.web_theme import WebThemeDocument
 
 
 def fixture():

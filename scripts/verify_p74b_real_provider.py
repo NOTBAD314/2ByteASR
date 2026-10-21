@@ -17,12 +17,12 @@ if str(ROOT) not in sys.path:
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.ai_providers import provider_for_stage
-from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-from twobyteasr.settings import load_runtime_settings
-from twobyteasr.studio_ai import request_style_design
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.visual_design_graph import VisualDesignGraph, structural_signature
+from twobyteasr.providers.ai_providers import provider_for_stage
+from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+from twobyteasr.storage.settings import load_runtime_settings
+from twobyteasr.caption_design.studio_ai import request_style_design
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_design.visual_design_graph import VisualDesignGraph, structural_signature
 
 
 PROMPTS = (

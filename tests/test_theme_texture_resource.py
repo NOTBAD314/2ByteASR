@@ -1,9 +1,9 @@
 from urllib.parse import quote
 import pytest
-from twobyteasr.theme_texture_resource import validate_svg_texture,checked_css_urls
-from twobyteasr.web_theme import sanitize_css,sanitize_html,WebThemeValidationError
-from twobyteasr.authored_html import html_problems
-from twobyteasr.authored_theme_contract import CSS_SCHEMA
+from twobyteasr.caption_design.theme_texture_resource import validate_svg_texture,checked_css_urls
+from twobyteasr.caption_design.web_theme import sanitize_css,sanitize_html,WebThemeValidationError
+from twobyteasr.caption_design.authored_html import html_problems
+from twobyteasr.caption_design.authored_theme_contract import CSS_SCHEMA
 import jsonschema
 
 def uri(body='<rect width="80" height="80" fill="#8B4513"/><rect width="80" height="20" fill="#6B8E23"/>',**attributes):

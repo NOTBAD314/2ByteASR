@@ -37,8 +37,8 @@ def main():
     os.environ['TWOBYTEASR_BOUNDARY_CAPTURE']=str(int(args.capture))
     os.environ['TWOBYTEASR_BOUNDARY_COUNT']=str(args.count)
     if args.audit!='boundary':os.environ['TWOBYTEASR_PLAYBACK_PROBE']='1'
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
     media = root/'tmp/visible-playback-v2/media/subtitle-safe/V1-30s.mp4'
     cues = [StudioCue(f'S{track+1}-{i:02d}', 250+i*225, 475+i*225,
                      f'第{i+1}条短字幕', f'S0{track+1}') for track in range(args.tracks) for i in range(args.count)]
@@ -57,17 +57,17 @@ def main():
     project.validate()
     hydrate_media_contract(project, probe_media_identity(str(media)))
     save_project(project, out/'fixture.2byteproj')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(root/'quick_start.py')]
     if args.legacy_follow:
         if args.exe: raise ValueError('legacy replay is a source diagnostic only')
-        source = run_hidden_subprocess(['git', 'show', '1f1410c:twobyteasr/studio_playback_flow.py'],
+        source = run_hidden_subprocess(['git', 'show', '1f1410c:twobyteasr/studio/studio_playback_flow.py'],
             capture_output=True, text=True, encoding='utf8', check=True, purpose='read original playback source').stdout
         old = out/'original_playback.py'; old.write_text(source, encoding='utf8')
         runner = out/'replay_original.py'
         runner.write_text('import sys, importlib.util, runpy\n'+
             f'sys.path.insert(0, {str(root)!r})\n'+
-            f'spec=importlib.util.spec_from_file_location("twobyteasr.studio_playback_flow", {str(old)!r})\n'+
+            f'spec=importlib.util.spec_from_file_location("twobyteasr.studio.studio_playback_flow", {str(old)!r})\n'+
             'module=importlib.util.module_from_spec(spec)\nsys.modules[spec.name]=module\nspec.loader.exec_module(module)\n'+
             f'runpy.run_path({str(root/"quick_start.py")!r}, run_name="__main__")\n', encoding='utf8')
         os.environ['TWOBYTEASR_BOUNDARY_LEGACY_REPLAY']='1'

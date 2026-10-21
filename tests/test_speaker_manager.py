@@ -4,8 +4,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_commands import MergeSpeakerCommand, SetSpeakerCommand
-from twobyteasr.studio_project import (
+from twobyteasr.timeline.studio_commands import MergeSpeakerCommand, SetSpeakerCommand
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -13,7 +13,7 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.studio_ui import SpeakerManagerDialog, SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SpeakerManagerDialog, SubtitleStudioPage
 
 
 def _app():

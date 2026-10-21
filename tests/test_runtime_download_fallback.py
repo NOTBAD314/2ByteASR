@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import zipfile
 
@@ -95,7 +96,8 @@ def test_build_backend_for_mirror_path_is_the_locked_release():
         'setuptools': LOCK['runtime']['setuptools'], 'wheel': LOCK['runtime']['wheel']}
     bundled = {item['file']: item['sha256'] for item in
                json.loads((ROOT/'packaging/model_wheels.json').read_text('utf8'))['wheels']}
-    assert bundled[f"setuptools-{backend['setuptools']['version']}-py3-none-any.whl"] in backend['setuptools']['sha256']
+    for name in ('setuptools','wheel'):
+        assert bundled[f"{name}-{backend[name]['version']}-py3-none-any.whl"] in backend[name]['sha256']
     lines = installer.mirror_build_constraints(ROOT).splitlines()
     assert [line.split('==')[0] for line in lines] == ['setuptools', 'wheel']
     assert all(' --hash=sha256:' in line for line in lines)
@@ -116,7 +118,16 @@ class FakeUv:
             python.parent.mkdir(parents=True, exist_ok=True)
             python.write_bytes(b'fixture only')
         code = 1 if self.fails(' '.join(arguments)) else 0
-        return type('Process', (), {'stdout': io.StringIO(''), 'wait': lambda self: code})()
+        output = self.freeze(arguments) if 'freeze' in arguments else ''
+        def wait(process,timeout=None):
+            deadline=None if timeout is None else time.monotonic()+timeout
+            while process.poll() is None:
+                if deadline is not None and time.monotonic()>=deadline:
+                    raise subprocess.TimeoutExpired(arguments,timeout)
+                time.sleep(.01)
+            return process.returncode
+        return type('Process', (), {'stdout': io.StringIO(output), 'pid': 123456,
+            'returncode': code, 'poll': lambda self: code, 'wait': wait})()
 
     def check_output(self, arguments, **kwargs):
         return self.freeze(arguments).encode()
@@ -128,16 +139,36 @@ class FakeUv:
 @pytest.fixture
 def run_installer(monkeypatch):
     from twobyteasr.runtime_paths import user_data_root
+    from twobyteasr.system import process_job
+    # FakeUv never owns a Win32 process handle; real-process tests exercise
+    # RequestProcessJob separately. Do not attach a native Job to this stub.
+    class FakeJob:
+        def __init__(self,process):pass
+        def close(self,timeout=None):pass
+    monkeypatch.setattr(process_job,'RequestProcessJob',FakeJob)
     managed = user_data_root()/'runtimes'
     if managed.exists():
         shutil.rmtree(managed)
     monkeypatch.setenv('2BYTEASR_CPU_ONLY', '1')
+    monkeypatch.delenv(installer.RUNTIME_SOURCE_ENV, raising=False)
+    backends=user_data_root()/'fake-build-wheels';backends.mkdir(parents=True,exist_ok=True)
+    wheels=[backends/'setuptools.whl',backends/'wheel.whl']
+    for wheel in wheels:wheel.write_bytes(b'FakeUv fixture; hash validation has separate tests')
+    monkeypatch.setattr(installer,'verified_bundled_build_wheels',lambda root:wheels)
 
-    def run(models, fails, freeze):
+    def run(models, fails, freeze, left_official=lambda call: '', repair_roles=''):
         fake = FakeUv(fails, freeze)
+        fake.fetches = []
+        def fetch(folder, pins, version, entry, sources):
+            # No network: the real downloader has its own tests.
+            call = dict(folder=Path(folder), pins=list(pins), version=version, sources=list(sources))
+            fake.fetches.append(call)
+            return left_official(call)
+        monkeypatch.setattr(installer, 'fetch_pytorch_wheels', fetch)
         monkeypatch.setattr(installer.subprocess, 'Popen', fake.popen)
         monkeypatch.setattr(installer.subprocess, 'check_output', fake.check_output)
-        monkeypatch.setattr(sys, 'argv', ['install', '--root', str(ROOT), '--uv', 'uv-fixture.exe', '--models', models])
+        monkeypatch.setattr(sys, 'argv', ['install', '--root', str(ROOT), '--uv', 'uv-fixture.exe', '--models', models,
+                                        *(['--repair-roles',repair_roles] if repair_roles else [])])
         try:
             installer.main()
         finally:
@@ -146,47 +177,51 @@ def run_installer(monkeypatch):
     return run
 
 
+@pytest.fixture
+def cuda(monkeypatch):
+    """Pretend an NVIDIA GPU with compute capability 12.x (modern CUDA build)."""
+    monkeypatch.delenv('2BYTEASR_CPU_ONLY')
+    real_is_file = Path.is_file
+    monkeypatch.setattr(Path, 'is_file', lambda self: True if self.name == 'nvidia-smi.exe' else real_is_file(self))
+    monkeypatch.setattr(installer.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, '12.0\n', ''))
+    return LOCK['runtime']['cuda_wheel_modern']
+
+
 def table_freeze(role, tag='cpu', extra=''):
     entry = HASHES['environments'][f'{role}|{installer.role_python(role)}|{tag}']
     return lambda arguments: '\n'.join(f"{n}=={entry['packages'][n]['version']}" for n in ('torch', 'requests')
                                        if n in entry['packages']) + '\n' + extra
 
 
-def test_official_sources_keep_the_original_commands(run_installer):
+def test_official_sources_also_use_the_pinned_hashed_closure(run_installer):
     fake = run_installer('sensevoice', lambda command: False, table_freeze('main'))
     installs = fake.installs()
-    assert len(installs) == 2
-    assert '--index-url https://download.pytorch.org/whl/cpu' in installs[0]
-    assert installs[0].endswith('torch==2.11.0+cpu torchaudio==2.11.0+cpu')
-    assert '--index-url https://pypi.org/simple' in installs[1] and '--constraint' in installs[1]
-    assert not any('mirror' in ' '.join(c) for c in fake.commands)
+    assert len(installs) == 1
+    assert '--index-url https://pypi.org/simple' in installs[0]
+    assert 'torch==2.11.0+cpu' in installs[0] and '--find-links' in installs[0]
+    assert '--constraint' in installs[0] and '--only-binary' in installs[0]
     assert not any('--mirror' in c for c in fake.commands)
-    assert not list(fake.managed.rglob('mirror-constraints.txt'))
+    assert list(fake.managed.rglob('mirror-constraints.txt'))
 
 
-def test_failed_official_source_installs_environment_from_hashed_mirrors(run_installer, monkeypatch):
-    # A CUDA build is not bundled, so it needs a PyTorch mirror.
-    monkeypatch.delenv('2BYTEASR_CPU_ONLY')
-    real_is_file = Path.is_file
-    monkeypatch.setattr(Path, 'is_file', lambda self: True if self.name == 'nvidia-smi.exe' else real_is_file(self))
-    # compute capability 12.x selects the modern CUDA build.
-    monkeypatch.setattr(installer.subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, '12.0\n', ''))
-    tag = LOCK['runtime']['cuda_wheel_modern']
-    first_mirror = SOURCES['pypi_mirrors'][0]['url']
-    first_torch = SOURCES['pytorch_mirrors'][0]['url'].format(tag=tag)
-    fails = lambda command: ('download.pytorch.org' in command
-                             or (first_mirror in command and first_torch in command))
+def test_failed_official_source_installs_environment_from_hashed_mirrors(run_installer, cuda):
+    # The CUDA build was fetched (and verified) into the wheelhouse beforehand,
+    # so the mirror resolution needs PyPI mirrors only.
+    tag = cuda
+    first_mirror, second_mirror = (item['url'] for item in SOURCES['pypi_mirrors'][:2])
+    fails = lambda command: 'https://pypi.org/simple' in command or first_mirror in command
     fake = run_installer('sensevoice', fails, table_freeze('main', tag))
     installs = fake.installs()
-    assert 'download.pytorch.org' in installs[0]
+    assert [call['pins'] for call in fake.fetches] == [[f'torch==2.11.0+{tag}', f'torchaudio==2.11.0+{tag}']]
+    wheelhouse = str(fake.managed/installer.WHEELHOUSE)
+    assert 'https://pypi.org/simple' in installs[0] and f'--find-links {wheelhouse}' in installs[0]
     mirror = installs[-1]
-    assert f'--index-url {first_mirror}' in mirror
-    second_torch = SOURCES['pytorch_mirrors'][1]['url'].format(tag=tag)
-    assert f'--find-links {second_torch}/torch/' in mirror
+    assert f'--index-url {second_mirror}' in mirror and f'--find-links {wheelhouse}' in mirror
+    assert not any(item['url'].split('{')[0] in mirror for item in SOURCES['pytorch_mirrors'])
     assert 'mirror-constraints.txt' in mirror and 'mirror-build-constraints.txt' in mirror
     assert f'torch==2.11.0+{tag}' in mirror and 'funasr==1.4.1' in mirror
     # The PyPI step was covered by the mirror resolution, not retried officially.
-    assert not any('https://pypi.org/simple' in command for command in installs)
+    assert sum('https://pypi.org/simple' in command for command in installs) == 1
     constraints = next(fake.managed.rglob('mirror-constraints.txt')).read_text('utf8').splitlines()
     assert constraints and all(' --hash=sha256:' in line for line in constraints)
     assert next(fake.managed.rglob('managed-runtime.json')).is_file()
@@ -201,11 +236,87 @@ def test_bundled_cpu_pytorch_does_not_depend_on_a_pytorch_mirror(run_installer):
     assert not any(item['url'].split('{')[0] in mirror for item in SOURCES['pytorch_mirrors'])
 
 
+def test_cuda_build_installs_from_the_verified_wheelhouse_when_official_is_fine(run_installer, cuda):
+    fake = run_installer('sensevoice', lambda command: False, table_freeze('main', cuda))
+    (call,) = fake.fetches
+    assert call['folder'] == fake.managed/installer.WHEELHOUSE and call['version'] == '3.10.19'
+    assert call['sources'][0] == {'label': 'PyTorch 官方', 'url': f'https://download.pytorch.org/whl/{cuda}', 'official': True}
+    assert [item['url'] for item in call['sources'][1:]] == [item['url'].format(tag=cuda) for item in SOURCES['pytorch_mirrors']]
+    installs = fake.installs()
+    assert len(installs) == 1
+    assert '--index-url https://pypi.org/simple' in installs[0]
+    assert f'--find-links {call["folder"]}' in installs[0]
+    assert f'torch==2.11.0+{cuda}' in installs[0]
+    assert list(fake.managed.rglob('mirror-constraints.txt'))
+
+
+def _quick_freeze(tag):
+    return lambda arguments: f'torch==2.11.0+{tag}\nrequests==2.33.0\n'
+
+
+def test_slow_official_pytorch_moves_this_and_later_environments_to_mirrors(run_installer, cuda, capsys):
+    reason = f'官方 PyTorch 来源只有 0.9 MB/s，{SOURCES["pytorch_mirrors"][0]["label"]} 15.0 MB/s'
+    fake = run_installer('moss,sensevoice', lambda command: False, _quick_freeze(cuda),
+                         left_official=lambda call: reason if call['sources'][0]['official'] else '')
+    assert [call['version'] for call in fake.fetches] == ['3.10.19', '3.12.13']
+    assert fake.fetches[0]['sources'][0]['official'] is True
+    # The MOSS environment (fetched after main) starts from the mirrors.
+    assert fake.fetches[1]['sources'][0]['official'] is False and fake.fetches[1]['sources'][-1]['official'] is True
+    installs = fake.installs()
+    assert not any('download.pytorch.org' in command or 'https://pypi.org/simple' in command for command in installs)
+    assert all(SOURCES['pypi_mirrors'][0]['url'] in command for command in installs if '--offline' not in command)
+    offline=[command for command in installs if '--offline' in command]
+    assert len(offline)==1 and '--no-index' in offline[0] and '--index-url' not in offline[0]
+    output = capsys.readouterr().out
+    assert reason in output and SOURCES['pypi_mirrors'][0]['label'] in output
+    assert '之后的环境直接先用国内镜像' in output
+    python_installs = [c for c in fake.commands if 'python' in c and 'install' in c and 'pip' not in c]
+    assert '--mirror' not in python_installs[0] and '3.12.13' in python_installs[-1]
+    assert '--mirror' in python_installs[-1]  # the MOSS Python came from a mirror first as well
+
+
+def test_domestic_download_source_starts_every_runtime_step_from_mirrors(run_installer, monkeypatch, capsys):
+    monkeypatch.setenv(installer.RUNTIME_SOURCE_ENV, 'mirror')
+    fake = run_installer('sensevoice', lambda command: False, table_freeze('main'))
+    python_installs = [c for c in fake.commands if 'python' in c and 'install' in c and 'pip' not in c]
+    assert python_installs[0][-2:] == ['--mirror', SOURCES['python_mirrors'][0]['url']]
+    installs = fake.installs()
+    assert len(installs) == 1 and f"--index-url {SOURCES['pypi_mirrors'][0]['url']}" in installs[0]
+    assert not any('download.pytorch.org' in c or 'pypi.org/simple' in c for c in installs)
+    assert '已选择国内下载源：运行环境先用国内镜像' in capsys.readouterr().out
+
+
+def test_domestic_choice_fetches_cuda_pytorch_from_mirrors_first(run_installer, cuda, monkeypatch):
+    monkeypatch.setenv(installer.RUNTIME_SOURCE_ENV, 'mirror')
+    fake = run_installer('sensevoice', lambda command: False, table_freeze('main', cuda))
+    sources = fake.fetches[0]['sources']
+    assert [item['official'] for item in sources] == [False] * len(SOURCES['pytorch_mirrors']) + [True]
+
+
+def test_quiet_uv_step_reports_that_it_is_still_running(run_installer, monkeypatch, capsys):
+    from twobyteasr.system import deployment
+    monkeypatch.setattr(deployment, 'HEARTBEAT_S', 0.3)
+    original = FakeUv.popen
+
+    def slow_popen(self, arguments, **kwargs):
+        process = original(self, arguments, **kwargs)
+        if 'pip' in arguments and 'install' in arguments:
+            done_at = time.monotonic()+1.2
+            code = process.returncode
+            process.poll = lambda: code if time.monotonic() >= done_at else None
+        return process
+    monkeypatch.setattr(FakeUv, 'popen', slow_popen)
+    run_installer('sensevoice', lambda command: False, table_freeze('main'))
+    output = capsys.readouterr().out
+    assert '"state": "waiting"' in output and '"waiting": "subprocess"' in output
+    assert '"phase": "dependencies_installing"' in output
+
+
 def test_mirror_install_with_unlisted_package_is_not_published(run_installer):
     fails = lambda command: 'pypi.org/simple' in command
     with pytest.raises(RuntimeError, match='锁定哈希表之外'):
         run_installer('sensevoice', fails, table_freeze('main', extra='injected==1.0'))
-    from twobyteasr.runtime_registry import load_registry
+    from twobyteasr.system.runtime_registry import load_registry
     assert 'main' not in load_registry()
 
 
@@ -225,6 +336,28 @@ def test_python_download_falls_back_to_mirror(run_installer):
     assert python_installs[1][-2:] == ['--mirror', SOURCES['python_mirrors'][0]['url']]
 
 
+def test_model_with_identical_dependencies_reuses_existing_environment(run_installer):
+    first=run_installer('qwen_asr',lambda command:False,table_freeze('main'))
+    receipt=next(first.managed.rglob('managed-runtime.json'))
+    second=run_installer('qwen_aligner',lambda command:False,table_freeze('main'))
+    assert not second.installs()
+    assert not any('venv' in command for command in second.commands)
+    assert set(json.loads(receipt.read_text('utf8'))['models'])=={'qwen_asr','qwen_aligner'}
+    assert len(list(second.managed.rglob('managed-runtime.json')))==1
+
+
+def test_explicit_repair_keeps_previous_directory_and_ignores_expanded_package_cache(run_installer):
+    first=run_installer('qwen_asr',lambda command:False,table_freeze('main'))
+    original=next(first.managed.rglob('managed-runtime.json'))
+    repair=run_installer('qwen_asr',lambda command:False,table_freeze('main'),repair_roles='main')
+    assert original.is_file()
+    receipts=list(repair.managed.rglob('managed-runtime.json'))
+    assert len(receipts)==2
+    assert all('--no-cache' in command for command in repair.installs())
+    replacement=next(path for path in receipts if path!=original)
+    assert json.loads(replacement.read_text('utf8'))['previous_runtime']==str(original.parent/'Scripts/python.exe')
+
+
 def test_moss_mirror_path_installs_locked_dependencies_then_builds_source(run_installer):
     fails = lambda command: 'download.pytorch.org' in command or 'https://pypi.org/simple' in command
     fake = run_installer('moss', fails, table_freeze('moss'))
@@ -233,11 +366,11 @@ def test_moss_mirror_path_installs_locked_dependencies_then_builds_source(run_in
     moss_mirror = next(c for c in installs if 'mirror-constraints.txt' in c and 'torch==2.11.0+cpu' in c)
     assert f"librosa=={entry['packages']['librosa']['version']}" in moss_mirror
     build = installs[-1]
-    assert f"--index-url {SOURCES['pypi_mirrors'][0]['url']}" in build
-    assert 'mirror-constraints.txt' in build and 'mirror-build-constraints.txt' in build
+    assert '--no-index' in build and '--offline' in build and '--no-deps' in build
+    assert '--index-url' not in build and 'mirror-build-constraints.txt' in build
     assert build.endswith('MOSS-Transcribe-Diarize[torch-runtime]')
     # The official MOSS step (default index) was not attempted after the mirror took over.
-    assert not any(c.endswith('[torch-runtime]') and '--index-url' not in c for c in installs)
+    assert not any(c.endswith('[torch-runtime]') and '--offline' not in c for c in installs)
 
 
 def _zip_with(names):
@@ -250,7 +383,7 @@ def _zip_with(names):
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell and curl.exe')
 def test_powershell_uv_sources_and_system_proxy():
-    work = ROOT/'tmp'/('runtime-fallback-'+uuid.uuid4().hex)
+    work = Path(os.environ.get('TWOBYTEASR_TEST_ROOT') or ROOT/'tmp')/('runtime-fallback-'+uuid.uuid4().hex)
     served = work/'served'
     served.mkdir(parents=True)
     good = _zip_with(['uv.exe', 'uvw.exe'])
@@ -286,3 +419,90 @@ def test_powershell_uv_sources_and_system_proxy():
     assert actual['system_no_proxy'] == 'localhost,127.0.0.1,::1'
     assert actual['user_https'] == 'http://user-choice.invalid:1' and actual['user_http'] == ''
     assert actual['dead_https'] == actual['bypass_https'] == actual['direct_https'] == ''
+    assert actual['order_auto'] == actual['order_unset'] == ['good', 'dead', 'missing']
+    assert actual['order_mirror'] == ['dead', 'missing', 'good']
+    assert actual['order_single_fallback'] == ['good']
+    assert actual['uv_order_auto']==actual['uv_order_unset']==['domestic','good','dead','missing']
+    assert actual['uv_order_mirror']==['domestic','dead','missing','good']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell')
+def test_download_source_choice_sets_the_runtime_source_preference():
+    """The workshop passes -Source; ModelScope / HF 镜像 mean domestic runtime sources first."""
+    script = (ROOT/'scripts/download_models.ps1').read_text('utf-8-sig')
+    statement = next(line.strip() for line in script.splitlines() if line.strip().startswith('$env:2BYTEASR_RUNTIME_SOURCE'))
+    assert script.index(statement) > script.index('$Source = switch -Regex ($Source)')
+    assert script.index(statement) < script.index('& $backendSetup -ModelKey $backendKeys')
+    shell = Path(os.environ.get('SystemRoot', 'C:/Windows'))/'System32/WindowsPowerShell/v1.0/powershell.exe'
+    for source, expected in (('AUTO', 'auto'), ('MODELSCOPE', 'mirror'), ('HF_MIRROR', 'mirror'), ('HF_OFFICIAL', 'auto')):
+        command = f"$Source='{source}'; {statement}; [Console]::Out.Write($env:2BYTEASR_RUNTIME_SOURCE)"
+        result = subprocess.run([str(shell), '-NoProfile', '-NonInteractive', '-Command', command],
+                                capture_output=True, text=True, timeout=60)
+        assert result.stdout.strip() == expected, (source, result.stdout, result.stderr)
+    setup = (ROOT/'scripts/setup_managed_backend.ps1').read_text('utf-8-sig')
+    assert '$uvSources=@(Get-UvSources $officialUv $uvFallbacks)' in setup
+    assert "Get-PreferredOrder ([pscustomobject]@{label='默认来源';url=''}) @($script:pythonMirrors)" in setup
+
+
+@pytest.mark.parametrize('corrupt', ['{', '[]', '{"role":"main","models":"qwen_asr"}',
+                                    '{"role":"main","models":["unsupported-model"]}',
+                                    '{"role":"moss","models":["moss"]}', None])
+def test_corrupt_main_history_rebuilds_from_current_request_and_preserves_original(run_installer,capsys,corrupt):
+    from twobyteasr.system import runtime_registry
+    first=run_installer('qwen_asr,sensevoice',lambda command:False,table_freeze('main'))
+    old=Path(runtime_registry.load_registry()['main']['python_executable'])
+    receipt=old.parent.parent/'managed-runtime.json'
+    if corrupt is None:receipt.unlink()
+    else:receipt.write_text(corrupt,'utf8')
+    old_python=old.read_bytes()
+    sentinel=first.managed.parent/'project-media-key-model-canary'
+    sentinel.write_bytes(b'owned fixture data must not change')
+    run_installer('qwen_asr',lambda command:False,table_freeze('main'),repair_roles='main')
+    current=Path(runtime_registry.load_registry()['main']['python_executable'])
+    assert current!=old and old.read_bytes()==old_python
+    assert not receipt.exists() if corrupt is None else receipt.read_text('utf8')==corrupt
+    saved=json.loads((current.parent.parent/'managed-runtime.json').read_text('utf8'))
+    assert saved['models']==['qwen_asr']
+    assert saved['historical_models_complete'] is False
+    assert saved['previous_runtime']==str(old)
+    assert any(x['role']=='main' and x['historical_models']=='unavailable' for x in saved['previous_receipt_issues'])
+    assert '历史模型集合无法恢复' in capsys.readouterr().out
+    assert sentinel.read_bytes()==b'owned fixture data must not change'
+
+
+def test_normal_prepare_does_not_reparse_or_overwrite_a_damaged_receipt(run_installer):
+    from twobyteasr.system import runtime_registry
+    run_installer('qwen_asr',lambda command:False,table_freeze('main'))
+    old=Path(runtime_registry.load_registry()['main']['python_executable'])
+    receipt=old.parent.parent/'managed-runtime.json';receipt.write_text('{','utf8')
+    run_installer('qwen_asr',lambda command:False,table_freeze('main'))
+    assert Path(runtime_registry.load_registry()['main']['python_executable'])!=old
+    assert receipt.read_text('utf8')=='{' and old.is_file()
+
+
+def test_only_moss_repair_survives_bad_main_history_without_republishing_main(run_installer):
+    from twobyteasr.system import runtime_registry
+    run_installer('qwen_asr,moss',lambda command:False,_quick_freeze('cpu'))
+    before=runtime_registry.load_registry()
+    main=Path(before['main']['python_executable'])
+    receipt=main.parent.parent/'managed-runtime.json';receipt.write_text('{','utf8')
+    run_installer('moss',lambda command:False,_quick_freeze('cpu'),repair_roles='moss')
+    after=runtime_registry.load_registry()
+    assert after['main']==before['main'] and receipt.read_text('utf8')=='{'
+    assert after['moss']['python_executable']!=before['moss']['python_executable']
+    saved=json.loads((Path(after['moss']['root'])/'managed-runtime.json').read_text('utf8'))
+    assert saved['models']==['moss']
+    assert any(x['role']=='main' for x in saved['previous_receipt_issues'])
+
+
+def test_failed_new_generation_keeps_original_pointer_and_damaged_receipt(run_installer):
+    from twobyteasr.system import runtime_registry
+    run_installer('qwen_asr',lambda command:False,table_freeze('main'))
+    before=runtime_registry.registry_path().read_bytes()
+    old=Path(runtime_registry.load_registry()['main']['python_executable'])
+    receipt=old.parent.parent/'managed-runtime.json';receipt.write_text('{','utf8')
+    with pytest.raises(subprocess.CalledProcessError):
+        run_installer('qwen_asr',lambda command:'validate_managed_runtime.py' in command,
+                      table_freeze('main'),repair_roles='main')
+    assert runtime_registry.registry_path().read_bytes()==before
+    assert old.is_file() and receipt.read_text('utf8')=='{'

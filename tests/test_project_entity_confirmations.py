@@ -4,10 +4,10 @@ from types import SimpleNamespace
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.project_entity_confirmations import confirmation_receipt, confirmed_entity_occurrences
-from twobyteasr.studio_find_replace import PreviewBinding, apply_occurrences
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, load_project, save_project
-from twobyteasr.studio_text_tools import find_occurrences
+from twobyteasr.glossary.project_entity_confirmations import confirmation_receipt, confirmed_entity_occurrences
+from twobyteasr.studio.studio_find_replace import PreviewBinding, apply_occurrences
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, load_project, save_project
+from twobyteasr.studio.studio_text_tools import find_occurrences
 
 
 def project():
@@ -84,8 +84,8 @@ def test_conflicting_alias_confirmations_are_skipped_with_diagnostic():
 
 def test_entity_review_ui_respects_selected_scope_and_does_not_learn_globally(monkeypatch):
     from PySide6.QtWidgets import QWidget
-    from twobyteasr.studio_find_replace import FindReplaceDialog
-    from twobyteasr.studio_text_tools import SCOPE_SELECTED
+    from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+    from twobyteasr.studio.studio_text_tools import SCOPE_SELECTED
     import subtitle_core
     monkeypatch.setattr(subtitle_core,'glossary_catalog',lambda:[])
     app=QApplication.instance() or QApplication([])

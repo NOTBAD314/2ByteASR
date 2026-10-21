@@ -3,8 +3,8 @@ import subprocess
 
 import pytest
 
-from twobyteasr import studio_render
-from twobyteasr.studio_render import RenderSettings, _quality_arguments
+from twobyteasr.exports import studio_render
+from twobyteasr.exports.studio_render import RenderSettings, _quality_arguments
 
 
 @pytest.fixture(autouse=True)

@@ -8,10 +8,10 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QWidget
 import subtitle_core as legacy
-from twobyteasr.main_ui_glossary import TermLibraryDialog
-from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry, snapshot_glossaries
-from twobyteasr.content_scene import ContentScene
-from twobyteasr.glossary_diagnostics import diagnose_sentence
+from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
+from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry, snapshot_glossaries
+from twobyteasr.recognition.content_scene import ContentScene
+from twobyteasr.glossary.glossary_diagnostics import diagnose_sentence
 
 APP = QApplication.instance() or QApplication([])
 
@@ -169,8 +169,8 @@ def test_diagnostics_distinguish_preview_batch_missing_alias_reference_context_a
 
 
 def test_studio_local_preview_keeps_ordinary_topic_and_original_alias_span():
-    from twobyteasr.studio_text_tools import glossary_occurrences
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.studio.studio_text_tools import glossary_occurrences
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
     snapshot = GlossarySnapshot((GlossaryLibrary('game', '领域一', '2',
         (TermEntry('ZeRo7', ('阿七',), category='选手 ID'),),
         profile_json='{"identity":"game"}'),))

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication, QGroupBox, QScrollArea, QWidget
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.studio_video_flow import StudioVideoFlowMixin
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
 
 
 def _app():

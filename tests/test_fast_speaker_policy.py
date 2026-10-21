@@ -1,7 +1,7 @@
 import copy
 import numpy as np
-from twobyteasr.speaker_diarization import has_native_speakers, speech_windows, cluster_windows, assign_identities
-from twobyteasr.speaker_evidence import scope_request_speakers, needs_moss_speakers
+from twobyteasr.recognition.speaker_diarization import has_native_speakers, speech_windows, cluster_windows, assign_identities
+from twobyteasr.recognition.speaker_evidence import scope_request_speakers, needs_moss_speakers
 
 
 def test_native_zero_single_speaker_never_triggers_full_asr():
@@ -36,15 +36,15 @@ def test_conservative_window_clustering_and_exact_words():
 
 
 def test_fragment_merge_restore_exact_cues_is_idempotent(tmp_path):
-    from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project, load_project
-    from twobyteasr.speaker_recovery import candidate_snapshot, apply_automatic_candidate_policy, rebuild_selected_speakers, recovery_preview, load_candidate_snapshot
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project, load_project
+    from twobyteasr.recognition.speaker_recovery import candidate_snapshot, apply_automatic_candidate_policy, rebuild_selected_speakers, recovery_preview, load_candidate_snapshot
     raw=[dict(start=i*3,end=i*3+2,text='原文',speaker='S01') for i in range(5)]
     raw.append(dict(start=17,end=17.5,text='原文不是人工文字',speaker='S08'))
     p=SubtitleProject(media=StudioMedia('',duration_ms=20000),speakers=[StudioSpeaker('S01'),StudioSpeaker('S08')],
         cues=[StudioCue('main',0,2000,'人工主字幕','S01'),StudioCue('fragment',17000,17500,'人工短句','S08')])
     p.generation_metadata['speaker_recovery']=candidate_snapshot(raw,{'S01','S08'})
     p.generation_metadata['speaker_recovery']['allow_raw_recovery']=False
-    from twobyteasr.speaker_organization import apply_new_project_policy
+    from twobyteasr.projects.speaker_organization import apply_new_project_policy
     apply_new_project_policy(p)
     assert [c.id for c in p.cues]==['main','fragment']
     assert {c.speaker_id for c in p.cues}=={'SUBTITLES'}

@@ -26,7 +26,7 @@ def parse_args():
 def main():
     args = parse_args()
     import torch
-    import twobyteasr.asr as asr
+    import twobyteasr.recognition.asr as asr
 
     asr.QWEN_ASR_BATCH_SIZE = max(1, min(12, int(args.qwen_batch_size)))
     audio = asr.decode_audio_to_array(args.media)

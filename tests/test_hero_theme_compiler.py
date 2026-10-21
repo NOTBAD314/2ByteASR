@@ -3,9 +3,9 @@ import copy,json
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-from twobyteasr import studio_ai
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
-from twobyteasr.theme_draft import DraftValidationError
+from twobyteasr.caption_design import studio_ai
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
+from twobyteasr.caption_design.theme_draft import DraftValidationError
 from tests.test_theme_motion import spec
 
 
@@ -14,7 +14,7 @@ def setup(monkeypatch,responses,*,vision=False):
     selection=SimpleNamespace(credential_ready=True,provider='fixture',model='selected-high')
     monkeypatch.setattr(studio_ai.GLOBAL_PROVIDER_REGISTRY,'selection',lambda *_a,**_k:selection)
     calls=[];traces=[];clock=[100.]
-    from twobyteasr import web_theme_compiler
+    from twobyteasr.caption_design import web_theme_compiler
     monkeypatch.setattr(web_theme_compiler,'time',SimpleNamespace(monotonic=lambda:clock[0]))
     class Provider:
         transport='codex_cli'
@@ -60,7 +60,7 @@ def test_legacy_compiler_saves_design_before_each_real_hero(monkeypatch,tmp_path
     responses.extend([actual_hero]*3)
     project,settings,calls,traces=setup(monkeypatch,responses)
     monkeypatch.setattr(studio_ai,'_persist_ai_design_trace',lambda t:traces.append(copy.deepcopy(t)) or str(tmp_path/'trace.json'))
-    from twobyteasr.web_theme_compiler import compile_theme
+    from twobyteasr.caption_design.web_theme_compiler import compile_theme
     result=compile_theme(project,'cue','历史编译器兼容',settings,request_id='test')
     assert len(calls)==5 and result.source=='concepts' and not result.theme and not result.selected_concept_id
     assert all(c['hero_theme']['cueHtml'] and c['design_markdown'] for c in result.concepts)
@@ -115,7 +115,7 @@ def test_three_failed_repairs_stop_without_builtin_substitution(monkeypatch):
 
 
 def test_partial_hero_failure_preserves_completed_directions_for_retry(monkeypatch):
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.ai_providers import AIProviderError
     d=design('');d['concepts'][1].pop('hero_theme');d['concepts'][2].pop('hero_theme')
     def interrupted(kwargs):
         kwargs['on_stream_event']('delta','partial hero')
@@ -129,7 +129,7 @@ def test_partial_hero_failure_preserves_completed_directions_for_retry(monkeypat
 
 
 def test_actual_frame_review_uses_evidence_not_scores(monkeypatch,tmp_path):
-    from twobyteasr.theme_art_direction_v2 import SCORE_LABELS
+    from twobyteasr.caption_design.theme_art_direction_v2 import SCORE_LABELS
     review=dict(passed=True,checks={k:dict(passed=True,evidence='保持帧对应结构清晰可见') for k in SCORE_LABELS},defects=[])
     project,settings,calls,_=setup(monkeypatch,[json.dumps(hero(True)),json.dumps(review)],vision=True)
     frame=tmp_path/'frame.png';frame.write_bytes(b'fixture-image')

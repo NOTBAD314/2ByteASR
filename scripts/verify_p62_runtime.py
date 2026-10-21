@@ -30,9 +30,9 @@ import psutil
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_project import load_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.projects.studio_project import load_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 class ChildWindowMonitor:

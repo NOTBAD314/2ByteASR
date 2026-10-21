@@ -121,15 +121,15 @@ def inner(output: Path):
     spec = json.loads((output / 'spec.json').read_text('utf8'))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.blank_project_audit import install_offline_guards
+    from twobyteasr.acceptance.blank_project_audit import install_offline_guards
     install_offline_guards()
     from PySide6.QtCore import QObject, QTimer, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QWidget
     import moss_firered_pipeline
     import subtitle_core
-    from twobyteasr import ui
-    from twobyteasr.theme_manager import apply_application_theme
+    from twobyteasr.app import ui
+    from twobyteasr.design.theme_manager import apply_application_theme
     from twobyteasr.i18n import save_language
 
     ui._configure_windows_app_identity()
@@ -163,7 +163,7 @@ def inner(output: Path):
         return sorted(rows, key=lambda row: -row['min_h'])[:4]
 
     def shot(name, widget=None):
-        from twobyteasr.blank_project_audit import _capture
+        from twobyteasr.acceptance.blank_project_audit import _capture
         widget = widget or window
         QApplication.processEvents()
         if widget is window:
@@ -250,7 +250,7 @@ def inner(output: Path):
     project_path = fixtures / 'ge-project.2byteproj'
 
     def replay_progress(stop_after_index=9):
-        from twobyteasr.service import _event_from_payload
+        from twobyteasr.recognition.service import _event_from_payload
         rows = [json.loads(line) for line in (fixtures / 'ge-run.jsonl').read_text('utf8').splitlines() if line.strip()]
         window._switch_page(window.pages.widget(1)) if hasattr(window, '_switch_page') else None
         window.pages.setCurrentIndex(1)
@@ -278,7 +278,7 @@ def inner(output: Path):
         ``stop(row)`` is true (that row included). Stage start times are
         shifted to the recorded durations so live facts read realistically;
         no model runs."""
-        from twobyteasr.service import _event_from_payload
+        from twobyteasr.recognition.service import _event_from_payload
         rows = [json.loads(line) for line in (fixtures / 'ge-run.jsonl').read_text('utf8').splitlines() if line.strip()]
         window.pages.setCurrentIndex(1)
         window._active_job_id = ''
@@ -332,7 +332,7 @@ def inner(output: Path):
         window._refresh_progress_cards()
 
     def complete():
-        from twobyteasr.service import MediaResult, QueueResult
+        from twobyteasr.recognition.service import MediaResult, QueueResult
         report = json.loads(report_path.read_text('utf8'))
         actual = MediaResult(media_path=report['media']['path'], status=report['status'],
                              project_path=str(project_path), report_json_path=str(report_path),
@@ -388,7 +388,7 @@ def inner(output: Path):
     def scene_home_gallery(tag):
         # Isolated copies of the fixture project as recent projects, so the
         # home gallery is captured with a realistic number of entries.
-        from twobyteasr.studio_project import studio_settings_path
+        from twobyteasr.projects.studio_project import studio_settings_path
         settings_path = studio_settings_path()
         payload = json.loads(settings_path.read_text('utf-8-sig')) if settings_path.is_file() else {}
         records = []
@@ -477,7 +477,7 @@ def inner(output: Path):
         shot(f'progress-evidence_{tag}')
 
     def scene_progress_cancel(tag):
-        from twobyteasr.service import CancellationToken, PipelineEvent
+        from twobyteasr.recognition.service import CancellationToken, PipelineEvent
         replay_until(moss_generating)
         window.token = CancellationToken()
         window._cancel_run()
@@ -628,7 +628,7 @@ def inner(output: Path):
     def scene_completion_retry(tag):
         # Retry is only offered for retryable outcomes with the original run
         # options; give the replay the options object the real run would hold.
-        from twobyteasr.service import RunOptions
+        from twobyteasr.recognition.service import RunOptions
         window._last_run_options = RunOptions.from_legacy(subtitle_core)
         window._tour_completion_ready = False
         yield from scene_completion(tag)
@@ -877,7 +877,7 @@ def inner(output: Path):
     def open_concepts():
         # Retained real AI design concepts (tests/fixtures, earlier generation);
         # chrome check only: no generation, previews only if the fixture has them.
-        from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+        from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
         concepts = json.loads((ROOT / 'tests/fixtures/death_stranding_concepts.json').read_text('utf8'))
         concepts = concepts.get('concepts', concepts) if isinstance(concepts, dict) else concepts
         window._tour_concepts = ThemeConceptDialog(concepts, {}, window.studio_page)

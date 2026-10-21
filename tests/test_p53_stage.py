@@ -10,13 +10,13 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication, QToolButton
 
 from twobyteasr.i18n import translate
-from twobyteasr.main_ui_branding import HeaderMascot
-from twobyteasr.main_ui_dialogs import SpringDialog
-from twobyteasr.studio_commands import BatchReplaceTextCommand
-from twobyteasr.studio_export_ui import StudioExportWorkspace
-from twobyteasr.studio_find_replace import FindReplaceDialog, apply_occurrences, replace_all
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_render import (
+from twobyteasr.app.main_ui_branding import HeaderMascot
+from twobyteasr.design.main_ui_dialogs import SpringDialog
+from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+from twobyteasr.studio.studio_find_replace import FindReplaceDialog, apply_occurrences, replace_all
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.exports.studio_render import (
     STAGE_ADVANCED_RENDER,
     STAGE_ENCODE,
     STAGE_MUX,
@@ -25,18 +25,18 @@ from twobyteasr.studio_render import (
     export_progress,
     parse_ffmpeg_out_time_seconds,
 )
-from twobyteasr.studio_text_tools import (
+from twobyteasr.studio.studio_text_tools import (
     PAUSE_LIGHT_TO_SPACE,
     find_occurrences,
     parse_cleanup_payload,
     tidy_text,
     values_from_occurrences,
 )
-from twobyteasr.studio_theme import BRAND_DISPLAY_NAME
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.themed_icons import icon_role_color
-from twobyteasr.ui_theme import contrast_ratio, theme_definition
-import twobyteasr.theme_manager as theme_manager
+from twobyteasr.design.studio_theme import BRAND_DISPLAY_NAME
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.design.themed_icons import icon_role_color
+from twobyteasr.design.ui_theme import contrast_ratio, theme_definition
+import twobyteasr.design.theme_manager as theme_manager
 
 
 def _app():

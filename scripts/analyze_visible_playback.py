@@ -27,7 +27,7 @@ def main():
             row[key]=sum(b<<i for i,b in enumerate(bits[:12])) if bits[12:]==[0,1,0,1] else None
         rows.append(row)
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-    from twobyteasr.visible_playback_audit import summarize
+    from twobyteasr.acceptance.visible_playback_audit import summarize
     # Leave an extra .5s boundary margin for recorder startup. FPS is counted
     # within the recorded presentation timeline, with no timer extrapolation.
     start=d['play_window'][0]-d['record_started']+.5

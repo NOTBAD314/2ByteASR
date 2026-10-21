@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-from twobyteasr.ai_providers import CLIProvider, GrokCLIProvider, AIProviderError
-from twobyteasr.provider_diagnostics import collect_search_evidence, redact_diagnostics
-from twobyteasr.task_execution_events import ExecutionObserver
+from twobyteasr.providers.ai_providers import CLIProvider, GrokCLIProvider, AIProviderError
+from twobyteasr.providers.provider_diagnostics import collect_search_evidence, redact_diagnostics
+from twobyteasr.providers.task_execution_events import ExecutionObserver
 
 
 def event(kind, **kw):
@@ -74,7 +74,7 @@ def test_cli_activity_resets_idle_but_not_total_and_consumer_failure(tmp_path):
 
 
 def test_terminal_and_other_task_events_do_not_pollute_state():
-    from twobyteasr.glossary_task_manager import GlossaryUpdateManager,GlossaryTaskState
+    from twobyteasr.glossary.glossary_task_manager import GlossaryUpdateManager,GlossaryTaskState
     manager=GlossaryUpdateManager(object())
     task=GlossaryTaskState('a','game','full','service','model',time.time(),status='running')
     manager._tasks['a']=task
@@ -98,13 +98,13 @@ def test_fast_exit_consumer_failure_is_not_success(tmp_path):
 
 
 def test_trace_does_not_retain_private_event_tail():
-    from twobyteasr.provider_diagnostics import public_stream_text
+    from twobyteasr.providers.provider_diagnostics import public_stream_text
     assert 'SECRET_REASONING' not in public_stream_text('{"delta":{"thinking":"SECRET_REASONING"}}\n{"thinking":"SECRET_REASONING')
 
 
 def test_minecraft_catalogs_are_sources_not_names():
-    from twobyteasr.minecraft_catalogs import known_catalogs,SCOPES
-    from twobyteasr.glossary_build import _covers_seed_category
+    from twobyteasr.glossary.minecraft_catalogs import known_catalogs,SCOPES
+    from twobyteasr.glossary.glossary_build import _covers_seed_category
     sources=known_catalogs('我的世界')
     assert len(sources)==7 and not known_catalogs('异环')
     assert {_covers_seed_category(c['covers'])[0] for c in sources}=={k for k,_ in SCOPES}
@@ -113,7 +113,7 @@ def test_minecraft_catalogs_are_sources_not_names():
 def test_int32_positive_full_scale_does_not_wrap():
     import numpy as np
     from types import SimpleNamespace
-    from twobyteasr.audio_engine import _PcmRingDevice,AudioOutputSpec
+    from twobyteasr.playback.audio_engine import _PcmRingDevice,AudioOutputSpec
     from PySide6.QtMultimedia import QAudioFormat
     spec=AudioOutputSpec(48000,2,QAudioFormat.SampleFormat.Int32,4,'s32le')
     owner=SimpleNamespace(_mix_spec=spec,_mix_ids=('a',),_mix_gains=np.ones(1,dtype=np.float32),_mix_previous=np.ones(1,dtype=np.float32))
@@ -128,14 +128,14 @@ def test_six_channel_decoder_keeps_short_reads_on_complete_frames(monkeypatch):
     import numpy as np
     from PySide6.QtWidgets import QApplication
     from PySide6.QtMultimedia import QAudioFormat
-    from twobyteasr.audio_engine import _AudioEngineWorker,_PcmRingDevice,AudioOutputSpec
+    from twobyteasr.playback.audio_engine import _AudioEngineWorker,_PcmRingDevice,AudioOutputSpec
     app=QApplication.instance() or QApplication([])
     values=np.linspace(-.7,.7,4800*6,dtype='<f4')
     data=values.tobytes()
     class ShortPipe(io.BytesIO):
         def read(self,n=-1):return super().read(min(n,8171))
     process=SimpleNamespace(stdout=ShortPipe(data),stderr=io.BytesIO(),poll=lambda:0)
-    monkeypatch.setattr('twobyteasr.processes.popen_hidden_subprocess',lambda *a,**k:process)
+    monkeypatch.setattr('twobyteasr.system.processes.popen_hidden_subprocess',lambda *a,**k:process)
     worker=_AudioEngineWorker(Path('fixture-ffmpeg.exe'))
     worker._output_spec=AudioOutputSpec(48000,6,QAudioFormat.SampleFormat.Int16,2,'s16le')
     worker.device=_PcmRingDevice(sample_format=worker._output_spec.sample_format)

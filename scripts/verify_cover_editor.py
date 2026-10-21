@@ -23,7 +23,7 @@ def main():
     out.mkdir(parents=True)
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(out)
     sys.path.insert(0, str(root))
-    from twobyteasr.studio_project import SubtitleProject
+    from twobyteasr.projects.studio_project import SubtitleProject
     p = SubtitleProject.from_dict(json.loads(args.project.read_text(encoding='utf-8-sig')))
     if not Path(p.media.path).is_file():
         raise FileNotFoundError(p.media.path)
@@ -37,7 +37,7 @@ def main():
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', TWOBYTEASR_COVER_QUICK='1' if args.quick else '0',
         TWOBYTEASR_COVER_SUSTAIN=str(args.sustain_seconds), TWOBYTEASR_COVER_LONG='1' if args.long else '0')
     cmd = [str(args.exe.resolve())] if args.exe else [sys.executable, '-X', 'utf8', '-B', str(root/'quick_start.py')]
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     with (out/'application.log').open('wb') as log:
         process = run_hidden_subprocess(cmd, cwd=root, env=env, stdout=log, stderr=log,
             timeout=600, purpose='isolated local cover editor acceptance')

@@ -2,7 +2,7 @@
 
 Copies a Japanese recognition project into a fresh owned tmp directory,
 isolates all app data there, and runs the in-process `ja-bilingual` scenario
-(twobyteasr/ja_bilingual_audit.py) on a private Windows desktop: razor cut at
+(twobyteasr/acceptance/ja_bilingual_audit.py) on a private Windows desktop: razor cut at
 measured Japanese boundaries, edit + re-alignment (real Qwen3-ForcedAligner
 worker, read-only model folder), translation dialog against a MOCK provider
 (offline), bilingual preview captures, split states, save/reopen, SRT/JSON

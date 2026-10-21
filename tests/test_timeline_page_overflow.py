@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_timeline import WaveformTimeline
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.studio.studio_timeline import WaveformTimeline
 
 
 @pytest.fixture

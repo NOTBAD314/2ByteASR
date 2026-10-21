@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_video_canvas import MpvCanvas
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
 
 
 def _app() -> QApplication:
@@ -143,19 +143,19 @@ def test_paused_idle_death_then_play_revives():
     replacement = FakeActorBackedController()
     created: list[FakeActorBackedController] = []
 
-    import twobyteasr.studio_video_canvas as canvas_module
+    import twobyteasr.studio.studio_video_canvas as canvas_module
 
-    original_controller_cls = canvas_module.MpvController
+    original_controller_cls = canvas_module.create_preview_controller
 
     def _factory(*_args, **_kwargs):
         created.append(replacement)
         return replacement
 
-    canvas_module.MpvController = staticmethod(_factory)
+    canvas_module.create_preview_controller = staticmethod(_factory)
     try:
         assert canvas.revive_dead_source(paused=False) is True
     finally:
-        canvas_module.MpvController = original_controller_cls
+        canvas_module.create_preview_controller = original_controller_cls
 
     assert created == [replacement]
     assert replacement.start_calls, "revive must start a fresh mpv child"
@@ -202,19 +202,19 @@ def test_project_reload_replaces_dead_controller():
     replacement = FakeActorBackedController()
     created: list[FakeActorBackedController] = []
 
-    import twobyteasr.studio_video_canvas as canvas_module
+    import twobyteasr.studio.studio_video_canvas as canvas_module
 
-    original_controller_cls = canvas_module.MpvController
+    original_controller_cls = canvas_module.create_preview_controller
 
     def _factory(*_args, **_kwargs):
         created.append(replacement)
         return replacement
 
-    canvas_module.MpvController = staticmethod(_factory)
+    canvas_module.create_preview_controller = staticmethod(_factory)
     try:
         canvas.load("media.mp4", "", start_seconds=5.0)
     finally:
-        canvas_module.MpvController = original_controller_cls
+        canvas_module.create_preview_controller = original_controller_cls
 
     assert controller.closed, "dead controller must be closed, not reused"
     assert created == [replacement]
@@ -270,7 +270,7 @@ def test_dead_pause_click_is_recorded_not_faked():
 
 def test_toggle_playback_routes_revive_when_dead():
     _app()
-    from twobyteasr.studio_playback_flow import StudioPlaybackFlowMixin
+    from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
 
     revive_calls: list[bool] = []
     sync_calls: list[bool] = []

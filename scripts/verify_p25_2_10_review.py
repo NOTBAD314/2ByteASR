@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitlePositionOverlay, SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitlePositionOverlay, SubtitleStudioPage
 
 
 def pump(app: QApplication, seconds: float) -> None:
@@ -59,7 +59,7 @@ def main() -> int:
     screenshot = OUTPUT / "review-dock.png"
     dock.save(str(screenshot))
     review_card_type = __import__(
-        "twobyteasr.studio_ui", fromlist=["ReviewCandidateCard"]
+        "twobyteasr.studio.studio_ui", fromlist=["ReviewCandidateCard"]
     ).ReviewCandidateCard
     # QObject children may include cards waiting for deleteLater(); inspect
     # only widgets currently present and visible in the live candidate grid.

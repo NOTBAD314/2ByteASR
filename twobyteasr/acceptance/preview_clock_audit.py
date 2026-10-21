@@ -14,12 +14,12 @@ def run(output, *, baseline=False, display_fps=0, window=None):
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from .. import studio_mpv
-    from ..studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, hydrate_media_contract
-    from ..studio_helpers import probe_media_identity
-    from ..studio_ui import SubtitleStudioPage
-    from ..processes import run_hidden_subprocess
-    from ..blank_project_audit import _capture
+    from ..playback import studio_mpv
+    from ..projects.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, hydrate_media_contract
+    from ..studio.studio_helpers import probe_media_identity
+    from ..studio.studio_ui import SubtitleStudioPage
+    from ..system.processes import run_hidden_subprocess
+    from .blank_project_audit import _capture
 
     root = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[2]
     media = output/'variable-rate.mp4'
@@ -53,7 +53,7 @@ def run(output, *, baseline=False, display_fps=0, window=None):
     surface = window if window is not None else page
     surface.resize(1440, 900)
     surface.show()
-    from ..build_identity import load_build_identity
+    from ..diagnostics.build_identity import load_build_identity
     result = dict(passed=False, baseline=baseline, display_fps_override=display_fps,
                   scope='real Studio/mpv/PCM; controlled display report; no user media or human listening',
                   entry='normal-window' if window is not None else 'standalone-page',

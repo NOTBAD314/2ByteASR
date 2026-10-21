@@ -10,25 +10,26 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QLabel
 
-from twobyteasr.ai_design_adapter import ProviderOutputAdapter
-from twobyteasr.glossary_binding import GlossaryBindingResolver
-from twobyteasr.playback_clock import PlaybackClock
-from twobyteasr.studio_media_pool import (
+from twobyteasr.caption_design.ai_design_adapter import ProviderOutputAdapter
+from twobyteasr.glossary.glossary_binding import GlossaryBindingResolver
+from twobyteasr.playback.playback_clock import PlaybackClock
+from twobyteasr.timeline.studio_media_pool import (
     add_media_asset,
     add_video_clip,
     create_video_track,
     reassign_video_clip,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     AudioClip,
     AudioTrack,
     StudioCue,
     StudioMedia,
     SubtitleProject,
 )
-from twobyteasr.studio_review import export_review_risk_audit
-from twobyteasr.studio_export_ui import SubtitleExportDialog
-from twobyteasr import studio_ai, studio_ai_flow, studio_ui
+from twobyteasr.subtitle_rules.studio_review import export_review_risk_audit
+from twobyteasr.exports.studio_export_ui import SubtitleExportDialog
+from twobyteasr.caption_design import studio_ai
+from twobyteasr.studio import studio_ai_flow, studio_ui
 
 
 def _app() -> QApplication:
@@ -224,7 +225,7 @@ def test_audio_only_preview_target_uses_standalone_audio_layer(tmp_path):
         clips=[AudioClip("audio-only", asset.asset_id, source_out_ms=1_200_000, timeline_out_ms=1_200_000)],
     ))
     project.validate()
-    from twobyteasr.studio_media_pool import set_audio_master_mode
+    from twobyteasr.timeline.studio_media_pool import set_audio_master_mode
     set_audio_master_mode(project,"mix_all")
     page = studio_ui.SubtitleStudioPage()
     page.project = project

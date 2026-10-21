@@ -27,7 +27,7 @@ def main():
     if codex.is_file():os.environ['TWOBYTEASR_CODEX_EXECUTABLE']=str(codex)
     os.environ.update(LOCALAPPDATA=str(output/'local'), APPDATA=str(output/'roaming'),
         QT_QPA_PLATFORM='windows', QT_SCALE_FACTOR='1', DASHSCOPE_API_KEY='sk-local-test-dummy')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     ffmpeg = root/'tools/ffmpeg/bin/ffmpeg.exe'
     sources = []
     for i, size in enumerate(('1920x1080', '640x480', '640x360')):
@@ -45,14 +45,14 @@ def main():
             '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-c:a', 'aac', str(source)],
             purpose='isolated feedback audit fixture', check=True, timeout=60)
         sources.append(source)
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, VideoTransform, save_project
-    from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_audio_master_mode
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, VideoTransform, save_project
+    from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_audio_master_mode
     project = SubtitleProject(media=StudioMedia(path=str(sources[0]), duration_ms=6000, width=1920, height=1080),
         cues=[StudioCue('cue', 0, 6000, '逐轨音量 · 首尾完整性验证')])
     project.validate()
     if args.theme:
-        from twobyteasr.web_theme import import_theme_archive
-        from twobyteasr.style_recipe import StyleRecipe
+        from twobyteasr.caption_design.web_theme import import_theme_archive
+        from twobyteasr.caption_style.style_recipe import StyleRecipe
         project.style_recipes[project.cues[0].style_id] = StyleRecipe(
             name='Clock acceptance',engine='remotion',web_theme=import_theme_archive(args.theme)).to_dict()
     for i in ((1,) if args.scenario=='endurance' else (1, 2)):
@@ -88,12 +88,12 @@ def main():
         run_hidden_subprocess([str(args.exe.resolve())], cwd=root, purpose='frozen feedback acceptance',
             timeout=max(180,args.seconds+160) if args.scenario=='endurance' else 260, check=True)
     else:
-        from twobyteasr.studio_acceptance_audit import isolate_acceptance_settings, start_acceptance
+        from twobyteasr.acceptance.studio_acceptance_audit import isolate_acceptance_settings, start_acceptance
         isolate_acceptance_settings()
         from PySide6.QtWidgets import QApplication
         import subtitle_core
-        from twobyteasr.ui import MainWindow, _register_bundled_fonts, _app_font
-        from twobyteasr.theme_manager import apply_theme
+        from twobyteasr.app.ui import MainWindow, _register_bundled_fonts, _app_font
+        from twobyteasr.design.theme_manager import apply_theme
         from PySide6.QtCore import QObject, QEvent, QTimer
         app = QApplication([])
         _register_bundled_fonts(); app.setFont(_app_font()); apply_theme('warm', app)

@@ -7,8 +7,8 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialogButtonBox, QMessageBox, QPushButton, QWidget, QVBoxLayout
 
 from tests.test_storage_maintenance_ui import qapp
-from twobyteasr.application_settings_ui import ApplicationSettingsDialog
-from twobyteasr.modal_acceptance_driver import ModalAcceptanceDriver, cancel_without_settings_save_prompt
+from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
+from twobyteasr.acceptance.modal_acceptance_driver import ModalAcceptanceDriver, cancel_without_settings_save_prompt
 
 
 class ProbeDriver(ModalAcceptanceDriver):

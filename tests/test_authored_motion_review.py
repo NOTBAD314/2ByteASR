@@ -3,13 +3,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from PIL import Image
 import pytest
-from twobyteasr.authored_motion_review import capture_motion_review
-from twobyteasr.authored_keyframe_review import same_provider_reviewer, review_frame_paths
+from twobyteasr.caption_design.authored_motion_review import capture_motion_review
+from twobyteasr.caption_design.authored_keyframe_review import same_provider_reviewer, review_frame_paths
 
 
 def test_real_contact_sheets_cover_both_boundaries_and_short_hold(monkeypatch,tmp_path):
     import io
-    monkeypatch.setattr('twobyteasr.web_theme.theme_archive_html',lambda *a,**kw:str(kw['duration_seconds']))
+    monkeypatch.setattr('twobyteasr.caption_design.web_theme.theme_archive_html',lambda *a,**kw:str(kw['duration_seconds']))
     class Service:
         def __init__(self):self.calls=[]
         def live_set(self,html,**kw):self.duration=float(html)*1000
@@ -52,7 +52,7 @@ def test_reviewer_receives_departure_contact_and_fallback_end(tmp_path):
 
 
 def test_surface_scope_allows_text_clipped_ink_but_not_body_visibility():
-    from twobyteasr.theme_design_preservation import validate_surface_revision
+    from twobyteasr.caption_design.theme_design_preservation import validate_surface_revision
     original={'cueCss':'.copy{position:absolute;color:red}'}
     validate_surface_revision(original,{'cueCss':'.copy{position:absolute;color:red;background:linear-gradient(red,brown);-webkit-background-clip:text;-webkit-text-fill-color:transparent}'})
     with pytest.raises(ValueError):validate_surface_revision(original,{'cueCss':'.copy{position:absolute;color:red;opacity:0}'})

@@ -1,10 +1,10 @@
 from pathlib import Path
 import hashlib
 import pytest
-from twobyteasr.design_guidance import load_design_guidance
-from twobyteasr.authored_prompt import assemble, direction_adjustment
-from twobyteasr.caption_creative_pipeline import ThemeLedger
-from twobyteasr.provider_input_budget import prepare_input
+from twobyteasr.caption_design.design_guidance import load_design_guidance
+from twobyteasr.caption_design.authored_prompt import assemble, direction_adjustment
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+from twobyteasr.providers.provider_input_budget import prepare_input
 
 
 @pytest.mark.parametrize('name',['塞尔达','赛尔达传说','薩爾達','Zelda'])

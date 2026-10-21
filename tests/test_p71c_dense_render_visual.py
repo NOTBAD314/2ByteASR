@@ -9,23 +9,23 @@ from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.advanced_renderer import compile_composition_data
-from twobyteasr.ass_compile_actor import AssCompileActor, AssCompileResult
-from twobyteasr.ass_compiler import compile_ass, compile_ass_revision
-from twobyteasr.studio_mpv import MpvIPCTimeoutError, _MpvCommandActor
-from twobyteasr.studio_project import (
+from twobyteasr.rendering.advanced_renderer import compile_composition_data
+from twobyteasr.rendering.ass_compile_actor import AssCompileActor, AssCompileResult
+from twobyteasr.rendering.ass_compiler import compile_ass, compile_ass_revision
+from twobyteasr.playback.studio_mpv import MpvIPCTimeoutError, _MpvCommandActor
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     save_autosave_revision,
 )
-from twobyteasr.studio_revisions import (
+from twobyteasr.projects.studio_revisions import (
     StudioRevisionStore,
     preview_render_revision,
 )
-from twobyteasr.studio_runtime_state import DirtyDomain, StateDelta
-from twobyteasr.studio_ui import AdvancedLiveCanvas, SubtitlePositionOverlay
-from twobyteasr.style_recipe import FillSpec, normalize_shadow_contract
+from twobyteasr.projects.studio_runtime_state import DirtyDomain, StateDelta
+from twobyteasr.studio.studio_ui import AdvancedLiveCanvas, SubtitlePositionOverlay
+from twobyteasr.caption_style.style_recipe import FillSpec, normalize_shadow_contract
 
 
 @pytest.fixture(scope="module")
@@ -196,7 +196,7 @@ def test_ass_actor_drops_intermediate_pending_revisions():
 
 
 def test_advanced_preview_worker_is_serial_and_latest_wins():
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SimpleNamespace()
     page._queue_advanced_preview_job = MethodType(

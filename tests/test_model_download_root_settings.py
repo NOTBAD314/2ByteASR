@@ -3,7 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from twobyteasr import runtime_paths as rp
-from twobyteasr.model_root_settings import save_model_download_root
+from twobyteasr.local_models.model_root_settings import save_model_download_root
 
 
 @pytest.fixture

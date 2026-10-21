@@ -8,8 +8,9 @@ from the next scan.
 import json
 from pathlib import Path
 
-from twobyteasr import model_associations, runtime_paths
-from twobyteasr.model_associations import detach_model, is_model_detached
+from twobyteasr.local_models import model_associations
+from twobyteasr import runtime_paths
+from twobyteasr.local_models.model_associations import detach_model, is_model_detached
 
 
 def test_memo_exists_only_inside_one_scan(monkeypatch):

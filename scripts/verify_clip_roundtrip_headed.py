@@ -36,9 +36,9 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_edit_commands import generate_edit_command, restore_full_sequence_command
-    from twobyteasr.studio_edit_sequence import (
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.timeline.studio_edit_commands import generate_edit_command, restore_full_sequence_command
+    from twobyteasr.timeline.studio_edit_sequence import (
         HighlightCandidate, projected_cues, sequence_of, timeline_duration_ms,
     )
 
@@ -174,7 +174,7 @@ def main() -> int:
     check("C_ten_roundtrips_stable", stable, f"cycle={cycle + 1} n={len(project.cues)}")
 
     # ---------- D. 剪辑态保存 → 重开 → 返回 ----------
-    from twobyteasr.studio_project import load_project, save_project
+    from twobyteasr.projects.studio_project import load_project, save_project
     page.undo_stack.push(generate_edit_command(project, changed=page._sequence_changed))
     _pump(app, 1.0)
     saved = OUT / "saved-in-clip.2byteproj"
@@ -187,7 +187,7 @@ def main() -> int:
     page.undo_stack.push(restore_full_sequence_command(project, changed=page._sequence_changed))
 
     # ---------- F. 导出域一致性 ----------
-    from twobyteasr.studio_subtitle_export import _compile_format
+    from twobyteasr.exports.studio_subtitle_export import _compile_format
     page.undo_stack.push(generate_edit_command(project, changed=page._sequence_changed))
     _pump(app, 0.5)
     srt_clip = _compile_format(project, "srt")

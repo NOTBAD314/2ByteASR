@@ -10,12 +10,13 @@ import threading
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from twobyteasr.qwen31_asr import ASRProtocolError, FILETRANS, QWEN3_FILETRANS
+from twobyteasr.providers.qwen31_asr import ASRProtocolError, FILETRANS, QWEN3_FILETRANS
 
 
 class Response:
@@ -61,7 +62,7 @@ QWEN3_RESULT = {'file_url': 'x', 'transcripts': [{'channel_id': 0, 'text': '欢�
 
 
 def test_qwen3_filetrans_uses_its_own_schema_and_word_timestamps(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     sent = {}
     fetched = []
 
@@ -98,8 +99,8 @@ def test_qwen3_filetrans_uses_its_own_schema_and_word_timestamps(tmp_path):
 
 
 def test_qwen3_filetrans_ignores_hotwords_and_diarization_it_does_not_support(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
-    from twobyteasr.qwen31_asr import filetrans_hints_for_model
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.qwen31_asr import filetrans_hints_for_model
     hints = filetrans_hints_for_model(QWEN3_FILETRANS, ['S0pp', 'BerLIN'], language='auto')
     assert 'vocabulary' not in hints and 'filetrans_language' not in hints
     assert hints['hint_counts']['unsupported_by_model'] == 2
@@ -123,7 +124,7 @@ def test_qwen3_filetrans_ignores_hotwords_and_diarization_it_does_not_support(tm
 
 
 def test_qwen_audio_31_keeps_file_urls_and_diarization(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     sent = {}
 
     class Client:
@@ -145,8 +146,8 @@ def test_qwen_audio_31_keeps_file_urls_and_diarization(tmp_path):
 
 def test_qwen_audio_31_submits_without_an_over_long_glossary_term(tmp_path):
     # 2026-10-17: one long personal glossary row used to fail the whole request.
-    from twobyteasr.cloud_asr_jobs import filetrans
-    from twobyteasr.qwen31_asr import filetrans_hints_for_model
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.qwen31_asr import filetrans_hints_for_model
     sent = {}
 
     class Client:
@@ -171,7 +172,7 @@ def test_qwen_audio_31_submits_without_an_over_long_glossary_term(tmp_path):
 
 
 def test_filetrans_unknown_task_is_reported_not_resubmitted(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     posts = []
 
     class Client:
@@ -193,7 +194,7 @@ def test_filetrans_unknown_task_is_reported_not_resubmitted(tmp_path):
 
 
 def test_endpoint_validation_accepts_both_bailian_models_and_rejects_chat_path():
-    from twobyteasr.llm_config import validate_qwen_asr_endpoint
+    from twobyteasr.providers.llm_config import validate_qwen_asr_endpoint
     validate_qwen_asr_endpoint(qwen3_endpoint())
     validate_qwen_asr_endpoint(dict(qwen3_endpoint(), model=FILETRANS))
     with pytest.raises(RuntimeError, match='compatible-mode'):
@@ -218,7 +219,7 @@ def test_endpoint_validation_accepts_both_bailian_models_and_rejects_chat_path()
     ' "https://LLM-ABC123.cn-beijing.maas.aliyuncs.com/" ',
 ])
 def test_dashscope_workspace_host_any_pasted_form(pasted):
-    from twobyteasr.api_endpoints import parse_dashscope_address
+    from twobyteasr.providers.api_endpoints import parse_dashscope_address
     address = parse_dashscope_address(pasted)
     assert address.host == 'llm-abc123.cn-beijing.maas.aliyuncs.com'
     assert address.region == 'cn-beijing' and address.workspace_id == 'llm-abc123' and not address.legacy
@@ -228,7 +229,7 @@ def test_dashscope_workspace_host_any_pasted_form(pasted):
 
 
 def test_dashscope_legacy_region_workspace_id_and_wrong_hosts():
-    from twobyteasr.api_endpoints import EndpointInputError, parse_dashscope_address
+    from twobyteasr.providers.api_endpoints import EndpointInputError, parse_dashscope_address
     legacy = parse_dashscope_address('https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription')
     assert legacy.legacy and legacy.region == 'cn-beijing' and legacy.notes()
     singapore = parse_dashscope_address('dashscope-intl.aliyuncs.com')
@@ -254,13 +255,13 @@ def mosi_endpoint(**extra):
                                     'https://api.mosi.cn/v1/audio/transcriptions', 'https://api.mosi.cn/v1/v1',
                                     'https://platform.mosi.cn/app/api-keys/'])
 def test_mosi_base_url_never_doubles_v1(pasted):
-    from twobyteasr.mosi_asr import normalize_api_base, transcriptions_url
+    from twobyteasr.providers.mosi_asr import normalize_api_base, transcriptions_url
     assert normalize_api_base(pasted) == 'https://api.mosi.cn/v1'
     assert transcriptions_url(pasted) == 'https://api.mosi.cn/v1/audio/transcriptions'
 
 
 def test_mosi_keyterms_keep_spelling_and_official_limits():
-    from twobyteasr.mosi_asr import keyterm_hints
+    from twobyteasr.providers.mosi_asr import keyterm_hints
     terms = ['MOSS', 'SGLang', 'S0pp', 'MOSS', 'x' * 31] + [f'词{i}' for i in range(30)]
     hints = keyterm_hints(terms)
     assert hints['mosi_keyterms'][:3] == ['MOSS', 'SGLang', 'S0pp']
@@ -319,7 +320,7 @@ class MosiClient:
 
 
 def test_mosi_async_upload_poll_and_segment_rows(tmp_path):
-    from twobyteasr.mosi_asr import keyterm_hints, transcribe
+    from twobyteasr.providers.mosi_asr import keyterm_hints, transcribe
     client = MosiClient()
     endpoint = mosi_endpoint(**keyterm_hints(['MOSS', 'S0pp']))
     rows = transcribe(np.zeros(32000, dtype=np.float32), endpoint, tmp_path, client=client, sleep=lambda *_: None)
@@ -345,7 +346,7 @@ def test_mosi_async_upload_poll_and_segment_rows(tmp_path):
 
 def test_mosi_lost_upload_response_is_never_resubmitted(tmp_path):
     import requests
-    from twobyteasr.mosi_asr import transcribe
+    from twobyteasr.providers.mosi_asr import transcribe
     client = MosiClient(submit_error=requests.exceptions.ConnectionError('reset'))
     for _ in range(2):
         with pytest.raises(ASRProtocolError) as error:
@@ -357,7 +358,7 @@ def test_mosi_lost_upload_response_is_never_resubmitted(tmp_path):
 def test_mosi_interrupted_upload_is_uploaded_again_without_confirmation(tmp_path):
     """MOSI cannot accept a body whose closing boundary was never sent."""
     import requests
-    from twobyteasr.mosi_asr import transcribe
+    from twobyteasr.providers.mosi_asr import transcribe
 
     class Interrupted(MosiClient):
         def post(self, url, **kw):
@@ -397,7 +398,7 @@ def test_mosi_upload_is_not_bounded_by_the_connect_timeout(tmp_path, monkeypatch
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import NameOID
-    from twobyteasr import mosi_asr
+    from twobyteasr.providers import mosi_asr
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'isolated local fixture')])
@@ -474,7 +475,7 @@ def test_mosi_upload_is_not_bounded_by_the_connect_timeout(tmp_path, monkeypatch
 
 
 def test_mosi_insufficient_credits_is_a_definitive_rejection(tmp_path):
-    from twobyteasr.mosi_asr import transcribe
+    from twobyteasr.providers.mosi_asr import transcribe
     client = MosiClient(submit_status=402)
     with pytest.raises(ASRProtocolError, match='积分不足') as error:
         transcribe(np.zeros(16000, dtype=np.float32), mosi_endpoint(), tmp_path, client=client)
@@ -486,7 +487,7 @@ def test_mosi_insufficient_credits_is_a_definitive_rejection(tmp_path):
 
 
 def test_mosi_poll_failure_resumes_same_task(tmp_path):
-    from twobyteasr.mosi_asr import transcribe
+    from twobyteasr.providers.mosi_asr import transcribe
 
     class Flaky(MosiClient):
         def get(self, url, **kw):
@@ -504,7 +505,7 @@ def test_mosi_poll_failure_resumes_same_task(tmp_path):
 
 
 def test_mosi_failed_task_and_local_cancel_are_reported_honestly(tmp_path):
-    from twobyteasr.mosi_asr import transcribe
+    from twobyteasr.providers.mosi_asr import transcribe
     with pytest.raises(ASRProtocolError, match='积分账单'):
         transcribe(np.zeros(16000, dtype=np.float32), mosi_endpoint(), tmp_path / 'a',
                    client=MosiClient(statuses=['FAILED']), sleep=lambda *_: None)
@@ -528,7 +529,7 @@ def test_mosi_failed_task_and_local_cancel_are_reported_honestly(tmp_path):
 
 
 def test_mosi_long_audio_split_offsets_once_and_speakers_stay_request_local(tmp_path, monkeypatch):
-    from twobyteasr import mosi_asr
+    from twobyteasr.providers import mosi_asr
     monkeypatch.setattr(mosi_asr, 'MAX_AUDIO_SECONDS', 2)
     audio = np.zeros(16000 * 5, dtype=np.float32)
     ranges = mosi_asr.plan_ranges(audio, chunk_seconds=2)
@@ -550,7 +551,7 @@ def test_mosi_long_audio_split_offsets_once_and_speakers_stay_request_local(tmp_
 
 
 def test_mosi_key_check_reports_validity_and_model_access():
-    from twobyteasr.mosi_asr import check_key
+    from twobyteasr.providers.mosi_asr import check_key
 
     class Client:
         def __init__(self, code, models):
@@ -576,7 +577,7 @@ def cloud_only(**models):
 
 
 def test_cloud_only_plan_requires_no_local_runtime():
-    from twobyteasr.environment import required_environment_roles
+    from twobyteasr.system.environment import required_environment_roles
     assert required_environment_roles(cloud_only()) == []
     assert required_environment_roles(cloud_only(qwen_asr_backend='api')) == []
     assert required_environment_roles(cloud_only(firered_asr_backend='qwen_aligner')) == ['main']
@@ -584,7 +585,7 @@ def test_cloud_only_plan_requires_no_local_runtime():
 
 
 def test_cloud_only_never_starts_the_torch_probe(monkeypatch):
-    from twobyteasr import hardware
+    from twobyteasr.system import hardware
 
     def boom():
         raise AssertionError('torch probe must not start for a cloud-only plan')
@@ -595,7 +596,7 @@ def test_cloud_only_never_starts_the_torch_probe(monkeypatch):
 
 
 def test_cuda_error_names_the_selected_components(monkeypatch):
-    from twobyteasr import hardware
+    from twobyteasr.system import hardware
     monkeypatch.setattr(hardware, 'ready_torch_probe', lambda: {})
     monkeypatch.setattr(hardware, 'detect_cuda_runtime', lambda probe=None: hardware.CudaRuntimeStatus(
         False, 'gpu_or_driver_missing', '未检测到可用的 NVIDIA CUDA GPU。', '请检查驱动。'))
@@ -605,7 +606,7 @@ def test_cuda_error_names_the_selected_components(monkeypatch):
 
 
 def test_cloud_worker_runs_with_the_app_itself(monkeypatch, tmp_path):
-    from twobyteasr import cloud_api_worker
+    from twobyteasr.providers import cloud_api_worker
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     monkeypatch.setattr(sys, 'executable', r'C:\Apps\2ByteASR\2ByteASR.exe')
     assert cloud_api_worker.cloud_worker_command(tmp_path) == [r'C:\Apps\2ByteASR\2ByteASR.exe', '--asr-api-worker']
@@ -621,7 +622,7 @@ def test_cloud_worker_reads_a_chinese_path_request_on_a_gbk_windows(monkeypatch)
     backslash: ``Invalid \\escape: line 1 column 61 (char 60)``."""
     import io
     import json
-    from twobyteasr import cloud_api_worker
+    from twobyteasr.providers import cloud_api_worker
     source = r'H:\record\Bilibili\Bilibili\企鹅带带北极熊\2026-10-14 16-30-16 洛克！开门大吉升级了！.flv'
     request = json.dumps(dict(source_path=source, output='unused'), ensure_ascii=False).encode('utf-8')
     with pytest.raises(json.JSONDecodeError, match='Invalid'):
@@ -663,6 +664,111 @@ def test_aligner_worker_falls_back_to_cpu_float32():
     fake.cuda = FakeCuda(True)
     assert worker.select_device(fake, 'auto') == ('cuda:0', 'bf16')
     assert worker.select_device(fake, 'cpu') == ('cpu', 'f32')
+
+
+def test_aligner_load_maps_weights_read_only_or_uses_the_official_loader(monkeypatch, capsys):
+    """2026-10-15: the official loader runs inside read-only views; any problem there loads it the plain way.
+
+    The views themselves are tested in test_read_only_weights.py.
+    """
+    import contextlib
+    import importlib
+    from twobyteasr import read_only_weights
+    worker = importlib.import_module('qwen_aligner_worker')
+    calls = []
+
+    class Official:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            calls.append((path, kwargs))
+            return SimpleNamespace(model='model')
+
+    class Views:
+        def detach(self, *modules):
+            calls.append(('detach', modules))
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, 'qwen_asr', SimpleNamespace(Qwen3ForcedAligner=Official))
+    fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
+    official_call = ('m', {'local_files_only': True, 'device_map': 'cuda:0', 'dtype': 'bf16'})
+    monkeypatch.setattr(read_only_weights, 'ENABLED', True)
+    monkeypatch.setattr(read_only_weights, 'read_only_weight_files',
+                        lambda torch, **options: contextlib.nullcontext(Views()))
+    assert worker.load_aligner(Path('m'), 'cuda:0', 'bf16', fake_torch)[1] == 'read_only_map'
+    assert calls == [official_call, ('detach', ('model',))]
+
+    @contextlib.contextmanager
+    def broken(torch, **options):
+        raise ValueError('header')
+        yield
+
+    calls.clear()
+    monkeypatch.setattr(read_only_weights, 'read_only_weight_files', broken)
+    assert worker.load_aligner(Path('m'), 'cuda:0', 'bf16', fake_torch)[1] == 'official'
+    assert calls == [official_call]
+    assert '"read_only_load_failed"' in capsys.readouterr().out
+    monkeypatch.setattr(read_only_weights, 'ENABLED', False)
+    assert worker.load_aligner(Path('m'), 'cpu', 'f32', fake_torch)[1] == 'official'
+
+
+# The user's 2026-10-15 report: the aligner load stopped at Windows' commit limit.
+PAGE_FILE_FAILURE = ('QWEN3-ALIGNER worker failed (exit 1):\nstdout:\n'
+                     '[2BYTEASR_QWEN3_ALIGNER] {"event": "loading", "device": "cuda:0"}\n'
+                     '[2BYTEASR_QWEN3_ALIGNER] {"event": "failed", "error_type": "OSError", '
+                     '"detail": "页面文件太小，无法完成操作。 (os error 1455)"}\n\nstderr:\n')
+
+
+def test_aligner_page_file_failure_explains_itself_or_raises_for_readiness(monkeypatch):
+    from twobyteasr.recognition import asr
+    reviews = []
+
+    def fail(audio, jobs):
+        raise RuntimeError(PAGE_FILE_FAILURE)
+
+    monkeypatch.setattr(asr, 'run_qwen_aligner_worker', fail)
+    monkeypatch.setattr(asr, 'add_review_item', lambda *a, **kw: reviews.append(a))
+    segment = [{'start': 0.0, 'end': 2.0, 'text': '你好世界', 'speaker': 'S01'}]
+    audio = np.zeros(32000, np.float32)
+    assert asr.transcribe_qwen_aligner_reference(audio, segment, language='Chinese') == []
+    assert reviews[-1][1] == '时间轴模型失败' and '页面文件' in reviews[-1][2] and '系统管理的大小' in reviews[-1][2]
+    with pytest.raises(RuntimeError, match='os error 1455'):
+        asr.transcribe_qwen_aligner_reference(audio, segment, language='Chinese', raise_errors=True)
+    assert asr.windows_commit_limit_error('[WinError 1455] The paging file is too small for this operation to complete')
+    assert not asr.windows_commit_limit_error('CUDA out of memory')
+
+
+def _failed_event(detail, free_mb):
+    return 'stdout:\n[2BYTEASR_QWEN3_ALIGNER] ' + json.dumps({'event': 'failed', 'error_type': 'AcceleratorError',
+                                                             'detail': detail, 'free_vram_mb': free_mb})
+
+
+def test_cuda_out_of_memory_with_free_vram_counts_as_the_commit_limit():
+    """2026-10-15: at the commit limit GPU allocations fail too, with most of the VRAM free."""
+    from twobyteasr.recognition import asr
+    generic = 'CUDA error: out of memory\nSearch for `cudaErrorMemoryAllocation`'
+    assert asr.windows_commit_limit_error(_failed_event(generic, 14200))
+    assert not asr.windows_commit_limit_error(_failed_event(generic, 600))  # the GPU really was full
+    commit = 'CUDA out of memory. Tried to allocate 1.41 GiB. GPU 0 has a total capacity of 15.89 GiB of which 14.68 GiB is free.'
+    assert asr.windows_commit_limit_error(_failed_event(commit, 15000))
+    vram = 'CUDA out of memory. Tried to allocate 3.00 GiB. GPU 0 has a total capacity of 6.00 GiB of which 2.50 GiB is free.'
+    assert not asr.windows_commit_limit_error(_failed_event(vram, 2560))
+    assert not asr.windows_commit_limit_error(generic)  # no reading from the worker: unchanged
+    cublas = 'CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`'
+    assert asr.windows_commit_limit_error(_failed_event(cublas, 13200))
+    assert not asr.windows_commit_limit_error(_failed_event(cublas, 400))
+
+
+def test_aligner_worker_reports_memory_only_for_allocation_failures():
+    import importlib
+    import os
+    worker = importlib.import_module('qwen_aligner_worker')
+    assert worker.memory_facts(ValueError('header')) == {}
+    assert worker.memory_facts(RuntimeError('CUBLAS_STATUS_ALLOC_FAILED')) != {} or os.name != 'nt'
+    facts = worker.memory_facts(RuntimeError('CUDA error: out of memory'))
+    if os.name == 'nt':
+        assert 0 < facts['commit_total_mb'] <= facts['commit_limit_mb'] and facts['physical_total_mb'] > 0
 
 
 # --- Cloud transcript + local aligner -----------------------------------------------
@@ -731,8 +837,9 @@ class _FakeMosi(BaseHTTPRequestHandler):
 
 
 def test_real_worker_process_reaches_cloud_without_model_runtime(monkeypatch, tmp_path):
-    from twobyteasr import asr, asr_api_process
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition import asr
+    from twobyteasr.providers import asr_api_process
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     server = ThreadingHTTPServer(('127.0.0.1', 0), _FakeMosi)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -741,9 +848,9 @@ def test_real_worker_process_reaches_cloud_without_model_runtime(monkeypatch, tm
         context = RuntimeContext(job_id='job-loop', asr_endpoint_snapshot=endpoint,
                                  asr_settings_snapshot={'models': {}}, speaker_source='native')
         monkeypatch.setattr(asr, 'build_qwen_asr_context', lambda *a: '')
-        monkeypatch.setattr('twobyteasr.terminology.runtime_snapshot', lambda: SimpleNamespace(canonical_terms=[]))
+        monkeypatch.setattr('twobyteasr.glossary.terminology.runtime_snapshot', lambda: SimpleNamespace(canonical_terms=[]))
         # No managed model runtime is registered or needed.
-        monkeypatch.setattr('twobyteasr.runtime_registry.resolve_runtime_python',
+        monkeypatch.setattr('twobyteasr.system.runtime_registry.resolve_runtime_python',
                             lambda *a: (_ for _ in ()).throw(AssertionError('model runtime must not be used')))
         with activate_runtime_context(context):
             rows = asr_api_process.transcribe('fixture.wav', [dict(start=0, end=2, audio=(np.zeros(32000, np.float32), 16000))])

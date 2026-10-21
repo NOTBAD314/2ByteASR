@@ -22,9 +22,9 @@ def main():
         QT_SCALE_FACTOR='1', TWOBYTEASR_ACCEPTANCE_DIR=str(out), TWOBYTEASR_ACCEPTANCE_SCENARIO='speaker-workflow',
         TWOBYTEASR_STARTUP_PROJECT=str(out/'v1.2byteproj'), TWOBYTEASR_STARTUP_OPEN_STUDIO='1',
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', TWOBYTEASR_STARTUP_TRACE=str(out/'startup.jsonl'))
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
-    from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
-    from twobyteasr.studio_helpers import probe_media_identity
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
+    from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+    from twobyteasr.studio.studio_helpers import probe_media_identity
     media = root/'tmp/visible-playback-v2/media/subtitle-safe'
     if not all((media/f'V{i}-30s.mp4').is_file() for i in (1,2)):
         raise ValueError('Existing silent V1/V2 30s fixtures are required; no media is regenerated')
@@ -42,7 +42,7 @@ def main():
     clip.transform.position_y = .28
     hydrate_media_contract(project, probe_media_identity(str(media/'V2-30s.mp4')), source_path=str(media/'V2-30s.mp4'))
     save_project(project, out/'v2.2byteproj')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(root/'quick_start.py')]
     with (out/'process.log').open('w', encoding='utf8') as log:
         result = run_hidden_subprocess(command, cwd=str(root), env=os.environ.copy(), stdout=log, stderr=subprocess.STDOUT,

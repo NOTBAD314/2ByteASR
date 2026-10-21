@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from twobyteasr.web_theme_fonts import css_font_stack,offline_font_css
+from twobyteasr.caption_design.web_theme_fonts import css_font_stack,offline_font_css
 
 
 @pytest.mark.parametrize('stack,expected',[
@@ -22,7 +22,7 @@ def test_cubic_bytes_are_identical_in_html_and_export_asset():
 
 
 def test_archive_quotes_numbered_family_without_rewriting_saved_appearance():
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
     theme=WebThemeDocument.from_dict(dict(name='Cubic fixture',palette={'primary':'#FFFFDD','text':'#FFFFDD'},cueHtml='<div class="lettering">{{text}}</div>',
         cueCss='.lettering{font-family:var(--wt-font)}',appearance={'fontFamily':'Cubic 11, Source Han Sans SC'})).to_dict()
     assert theme['appearance']['fontFamily']=='Cubic 11, Source Han Sans SC'

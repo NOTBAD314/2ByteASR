@@ -1,5 +1,5 @@
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_edit_sequence import (EditSequence, VideoSegment, store_sequence,
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.timeline.studio_edit_sequence import (EditSequence, VideoSegment, store_sequence,
     sequence_of, projected_cues, split_at_playhead)
 
 
@@ -21,7 +21,7 @@ def signature(p):
 def test_cut_retains_right_captions_and_crossing_sentence_undo_reopen():
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_edit_commands import razor_video_command
+    from twobyteasr.timeline.studio_edit_commands import razor_video_command
     app = QApplication.instance() or QApplication([])
     p = recognition_project()
     before = signature(p)
@@ -73,7 +73,7 @@ def test_descendant_can_move_and_repeated_source_is_not_multiplied():
 
 def test_range_independent_persisted_and_invalid_is_not_clamped():
     import pytest
-    from twobyteasr.project_range import set_range, range_points, validated_range
+    from twobyteasr.projects.project_range import set_range, range_points, validated_range
     p = recognition_project()
     set_range(p,1234,None)
     assert validated_range(p) == (1234,20000)
@@ -88,8 +88,8 @@ def test_range_independent_persisted_and_invalid_is_not_clamped():
 
 
 def test_export_snapshot_does_not_reproject_or_read_stale_runtime():
-    from twobyteasr.export_timeline import export_project_snapshot
-    from twobyteasr.studio_runtime_state import state_for
+    from twobyteasr.exports.export_timeline import export_project_snapshot
+    from twobyteasr.projects.studio_runtime_state import state_for
     p=recognition_project()
     state_for(p)
     seq=split_at_playhead(sequence_of(p),10000)
@@ -108,8 +108,8 @@ def test_export_snapshot_does_not_reproject_or_read_stale_runtime():
 def test_export_ui_independent_marks_and_pre_submit_gate(tmp_path,monkeypatch):
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import studio_export_ui
-    from twobyteasr.project_range import range_points
+    from twobyteasr.exports import studio_export_ui
+    from twobyteasr.projects.project_range import range_points
     app=QApplication.instance() or QApplication([])
     monkeypatch.setattr(studio_export_ui,'QSettings',lambda *a:QSettings(str(tmp_path/'qt.ini'),QSettings.IniFormat))
     p=recognition_project()
@@ -128,8 +128,8 @@ def test_export_ui_independent_marks_and_pre_submit_gate(tmp_path,monkeypatch):
 
 def test_export_does_not_require_expired_preview_generation(tmp_path,monkeypatch):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.studio_export_ui import StudioExportWorkspace
-    from twobyteasr.project_range import set_range
+    from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+    from twobyteasr.projects.project_range import set_range
     app=QApplication.instance() or QApplication([])
     p=recognition_project();set_range(p,1000,2000)
     ui=StudioExportWorkspace(p,str(tmp_path/'expired.ass'))

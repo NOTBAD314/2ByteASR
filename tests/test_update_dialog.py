@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QPushButton
 
-from twobyteasr.updater import ComponentAction, UpdatePlan
+from twobyteasr.app.updater import ComponentAction, UpdatePlan
 
 
 @pytest.fixture(scope="module")
@@ -28,7 +28,7 @@ def _texts(dialog):
 
 
 def test_component_offer_lists_only_changed_parts(app):
-    from twobyteasr.ui import UpdateOfferDialog
+    from twobyteasr.app.ui import UpdateOfferDialog
 
     plan = UpdatePlan("components", (
         ComponentAction("app", "changed", 23 * 1024 * 1024, 23 * 1024 * 1024, 48_000_000),
@@ -48,7 +48,7 @@ def test_component_offer_lists_only_changed_parts(app):
 
 
 def test_setup_fallback_states_size_and_reason(app):
-    from twobyteasr.ui import UpdateOfferDialog
+    from twobyteasr.app.ui import UpdateOfferDialog
 
     plan = UpdatePlan("setup", (), 1_200_000_000, 1_200_000_000, "当前安装没有元件清单", ("moss",), ("moss",))
     dialog = UpdateOfferDialog(_check(plan))

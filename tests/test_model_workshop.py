@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton
 
-from twobyteasr.model_workshop import (
+from twobyteasr.local_models.model_workshop import (
     MODELS,
     ModelDownloadDialog,
     ModelWorkshopPage,
@@ -15,7 +15,7 @@ from twobyteasr.model_workshop import (
     installed_model_keys,
 )
 from PySide6.QtCore import QProcess, QSize
-from twobyteasr.ui import FramelessPopupCombo, populate_available_asr_choices
+from twobyteasr.app.ui import FramelessPopupCombo, populate_available_asr_choices
 
 
 ROOT = Path(__file__).parents[1]
@@ -34,8 +34,8 @@ def isolated_model_registry(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('saved_model',['','microsoft/mai-transcribe-2'])
 def test_mai_pending_mapping_never_claims_ready_from_a_preserved_key(monkeypatch,saved_model):
-    from twobyteasr.model_workshop import _metric_evidence
-    monkeypatch.setattr('twobyteasr.llm_config.read_asr_api_key',lambda *a:('preserved-key','test'))
+    from twobyteasr.local_models.model_workshop import _metric_evidence
+    monkeypatch.setattr('twobyteasr.providers.llm_config.read_asr_api_key',lambda *a:('preserved-key','test'))
     app=QApplication.instance() or QApplication([])
     page=ModelWorkshopPage(ROOT,{'models':{'qwen_asr_api_provider':'openrouter_word',
                                         'qwen_asr_api_model':saved_model,'primary_asr_backend':'api'}})
@@ -64,7 +64,7 @@ def test_installed_model_keys_requires_every_locked_file(tmp_path):
 
 def test_workshop_filters_roles_and_emits_real_backend_changes(monkeypatch):
     from types import SimpleNamespace
-    monkeypatch.setattr('twobyteasr.environment.fast_preflight',lambda role:SimpleNamespace(ok=True))
+    monkeypatch.setattr('twobyteasr.system.environment.fast_preflight',lambda role:SimpleNamespace(ok=True))
     app = QApplication.instance() or QApplication([])
     settings = {
         "models": {
@@ -108,8 +108,8 @@ def test_workshop_filters_roles_and_emits_real_backend_changes(monkeypatch):
 
 def test_workshop_exposes_api_presets_and_downloadable_adapter_candidates(monkeypatch):
     app = QApplication.instance() or QApplication([])
-    monkeypatch.setattr("twobyteasr.model_workshop.resolve_api_key", lambda _stage: ("", "missing"))
-    monkeypatch.setattr("twobyteasr.model_workshop.installed_model_keys", lambda _root: set())
+    monkeypatch.setattr("twobyteasr.local_models.model_workshop.resolve_api_key", lambda _stage: ("", "missing"))
+    monkeypatch.setattr("twobyteasr.local_models.model_workshop.installed_model_keys", lambda _root: set())
     page = ModelWorkshopPage(ROOT, {"models": {"qwen_asr_backend": "off"}})
     requested = []
     page.api_preset_requested.connect(requested.append)
@@ -125,7 +125,7 @@ def test_workshop_exposes_api_presets_and_downloadable_adapter_candidates(monkey
     }
     # The current long-file provider intentionally replaced the retired card.
     # Keep protocol/model/roles and real configuration-signal checks explicit.
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.app.ui import ASR_API_PRESETS
     assert 'qwen_api' not in page._cards
     qwen = page._cards['qwen31_filetrans'].model
     assert qwen.api_preset == 'qwen31_filetrans'
@@ -293,7 +293,7 @@ def test_download_result_sound_plays_once_for_final_outcome(monkeypatch):
     app = QApplication.instance() or QApplication([])
     model = next(model for model in MODELS if model.key == "sensevoice")
     sounds = []
-    monkeypatch.setattr("twobyteasr.model_workshop._play_download_result_sound", sounds.append)
+    monkeypatch.setattr("twobyteasr.local_models.model_workshop._play_download_result_sound", sounds.append)
 
     dialog = ModelDownloadDialog(ROOT, model)
     dialog._finished_v2(0, None)

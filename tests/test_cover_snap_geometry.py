@@ -1,6 +1,6 @@
 import unittest
 
-from twobyteasr.cover_snap.geometry import snap_axis
+from twobyteasr.cover.cover_snap.geometry import snap_axis
 
 
 class SnapAxisTests(unittest.TestCase):

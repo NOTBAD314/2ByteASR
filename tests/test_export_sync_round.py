@@ -9,15 +9,15 @@ import av
 import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment, store_sequence, projected_cues
-from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
-from twobyteasr.export_timeline import write_export_ass
-from twobyteasr.video_export import capture_video_graph
-from twobyteasr.studio_render import RenderJob, RenderSettings, run_render_job
-from twobyteasr.export_preferences import output_basename, clean_affix
-from twobyteasr.export_progress import ExportProgress
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence, projected_cues
+from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
+from twobyteasr.exports.export_timeline import write_export_ass
+from twobyteasr.exports.video_export import capture_video_graph
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, run_render_job
+from twobyteasr.exports.export_preferences import output_basename, clean_affix
+from twobyteasr.exports.export_progress import ExportProgress
 
 
 def test_static_gradient_progress_reserves_majority_for_actual_encoding():
@@ -27,7 +27,7 @@ def test_static_gradient_progress_reserves_majority_for_actual_encoding():
     value,_=progress.update({'stage':'encode','out_time_us':'1760000'})
     assert 5<value<10
     assert progress.update({'stage':'mux','percent':100})[0]==100
-from twobyteasr.speaker_evidence import needs_moss_speakers, fuse_moss_speakers
+from twobyteasr.recognition.speaker_evidence import needs_moss_speakers, fuse_moss_speakers
 
 FFMPEG = Path(__file__).resolve().parents[1]/'tools/ffmpeg/bin/ffmpeg.exe'
 

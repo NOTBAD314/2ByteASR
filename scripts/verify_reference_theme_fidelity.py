@@ -9,13 +9,13 @@ def main():
     parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
     out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen')
-    from twobyteasr.web_theme import import_theme_archive,theme_archive_html
-    from twobyteasr.theme_draft import canonical_theme
-    from twobyteasr.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.web_theme import import_theme_archive,theme_archive_html
+    from twobyteasr.caption_design.theme_draft import canonical_theme
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
     from PySide6.QtWidgets import QApplication
     app=QApplication([])
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.advanced_renderer import compile_composition_data
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.rendering.advanced_renderer import compile_composition_data
     from PIL import Image
     import numpy as np
     sha=lambda value:hashlib.sha256(value).hexdigest()

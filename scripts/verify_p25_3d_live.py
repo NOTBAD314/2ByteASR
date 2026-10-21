@@ -16,10 +16,10 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QApplication, QMainWindow
 
-from twobyteasr.advanced_preview import AdvancedPreviewCache
-from twobyteasr.studio_project import load_project
-from twobyteasr.studio_ui import FillEditorDialog, FontPickerDialog, SubtitleStudioPage
-from twobyteasr.ui import APP_QSS
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewCache
+from twobyteasr.projects.studio_project import load_project
+from twobyteasr.studio.studio_ui import FillEditorDialog, FontPickerDialog, SubtitleStudioPage
+from twobyteasr.app.ui import APP_QSS
 
 PROJECT = ROOT / "tmp" / "p25.3c" / "mixed-authoritative-visuals.2byteproj"
 EVIDENCE = ROOT / "screenshots" / "p25.3d"

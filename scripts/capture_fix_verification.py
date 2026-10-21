@@ -28,8 +28,8 @@ from PySide6.QtCore import QTimer, Qt  # noqa: E402
 
 import moss_firered_pipeline  # noqa: E402
 import subtitle_core  # noqa: E402
-import twobyteasr.ui as ui  # noqa: E402
-from twobyteasr.model_workshop import ModelPickerPanel, ModelWorkshopPage  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
+from twobyteasr.local_models.model_workshop import ModelPickerPanel, ModelWorkshopPage  # noqa: E402
 
 OUT_DIR = ROOT / "screenshots" / "ui_fixes"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -139,7 +139,7 @@ def main() -> int:
     # 5) Technical Info via ModalHost (first screen order + no yellow lines + benchmark + wrap)
     try:
         host = window._modal_host
-        from twobyteasr.model_workshop import ModelTechnicalDialog
+        from twobyteasr.local_models.model_workshop import ModelTechnicalDialog
         cards = getattr(window.workshop_page, "_cards", {})
         for index, key in enumerate(("moss", "firered", "qwen_local"), start=1):
             model = cards[key].model

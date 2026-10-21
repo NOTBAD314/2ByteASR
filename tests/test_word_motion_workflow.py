@@ -6,12 +6,12 @@ import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
 
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, SubtitleStyle, save_project, load_project
-from twobyteasr.motion_application import motion_command
-from twobyteasr.word_animation import build_word_animation, word_state
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.effect_dsl import builtin_effects
-from twobyteasr.ass_compiler import compile_ass
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, SubtitleStyle, save_project, load_project
+from twobyteasr.caption_style.motion_application import motion_command
+from twobyteasr.caption_style.word_animation import build_word_animation, word_state
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.effect_dsl import builtin_effects
+from twobyteasr.rendering.ass_compiler import compile_ass
 
 
 @pytest.fixture(scope='module')
@@ -84,8 +84,8 @@ def test_effect_edit_is_immutable_outside_scope(app):
 
 
 def test_snapshot_consumes_cue_effect_and_live_words(app):
-    from twobyteasr.advanced_live_renderer import render_live_snapshot
-    from twobyteasr.studio_live_canvas import compiled_scene_for_snapshot
+    from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot
+    from twobyteasr.rendering.studio_live_canvas import compiled_scene_for_snapshot
     p = fixture_project()
     motion_command(p, ['a'], motion=builtin_effects()['float_up'], words={'type': 'word_reveal'}).redo()
     snap = build_visual_cue_snapshot(p, 'a')
@@ -109,9 +109,9 @@ def test_stop_motion_is_explicit_and_preserves_word_mode(app):
 
 
 def test_segment_and_frozen_revision_keep_acoustic_clock(app):
-    from twobyteasr.advanced_renderer import _native_segment_project
-    from twobyteasr.ass_compiler import compile_ass_revision
-    from twobyteasr.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.advanced_renderer import _native_segment_project
+    from twobyteasr.rendering.ass_compiler import compile_ass_revision
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
     p = fixture_project()
     motion_command(p, ['a'], words={'type': 'word_reveal'}).redo()
     assert compile_ass_revision(StudioRevisionStore(p).render) == compile_ass(p)
@@ -127,8 +127,8 @@ def test_segment_and_frozen_revision_keep_acoustic_clock(app):
 
 
 def test_advanced_excerpt_and_type_size_match_preview(app):
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.advanced_renderer import compile_composition_data
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.rendering.advanced_renderer import compile_composition_data
     p = fixture_project()
     p.style_recipes['default'] = StyleRecipe(name='Gradient', engine='remotion', colors={
         'fill': {'type':'linear-gradient','stops':[{'position':0,'color':'#FFFFFFFF'},
@@ -159,7 +159,7 @@ def test_english_characters_grouped_and_short_cue(app):
 
 
 def test_custom_native_preset_round_trip(app, tmp_path):
-    from twobyteasr.motion_library import MotionPresetStore, MotionPreset
+    from twobyteasr.caption_style.motion_library import MotionPresetStore, MotionPreset
     store = MotionPresetStore(tmp_path)
     effect = builtin_effects()['soft_pop']
     effect['word_highlight'] = {'type':'word_reveal'}

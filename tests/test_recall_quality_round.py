@@ -26,7 +26,7 @@ from subtitle_core import (
     SubtitleCue,
     normalize_cue_times,
 )
-from twobyteasr.correction import split_items_for_api
+from twobyteasr.subtitle_rules.correction import split_items_for_api
 
 
 S03_LONG = (
@@ -213,13 +213,13 @@ def test_mid_word_repair_moves_cut_across_breath_gap():
     # 2026-09-03 用户反馈“缺首字挂在上一块末尾”：651.7s 真实案例。
     # 两段间有 0.9s 换气间隙（旧门 >0.75s 直接放弃），词“面对”被 MOSS 原始
     # 段边界切开。挪切点不合并字幕，必须跨换气级间隙修复。
-    from twobyteasr.segmentation import repair_mid_word_adjacent_cues
+    from twobyteasr.subtitle_rules.segmentation import repair_mid_word_adjacent_cues
 
     left = SubtitleCue(1, 651.68, 654.60, "就是封住更多的这个你的这个抵抗面", speaker="S02")
     right = SubtitleCue(2, 655.50, 657.40, "对对你必须同时抵抗他俩", speaker="S02")
     # A text-only SRT cannot supply the time of the moved word. This fixture
     # now supplies explicit constructed word anchors; it is not an audio audit.
-    from twobyteasr.models import SpeechSegment, WordUnit
+    from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
     text = legacy.content_only(left.text + right.text)
     words = [WordUnit(651.68+i*.17,651.68+(i+1)*.17,char,1) for i,char in enumerate(text)]
     source = SpeechSegment(1,left.start,right.end,text,1,words,speaker='S02')
@@ -240,7 +240,7 @@ def test_mid_word_repair_moves_cut_across_breath_gap():
 
 
 def test_mid_word_repair_untouched_across_long_silence():
-    from twobyteasr.segmentation import repair_mid_word_adjacent_cues
+    from twobyteasr.subtitle_rules.segmentation import repair_mid_word_adjacent_cues
 
     left = SubtitleCue(1, 100.0, 103.0, "我这边已经讲完了抵抗面", speaker="S01")
     right = SubtitleCue(2, 108.0, 110.0, "对对你必须同时抵抗", speaker="S01")
@@ -249,7 +249,7 @@ def test_mid_word_repair_untouched_across_long_silence():
 
 
 def test_mid_word_repair_respects_timing_lock():
-    from twobyteasr.segmentation import repair_mid_word_adjacent_cues
+    from twobyteasr.subtitle_rules.segmentation import repair_mid_word_adjacent_cues
 
     left = SubtitleCue(
         1, 651.68, 654.60, "就是封住更多的这个你的这个抵抗面",
@@ -262,7 +262,7 @@ def test_mid_word_repair_respects_timing_lock():
 
 def test_fallback_group_resplits_long_segments_for_comfort():
     # 本地回退不再保留 13-16 字的 MOSS 原句：单行放不下会被播放器折行。
-    from twobyteasr.grouping import fallback_group
+    from twobyteasr.subtitle_rules.grouping import fallback_group
 
     text = "然后北极熊教练组的阵容组建部分"
     segment = legacy.SpeechSegment(1, 30.0, 33.2, text, 0.9, [], speaker="S01")
@@ -275,7 +275,7 @@ def test_fallback_group_resplits_long_segments_for_comfort():
 
 
 def test_fallback_group_keeps_short_utterances_verbatim():
-    from twobyteasr.grouping import fallback_group
+    from twobyteasr.subtitle_rules.grouping import fallback_group
 
     segment = legacy.SpeechSegment(1, 10.0, 12.0, "到底有哪些值得关注的地方", 0.9, [], speaker="S01")
     cues = fallback_group([segment])
@@ -287,12 +287,12 @@ def test_provider_timeout_does_not_open_circuit(monkeypatch):
     import time
 
     import pytest
-    from twobyteasr.ai_providers import AITransport, AIProviderError, ProviderStatus
-    from twobyteasr.provider_service import (
+    from twobyteasr.providers.ai_providers import AITransport, AIProviderError, ProviderStatus
+    from twobyteasr.providers.provider_service import (
         ProviderHealthState,
         ProviderService,
     )
-    from twobyteasr.resource_governor import ResourceGovernor
+    from twobyteasr.system.resource_governor import ResourceGovernor
 
     class _TimeoutAdapter:
         provider_id = "fixture"
@@ -308,7 +308,7 @@ def test_provider_timeout_does_not_open_circuit(monkeypatch):
             raise AIProviderError("AI CLI 请求超时。", category="timeout")
 
     monkeypatch.setattr(
-        "twobyteasr.provider_service.adapter_for_stage",
+        "twobyteasr.providers.provider_service.adapter_for_stage",
         lambda *_args, **_named: _TimeoutAdapter(),
     )
     service = ProviderService(
@@ -330,8 +330,8 @@ def test_provider_timeout_does_not_open_circuit(monkeypatch):
 
 def test_history_page_qss_follows_active_theme():
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.recognition_history import build_history_page_qss
-    from twobyteasr.ui_theme import theme_definition
+    from twobyteasr.recognition.recognition_history import build_history_page_qss
+    from twobyteasr.design.ui_theme import theme_definition
 
     QApplication.instance() or QApplication([])
     light = build_history_page_qss(theme_definition("warm"))

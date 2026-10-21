@@ -9,8 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-from twobyteasr.export_media import MediaIndex, ExportMediaError, probe_media, SequentialExportDecoder
-from twobyteasr import video_export
+from twobyteasr.exports.export_media import MediaIndex, ExportMediaError, probe_media, SequentialExportDecoder
+from twobyteasr.exports import video_export
 
 
 def make_job(tmp_path, *, start=0,duration=2.117,full_ms=223296,fps=60):
@@ -96,7 +96,7 @@ def test_clip_outside_requested_samples_not_probed(tmp_path,monkeypatch):
 
 
 def test_range_without_active_video_keeps_empty_index_and_raster_route(tmp_path,monkeypatch):
-    from twobyteasr.studio_render import RenderJob,RenderSettings
+    from twobyteasr.exports.studio_render import RenderJob,RenderSettings
     original=make_job(tmp_path,full_ms=1000)
     job=RenderJob(original.media_path,str(tmp_path/'unused.ass'),original.output_path,
         RenderSettings(fps=60,audio_codec='none'),start_seconds=2.,duration_seconds=.2,
@@ -116,7 +116,7 @@ def test_transition_expanded_handle_is_checked_on_same_raster_clock(tmp_path,mon
     clip=job.video_graph['video_tracks'][0]['clips'][0]
     clip.update(timeline_in_ms=1000,timeline_out_ms=2000,source_in_ms=500,source_out_ms=1500)
     # Drive the actual shared production transition-window seam contract.
-    from twobyteasr import studio_transitions
+    from twobyteasr.timeline import studio_transitions
     window=dict(clip,timeline_in_ms=900,source_in_ms=400)
     monkeypatch.setattr(studio_transitions,'transition_windows',lambda *args:{('V1','primary'):window})
     install_index(monkeypatch,job,index_for(job.media_path))
@@ -125,7 +125,7 @@ def test_transition_expanded_handle_is_checked_on_same_raster_clock(tmp_path,mon
 
 
 def test_real_media_audio_tail_short_and_full_decoder_requests(tmp_path):
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     root=Path(__file__).resolve().parents[1]
     ffmpeg=root/'tools/ffmpeg/bin/ffmpeg.exe'
     if not ffmpeg.is_file():ffmpeg=root/'prototype/runtime/ffmpeg/ffmpeg.exe'

@@ -4,9 +4,9 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker
-from twobyteasr.studio_motion_browser import MotionBrowserDialog
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker
+from twobyteasr.caption_style.studio_motion_browser import MotionBrowserDialog
 
 
 def make_page(tmp_path):
@@ -105,8 +105,8 @@ def test_selected_scope_preserves_different_looks_and_appearance_edits(tmp_path)
 
 
 def test_saved_authored_motion_replaces_native_without_changing_words(tmp_path):
-    from twobyteasr.motion_library import MotionPreset
-    from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+    from twobyteasr.caption_style.motion_library import MotionPreset
+    from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
     app, page = make_page(tmp_path)
     try:
         page._queue_advanced_preview = lambda *args, **kwargs: None

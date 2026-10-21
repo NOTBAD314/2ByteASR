@@ -1,8 +1,8 @@
 import copy
 import pytest
-from twobyteasr.theme_motion import validate_motion_spec
-from twobyteasr.motion_ownership import MotionOwnershipError, motion_schedule
-from twobyteasr.theme_dom import selector_targets
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.motion_ownership import MotionOwnershipError, motion_schedule
+from twobyteasr.caption_design.theme_dom import selector_targets
 
 HTML='<div class="device"><div class="text alias">{{text}}</div><i class="lamp"></i></div>'
 

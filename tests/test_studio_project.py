@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.ass_compiler import compile_ass, compile_txt
-from twobyteasr.models import SubtitleCue
-from twobyteasr.studio_project import (
+from twobyteasr.rendering.ass_compiler import compile_ass, compile_txt
+from twobyteasr.recognition.transcript_data import SubtitleCue
+from twobyteasr.projects.studio_project import (
     PROJECT_SCHEMA_VERSION,
     ProjectValidationError,
     StudioCue,
@@ -203,7 +203,7 @@ def test_style_position_round_trip_emits_ass_override(tmp_path):
 
     loaded = load_project(save_project(project, tmp_path / "positioned.2byteproj"))
     assert (loaded.styles[0].position_x, loaded.styles[0].position_y) == (731, 882)
-    from twobyteasr.ass_font_units import ass_font_style
+    from twobyteasr.rendering.ass_font_units import ass_font_style
     native=ass_font_style(loaded.styles[0],1920,1080)
     assert f"\\pos({round(native.position_x,2):g},{round(native.position_y,2):g})" in compile_ass(loaded)
 
@@ -224,7 +224,7 @@ def test_live_preview_payload_contains_editable_style_values():
         f"Default,{style.font_family},130,&H000000FF,&H000000FF,&H00000000"
         in ass
     )
-    from twobyteasr.ass_font_units import ass_font_style
+    from twobyteasr.rendering.ass_font_units import ass_font_style
     native=ass_font_style(style,1920,1080)
     assert f"\\pos({round(native.position_x,2):g},{round(native.position_y,2):g})" in ass
     assert "Dialogue: 0,0:00:00.10" in ass
@@ -360,7 +360,7 @@ def test_p74c_open_time_hydrate_repairs_zero_duration_recognition_project(tmp_pa
     assert asset.duration_ms == 0
     assert project.video_tracks[0].clips[0].timeline_out_ms == 0
 
-    from twobyteasr.studio_project import hydrate_media_contract
+    from twobyteasr.projects.studio_project import hydrate_media_contract
 
     hydrate_media_contract(
         project,
@@ -393,7 +393,7 @@ def test_p74c_zero_duration_project_survives_probe_failure_without_exception(tmp
         raise RuntimeError("ffprobe unavailable")
 
     monkeypatch.setattr(
-        "twobyteasr.studio_helpers.probe_media_identity", _fail
+        "twobyteasr.studio.studio_helpers.probe_media_identity", _fail
     )
     project = project_from_runtime_cues(str(media), [])
     assert "media_contract_probe_error" in project.generation_metadata
@@ -404,8 +404,8 @@ def test_p74c_zero_duration_project_survives_probe_failure_without_exception(tmp
 
 
 def test_p74c_linked_av_edits_move_trim_and_remove_in_lockstep(tmp_path):
-    from twobyteasr.studio_project import hydrate_media_contract
-    from twobyteasr.studio_media_pool import (
+    from twobyteasr.projects.studio_project import hydrate_media_contract
+    from twobyteasr.timeline.studio_media_pool import (
         add_media_asset,
         add_video_clip,
         create_video_track,
@@ -463,7 +463,7 @@ def test_p74c_linked_av_edits_move_trim_and_remove_in_lockstep(tmp_path):
 
     # Removing the video clip drops its linked audio clip, never the whole A2.
     remove_video_clip(project, "V2", v2_clip.id)
-    from twobyteasr.studio_project import sync_linked_av_contract
+    from twobyteasr.projects.studio_project import sync_linked_av_contract
 
     sync_linked_av_contract(project)
     assert a2.clips == []
@@ -471,8 +471,8 @@ def test_p74c_linked_av_edits_move_trim_and_remove_in_lockstep(tmp_path):
 
 
 def test_p74c_pure_audio_asset_gets_standalone_lane_without_fake_video(tmp_path):
-    from twobyteasr.studio_media_pool import add_media_asset
-    from twobyteasr.studio_project import sync_linked_av_contract
+    from twobyteasr.timeline.studio_media_pool import add_media_asset
+    from twobyteasr.projects.studio_project import sync_linked_av_contract
 
     primary = tmp_path / "one.mp4"
     primary.write_bytes(b"a")
@@ -631,7 +631,7 @@ def test_p74c_create_studio_outputs_hydrates_without_constructed_asset(tmp_path,
     txt = tmp_path / "game.txt"
     txt.write_text("hello", encoding="utf-8")
     monkeypatch.setattr(
-        "twobyteasr.studio_helpers.probe_media_identity",
+        "twobyteasr.studio.studio_helpers.probe_media_identity",
         lambda path: _real_media_identity(str(path)),
     )
     outputs = create_studio_outputs(

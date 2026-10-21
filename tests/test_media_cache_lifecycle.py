@@ -10,15 +10,15 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.indexed_media import IndexedMediaCache
-from twobyteasr.overlay_buffer import OverlayBuffer
-from twobyteasr.overlay_session import ensure_overlay_session, register_overlay_worker, retire_overlay_session
-from twobyteasr.storage_service import StorageService
+from twobyteasr.media.indexed_media import IndexedMediaCache
+from twobyteasr.rendering.overlay_buffer import OverlayBuffer
+from twobyteasr.rendering.overlay_session import ensure_overlay_session, register_overlay_worker, retire_overlay_session
+from twobyteasr.storage.storage_service import StorageService
 
 
 @pytest.fixture
 def storage(tmp_path, monkeypatch):
-    import twobyteasr.storage_service as module
+    import twobyteasr.storage.storage_service as module
     service = StorageService(roots=(tmp_path,), state_root=tmp_path/'state')
     monkeypatch.setattr(module, 'StorageService', lambda: service)
     return service
@@ -124,7 +124,7 @@ class DelayedController:
 
 
 def test_sync_overlay_ack_protects_two_slots_and_reuses_identical_frame(tmp_path, storage, monkeypatch):
-    from twobyteasr import studio_video_canvas as module
+    from twobyteasr.studio import studio_video_canvas as module
     app=QApplication.instance() or QApplication([])
     monkeypatch.setattr(module, 'studio_data_root', lambda:tmp_path)
     canvas=module.MpvCanvas();controller=DelayedController();canvas.controller=controller

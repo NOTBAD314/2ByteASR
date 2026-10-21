@@ -3,7 +3,7 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import time
 from pathlib import Path
 from PySide6.QtWidgets import QApplication
-from twobyteasr.video_filmstrip import FilmstripCache,FilmstripView,filmstrip_tiles
+from twobyteasr.studio.video_filmstrip import FilmstripCache,FilmstripView,filmstrip_tiles
 
 
 def test_trim_rate_and_zoom_select_source_seconds_without_gaps():
@@ -16,7 +16,7 @@ def test_trim_rate_and_zoom_select_source_seconds_without_gaps():
 
 def test_async_decode_disk_reuse_and_viewport_cancellation(tmp_path):
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     source=tmp_path/'silent.mp4'
     run_hidden_subprocess([str(Path(__file__).resolve().parents[1]/'tools/ffmpeg/bin/ffmpeg.exe'),'-v','error','-y',
         '-f','lavfi','-i','testsrc2=s=320x180:r=30:d=4','-c:v','libx264','-preset','ultrafast',str(source)],

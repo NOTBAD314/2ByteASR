@@ -12,10 +12,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QVBoxLayout, QWidget
 
-from twobyteasr.cover_document import CoverDocument
-from twobyteasr.cover_editor import CoverEditor
-from twobyteasr.cover_local_library import LocalCoverLibrary
-from twobyteasr.cover_studio import install_cover_button
+from twobyteasr.cover.cover_document import CoverDocument
+from twobyteasr.cover.cover_editor import CoverEditor
+from twobyteasr.cover.cover_local_library import LocalCoverLibrary
+from twobyteasr.cover.cover_studio import install_cover_button
 
 
 @pytest.fixture(scope='module')
@@ -149,13 +149,13 @@ def test_studio_has_only_three_local_entries_without_runtime_or_browser(app, mon
     second = page.cover_controller.show_editor(document())
     assert second is not first and first.session.document.layers[-1].text == '未保存内容'
     assert not any('GIMP' in action.text() for action in second.cover_actions.values())
-    from twobyteasr.cover_workbench import CoverWorkbench
+    from twobyteasr.cover.cover_workbench import CoverWorkbench
     assert CoverWorkbench is CoverEditor
 
 
 def test_studio_template_selection_opens_full_local_copy(tmp_path, app, monkeypatch):
-    from twobyteasr.cover_templates_ui import TemplatePicker
-    from twobyteasr import cover_local_library
+    from twobyteasr.cover.cover_templates_ui import TemplatePicker
+    from twobyteasr.cover import cover_local_library
     library = LocalCoverLibrary(tmp_path / 'library')
     doc = document(); entry = library.save_native('可选模板', doc, png())
     monkeypatch.setattr(cover_local_library, 'LocalCoverLibrary', lambda: library)
@@ -171,7 +171,7 @@ def test_studio_template_selection_opens_full_local_copy(tmp_path, app, monkeypa
 
 
 def test_current_screenshot_enters_local_editor_without_choice_page(app, monkeypatch):
-    from twobyteasr import export_timeline, video_export, frame_export
+    from twobyteasr.exports import export_timeline, video_export, frame_export
     page = QWidget(); page.save_state = QLabel(page)
     page.project = SimpleNamespace(media=SimpleNamespace(path='fixture.mp4'))
     page.timeline = SimpleNamespace(playhead_ms=8250)

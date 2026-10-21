@@ -33,7 +33,7 @@ sys.path.insert(0, str(ROOT))
 
 
 def make_build(args) -> None:
-    from twobyteasr.update_manifest import COMPONENTS_FILENAME, build_installed_manifest, file_sha256, parse_version
+    from twobyteasr.app.update_manifest import COMPONENTS_FILENAME, build_installed_manifest, file_sha256, parse_version
     source = Path(args.source).resolve()
     out = Path(args.out).resolve()
     if out.exists():

@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 import subtitle_core
-from twobyteasr import asr
-from twobyteasr.asr import (
+from twobyteasr.recognition import asr
+from twobyteasr.recognition.asr import (
     _api_transcription_rows,
     _extract_transcription_segments,
     _extract_transcription_words,
@@ -163,7 +163,7 @@ def test_verbose_json_rejection_falls_back_to_plain_json():
 
 def _install_endpoint(monkeypatch, endpoint):
     monkeypatch.setattr(
-        "twobyteasr.llm_config.qwen_asr_endpoint_from_settings",
+        "twobyteasr.providers.llm_config.qwen_asr_endpoint_from_settings",
         lambda settings: dict(endpoint),
     )
     monkeypatch.setattr(asr, "CLOUD_BATCH_WORKERS", 2)
@@ -253,7 +253,7 @@ def test_attach_review_completion_log_names_provider(monkeypatch, capsys):
 
 def test_pipeline_stage_label_logic_for_api_review(monkeypatch, capsys):
     """复刻 run_qwen_stage 的标签分支：api → 在线 ASR API 文字复核（display）。"""
-    from twobyteasr.llm_config import asr_api_display, qwen_asr_endpoint_from_settings
+    from twobyteasr.providers.llm_config import asr_api_display, qwen_asr_endpoint_from_settings
 
     settings = {
         "models": {
@@ -270,7 +270,7 @@ def test_pipeline_stage_label_logic_for_api_review(monkeypatch, capsys):
 
 
 def test_validate_endpoint_messages_are_provider_scoped():
-    from twobyteasr.llm_config import validate_qwen_asr_endpoint
+    from twobyteasr.providers.llm_config import validate_qwen_asr_endpoint
 
     with pytest.raises(RuntimeError) as excinfo:
         validate_qwen_asr_endpoint(

@@ -18,8 +18,8 @@ def main():
     from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSettings, QTimer
     from PySide6.QtGui import QColor, QImage, QPainter
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.cover_document import CoverDocument
-    from twobyteasr.cover_editor import CoverEditor
+    from twobyteasr.cover.cover_document import CoverDocument
+    from twobyteasr.cover.cover_editor import CoverEditor
 
     QSettings.setDefaultFormat(QSettings.IniFormat)
     QSettings.setPath(QSettings.IniFormat, QSettings.UserScope,

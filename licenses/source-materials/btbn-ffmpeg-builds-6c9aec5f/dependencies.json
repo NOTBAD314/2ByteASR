@@ -1,0 +1,1733 @@
+{
+ "format": "2ByteASR BtbN FFmpeg dependency manifest",
+ "schema_version": 1,
+ "checked_on": "2026-10-14",
+ "build": {
+  "project": "https://github.com/BtbN/FFmpeg-Builds",
+  "tag": "autobuild-2026-09-30-13-08",
+  "commit": "6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b",
+  "target": "win64",
+  "variant": "gpl",
+  "addin": "9.0",
+  "archive": "ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip",
+  "archive_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-30-13-08/ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip",
+  "archive_sha256": "a0e45723c72141975f51d8666302e614711745f3102b704ca3f82c897a58d278",
+  "archive_bytes": 194034585
+ },
+ "ffmpeg": {
+  "repo": "https://github.com/FFmpeg/FFmpeg.git",
+  "branch": "release/9.0",
+  "commit": "2a571b606854520cf89804d8030c8b328e621689",
+  "describe": "n9.0.2-17-g2a571b6068",
+  "patches": "none (BtbN clones the branch and runs configure; see build.sh)"
+ },
+ "toolchain": {
+  "reported": "gcc 16.2.0 (crosstool-NG 1.29.0.7_b1a94f6)",
+  "pinned_in_scripts": false,
+  "note": "images/base-win64 clones crosstool-NG at image build time; Rust comes from rustup stable at image build time. Not part of GPLv3 Corresponding Source (generally available compilers); GCC runtime libraries are under the GCC Runtime Library Exception."
+ },
+ "build_patches": [
+  "patches/aom/0001-Fall-back-to-built-in-vmaf-model-on-load-failure.patch",
+  "patches/aribb24/12.patch",
+  "patches/aribb24/13.patch"
+ ],
+ "nested_pins": "Submodules, shaderc utils/git-sync-deps (DEPS file), glib meson subprojects, opus model download (checksum in autogen), and Rust crates (Cargo.lock, cargo vendor) are fixed by the upstream repository at the pinned commit.",
+ "dependencies": [
+  {
+   "script": "scripts.d/10-mingw-std-threads.sh",
+   "repo": "https://github.com/meganz/mingw-std-threads.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "c931bac289dd431f1dd30fc4a5d1a7be36668073",
+   "commit": "c931bac289dd431f1dd30fc4a5d1a7be36668073",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/meganz/mingw-std-threads/commit/c931bac289dd431f1dd30fc4a5d1a7be36668073",
+    "resolved": "c931bac289dd431f1dd30fc4a5d1a7be36668073",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/10-mingw.sh",
+   "repo": "https://git.code.sf.net/p/mingw-w64/mingw-w64.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "57b595039040eaa15bece85b7cc71d952281b269",
+   "commit": "57b595039040eaa15bece85b7cc71d952281b269",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "SourceForge commit page",
+    "url": "https://sourceforge.net/p/mingw-w64/mingw-w64/ci/57b595039040eaa15bece85b7cc71d952281b269/",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/20-libiconv.sh",
+   "repo": "https://git.savannah.gnu.org/git/libiconv.git",
+   "mirror": "git://git.git.savannah.gnu.org/libiconv.git",
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "1df3087ba8110c7f3ed3eb5f8869b814dbbe00b0",
+   "commit": "1df3087ba8110c7f3ed3eb5f8869b814dbbe00b0",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "git fetch --depth=1 of the exact commit (cgit web returned 502)",
+    "url": "https://git.savannah.gnu.org/git/libiconv.git",
+    "commit_date": "2026-08-20T17:55:32+02:00",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/20-libiconv.sh",
+   "repo": "https://git.savannah.gnu.org/git/gnulib.git",
+   "mirror": "https://github.com/coreutils/gnulib.git",
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "eb72eb6f75f5621c5d648acd11467fd124584617",
+   "commit": "eb72eb6f75f5621c5d648acd11467fd124584617",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/coreutils/gnulib/commit/eb72eb6f75f5621c5d648acd11467fd124584617",
+    "resolved": "eb72eb6f75f5621c5d648acd11467fd124584617",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/20-zlib.sh",
+   "repo": "https://github.com/madler/zlib.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "767c4c947852e143f582c85f14cf573411df1b35",
+   "commit": "767c4c947852e143f582c85f14cf573411df1b35",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/madler/zlib/commit/767c4c947852e143f582c85f14cf573411df1b35",
+    "resolved": "767c4c947852e143f582c85f14cf573411df1b35",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-fftw3.sh",
+   "repo": "https://github.com/FFTW/fftw3.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "93ed4c786934aec9946f8dda4b4e3eb08f8be41c",
+   "commit": "93ed4c786934aec9946f8dda4b4e3eb08f8be41c",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/FFTW/fftw3/commit/93ed4c786934aec9946f8dda4b4e3eb08f8be41c",
+    "resolved": "93ed4c786934aec9946f8dda4b4e3eb08f8be41c",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-fribidi.sh",
+   "repo": "https://github.com/fribidi/fribidi.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "4c914a92e94a9fe4f30ae83a1130099841566448",
+   "commit": "4c914a92e94a9fe4f30ae83a1130099841566448",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/fribidi/fribidi/commit/4c914a92e94a9fe4f30ae83a1130099841566448",
+    "resolved": "4c914a92e94a9fe4f30ae83a1130099841566448",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-gmp.sh",
+   "repo": "https://github.com/BtbN/gmplib.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "763b40df71c0f4d5f5d7b33dc55038c8c9377ecf",
+   "commit": "763b40df71c0f4d5f5d7b33dc55038c8c9377ecf",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/BtbN/gmplib/commit/763b40df71c0f4d5f5d7b33dc55038c8c9377ecf",
+    "resolved": "763b40df71c0f4d5f5d7b33dc55038c8c9377ecf",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-libogg.sh",
+   "repo": "https://github.com/xiph/ogg.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "06a5e0262cdc28aa4ae6797627a783b5010440f0",
+   "commit": "06a5e0262cdc28aa4ae6797627a783b5010440f0",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/xiph/ogg/commit/06a5e0262cdc28aa4ae6797627a783b5010440f0",
+    "resolved": "06a5e0262cdc28aa4ae6797627a783b5010440f0",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-libpng.sh",
+   "repo": "https://github.com/glennrp/libpng.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "964b4135949703b705fc760fc3fb546b86e5ab47",
+   "commit": "964b4135949703b705fc760fc3fb546b86e5ab47",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/glennrp/libpng/commit/964b4135949703b705fc760fc3fb546b86e5ab47",
+    "resolved": "964b4135949703b705fc760fc3fb546b86e5ab47",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-libxml2.sh",
+   "repo": "https://github.com/GNOME/libxml2.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "91586dc6742ab335682235120363f6e126eea5e2",
+   "commit": "91586dc6742ab335682235120363f6e126eea5e2",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/GNOME/libxml2/commit/91586dc6742ab335682235120363f6e126eea5e2",
+    "resolved": "91586dc6742ab335682235120363f6e126eea5e2",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-openssl.sh",
+   "repo": "https://github.com/openssl/openssl.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-tag",
+   "pin": "openssl-3.6.4",
+   "commit": "d3c1b1169b3569ff3069e5b399f47b2b28e03d79",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/openssl/openssl/commit/d3c1b1169b3569ff3069e5b399f47b2b28e03d79",
+    "resolved": "d3c1b1169b3569ff3069e5b399f47b2b28e03d79",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/25-xz.sh",
+   "repo": "https://github.com/tukaani-project/xz.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "3b1efb04d17c3a9ef7f473d73af13f1531428ffe",
+   "commit": "3b1efb04d17c3a9ef7f473d73af13f1531428ffe",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/tukaani-project/xz/commit/3b1efb04d17c3a9ef7f473d73af13f1531428ffe",
+    "resolved": "3b1efb04d17c3a9ef7f473d73af13f1531428ffe",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-brotli.sh",
+   "repo": "https://github.com/google/brotli.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a3abcbee0d945e51dddeec81e647ffe0cde182c2",
+   "commit": "a3abcbee0d945e51dddeec81e647ffe0cde182c2",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/google/brotli/commit/a3abcbee0d945e51dddeec81e647ffe0cde182c2",
+    "resolved": "a3abcbee0d945e51dddeec81e647ffe0cde182c2",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-fonts/25-freetype.sh",
+   "repo": "https://gitlab.freedesktop.org/freetype/freetype.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "d333439633039de426f943f28a2926c7f97b5ae5",
+   "commit": "d333439633039de426f943f28a2926c7f97b5ae5",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://gitlab.freedesktop.org/freetype/freetype/-/commit/d333439633039de426f943f28a2926c7f97b5ae5",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-fonts/35-fontconfig.sh",
+   "repo": "https://gitlab.freedesktop.org/fontconfig/fontconfig.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "bd8f7b597de96761750d0365abb49b19d2f8d5c3",
+   "commit": "bd8f7b597de96761750d0365abb49b19d2f8d5c3",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/commit/bd8f7b597de96761750d0365abb49b19d2f8d5c3",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-fonts/45-harfbuzz.sh",
+   "repo": "https://github.com/harfbuzz/harfbuzz.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "b3bab62307017934dd7f532c52a696fefb12b3ad",
+   "commit": "b3bab62307017934dd7f532c52a696fefb12b3ad",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/harfbuzz/harfbuzz/commit/b3bab62307017934dd7f532c52a696fefb12b3ad",
+    "resolved": "b3bab62307017934dd7f532c52a696fefb12b3ad",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-fonts/50-freetype.sh",
+   "repo": "https://gitlab.freedesktop.org/freetype/freetype.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "d333439633039de426f943f28a2926c7f97b5ae5",
+   "commit": "d333439633039de426f943f28a2926c7f97b5ae5",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://gitlab.freedesktop.org/freetype/freetype/-/commit/d333439633039de426f943f28a2926c7f97b5ae5",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-libffi.sh",
+   "repo": "https://github.com/libffi/libffi.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "bc553867367246d140cd156f060bd0409f57f157",
+   "commit": "bc553867367246d140cd156f060bd0409f57f157",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/libffi/libffi/commit/bc553867367246d140cd156f060bd0409f57f157",
+    "resolved": "bc553867367246d140cd156f060bd0409f57f157",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-libsamplerate.sh",
+   "repo": "https://github.com/libsndfile/libsamplerate.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "0844c208f683527c08ea8a80acc13b398aa9c8bf",
+   "commit": "0844c208f683527c08ea8a80acc13b398aa9c8bf",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/libsndfile/libsamplerate/commit/0844c208f683527c08ea8a80acc13b398aa9c8bf",
+    "resolved": "0844c208f683527c08ea8a80acc13b398aa9c8bf",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-libudfread.sh",
+   "repo": "https://code.videolan.org/videolan/libudfread.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "b0bc6957e7e07d5f35391f210596d9eb71cffdd9",
+   "commit": "b0bc6957e7e07d5f35391f210596d9eb71cffdd9",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/libudfread/-/commit/b0bc6957e7e07d5f35391f210596d9eb71cffdd9",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-libunibreak.sh",
+   "repo": "https://github.com/adah1972/libunibreak.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "28a2756b864c343f438cd22537d49d394d4666a5",
+   "commit": "28a2756b864c343f438cd22537d49d394d4666a5",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/adah1972/libunibreak/commit/28a2756b864c343f438cd22537d49d394d4666a5",
+    "resolved": "28a2756b864c343f438cd22537d49d394d4666a5",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-libvorbis.sh",
+   "repo": "https://github.com/xiph/vorbis.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "1b75110b5a2754ba1931d82dd83cb822b266a21d",
+   "commit": "1b75110b5a2754ba1931d82dd83cb822b266a21d",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/xiph/vorbis/commit/1b75110b5a2754ba1931d82dd83cb822b266a21d",
+    "resolved": "1b75110b5a2754ba1931d82dd83cb822b266a21d",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-opencl.sh",
+   "repo": "https://github.com/KhronosGroup/OpenCL-Headers.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "e6060189f4ebe8b52d885c37af71b9a50c272154",
+   "commit": "e6060189f4ebe8b52d885c37af71b9a50c272154",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/KhronosGroup/OpenCL-Headers/commit/e6060189f4ebe8b52d885c37af71b9a50c272154",
+    "resolved": "e6060189f4ebe8b52d885c37af71b9a50c272154",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-opencl.sh",
+   "repo": "https://github.com/KhronosGroup/OpenCL-ICD-Loader.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "5192c84f8059e5f703e5452929b613f9487f6e4c",
+   "commit": "5192c84f8059e5f703e5452929b613f9487f6e4c",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/KhronosGroup/OpenCL-ICD-Loader/commit/5192c84f8059e5f703e5452929b613f9487f6e4c",
+    "resolved": "5192c84f8059e5f703e5452929b613f9487f6e4c",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-pcre2.sh",
+   "repo": "https://github.com/PCRE2Project/pcre2.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "09eb19dc1102b34e7557408f33318364cb97d2b0",
+   "commit": "09eb19dc1102b34e7557408f33318364cb97d2b0",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/PCRE2Project/pcre2/commit/09eb19dc1102b34e7557408f33318364cb97d2b0",
+    "resolved": "09eb19dc1102b34e7557408f33318364cb97d2b0",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-pixman.sh",
+   "repo": "https://gitlab.freedesktop.org/pixman/pixman.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "96c04d1b87934dc4b9396197a2dff737698ab310",
+   "commit": "96c04d1b87934dc4b9396197a2dff737698ab310",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://gitlab.freedesktop.org/pixman/pixman/-/commit/96c04d1b87934dc4b9396197a2dff737698ab310",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-vmaf.sh",
+   "repo": "https://github.com/Netflix/vmaf.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "86da14d0306a138fd3f01319860b905169746516",
+   "commit": "86da14d0306a138fd3f01319860b905169746516",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/Netflix/vmaf/commit/86da14d0306a138fd3f01319860b905169746516",
+    "resolved": "86da14d0306a138fd3f01319860b905169746516",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/45-zstd.sh",
+   "repo": "https://github.com/facebook/zstd.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "01b7154f1172432f8abe9b3bb9909e14a1176b7d",
+   "commit": "01b7154f1172432f8abe9b3bb9909e14a1176b7d",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits (retry; first call returned empty)",
+    "url": "https://github.com/facebook/zstd/commit/01b7154f1172432f8abe9b3bb9909e14a1176b7d",
+    "commit_date": "2026-09-18T16:31:52Z",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/47-vulkan/40-vulkan-headers.sh",
+   "repo": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-tag",
+   "pin": "v1.4.363",
+   "commit": "6802bb4733b63ed5efd3adb308a6c885ef180ea1",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/KhronosGroup/Vulkan-Headers/commit/6802bb4733b63ed5efd3adb308a6c885ef180ea1",
+    "resolved": "6802bb4733b63ed5efd3adb308a6c885ef180ea1",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/47-vulkan/45-vulkan-loader.sh",
+   "repo": "https://github.com/BtbN/Vulkan-Shim-Loader.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "65b3936528cd92eb4ea3de485d03f858a3850484",
+   "commit": "65b3936528cd92eb4ea3de485d03f858a3850484",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/BtbN/Vulkan-Shim-Loader/commit/65b3936528cd92eb4ea3de485d03f858a3850484",
+    "resolved": "65b3936528cd92eb4ea3de485d03f858a3850484",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/47-vulkan/45-vulkan-loader.sh",
+   "repo": "https://github.com/KhronosGroup/Vulkan-Headers.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-tag",
+   "pin": "v1.4.363",
+   "commit": "6802bb4733b63ed5efd3adb308a6c885ef180ea1",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/KhronosGroup/Vulkan-Headers/commit/6802bb4733b63ed5efd3adb308a6c885ef180ea1",
+    "resolved": "6802bb4733b63ed5efd3adb308a6c885ef180ea1",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/47-vulkan/50-shaderc.sh",
+   "repo": "https://github.com/google/shaderc.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a8abeb0b8a9d4b11e3d59ca9f4550b8213e733ab",
+   "commit": "a8abeb0b8a9d4b11e3d59ca9f4550b8213e733ab",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/google/shaderc/commit/a8abeb0b8a9d4b11e3d59ca9f4550b8213e733ab",
+    "resolved": "a8abeb0b8a9d4b11e3d59ca9f4550b8213e733ab",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/47-vulkan/55-spirv-cross.sh",
+   "repo": "https://github.com/KhronosGroup/SPIRV-Cross.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "aa217aeb6c9f0ace7a0ab233b28807edf45eb165",
+   "commit": "aa217aeb6c9f0ace7a0ab233b28807edf45eb165",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/KhronosGroup/SPIRV-Cross/commit/aa217aeb6c9f0ace7a0ab233b28807edf45eb165",
+    "resolved": "aa217aeb6c9f0ace7a0ab233b28807edf45eb165",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/47-vulkan/60-spirv-headers.sh",
+   "repo": "https://github.com/KhronosGroup/SPIRV-Headers.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "2b7475f6d664efbad4d4315c94ecec9640831e5b",
+   "commit": "2b7475f6d664efbad4d4315c94ecec9640831e5b",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/KhronosGroup/SPIRV-Headers/commit/2b7475f6d664efbad4d4315c94ecec9640831e5b",
+    "resolved": "2b7475f6d664efbad4d4315c94ecec9640831e5b",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-amf.sh",
+   "repo": "https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "6277e353fd625121a8f627b1d0540323ef372a49",
+   "commit": "6277e353fd625121a8f627b1d0540323ef372a49",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/GPUOpen-LibrariesAndSDKs/AMF/commit/6277e353fd625121a8f627b1d0540323ef372a49",
+    "resolved": "6277e353fd625121a8f627b1d0540323ef372a49",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-aom.sh",
+   "repo": "https://aomedia.googlesource.com/aom",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "b4ce2cd097b00921b0327bfb5f07b5f8361ade99",
+   "commit": "b4ce2cd097b00921b0327bfb5f07b5f8361ade99",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "Gitiles JSON",
+    "url": "https://aomedia.googlesource.com/aom/+/b4ce2cd097b00921b0327bfb5f07b5f8361ade99",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-avisynth.sh",
+   "repo": "https://github.com/AviSynth/AviSynthPlus.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "5c82777b374bdef16e13007a11e77d735ac1e4eb",
+   "commit": "5c82777b374bdef16e13007a11e77d735ac1e4eb",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/AviSynth/AviSynthPlus/commit/5c82777b374bdef16e13007a11e77d735ac1e4eb",
+    "resolved": "5c82777b374bdef16e13007a11e77d735ac1e4eb",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-chromaprint.sh",
+   "repo": "https://github.com/acoustid/chromaprint.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "aed8eba2202dd9d7b3b0a56c77904cc805490d72",
+   "commit": "aed8eba2202dd9d7b3b0a56c77904cc805490d72",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/acoustid/chromaprint/commit/aed8eba2202dd9d7b3b0a56c77904cc805490d72",
+    "resolved": "aed8eba2202dd9d7b3b0a56c77904cc805490d72",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-dav1d.sh",
+   "repo": "https://code.videolan.org/videolan/dav1d.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "9711965b60bb692ae24004659acf61f5c7d9ed61",
+   "commit": "9711965b60bb692ae24004659acf61f5c7d9ed61",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/dav1d/-/commit/9711965b60bb692ae24004659acf61f5c7d9ed61",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-davs2.sh",
+   "repo": "https://github.com/pkuvcl/davs2.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "b41cf117452e2d73d827f02d3e30aa20f1c721ac",
+   "commit": "b41cf117452e2d73d827f02d3e30aa20f1c721ac",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/pkuvcl/davs2/commit/b41cf117452e2d73d827f02d3e30aa20f1c721ac",
+    "resolved": "b41cf117452e2d73d827f02d3e30aa20f1c721ac",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-dvd/30-libdvdcss.sh",
+   "repo": "https://code.videolan.org/videolan/libdvdcss.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "811ce97a1d4d1c9d936f4b2707f533a9ef768251",
+   "commit": "811ce97a1d4d1c9d936f4b2707f533a9ef768251",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/libdvdcss/-/commit/811ce97a1d4d1c9d936f4b2707f533a9ef768251",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-dvd/40-libdvdread.sh",
+   "repo": "https://code.videolan.org/videolan/libdvdread.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "0f30df53125b564ef45903714403ce0a1e6c5e9e",
+   "commit": "0f30df53125b564ef45903714403ce0a1e6c5e9e",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/libdvdread/-/commit/0f30df53125b564ef45903714403ce0a1e6c5e9e",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-dvd/50-libdvdnav.sh",
+   "repo": "https://code.videolan.org/videolan/libdvdnav.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "8147ccd35e5aae4afdd21171cf7b6b4d8f179d28",
+   "commit": "8147ccd35e5aae4afdd21171cf7b6b4d8f179d28",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/libdvdnav/-/commit/8147ccd35e5aae4afdd21171cf7b6b4d8f179d28",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-ffnvcodec.sh",
+   "repo": "https://github.com/FFmpeg/nv-codec-headers.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "eddcea9e27f6b772057c9b3f87de2cc1737faffc",
+   "commit": "eddcea9e27f6b772057c9b3f87de2cc1737faffc",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/FFmpeg/nv-codec-headers/commit/eddcea9e27f6b772057c9b3f87de2cc1737faffc",
+    "resolved": "eddcea9e27f6b772057c9b3f87de2cc1737faffc",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-frei0r.sh",
+   "repo": "https://github.com/dyne/frei0r.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "4c95b2a02b2d03c71d5f6d7980d16c99acfd5a5f",
+   "commit": "4c95b2a02b2d03c71d5f6d7980d16c99acfd5a5f",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/dyne/frei0r/commit/4c95b2a02b2d03c71d5f6d7980d16c99acfd5a5f",
+    "resolved": "4c95b2a02b2d03c71d5f6d7980d16c99acfd5a5f",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-gme.sh",
+   "repo": "https://github.com/libgme/game-music-emu.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "f68963b1de0633149b05732113d3c3113c6f63a1",
+   "commit": "f68963b1de0633149b05732113d3c3113c6f63a1",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/libgme/game-music-emu/commit/f68963b1de0633149b05732113d3c3113c6f63a1",
+    "resolved": "f68963b1de0633149b05732113d3c3113c6f63a1",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-kvazaar.sh",
+   "repo": "https://github.com/ultravideo/kvazaar.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "2b06691bb5844404c0e703f12a5d7b0fee914ec7",
+   "commit": "2b06691bb5844404c0e703f12a5d7b0fee914ec7",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/ultravideo/kvazaar/commit/2b06691bb5844404c0e703f12a5d7b0fee914ec7",
+    "resolved": "2b06691bb5844404c0e703f12a5d7b0fee914ec7",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-lcevcdec.sh",
+   "repo": "https://github.com/v-novaltd/LCEVCdec.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "17804ac54db8fbb42717f3275b1e73f3c0b067d3",
+   "commit": "17804ac54db8fbb42717f3275b1e73f3c0b067d3",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/v-novaltd/LCEVCdec/commit/17804ac54db8fbb42717f3275b1e73f3c0b067d3",
+    "resolved": "17804ac54db8fbb42717f3275b1e73f3c0b067d3",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libaribb24.sh",
+   "repo": "https://github.com/nkoriyama/aribb24.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "5e9be272f96e00f15a2f3c5f8ba7e124862aec38",
+   "commit": "5e9be272f96e00f15a2f3c5f8ba7e124862aec38",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/nkoriyama/aribb24/commit/5e9be272f96e00f15a2f3c5f8ba7e124862aec38",
+    "resolved": "5e9be272f96e00f15a2f3c5f8ba7e124862aec38",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libaribcaption.sh",
+   "repo": "https://github.com/xqq/libaribcaption.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "c64c23b8905ba514b87c9789269e9f66f949ffe0",
+   "commit": "c64c23b8905ba514b87c9789269e9f66f949ffe0",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/xqq/libaribcaption/commit/c64c23b8905ba514b87c9789269e9f66f949ffe0",
+    "resolved": "c64c23b8905ba514b87c9789269e9f66f949ffe0",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libass.sh",
+   "repo": "https://github.com/libass/libass.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "f61db567e6593df3470e91594bcd4ad2d0473aff",
+   "commit": "f61db567e6593df3470e91594bcd4ad2d0473aff",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/libass/libass/commit/f61db567e6593df3470e91594bcd4ad2d0473aff",
+    "resolved": "f61db567e6593df3470e91594bcd4ad2d0473aff",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libbluray.sh",
+   "repo": "https://code.videolan.org/videolan/libbluray.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a24f4fad4d62893de647abc8671397747b2359dd",
+   "commit": "a24f4fad4d62893de647abc8671397747b2359dd",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/libbluray/-/commit/a24f4fad4d62893de647abc8671397747b2359dd",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libcurl/40-libpsl.sh",
+   "repo": "https://github.com/rockdaboot/libpsl.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a629c831d09011f76974d931be7f6167be90673e",
+   "commit": "a629c831d09011f76974d931be7f6167be90673e",
+   "linked_into_ffmpeg_exe": false,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/rockdaboot/libpsl/commit/a629c831d09011f76974d931be7f6167be90673e",
+    "resolved": "a629c831d09011f76974d931be7f6167be90673e",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libcurl/40-libpsl.sh",
+   "repo": "https://github.com/publicsuffix/list.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a179a48c465e818cfd8d626691cb317985da87fb",
+   "commit": "a179a48c465e818cfd8d626691cb317985da87fb",
+   "linked_into_ffmpeg_exe": false,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/publicsuffix/list/commit/a179a48c465e818cfd8d626691cb317985da87fb",
+    "resolved": "a179a48c465e818cfd8d626691cb317985da87fb",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libcurl/40-nghttp2.sh",
+   "repo": "https://github.com/nghttp2/nghttp2.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "19d06e62185d93d2398d85241cdbb460349bfe44",
+   "commit": "19d06e62185d93d2398d85241cdbb460349bfe44",
+   "linked_into_ffmpeg_exe": false,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/nghttp2/nghttp2/commit/19d06e62185d93d2398d85241cdbb460349bfe44",
+    "resolved": "19d06e62185d93d2398d85241cdbb460349bfe44",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libcurl/40-nghttp3.sh",
+   "repo": "https://github.com/ngtcp2/nghttp3.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "2304973e5a0c8b1fa4bb380b47945a000357f87f",
+   "commit": "2304973e5a0c8b1fa4bb380b47945a000357f87f",
+   "linked_into_ffmpeg_exe": false,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/ngtcp2/nghttp3/commit/2304973e5a0c8b1fa4bb380b47945a000357f87f",
+    "resolved": "2304973e5a0c8b1fa4bb380b47945a000357f87f",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libcurl/40-ngtcp2.sh",
+   "repo": "https://github.com/ngtcp2/ngtcp2.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a4925d70647b75286b28c37be260de3729c2de3d",
+   "commit": "a4925d70647b75286b28c37be260de3729c2de3d",
+   "linked_into_ffmpeg_exe": false,
+   "public_check": {
+    "method": "GitHub API commits (retry; first call returned empty)",
+    "url": "https://github.com/ngtcp2/ngtcp2/commit/a4925d70647b75286b28c37be260de3729c2de3d",
+    "commit_date": "2026-09-26T01:47:54Z",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libjxl/45-lcms2.sh",
+   "repo": "https://github.com/mm2/Little-CMS.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a0b0d7a69b13b461bdbd9cff9f7f1d59ccd1858c",
+   "commit": "a0b0d7a69b13b461bdbd9cff9f7f1d59ccd1858c",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/mm2/Little-CMS/commit/a0b0d7a69b13b461bdbd9cff9f7f1d59ccd1858c",
+    "resolved": "a0b0d7a69b13b461bdbd9cff9f7f1d59ccd1858c",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libjxl/50-libjxl.sh",
+   "repo": "https://github.com/libjxl/libjxl.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "b87738951c1254cd8cccaa6d47712ba735da56d8",
+   "commit": "b87738951c1254cd8cccaa6d47712ba735da56d8",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/libjxl/libjxl/commit/b87738951c1254cd8cccaa6d47712ba735da56d8",
+    "resolved": "b87738951c1254cd8cccaa6d47712ba735da56d8",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libmp3lame.sh",
+   "repo": "https://svn.code.sf.net/p/lame/svn/trunk/lame",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "svn-revision",
+   "pin": "6835",
+   "commit": null,
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "svn baseline collection GET",
+    "url": "https://svn.code.sf.net/p/lame/svn/!svn/bc/6835/trunk/lame/",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libopus.sh",
+   "repo": "https://github.com/xiph/opus.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "503d81b138d76621aae4b12786e90de48aa8db3a",
+   "commit": "503d81b138d76621aae4b12786e90de48aa8db3a",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/xiph/opus/commit/503d81b138d76621aae4b12786e90de48aa8db3a",
+    "resolved": "503d81b138d76621aae4b12786e90de48aa8db3a",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libplacebo.sh",
+   "repo": "https://code.videolan.org/videolan/libplacebo.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "e2972fdd09adacd383656738d7d280f0cd84a761",
+   "commit": "e2972fdd09adacd383656738d7d280f0cd84a761",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/libplacebo/-/commit/e2972fdd09adacd383656738d7d280f0cd84a761",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-librist/40-mbedtls.sh",
+   "repo": "https://github.com/ARMmbed/mbedtls.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-tag",
+   "pin": "v4.2.0",
+   "commit": "ece41aa84d7879d7e55c59e955a5884b541f7f3b",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/ARMmbed/mbedtls/commit/ece41aa84d7879d7e55c59e955a5884b541f7f3b",
+    "resolved": "ece41aa84d7879d7e55c59e955a5884b541f7f3b",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-librist/50-librist.sh",
+   "repo": "https://code.videolan.org/rist/librist.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "4f45ef8f78983892d52ccd52d9f675435b23738f",
+   "commit": "4f45ef8f78983892d52ccd52d9f675435b23738f",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/rist/librist/-/commit/4f45ef8f78983892d52ccd52d9f675435b23738f",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-librsvg/10-glib.sh",
+   "repo": "https://github.com/GNOME/glib.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "5a124d1e66a6c2dc56989303b4d6d4781c2952ed",
+   "commit": "5a124d1e66a6c2dc56989303b4d6d4781c2952ed",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/GNOME/glib/commit/5a124d1e66a6c2dc56989303b4d6d4781c2952ed",
+    "resolved": "5a124d1e66a6c2dc56989303b4d6d4781c2952ed",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-librsvg/20-cairo.sh",
+   "repo": "https://gitlab.freedesktop.org/cairo/cairo.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "74755964edef651691d5cd36ff140108298e4e6e",
+   "commit": "74755964edef651691d5cd36ff140108298e4e6e",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://gitlab.freedesktop.org/cairo/cairo/-/commit/74755964edef651691d5cd36ff140108298e4e6e",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-librsvg/30-pango.sh",
+   "repo": "https://github.com/GNOME/pango.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "8e74c27c113c98664b77272d16b14bbce542c184",
+   "commit": "8e74c27c113c98664b77272d16b14bbce542c184",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/GNOME/pango/commit/8e74c27c113c98664b77272d16b14bbce542c184",
+    "resolved": "8e74c27c113c98664b77272d16b14bbce542c184",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-librsvg/99-librsvg.sh",
+   "repo": "https://github.com/GNOME/librsvg.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "7612431eb02dc009319094f8513d63c1faaecfb4",
+   "commit": "7612431eb02dc009319094f8513d63c1faaecfb4",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/GNOME/librsvg/commit/7612431eb02dc009319094f8513d63c1faaecfb4",
+    "resolved": "7612431eb02dc009319094f8513d63c1faaecfb4",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libssh.sh",
+   "repo": "https://gitlab.com/libssh/libssh-mirror.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "76e0a8639e61436c28d877586f65a7707edc6ee5",
+   "commit": "76e0a8639e61436c28d877586f65a7707edc6ee5",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://gitlab.com/libssh/libssh-mirror/-/commit/76e0a8639e61436c28d877586f65a7707edc6ee5",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libtheora.sh",
+   "repo": "https://github.com/xiph/theora.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "28fd5ec77f0ad0e07a371cef1047828116f6bd8a",
+   "commit": "28fd5ec77f0ad0e07a371cef1047828116f6bd8a",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/xiph/theora/commit/28fd5ec77f0ad0e07a371cef1047828116f6bd8a",
+    "resolved": "28fd5ec77f0ad0e07a371cef1047828116f6bd8a",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libvpx.sh",
+   "repo": "https://chromium.googlesource.com/webm/libvpx",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "5e680f30801d03c21078f8c4b772464752516211",
+   "commit": "5e680f30801d03c21078f8c4b772464752516211",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "Gitiles JSON",
+    "url": "https://chromium.googlesource.com/webm/libvpx/+/5e680f30801d03c21078f8c4b772464752516211",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libwebp.sh",
+   "repo": "https://chromium.googlesource.com/webm/libwebp",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "5c168cd23b1872969c38e34b01b04dcf29849288",
+   "commit": "5c168cd23b1872969c38e34b01b04dcf29849288",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "Gitiles JSON",
+    "url": "https://chromium.googlesource.com/webm/libwebp/+/5c168cd23b1872969c38e34b01b04dcf29849288",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-libzmq.sh",
+   "repo": "https://github.com/zeromq/libzmq.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "46493370217ac135246617fa2f6ac819d8b61bfc",
+   "commit": "46493370217ac135246617fa2f6ac819d8b61bfc",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/zeromq/libzmq/commit/46493370217ac135246617fa2f6ac819d8b61bfc",
+    "resolved": "46493370217ac135246617fa2f6ac819d8b61bfc",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-lilv/96-lv2.sh",
+   "repo": "https://github.com/lv2/lv2.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "3c57dae600a5ad8d05acd53ee3490f7d91cb7be6",
+   "commit": "3c57dae600a5ad8d05acd53ee3490f7d91cb7be6",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/lv2/lv2/commit/3c57dae600a5ad8d05acd53ee3490f7d91cb7be6",
+    "resolved": "3c57dae600a5ad8d05acd53ee3490f7d91cb7be6",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-lilv/96-serd.sh",
+   "repo": "https://github.com/drobilla/serd.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "b6053bb2a4533e6a8e3821c1061f140d5e666938",
+   "commit": "b6053bb2a4533e6a8e3821c1061f140d5e666938",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/drobilla/serd/commit/b6053bb2a4533e6a8e3821c1061f140d5e666938",
+    "resolved": "b6053bb2a4533e6a8e3821c1061f140d5e666938",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-lilv/96-zix.sh",
+   "repo": "https://github.com/drobilla/zix.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "17d632393f5addb6fa24dda2927b96515407cca7",
+   "commit": "17d632393f5addb6fa24dda2927b96515407cca7",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/drobilla/zix/commit/17d632393f5addb6fa24dda2927b96515407cca7",
+    "resolved": "17d632393f5addb6fa24dda2927b96515407cca7",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-lilv/97-sord.sh",
+   "repo": "https://github.com/drobilla/sord.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "4b5232bb91e7f2f1b84df384494d073fabbcd312",
+   "commit": "4b5232bb91e7f2f1b84df384494d073fabbcd312",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/drobilla/sord/commit/4b5232bb91e7f2f1b84df384494d073fabbcd312",
+    "resolved": "4b5232bb91e7f2f1b84df384494d073fabbcd312",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-lilv/98-sratom.sh",
+   "repo": "https://github.com/lv2/sratom.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "9e8ee84eed502e6030ce8bb49694fd28542b08fc",
+   "commit": "9e8ee84eed502e6030ce8bb49694fd28542b08fc",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/lv2/sratom/commit/9e8ee84eed502e6030ce8bb49694fd28542b08fc",
+    "resolved": "9e8ee84eed502e6030ce8bb49694fd28542b08fc",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-lilv/99-lilv.sh",
+   "repo": "https://github.com/lv2/lilv.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "4b8f30055fa5cb4134a2eb45fc1555bc04289314",
+   "commit": "4b8f30055fa5cb4134a2eb45fc1555bc04289314",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/lv2/lilv/commit/4b8f30055fa5cb4134a2eb45fc1555bc04289314",
+    "resolved": "4b8f30055fa5cb4134a2eb45fc1555bc04289314",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-onevpl.sh",
+   "repo": "https://github.com/intel/libvpl.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "674d015bcb294bc39fa276e99a652ea045423e82",
+   "commit": "674d015bcb294bc39fa276e99a652ea045423e82",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/intel/libvpl/commit/674d015bcb294bc39fa276e99a652ea045423e82",
+    "resolved": "674d015bcb294bc39fa276e99a652ea045423e82",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-openal.sh",
+   "repo": "https://github.com/kcat/openal-soft.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "c89b8cf7bba4822f230c69f0a6696a52e5322dca",
+   "commit": "c89b8cf7bba4822f230c69f0a6696a52e5322dca",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/kcat/openal-soft/commit/c89b8cf7bba4822f230c69f0a6696a52e5322dca",
+    "resolved": "c89b8cf7bba4822f230c69f0a6696a52e5322dca",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-openapv.sh",
+   "repo": "https://github.com/AcademySoftwareFoundation/openapv.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "a58ce739be0dfb083643d929aee8f0e0ba9bdf63",
+   "commit": "a58ce739be0dfb083643d929aee8f0e0ba9bdf63",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/AcademySoftwareFoundation/openapv/commit/a58ce739be0dfb083643d929aee8f0e0ba9bdf63",
+    "resolved": "a58ce739be0dfb083643d929aee8f0e0ba9bdf63",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-opencore-amr.sh",
+   "repo": "https://git.code.sf.net/p/opencore-amr/code",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "7dba8c32238418ce0b316a852b2224df586ca896",
+   "commit": "7dba8c32238418ce0b316a852b2224df586ca896",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "SourceForge commit page",
+    "url": "https://sourceforge.net/p/opencore-amr/code/ci/7dba8c32238418ce0b316a852b2224df586ca896/",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-openh264.sh",
+   "repo": "https://github.com/cisco/openh264.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "8b2d28faade10d74d99ac80e199aef664c9c5a3b",
+   "commit": "8b2d28faade10d74d99ac80e199aef664c9c5a3b",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/cisco/openh264/commit/8b2d28faade10d74d99ac80e199aef664c9c5a3b",
+    "resolved": "8b2d28faade10d74d99ac80e199aef664c9c5a3b",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-openjpeg.sh",
+   "repo": "https://github.com/uclouvain/openjpeg.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "8314119b067c0fc77834731168daaebd379fdb12",
+   "commit": "8314119b067c0fc77834731168daaebd379fdb12",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/uclouvain/openjpeg/commit/8314119b067c0fc77834731168daaebd379fdb12",
+    "resolved": "8314119b067c0fc77834731168daaebd379fdb12",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-openmpt.sh",
+   "repo": "https://github.com/OpenMPT/openmpt.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "f83cedb0cd5446e4dfaa83ac97e3087107e26767",
+   "commit": "f83cedb0cd5446e4dfaa83ac97e3087107e26767",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/OpenMPT/openmpt/commit/f83cedb0cd5446e4dfaa83ac97e3087107e26767",
+    "resolved": "f83cedb0cd5446e4dfaa83ac97e3087107e26767",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-rav1e.sh",
+   "repo": "https://github.com/xiph/rav1e.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "31435de9d76fddd38f6dcc31d4014574cebb2092",
+   "commit": "31435de9d76fddd38f6dcc31d4014574cebb2092",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/xiph/rav1e/commit/31435de9d76fddd38f6dcc31d4014574cebb2092",
+    "resolved": "31435de9d76fddd38f6dcc31d4014574cebb2092",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-rubberband.sh",
+   "repo": "https://github.com/breakfastquay/rubberband.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "e4296ac80b1170018a110bc326fd0d45a0eb27d6",
+   "commit": "e4296ac80b1170018a110bc326fd0d45a0eb27d6",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/breakfastquay/rubberband/commit/e4296ac80b1170018a110bc326fd0d45a0eb27d6",
+    "resolved": "e4296ac80b1170018a110bc326fd0d45a0eb27d6",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-sdl.sh",
+   "repo": "https://github.com/libsdl-org/SDL.git",
+   "mirror": null,
+   "branch": "SDL2",
+   "pin_kind": "git-commit",
+   "pin": "b90ac95029d801c5abc59472ba8e2200dff31e1e",
+   "commit": "b90ac95029d801c5abc59472ba8e2200dff31e1e",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/libsdl-org/SDL/commit/b90ac95029d801c5abc59472ba8e2200dff31e1e",
+    "resolved": "b90ac95029d801c5abc59472ba8e2200dff31e1e",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-snappy.sh",
+   "repo": "https://github.com/google/snappy.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "9c28114a38866f6deeaa826db918293bc28ae410",
+   "commit": "9c28114a38866f6deeaa826db918293bc28ae410",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/google/snappy/commit/9c28114a38866f6deeaa826db918293bc28ae410",
+    "resolved": "9c28114a38866f6deeaa826db918293bc28ae410",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-soxr.sh",
+   "repo": "https://git.code.sf.net/p/soxr/code",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "945b592b70470e29f917f4de89b4281fbbd540c0",
+   "commit": "945b592b70470e29f917f4de89b4281fbbd540c0",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "SourceForge commit page",
+    "url": "https://sourceforge.net/p/soxr/code/ci/945b592b70470e29f917f4de89b4281fbbd540c0/",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-srt.sh",
+   "repo": "https://github.com/Haivision/srt.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "ff8ab25c57aece5b7351defe36dacc94fc28527f",
+   "commit": "ff8ab25c57aece5b7351defe36dacc94fc28527f",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/Haivision/srt/commit/ff8ab25c57aece5b7351defe36dacc94fc28527f",
+    "resolved": "ff8ab25c57aece5b7351defe36dacc94fc28527f",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-svtav1.sh",
+   "repo": "https://gitlab.com/AOMediaCodec/SVT-AV1.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "5ed9ffbcb5086da23f30fe9bc5b00145358462da",
+   "commit": "5ed9ffbcb5086da23f30fe9bc5b00145358462da",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://gitlab.com/AOMediaCodec/SVT-AV1/-/commit/5ed9ffbcb5086da23f30fe9bc5b00145358462da",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-twolame.sh",
+   "repo": "https://github.com/njh/twolame.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "6fced852d4d5cfad58cf9dbe3ea619b08e87d398",
+   "commit": "6fced852d4d5cfad58cf9dbe3ea619b08e87d398",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/njh/twolame/commit/6fced852d4d5cfad58cf9dbe3ea619b08e87d398",
+    "resolved": "6fced852d4d5cfad58cf9dbe3ea619b08e87d398",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-uavs3d.sh",
+   "repo": "https://github.com/uavs3/uavs3d.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "0e20d2c291853f196c68922a264bcd8471d75b68",
+   "commit": "0e20d2c291853f196c68922a264bcd8471d75b68",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/uavs3/uavs3d/commit/0e20d2c291853f196c68922a264bcd8471d75b68",
+    "resolved": "0e20d2c291853f196c68922a264bcd8471d75b68",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-vaapi/50-libva.sh",
+   "repo": "https://github.com/intel/libva.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "6b07f7100512817f736967e899b8c26313c20623",
+   "commit": "6b07f7100512817f736967e899b8c26313c20623",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/intel/libva/commit/6b07f7100512817f736967e899b8c26313c20623",
+    "resolved": "6b07f7100512817f736967e899b8c26313c20623",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-vidstab.sh",
+   "repo": "https://github.com/georgmartius/vid.stab.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "e2445c4081658318223762a696eb1c645c2d7168",
+   "commit": "e2445c4081658318223762a696eb1c645c2d7168",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/georgmartius/vid.stab/commit/e2445c4081658318223762a696eb1c645c2d7168",
+    "resolved": "e2445c4081658318223762a696eb1c645c2d7168",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-vvenc.sh",
+   "repo": "https://github.com/fraunhoferhhi/vvenc.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "b1cfb2ad495af6ae4cc214b7a060e8b4166c4629",
+   "commit": "b1cfb2ad495af6ae4cc214b7a060e8b4166c4629",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/fraunhoferhhi/vvenc/commit/b1cfb2ad495af6ae4cc214b7a060e8b4166c4629",
+    "resolved": "b1cfb2ad495af6ae4cc214b7a060e8b4166c4629",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-x264.sh",
+   "repo": "https://code.videolan.org/videolan/x264.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",
+   "commit": "0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitLab API commits",
+    "url": "https://code.videolan.org/videolan/x264/-/commit/0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-x265.sh",
+   "repo": "https://github.com/Multicorewareinc/x265.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "020d7054dbecfd3be8e62efe33ff8a305d41856e",
+   "commit": "020d7054dbecfd3be8e62efe33ff8a305d41856e",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/Multicorewareinc/x265/commit/020d7054dbecfd3be8e62efe33ff8a305d41856e",
+    "resolved": "020d7054dbecfd3be8e62efe33ff8a305d41856e",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-xavs2.sh",
+   "repo": "https://github.com/pkuvcl/xavs2.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "eae1e8b9d12468059bdd7dee893508e470fa83d8",
+   "commit": "eae1e8b9d12468059bdd7dee893508e470fa83d8",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/pkuvcl/xavs2/commit/eae1e8b9d12468059bdd7dee893508e470fa83d8",
+    "resolved": "eae1e8b9d12468059bdd7dee893508e470fa83d8",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-xvid.sh",
+   "repo": "https://svn.xvid.org/trunk/xvidcore",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "svn-revision",
+   "pin": "2204",
+   "commit": null,
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "svn baseline collection GET",
+    "url": "https://svn.xvid.org/!svn/bc/2204/trunk/xvidcore/",
+    "http": 200,
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-zimg.sh",
+   "repo": "https://github.com/sekrit-twc/zimg.git",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "67e0603271c080e22c8429856dd4a8a56587e61e",
+   "commit": "67e0603271c080e22c8429856dd4a8a56587e61e",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/sekrit-twc/zimg/commit/67e0603271c080e22c8429856dd4a8a56587e61e",
+    "resolved": "67e0603271c080e22c8429856dd4a8a56587e61e",
+    "reachable": true
+   }
+  },
+  {
+   "script": "scripts.d/50-zvbi.sh",
+   "repo": "https://github.com/zapping-vbi/zvbi",
+   "mirror": null,
+   "branch": null,
+   "pin_kind": "git-commit",
+   "pin": "d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0",
+   "commit": "d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0",
+   "linked_into_ffmpeg_exe": true,
+   "public_check": {
+    "method": "GitHub API commits",
+    "url": "https://github.com/zapping-vbi/zvbi/commit/d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0",
+    "resolved": "d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0",
+    "reachable": true
+   }
+  }
+ ],
+ "summary": {
+  "dependency_rows": 105,
+  "publicly_reachable": 105,
+  "pin_kinds": {
+   "git-commit": 99,
+   "git-tag": 4,
+   "svn-revision": 2
+  },
+  "not_linked_into_ffmpeg_exe": [
+   "scripts.d/50-libcurl/40-libpsl.sh",
+   "scripts.d/50-libcurl/40-libpsl.sh",
+   "scripts.d/50-libcurl/40-nghttp2.sh",
+   "scripts.d/50-libcurl/40-nghttp3.sh",
+   "scripts.d/50-libcurl/40-ngtcp2.sh"
+  ]
+ }
+}

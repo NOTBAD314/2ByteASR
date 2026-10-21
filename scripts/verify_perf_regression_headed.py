@@ -7,7 +7,7 @@ Usage:
 
 The project is copied (the original is only read and its SHA is checked), the
 seek cache is hard-linked, all user data goes to an isolated profile. Results:
-<output>/perf.json (twobyteasr.perf_regression_audit) plus process logs.
+<output>/perf.json (twobyteasr.acceptance.perf_regression_audit) plus process logs.
 Compare runs with scripts/summarize_perf_regression.py.
 """
 import argparse

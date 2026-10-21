@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
 
     monkeypatch.setattr(
         theme_manager,
@@ -31,13 +31,13 @@ def app(tmp_path, monkeypatch):
 def _make_window(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     return MainWindow([], legacy, object(), None)
 
 
 def test_main_window_defines_refresh_theme_palette_once():
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     source = inspect.getsource(MainWindow)
     assert source.count("def refresh_theme_palette") == 1, (
@@ -46,8 +46,8 @@ def test_main_window_defines_refresh_theme_palette_once():
 
 
 def test_active_tasks_label_follows_theme_switch(app, tmp_path, monkeypatch):
-    from twobyteasr import theme_manager
-    from twobyteasr.ui_theme import THEMES
+    from twobyteasr.design import theme_manager
+    from twobyteasr.design.ui_theme import THEMES
 
     win = _make_window(tmp_path, monkeypatch)
     try:

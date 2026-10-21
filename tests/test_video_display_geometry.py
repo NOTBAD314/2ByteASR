@@ -2,8 +2,8 @@
 from fractions import Fraction
 from pathlib import Path
 import pytest
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.video_decode_worker import display_bgra
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.playback.video_decode_worker import display_bgra
 
 
 def test_padded_viewport_rows_without_numpy_import():
@@ -11,7 +11,7 @@ def test_padded_viewport_rows_without_numpy_import():
     code = '''
 import sys
 import av
-from twobyteasr.video_decode_worker import display_bgra
+from twobyteasr.playback.video_decode_worker import display_bgra
 class RejectNumpy:
     def find_spec(self, fullname, path=None, target=None):
         if fullname == 'numpy' or fullname.startswith('numpy.'):

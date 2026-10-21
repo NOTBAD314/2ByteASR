@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from threading import Event
 
-from twobyteasr.runtime_download_cache import (bootstrap_guard, mark_runtime_cache_ready,
+from twobyteasr.system.runtime_download_cache import (bootstrap_guard, mark_runtime_cache_ready,
     mark_runtime_cache_state, prune_runtime_download_cache)
 
 

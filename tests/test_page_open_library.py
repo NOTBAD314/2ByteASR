@@ -11,14 +11,14 @@ from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.studio_hub as studio_hub
-import twobyteasr.studio_media_flow as studio_media_flow
-import twobyteasr.studio_project as studio_project
-import twobyteasr.studio_project_flow as studio_project_flow
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_hub import _library_display_signature
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+import twobyteasr.studio.studio_hub as studio_hub
+import twobyteasr.studio.studio_media_flow as studio_media_flow
+import twobyteasr.projects.studio_project as studio_project
+import twobyteasr.studio.studio_project_flow as studio_project_flow
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.studio.studio_hub import _library_display_signature
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 @pytest.fixture

@@ -15,9 +15,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QUndoStack  # noqa: E402
 
-from twobyteasr.audio_playback_graph import AudioPlaybackGraph  # noqa: E402
-from twobyteasr.studio_edit_commands import EditSequenceCommand  # noqa: E402
-from twobyteasr.studio_edit_sequence import (  # noqa: E402
+from twobyteasr.playback.audio_playback_graph import AudioPlaybackGraph  # noqa: E402
+from twobyteasr.timeline.studio_edit_commands import EditSequenceCommand  # noqa: E402
+from twobyteasr.timeline.studio_edit_sequence import (  # noqa: E402
     ensure_edit_sequence,
     overwrite_insert_segment,
     remap_cues,
@@ -25,12 +25,12 @@ from twobyteasr.studio_edit_sequence import (  # noqa: E402
     sequence_of,
     split_at_playhead,
 )
-from twobyteasr.studio_media_commands import (  # noqa: E402
+from twobyteasr.timeline.studio_media_commands import (  # noqa: E402
     CompositeMediaCommand,
     AudioMasterCommand,
     media_graph_command,
 )
-from twobyteasr.studio_media_pool import (  # noqa: E402
+from twobyteasr.timeline.studio_media_pool import (  # noqa: E402
     add_video_clip,
     audio_master_mode,
     audio_master_track_id,
@@ -41,7 +41,7 @@ from twobyteasr.studio_media_pool import (  # noqa: E402
     set_audio_master_track,
     sync_linked_av_contract,
 )
-from twobyteasr.studio_project import (  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     MediaAsset,
     StudioCue,
     StudioMedia,
@@ -265,7 +265,7 @@ def test_v2_clip_drag_onto_primary_lane_reassigns_clip():
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
 
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
 
     QApplication.instance() or QApplication([])
     project = _overlay_project()
@@ -327,7 +327,7 @@ def test_primary_segment_lift_creates_overlay_clip_and_undoes():
     before_sequence = sequence_of(project)
     second_id = before_sequence.segments[1].id
 
-    from twobyteasr.studio_edit_sequence import delete_segments
+    from twobyteasr.timeline.studio_edit_sequence import delete_segments
 
     after_sequence = delete_segments(before_sequence, [second_id])
     after_cues = remap_cues(project.cues, before_sequence, after_sequence)
@@ -383,7 +383,7 @@ class _FakeMediaService:
 
 
 def _flow():
-    from twobyteasr.studio_video_flow import StudioVideoFlowMixin
+    from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
 
     flow = object.__new__(StudioVideoFlowMixin)
     flow._overlay_proxy_cache = {}
@@ -402,8 +402,8 @@ def _asset(path: str, codec: str) -> MediaAsset:
 
 
 def test_overlay_path_hevc_mov_uses_ffmpeg_source(monkeypatch):
-    from twobyteasr import media_service
-    from twobyteasr.studio_video_flow import StudioVideoFlowMixin
+    from twobyteasr.media import media_service
+    from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
 
     fake = _FakeMediaService()
     fake.manifests["D:/img.MOV"] = _FakeProxyManifest("C:/cache/img-proxy.mp4")
@@ -415,7 +415,7 @@ def test_overlay_path_hevc_mov_uses_ffmpeg_source(monkeypatch):
 
 
 def test_overlay_path_h264_mp4_passthrough(monkeypatch):
-    from twobyteasr import media_service
+    from twobyteasr.media import media_service
 
     fake = _FakeMediaService()
     monkeypatch.setattr(media_service, "GLOBAL_MEDIA_SERVICE", fake)
@@ -430,7 +430,7 @@ def test_overlay_path_h264_mp4_passthrough(monkeypatch):
 def test_overlay_path_same_source_uses_independent_ffmpeg_decoder(monkeypatch):
     """Each overlay has its own ffmpeg decoder, including a shared source."""
 
-    from twobyteasr import media_service
+    from twobyteasr.media import media_service
 
     fake = _FakeMediaService()
     fake.manifests["D:/same.mp4"] = _FakeProxyManifest("C:/cache/same-proxy.mp4")
@@ -444,7 +444,7 @@ def test_overlay_path_same_source_uses_independent_ffmpeg_decoder(monkeypatch):
 
 
 def test_overlay_path_av1_does_not_create_a_wmf_proxy(monkeypatch):
-    from twobyteasr import media_service
+    from twobyteasr.media import media_service
 
     fake = _FakeMediaService()
     monkeypatch.setattr(media_service, "GLOBAL_MEDIA_SERVICE", fake)

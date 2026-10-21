@@ -6,13 +6,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_review import (
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.subtitle_rules.studio_review import (
     analyze_review_risks,
     review_evidence_coverage,
     review_hypotheses_from_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def _app():
@@ -224,9 +224,8 @@ def test_removed_checks_page_does_not_implicitly_rewrite_project(tmp_path, monke
 
     assert not hasattr(page, 'safe_fix_card')
     assert not hasattr(page, '_apply_safe_fixes')
-    # AI设计 / 样式 / 动效 / 视频 / 剪辑助手 / 素材 — no 检查 page.
-    assert page.context_drawer.count() == 6
-    assert '检查' not in [page.context_drawer.tabToolTip(i) for i in range(page.context_drawer.count())]
+    assert page.context_drawer.count() == 5
+    assert '检查' not in [page.context_drawer.tabToolTip(i) for i in range(5)]
     assert page.undo_stack.count() == 0
     assert page.project.cues[0].text == "  第一条 １２！！  "
     page.close_page()

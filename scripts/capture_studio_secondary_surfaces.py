@@ -15,10 +15,10 @@ from PySide6.QtCore import QPoint  # noqa: E402
 from PySide6.QtGui import QFont, QFontDatabase  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-import twobyteasr.studio_render_ui as render_ui  # noqa: E402
-from twobyteasr.studio_project import StudioMedia, SubtitleProject  # noqa: E402
-from twobyteasr.studio_theme import StudioComboBox, create_studio_menu  # noqa: E402
-from twobyteasr.studio_ui import ShortcutSettingsDialog  # noqa: E402
+import twobyteasr.exports.studio_render_ui as render_ui  # noqa: E402
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject  # noqa: E402
+from twobyteasr.design.studio_theme import StudioComboBox, create_studio_menu  # noqa: E402
+from twobyteasr.studio.studio_ui import ShortcutSettingsDialog  # noqa: E402
 
 
 def _save(widget, target: Path) -> None:

@@ -12,7 +12,7 @@ meaning explicitly (2026-10-07 visual system):
 """
 from __future__ import annotations
 
-from ..typography import UI_FONT_STACK
+from .typography import UI_FONT_STACK
 
 
 def build_semantic_qss(t) -> str:

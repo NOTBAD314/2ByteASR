@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.studio_mpv import (
+from twobyteasr.playback.studio_mpv import (
     _MpvCommandActor,
     ADVANCED_OVERLAY_ID,
     TRANSFORM_OVERLAY_ID,

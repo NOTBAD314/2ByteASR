@@ -12,17 +12,17 @@ from PySide6.QtGui import QMouseEvent, QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_media_commands import media_graph_command
-from twobyteasr.studio_media_pool import (
+from twobyteasr.timeline.studio_media_commands import media_graph_command
+from twobyteasr.timeline.studio_media_pool import (
     active_video_clips,
     add_media_asset,
     add_video_clip,
     create_video_track,
     move_video_clip,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_runtime_state import DirtyDomain, state_for
-from twobyteasr.studio_ui import SubtitleStudioPage, WaveformTimeline
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_runtime_state import DirtyDomain, state_for
+from twobyteasr.studio.studio_ui import SubtitleStudioPage, WaveformTimeline
 
 
 def _app() -> QApplication:

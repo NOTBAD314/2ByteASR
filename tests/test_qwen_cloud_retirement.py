@@ -2,8 +2,8 @@
 import copy
 from types import SimpleNamespace
 import pytest
-from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
-from twobyteasr import llm_config
+from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
+from twobyteasr.providers import llm_config
 
 LATEST = "qwen-audio-3.1-asr-flash-filetrans"
 PATH = "/api/v1/services/audio/asr/transcription"
@@ -51,8 +51,8 @@ def test_workspace_key_remains_in_existing_provider_host_scope_without_writes(mo
     assert llm_config._provider_key_id("dashscope",HOST+OLD_PATH)==llm_config._provider_key_id("dashscope",HOST+PATH)
 
 def test_factory_endpoint_and_catalog_only_offer_latest_cloud_qwen(monkeypatch):
-    from twobyteasr.ui import ASR_API_PRESETS
-    from twobyteasr.model_workshop import MODELS,CANONICAL_MODEL_ORDER
+    from twobyteasr.app.ui import ASR_API_PRESETS
+    from twobyteasr.local_models.model_workshop import MODELS,CANONICAL_MODEL_ORDER
     calls=[]
     monkeypatch.setattr(llm_config,"read_asr_api_key",lambda p,u:(calls.append((p,u)) or ("fixture-key","fixture")))
     endpoint=llm_config.qwen_asr_endpoint_from_settings({})
@@ -66,7 +66,7 @@ def test_factory_endpoint_and_catalog_only_offer_latest_cloud_qwen(monkeypatch):
     assert [m.key for m in cloud]==["qwen_cloud_filetrans","qwen31_filetrans"]
     assert {ASR_API_PRESETS[m.api_preset]["model"] for m in cloud}=={LATEST}
     assert {"qwen_local","qwen_aligner"}<={m.key for m in MODELS}
-    from twobyteasr.model_benchmarks import reference_api_model
+    from twobyteasr.local_models.model_benchmarks import reference_api_model
     assert reference_api_model(LATEST,"accuracy","zh") is None
 
 @pytest.mark.parametrize("model",["qwen3-asr-flash","qwen3-asr-flash-legacy-date","qwen-audio-3.0-asr-flash","qwen-audio-3.1-asr-flash"])
@@ -75,7 +75,7 @@ def test_old_short_model_cannot_be_reintroduced_through_custom_provider(model):
         llm_config.validate_qwen_asr_endpoint(dict(provider="custom",protocol="openai_transcription",model=model,url="https://fixture.invalid/asr",api_key="fixture"))
 
 def test_saved_unrelated_deployment_protocol_can_be_retained_without_preset(monkeypatch):
-    from twobyteasr.ui import persist_asr_configuration
+    from twobyteasr.app.ui import persist_asr_configuration
     old=dict(primary_asr_backend="api",qwen_asr_backend="off",firered_asr_backend="off",
       qwen_asr_api_provider="dashscope",qwen_asr_api_protocol="dashscope_multimodal",
       qwen_asr_api_model="unrelated-deployment",qwen_asr_api_url="https://fixture.invalid/asr")
@@ -93,7 +93,7 @@ def test_saved_unrelated_deployment_protocol_can_be_retained_without_preset(monk
 @pytest.mark.parametrize("with_url",[True,False])
 def test_old_profile_uses_settings_migration_before_refilling_qt_controls(monkeypatch,persist,with_url):
     from PySide6.QtWidgets import QApplication,QComboBox,QLineEdit
-    from twobyteasr.ui import MainWindow,ASR_API_PRESETS
+    from twobyteasr.app.ui import MainWindow,ASR_API_PRESETS
     app=QApplication.instance() or QApplication([])
     runtime=copy.deepcopy(DEFAULT_SETTINGS)
     runtime["models"]["qwen_asr_api_url"]=HOST+OLD_PATH
@@ -122,7 +122,7 @@ def test_old_profile_uses_settings_migration_before_refilling_qt_controls(monkey
 
 def test_asr_placeholder_never_uses_unrelated_legacy_stage_secret(monkeypatch):
     from PySide6.QtWidgets import QApplication,QComboBox,QLineEdit
-    from twobyteasr import ui
+    from twobyteasr.app import ui
     app=QApplication.instance() or QApplication([])
     provider=QComboBox();provider.addItem("custom","custom")
     field=QLineEdit();url=QLineEdit("https://fixture.invalid/asr")

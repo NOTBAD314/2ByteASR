@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import moss_firered_pipeline as pipeline
-from twobyteasr.asr_schema import (
+from twobyteasr.recognition.asr_schema import (
     SchemaContractError,
     flatten_segment_tokens,
     normalize_firered_worker_result,
@@ -62,7 +62,7 @@ def test_stage5_rejects_malformed_value_with_schema_error():
 
 def test_alignment_dtype_parser_accepts_supported_float_sample():
     stdout = '[2BYTEASR_FIRERED_AED] {"event":"align_dtype","log_probs_dtype":"torch.float16","log_probs_device":"cuda:0","targets_dtype":"torch.int64","targets_device":"cuda:0"}'
-    sample = __import__("twobyteasr.asr", fromlist=["_parse_firered_alignment_telemetry"])._parse_firered_alignment_telemetry(stdout)
+    sample = __import__("twobyteasr.recognition.asr", fromlist=["_parse_firered_alignment_telemetry"])._parse_firered_alignment_telemetry(stdout)
     assert sample[0]["log_probs_dtype"] == "torch.float16"
 
 
@@ -74,7 +74,7 @@ def test_frozen_qwen_worker_result_survives_finally_without_torch(monkeypatch):
     """frozen 进程没有 torch；worker 路径的成功返回值不得被 finally 清理吞掉。"""
     import sys
 
-    from twobyteasr import asr
+    from twobyteasr.recognition import asr
 
     references = [{"start": 0.0, "end": 1.0, "text": "真实短块", "confidence": 0.9}]
     monkeypatch.setattr(asr, "USE_QWEN_ASR_REFERENCE", True)

@@ -11,9 +11,9 @@ pytest_qt = pytest.importorskip("PySide6.QtWidgets", reason="needs PySide6")
 from PySide6.QtCore import QCoreApplication, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr import glossary_build as gbuild  # noqa: E402
-from twobyteasr import glossary_task_manager as gtm  # noqa: E402
-from twobyteasr.glossary_skill import SearchedTerm, TermDiff  # noqa: E402
+from twobyteasr.glossary import glossary_build as gbuild  # noqa: E402
+from twobyteasr.glossary import glossary_task_manager as gtm  # noqa: E402
+from twobyteasr.glossary.glossary_skill import SearchedTerm, TermDiff  # noqa: E402
 
 
 class _Legacy:

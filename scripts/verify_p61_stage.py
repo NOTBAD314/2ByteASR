@@ -17,11 +17,11 @@ from PySide6.QtWidgets import QApplication, QSplitter
 
 import subtitle_core as legacy
 
-from twobyteasr.studio_find_replace import FindReplaceDialog
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.theme_manager import apply_application_theme
-from twobyteasr.ui import MainWindow
+from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.design.theme_manager import apply_application_theme
+from twobyteasr.app.ui import MainWindow
 
 SHOTS = ROOT / "tmp" / "p61-accept"
 SHOTS.mkdir(parents=True, exist_ok=True)

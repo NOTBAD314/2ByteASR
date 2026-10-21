@@ -122,7 +122,8 @@ def main():
         os.environ['GROK_HOME'] = str(private_cli)
         if cli_config_source.is_file():
             (private_cli/'config.toml').write_bytes(cli_config_source.read_bytes())
-    from twobyteasr import settings as settings_module, llm_config
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.providers import llm_config
     settings, warnings = settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS, raw_settings)
     secret_reader = llm_config._read_secrets
     llm_config._read_secrets = lambda **_: secret_reader(read_only_path=secrets_path)
@@ -132,15 +133,15 @@ def main():
     settings_module.save_runtime_settings(settings, out/'profile/config')
     # No role is repaired or installed. The real preflight still verifies the
     # borrowed interpreter against the production dependency lock.
-    from twobyteasr import runtime_registry
+    from twobyteasr.system import runtime_registry
     runtime_registry.resolve_runtime_python = lambda role, **_: borrowed_roles.get(role, '')
     from twobyteasr.runtime_paths import MODEL_ROOT_ENV, reset_runtime_paths
     os.environ[MODEL_ROOT_ENV] = str(model_root)
     reset_runtime_paths()
     import subtitle_core as core
-    from twobyteasr.service import CancellationToken, RunOptions, run_media_queue
-    from twobyteasr.recognition_result import validate_job_id, verify_result_reference
-    from twobyteasr.terminology import GlossarySnapshot
+    from twobyteasr.recognition.service import CancellationToken, RunOptions, run_media_queue
+    from twobyteasr.recognition.recognition_result import validate_job_id, verify_result_reference
+    from twobyteasr.glossary.terminology import GlossarySnapshot
     core.adopt_profile_runtime_settings(settings, warnings)
     catalog = GlossarySnapshot.from_dict(snapshot)
     if not catalog.libraries:

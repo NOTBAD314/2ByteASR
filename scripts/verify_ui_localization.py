@@ -15,6 +15,8 @@ def main():
     parser.add_argument('--exe', type=Path)
     parser.add_argument('--theme', default='')
     parser.add_argument('--scale', default='1')
+    parser.add_argument('--six-languages', action='store_true',
+                        help='Check the six added languages and responsive model badges.')
     args = parser.parse_args()
     out = args.output.resolve()
     if not out.is_relative_to(ROOT/'tmp') or out.exists():
@@ -37,6 +39,8 @@ def main():
                TWOBYTEASR_BRAND_EXPECT_THEME=args.theme or 'grape', QT_QPA_PLATFORM='windows',
                QT_SCALE_FACTOR=args.scale, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1',
                HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
+    if args.six_languages:
+        env['TWOBYTEASR_LOCALIZATION_SIX'] = '1'
     from isolated_windows_desktop import run_on_desktop
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT/'quick_start.py')]
     code = run_on_desktop(command, cwd=ROOT, env=env, output=out/'process', timeout=240)

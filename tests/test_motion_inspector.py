@@ -7,13 +7,13 @@ import pytest
 
 from tests.test_motion_workflow_ui import make_page, close
 from tests.test_word_motion_workflow import fixture_project, app
-from twobyteasr.effect_dsl import validate_effect, EffectValidationError
-from twobyteasr.motion_application import motion_command
-from twobyteasr.word_animation import build_word_animation
-from twobyteasr.letter_motion import sample
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.studio_project import save_project, load_project
-from twobyteasr.ass_compiler import compile_ass, compile_ass_revision
+from twobyteasr.caption_style.effect_dsl import validate_effect, EffectValidationError
+from twobyteasr.caption_style.motion_application import motion_command
+from twobyteasr.caption_style.word_animation import build_word_animation
+from twobyteasr.caption_style.letter_motion import sample
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.projects.studio_project import save_project, load_project
+from twobyteasr.rendering.ass_compiler import compile_ass, compile_ass_revision
 
 
 def test_stage_cards_keep_independent_choices_and_duration(tmp_path):
@@ -68,8 +68,8 @@ def test_blue_karaoke_interpolates_and_stops_in_gaps(app):
 
 @pytest.mark.parametrize('mode,channel', [('loop_breathe','scale'), ('loop_float','y'), ('loop_sway','x')])
 def test_loop_period_window_and_export_clock(mode, channel, app, tmp_path):
-    from twobyteasr.advanced_renderer import _native_segment_project
-    from twobyteasr.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.advanced_renderer import _native_segment_project
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
     p = fixture_project()
     effect = {'entry': {'type':'soft_fade','duration':200}, 'exit': {'type':'soft_fade','duration':300},
               'loop': {'type':mode,'duration':800}}
@@ -83,7 +83,7 @@ def test_loop_period_window_and_export_clock(mode, channel, app, tmp_path):
     # Continuous clock survives excerpting and the frozen revision route.
     segment = _native_segment_project(p, 1800, 3200)
     cut = segment._word_animation_plans['a']
-    from twobyteasr.word_animation import remap_word_animation
+    from twobyteasr.caption_style.word_animation import remap_word_animation
     cut = remap_word_animation(cut, cut['text'])
     assert sample(cut['units'][0], 500)[channel] == pytest.approx(sample(unit, 1300)[channel])
     assert compile_ass_revision(StudioRevisionStore(p).render) == compile_ass(p)

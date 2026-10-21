@@ -28,7 +28,7 @@ def main():
         (runtime/'Lib/site-packages/qa-dependencies.pth').write_text(str(root/'.venv-main/Lib/site-packages'),'utf8')
         os.environ['TWOBYTEASR_MAIN_PYTHON']=str(runtime/'Scripts/python.exe')
         os.environ['PYTHONDONTWRITEBYTECODE']='1'
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     assets=root/'tmp/studio-multisource-20260928/assets';assets.mkdir(parents=True,exist_ok=True)
     for name,color,freq,duration in [('first','red',440,10),('second','blue',880,15),('third','green',660,7)]:
         path=assets/(name+'.mp4')
@@ -38,9 +38,9 @@ def main():
                 f'sine=frequency={freq}:sample_rate=48000:duration={duration}',
                 '-c:v','libx264','-preset','ultrafast','-g','30','-c:a','aac','-shortest',path],
                 check=True,timeout=90,purpose='multi-source acceptance fixtures')
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
-    from twobyteasr.studio_edit_sequence import sequence_of
-    from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip
     p=SubtitleProject(media=StudioMedia(path=str(assets/'first.mp4'),duration_ms=10000,width=1280,height=720))
     p.validate();p.video_tracks[0].locked=sequence_of(p).video_track_locked=False
     a=add_media_asset(p,assets/'second.mp4',duration_ms=15000)
@@ -50,7 +50,7 @@ def main():
     save_project(overlap,out/'overlap.2byteproj')
     gap=copy.deepcopy(p);c=gap.video_tracks[1].clips[0];c.timeline_in_ms=12000;c.timeline_out_ms=27000
     save_project(gap,out/'gap.2byteproj')
-    from twobyteasr.studio_clip_edit import reassign_clips_command
+    from twobyteasr.timeline.studio_clip_edit import reassign_clips_command
     three=copy.deepcopy(p)
     reassign_clips_command(three,'V2','V1',[three.video_tracks[1].clips[0].id],append=True).redo()
     a=add_media_asset(three,assets/'third.mp4',duration_ms=7000)
@@ -58,7 +58,7 @@ def main():
     reassign_clips_command(three,'V2','V1',[three.video_tracks[1].clips[0].id],append=True).redo()
     save_project(three,out/'three.2byteproj')
     if args.held_preview:
-        from twobyteasr.studio_clip_edit import clip_edit_command
+        from twobyteasr.timeline.studio_clip_edit import clip_edit_command
         for name,duration,cut,frequency,color in [('deep-a',42,30,440,'green'),('deep-b',108,100,880,'blue')]:
             path=assets/(name+'.mp4')
             if not path.exists():

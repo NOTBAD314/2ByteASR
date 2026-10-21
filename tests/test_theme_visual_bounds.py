@@ -1,8 +1,8 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
-from twobyteasr.subtitle_stacking import compute_stack_layout
-from twobyteasr.theme_visual_bounds import measurement_key, measured_bounds
+from twobyteasr.caption_style.subtitle_stacking import compute_stack_layout
+from twobyteasr.caption_design.theme_visual_bounds import measurement_key, measured_bounds
 
 
 class Recipe:

@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 
-from twobyteasr.model_benchmarks import (  # noqa: E402
+from twobyteasr.local_models.model_benchmarks import (  # noqa: E402
     DEFAULT_SCENE,
     GROUPS,
     SCENES,
@@ -25,7 +25,7 @@ from twobyteasr.model_benchmarks import (  # noqa: E402
     score_in_group,
     secondary_record,
 )
-from twobyteasr.model_benchmarks import ComparisonGroup  # noqa: E402
+from twobyteasr.local_models.model_benchmarks import ComparisonGroup  # noqa: E402
 
 
 BY_ID = {group.group_id: group for group in GROUPS}

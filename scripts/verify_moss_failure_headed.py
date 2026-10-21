@@ -28,7 +28,7 @@ def main():
     ):
         cases.append(dict(name=name, cause=cause, expected=expected))
     (out / 'failure-cases.json').write_text(json.dumps(cases, ensure_ascii=False), 'utf8')
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, save_project
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, save_project
     guard = out / 'empty.2byteproj'
     save_project(SubtitleProject(media=StudioMedia(path='', display_name='', duration_ms=0)), guard)
     env = os.environ.copy()

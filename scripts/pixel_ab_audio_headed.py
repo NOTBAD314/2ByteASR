@@ -25,8 +25,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_recipe import recipe_payload_for_style, route_recipe
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_recipe import recipe_payload_for_style, route_recipe
 import os
 
 CUE_ID = "2"

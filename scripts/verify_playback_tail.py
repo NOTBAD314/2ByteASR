@@ -51,10 +51,10 @@ def main():
     os.environ['TWOBYTEASR_TAIL_WINDOW_MS']=str(round(args.window_seconds*1000))
     os.environ['TWOBYTEASR_PLAYBACK_PROBE_DETAIL']=args.probe
     os.environ['TWOBYTEASR_TAIL_GC_PRESSURE']='1' if args.exercise_gc_limit else '0'
-    from twobyteasr.studio_project import (SubtitleProject, StudioMedia, StudioCue, StudioSpeaker,
+    from twobyteasr.projects.studio_project import (SubtitleProject, StudioMedia, StudioCue, StudioSpeaker,
                                           load_project, save_project, hydrate_media_contract)
-    from twobyteasr.studio_helpers import probe_media_identity
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.studio.studio_helpers import probe_media_identity
+    from twobyteasr.system.processes import run_hidden_subprocess
     source = load_project(args.project) if args.project else None
     corpus = json.loads(args.cue_corpus.read_text('utf8')).get('cues', []) if args.cue_corpus else []
     if args.cue_corpus and len(corpus) < args.count:

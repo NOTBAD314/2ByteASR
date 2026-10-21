@@ -38,7 +38,7 @@ def main() -> int:
     from twobyteasr.test_isolation import install
     install()
     import subtitle_core as legacy
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
 
     # A glossary in the isolated user data: two names and one confirmed alias.
     library = legacy.create_learned_content('原神', create_new=True)

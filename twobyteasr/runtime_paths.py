@@ -595,7 +595,7 @@ def iter_model_dir_candidates(
     seen: set[str] = set()
     paths = get_runtime_paths()
     if os.environ.get("TWOBYTEASR_TEST_ROOT"):
-        from .model_associations import is_model_detached
+        from .local_models.model_associations import is_model_detached
         candidate = (paths.model_root / name).resolve()
         for parent in (paths.model_root, *(Path(p) for p in paths.discovered_model_roots)):
             path = parent / name
@@ -619,7 +619,7 @@ def iter_model_dir_candidates(
         except OSError:
             continue
         key = os.path.normcase(str(resolved))
-        from .model_associations import is_model_detached
+        from .local_models.model_associations import is_model_detached
         if is_model_detached(resolved):
             continue
         if key in seen:

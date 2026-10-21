@@ -7,13 +7,13 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget, QLineEdit, QVBoxLayout, QLabel
 
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, AudioTrack, AudioClip, save_project, load_project
-from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_video_track_state, audio_master_mode, audio_master_track_id
-from twobyteasr.audio_graph import capture_audio_graph, preview_audio_layers
-from twobyteasr.studio_track_delete import DeleteTrackCommand, delete_current, delete_track
-from twobyteasr.studio_media_commands import media_graph_command
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_timeline import WaveformTimeline
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, AudioTrack, AudioClip, save_project, load_project
+from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_video_track_state, audio_master_mode, audio_master_track_id
+from twobyteasr.playback.audio_graph import capture_audio_graph, preview_audio_layers
+from twobyteasr.timeline.studio_track_delete import DeleteTrackCommand, delete_current, delete_track
+from twobyteasr.timeline.studio_media_commands import media_graph_command
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.studio.studio_timeline import WaveformTimeline
 
 
 @pytest.fixture(scope='module')
@@ -123,7 +123,7 @@ def test_header_focus_text_delete_clip_selection_and_empty_track_layout(project,
 
 
 def test_deleted_standalone_audio_does_not_resurrect_on_probe_or_new_import(project,app,tmp_path):
-    from twobyteasr.studio_project import hydrate_media_contract
+    from twobyteasr.projects.studio_project import hydrate_media_contract
     audio=add_media_asset(project,tmp_path/'voice.wav',duration_ms=3000,
         video_metadata={'has_video':False},audio_metadata={'has_audio':True})
     tid=next(t.id for t in project.audio_tracks if any(c.asset_id==audio.asset_id for c in t.clips))
@@ -135,7 +135,7 @@ def test_deleted_standalone_audio_does_not_resurrect_on_probe_or_new_import(proj
 
 
 def test_add_empty_subtitle_track_is_reversible_and_preserves_order(project,app):
-    from twobyteasr.studio_track_delete import AddSubtitleTrackCommand
+    from twobyteasr.timeline.studio_track_delete import AddSubtitleTrackCommand
     timeline=WaveformTimeline();timeline.set_project(project)
     page=SimpleNamespace(project=project,timeline=timeline,_populate_speakers=lambda:None,ensure_active_subtitle_renderer=lambda **_:None)
     before=copy.deepcopy(project.speakers);order=list(project.studio_state['speaker_track_order'])
@@ -148,7 +148,7 @@ def test_add_empty_subtitle_track_is_reversible_and_preserves_order(project,app)
 
 def test_single_key_press_deletes_one_track_and_next_press_is_not_debounced(tmp_path,monkeypatch):
     from tests.test_studio_style_controller import _page,_finish
-    from twobyteasr.studio_track_delete import AddSubtitleTrackCommand
+    from twobyteasr.timeline.studio_track_delete import AddSubtitleTrackCommand
     app,page=_page(tmp_path,monkeypatch)
     try:
         page.show();page.activateWindow();QTest.qWait(40)

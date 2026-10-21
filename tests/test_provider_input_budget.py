@@ -2,8 +2,8 @@ import base64,io,json
 from pathlib import Path
 import pytest
 from PIL import Image
-from twobyteasr.provider_input_budget import prepare_input,InputBudgetError,windows_argv_units
-from twobyteasr.ai_providers import GrokCLIProvider,AIProviderError
+from twobyteasr.providers.provider_input_budget import prepare_input,InputBudgetError,windows_argv_units
+from twobyteasr.providers.ai_providers import GrokCLIProvider,AIProviderError
 
 
 def screenshot(size=(1920,1080)):

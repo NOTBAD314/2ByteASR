@@ -1,4 +1,4 @@
-from twobyteasr.display_timing import classify_overlap, protect_intervals
+from twobyteasr.subtitle_rules.display_timing import classify_overlap, protect_intervals
 
 
 def row(label, start, end, speaker=None):
@@ -31,7 +31,7 @@ def test_missing_or_interleaved_evidence_is_uncertain_and_not_clipped():
 
 def test_failed_firered_uses_moss_even_with_stale_positive_alignment():
     from types import SimpleNamespace
-    from twobyteasr.display_timing import project_acoustics
+    from twobyteasr.subtitle_rules.display_timing import project_acoustics
     project = SimpleNamespace(asr_evidence={"r": dict(moss_start=1., moss_end=2., firered_start=.5,
         firered_end=2.5, firered_alignment_confidence=.9, final_timing_owner="MOSS_DEGRADED")})
     assert project_acoustics(project, SimpleNamespace(evidence_refs=["r"])) == [(1000, 2000)]

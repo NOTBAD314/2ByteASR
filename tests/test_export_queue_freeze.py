@@ -1,5 +1,5 @@
-from twobyteasr.studio_render import RenderJob, RenderSettings
-from twobyteasr.studio_render_queue import StudioRenderQueue, RenderQueueStore, QueuedRenderJob
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings
+from twobyteasr.exports.studio_render_queue import StudioRenderQueue, RenderQueueStore, QueuedRenderJob
 
 
 def test_enqueued_settings_graph_context_and_project_are_owned_copies(tmp_path, monkeypatch):

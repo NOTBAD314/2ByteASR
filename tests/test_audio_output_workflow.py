@@ -11,15 +11,15 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 from PySide6.QtMultimedia import QAudioFormat
-from twobyteasr.audio_graph import capture_audio_graph,preview_audio_layers,audio_graph_signature
-from twobyteasr.audio_engine import AudioOutputSpec,_PcmRingDevice,StudioAudioEngine,build_audio_mix_command
-from twobyteasr.audio_export import audio_mix_arguments
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,AudioTrack,AudioClip,sync_linked_av_contract,save_project,load_project
-from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_clip_edit import clip_edit_command
-from twobyteasr.studio_track_delete import DeleteTrackCommand
-from twobyteasr.processes import run_hidden_subprocess
+from twobyteasr.playback.audio_graph import capture_audio_graph,preview_audio_layers,audio_graph_signature
+from twobyteasr.playback.audio_engine import AudioOutputSpec,_PcmRingDevice,StudioAudioEngine,build_audio_mix_command
+from twobyteasr.exports.audio_export import audio_mix_arguments
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,AudioTrack,AudioClip,sync_linked_av_contract,save_project,load_project
+from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.timeline.studio_clip_edit import clip_edit_command
+from twobyteasr.timeline.studio_track_delete import DeleteTrackCommand
+from twobyteasr.system.processes import run_hidden_subprocess
 FFMPEG=Path(__file__).resolve().parents[1]/'tools/ffmpeg/bin/ffmpeg.exe'
 
 @pytest.fixture(scope='module',autouse=True)
@@ -144,8 +144,8 @@ def test_actual_export_gap_and_preview_share_sources(project,tmp_path,background
 
 @pytest.mark.parametrize('rate',[1.,2.])
 def test_real_equal_power_transition_preview_export_and_seek(project,tmp_path,rate):
-    from twobyteasr.studio_project import VideoClip
-    from twobyteasr.studio_transitions import set_transition,transition_gain
+    from twobyteasr.projects.studio_project import VideoClip
+    from twobyteasr.timeline.studio_transitions import set_transition,transition_gain
     p=project;t=p.video_tracks[1]
     t.clips=[VideoClip('left',t.clips[0].asset_id,source_out_ms=2000,timeline_out_ms=2000),
              VideoClip('right',p.media_pool[0].asset_id,source_in_ms=1000,source_out_ms=3000,timeline_in_ms=2000,timeline_out_ms=4000)]

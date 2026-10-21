@@ -20,12 +20,12 @@ import pytest
 from PySide6.QtCore import QEventLoop, QObject, QRectF, QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import caption_scene as scene_module
-from twobyteasr.caption_playback_cache import PreparedCaption
-from twobyteasr.caption_scene import CaptionScene
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, SubtitleStyle
-from twobyteasr.style_recipe import RecipeRoute
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering import caption_scene as scene_module
+from twobyteasr.rendering.caption_playback_cache import PreparedCaption
+from twobyteasr.rendering.caption_scene import CaptionScene
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, SubtitleStyle
+from twobyteasr.caption_style.style_recipe import RecipeRoute
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 @pytest.fixture(scope="module")

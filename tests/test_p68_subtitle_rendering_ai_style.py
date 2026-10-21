@@ -1,16 +1,16 @@
 import json
 from types import SimpleNamespace
 
-from twobyteasr.advanced_renderer import compile_composition_data
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_recipe import route_recipe
-from twobyteasr.studio_ai import (
+from twobyteasr.rendering.advanced_renderer import compile_composition_data
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_recipe import route_recipe
+from twobyteasr.caption_design.studio_ai import (
     _recipe_signature,
     _semantic_richness,
     style_recipe_for_prompt,
     visual_design_variants,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
@@ -35,7 +35,7 @@ def test_analysis_transcript_is_non_destructive_and_clip_readable(tmp_path, monk
     srt = tmp_path / "analysis-output.srt"
     txt.write_text("分析字幕", encoding="utf-8")
     srt.write_text("1\n00:00:01,000 --> 00:00:02,000\n分析字幕\n", encoding="utf-8")
-    monkeypatch.setattr("twobyteasr.studio_project.register_recent_project", lambda *_a, **_k: None)
+    monkeypatch.setattr("twobyteasr.projects.studio_project.register_recent_project", lambda *_a, **_k: None)
 
     create_studio_outputs(
         media,
@@ -66,7 +66,7 @@ def test_1930s_recipe_has_real_card_texture_motion_and_semantic_evidence():
 
 def test_local_abc_variants_differ_across_at_least_three_design_dimensions(monkeypatch):
     monkeypatch.setattr(
-        "twobyteasr.studio_ai.available_font_shortlist",
+        "twobyteasr.caption_design.studio_ai.available_font_shortlist",
         lambda *_a, **_k: {
             "serif": ["SimSun"], "handwriting": ["KaiTi"],
             "chinese_sans": ["Microsoft YaHei UI"], "chinese_display": ["SimHei"],

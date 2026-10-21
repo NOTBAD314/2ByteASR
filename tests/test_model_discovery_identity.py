@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import pytest
-from twobyteasr import model_discovery as discovery
-from twobyteasr.llm_config import models_url, resolved_service_values, update_active_profile, activate_ai_service
+from twobyteasr.providers import model_discovery as discovery
+from twobyteasr.providers.llm_config import models_url, resolved_service_values, update_active_profile, activate_ai_service
 
 
 def response(payload, status=200):

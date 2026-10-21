@@ -30,8 +30,8 @@ sys.path.insert(0,str(ROOT))
 from PySide6.QtCore import QSettings,QTimer,Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QMainWindow,QMessageBox,QScrollArea
-from twobyteasr import model_removal
-from twobyteasr.model_workshop import ModelWorkshopPage
+from twobyteasr.local_models import model_removal
+from twobyteasr.local_models.model_workshop import ModelWorkshopPage
 from twobyteasr.runtime_paths import MODEL_ROOT_ENV,USER_DATA_ENV,reset_runtime_paths
 
 os.environ[MODEL_ROOT_ENV]=str(MODELS);os.environ[USER_DATA_ENV]=str(PROFILE/'local');reset_runtime_paths()
@@ -48,7 +48,7 @@ for name in names:(folder/name).write_bytes(b'owned fixture\n'*1024)
 app=QApplication([])
 from twobyteasr.i18n import save_language, tr, current_language
 save_language(args.language)
-from twobyteasr.theme_manager import apply_application_theme
+from twobyteasr.design.theme_manager import apply_application_theme
 apply_application_theme(app)
 window=QMainWindow();window.setWindowTitle('2ByteASR 模型永久删除实测 · tmp 归属沙箱')
 window._run_in_progress=False;window.worker=None
@@ -134,7 +134,7 @@ try:
     QTest.qWait(700)
     check('independent speaker tab absent',all(b.property('role')!='speaker' for b in page.tab_group.buttons()))
     check('retired model entries absent',not {'nemotron','qwen_api','qwen31_flash','qwen_audio_asr_flash','qwen_audio_filetrans'} & set(page._cards))
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.app.ui import ASR_API_PRESETS
     check('cloud Qwen presets contain only latest Filetrans',
           {key for key,value in ASR_API_PRESETS.items() if str(value.get('model','')).startswith('qwen')} == {'qwen31_filetrans','qwen_cloud_filetrans'}
           and 'dashscope' not in ASR_API_PRESETS)
@@ -172,7 +172,7 @@ try:
     check('GUI events continue during actual permanent deletion',thread_checks[0]['ui_ticks_during_delete']>0)
     check('model registry refreshes actual missing state','sensevoice' not in page._installed)
     shot('permanent-complete')
-    from twobyteasr.model_storage import ModelStorageDialog
+    from twobyteasr.local_models.model_storage import ModelStorageDialog
     trash=PROFILE/'.bin'/folder.name;trash.mkdir(parents=True)
     fixture_roots.append(trash)
     for name in ('model.pt','config.json'):(trash/name).write_bytes(b'owned historical model fixture')
@@ -187,7 +187,7 @@ try:
     check('historical registered files permanently removed',not (trash/'model.pt').exists() and not (trash/'config.json').exists())
     check('historical unknown files and unrelated bin directory preserved',(trash/'unknown.bin').read_bytes()==b'unknown file kept' and (unknown/'weights.bin').read_bytes()==b'not managed')
     storage.grab().save(str(PROFILE/'historical-cleanup-complete.png'))
-    from twobyteasr.model_download_cache import write_transaction
+    from twobyteasr.local_models.model_download_cache import write_transaction
     stage=MODELS/'.downloads/sensevoice/hf_official/fixture';stage.mkdir(parents=True)
     (stage/'model.pt.part.owned.000').write_bytes(b'published staging duplicate')
     (stage/'user-note.mp4').write_bytes(b'unknown asset retained')
@@ -200,7 +200,8 @@ try:
 
     # Normal unused-runtime control with actual offline uv health checks. The
     # tool's location alone is substituted to avoid duplicating its large EXE.
-    from twobyteasr import runtime_download_cache,model_runtime_cleanup
+    from twobyteasr.system import runtime_download_cache
+    from twobyteasr.local_models import model_runtime_cleanup
     from twobyteasr.runtime_paths import user_data_root
     managed=user_data_root()/'runtimes';managed.mkdir(parents=True,exist_ok=True)
     current=managed/'main/0123456789abcdef';old=managed/'main/fedcba9876543210'
@@ -241,7 +242,7 @@ try:
     check('normal external default action leaves every file intact',detached.detached==[str(external)] and all((external/name).exists() for name in names))
     check('detached external model remains unavailable after registry refresh','sensevoice' not in page._installed)
     shot('external-detached')
-    from twobyteasr.model_associations import restore_model_association
+    from twobyteasr.local_models.model_associations import restore_model_association
     restore_model_association(external);page.refresh();external_choice[0]='delete'
     removed=click_delete()
     check('normal external permanent action has separate confirmation and real file deletion',removed.completed and not external.exists())

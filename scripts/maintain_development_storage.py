@@ -18,7 +18,7 @@ import zipfile
 import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from twobyteasr.storage_service import safe_path
+from twobyteasr.storage.storage_service import safe_path
 
 ASSETS={'.2byteproj','.2byteasr','.flv','.wav','.mp3','.m4a'}
 SOURCE={'.py','.pyi','.ps1','.sh','.bat','.cmd','.cs','.cpp','.c','.h','.js','.mjs','.cjs','.jsx','.ts','.tsx','.rs','.go','.java','.md','.toml','.lock','.yml','.yaml','.ini','.env'}

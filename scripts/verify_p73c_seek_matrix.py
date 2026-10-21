@@ -58,12 +58,12 @@ from PySide6.QtWidgets import QApplication
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.p64_runtime_audit import _print_window, _window_bounds
-from twobyteasr.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
-from twobyteasr.runtime_trace import GLOBAL_STUDIO_TRACE
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.visual_runtime import VisualOwner
+from twobyteasr.app import ui
+from twobyteasr.acceptance.p64_runtime_audit import _print_window, _window_bounds
+from twobyteasr.projects.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
+from twobyteasr.diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.rendering.visual_runtime import VisualOwner
 
 
 CURRENT_ACTION = "startup"

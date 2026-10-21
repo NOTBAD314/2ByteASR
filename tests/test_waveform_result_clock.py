@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.recognition_result import media_identity_for_task, stamp_result, verify_result_reference
-from twobyteasr.studio_project import MediaAsset, StudioMedia, SubtitleProject
-from twobyteasr.studio_timeline import WaveformTimeline
+from twobyteasr.recognition.recognition_result import media_identity_for_task, stamp_result, verify_result_reference
+from twobyteasr.projects.studio_project import MediaAsset, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_timeline import WaveformTimeline
 
 
 def timeline(project):

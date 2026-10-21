@@ -10,15 +10,15 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
-from twobyteasr.studio_edit_commands import (
+from twobyteasr.studio.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
+from twobyteasr.timeline.studio_edit_commands import (
     generate_edit_command,
     razor_video_command,
     restore_full_sequence_command,
     ripple_trim_command,
     set_video_lock_command,
 )
-from twobyteasr.studio_edit_sequence import (
+from twobyteasr.timeline.studio_edit_sequence import (
     HighlightCandidate,
     VideoSegment,
     ensure_edit_sequence,
@@ -31,10 +31,10 @@ from twobyteasr.studio_edit_sequence import (
     split_at_playhead,
     timeline_duration_ms,
 )
-from twobyteasr.studio_highlight_analyzer import parse_highlight_payload
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, load_project, save_project
-from twobyteasr.studio_render import RenderJob, RenderSettings, build_concat_filter_complex, build_render_command
-from twobyteasr.studio_sequence_mapper import export_source_slices, source_to_timeline, timeline_to_source, write_mpv_edl
+from twobyteasr.studio.studio_highlight_analyzer import parse_highlight_payload
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, load_project, save_project
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, build_concat_filter_complex, build_render_command
+from twobyteasr.timeline.studio_sequence_mapper import export_source_slices, source_to_timeline, timeline_to_source, write_mpv_edl
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,7 +122,7 @@ def test_qw_ripple_shifts_and_deletes_cues_as_one_undo():
     assert sequence.timeline_duration_ms == 40_000
     # cue 8–12 overlaps 10–20: clamp start to 10 then shift? start in range, end in range for 8-12:
     # start 8 < 10, end 12 in [10,20) → end becomes 10. Kept at 8–10.
-    from twobyteasr.studio_edit_sequence import projected_cues, source_cue_id_of
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues, source_cue_id_of
     assert [(c.start_ms, c.end_ms) for c in project.cues] == [(c.start_ms, c.end_ms) for c in _project().cues]
     texts = {source_cue_id_of(cue.id): (cue.start_ms, cue.end_ms) for cue in projected_cues(project)}
     assert "c1" in texts
@@ -176,8 +176,8 @@ def test_concat_filter_is_single_graph(tmp_path):
     assert "[v0][a0][v1][a1][v2][a2]concat=" in graph
     assert ".mp4" not in graph  # no intermediate files
     assert vlabel == "[vout]"
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.ass_compiler import compile_ass
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.rendering.ass_compiler import compile_ass
     media=tmp_path/'source.mp4';ass=tmp_path/'captions.ass';output=tmp_path/'concat.mp4'
     run_hidden_subprocess([str(FFMPEG),'-v','error','-f','lavfi','-i',
         'color=c=purple:s=320x180:r=25:d=1','-f','lavfi','-i',
@@ -256,7 +256,7 @@ def test_danmaku_xml_parse_and_aggregate(tmp_path):
 
 
 def test_discovers_user_livestream_clip_skills():
-    from twobyteasr.studio_highlight_analyzer import HighlightSkillAdapter
+    from twobyteasr.studio.studio_highlight_analyzer import HighlightSkillAdapter
 
     skill = HighlightSkillAdapter.discover()
     assert skill.found is True
@@ -292,7 +292,7 @@ def test_edl_write(tmp_path):
 def test_timeline_paint_scales_to_three_hour_synthetic():
     pytest.importorskip("PySide6")
     app = QApplication.instance() or QApplication([])
-    from twobyteasr.studio_ui import WaveformTimeline
+    from twobyteasr.studio.studio_ui import WaveformTimeline
     project = SubtitleProject(
         media=StudioMedia(path="D:/long.mp4", duration_ms=3 * 3600 * 1000),
         speakers=[StudioSpeaker(id=f"S{index:02d}", name=f"P{index}") for index in range(4)],
@@ -314,7 +314,7 @@ def test_timeline_paint_scales_to_three_hour_synthetic():
         for index in range(18)
     ]
     sequence.normalize_timeline()
-    from twobyteasr.studio_edit_sequence import store_sequence
+    from twobyteasr.timeline.studio_edit_sequence import store_sequence
     store_sequence(project, sequence)
     timeline = WaveformTimeline()
     timeline.resize(1400, 280)

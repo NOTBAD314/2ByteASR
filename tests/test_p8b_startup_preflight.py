@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from twobyteasr.model_registry import ModelHealth, ModelRecord, ModelRegistry
-from twobyteasr.ui import required_recognition_model_keys, startup_model_preflight
+from twobyteasr.local_models.model_registry import ModelHealth, ModelRecord, ModelRegistry
+from twobyteasr.app.ui import required_recognition_model_keys, startup_model_preflight
 
 
 def _record(key: str, health: ModelHealth) -> ModelRecord:
@@ -104,7 +104,7 @@ def test_unselected_missing_catalog_models_do_not_prompt():
 
 
 def test_startup_skips_dialog_when_registry_preflight_is_healthy(monkeypatch):
-    from twobyteasr import ui
+    from twobyteasr.app import ui
 
     healthy = ui.StartupModelPreflight(5, ("moss",), (), ())
     monkeypatch.delenv("TWOBYTEASR_SKIP_FIRST_RUN_WIZARD", raising=False)

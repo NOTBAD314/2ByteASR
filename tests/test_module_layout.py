@@ -12,7 +12,7 @@ def test_stage_modules_are_available_and_compatibility_api_is_published():
         sys.executable,
         "-c",
         (
-            "import twobyteasr.cache, subtitle_core; "
+            "import twobyteasr.recognition.cache, subtitle_core; "
             "required=('stable_digest','run_cached_stage','transcribe_qwen_reference',"
             "'group_subtitles','normalize_cue_times','render_srt'); "
             "assert all(hasattr(subtitle_core, name) for name in required)"
@@ -61,10 +61,10 @@ def test_correction_facade_reexports_split_implementations():
         sys.executable,
         "-c",
         (
-            "import twobyteasr.correction as facade; "
-            "import twobyteasr.correction_safety as safety; "
-            "import twobyteasr.domain_terms as terms; "
-            "import twobyteasr.polishing as polishing; "
+            "import twobyteasr.subtitle_rules.correction as facade; "
+            "import twobyteasr.subtitle_rules.correction_safety as safety; "
+            "import twobyteasr.glossary.domain_terms as terms; "
+            "import twobyteasr.subtitle_rules.polishing as polishing; "
             "assert facade.apply_correction_edits is safety.apply_correction_edits; "
             "assert facade.discover_global_domain_term_mappings is terms.discover_global_domain_term_mappings; "
             "assert facade.polish_subtitles is polishing.polish_subtitles"
@@ -79,10 +79,10 @@ def test_segmentation_facade_reexports_split_implementations():
         sys.executable,
         "-c",
         (
-            "import twobyteasr.segmentation as facade; "
-            "import twobyteasr.cue_cleanup as cleanup; "
-            "import twobyteasr.grouping as grouping; "
-            "import twobyteasr.segmentation_alignment as alignment; "
+            "import twobyteasr.subtitle_rules.segmentation as facade; "
+            "import twobyteasr.subtitle_rules.cue_cleanup as cleanup; "
+            "import twobyteasr.subtitle_rules.grouping as grouping; "
+            "import twobyteasr.subtitle_rules.segmentation_alignment as alignment; "
             "assert facade.call_grouping_api is grouping.call_grouping_api; "
             "assert facade.merge_isolated_two_character_cues is cleanup.merge_isolated_two_character_cues; "
             "assert facade.segment_content_timeline is alignment.segment_content_timeline"
@@ -97,7 +97,7 @@ def test_text_rules_are_published_through_compatibility_core():
         sys.executable,
         "-c",
         (
-            "import subtitle_core; import twobyteasr.text_rules as rules; "
+            "import subtitle_core; import twobyteasr.subtitle_rules.text_rules as rules; "
             "assert subtitle_core.normalize_output_text is rules.normalize_output_text; "
             "assert subtitle_core.apply_editorial_segment_rules is rules.apply_editorial_segment_rules"
         ),
@@ -108,10 +108,10 @@ def test_text_rules_are_published_through_compatibility_core():
 
 def test_compatibility_facades_do_not_regrow_implementation_blocks():
     maximum_lines = {
-        "twobyteasr/correction.py": 300,
+        "twobyteasr/subtitle_rules/correction.py": 300,
         # e2ce52c: four forwarding lines for provider_snapshot/max_workers;
         # implementation remains in grouping.py, not this compatibility entry.
-        "twobyteasr/segmentation.py": 1882,
+        "twobyteasr/subtitle_rules/segmentation.py": 1882,
         "subtitle_core.py": 2500,
     }
     for relative_path, maximum in maximum_lines.items():
@@ -120,7 +120,7 @@ def test_compatibility_facades_do_not_regrow_implementation_blocks():
 
 
 def test_runtime_context_module_has_no_compatibility_core_import_cycle():
-    tree = ast.parse((ROOT / "twobyteasr/runtime.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "twobyteasr/recognition/run_context.py").read_text(encoding="utf-8"))
     imported_modules = {
         alias.name
         for node in ast.walk(tree)
@@ -148,13 +148,13 @@ def test_stage_modules_do_not_copy_mutable_runtime_globals():
         "RUN_REVIEW_ITEMS",
     )
     stage_paths = (
-        "twobyteasr/domain_terms.py",
-        "twobyteasr/polishing.py",
-        "twobyteasr/segmentation.py",
-        "twobyteasr/output.py",
-        "twobyteasr/timing.py",
-        "twobyteasr/text_rules.py",
-        "twobyteasr/pipeline_runtime.py",
+        "twobyteasr/glossary/domain_terms.py",
+        "twobyteasr/subtitle_rules/polishing.py",
+        "twobyteasr/subtitle_rules/segmentation.py",
+        "twobyteasr/subtitle_rules/output.py",
+        "twobyteasr/subtitle_rules/timing.py",
+        "twobyteasr/subtitle_rules/text_rules.py",
+        "twobyteasr/recognition/pipeline_runtime.py",
     )
     for relative_path in stage_paths:
         source = (ROOT / relative_path).read_text(encoding="utf-8")
@@ -167,7 +167,7 @@ def test_phonetic_similarity_is_available_in_production_import_order():
         sys.executable,
         "-c",
         (
-            "import subtitle_core; import twobyteasr.correction_safety as safety; "
+            "import subtitle_core; import twobyteasr.subtitle_rules.correction_safety as safety; "
             "assert safety.asr_consensus_similarity('测试', '测试') == 1.0; "
             "assert subtitle_core.phonetic_text('测试') == 'ceshi'"
         ),
@@ -182,11 +182,11 @@ def test_stage_function_globals_resolve_in_production_import_order():
         "-c",
         (
             "import builtins,dis,importlib,inspect,subtitle_core; "
-            "mods=('twobyteasr.cache','twobyteasr.asr','twobyteasr.correction',"
-            "'twobyteasr.correction_safety','twobyteasr.domain_terms','twobyteasr.polishing',"
-            "'twobyteasr.segmentation','twobyteasr.segmentation_alignment',"
-            "'twobyteasr.cue_cleanup','twobyteasr.grouping','twobyteasr.timing',"
-            "'twobyteasr.output','twobyteasr.text_rules'); missing=[]; "
+            "mods=('twobyteasr.recognition.cache','twobyteasr.recognition.asr','twobyteasr.subtitle_rules.correction',"
+            "'twobyteasr.subtitle_rules.correction_safety','twobyteasr.glossary.domain_terms','twobyteasr.subtitle_rules.polishing',"
+            "'twobyteasr.subtitle_rules.segmentation','twobyteasr.subtitle_rules.segmentation_alignment',"
+            "'twobyteasr.subtitle_rules.cue_cleanup','twobyteasr.subtitle_rules.grouping','twobyteasr.subtitle_rules.timing',"
+            "'twobyteasr.subtitle_rules.output','twobyteasr.subtitle_rules.text_rules'); missing=[]; "
             "[(missing.append((mn,n,str(i.argval))) if "
             "i.opname in ('LOAD_GLOBAL','LOAD_NAME') and str(i.argval) not in vars(m) "
             "and not hasattr(builtins,str(i.argval)) and str(i.argval) != '_GeneratorContextManager' "

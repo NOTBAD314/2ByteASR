@@ -67,7 +67,7 @@ class _FakeOwner(QWidget):
 def dialog(tmp_path, monkeypatch):
     _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    from twobyteasr.main_ui_glossary import TermLibraryDialog
+    from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
 
     owner = _FakeOwner()
     dlg = TermLibraryDialog(owner, page_mode=True)
@@ -169,8 +169,8 @@ def test_ai_update_and_builtin_collect_never_resurrect_hidden(dialog, tmp_path, 
     monkeypatch.setattr(legacy, "LEARNED_TERMS_PATH", str(tmp_path / "learned.json"))
     game = "绝区零"
     legacy.set_reference_terms_hidden(game, ["艾莲"], True)
-    from twobyteasr.smart_glossary import BuiltinGlossarySource, build_candidates
-    from twobyteasr.glossary_skill import SearchedTerm, diff_term_updates
+    from twobyteasr.glossary.smart_glossary import BuiltinGlossarySource, build_candidates
+    from twobyteasr.glossary.glossary_skill import SearchedTerm, diff_term_updates
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     payload = json.loads(open(os.path.join(root, "game_profiles.json"), encoding="utf-8-sig").read())

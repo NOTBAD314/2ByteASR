@@ -9,7 +9,7 @@ def main():
     parser.add_argument('--name',default='snow-slope-look')
     a=parser.parse_args();out=a.folder.resolve()
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'))
-    from twobyteasr.processes import run_hidden_subprocess,renderer_node_command,renderer_child_environment
+    from twobyteasr.system.processes import run_hidden_subprocess,renderer_node_command,renderer_child_environment
     from PIL import Image
     import numpy as np
     renderer=ROOT/'renderer';mov=out/(a.name+'.mov');start=time.perf_counter()

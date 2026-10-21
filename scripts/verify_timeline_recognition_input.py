@@ -13,10 +13,10 @@ out = ROOT/"tmp/timeline-recognition-round/real-input"
 out.mkdir(parents=True,exist_ok=True)
 os.environ["LOCALAPPDATA"] = str(out/"local")
 os.environ["APPDATA"] = str(out/"roaming")
-from twobyteasr.studio_project import load_project,save_project
-from twobyteasr.studio_edit_sequence import EditSequence,VideoSegment,store_sequence,timeline_duration_ms
-from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
-from twobyteasr.recognition_input import capture_recognition_snapshot,prepare_recognition_input
+from twobyteasr.projects.studio_project import load_project,save_project
+from twobyteasr.timeline.studio_edit_sequence import EditSequence,VideoSegment,store_sequence,timeline_duration_ms
+from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
+from twobyteasr.recognition.recognition_input import capture_recognition_snapshot,prepare_recognition_input
 
 project = load_project(source_project)
 baseline = {"project": str(source_project),"media": project.media.path,

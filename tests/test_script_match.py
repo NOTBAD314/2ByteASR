@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from twobyteasr.script_match import (ScriptMatchError, Token, match_script, parse_script)
+from twobyteasr.recognition.script_match import (ScriptMatchError, Token, match_script, parse_script)
 
 
 def _chars(text, start, step=200, speaker='S00', ref='segment:0'):

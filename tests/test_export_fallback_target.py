@@ -8,8 +8,9 @@ import subprocess
 
 import pytest
 
-from twobyteasr import export_run_log, export_validation, processes, studio_render
-from twobyteasr.studio_render import RenderJob, RenderSettings
+from twobyteasr.exports import export_run_log, export_validation, studio_render
+from twobyteasr.system import processes
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings
 
 
 def _job(tmp_path, target, requested_encoder, *, audio=False, graph=True):
@@ -72,7 +73,7 @@ def fake_backend(tmp_path, monkeypatch):
     def compile_graph(ffmpeg, job, ass_filter):
         graph_seen.append(deepcopy(job.direct_video_graph))
         return ['-i', job.media_path, '-map', '0:v:0', '-vf', ass_filter]
-    monkeypatch.setattr('twobyteasr.export_filtergraph.compile_video_filtergraph', compile_graph)
+    monkeypatch.setattr('twobyteasr.exports.export_filtergraph.compile_video_filtergraph', compile_graph)
     # Validate/publish functions retain normal receipt ownership. Only decoding
     # and packet scanning are replaced with explicit fake validation metadata.
     def fake_validate(ffmpeg, output, **kwargs):

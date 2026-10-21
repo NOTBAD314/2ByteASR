@@ -27,17 +27,17 @@ def main():
     install()
     from PIL import Image,ImageDraw
     import numpy as np
-    from twobyteasr.caption_card_ui import examples
+    from twobyteasr.caption_design.caption_card_ui import examples
     if args.components_version==4:
-        from twobyteasr.caption_type_effects import examples
+        from twobyteasr.caption_design.caption_type_effects import examples
     elif args.components_version==5:
-        from twobyteasr.caption_living_motion import examples
-    from twobyteasr.caption_components import compose
-    from twobyteasr.renderer_service import RendererService,RendererJob
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.theme_direction_preview import render_motion_preview
-    from twobyteasr.authored_motion_review import capture_motion_review
+        from twobyteasr.caption_design.caption_living_motion import examples
+    from twobyteasr.caption_design.caption_components import compose
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
+    from twobyteasr.caption_design.authored_motion_review import capture_motion_review
     background=Image.open(args.game_frame).convert('RGBA').resize((1920,1080))
     service=RendererService()
     result=dict(provenance='local-authored-component-examples',external_model_calls=0,

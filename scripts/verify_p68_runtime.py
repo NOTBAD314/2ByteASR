@@ -41,13 +41,13 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
-from twobyteasr.studio_ai import AIDesignSuggestion, style_recipe_for_prompt, visual_design_variants
-from twobyteasr.studio_edit_sequence import HighlightCandidate
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_recipe import FillSpec
-from twobyteasr.window_audit import TopLevelWindowAudit, qt_top_level_widgets, win32_top_level_windows
+from twobyteasr.app import ui
+from twobyteasr.projects.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
+from twobyteasr.caption_design.studio_ai import AIDesignSuggestion, style_recipe_for_prompt, visual_design_variants
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_recipe import FillSpec
+from twobyteasr.acceptance.window_audit import TopLevelWindowAudit, qt_top_level_widgets, win32_top_level_windows
 
 
 def progress(message: str) -> None:

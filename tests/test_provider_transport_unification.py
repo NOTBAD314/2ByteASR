@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import copy
 
-from twobyteasr.ai_providers import AITransport, transport_for_stage
-from twobyteasr.llm_config import (
+from twobyteasr.providers.ai_providers import AITransport, transport_for_stage
+from twobyteasr.providers.llm_config import (
     activate_ai_service,
     endpoint_from_settings,
     get_active_service,
@@ -78,10 +78,10 @@ def test_cli_transport_never_attaches_vision_frame_to_argv(monkeypatch):
     Windows command-line budget and die as a generic transport error."""
     import json
 
-    from twobyteasr import studio_ai
-    from twobyteasr.art_direction import fallback_art_directions
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-    from twobyteasr.visual_design_graph import (
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_design.art_direction import fallback_art_directions
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.caption_design.visual_design_graph import (
         comic_burst_graph,
         glitch_graph,
         streamer_gaming_graph,

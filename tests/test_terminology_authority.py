@@ -6,9 +6,9 @@ import pytest
 
 import subtitle_core as legacy
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr.models import SpeechSegment
-from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry, TermResolver, snapshot_glossaries
-from twobyteasr.terminology_retrieval import retrieve_candidates
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry, TermResolver, snapshot_glossaries
+from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
 
 
 def case_snapshot(lower_kind, reverse=False):
@@ -24,7 +24,7 @@ def case_snapshot(lower_kind, reverse=False):
 @pytest.mark.parametrize("lower_kind", ["builtin", "reference"])
 @pytest.mark.parametrize("reverse", [False, True])
 def test_manual_case_wins_in_recall_and_serialized_prompt(context, monkeypatch, lower_kind, reverse):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = case_snapshot(lower_kind, reverse)
@@ -45,7 +45,7 @@ def test_manual_case_wins_in_recall_and_serialized_prompt(context, monkeypatch, 
         assert [x["canonical"] for x in body["terminology_candidates"]] == ["BerLIN"]
         return json.dumps({"checked_ids": [4], "cues": [{"id": 4, "edits": [
             {"from": "Borlin", "to": "berlin", "basis": "glossary+context"}]}]})
-    monkeypatch.setattr("twobyteasr.ai_providers.provider_for_stage", lambda *a, **k:
+    monkeypatch.setattr("twobyteasr.providers.ai_providers.provider_for_stage", lambda *a, **k:
         SimpleNamespace(complete=complete))
     result = polishing.call_correction_api([row], [], "", "", "Real transcript", "", [], [], [],
         glossary_evidence=owner.glossary_snapshot.evidence())
@@ -57,7 +57,7 @@ def test_manual_case_wins_in_recall_and_serialized_prompt(context, monkeypatch, 
 @pytest.mark.parametrize("other", ["berlin", "Barlin"])
 @pytest.mark.parametrize("reverse", [False, True])
 def test_equal_priority_case_conflict_and_distinct_names_keep_ambiguity(other, reverse):
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     libraries = (GlossaryLibrary("a", "A", "1", (TermEntry("BerLIN"),)),
                  GlossaryLibrary("b", "B", "1", (TermEntry(other),)))
     snapshot = GlossarySnapshot(tuple(reversed(libraries)) if reverse else libraries)

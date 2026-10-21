@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from twobyteasr.hardware import combination_requires_cuda, selected_cuda_components
-from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+from twobyteasr.system.hardware import combination_requires_cuda, selected_cuda_components
+from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
 
 
 @pytest.mark.parametrize(
@@ -113,7 +113,7 @@ def test_lightweight_vad_needs_no_firered_model():
 
 
 def test_dynamic_primary_and_lightweight_vad_cache_stages_are_registered(tmp_path):
-    from twobyteasr.cache import cache_stage_signature, run_cached_stage
+    from twobyteasr.recognition.cache import cache_stage_signature, run_cached_stage
 
     lightweight = cache_stage_signature(
         "lightweight_vad", {"engine": "energy-v1", "sample_rate": 16000}

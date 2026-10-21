@@ -6,9 +6,9 @@ from PySide6.QtGui import QColor, QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_video_canvas import MpvCanvas
-from twobyteasr.video_compositor import VideoCompositionScene
-from twobyteasr.secondary_video import SourceState
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
+from twobyteasr.playback.video_compositor import VideoCompositionScene
+from twobyteasr.playback.secondary_video import SourceState
 
 APP = QApplication.instance() or QApplication([])
 
@@ -112,7 +112,7 @@ def test_lone_secondary_layer_in_primary_gap_still_requires_subtitle_promotion(m
         def suspend(self):
             pass
 
-    monkeypatch.setattr('twobyteasr.video_compositor.SecondaryVideoSource', Decoder)
+    monkeypatch.setattr('twobyteasr.playback.video_compositor.SecondaryVideoSource', Decoder)
     scene = VideoCompositionScene()
     scene.set_composition(
         [{'clip_id': 'v2', 'track_id': 'V2', 'source_path': 'secondary.mp4'}],

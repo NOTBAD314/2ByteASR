@@ -16,7 +16,7 @@ from moss_firered_pipeline import (
     _record_fused_review_classification,
     _run_audited_model_stage,
 )
-from twobyteasr.models import SpeechSegment, WordUnit
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
 
 
 def run(output: Path) -> dict:

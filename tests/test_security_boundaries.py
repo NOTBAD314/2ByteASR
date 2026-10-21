@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from twobyteasr import domain_terms
-from twobyteasr.llm_config import validate_transport_url
+from twobyteasr.glossary import domain_terms
+from twobyteasr.providers.llm_config import validate_transport_url
 from twobyteasr.model_integrity import ModelIntegrityError, verify_model_files
 
 

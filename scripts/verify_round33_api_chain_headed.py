@@ -13,8 +13,8 @@ from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.model_workshop import MODELS, ModelWorkshopPage
-from twobyteasr.recognition_plans import RECOGNITION_PLANS
+from twobyteasr.local_models.model_workshop import MODELS, ModelWorkshopPage
+from twobyteasr.recognition.recognition_plans import RECOGNITION_PLANS
 
 RESULTS = []
 

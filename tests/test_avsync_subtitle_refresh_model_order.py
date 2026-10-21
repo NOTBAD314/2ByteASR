@@ -36,7 +36,7 @@ def run_ffmpeg(*args: str) -> None:
 
 
 def _gappy_map():
-    from twobyteasr.avsync import AVSyncMap, TimestampGap
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap
 
     gaps = [
         TimestampGap(5_902_550, 5_903_566, 1016, video=True, audio=True),
@@ -63,7 +63,7 @@ def test_avsync_map_math_clamps_inside_holes_and_roundtrips():
 
 
 def test_avsync_overrides_are_piecewise_and_identity_media_untouched():
-    from twobyteasr.avsync import AVSyncMap, SyncOverride
+    from twobyteasr.playback.avsync import AVSyncMap, SyncOverride
 
     sync_map = _gappy_map()
     with_over = sync_map.with_overrides([SyncOverride(at_ms=5_902_550, offset_ms=-820)])
@@ -78,7 +78,7 @@ def test_avsync_overrides_are_piecewise_and_identity_media_untouched():
 
 
 def test_avsync_map_persistence_roundtrip(tmp_path):
-    from twobyteasr.avsync import load_sync_map, save_sync_map
+    from twobyteasr.playback.avsync import load_sync_map, save_sync_map
 
     sync_map = _gappy_map()
     save_sync_map(tmp_path, sync_map)
@@ -105,7 +105,7 @@ def _make_holed_mkv(path: Path) -> None:
 
 
 def test_avsync_scan_detects_joint_hole_and_healthy_identity(tmp_path):
-    from twobyteasr.avsync import scan_timestamp_gaps
+    from twobyteasr.playback.avsync import scan_timestamp_gaps
 
     holed = tmp_path / "holed.mkv"
     _make_holed_mkv(holed)
@@ -128,8 +128,8 @@ def test_avsync_scan_detects_joint_hole_and_healthy_identity(tmp_path):
 
 
 def test_audio_decode_command_translates_seek_through_map():
-    from twobyteasr.audio_engine import build_audio_decode_command
-    from twobyteasr.avsync import AVSyncMap, TimestampGap
+    from twobyteasr.playback.audio_engine import build_audio_decode_command
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap
 
     gaps = [TimestampGap(5_902_550, 5_903_566, 1016, video=True, audio=True)]
     sync_map = AVSyncMap(gaps)
@@ -148,8 +148,8 @@ def test_audio_decode_command_translates_seek_through_map():
 
 
 def test_optimized_media_cache_serves_sync_map(tmp_path):
-    from twobyteasr.indexed_media import IndexedMediaCache
-    from twobyteasr.avsync import AVSyncMap, TimestampGap, save_sync_map
+    from twobyteasr.media.indexed_media import IndexedMediaCache
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap, save_sync_map
 
     flv = tmp_path / "s.flv"
     run_ffmpeg(
@@ -191,7 +191,7 @@ def test_optimized_media_cache_serves_sync_map(tmp_path):
 def test_video_canvas_maps_positions_and_seek_targets(tmp_path):
     _app()
     from tests.test_round42_studio_recognition import _page  # offscreen page fixture
-    from twobyteasr.avsync import AVSyncMap, TimestampGap
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap
 
     page = _page(_monkey_stub(), tmp_path)
     try:
@@ -230,7 +230,7 @@ class _monkey_stub:
 
 
 def _write_project_with_cues(path: Path, media_path: Path, count: int) -> None:
-    from twobyteasr.studio_project import (
+    from twobyteasr.projects.studio_project import (
         AudioClip, AudioTrack, AVTrackGroup, MediaAsset, StudioCue, StudioMedia,
         StudioSpeaker, SubtitleProject, VideoClip, VideoTrack, save_project,
     )
@@ -268,7 +268,7 @@ def _write_project_with_cues(path: Path, media_path: Path, count: int) -> None:
 def test_recognition_handoff_refreshes_studio_without_reopen(monkeypatch, tmp_path):
     _app()
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     media = tmp_path / "m.wav"
@@ -316,7 +316,7 @@ def test_recognition_handoff_refreshes_studio_without_reopen(monkeypatch, tmp_pa
 def test_pending_recognition_reload_retries_on_studio_entry(monkeypatch, tmp_path):
     _app()
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     media = tmp_path / "m.wav"
@@ -339,9 +339,9 @@ def test_pending_recognition_reload_retries_on_studio_entry(monkeypatch, tmp_pat
 
 def test_readiness_failure_is_visible_and_keeps_pending(tmp_path):
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_readiness import StudioReadiness
-    from twobyteasr.runtime_trace import GLOBAL_STUDIO_TRACE
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_readiness import StudioReadiness
+    from twobyteasr.diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 
     _monkey_local(tmp_path)
     page = SubtitleStudioPage()

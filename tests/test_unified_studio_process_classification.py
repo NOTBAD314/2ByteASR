@@ -1,4 +1,4 @@
-from twobyteasr.unified_studio_audit import classify_export_invocation
+from twobyteasr.acceptance.unified_studio_audit import classify_export_invocation
 
 
 def test_actual_media_tools_with_non_remotion_output_paths_are_not_rejected():

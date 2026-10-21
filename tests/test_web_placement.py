@@ -1,13 +1,13 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,load_project
-from twobyteasr.style_recipe import StyleRecipe
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.web_placement import cue_placement,moved_placement
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,load_project
+from twobyteasr.caption_style.style_recipe import StyleRecipe
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.web_placement import cue_placement,moved_placement
 
 
 def project():
-    from twobyteasr.web_theme import builtin_web_themes
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
     theme=next(iter(builtin_web_themes().values())).to_dict()
     p=SubtitleProject(media=StudioMedia(path='',width=1920,height=1080,duration_ms=3000),
                       cues=[StudioCue('cue',0,3000,'位置保持')])
@@ -35,8 +35,8 @@ def test_normalized_placement_survives_save_and_output_resolution(tmp_path):
 
 
 def test_export_visual_and_html_use_same_placement():
-    from twobyteasr.web_theme import theme_archive_html
-    from twobyteasr.advanced_renderer import normalized_visual_snapshot
+    from twobyteasr.caption_design.web_theme import theme_archive_html
+    from twobyteasr.rendering.advanced_renderer import normalized_visual_snapshot
     p=project();cue=p.cues[0];cue.transform.update(position_x=400,position_y=400)
     snapshot=build_visual_cue_snapshot(p,'cue')
     visual=normalized_visual_snapshot(snapshot)

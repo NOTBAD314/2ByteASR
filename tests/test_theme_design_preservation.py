@@ -1,7 +1,7 @@
 import copy
 import pytest
-from twobyteasr.theme_design_preservation import protect_structure,validate_surface_revision
-from twobyteasr.theme_revision_constraints import enforce_constraints
+from twobyteasr.caption_design.theme_design_preservation import protect_structure,validate_surface_revision
+from twobyteasr.caption_design.theme_revision_constraints import enforce_constraints
 
 def sample():
     return dict(cueHtml='<div class="frame"><svg class="bear"></svg><b>{{text}}</b></div>',
@@ -29,9 +29,9 @@ def test_existing_authored_theme_can_be_refined_without_legacy_concept_tags(tmp_
     import json
     from types import SimpleNamespace
     from tests.test_caption_creative_pipeline import candidates
-    from twobyteasr import studio_ai as api
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design import studio_ai as api
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     theme=copy.deepcopy(candidates()[0]['generated_source'])
     theme['concept']='带框的印刷作品，现有构图与动作已经选定。'
     theme=WebThemeDocument.from_dict(theme).to_dict()
@@ -57,8 +57,8 @@ def test_existing_authored_theme_can_be_refined_without_legacy_concept_tags(tmp_
 
 
 def test_section_font_weight_and_explicit_current_font_references_survive():
-    from twobyteasr.web_theme import parse_web_theme_sections,WebThemeDocument
-    from twobyteasr.theme_design_preservation import resolve_appearance_references
+    from twobyteasr.caption_design.web_theme import parse_web_theme_sections,WebThemeDocument
+    from twobyteasr.caption_design.theme_design_preservation import resolve_appearance_references
     parsed=parse_web_theme_sections('===APPEARANCE===\nfontFamily=var(--wt-font)\nfontSize=var(--wt-size)\nfontWeight=900')
     old={'appearance':{'fontFamily':'ZCOOL KuaiLe','fontSize':64,'fontWeight':400}}
     restored,changes=resolve_appearance_references(parsed,old)
@@ -73,9 +73,9 @@ def test_directed_motion_revision_loads_current_guidance_without_surface_freeze(
     import json
     from types import SimpleNamespace
     from tests.test_caption_creative_pipeline import candidates
-    from twobyteasr import studio_ai as api
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design import studio_ai as api
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     theme=WebThemeDocument.from_dict(copy.deepcopy(candidates()[0]['generated_source'])).to_dict()
     proposed=copy.deepcopy(theme);proposed['motionSpec']['buildMs']=701
     proposed['cueHtml']='<div class="revision-frame">'+theme['cueHtml']+'</div>'

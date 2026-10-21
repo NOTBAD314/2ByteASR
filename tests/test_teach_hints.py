@@ -4,8 +4,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.teach_hints import TeachHintStore
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.app.teach_hints import TeachHintStore
 
 
 def test_hint_shows_once_and_reset_restores_it(tmp_path):
@@ -30,7 +30,7 @@ def test_studio_context_banner_shows_once_and_returns_after_reset(tmp_path, monk
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     app = QApplication.instance() or QApplication([])
     page = SubtitleStudioPage()
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia
     page.project=SubtitleProject(media=StudioMedia(path="fixture.mp4"))
     page._refresh_studio_empty_state(rescan=False)
     page.show()

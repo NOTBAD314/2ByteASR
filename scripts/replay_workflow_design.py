@@ -18,10 +18,10 @@ def main():
     os.environ['QT_QPA_PLATFORM']='offscreen'
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.authored_repair import apply_patch_transaction,get_leaf
-    from twobyteasr.structured_output import response_object
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set,canonical,digest
-    from twobyteasr.authored_preview import render_candidate_preview
+    from twobyteasr.caption_design.authored_repair import apply_patch_transaction,get_leaf
+    from twobyteasr.providers.structured_output import response_object
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set,canonical,digest
+    from twobyteasr.caption_design.authored_preview import render_candidate_preview
     read=lambda p:json.loads(p.read_text('utf8'))
     result={'kind':'saved-response-offline-replay','model_calls':0,'candidates':[]}
     repairs=['7f415904e7b9453095d2035fcee5de45','06b25d9c4abe462fa519b62c1a0a3d4c','7ac6b928509349f1a31f2e60fc6a0a84']

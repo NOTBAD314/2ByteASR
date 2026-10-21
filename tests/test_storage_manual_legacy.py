@@ -11,14 +11,14 @@ from types import SimpleNamespace
 
 import pytest
 from twobyteasr.runtime_paths import RuntimePaths
-from twobyteasr.storage_service import StorageService
+from twobyteasr.storage.storage_service import StorageService
 
 
 @pytest.fixture
 def service(tmp_path,monkeypatch):
     data=tmp_path/'data';cache=data/'cache';cache.mkdir(parents=True)
     paths=RuntimePaths(tmp_path,data,data/'models',cache,data/'Projects',data,data/'logs',tmp_path/'renderer',data/'tmp')
-    monkeypatch.setattr('twobyteasr.storage_legacy.legacy_consumers',lambda:[])
+    monkeypatch.setattr('twobyteasr.storage.storage_legacy.legacy_consumers',lambda:[])
     return StorageService(paths,media_validator=lambda source:'')
 
 
@@ -94,7 +94,7 @@ def test_old_filmstrip_exact_key_receipt_and_warning(service):
 
 def test_specific_live_session_does_not_protect_old_session(service,monkeypatch):
     old=overlay(service,'d'*32);active=overlay(service,'e'*32)
-    from twobyteasr.storage_service import _pid_identity
+    from twobyteasr.storage.storage_service import _pid_identity
     pid,born=_pid_identity().split(':')
     (active.parent/'owner.json').write_text(json.dumps(dict(producer='mpv_overlay_session',schema=1,pid=int(pid),create_time=float(born))))
     scan=service.scan(include_models=False)
@@ -133,7 +133,7 @@ def test_overlapping_roots_do_not_count_same_path_twice(service):
 def test_zero_executable_buttons_disabled_and_batch_shows_nonzero(service):
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import Qt
-    from twobyteasr.storage_ui import StoragePanel,app_busy
+    from twobyteasr.storage.storage_ui import StoragePanel,app_busy
     app=QApplication.instance() or QApplication([])
     (service.paths.cache_root/'unknown.mp4').write_bytes(b'user')
     panel=StoragePanel(service=service);panel._scanned(service.scan(include_models=False))
@@ -150,7 +150,7 @@ def test_zero_executable_buttons_disabled_and_batch_shows_nonzero(service):
 
 def test_manual_uv_clean_is_distinct_from_prune_and_ignores_only_auto_retention(tmp_path):
     from tests.test_runtime_download_cache import fixture
-    from twobyteasr.runtime_download_cache import clean_runtime_download_cache,mark_runtime_cache_state
+    from twobyteasr.system.runtime_download_cache import clean_runtime_download_cache,mark_runtime_cache_state
     install,data,cache,python=fixture(tmp_path);calls=[]
     mark_runtime_cache_state('paused',data_root=data)
     def runner(argv,cancel):
@@ -166,9 +166,9 @@ def test_manual_uv_clean_is_distinct_from_prune_and_ignores_only_auto_retention(
 
 def test_manual_uv_unknown_size_does_not_mean_zero_or_disable_tool(tmp_path,monkeypatch):
     from tests.test_runtime_download_cache import fixture
-    from twobyteasr.runtime_download_cache import clean_runtime_download_cache
+    from twobyteasr.system.runtime_download_cache import clean_runtime_download_cache
     install,data,cache,_=fixture(tmp_path);calls=[]
-    monkeypatch.setattr('twobyteasr.runtime_download_cache._size',lambda *a:(_ for _ in ()).throw(PermissionError('unmeasured')))
+    monkeypatch.setattr('twobyteasr.system.runtime_download_cache._size',lambda *a:(_ for _ in ()).throw(PermissionError('unmeasured')))
     def runner(argv,cancel):
         args=list(map(str,argv));calls.append(args)
         return 'uv 0.11.7 (fixture)' if '--version' in args else 'Official maintenance complete'
@@ -227,7 +227,7 @@ def test_unknown_saved_graph_or_current_loaded_cache_reference_is_a_hold(service
 
 def relinked_asset(service,path,source):
     import hashlib
-    from twobyteasr.storage_media_preservation import record_preserved_asset
+    from twobyteasr.storage.storage_media_preservation import record_preserved_asset
     asset=service.paths.user_data_root/'assets'/'preserved.mp4';asset.parent.mkdir();asset.write_bytes(path.read_bytes())
     item=next(i for i in service.scan(include_models=False).items if i.path==str(path))
     record_preserved_asset(item,service.paths,asset,hashlib.sha256(asset.read_bytes()).hexdigest())
@@ -274,15 +274,15 @@ def test_loaded_player_cache_path_is_protected_without_blocking_nominal_original
 
 
 def test_export_busy_is_a_manual_safety_gate():
-    from twobyteasr.storage_ui import app_busy
+    from twobyteasr.storage.storage_ui import app_busy
     worker=SimpleNamespace(is_alive=lambda:True)
     owner=SimpleNamespace(studio_page=SimpleNamespace(export_workspace=SimpleNamespace(_worker=worker)))
     assert app_busy(owner,manual=True)
 
 
 def test_loaded_graph_inventory_does_not_persist_or_initialize_user_sequence():
-    from twobyteasr.storage_ui import loaded_media_graph
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia
+    from twobyteasr.storage.storage_ui import loaded_media_graph
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia
     project=SubtitleProject(media=StudioMedia(path=''))
     before=json.dumps(project.edit_sequence,sort_keys=True)
     runtime_before=getattr(project,'_edit_sequence_runtime',None)

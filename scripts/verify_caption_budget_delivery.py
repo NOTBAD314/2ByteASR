@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 import sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-from twobyteasr.caption_creative_pipeline import ThemeLedger, saved_reference_images
-from twobyteasr.authored_prompt import assemble
-from twobyteasr.provider_input_budget import prepare_input, InputBudgetError, project_transport_messages
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger, saved_reference_images
+from twobyteasr.caption_design.authored_prompt import assemble
+from twobyteasr.providers.provider_input_budget import prepare_input, InputBudgetError, project_transport_messages
 
 
 def main():

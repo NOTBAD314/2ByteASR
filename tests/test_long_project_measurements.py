@@ -1,4 +1,4 @@
-from twobyteasr.long_project_acceptance_audit import mpv_timecode_ms
+from twobyteasr.acceptance.long_project_acceptance_audit import mpv_timecode_ms
 
 
 def test_real_mpv_drop_frame_labels_do_not_create_long_recording_offsets():

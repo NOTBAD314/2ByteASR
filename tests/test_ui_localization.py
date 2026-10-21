@@ -16,8 +16,8 @@ def app():
 
 def test_bound_messages_have_both_translations():
     missing=[]
-    for p in (Path(__file__).parents[1]/'twobyteasr').glob('*.py'):
-        if 'audit' in p.stem:continue
+    for p in (Path(__file__).parents[1]/'twobyteasr').rglob('*.py'):
+        if 'audit' in p.stem or '__pycache__' in p.parts:continue
         tree=ast.parse(p.read_text('utf-8-sig'))
         for n in ast.walk(tree):
             if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id in ('bind_text','tr','translate'):
@@ -49,8 +49,10 @@ def test_locale_files_load_with_identical_keys():
     assert set(eager)=={'en','ja'}
     assert {language:i18n._TRANSLATIONS[language] for language in eager}==eager
     assert tables['zh-Hant'].items() <= i18n.language_table('zh-Hant').items()
-    # Korean may lag behind en/ja (English is shown), never carries other keys.
-    assert tables['ko']==i18n.language_table('ko') and tables['ko'].keys() <= tables['en'].keys()
+    # Korean and the 2026-10-19 languages may lag behind en/ja (English is
+    # shown), never carry other keys.
+    for language in ('ko', 'es', 'de', 'fr', 'pt', 'it', 'ru'):
+        assert tables[language]==i18n.language_table(language) and tables[language].keys() <= tables['en'].keys()
 
 
 def test_korean_falls_back_to_english_not_chinese(monkeypatch):
@@ -60,6 +62,42 @@ def test_korean_falls_back_to_english_not_chinese(monkeypatch):
     assert i18n.translate('取消','ko')==i18n._TRANSLATIONS['en']['取消']
     assert i18n.ui_literal('取消','ko')==i18n._TRANSLATIONS['en']['取消']
     assert i18n.translate('用户自己的文字','ko')=='用户自己的文字'
+
+
+@pytest.mark.parametrize('language', ('es', 'de', 'fr', 'pt', 'it', 'ru'))
+def test_new_languages_load_lazily_and_fall_back_to_english(monkeypatch, language):
+    """2026-10-19: Español … Русский work like 한국어."""
+    assert language in i18n.SUPPORTED_LANGUAGES and language in i18n._LAZY_LANGUAGES
+    table=i18n.language_table(language)
+    assert len(table)>4000 and i18n.translate('取消',language)==table['取消']
+    assert table['取消'] not in ('取消', i18n._TRANSLATIONS['en']['取消'])
+    monkeypatch.delitem(table,'取消')
+    assert i18n.translate('取消',language)==i18n._TRANSLATIONS['en']['取消']
+    assert i18n.ui_literal('取消',language)==i18n._TRANSLATIONS['en']['取消']
+    assert i18n.translate('用户自己的文字',language)=='用户自己的文字'
+
+
+def test_language_menus_list_every_language_by_its_native_name(app, monkeypatch):
+    assert tuple(i18n.LANGUAGE_NATIVE_NAMES)==i18n.SUPPORTED_LANGUAGES
+    assert [i18n.LANGUAGE_NATIVE_NAMES[code] for code in ('es','de','fr','pt','it','ru')]==[
+        'Español','Deutsch','Français','Português','Italiano','Русский']
+    source=(Path(__file__).parents[1]/'twobyteasr/app/ui.py').read_text('utf-8')
+    assert 'for code, name in LANGUAGE_NATIVE_NAMES.items():' in source
+    quick=(Path(__file__).parents[1]/'twobyteasr/app/quick_setup.py').read_text('utf-8')
+    assert 'for code, label in LANGUAGE_NATIVE_NAMES.items():' in quick
+    assert 'LANGUAGE_NATIVE_NAMES' in (Path(__file__).parents[1]/'twobyteasr/app/guided_setup_dialog.py').read_text('utf-8')
+
+
+@pytest.mark.parametrize('language', ('es', 'de', 'fr', 'pt', 'it', 'ru'))
+def test_qt_standard_dialogs_follow_the_new_languages(app, language):
+    from PySide6.QtCore import QCoreApplication
+    from twobyteasr.i18n_widgets import _qt_language
+    _qt_language(app, language)
+    try:
+        assert app._i18n_qt_language==language
+        assert QCoreApplication.translate('QPlatformTheme','Cancel')!='Cancel'
+    finally:
+        _qt_language(app, 'zh')
 
 
 def test_dynamic_status_replaces_previous_capture(app):
@@ -119,8 +157,8 @@ def test_application_refresh_handles_item_view_overloads(app):
 
 
 def test_default_names_localize_without_mutation(tmp_path,monkeypatch):
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
-    from twobyteasr.project_display_name import display_project_name
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
+    from twobyteasr.projects.project_display_name import display_project_name
     folder=tmp_path/'未命名工程 30';folder.mkdir()
     path=folder/'未命名工程 30.2byteproj'
     project=SubtitleProject(media=StudioMedia(path='',display_name='未命名工程 30'))
@@ -137,7 +175,7 @@ def test_default_names_localize_without_mutation(tmp_path,monkeypatch):
 
 
 def test_uncertain_offline_names_are_not_guessed(tmp_path,monkeypatch):
-    from twobyteasr.project_display_name import display_project_name
+    from twobyteasr.projects.project_display_name import display_project_name
     monkeypatch.setattr(i18n,'_CURRENT_LANGUAGE_CACHE','en')
     assert display_project_name({'path':str(tmp_path/'未命名工程 30.2byteproj'),'name':'未命名工程 30'})=='未命名工程 30'
 
@@ -148,7 +186,7 @@ def test_locale_key_parity():
 
 def test_nested_worker_messages_retranslate_and_preserve_recognition_text(app, monkeypatch):
     from PySide6.QtWidgets import QLabel
-    from twobyteasr.recognition_status_text import recognition_event_text
+    from twobyteasr.app.recognition_status_text import recognition_event_text
     monkeypatch.setattr(i18n, '_CURRENT_LANGUAGE_CACHE', 'zh')
     payload=dict(completed_chunks=1,total_chunks=2,processed_start=0,processed_end=4,
                  rows=[{'text':'用户内容：说话人管理'}])
@@ -178,8 +216,8 @@ def test_dynamic_combo_and_dialog_keep_arguments(app, monkeypatch):
 
 
 def test_new_default_and_offline_rename_are_distinct(tmp_path,monkeypatch):
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia
-    from twobyteasr.project_display_name import display_project_name
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia
+    from twobyteasr.projects.project_display_name import display_project_name
     p=SubtitleProject(media=StudioMedia(path=""));p.studio_state['project_name_origin']={'kind':'unnamed','number':35}
     for lang,expected in [('en','Unnamed Project 35'),('ja','無題のプロジェクト 35')]:
         monkeypatch.setattr(i18n,'_CURRENT_LANGUAGE_CACHE',lang)
@@ -190,8 +228,8 @@ def test_new_default_and_offline_rename_are_distinct(tmp_path,monkeypatch):
 
 
 def test_automatic_and_custom_speaker_names(monkeypatch):
-    from twobyteasr.studio_project import SubtitleProject,StudioSpeaker,StudioMedia
-    from twobyteasr.speaker_names import display_speaker_name
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioSpeaker,StudioMedia
+    from twobyteasr.projects.speaker_names import display_speaker_name
     p=SubtitleProject(media=StudioMedia(path=""));s=StudioSpeaker('S01','说话人 1')
     p.generation_metadata['speaker_names']={'entries':{'S01':{'automatic':True}}}
     monkeypatch.setattr(i18n,'_CURRENT_LANGUAGE_CACHE','en')
@@ -201,7 +239,7 @@ def test_automatic_and_custom_speaker_names(monkeypatch):
 
 
 def test_built_in_model_prose_is_translated_without_changing_evidence(monkeypatch):
-    from twobyteasr.model_evaluation_metadata import get_profile,_TECHNICAL_PROFILES
+    from twobyteasr.local_models.model_evaluation_metadata import get_profile,_TECHNICAL_PROFILES
     import re
     def strings(value):
         if isinstance(value,str):yield value

@@ -9,9 +9,9 @@ from threading import Event
 import pytest
 
 from tests.test_storage_maintenance_ui import service, qapp
-from twobyteasr.storage_media_assets import save_cached_media_asset
-from twobyteasr import storage_media_preservation as proof
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, save_project
+from twobyteasr.storage.storage_media_assets import save_cached_media_asset
+from twobyteasr.storage import storage_media_preservation as proof
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, save_project
 
 
 @pytest.fixture
@@ -36,8 +36,8 @@ def project(source, path):
 
 
 def relink_and_save(value, target, path):
-    from twobyteasr.studio_media_commands import media_graph_command
-    from twobyteasr.studio_media_pool import relink_media_asset
+    from twobyteasr.timeline.studio_media_commands import media_graph_command
+    from twobyteasr.timeline.studio_media_pool import relink_media_asset
     command = media_graph_command(value, '重新链接素材',
         lambda working: relink_media_asset(working, working.media_pool[0].asset_id, target))
     command.redo(); save_project(value, path)
@@ -48,8 +48,8 @@ def test_explicit_copy_alone_and_unsaved_relink_never_release(preserved, service
     cache, item, asset, path = preserved
     assert not proof.verified_relinked_asset(item, service.paths).verified
     value = project(item.source, path)
-    from twobyteasr.studio_media_commands import media_graph_command
-    from twobyteasr.studio_media_pool import relink_media_asset
+    from twobyteasr.timeline.studio_media_commands import media_graph_command
+    from twobyteasr.timeline.studio_media_pool import relink_media_asset
     command = media_graph_command(value, '重新链接素材',
         lambda working: relink_media_asset(working, working.media_pool[0].asset_id, asset))
     command.redo()

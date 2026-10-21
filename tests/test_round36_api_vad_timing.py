@@ -9,8 +9,8 @@
 import numpy as np
 import pytest
 
-from twobyteasr import asr
-from twobyteasr.asr import build_qwen_asr_chunks
+from twobyteasr.recognition import asr
+from twobyteasr.recognition.asr import build_qwen_asr_chunks
 
 SAMPLING = 16_000
 
@@ -89,7 +89,7 @@ def test_api_primary_uses_10s_chunks(monkeypatch):
     monkeypatch.setattr(asr, "_transcribe_api_owned", _fake_transcribe)
     monkeypatch.setattr(asr, "decode_audio_to_array", lambda path: _audio(26.0))
     # 端点检查要求有 Key；用假 Key，不依赖本机保存的真实密钥。
-    monkeypatch.setattr("twobyteasr.llm_config.read_asr_api_key", lambda *_args: ("sk-fixture", "fixture"))
+    monkeypatch.setattr("twobyteasr.providers.llm_config.read_asr_api_key", lambda *_args: ("sk-fixture", "fixture"))
     import subtitle_core
 
     monkeypatch.setattr(subtitle_core, "USE_QWEN_ASR_REFERENCE", True)
@@ -121,7 +121,7 @@ def test_completion_button_lands_in_studio_edit():
     """完成后「压制字幕视频」落工作台编辑区，不再直达导出对话框。"""
     import types
 
-    from twobyteasr import ui as ui_module
+    from twobyteasr.app import ui as ui_module
 
     captured = {}
     fake_self = types.SimpleNamespace(

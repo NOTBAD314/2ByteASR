@@ -6,11 +6,11 @@ import pytest
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication, QPushButton, QLabel, QPlainTextEdit
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, AudioClip, save_project, load_project, sync_linked_av_contract
-from twobyteasr.studio_media_pool import create_video_track, add_video_clip, set_video_track_state
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_track_delete import DeleteTrackCommand
-from twobyteasr.studio_track_header import ACTIONS, button_rect, action_at
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, AudioClip, save_project, load_project, sync_linked_av_contract
+from twobyteasr.timeline.studio_media_pool import create_video_track, add_video_clip, set_video_track_state
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.timeline.studio_track_delete import DeleteTrackCommand
+from twobyteasr.studio.studio_track_header import ACTIONS, button_rect, action_at
 
 @pytest.fixture(scope='module')
 def app():return QApplication.instance() or QApplication([])
@@ -49,7 +49,7 @@ def test_last_clip_group_removal_undo_redo_save(project,tmp_path):
 
 def test_nonlast_primary_delete_leaves_gap_and_cues(project):
  p=project;t=p.video_tracks[0]
- from twobyteasr.studio_edit_commands import razor_video_command
+ from twobyteasr.timeline.studio_edit_commands import razor_video_command
  stack=QUndoStack();stack.push(razor_video_command(p,3000))
  t=p.video_tracks[0];before=copy.deepcopy(p.cues);remaining=copy.deepcopy(t.clips[-1])
  stack.push(DeleteTrackCommand(p,'video',t.id,clip_ids=[t.clips[0].id]))
@@ -59,7 +59,7 @@ def test_nonlast_primary_delete_leaves_gap_and_cues(project):
 
 
 def test_primary_last_delete_preserves_other_speed_trim_transform_and_mapping(project,tmp_path):
- from twobyteasr.studio_sequence_mapper import timeline_to_source,source_to_timeline
+ from twobyteasr.timeline.studio_sequence_mapper import timeline_to_source,source_to_timeline
  p=project;t=p.video_tracks[1];c=t.clips[0]
  c.source_in_ms=1000;c.source_out_ms=5000;c.timeline_in_ms=3000;c.timeline_out_ms=5000;c.playback_rate=2
  c.transform.rotation=17;sync_linked_av_contract(p)
@@ -78,7 +78,7 @@ def test_detached_audio_and_locked_pair(project):
  a.locked=True
  with pytest.raises(ValueError,match='锁定'):DeleteTrackCommand(p,'video',t.id,clip_ids=[t.clips[0].id])
  a.locked=False;g.linked=False;before=copy.deepcopy(a.clips)
- from twobyteasr.studio_track_gain import audio_track_id
+ from twobyteasr.timeline.studio_track_gain import audio_track_id
  assert audio_track_id(p,t.id)==t.id
  stack=QUndoStack();stack.push(DeleteTrackCommand(p,'video',t.id,clip_ids=[t.clips[0].id]))
  assert len(p.audio_tracks)==2
@@ -87,7 +87,7 @@ def test_detached_audio_and_locked_pair(project):
  stack.undo();assert p.av_track_groups[1].linked is False
 
 def test_disabled_video_lane_excludes_its_owned_audio(project):
- from twobyteasr.audio_graph import capture_audio_graph
+ from twobyteasr.playback.audio_graph import capture_audio_graph
  p=project;before=capture_audio_graph(p)['segments'];set_video_track_state(p,'V2',enabled=False)
  after=capture_audio_graph(p)['segments']
  assert {x['track_id'] for x in before}=={'V1','V2'}
@@ -95,7 +95,7 @@ def test_disabled_video_lane_excludes_its_owned_audio(project):
  assert [(x['source_path'],x['source_in_ms'],x['gain_db']) for x in before if x['track_id']=='V1']==[(x['source_path'],x['source_in_ms'],x['gain_db']) for x in after]
 
 def test_new_generate_preflight_visible_identity_and_recovery(app,project,tmp_path,monkeypatch):
- import twobyteasr.studio_ai_flow as module
+ import twobyteasr.studio.studio_ai_flow as module
  monkeypatch.setattr(module,'studio_data_root',lambda:tmp_path)
  class Page(module.StudioAIFlowMixin):
   def _studio_trace(self,*args,**kwargs):pass
@@ -117,7 +117,7 @@ def test_new_generate_preflight_visible_identity_and_recovery(app,project,tmp_pa
 
 
 def test_relink_warning_cancel_and_decode_failure_never_mutate(project,app,monkeypatch):
- from twobyteasr.studio_media_availability import StudioMediaAvailability
+ from twobyteasr.studio.studio_media_availability import StudioMediaAvailability
  from PySide6.QtWidgets import QMessageBox
  p=project;asset=p.media_pool[0];before=copy.deepcopy(p)
  page=SimpleNamespace(project=p,save_state=QLabel(),undo_stack=QUndoStack())
@@ -142,7 +142,7 @@ def test_relink_warning_cancel_and_decode_failure_never_mutate(project,app,monke
 
 def test_waveform_relink_rejects_cache_for_old_source(project):
  from pathlib import Path
- from twobyteasr.studio_timeline import WaveformTimeline
+ from twobyteasr.studio.studio_timeline import WaveformTimeline
  asset=project.media_pool[0]
  old=SimpleNamespace(metadata=SimpleNamespace(source_path=asset.canonical_source))
  page=SimpleNamespace(project=project,waveform_caches={asset.asset_id:old},waveform_clip_keys={'clip':'old'})

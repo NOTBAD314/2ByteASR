@@ -8,7 +8,7 @@ import time
 
 
 def make_media(root):
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     folder = root/'tmp/visible-playback-v2/media/subtitle-safe'
     folder.mkdir(parents=True, exist_ok=True)
     ffmpeg = str(root/'tools/ffmpeg/bin/ffmpeg.exe')
@@ -59,7 +59,7 @@ def main():
     media = root/'tmp/progressive-v2-theme/silent-media' if args.real_project else make_media(root)
     media.mkdir(parents=True,exist_ok=True)
     if args.mode=='filmstrip':
-        from twobyteasr.processes import run_hidden_subprocess
+        from twobyteasr.system.processes import run_hidden_subprocess
         for layer in (1,2):
             long=media/f'V{layer}-1200s.mp4'
             if not long.exists():
@@ -90,8 +90,8 @@ def main():
     os.environ['TWOBYTEASR_VISIBLE_REAL']='1' if args.real_project else '0'
     os.environ['TWOBYTEASR_VISIBLE_THUMBNAILS']=args.thumbnails
     os.environ['TWOBYTEASR_STARTUP_TRACE']=str(out/'startup-trace.jsonl')
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, save_project
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, save_project
+    from twobyteasr.system.processes import run_hidden_subprocess
     if args.real_project:
         # Recursively replace only media path strings in the isolated fixture.
         # Video is stream copied; audio packet content alone is made silent.

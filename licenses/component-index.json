@@ -1,7 +1,7 @@
 {
   "format": "2ByteASR license-material index",
   "schema_version": 1,
-  "date": "2026-10-13",
+  "date": "2026-10-14",
   "candidate": {
     "path": "releases/brand-review-20260930/2ByteASR-Setup-0.2.6-test.2.exe",
     "bytes": 993146272,
@@ -15,7 +15,7 @@
     "D": "用户另配外部服务/工具",
     "E": "仅本机开发工具，不在当前源码公开树或B中；工具产出/bootloader另列"
   },
-  "component_count": 624,
+  "component_count": 623,
   "components": [
     {
       "id": "npm:renderer/node_modules/@babel/code-frame/package.json",
@@ -29457,8 +29457,8 @@
     },
     {
       "id": "media:ffmpeg-cli",
-      "name": "FFmpeg / ffprobe (gyan essentials)",
-      "version": "9.0",
+      "name": "FFmpeg / ffprobe (BtbN FFmpeg-Builds win64-gpl-9.0)",
+      "version": "n9.0.2-17-g2a571b6068 (BtbN autobuild-2026-09-30-13-08)",
       "scopes": [
         "B"
       ],
@@ -29472,22 +29472,46 @@
           "url": "https://ffmpeg.org/legal.html",
           "sha256": "cd51dc25f9e3200b1e3953aee036f499ed51f01f7ba30563873186cb3f870eda",
           "local": "tmp/public-distribution-audit-20260930/upstream/ffmpeg-legal.txt"
+        },
+        {
+          "id": "btbn-release",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-30-13-08",
+          "archive": "ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip",
+          "sha256": "a0e45723c72141975f51d8666302e614711745f3102b704ca3f82c897a58d278",
+          "bytes": 194034585,
+          "local": "tmp/ffmpeg-btbn-20261014/download/ffmpeg-n9.0.2-17-g2a571b6068-win64-gpl-9.0.zip"
+        },
+        {
+          "id": "btbn-build-repository",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/tree/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b",
+          "commit": "6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b",
+          "local": "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/FFmpeg-Builds-6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz"
+        },
+        {
+          "id": "ffmpeg-source-commit",
+          "url": "https://github.com/FFmpeg/FFmpeg/commit/2a571b606854520cf89804d8030c8b328e621689",
+          "branch": "release/9.0",
+          "commit": "2a571b606854520cf89804d8030c8b328e621689"
         }
       ],
       "license": "GPL-3.0-or-later (actual enabled build)",
       "copyright": "组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者",
       "additional_conditions": [
-        "--enable-gpl --enable-version3 --enable-static；无--enable-nonfree；外部库不能仅按FFmpeg主许可覆盖"
+        "--enable-gpl --enable-version3，静态；无--enable-nonfree，fdk-aac未启用；外部静态库（含libdvdcss、x264、x265等）各按自身许可，不能仅按FFmpeg主许可覆盖，见dependencies.json"
       ],
-      "modification_status": "未证明逐字节未修改",
-      "patches": [],
+      "modification_status": "与固定Release压缩包内文件逐字节相同（SHA-256已核对）；BtbN不修改FFmpeg源码，构建补丁仅patches/aom、patches/aribb24",
+      "patches": [
+        "BtbN构建仓库 patches/aom/0001-Fall-back-to-built-in-vmaf-model-on-load-failure.patch",
+        "BtbN构建仓库 patches/aribb24/12.patch",
+        "BtbN构建仓库 patches/aribb24/13.patch"
+      ],
       "integration": "独立CLI进程，文件/管道媒体接口",
       "required_materials": [
-        "实际9.0构建及全部链接依赖的Corresponding Source、补丁、构建脚本；GNU GPL及版权"
+        "FFmpeg提交2a571b60…、BtbN构建脚本与补丁（已附快照）、105个依赖固定来源（dependencies.json，按§6(d)指向上游）；GNU GPL及版权"
       ],
       "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
       "evidence_status": "已核实",
-      "version_evidence": "evidence/ffmpeg-version.txt; evidence/ffmpeg-buildconf.txt",
+      "version_evidence": "licenses/source-materials/build-records/btbn-ffmpeg-version.txt; licenses/source-materials/build-records/btbn-ffmpeg-buildconf.txt",
       "license_evidence": [
         {
           "path": "licenses/ffmpeg-GPLv3.txt",
@@ -29496,22 +29520,56 @@
         }
       ],
       "pending": [
-        "精确上游构建来源链、每个静态外部库版本及可实际取得的对应源码未闭合"
+        "各静态依赖库许可原文（BSD/MIT等版权声明）尚未逐项收集进licenses/",
+        "编译工具链（crosstool-NG、Rust）未按提交固定：不属对应源码，影响逐字节重建；本项目未重建",
+        "静态链接libdvdcss（DVD CSS解扰，GPL-2.0-or-later）；用户2026-10-14确认可随附"
       ],
       "local_materials": [
-        "licenses/ffmpeg-GPLv3.txt"
+        "licenses/ffmpeg-GPLv3.txt",
+        "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/FFmpeg-Builds-6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz",
+        "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/BtbN-FFmpeg-Builds-LICENSE.txt",
+        "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/dependencies.json",
+        "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/README.md",
+        "licenses/source-materials/build-records/btbn-ffmpeg-version.txt",
+        "licenses/source-materials/build-records/btbn-ffmpeg-buildconf.txt",
+        "licenses/source-materials/build-records/btbn-ffprobe-version.txt"
       ],
       "copyright_evidence": [],
       "assembly_status": "已附所列原文/材料；兼容性及对应源码状态另列，不自动放行",
-      "binary_identity_evidence": [],
-      "official_sources": [
-        "https://ffmpeg.org/legal.html"
+      "binary_identity_evidence": [
+        {
+          "path": "tools/ffmpeg/bin/ffmpeg.exe",
+          "bytes": 165155840,
+          "sha256": "513368c81583572ce1d09d5c7ff827feed1a63db352412a5001f4da3a1583d98",
+          "matches": "bin/ffmpeg.exe in the pinned Release archive"
+        },
+        {
+          "path": "tools/ffmpeg/bin/ffprobe.exe",
+          "bytes": 164954624,
+          "sha256": "0fd8f3bae96cc707993bcd8c56c13f8cd73962d37dbcaac0dad4fe3a0ce1f68f",
+          "matches": "bin/ffprobe.exe in the pinned Release archive"
+        }
       ],
-      "version_source": "https://ffmpeg.org/legal.html",
+      "official_sources": [
+        "https://ffmpeg.org/legal.html",
+        "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-30-13-08",
+        "https://github.com/BtbN/FFmpeg-Builds/tree/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b"
+      ],
+      "version_source": "https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-30-13-08",
       "audit_evidence_status": "已核实",
       "unreviewed_copyright_observations": [],
       "copyright_attribution": [],
-      "historical_no_sale_target_compatibility": "工具本身必须保持GPL和收费权利；与应用是否仅聚合须单独分析，独立进程不是自动免责"
+      "historical_no_sale_target_compatibility": "工具本身必须保持GPL和收费权利；与应用是否仅聚合须单独分析，独立进程不是自动免责",
+      "previous_shipped": {
+        "name": "FFmpeg / ffprobe (gyan essentials) 9.0",
+        "shipped_in": "已发布安装包截至0.7.1",
+        "sha256": {
+          "tools/ffmpeg/bin/ffmpeg.exe": "227af0691433b703ffc5725e47f7d06eefc34b4a72e7870e73d30e2cda483ecf",
+          "tools/ffmpeg/bin/ffprobe.exe": "901f0efe4793cbb0f017101e3427f816e8fbf9a407bd585f49df30f4325cfd88"
+        },
+        "pending": "精确上游构建来源链、每个静态外部库版本及可实际取得的对应源码未闭合（见SOURCES.md）",
+        "version_evidence": "licenses/source-materials/build-records/ffmpeg-version.txt; licenses/source-materials/build-records/ffmpeg-buildconf.txt"
+      }
     },
     {
       "id": "media:mpv",
@@ -29527,9 +29585,17 @@
       "upstream": [
         {
           "version": "20260814-git-7b8915bc1d",
-          "source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260814/mpv-x86_64-20260814-git-7b8915bc1d.7z",
+          "source": "https://github.com/NOTBAD314/2ByteASR/releases/download/v0.6.5/mpv-x86_64-20260814-git-7b8915bc1d.7z",
+          "mirrors": [
+            "https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.6.5/mpv-x86_64-20260814-git-7b8915bc1d.7z"
+          ],
           "sha256": "1bf3b029da2c98e605e00e85f21ee3142f22a1dcc4ceb5c827b5c51e36e390f9",
+          "size": 33583248,
+          "upstream_source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260814/mpv-x86_64-20260814-git-7b8915bc1d.7z",
+          "upstream_source_status": "deleted upstream (only the latest 30 releases are kept); unmodified original recovered 2026-10-17 from Actions artifact 9203486021 and archived on the project's v0.6.5 release",
           "binary_source": "https://github.com/shinchiro/mpv-winbuild-cmake",
+          "build_recipe_commit": "cd1edc11dc6887a50f705717619d879f5a93a488",
+          "build_run": "https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/31755832255",
           "upstream": "https://github.com/mpv-player/mpv",
           "mpv_revision": "7b8915bc1d",
           "license": "GPL-2.0-or-later (build); bundled libraries retain their own licenses",
@@ -29547,7 +29613,7 @@
       "additional_conditions": [
         "实际feature含gpl；内嵌FFmpeg N-126125-g1d7b14f61；libplacebo v7.371.0且版本字符串含dirty"
       ],
-      "modification_status": "未证明逐字节未修改",
+      "modification_status": "未修改：2026-10-17核对，随附tools/mpv的13个文件与上游原包mpv-x86_64-20260814-git-7b8915bc1d.7z（SHA-256 1bf3b029…）逐字节相同，见source-materials/build-records/mpv-upstream-run.txt",
       "patches": [],
       "integration": "独立mpv.exe + HWND + JSON命名管道IPC；封存test.4未发现libmpv/Python-mpv绑定",
       "required_materials": [
@@ -41109,61 +41175,6 @@
       "historical_no_sale_target_compatibility": "保持模型原条款；应用禁止出售条款不能缩减模型原有权利；下载时仍应交付通知"
     },
     {
-      "id": "frozen:pylatexenc",
-      "name": "pylatexenc",
-      "version": "2.11",
-      "scopes": [
-        "B"
-      ],
-      "paths": [
-        "2ByteASR.exe!PYZ:pylatexenc"
-      ],
-      "upstream": [
-        "https://github.com/phfaist/pylatexenc"
-      ],
-      "license": "MIT",
-      "copyright": "Copyright (c) 2015-2019 Philippe Faist（许可原文中的声明）",
-      "additional_conditions": [],
-      "modification_status": "未证明逐字节未修改",
-      "patches": [],
-      "integration": "PyInstaller PYZ模块；字幕数学公式 Unicode 一级转换（twobyteasr.math_text）",
-      "required_materials": [
-        "对应版本许可全文、版权与适用NOTICE；先核查原文"
-      ],
-      "author_target_compatibility": "自有代码已采用GPL-3.0-only，旧禁售目标撤销；本项原许可与审计等级保留，当前组合/源码缺口见GPL3_ROUTE.md，不自动放行。",
-      "evidence_status": "有初步证据",
-      "version_evidence": "实际PYZ模块或扩展文件存在；版本来自该包保留的构建环境inventory，非独立重建证明",
-      "license_evidence": [
-        {
-          "path": "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt",
-          "sha256": "90b6f8fc23cb0328a9678562627fb2ebc5f9c871712fad698d781869eb02862c",
-          "bytes": 1086
-        }
-      ],
-      "pending": [
-        "确认实际模块与该版本来源的字节对应"
-      ],
-      "local_materials": [
-        "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt"
-      ],
-      "copyright_evidence": [
-        "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt"
-      ],
-      "assembly_status": "许可原文取自构建环境 pylatexenc-2.11.dist-info/licenses/LICENSE.txt",
-      "binary_identity_evidence": [],
-      "official_sources": [
-        "https://pypi.org/project/pylatexenc/2.11/",
-        "https://github.com/phfaist/pylatexenc"
-      ],
-      "version_source": "https://pypi.org/project/pylatexenc/2.11/",
-      "audit_evidence_status": "有初步证据",
-      "unreviewed_copyright_observations": [],
-      "copyright_attribution": [
-        "Philippe Faist"
-      ],
-      "historical_no_sale_target_compatibility": "未查明；不得把作者禁止收费条款施加于该第三方本身"
-    },
-    {
       "id": "runtime:vulkan-loader",
       "name": "Khronos Vulkan-Loader (LunarG Vulkan Runtime, vulkan-1.dll)",
       "version": "1.4.363.0",
@@ -47218,12 +47229,71 @@
       }
     },
     {
-      "path": "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt",
-      "sha256": "90b6f8fc23cb0328a9678562627fb2ebc5f9c871712fad698d781869eb02862c",
-      "bytes": 1086,
+      "path": "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/FFmpeg-Builds-6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz",
+      "sha256": "81da4f7c878dc0f60e6b8d0049a112e32178e20f025d468fe4e99e77b2dfe0ec",
+      "bytes": 107893,
+      "kind": "upstream_build_source",
+      "source": {
+        "url": "https://codeload.github.com/BtbN/FFmpeg-Builds/tar.gz/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b",
+        "commit": "6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b",
+        "tag": "autobuild-2026-09-30-13-08",
+        "note": "codeload gzip bytes are not guaranteed stable; identity is the commit"
+      }
+    },
+    {
+      "path": "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/BtbN-FFmpeg-Builds-LICENSE.txt",
+      "sha256": "c1b3cc7eec42bd9c4f6247169bb887b4a9bc904abfd2a7f7f9231ed357844993",
+      "bytes": 1064,
       "kind": "license_or_notice",
       "source": {
-        "candidate_path": ".venv-main/Lib/site-packages/pylatexenc-2.11.dist-info/licenses/LICENSE.txt"
+        "url": "https://github.com/BtbN/FFmpeg-Builds/tree/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b/LICENSE",
+        "extracted_from": "FFmpeg-Builds-6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz"
+      }
+    },
+    {
+      "path": "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/dependencies.json",
+      "sha256": "069dfd01f95794e65e5e7bd7ce11fe123050e3a521fb571c00be39bcd92d260a",
+      "bytes": 61850,
+      "kind": "build_information",
+      "source": {
+        "generated_from": "https://github.com/BtbN/FFmpeg-Builds/tree/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b/scripts.d",
+        "checked_on": "2026-10-14"
+      }
+    },
+    {
+      "path": "licenses/source-materials/btbn-ffmpeg-builds-6c9aec5f/README.md",
+      "sha256": "2d8b0f266fe5bd94f3145a52eb54d14d5a7599bee7cc463ac2970f0949d1b1f3",
+      "bytes": 4513,
+      "kind": "build_information",
+      "source": {
+        "written_by": "2ByteASR maintainers 2026-10-14"
+      }
+    },
+    {
+      "path": "licenses/source-materials/build-records/btbn-ffmpeg-version.txt",
+      "sha256": "5759893e536b90221258892da8970214e0e2ea3e4046ed6b8f3c1f32ae2c4e63",
+      "bytes": 2377,
+      "kind": "build_information",
+      "source": {
+        "audit_evidence": "tools/ffmpeg/bin/ffmpeg.exe -version (2026-10-14)"
+      }
+    },
+    {
+      "path": "licenses/source-materials/build-records/btbn-ffmpeg-buildconf.txt",
+      "sha256": "87bb38d8d01ef33db61a7928d059467367957f3fff18dbfa199559cd0abbc526",
+      "bytes": 2438,
+      "kind": "build_information",
+      "source": {
+        "audit_evidence": "tools/ffmpeg/bin/ffmpeg.exe -hide_banner -buildconf (2026-10-14)"
+      }
+    },
+    {
+      "path": "licenses/source-materials/build-records/btbn-ffprobe-version.txt",
+      "sha256": "af6d69e8fa3d6fc5b56fc93fe5b75d67594abfd667d2e177e180459d95e585df",
+      "bytes": 2350,
+      "kind": "build_information",
+      "source": {
+        "audit_evidence": "tools/ffmpeg/bin/ffprobe.exe -version (2026-10-14)"
       }
     },
     {

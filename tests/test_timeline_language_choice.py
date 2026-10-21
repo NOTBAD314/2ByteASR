@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import model_workshop as workshop
+from twobyteasr.local_models import model_workshop as workshop
 
 APP = QApplication.instance() or QApplication([])
 
@@ -17,9 +17,9 @@ APP = QApplication.instance() or QApplication([])
 @pytest.fixture
 def window(monkeypatch):
     import subtitle_core as legacy
-    from twobyteasr import ui
-    from twobyteasr.model_registry import ModelRegistry
-    from twobyteasr import asr, ctc_alignment
+    from twobyteasr.app import ui
+    from twobyteasr.local_models.model_registry import ModelRegistry
+    from twobyteasr.recognition import asr, ctc_alignment
 
     installed = {"qwen_aligner", "ja_ctc_aligner", "firered_aed", "qwen_asr"}
     monkeypatch.setattr(ModelRegistry, "installed_keys", lambda self: set(installed))
@@ -106,7 +106,7 @@ def test_cancel_and_use_again_keep_picker_and_home_in_step(window):
     assert card.description_label.text() == "11 种语言 · 字/词级对齐"
     assert win.legacy.RUNTIME_SETTINGS["switches"]["use_ja_ctc_aligner"] is False  # unchanged
     win._modal_host._request_close()
-    from twobyteasr.settings import load_runtime_settings
+    from twobyteasr.storage.settings import load_runtime_settings
     assert load_runtime_settings()[0]["models"]["firered_asr_backend"] == "qwen_aligner"
 
 
@@ -149,7 +149,7 @@ def test_chinese_and_english_follow_the_spoken_language(window):
 
 
 def test_pre_run_summary_names_the_aligner_for_japanese():
-    from twobyteasr.recognition_choices import disclosure_text, run_disclosure
+    from twobyteasr.recognition.recognition_choices import disclosure_text, run_disclosure
     settings = {"models": {"primary_asr_backend": "moss", "firered_asr_backend": "local",
                            "qwen_asr_backend": "off"},
                 "switches": {"use_ja_ctc_aligner": False},

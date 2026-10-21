@@ -34,9 +34,9 @@ def main():
     if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('New tmp directory required')
     out.mkdir(parents=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen')
-    from twobyteasr.renderer_service import RendererService,RendererJob
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
-    from twobyteasr.structured_output import response_object
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.providers.structured_output import response_object
     from PIL import Image,ImageDraw
     import numpy as np
     themes={'reference':reference_theme()}
@@ -80,9 +80,9 @@ def main():
                         readable=bool(runs) and all(r['opacity']>=.5 and r['rect'][2]>0 for r in runs)))
             parity=[]
             if args.production:
-                from twobyteasr.advanced_renderer import compile_composition_data
-                from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,SubtitleStyle
-                from twobyteasr.style_recipe import StyleRecipe
+                from twobyteasr.rendering.advanced_renderer import compile_composition_data
+                from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,SubtitleStyle
+                from twobyteasr.caption_style.style_recipe import StyleRecipe
                 project=SubtitleProject(media=StudioMedia('synthetic.mp4',width=1920,height=1080,duration_ms=3000),
                     styles=[SubtitleStyle('default','Render comparison')],cues=[StudioCue('c',0,3000,text)])
                 project.style_recipes['default']=StyleRecipe('reference',engine='remotion',web_theme=theme).to_dict()

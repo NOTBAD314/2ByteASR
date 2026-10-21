@@ -11,10 +11,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import ai_providers as _ai_providers
-from twobyteasr import glossary_skill as gs
-from twobyteasr.ai_providers import AIProviderError
-from twobyteasr.glossary_skill import (
+from twobyteasr.providers import ai_providers as _ai_providers
+from twobyteasr.glossary import glossary_skill as gs
+from twobyteasr.providers.ai_providers import AIProviderError
+from twobyteasr.glossary.glossary_skill import (
     GlossarySearchError,
     SearchedTerm,
     apply_term_updates,
@@ -167,8 +167,8 @@ def test_partial_sources_split_new_and_unverifiable():
 
 def test_worker_cancel_stops_and_reports_cancelled(qtbot_none=None):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import glossary_skill_ui as gsui
-    from twobyteasr.glossary_skill_ui import GlossaryUpdateWorker
+    from twobyteasr.glossary import glossary_skill_ui as gsui
+    from twobyteasr.glossary.glossary_skill_ui import GlossaryUpdateWorker
 
     app = QApplication.instance() or QApplication([])
     legacy = _FakeLegacy()
@@ -211,8 +211,8 @@ def _t2_wait(app, ms):
 
 def test_batch_queue_isolates_failures_and_cancel_stops_scheduling():
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import glossary_skill_ui as gsui
-    from twobyteasr.glossary_skill_ui import BatchGlossaryUpdateWorker
+    from twobyteasr.glossary import glossary_skill_ui as gsui
+    from twobyteasr.glossary.glossary_skill_ui import BatchGlossaryUpdateWorker
 
     app = QApplication.instance() or QApplication([])
     legacy = _FakeLegacy()

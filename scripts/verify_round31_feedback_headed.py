@@ -24,9 +24,9 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_edit_sequence import HighlightCandidate
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 RESULTS: list[tuple[str, bool, str]] = []
 

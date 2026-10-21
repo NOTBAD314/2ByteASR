@@ -32,15 +32,15 @@ MEDIA = PROJECT_DIR / "recording-60s.mp4"
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_edit_commands import (
+from twobyteasr.timeline.studio_edit_commands import (
     delete_video_segments_command,
     razor_video_command,
     ripple_trim_command,
     set_video_lock_command,
 )
-from twobyteasr.studio_edit_sequence import segment_at, sequence_of
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.timeline.studio_edit_sequence import segment_at, sequence_of
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 RESULTS: list[tuple[str, bool, str]] = []
 

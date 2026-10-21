@@ -24,8 +24,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -130,7 +130,7 @@ def phase_a(app: QApplication, project_dir: Path) -> SubtitleStudioPage:
 
 def phase_b(app: QApplication, project_dir: Path):
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     media = project_dir / "recognition.flv"
     win = MainWindow([], legacy, object(), None)

@@ -2,7 +2,7 @@
 import hashlib
 import json
 import pytest
-from twobyteasr.gpl_migration_audit import expected_release
+from twobyteasr.acceptance.gpl_migration_audit import expected_release
 
 
 def test_identity_comes_from_external_manifest(tmp_path):

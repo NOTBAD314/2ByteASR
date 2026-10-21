@@ -4,10 +4,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QUndoStack
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_commands import EditCueIntervalsCommand
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_timeline import WaveformTimeline
-from twobyteasr.timeline_cue_gesture import CueInterval, preview_intervals
+from twobyteasr.timeline.studio_commands import EditCueIntervalsCommand
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_timeline import WaveformTimeline
+from twobyteasr.timeline.timeline_cue_gesture import CueInterval, preview_intervals
 
 
 def test_group_delta_clamps_at_origin_and_minimum_without_moving_neighbours():

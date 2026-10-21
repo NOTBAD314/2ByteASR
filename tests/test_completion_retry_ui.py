@@ -13,13 +13,13 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton, QWidget
 
-from twobyteasr import completion_retry, completion_retry_ui
-from twobyteasr.completion_retry_ui import CompletionRetryThread
-from twobyteasr.service import MediaResult, RunOptions
-from twobyteasr.studio_glossary_service import GlossaryReviewPreview
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_text_tools import TextOccurrence
-from twobyteasr.ui import MainWindow
+from twobyteasr.app import completion_retry, completion_retry_ui
+from twobyteasr.app.completion_retry_ui import CompletionRetryThread
+from twobyteasr.recognition.service import MediaResult, RunOptions
+from twobyteasr.glossary.studio_glossary_service import GlossaryReviewPreview
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_text_tools import TextOccurrence
+from twobyteasr.app.ui import MainWindow
 
 APP = QApplication.instance() or QApplication([])
 
@@ -46,7 +46,7 @@ def sample_preview(stage='polish'):
 @pytest.fixture
 def page(monkeypatch):
     import subtitle_core
-    from twobyteasr import studio_project
+    from twobyteasr.projects import studio_project
     widget = QWidget()
     widget.session = SimpleNamespace(project=sample_project(), undo_stack=QUndoStack(widget))
     widget.selected_cue_ids = lambda: ['final-2']
@@ -62,7 +62,7 @@ def page(monkeypatch):
 
 def drive_dialog(monkeypatch, inspect, *, begin=None):
     """Run production queued slots in the GUI loop, without an interactive modal."""
-    from twobyteasr.studio_find_replace import FindReplaceDialog
+    from twobyteasr.studio.studio_find_replace import FindReplaceDialog
     observed = {}
     def exec_dialog(dialog):
         loop = QEventLoop()
@@ -278,7 +278,7 @@ def test_unsupported_search_dispatch_does_not_open_retry_or_queue(monkeypatch):
 
 
 def test_active_completion_retry_blocks_start_before_config_or_worker_changes(monkeypatch):
-    from twobyteasr import ui
+    from twobyteasr.app import ui
     shell = MainWindow.__new__(MainWindow)
     QWidget.__init__(shell)
     shell._run_in_progress = False

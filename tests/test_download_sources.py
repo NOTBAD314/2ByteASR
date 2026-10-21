@@ -27,7 +27,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = PROJECT_ROOT / "dependencies.lock.json"
 DOWNLOADER = PROJECT_ROOT / "scripts" / "download_file_fast.py"
-WORKSHOP = PROJECT_ROOT / "twobyteasr" / "model_workshop.py"
+WORKSHOP = PROJECT_ROOT / "twobyteasr" / "local_models" / "model_workshop.py"
 DOWNLOAD_PS1 = PROJECT_ROOT / "scripts" / "download_models.ps1"
 
 import twobyteasr.download_sources as sources
@@ -212,7 +212,9 @@ def test_workshop_dropdown_uses_canonical_modes_without_url_wall():
 def test_powershell_calls_python_resolver_not_inline_url_guess():
     ps1 = DOWNLOAD_PS1.read_text(encoding="utf-8-sig")
     assert "download_sources" in ps1
-    assert "-m twobyteasr.download_sources" in ps1 or "resolve_from_lock" in ps1
+    assert "-I -X utf8" in ps1 and "resolve_download_sources.py" in ps1
+    wrapper=(DOWNLOAD_PS1.parent/'resolve_download_sources.py').read_text('utf8')
+    assert 'from twobyteasr.download_sources import main' in wrapper
 
 
 class _FailThenOkHandler(BaseHTTPRequestHandler):
@@ -395,7 +397,7 @@ def test_download_dialog_passes_canonical_mode(monkeypatch):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
 
-    from twobyteasr.model_workshop import MODELS, ModelDownloadDialog
+    from twobyteasr.local_models.model_workshop import MODELS, ModelDownloadDialog
 
     app = QApplication.instance() or QApplication([])
     model = next(item for item in MODELS if item.key == "moss")

@@ -9,12 +9,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.ai_providers import (
+from twobyteasr.providers.ai_providers import (
     AIProvider,
     AIProviderError,
     OpenAICompatibleProvider,
 )
-from twobyteasr.ui import EndpointEditor, ProviderModelDiscoveryWorker
+from twobyteasr.app.ui import EndpointEditor, ProviderModelDiscoveryWorker
 
 
 def _app() -> QApplication:
@@ -37,16 +37,16 @@ def test_openai_model_discovery_uses_cache_and_refreshes(monkeypatch):
     cache = {("custom", "https://models.example/v1"): ["cached-model"]}
 
     monkeypatch.setattr(
-        "twobyteasr.ai_providers.get_cached_models",
+        "twobyteasr.providers.ai_providers.get_cached_models",
         lambda provider, base_url, **kwargs: cache.get((provider, base_url)),
     )
     monkeypatch.setattr(
-        "twobyteasr.ai_providers.fetch_openai_compatible_models",
+        "twobyteasr.providers.ai_providers.fetch_openai_compatible_models",
         lambda base_url, api_key, timeout, **kwargs: fetches.append((base_url, api_key, timeout))
         or ["fresh-b", "fresh-a"],
     )
     monkeypatch.setattr(
-        "twobyteasr.ai_providers.set_cached_models",
+        "twobyteasr.providers.ai_providers.set_cached_models",
         lambda provider, base_url, models, **kwargs: cache.__setitem__((provider, base_url), list(models)),
     )
     provider = OpenAICompatibleProvider(_endpoint())
@@ -61,7 +61,7 @@ def test_openai_model_discovery_uses_cache_and_refreshes(monkeypatch):
 def test_model_discovery_cancellation_and_unsupported_manual_fallback(monkeypatch):
     provider = OpenAICompatibleProvider(_endpoint())
     monkeypatch.setattr(
-        "twobyteasr.ai_providers.fetch_openai_compatible_models",
+        "twobyteasr.providers.ai_providers.fetch_openai_compatible_models",
         lambda *_args, **_kwargs: pytest.fail("cancelled discovery must not touch the network"),
     )
     with pytest.raises(AIProviderError) as cancelled:
@@ -88,7 +88,7 @@ def test_model_discovery_worker_reports_cancel_with_manual_fallback(monkeypatch)
             raise AIProviderError("模型发现已取消。", category="cancelled")
 
     monkeypatch.setattr(
-        "twobyteasr.ui.provider_for_stage",
+        "twobyteasr.providers.endpoint_editor_ui.provider_for_stage",
         lambda _settings, _stage: CancelAwareProvider(),
     )
     worker = ProviderModelDiscoveryWorker({"models": {}}, "polish")

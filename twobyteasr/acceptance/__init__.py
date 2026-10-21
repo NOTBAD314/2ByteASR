@@ -1,1 +1,1 @@
-"""Explicit acceptance audits, not imported during normal startup."""
+"""驗收與自我檢查腳本：只在明確開啟的驗收／QA 模式下執行，不是產品功能。"""

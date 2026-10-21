@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 import moss_firered_pipeline  # noqa: E402
 import subtitle_core  # noqa: E402
-import twobyteasr.ui as ui  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
 
 
 def main() -> int:

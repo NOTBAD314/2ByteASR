@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from twobyteasr import repository_download as downloader
-from twobyteasr.model_download_cache import (MARKER, cleanup_download_transaction,
+from twobyteasr.local_models.model_download_cache import (MARKER, cleanup_download_transaction,
     scan_download_transactions, write_transaction)
 
 

@@ -10,8 +10,8 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QFontMetrics  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.ui import APP_QSS  # noqa: E402
-from twobyteasr.ui_recognition import RecognitionPlanWidget  # noqa: E402
+from twobyteasr.app.ui import APP_QSS  # noqa: E402
+from twobyteasr.app.ui_recognition import RecognitionPlanWidget  # noqa: E402
 
 
 def _app():

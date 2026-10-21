@@ -21,8 +21,8 @@ SHOTS = ROOT / "tmp" / "shots-round44"
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_edit_sequence import ensure_edit_sequence, store_sequence
-from twobyteasr.studio_media_pool import (
+from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence, store_sequence
+from twobyteasr.timeline.studio_media_pool import (
     active_video_clips,
     add_media_asset,
     add_video_clip,
@@ -30,8 +30,8 @@ from twobyteasr.studio_media_pool import (
     primary_video_track_id,
     reorder_video_track,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -91,7 +91,7 @@ def main() -> int:
     )
     track = create_video_track(page.project, "覆盖轨")
     add_video_clip(page.project, track.id, asset.asset_id, timeline_in_ms=5_000)
-    from twobyteasr.studio_media_pool import validate_media_graph
+    from twobyteasr.timeline.studio_media_pool import validate_media_graph
 
     validate_media_graph(page.project)
     page.cue_controller.model_changed()

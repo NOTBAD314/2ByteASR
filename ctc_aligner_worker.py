@@ -5,7 +5,7 @@ audio window of the shared task PCM with wav2vec2-large-xlsr-53-japanese
 (character CTC, 20 ms frames) and ``torchaudio.functional.forced_align``.
 Returns per-character spans in the original text with the mean frame
 posterior, plus the model's own greedy transcript of the window. The worker
-makes no timing decisions; ``twobyteasr.ctc_alignment`` decides what to use.
+makes no timing decisions; ``twobyteasr.recognition.ctc_alignment`` decides what to use.
 """
 from __future__ import annotations
 
@@ -56,6 +56,10 @@ def token_spans(path, scores) -> list[tuple[int, int, float]]:
 
 
 def main() -> None:
+    # numpy and scipy each load OpenBLAS, which commits about 24 MB per CPU
+    # thread at import (1.5 GB on a 32-thread CPU). The model and the
+    # alignment run in torch / torchaudio; nothing here uses that BLAS (2026-10-15).
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
@@ -69,6 +73,7 @@ def main() -> None:
     import torch
     import torchaudio
     from transformers import Wav2Vec2ForCTC
+    from twobyteasr import read_only_weights
     from twobyteasr.model_integrity import verify_model_files
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
@@ -92,9 +97,14 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     load_started = time.perf_counter()
     _emit("loading", python=sys.executable, model_path=str(model_dir.resolve()), pid=os.getpid(), jobs=len(jobs), device=device)
-    model = Wav2Vec2ForCTC.from_pretrained(str(model_dir), local_files_only=True).to(device).eval()
+    # 2026-10-15: on Windows the checkpoint is mapped read-only
+    # (twobyteasr/read_only_weights.py); the loader is the official one.
+    model, weights_loader = read_only_weights.load(
+        torch, lambda: Wav2Vec2ForCTC.from_pretrained(str(model_dir), local_files_only=True).to(device).eval(),
+        lambda loaded: [loaded],
+        report=lambda error_type, detail: _emit("read_only_load_failed", error_type=error_type, detail=detail))
     load_ms = (time.perf_counter() - load_started) * 1000.0
-    _emit("loaded", elapsed_ms=round(load_ms, 3))
+    _emit("loaded", elapsed_ms=round(load_ms, 3), weights_loader=weights_loader)
     try:
         results = []
         started = time.perf_counter()

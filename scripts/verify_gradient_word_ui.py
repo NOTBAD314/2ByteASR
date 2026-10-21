@@ -25,7 +25,7 @@ def main():
         TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),TWOBYTEASR_STARTUP_OPEN_STUDIO='1',
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1')
     if args.burn_word:env['TWOBYTEASR_ACCEPTANCE_BURN_WORD']='1'
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command=[str(args.exe.resolve())] if args.exe else [sys.executable,'-B',str(root/'quick_start.py')]
     with (out/'application.log').open('wb') as log:
         r=run_hidden_subprocess(command,cwd=root,env=env,stdout=log,stderr=log,timeout=180,purpose='gradient and word split UI verification')

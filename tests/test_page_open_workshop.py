@@ -12,8 +12,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr import model_workshop  # noqa: E402
-from twobyteasr.model_workshop import ModelWorkshopPage  # noqa: E402
+from twobyteasr.local_models import model_workshop  # noqa: E402
+from twobyteasr.local_models.model_workshop import ModelWorkshopPage  # noqa: E402
 
 ROOT = Path(__file__).parents[1]
 
@@ -78,7 +78,7 @@ def test_each_model_state_is_computed_once_per_refresh(monkeypatch):
 
 def test_reentry_rechecks_registry_off_thread_and_refreshes_only_on_change(monkeypatch):
     import threading
-    from twobyteasr import model_registry
+    from twobyteasr.local_models import model_registry
     app = _app()
     page = ModelWorkshopPage(ROOT, _settings())
     current = page._registry
@@ -111,7 +111,7 @@ def test_reentry_rechecks_registry_off_thread_and_refreshes_only_on_change(monke
 
 
 def test_lock_file_hash_is_cached_by_mtime_and_size(tmp_path, monkeypatch):
-    from twobyteasr import environment
+    from twobyteasr.system import environment
     lock = tmp_path / "dependencies.lock.json"
     lock.write_text(json.dumps({environment._ENVIRONMENTS_LOCK_KEY: {"main": {"python": "3.10"}}}), encoding="utf-8")
     monkeypatch.setattr(environment, "lock_path", lambda: str(lock))

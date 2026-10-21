@@ -10,8 +10,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr import recognition_history as history  # noqa: E402
-from twobyteasr.recognition_history import (  # noqa: E402
+from twobyteasr.recognition import recognition_history as history  # noqa: E402
+from twobyteasr.recognition.recognition_history import (  # noqa: E402
     RecognitionHistoryDetail,
     RecognitionHistoryIndex,
     RecognitionHistoryPage,
@@ -220,7 +220,7 @@ def test_show_detail_reads_only_the_selected_report_and_releases_the_dialog(tmp_
     page = RecognitionHistoryPage(reports, index_path=tmp_path / "index.json")
     _wait(page)
     calls = _count_parses(monkeypatch)
-    from twobyteasr.main_ui_dialogs import SpringDialog
+    from twobyteasr.design.main_ui_dialogs import SpringDialog
     seen = []
 
     def fake_exec(dialog):
@@ -277,7 +277,7 @@ def test_detail_closed_before_its_report_arrives_drops_the_late_result(tmp_path,
     import threading
     from PySide6.QtCore import QCoreApplication, QEvent
     from shiboken6 import isValid
-    from twobyteasr.main_ui_dialogs import SpringDialog
+    from twobyteasr.design.main_ui_dialogs import SpringDialog
     app = _app()
     reports = tmp_path / "reports"
     reports.mkdir()
@@ -313,7 +313,7 @@ def test_detail_closed_before_its_report_arrives_drops_the_late_result(tmp_path,
 
 def test_repeated_threaded_detail_opens_release_every_dialog(tmp_path, monkeypatch):
     from PySide6.QtCore import QCoreApplication, QEvent
-    from twobyteasr.main_ui_dialogs import SpringDialog
+    from twobyteasr.design.main_ui_dialogs import SpringDialog
     app = _app()
     reports = tmp_path / "reports"
     reports.mkdir()

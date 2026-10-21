@@ -20,10 +20,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 import subtitle_core  # noqa: F401  initialize the legacy facade before text_rules
-from twobyteasr.asr_provider_snapshot import (
+from twobyteasr.providers.asr_provider_snapshot import (
     _BOUNDARY_INVISIBLE, restore_source_text, validate_grouped_text,
 )
-from twobyteasr.text_rules import FORMAT_INVISIBLE_CHARACTERS, normalize_format_whitespace
+from twobyteasr.subtitle_rules.text_rules import FORMAT_INVISIBLE_CHARACTERS, normalize_format_whitespace
 
 
 def rows(*texts, speaker="S01"):
@@ -106,17 +106,17 @@ def test_format_whitespace_examples_delete_junk_and_keep_meaning(raw, expected):
 
 @pytest.mark.parametrize("raw, expected", CASES)
 def test_studio_qc_uses_the_same_whitespace_rules(raw, expected):
-    from twobyteasr.studio_qc import normalize_format_spaces
+    from twobyteasr.subtitle_rules.studio_qc import normalize_format_spaces
     assert normalize_format_spaces(raw) == normalize_format_whitespace(raw)
 
 
 def test_invisible_character_sets_agree():
-    from twobyteasr import studio_qc
+    from twobyteasr.subtitle_rules import studio_qc
     assert set(FORMAT_INVISIBLE_CHARACTERS) == set(_BOUNDARY_INVISIBLE) == set(studio_qc._FORMAT_INVISIBLE)
 
 
 def test_delivery_normalization_runs_once_and_is_idempotent():
-    from twobyteasr.pipeline_runtime import normalize_delivered_cue_text
+    from twobyteasr.recognition.pipeline_runtime import normalize_delivered_cue_text
     events = []
     legacy = SimpleNamespace(record_run_event=lambda name, **payload: events.append((name, payload)))
     cues = [SimpleNamespace(cue_id=1, text="这里怎么办 "), SimpleNamespace(cue_id=2, text="我们还能挠三下"),
@@ -164,12 +164,12 @@ class _RunLegacy:
 def test_saved_project_reference_reopen_and_export_agree(tmp_path, monkeypatch):
     """The delivery digest is taken after normalization: no
     "工程字幕数量或文本时间摘要与已保存结果不一致" on open/reopen."""
-    import twobyteasr.studio_project as storage
-    from twobyteasr.models import SubtitleCue
-    from twobyteasr.pipeline_runtime import complete_media_run
-    from twobyteasr.recognition_result import media_identity_for_task, verify_result_reference
-    from twobyteasr.runtime import RuntimeContext
-    from twobyteasr.studio_subtitle_export import compile_srt
+    import twobyteasr.projects.studio_project as storage
+    from twobyteasr.recognition.transcript_data import SubtitleCue
+    from twobyteasr.recognition.pipeline_runtime import complete_media_run
+    from twobyteasr.recognition.recognition_result import media_identity_for_task, verify_result_reference
+    from twobyteasr.recognition.run_context import RuntimeContext
+    from twobyteasr.exports.studio_subtitle_export import compile_srt
 
     monkeypatch.setattr(storage, "project_library_root", lambda *a, **k: tmp_path / "Projects")
     real_create = storage.create_studio_outputs

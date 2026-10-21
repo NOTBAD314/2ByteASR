@@ -7,9 +7,9 @@ from dataclasses import replace
 import pytest
 
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr.ai_providers import AIProviderError, GrokCLIProvider
-from twobyteasr.models import SpeechSegment
-from twobyteasr.provider_input_budget import RetryBudget, retry_delay
+from twobyteasr.providers.ai_providers import AIProviderError, GrokCLIProvider
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.providers.provider_input_budget import RetryBudget, retry_delay
 
 
 def envelope():
@@ -19,7 +19,7 @@ def envelope():
 
 
 def test_unknown_model_is_configuration_failure_with_redacted_details():
-    from twobyteasr.provider_diagnostics import cli_failure
+    from twobyteasr.providers.provider_diagnostics import cli_failure
     failure=cli_failure(json.dumps(envelope()))
     assert failure['category']=='unknown_model'
     assert 'SECRET_FIXTURE_ONLY' not in str(failure)
@@ -34,7 +34,7 @@ def test_unknown_model_is_configuration_failure_with_redacted_details():
     {'type':'user','message':{'errors':['unknown model id']}},
 ])
 def test_success_or_user_text_does_not_reject_model(packet):
-    from twobyteasr.provider_diagnostics import cli_failure
+    from twobyteasr.providers.provider_diagnostics import cli_failure
     assert cli_failure(json.dumps(packet)) is None
 
 
@@ -62,14 +62,14 @@ def test_nonstream_multiple_lines_do_not_hide_model_selection_error(monkeypatch)
 
 @pytest.mark.parametrize('stage',['polished','grouped'])
 def test_later_batches_preserve_local_results_and_new_snapshot_can_retry(context,monkeypatch,stage):
-    from twobyteasr import polishing,grouping
+    from twobyteasr.subtitle_rules import polishing, grouping
     _,ctx,_=context
     calls=[]
     class Provider:
         def complete(self,*a,**kw):
             calls.append(kw)
             raise AIProviderError('服务端拒绝 unknown model id',category='unknown_model')
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**kw:Provider())
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**kw:Provider())
     monkeypatch.setattr(grouping,'provider_for_stage',lambda *a,**kw:Provider())
     monkeypatch.setattr(RetryBudget,'wait',lambda *a,**kw:pytest.fail('deterministic model errors never retry'))
     budget=RetryBudget(2)
@@ -100,7 +100,7 @@ def test_later_batches_preserve_local_results_and_new_snapshot_can_retry(context
 
 
 def test_queue_checks_task_rejection_before_start_and_does_not_poison_provider(context):
-    from twobyteasr.provider_service import ProviderService
+    from twobyteasr.providers.provider_service import ProviderService
     _,ctx,_=context
     budget=RetryBudget(2)
     scope=(budget,'grouped',ctx.provider_snapshot.fingerprint)

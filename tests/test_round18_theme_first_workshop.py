@@ -10,10 +10,10 @@ pytestqt = pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_renderer import normalized_visual_snapshot
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.style_recipe import StyleRecipe
-from twobyteasr.web_theme import (
+from twobyteasr.rendering.advanced_renderer import normalized_visual_snapshot
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_style.style_recipe import StyleRecipe
+from twobyteasr.caption_design.web_theme import (
     builtin_web_themes,
     parse_web_theme_sections,
     theme_archive_html,
@@ -112,7 +112,7 @@ def test_parse_sections_appearance_block():
     merged = dict(document.to_dict())
     merged.update(payload)
     merged["name"] = "X"
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     validated = WebThemeDocument.from_dict(merged)
     assert validated.appearance["fontSize"] == 48.0
@@ -174,7 +174,7 @@ class _FakePage:
 
 def test_workshop_dialog_controls_and_scope(monkeypatch):
     app = _app()
-    from twobyteasr.studio_web_theme_workshop import _QUICK_ASKS, WebThemeWorkshopDialog
+    from twobyteasr.caption_design.studio_web_theme_workshop import _QUICK_ASKS, WebThemeWorkshopDialog
 
     project = _workshop_project()
     page = _FakePage(project)
@@ -216,7 +216,7 @@ def test_open_web_theme_workshop_dispatch(monkeypatch):
     _app()
     from types import SimpleNamespace
 
-    from twobyteasr import studio_ai_flow
+    from twobyteasr.studio import studio_ai_flow
 
     project = _workshop_project()
     # 加一条普通字幕（无 webTheme）。
@@ -235,7 +235,7 @@ def test_open_web_theme_workshop_dispatch(monkeypatch):
             self.shown = True
 
     monkeypatch.setattr(
-        "twobyteasr.studio_web_theme_workshop.WebThemeWorkshopDialog", _Recorder
+        "twobyteasr.caption_design.studio_web_theme_workshop.WebThemeWorkshopDialog", _Recorder
     )
     hints: list[str] = []
     lookup = {cue.id: cue for cue in project.cues}

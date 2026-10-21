@@ -11,12 +11,12 @@ from types import SimpleNamespace
 import pytest
 
 import subtitle_core as legacy  # noqa: F401  (loads the core before the timing helpers)
-from twobyteasr.models import SpeechSegment
-from twobyteasr.language_rules import language_scope
-from twobyteasr.number_fidelity import numeric_event_values, numeric_unsafe_cut_offsets
-from twobyteasr.segmentation import locally_repair_resegmented_cue
-from twobyteasr.subtitle_fidelity import recover_final_content
-from twobyteasr.text_rules import content_exact
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.subtitle_rules.language_rules import language_scope
+from twobyteasr.subtitle_rules.number_fidelity import numeric_event_values, numeric_unsafe_cut_offsets
+from twobyteasr.subtitle_rules.segmentation import locally_repair_resegmented_cue
+from twobyteasr.subtitle_rules.subtitle_fidelity import recover_final_content
+from twobyteasr.subtitle_rules.text_rules import content_exact
 
 CHINESE = [
     '花了三百块一万金币对对对一二三第二阶段一万金币真的很难再来一把',
@@ -71,7 +71,7 @@ def test_local_repair_keeps_every_number_in_its_cue(text):
 def _formatted_segment_without_word_timing():
     """A real no-AI run (2026-10-16): 十连 became 10连 while the segment's words
     were still one span, so every character got the whole 6.4 s segment."""
-    from twobyteasr.models import WordUnit
+    from twobyteasr.recognition.transcript_data import WordUnit
     source = '我刚才又抽了十连结果只出了一个五星还是重复的角色有点难受啊！'
     text = '我刚才又抽了10连结果只出了一个五星还是重复的角色有点难受啊！'
     start, step = 31.92, 0.21
@@ -88,8 +88,8 @@ def _formatted_segment_without_word_timing():
 
 
 def test_number_formatted_without_word_timing_uses_character_tokens():
-    from twobyteasr.number_fidelity import mapped_content_timeline
-    from twobyteasr.segmentation_alignment import segment_content_timeline
+    from twobyteasr.subtitle_rules.number_fidelity import mapped_content_timeline
+    from twobyteasr.subtitle_rules.segmentation_alignment import segment_content_timeline
     segment, tokens = _formatted_segment_without_word_timing()
     assert mapped_content_timeline(segment) is None
     units = segment_content_timeline(segment, tokens)

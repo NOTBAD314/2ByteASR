@@ -22,8 +22,8 @@ sys.path.insert(0, str(ROOT))
 import moss_firered_pipeline as pipeline  # the pipeline module
 import subtitle_core as legacy  # the legacy facade
 
-from twobyteasr.service import RunOptions, run_media_queue, CancellationToken  # public API
-from twobyteasr.ui import persist_asr_configuration  # drives legacy backends (MOSS→FireRed→Qwen) without touching pipeline
+from twobyteasr.recognition.service import RunOptions, run_media_queue, CancellationToken  # public API
+from twobyteasr.app.ui import persist_asr_configuration  # drives legacy backends (MOSS→FireRed→Qwen) without touching pipeline
 
 MEDIA = Path.home() / "Desktop" / r"[NOTBAD]星铁4.5前瞻2.mp4"
 OUT_DIR = Path.home() / "Desktop"

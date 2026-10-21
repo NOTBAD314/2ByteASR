@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import web_theme
+from twobyteasr.caption_design import web_theme
 
 
 def test_identical_sections_reuse_parse_but_edited_bytes_are_validated(monkeypatch):
@@ -29,11 +29,11 @@ def test_identical_sections_reuse_parse_but_edited_bytes_are_validated(monkeypat
 
 
 def test_web_provider_reads_continuous_owner_without_changing_gui_snapshot(monkeypatch):
-    from twobyteasr.playback_clock import PlaybackClock
-    from twobyteasr.studio_advanced_flow import StudioAdvancedFlowMixin
-    from twobyteasr.studio_project import StudioCue
+    from twobyteasr.playback.playback_clock import PlaybackClock
+    from twobyteasr.studio.studio_advanced_flow import StudioAdvancedFlowMixin
+    from twobyteasr.projects.studio_project import StudioCue
     wall = [100.]
-    monkeypatch.setattr('twobyteasr.playback_clock.time.monotonic', lambda: wall[0])
+    monkeypatch.setattr('twobyteasr.playback.playback_clock.time.monotonic', lambda: wall[0])
     clock = PlaybackClock(now=wall[0])
     clock.force_position(11000, paused=False, playback_rate=2, now=wall[0])
     snapshot = clock.snapshot()
@@ -53,8 +53,8 @@ def test_web_provider_reads_continuous_owner_without_changing_gui_snapshot(monke
 def test_same_cue_seek_during_capture_discards_old_pixels(monkeypatch):
     import threading
     from PySide6.QtCore import Qt
-    from twobyteasr import renderer_service
-    from twobyteasr.live_web_preview import LiveWebPreviewWorker
+    from twobyteasr.rendering import renderer_service
+    from twobyteasr.rendering.live_web_preview import LiveWebPreviewWorker
     state = {'cue':100., 'generation':0, 'calls':0}
     done = threading.Event()
     def provide():
@@ -96,7 +96,7 @@ def test_same_cue_seek_during_capture_discards_old_pixels(monkeypatch):
 
 
 def test_cancelled_pause_releases_only_its_request_and_page(tmp_path):
-    from twobyteasr.renderer_service import RendererService, LiveRendererSession, RendererLiveRequestSuperseded
+    from twobyteasr.rendering.renderer_service import RendererService, LiveRendererSession, RendererLiveRequestSuperseded
     service = RendererService(tmp_path)
     sent = []
     service._send = sent.append

@@ -10,8 +10,8 @@ def main():
     global OUT
     parser=argparse.ArgumentParser();parser.add_argument('--themes',type=Path,default=OUT)
     OUT=parser.parse_args().themes.resolve()
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     from PIL import Image
     import numpy as np
     service=RendererService();summary={}

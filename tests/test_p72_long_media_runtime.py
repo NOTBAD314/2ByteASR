@@ -17,14 +17,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.waveform_cache as waveform_module
-from twobyteasr.advanced_live_renderer import render_live_snapshot
-from twobyteasr.advanced_preview import AdvancedPreviewIdentity
-from twobyteasr.incremental_asr import CueDelta, IncrementalASRPipeline
-from twobyteasr.media_service import MediaService, ProxyManifest
-from twobyteasr.resource_governor import ResourceGovernor, ResourceKind
-from twobyteasr.runtime_cache import CacheIdentity, RuntimeCacheManager
-from twobyteasr.studio_edit_sequence import (
+import twobyteasr.playback.waveform_cache as waveform_module
+from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewIdentity
+from twobyteasr.recognition.incremental_asr import CueDelta, IncrementalASRPipeline
+from twobyteasr.media.media_service import MediaService, ProxyManifest
+from twobyteasr.system.resource_governor import ResourceGovernor, ResourceKind
+from twobyteasr.storage.runtime_cache import CacheIdentity, RuntimeCacheManager
+from twobyteasr.timeline.studio_edit_sequence import (
     EditSequence,
     EditSequenceRuntime,
     HighlightCandidate,
@@ -32,12 +32,12 @@ from twobyteasr.studio_edit_sequence import (
     TimelineMarker,
     VideoSegment,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-from twobyteasr.studio_video_track import _density_pixel_spans, _merged_pixel_spans
-from twobyteasr.style_recipe import (
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.studio.studio_video_track import _density_pixel_spans, _merged_pixel_spans
+from twobyteasr.caption_style.style_recipe import (
     FillSpec, normalize_glow_contract, normalize_shadow_contract,
 )
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 @pytest.fixture(scope="module")

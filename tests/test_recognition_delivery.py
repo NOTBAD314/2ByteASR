@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def test_same_path_atomic_save_invalidates_loaded_identity(tmp_path):
-    from twobyteasr.studio_readiness import project_file_identity
+    from twobyteasr.studio.studio_readiness import project_file_identity
     target=tmp_path/'project.2byteproj'
     target.write_text('{"cues":[]}')
     first=project_file_identity(target)
@@ -16,7 +16,7 @@ def test_same_path_atomic_save_invalidates_loaded_identity(tmp_path):
 
 
 def test_skipped_stage_has_terminal_report_record(tmp_path, monkeypatch):
-    from twobyteasr import reporting
+    from twobyteasr.recognition import reporting
     media=tmp_path/'video.mp4';media.write_bytes(b'test')
     monkeypatch.setattr(reporting,'REPORT_ROOT',tmp_path)
     reporting.begin_media_report(media,{}, {})

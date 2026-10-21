@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtCore import QPointF, QRectF
 
-from twobyteasr.studio_geometry import SubtitleCoordinateMapper
+from twobyteasr.studio.studio_geometry import SubtitleCoordinateMapper
 
 
 @pytest.mark.parametrize(

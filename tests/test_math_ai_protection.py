@@ -15,11 +15,11 @@ import pytest
 # Like the app and the review service: subtitle_core first, so polishing's star import is complete
 # (importing text_rules first loads polishing while subtitle_core is still initializing).
 import subtitle_core  # noqa: F401
-from twobyteasr.terminology import (GlossaryLibrary, GlossarySnapshot, TermEntry, glossary_ai_notes,
+from twobyteasr.glossary.terminology import (GlossaryLibrary, GlossarySnapshot, TermEntry, glossary_ai_notes,
                                              library_ai_note)
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr import math_text
-from twobyteasr.math_text import FORMULA_RULE, mask_formulas, unmask_formulas
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.subtitle_rules import math_text
+from twobyteasr.subtitle_rules.math_text import FORMULA_RULE, mask_formulas, unmask_formulas
 
 FORMULA = r"$\frac{\sqrt{3}}{4}a^2$"
 
@@ -55,16 +55,16 @@ def test_mask_and_unmask_round_trip_and_refuse_broken_answers():
 
 
 def test_placeholders_survive_the_correction_text_cleanup():
-    from twobyteasr.text_rules import clean_subtitle_text
+    from twobyteasr.subtitle_rules.text_rules import clean_subtitle_text
     assert "⟦F1⟧" in clean_subtitle_text("面积是 ⟦F1⟧，对吧。") and "⟦F12⟧" in clean_subtitle_text("还有⟦F12⟧")
 
 
 # ---------------------------------------------------------------- correction prompt
 
 def correction_messages(text, snapshot):
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.models import SpeechSegment
-    from twobyteasr import polishing
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.transcript_data import SpeechSegment
+    from twobyteasr.subtitle_rules import polishing
     row = SpeechSegment(1, 0, 1, text, .9, [], speaker="S01", primary_source="project-original")
     context = RuntimeContext(enable_domain_terms=True, enabled_glossary_ids=["v"], glossary_snapshot=snapshot)
     with activate_runtime_context(context):
@@ -73,7 +73,7 @@ def correction_messages(text, snapshot):
 
 
 def test_prompt_additions_appear_only_when_they_apply():
-    from twobyteasr.polishing import USER_GLOSSARY_NOTES_RULE
+    from twobyteasr.subtitle_rules.polishing import USER_GLOSSARY_NOTES_RULE
     plain = correction_messages("谢尔宾斯基三角形", library())[0]["content"]
     assert FORMULA_RULE not in plain and USER_GLOSSARY_NOTES_RULE not in plain
     with_formula = correction_messages("面积是 ⟦F1⟧", library())[0]["content"]
@@ -84,7 +84,7 @@ def test_prompt_additions_appear_only_when_they_apply():
 
 
 def test_snapshot_carries_the_note_without_touching_libraries_that_have_none(monkeypatch):
-    from twobyteasr.terminology import snapshot_glossaries
+    from twobyteasr.glossary.terminology import snapshot_glossaries
     games = {"v": {"game": "数学", "library_id": "v", "mappings": []},
              "w": {"game": "游戏", "library_id": "w", "mappings": [], "ai_note": "选手名按词库统一。"}}
     legacy = SimpleNamespace(load_learned_term_payload=lambda: {"games": games})
@@ -115,8 +115,8 @@ def test_note_is_saved_cleared_and_also_works_for_a_builtin_library():
 # ---------------------------------------------------------------- AI 校对
 
 def fake_model(monkeypatch, answer):
-    import twobyteasr.asr_provider_snapshot as provider
-    import twobyteasr.polishing as polish
+    import twobyteasr.providers.asr_provider_snapshot as provider
+    import twobyteasr.subtitle_rules.polishing as polish
     seen = []
     monkeypatch.setattr(provider, "resolve_provider_snapshot", lambda *_a, **_kw: SimpleNamespace(
         public_identity=lambda: {"provider": "offline-test", "model": "offline-test"},
@@ -132,8 +132,8 @@ def fake_model(monkeypatch, answer):
 
 
 def test_review_never_sends_a_formula_and_keeps_it(monkeypatch):
-    from twobyteasr.studio_glossary_service import preview_glossary_correction
-    from twobyteasr.studio_text_tools import values_from_occurrences
+    from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+    from twobyteasr.studio.studio_text_tools import values_from_occurrences
     seen = fake_model(monkeypatch, lambda text: text.replace("谢尔宾斯机", "谢尔宾斯基"))
     project = make_project(f"谢尔宾斯机三角形的面积是 {FORMULA}")
     result = preview_glossary_correction(project, ["1"], library(), {})
@@ -143,7 +143,7 @@ def test_review_never_sends_a_formula_and_keeps_it(monkeypatch):
 
 
 def test_review_answer_that_breaks_a_formula_changes_nothing(monkeypatch):
-    from twobyteasr.studio_glossary_service import preview_glossary_correction
+    from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
     fake_model(monkeypatch, lambda text: text.replace("⟦F1⟧", "三分之根号三").replace("谢尔宾斯机", "谢尔宾斯基"))
     project = make_project(f"谢尔宾斯机三角形的面积是 {FORMULA}")
     result = preview_glossary_correction(project, ["1"], library(), {})
@@ -152,7 +152,7 @@ def test_review_answer_that_breaks_a_formula_changes_nothing(monkeypatch):
 
 
 def test_review_with_the_switch_off_sends_the_text_as_before(monkeypatch):
-    from twobyteasr.studio_glossary_service import preview_glossary_correction
+    from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
     seen = fake_model(monkeypatch, lambda text: text)
     preview_glossary_correction(make_project(f"面积是 {FORMULA}", math=False), ["1"], library(), {})
     assert seen == [f"面积是 {FORMULA}"]
@@ -165,8 +165,8 @@ def test_review_with_the_switch_off_sends_the_text_as_before(monkeypatch):
     ("面积就是三分之根号三", {}),
 ])
 def test_cleanup_masks_and_drops_broken_suggestions(monkeypatch, answer, expected):
-    import twobyteasr.ai_providers as providers
-    from twobyteasr.studio_text_tools import request_text_cleanup, values_from_occurrences
+    import twobyteasr.providers.ai_providers as providers
+    from twobyteasr.studio.studio_text_tools import request_text_cleanup, values_from_occurrences
     calls = []
 
     class Provider:
@@ -185,8 +185,8 @@ def test_cleanup_masks_and_drops_broken_suggestions(monkeypatch, answer, expecte
 # ---------------------------------------------------------------- AI 断句
 
 def test_sentence_refine_never_cuts_inside_a_formula(monkeypatch):
-    import twobyteasr.ai_providers as providers
-    from twobyteasr.sentence_refine import _refine_cues
+    import twobyteasr.providers.ai_providers as providers
+    from twobyteasr.subtitle_rules.sentence_refine import _refine_cues
     text = "面积是 $\\frac{a}{b}$ 对吧"
     inside = text.index("frac")  # a cut after this index lands inside the formula
     outside = text.index("$ 对") + 1
@@ -206,7 +206,7 @@ def test_sentence_refine_never_cuts_inside_a_formula(monkeypatch):
 # ---------------------------------------------------------------- 字幕翻译
 
 def test_translation_round_trips_formulas_and_retries_a_lost_one():
-    from twobyteasr.subtitle_translation import translate, translation_source
+    from twobyteasr.subtitle_rules.subtitle_translation import translate, translation_source
     project = make_project(f"面积是 {FORMULA}")
     project.generation_metadata["language"] = {"code": "zh"}
     calls = []

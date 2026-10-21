@@ -87,7 +87,7 @@ def inner(out: Path):
     os.environ.pop('TWOBYTEASR_TEST_ROOT', None)
     os.environ['2BYTEASR_MODEL_ROOT'] = str(REPO / 'models')
     os.environ['USERPROFILE'] = str(out / 'profile' / 'home')
-    from twobyteasr.blank_project_audit import install_offline_guards, _capture
+    from twobyteasr.acceptance.blank_project_audit import install_offline_guards, _capture
     install_offline_guards()
     from PySide6.QtCore import QObject, QTimer, Qt, QPoint, QPointF, QEvent
     from PySide6.QtGui import QMouseEvent
@@ -95,8 +95,8 @@ def inner(out: Path):
     from PySide6.QtWidgets import QApplication, QWidget
     import moss_firered_pipeline
     import subtitle_core
-    from twobyteasr import ui
-    from twobyteasr.theme_manager import apply_application_theme
+    from twobyteasr.app import ui
+    from twobyteasr.design.theme_manager import apply_application_theme
     from twobyteasr.i18n import save_language
 
     ui._configure_windows_app_identity()
@@ -327,7 +327,7 @@ def inner(out: Path):
 
     def split_target(cue, left_text):
         """Time range where the razor yields exactly ``left_text`` (same resolver as the timeline)."""
-        from twobyteasr.studio_timing import resolve_split
+        from twobyteasr.timeline.studio_timing import resolve_split
         hits = []
         for ms in range(cue.start_ms + 20, cue.end_ms - 20, 5):
             preview = resolve_split(cue, ms, project=page().project)
@@ -448,7 +448,7 @@ def inner(out: Path):
         yield 0.2
         p._refresh_review_summary_strip()
         yield from rec.hold(2.0)
-        from twobyteasr.studio_cards import ReviewCandidateCard
+        from twobyteasr.studio.studio_cards import ReviewCandidateCard
         cards = [c for c in p.findChildren(ReviewCandidateCard) if c.isVisible()]
         result['info']['review_cards'] = [dict(text=c._candidate.text, sources=list(c._candidate.sources)) for c in cards]
         qwen = next((c for c in cards if 'Qwen' in c._candidate.sources and len(c._candidate.sources) == 1), None)

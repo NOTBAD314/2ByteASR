@@ -2,7 +2,7 @@
 
 Copies a project into a fresh owned tmp directory, isolates all app data there
 and runs the in-process `mcp` scenario
-(twobyteasr/mcp_audit.py) with the official-SDK client scripts/mcp_client_flow.py on a private Windows desktop. The
+(twobyteasr/acceptance/mcp_audit.py) with the official-SDK client scripts/mcp_client_flow.py on a private Windows desktop. The
 project's media is only read. Use --exe for a frozen candidate or the root
 launcher. Writes result.json, operations.jsonl and window/timeline captures.
 """

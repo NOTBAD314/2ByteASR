@@ -7,11 +7,11 @@ import re
 
 import pytest
 
-from twobyteasr.theme_design_spec_v3 import (
+from twobyteasr.caption_design.theme_design_spec_v3 import (
     DesignSpecError, MotifAssetUnavailable, compile_static_html,
     resolve_motif, validate_design_spec, validate_static_visual_evidence,
 )
-from twobyteasr.web_theme_compiler import prepare_static_v3_options
+from twobyteasr.caption_design.web_theme_compiler import prepare_static_v3_options
 
 ROOT=Path(__file__).resolve().parents[1]
 

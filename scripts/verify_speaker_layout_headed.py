@@ -15,9 +15,9 @@ def main():
     from PySide6.QtCore import Qt,QPoint,QTimer
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication,QStyleOptionViewItem
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_speaker_manager import SpeakerManagerDialog,_CandidateExcerptDelegate
-    from twobyteasr.studio_project import load_project,save_project
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_speaker_manager import SpeakerManagerDialog,_CandidateExcerptDelegate
+    from twobyteasr.projects.studio_project import load_project,save_project
     result=dict(passed=False,checks=[],cells=[])
     app=QApplication.instance() or QApplication([])
     page=SubtitleStudioPage();page.resize(1440,920);page.volume_slider.setValue(0)

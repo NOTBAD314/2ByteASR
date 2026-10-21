@@ -88,7 +88,7 @@ def test_budget_uses_real_context_and_output_limit_is_incomplete():
 
 
 def test_cache_names_do_not_read_or_replace_old_moss(tmp_path):
-    from twobyteasr.cache import _stage_cache_path,cache_stage_signature
+    from twobyteasr.recognition.cache import _stage_cache_path,cache_stage_signature
     old=tmp_path/'moss.json';old.write_text('legacy independent blocks','utf8')
     new=Path(_stage_cache_path('moss',{'cache_dir':str(tmp_path)},'new'))
     assert new!=old and not new.exists()
@@ -97,7 +97,7 @@ def test_cache_names_do_not_read_or_replace_old_moss(tmp_path):
 
 
 def test_cancel_before_launch_does_not_start_worker(tmp_path,monkeypatch):
-    from twobyteasr.service import CancellationToken,CancelledError
+    from twobyteasr.recognition.service import CancellationToken,CancelledError
     import torch
     token=CancellationToken();token.cancel()
     monkeypatch.setattr(pipeline,'_CANCELLATION_TOKEN',token)
@@ -155,7 +155,7 @@ def test_oom_retry_keeps_single_context_and_bounds_calls(monkeypatch):
 def test_real_child_cancellation_stops_late_write(tmp_path,monkeypatch):
     import sys
     import time
-    from twobyteasr import cache
+    from twobyteasr.recognition import cache
     marker=tmp_path/'late-result.txt'
     started=time.monotonic()
     monkeypatch.setattr(pipeline,'_cancel_requested',lambda: time.monotonic()-started>1)
@@ -169,7 +169,7 @@ def test_real_child_cancellation_stops_late_write(tmp_path,monkeypatch):
 
 
 def test_independent_evidence_signature_kept_derived_batches_versioned(monkeypatch):
-    from twobyteasr import cache
+    from twobyteasr.recognition import cache
     captured=[]
     monkeypatch.setattr(cache,'stable_digest',lambda value:captured.append(value) or 'digest')
     for stage in ('audio','firered','qwen','moss','firered_primary','firered_llm','grouped_local','final_timing'):
@@ -179,7 +179,7 @@ def test_independent_evidence_signature_kept_derived_batches_versioned(monkeypat
 
 
 def test_cancelled_report_keeps_actual_counts_and_rejects_old_job(monkeypatch):
-    from twobyteasr import reporting
+    from twobyteasr.recognition import reporting
     report={'job_id':'current','events':[]}
     monkeypatch.setattr(reporting,'_active_report',report)
     reporting.record_media_event('moss_full_context_preparing',job_id='current',inference_mode='full_context')

@@ -14,14 +14,15 @@ def main():
         def __init__(self, *a, **kw):
             super().__init__(str(run / "qt.ini"), QSettings.Format.IniFormat)
     QtCore.QSettings = IsolatedSettings
-    from twobyteasr import settings, studio_project
+    from twobyteasr.storage import settings
+    from twobyteasr.projects import studio_project
     settings.stable_settings_root = lambda: run / "config"
     config = run / "studio-settings.json"
     config.write_text(json.dumps({"recent_projects": [], "project_root": str(run / "projects"),
         "studio_preferences": {"autosave_enabled": False, "auto_cover": False, "recovery_policy": "official"}}))
     studio_project.studio_settings_path = lambda *a: config
     studio_project.project_library_root = lambda *a: run / "projects"
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     ffmpeg = root / "tools/ffmpeg/bin/ffmpeg.exe"
     sources = []
     for i, vf in enumerate(("testsrc2=size=1920x1080:rate=60:duration=12",
@@ -32,8 +33,8 @@ def main():
                                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", str(path)],
                               purpose="isolated headed fixture", check=True, timeout=60)
         sources.append(path)
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, VideoTransform, save_project
-    from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, VideoTransform, save_project
+    from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
     project = SubtitleProject(media=StudioMedia(path=str(sources[0]), duration_ms=12000, width=1920, height=1080),
                               cues=[StudioCue("cue", 0, 12000, "三轨合成 · 播放与导出验证")])
     project.validate()
@@ -51,10 +52,10 @@ def main():
     from PySide6.QtWidgets import QApplication
     from PySide6.QtTest import QTest
     import subtitle_core
-    from twobyteasr.ui import MainWindow, _register_bundled_fonts, _app_font
-    from twobyteasr.theme_manager import apply_theme
-    from twobyteasr.studio_theme import build_studio_qss
-    from twobyteasr.studio_performance import performance_snapshot
+    from twobyteasr.app.ui import MainWindow, _register_bundled_fonts, _app_font
+    from twobyteasr.design.theme_manager import apply_theme
+    from twobyteasr.design.studio_theme import build_studio_qss
+    from twobyteasr.studio.studio_performance import performance_snapshot
     app = QApplication([])
     _register_bundled_fonts()
     app.setFont(_app_font())
@@ -112,7 +113,7 @@ def main():
     results["checks"]["blend_includes_base"] = True
     page._video_clip_selected(page.project.video_tracks[2].id, overlay.id)
     for theme in ("warm", "slate", "plum", "lavender"):
-        from twobyteasr.ui_theme import theme_definition
+        from twobyteasr.design.ui_theme import theme_definition
         # Registry returns canonical keys; reject a typo in the harness.
         definition = theme_definition(theme)
         apply_theme(definition.key, app)

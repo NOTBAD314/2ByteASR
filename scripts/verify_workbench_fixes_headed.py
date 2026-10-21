@@ -42,7 +42,7 @@ def main() -> int:
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
+    from twobyteasr.projects.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
                                                     default_style, save_project)
 
     fixture = output / 'projects' / LONG_NAME / f'{LONG_NAME}.2byteproj'

@@ -7,9 +7,9 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--theme',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
     out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen')
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
-    from twobyteasr.motion_ownership import motion_schedule
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.caption_design.motion_ownership import motion_schedule
     theme=WebThemeDocument.from_dict(json.loads(a.theme.read_text('utf8'))).to_dict();spec=theme['motionSpec']
     code=r'''
     (()=>{const checks={},details={};const original=SPEC;

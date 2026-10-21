@@ -42,7 +42,7 @@ def main():
         os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
         from twobyteasr.test_isolation import install
         install()
-        from twobyteasr.studio_project import StudioMedia, SubtitleProject, save_project
+        from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
         fixture = output / 'fixture.2byteproj'
         save_project(SubtitleProject(media=StudioMedia(path='', duration_ms=0)), fixture)
         env.update(TWOBYTEASR_TEST_ROOT=str(output), LOCALAPPDATA=str(output / 'local'),

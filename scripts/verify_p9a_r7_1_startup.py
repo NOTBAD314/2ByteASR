@@ -43,15 +43,15 @@ def _startup_log_segment(path: Path, pid: int) -> str:
 def _probe_before_launch(output: Path, probe_kind: str) -> dict[str, object]:
     probe_code = {
         "gpu": (
-            "from twobyteasr.hardware import collect_gpu_telemetry",
+            "from twobyteasr.system.hardware import collect_gpu_telemetry",
             "collect_gpu_telemetry()",
         ),
         "firered": (
-            "from twobyteasr.asr import probe_firered_environment",
+            "from twobyteasr.recognition.asr import probe_firered_environment",
             "probe_firered_environment()",
         ),
         "qwen": (
-            "from twobyteasr.asr import probe_qwen_environment",
+            "from twobyteasr.recognition.asr import probe_qwen_environment",
             "probe_qwen_environment()",
         ),
     }.get(probe_kind)

@@ -23,9 +23,9 @@ def main():
         DASHSCOPE_API_KEY='sk-local-test-dummy',TWOBYTEASR_STARTUP_TRACE=str(out/'startup.jsonl'))
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.studio_timeline import WaveformTimeline
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.video_filmstrip import FilmstripCache,filmstrip_tiles
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.studio.video_filmstrip import FilmstripCache,filmstrip_tiles
     app=QApplication([])
     rows=[];events=[];phase='initial'
     started=time.perf_counter()

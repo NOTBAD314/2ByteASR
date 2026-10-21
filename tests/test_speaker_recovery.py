@@ -8,9 +8,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
-from twobyteasr.speaker_recovery import candidate_snapshot, candidate_statistics, load_candidate_snapshot, rebuild_selected_speakers, representative_interval, selected_display_mapping, recovery_preview
-from twobyteasr.studio_commands import RecoverSpeakersCommand
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project, load_project, save_autosave
+from twobyteasr.recognition.speaker_recovery import candidate_snapshot, candidate_statistics, load_candidate_snapshot, rebuild_selected_speakers, representative_interval, selected_display_mapping, recovery_preview
+from twobyteasr.timeline.studio_commands import RecoverSpeakersCommand
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project, load_project, save_autosave
 
 
 def fixture_project():
@@ -83,7 +83,7 @@ def test_display_ranking_and_custom_name_survive_round_trip(tmp_path):
     reopened = load_project(save_project(result, tmp_path / "named.2byteproj"))
     again = rebuild_selected_speakers(reopened, reopened.generation_metadata["speaker_recovery"], roles)
     assert {s.id:s.name for s in again.speakers} == {"S02":"主播甲", "S03":"S03","GAME_BACKGROUND":"游戏背景声"}
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
     artifacts = export_subtitle_artifacts(again, tmp_path, "双轨", SubtitleExportOptions(speaker_mode="per_speaker"))
     assert {a.speaker_id:a.path.name for a in artifacts} == {"S03":"双轨_S03.srt", "S02":"双轨_主播甲.srt","GAME_BACKGROUND":"双轨_游戏背景声.srt"}
 

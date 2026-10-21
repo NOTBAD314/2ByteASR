@@ -11,14 +11,14 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock
 
-from twobyteasr import asr
-from twobyteasr.asr import _api_transcription_rows, _normalize_speaker_id
+from twobyteasr.recognition import asr
+from twobyteasr.recognition.asr import _api_transcription_rows, _normalize_speaker_id
 
 SAMPLING = 16_000
 
 
 def _fake_media(tmp_path):
-    from twobyteasr.studio_project import StudioMedia
+    from twobyteasr.projects.studio_project import StudioMedia
 
     target = tmp_path / "media.mp4"
     target.write_bytes(b"0")
@@ -86,7 +86,7 @@ def test_rows_keep_segment_speaker_when_words_have_none():
 
 def test_alternate_primary_segments_carry_speaker_and_resolver_seam():
     import moss_firered_pipeline as pipeline
-    from twobyteasr import speaker_identity
+    from twobyteasr.recognition import speaker_identity
 
     legacy = MagicMock()
     legacy.clean_subtitle_text = lambda s: str(s)
@@ -120,7 +120,7 @@ def test_alternate_primary_segments_carry_speaker_and_resolver_seam():
 
 
 def test_speaker_identity_resolver_defaults():
-    from twobyteasr.speaker_identity import (
+    from twobyteasr.recognition.speaker_identity import (
         PassthroughSpeakerIdentityResolver,
         speaker_identity_resolver,
     )
@@ -132,7 +132,7 @@ def test_speaker_identity_resolver_defaults():
 
 
 def test_settings_migrate_legacy_openrouter_provider():
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
 
     merged, warnings = _merge_known_settings(
         DEFAULT_SETTINGS,
@@ -154,7 +154,7 @@ def test_picker_card_configure_signal_is_wired():
 
     from PySide6.QtWidgets import QApplication
 
-    from twobyteasr.model_workshop import ModelPickerPanel, ModelWorkshopPage
+    from twobyteasr.local_models.model_workshop import ModelPickerPanel, ModelWorkshopPage
 
     app = QApplication.instance() or QApplication([])
     page = ModelWorkshopPage(
@@ -180,7 +180,7 @@ def test_picker_card_configure_signal_is_wired():
 
 
 def test_speaker_hidden_fields_and_visible_cues(tmp_path):
-    from twobyteasr.studio_project import StudioCue, StudioSpeaker, SubtitleProject
+    from twobyteasr.projects.studio_project import StudioCue, StudioSpeaker, SubtitleProject
 
     project = SubtitleProject(media=_fake_media(tmp_path))
     project.speakers = [
@@ -199,9 +199,9 @@ def test_speaker_hidden_fields_and_visible_cues(tmp_path):
 
 
 def test_export_excludes_hidden_speaker(tmp_path):
-    from twobyteasr.studio_commands import SetSpeakersVisibilityCommand
-    from twobyteasr.studio_project import StudioCue, StudioSpeaker, SubtitleProject
-    from twobyteasr.studio_subtitle_export import (
+    from twobyteasr.timeline.studio_commands import SetSpeakersVisibilityCommand
+    from twobyteasr.projects.studio_project import StudioCue, StudioSpeaker, SubtitleProject
+    from twobyteasr.exports.studio_subtitle_export import (
         SubtitleExportOptions,
         export_subtitle_artifacts,
     )
@@ -226,8 +226,8 @@ def test_export_excludes_hidden_speaker(tmp_path):
 
 
 def test_host_command_is_unique_and_undoable(tmp_path):
-    from twobyteasr.studio_commands import SetHostSpeakerCommand
-    from twobyteasr.studio_project import StudioSpeaker, SubtitleProject
+    from twobyteasr.timeline.studio_commands import SetHostSpeakerCommand
+    from twobyteasr.projects.studio_project import StudioSpeaker, SubtitleProject
 
     project = SubtitleProject(media=_fake_media(tmp_path))
     project.speakers = [

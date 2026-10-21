@@ -3,8 +3,8 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr import home_script_match as hsm
-from twobyteasr.script_match import ScriptMatchError
+from twobyteasr.app import home_script_match as hsm
+from twobyteasr.recognition.script_match import ScriptMatchError
 
 WORKER_LOG = ('QWEN3-ASR worker failed (exit 1):\nstdout:\n[2BYTEASR_EVENT] {"phase": "model_loading"}\n'
               'loading Qwen3-ASR\nstderr:\nTraceback (most recent call last):\n  File "qwen_asr_worker.py", line 1\n'

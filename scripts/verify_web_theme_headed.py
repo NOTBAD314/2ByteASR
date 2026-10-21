@@ -18,8 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.renderer_service import GLOBAL_RENDERER_SERVICE, RendererJob  # noqa: E402
-from twobyteasr.web_theme import builtin_web_themes  # noqa: E402
+from twobyteasr.rendering.renderer_service import GLOBAL_RENDERER_SERVICE, RendererJob  # noqa: E402
+from twobyteasr.caption_design.web_theme import builtin_web_themes  # noqa: E402
 
 OUT_DIR = ROOT / "tmp" / "web-theme-verify"
 WIDTH, HEIGHT, FPS = 1920, 1080, 30

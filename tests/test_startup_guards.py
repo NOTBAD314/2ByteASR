@@ -22,7 +22,7 @@ def test_pipeline_build_id_aligned():
 
 
 def test_public_secret_redactor_is_available_to_stage_modules():
-    from twobyteasr import correction, segmentation
+    from twobyteasr.subtitle_rules import correction, segmentation
 
     assert subtitle_core.redact_runtime_secrets("safe") == "safe"
     assert correction.redact_runtime_secrets("safe") == "safe"

@@ -4,7 +4,7 @@
 
 版权字段仅展示可定位到组件专属授权前言或核对过的源文件头的声明，不代表穷尽全部权利人。通用许可起草者、字体例外和条约句子不作为组件权利人；未核实项保留状态，完整原文不裁剪。
 
-基于品牌Setup `0d2796a1…c88878c`。本目录记录新补到源码树的材料，不表示旧Setup已含这些文件，也不代表发行兼容性已获批准。624条为分层记录（2026-10-13 补 0.7.0 新增 18 条：MCP 依赖链 17 个随包 Python 组件与日语 CTC 对齐模型；另 8 个原离线 wheel 组件同时进入主程序 PYZ；2026-10-17 补 0.7.5 的 pylatexenc（623）与 mpv 的 Vulkan 运行库兜底（624）），含重复依赖及未查明原生库。各项保持原审计证据等级。
+基于品牌Setup `0d2796a1…c88878c`。本目录记录新补到源码树的材料，不表示旧Setup已含这些文件，也不代表发行兼容性已获批准。623条为分层记录（2026-10-13 补 0.7.0 新增 18 条：MCP 依赖链 17 个随包 Python 组件与日语 CTC 对齐模型；另 8 个原离线 wheel 组件同时进入主程序 PYZ；2026-10-17 补 mpv 的 Vulkan 运行库兜底，编号 624：0.7.5 发布线上的第 623 条是 pylatexenc，本文件还没有收入），含重复依赖及未查明原生库。各项保持原审计证据等级。
 
 A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发包）；C＝首次准备下载；D＝用户另配；E＝仅开发。自有代码现采用GPL-3.0-only；独立第三方许可不变，旧禁售目标已经撤销。
 
@@ -4080,15 +4080,17 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 - 源码与配套义务：对应6.9.2模块许可、Qt第三方声明、对应源码和补丁/构建资料；适用LGPL的替换及调试修改例外。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
 - 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：模块第三方清单尚未逐项闭合；QtPdf包含PDFium等内容，不因没有QtWebEngine而消失。
 
-## 408. FFmpeg / ffprobe (gyan essentials) — 9.0
+## 408. FFmpeg / ffprobe (BtbN FFmpeg-Builds win64-gpl-9.0) — n9.0.2-17-g2a571b6068
 
-- 范围/位置：B；`tools/ffmpeg/bin/ffmpeg.exe`、`tools/ffmpeg/bin/ffprobe.exe`。
+- 范围/位置：B；`tools/ffmpeg/bin/ffmpeg.exe`、`tools/ffmpeg/bin/ffprobe.exe`（2026-10-14 起开发树；截至 0.7.1 的已发布安装包为 gyan 9.0-essentials，见本条末尾）。
 - 许可：GPL-3.0-or-later (actual enabled build)。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
-- 来源：[对应来源](https://ffmpeg.org/legal.html)。版本依据及SHA见机器索引对应`media:ffmpeg-cli`。
-- 完整原文及现有材料：[ffmpeg-GPLv3.txt](ffmpeg-GPLv3.txt)
-- 用途/集成：独立CLI进程，文件/管道媒体接口；修改/补丁：未证明逐字节未修改。
-- 源码与配套义务：实际9.0构建及全部链接依赖的Corresponding Source、补丁、构建脚本；GNU GPL及版权。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
-- 证据/兼容性：已核实；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：精确上游构建来源链、每个静态外部库版本及可实际取得的对应源码未闭合。
+- 来源：[对应来源](https://ffmpeg.org/legal.html)；[构建项目固定提交](https://github.com/BtbN/FFmpeg-Builds/tree/6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b)；[Release autobuild-2026-09-30-13-08](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-09-30-13-08)。版本依据及SHA见机器索引对应`media:ffmpeg-cli`。
+- 完整原文及现有材料：[ffmpeg-GPLv3.txt](ffmpeg-GPLv3.txt)（与包内 LICENSE.txt 逐字节相同）；[对应源码材料说明](source-materials/btbn-ffmpeg-builds-6c9aec5f/README.md)；[构建仓库快照](source-materials/btbn-ffmpeg-builds-6c9aec5f/FFmpeg-Builds-6c9aec5fc9a72ec3abedd1fa84db141fa18cf52b.tar.gz)；[依赖清单](source-materials/btbn-ffmpeg-builds-6c9aec5f/dependencies.json)；[BtbN 构建项目许可](source-materials/btbn-ffmpeg-builds-6c9aec5f/BtbN-FFmpeg-Builds-LICENSE.txt)；[版本](source-materials/build-records/btbn-ffmpeg-version.txt)；[buildconf](source-materials/build-records/btbn-ffmpeg-buildconf.txt)
+- 用途/集成：独立CLI进程，文件/管道媒体接口；修改/补丁：与固定 Release 压缩包内文件逐字节相同；BtbN 不修改 FFmpeg 源码，构建补丁仅 `patches/aom`、`patches/aribb24`（在构建仓库内）。
+- 源码与配套义务：FFmpeg 提交 `2a571b606854520cf89804d8030c8b328e621689`、构建脚本与补丁（已附快照），105 个依赖固定来源（依赖清单，按 §6(d) 指向上游）；GNU GPL 及版权。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
+- 证据/兼容性：已核实；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：各静态依赖库许可原文（BSD/MIT 版权声明）逐项收集；编译工具链未按提交固定（不属对应源码，影响逐字节重建）；静态链接 libdvdcss（GPL-2.0-or-later，用户 2026-10-14 确认可随附）。
+
+- 截至 0.7.1 的已发布安装包随附 gyan.dev 9.0-essentials（`ffmpeg.exe` `227af069…`、`ffprobe.exe` `901f0efe…`）：精确上游构建来源链、每个静态外部库版本及可实际取得的对应源码未闭合，材料见 [gyan README](source-materials/gyan-ffmpeg-9.0-essentials/README.txt)、[版本](source-materials/build-records/ffmpeg-version.txt)、[buildconf](source-materials/build-records/ffmpeg-buildconf.txt) 与 SOURCES.md。
 
 ## 409. mpv — v0.41.0-923-g7b8915bc1
 
@@ -4096,7 +4098,7 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 - 许可：GPL-2.0-or-later for mpv; linked libraries may impose additional/version3 terms。组件版权声明：组件权利人尚未单独核实；完整原文及其各自版权声明保留，不以许可模板作者代替组件作者。
 - 来源：[对应来源](https://raw.githubusercontent.com/mpv-player/mpv/7b8915bc1d/Copyright)。版本依据及SHA见机器索引对应`media:mpv`。
 - 完整原文及现有材料：[mpv-Copyright.txt](materials/media/mpv-v0.41.0-923-g7b8915bc1/mpv-Copyright.txt)
-- 用途/集成：独立mpv.exe + Win32 HWND嵌入 + JSON命名管道/overlay，非Python libmpv绑定；修改/补丁：未证明逐字节未修改。
+- 用途/集成：独立mpv.exe + Win32 HWND嵌入 + JSON命名管道/overlay，非Python libmpv绑定；修改/补丁：未修改（2026-10-17核对：随附 `tools/mpv/` 的13个文件与上游原包 `mpv-x86_64-20260814-git-7b8915bc1d.7z` 逐字节相同，见[构建记录](source-materials/build-records/mpv-upstream-run.txt)）。
 - 源码与配套义务：精确mpv/FFmpeg/libplacebo/静态依赖对应源码、补丁与构建环境/脚本；实际适用GPL全文。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
 - 证据/兼容性：已核实；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：未发现独立libmpv DLL/第三方Python-mpv绑定；不要因构建参数libmpv=true误报应用使用libmpv；完整对应源码和dirty来源未建立。
 
@@ -6234,15 +6236,6 @@ A＝随源码分发；B＝实际Setup载荷（含离线wheel/实际附带开发�
 - 源码与配套义务：精确revision模型卡、许可全文、版权/NOTICE、基础模型/词表条款；向用户提供来源及适用条件。第三方源码不是一律强制：以该项实际许可为准；当前收集结果和取得方式见SOURCES.md及上列材料。
 - 证据/兼容性：有初步证据；自有GPL已采用，旧禁售目标撤销；当前组合与源码问题见GPL3_ROUTE.md。待查：required_files只含运行文件；模型卡已按固定revision取得；基础模型 facebook/wav2vec2-large-xlsr-53 与训练数据（Common Voice 6.1、CSS10、JSUT）的条款未逐项核实；模型卡的 Apache-2.0 不自动覆盖数据集条件。
 
-## 623. pylatexenc — 2.11
-
-- 范围/位置：B；`2ByteASR.exe!PYZ:pylatexenc`。
-- 许可：MIT。组件版权声明：Copyright (c) 2015-2019 Philippe Faist（许可原文）。
-- 来源：[对应来源](https://pypi.org/project/pylatexenc/2.11/)、[上游仓库](https://github.com/phfaist/pylatexenc)。版本依据及SHA见机器索引对应`frozen:pylatexenc`。
-- 完整原文及现有材料：[LICENSE.txt](python/pylatexenc-2.11/licenses/LICENSE.txt)
-- 用途/集成：PyInstaller PYZ模块；字幕数学公式（`$…$`）转成 Unicode 文字；修改/补丁：无。
-- 源码与配套义务：保留许可全文与版权声明（已随包）。
-- 证据/兼容性：MIT 与自有 GPL-3.0-only 兼容；0.7.5 起随正式版发布（2026-10-16 起在本机日常程序里）。
 ## 624. Khronos Vulkan-Loader（LunarG Vulkan Runtime，`vulkan-1.dll`）— 1.4.363.0
 
 - 范围/位置：B；`third_party/vulkan-loader/vulkan-1.dll`、`third_party/vulkan-loader/VulkanRT-License.txt`（源码树由 `scripts/collect_tools.ps1` 放在 `tools/vulkan-loader/`）。2026-10-17 起，下一版安装包随附；已发布的安装包都没有。

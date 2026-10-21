@@ -4,11 +4,11 @@ from io import BytesIO
 from pathlib import Path
 import pytest
 from PIL import Image, ImageFont
-from twobyteasr.advanced_renderer import compile_composition_data
-from twobyteasr.renderer_service import RendererJob, RendererService
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, SubtitleStyle
-from twobyteasr.style_recipe import StyleRecipe
-from twobyteasr.web_theme import theme_archive_html, effective_appearance
+from twobyteasr.rendering.advanced_renderer import compile_composition_data
+from twobyteasr.rendering.renderer_service import RendererJob, RendererService
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, SubtitleStyle
+from twobyteasr.caption_style.style_recipe import StyleRecipe
+from twobyteasr.caption_design.web_theme import theme_archive_html, effective_appearance
 
 ROOT=Path(__file__).resolve().parents[1]
 TEXTS=['一二三四五六七','一二三四五六七八九十甲乙丙丁戊',
@@ -165,7 +165,7 @@ def test_default_stroke_keeps_thin_pixel_font_fill(renderer):
 
 
 def test_production_preflight_rejects_transparent_caption(tmp_path):
-    from twobyteasr.web_caption_preflight import preflight_web_captions
+    from twobyteasr.rendering.web_caption_preflight import preflight_web_captions
     p,theme=fixture('字幕必须可见')
     theme['cueCss'] += '.lettering{opacity:0}'
     p.style_recipes['default']=StyleRecipe('invisible',engine='remotion',web_theme=theme).to_dict()

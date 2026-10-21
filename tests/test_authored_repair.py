@@ -2,8 +2,8 @@ import copy,json
 from types import SimpleNamespace
 import pytest
 from scripts.author_balatro_candidates import candidates
-from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set
-from twobyteasr.authored_repair import collect_issues,apply_patch_transaction,css_values
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set
+from twobyteasr.caption_design.authored_repair import collect_issues,apply_patch_transaction,css_values
 
 
 def broken():
@@ -83,8 +83,8 @@ def test_missing_source_fields_have_typed_local_scope_without_rewriting_material
 
 
 def test_child_budget_uses_remaining_parent_and_retains_failed_invocation(tmp_path):
-    from twobyteasr.authored_repair import provider_callbacks
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.caption_design.authored_repair import provider_callbacks
+    from twobyteasr.providers.ai_providers import AIProviderError
     calls=[]
     class Client:
         transport='grok_cli'
@@ -177,8 +177,8 @@ def test_exact_legacy_metadata_conversion_preserves_colors_and_selectors(tmp_pat
 
 
 def test_repeated_selector_context_fits_budget_without_dropping_paths(tmp_path):
-    from twobyteasr.authored_repair import provider_callbacks, patch_schema
-    from twobyteasr.provider_input_budget import prepare_input
+    from twobyteasr.caption_design.authored_repair import provider_callbacks, patch_schema
+    from twobyteasr.providers.provider_input_budget import prepare_input
     data=broken();issues=collect_issues(data,ThemeLedger(tmp_path,'Balatro'))
     selector=next(i for i in issues if i['category']=='selector')
     repeated=[]
@@ -232,7 +232,7 @@ def test_material_metadata_is_advisory_and_numeric_error_is_repaired(tmp_path):
 
 
 def test_material_repair_rejects_text_layout_and_font_edits():
-    from twobyteasr.material_contract import validate_material_html_edit
+    from twobyteasr.caption_design.material_contract import validate_material_html_edit
     original='<div class="card"><span class="text">{{text}}</span></div>'
     validate_material_html_edit(original,original+'<i class="foil" aria-hidden="true"></i>',{'foil'})
     validate_material_html_edit(original,original.replace('class="card"','class="card foil"'),{'foil'})
@@ -242,7 +242,7 @@ def test_material_repair_rejects_text_layout_and_font_edits():
 
 
 def test_material_binding_checks_nodes_and_effective_rules_not_substrings():
-    from twobyteasr.material_contract import validate_material_bindings
+    from twobyteasr.caption_design.material_contract import validate_material_bindings
     contract={'selectors':['.paper']}
     validate_material_bindings(contract,{'cueHtml':'<div class="paper folded"></div>',
         'cueCss':'.paper.folded{background:#fff}'})
@@ -252,7 +252,7 @@ def test_material_binding_checks_nodes_and_effective_rules_not_substrings():
 
 
 def test_selector_conversion_preserves_exact_nodes_and_never_chooses_parent():
-    from twobyteasr.authored_repair import equivalent_motion_selector,selector_targets
+    from twobyteasr.caption_design.authored_repair import equivalent_motion_selector,selector_targets
     html='<div class="outer"><i class="shard left"></i><i class="shard right"></i></div>'
     assert equivalent_motion_selector(html,'.shard.left')=='.left'
     assert selector_targets(html,'.outer > .shard.left')==selector_targets(html,'.left')=={1}
@@ -261,7 +261,7 @@ def test_selector_conversion_preserves_exact_nodes_and_never_chooses_parent():
 
 
 def test_svg_presentation_paint_is_material_without_redundant_css():
-    from twobyteasr.material_contract import validate_material_bindings
+    from twobyteasr.caption_design.material_contract import validate_material_bindings
     contract={'selectors':['.soil','.grain']}
     validate_material_bindings(contract,dict(cueHtml='<svg viewBox="0 0 80 80"><polygon class="soil" points="0,0 80,0 80,80" fill="#845632"/><g fill="#654321"><rect class="grain" width="8" height="8"/></g></svg>',cueCss=''))
     validate_material_bindings({'selectors':['.soil']},dict(cueHtml='<svg><g class="soil"><path d="M0 0H80V40Z" fill="#845632"/></g></svg>',cueCss=''))
@@ -273,8 +273,8 @@ def test_svg_presentation_paint_is_material_without_redundant_css():
 
 
 def test_html_collects_all_unsupported_parts_and_accepts_safe_serialization():
-    from twobyteasr.authored_html import html_problems,html_signature
-    from twobyteasr.web_theme import sanitize_html
+    from twobyteasr.caption_design.authored_html import html_problems,html_signature
+    from twobyteasr.caption_design.web_theme import sanitize_html
     bad='<div aria-label="caption"><svg><feDropShadow/><feMerge><feMergeNode/></feMerge></svg></div>'
     problems=html_problems(bad)
     assert len(problems)==2  # feMerge/feMergeNode are now supported inline SVG.

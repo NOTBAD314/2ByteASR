@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker
-from twobyteasr.speaker_organization import *
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker
+from twobyteasr.projects.speaker_organization import *
 
 
 def fixture():
@@ -34,7 +34,7 @@ def test_original_utterance_threshold_deduplicates_and_survives_short_range():
     apply_new_project_policy(p)
     assert {s.id for s in p.speakers}=={'A',BACKGROUND}
     assert len(p.cues)==15
-    from twobyteasr.project_range import set_range
+    from twobyteasr.projects.project_range import set_range
     set_range(p,12000,15000)
     loaded=SubtitleProject.from_dict(p.to_dict())
     assert {s.id for s in loaded.speakers}=={'A',BACKGROUND}
@@ -60,7 +60,7 @@ def test_batch_delete_merge_restore_and_undo_redo():
 
 
 def test_candidate_recovery_after_unification_keeps_latest_edited_text():
-    from twobyteasr.speaker_recovery import rebuild_selected_speakers
+    from twobyteasr.recognition.speaker_recovery import rebuild_selected_speakers
     p=fixture();state=p.generation_metadata['speaker_recovery']
     state.update(processing={'mode':'single'},allow_raw_recovery=False)
     apply_new_project_policy(p)

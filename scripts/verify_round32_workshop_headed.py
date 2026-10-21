@@ -20,7 +20,7 @@ SHOTS = ROOT / "tmp" / "shots-round32"
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.model_workshop import (
+from twobyteasr.local_models.model_workshop import (
     MODELS,
     ModelWorkshopPage,
     _browser_groups,

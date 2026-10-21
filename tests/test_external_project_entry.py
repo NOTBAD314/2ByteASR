@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import json
 
-from twobyteasr.external_open import classify_open_paths, startup_destination
+from twobyteasr.app.external_open import classify_open_paths, startup_destination
 
 
 def test_type_dispatch_never_turns_a_project_into_media():
@@ -22,7 +22,7 @@ def test_startup_precedence_is_explicit_files_then_preference():
 
 
 def test_preferences_survive_save_and_keep_unrelated_fields(tmp_path, monkeypatch):
-    from twobyteasr import application_settings as settings
+    from twobyteasr.app import application_settings as settings
     path = tmp_path/'studio.json'
     path.write_text(json.dumps({'studio_preferences': {'future': 'kept'}, 'recent_projects': ['kept']}))
     monkeypatch.setattr(settings, 'studio_settings_path', lambda: path)
@@ -36,7 +36,7 @@ def test_preferences_survive_save_and_keep_unrelated_fields(tmp_path, monkeypatc
 
 def test_external_project_queue_waits_for_readiness_and_retains_subtitle_semantics():
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
-    from twobyteasr.desktop_intake import DesktopIntake
+    from twobyteasr.app.desktop_intake import DesktopIntake
     app = QApplication.instance() or QApplication([])
     window = QWidget()
     window._run_in_progress, window.worker = False, None
@@ -62,7 +62,7 @@ def test_external_project_queue_waits_for_readiness_and_retains_subtitle_semanti
 
 
 def test_association_preserves_existing_default_and_never_writes_userchoice(tmp_path):
-    from twobyteasr.project_file_association import repair_project_association, PROG_ID
+    from twobyteasr.projects.project_file_association import repair_project_association, PROG_ID
     from contextlib import nullcontext
     values = {('Software\\Classes\\.2byteproj', ''): 'Other.Project'}
     class Registry:

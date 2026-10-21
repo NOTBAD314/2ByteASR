@@ -4,8 +4,8 @@ import pytest
 from PySide6.QtCore import Qt,QPoint
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_timeline import WaveformTimeline
-from twobyteasr.selection_scope import SelectionScope
+from twobyteasr.studio.studio_timeline import WaveformTimeline
+from twobyteasr.timeline.selection_scope import SelectionScope
 from tests.test_studio_clip_edit import project,add_v2,clip,edit
 
 

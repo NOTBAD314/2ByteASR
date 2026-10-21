@@ -24,8 +24,8 @@ def main():
         TWOBYTEASR_CAPTION_AUDIT_MODE=args.mode, TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),
         TWOBYTEASR_STARTUP_OPEN_STUDIO='1', TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         TWOBYTEASR_STARTUP_TRACE=str(out/'startup.jsonl'))
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, save_project, hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
     media = root/'tmp/visible-playback-v2/media/subtitle-safe/V1-30s.mp4'
     project = SubtitleProject(media=StudioMedia(str(media), duration_ms=30000, width=1920, height=1080),
         speakers=[StudioSpeaker('S01')], cues=[StudioCue('long', 1000, 7500, '只要打PVP顺手就给他做完了', 'S01')]+
@@ -33,7 +33,7 @@ def main():
     project.validate()
     hydrate_media_contract(project, probe_media_identity(str(media)))
     save_project(project, out/'fixture.2byteproj')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(root/'quick_start.py')]
     with (out/'process.log').open('w', encoding='utf8') as log:
         result = run_hidden_subprocess(command, cwd=str(root), env=os.environ.copy(), stdout=log,

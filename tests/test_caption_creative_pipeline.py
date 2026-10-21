@@ -2,7 +2,7 @@ import copy,json
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-from twobyteasr.caption_creative_pipeline import (ThemeLedger,digest,canonical,accept_authored_set,
+from twobyteasr.caption_design.caption_creative_pipeline import (ThemeLedger,digest,canonical,accept_authored_set,
     reviewed_concepts,request_creative_options,validate_material_contract,resume_authored)
 from scripts.author_balatro_candidates import candidates
 
@@ -54,8 +54,8 @@ def test_new_prompt_or_source_cannot_resume_old_brief(tmp_path):
     with pytest.raises(ValueError,match='源码'):reviewed_concepts(result.concepts)
 
 def test_failed_provider_raw_saved_and_never_local_fallback(tmp_path,monkeypatch):
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY,'selection',lambda *a,**k:SimpleNamespace(provider='test',model='fake'))
     calls=[]
     class Client:
@@ -83,13 +83,13 @@ def test_material_label_is_not_visual_proof_or_a_fixed_class_template():
     # five mandatory class names as a proxy for the appearance of crystal.
 
 def test_current_negative_samples_are_not_positive_preferences():
-    from twobyteasr.caption_design_trials import CaptionPreferences
+    from twobyteasr.caption_design.caption_design_trials import CaptionPreferences
     prefs=CaptionPreferences(Path(__file__).resolve().parents[1]/'docs/design/caption-preferences.json')
     assert all(r['user_rating']==3 and r['accepted'] is False for r in prefs.read()['trial_runs'])
     assert prefs.positive_references()==[]
 
 def test_every_fresh_request_uses_authored_route(monkeypatch):
-    from twobyteasr import studio_ai,caption_creative_pipeline
+    from twobyteasr.caption_design import studio_ai, caption_creative_pipeline
     sentinel=object();calls=[]
     monkeypatch.setattr(caption_creative_pipeline,'request_creative_options',lambda *a,**k:calls.append(k) or sentinel)
     assert studio_ai.request_web_theme_design(None,'x','Balatro',{'models':{}},raw_user_prompt=' exact raw ')==sentinel
@@ -97,8 +97,8 @@ def test_every_fresh_request_uses_authored_route(monkeypatch):
 
 
 def test_authored_route_honors_configured_cli_deadline_and_reports_stream(monkeypatch,tmp_path):
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY,'selection',lambda *a,**k:SimpleNamespace(provider='test',model='fake'))
     calls=[];events=[]
     class Client:
@@ -187,9 +187,9 @@ def test_qualitative_art_concerns_preserve_voluntary_adoption_without_scores(tmp
 
 
 def test_saved_response_revalidates_retained_source_without_new_generation(tmp_path,monkeypatch):
-    from twobyteasr import caption_creative_pipeline as pipeline
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design import caption_creative_pipeline as pipeline
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     prior,result=authored(tmp_path/'prior');prior.raw_response(json.dumps({'candidates':candidates()}),'test','test')
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY,'selection',lambda *a,**k:SimpleNamespace(provider='test',model='test'))
     class Client:
@@ -214,9 +214,9 @@ def test_saved_response_revalidates_retained_source_without_new_generation(tmp_p
 
 @pytest.mark.parametrize('elapsed',[292,301])
 def test_direction_failure_and_overall_budget_never_start_source_requests(monkeypatch,tmp_path,elapsed):
-    from twobyteasr import caption_creative_pipeline as pipeline
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design import caption_creative_pipeline as pipeline
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY,'selection',lambda *a,**k:SimpleNamespace(provider='test',model='fake'))
     clock=[1000.];calls=[]
     monkeypatch.setattr(pipeline.time,'monotonic',lambda:clock[0])

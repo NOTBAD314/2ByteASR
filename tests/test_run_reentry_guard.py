@@ -16,8 +16,8 @@ import threading
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.service import CancellationToken, MediaResult, QueueResult
-from twobyteasr.ui import MainWindow, PipelineWorker
+from twobyteasr.recognition.service import CancellationToken, MediaResult, QueueResult
+from twobyteasr.app.ui import MainWindow, PipelineWorker
 
 app = QApplication.instance() or QApplication([])
 
@@ -163,13 +163,13 @@ def window(monkeypatch):
     monkeypatch.setattr(win, "_show_task_notification", lambda *a, **k: None)
     monkeypatch.setattr(win, "_refresh_progress_cards", lambda: None)
     monkeypatch.setattr(
-        "twobyteasr.ui.missing_selected_local_models", lambda values: []
+        "twobyteasr.app.ui.missing_selected_local_models", lambda values: []
     )
     # 骨架未调用 QWidget.__init__，UI 语言刷新（findChildren）不在 guard 测试范围
-    monkeypatch.setattr("twobyteasr.ui.apply_ui_language", lambda *a, **k: None)
+    monkeypatch.setattr("twobyteasr.app.ui.apply_ui_language", lambda *a, **k: None)
     # This fixture intentionally has no native QWidget. Keep deferred timing
     # without passing that incomplete skeleton as a QObject timer context.
-    from twobyteasr.ui import QTimer
+    from twobyteasr.app.ui import QTimer
     single_shot=QTimer.singleShot
     monkeypatch.setattr(QTimer,'singleShot',lambda delay,*callbacks:single_shot(delay,lambda:callbacks[-1]()))
 
@@ -355,7 +355,7 @@ def test_case_i_exception_before_worker_start_releases_guard(window, monkeypatch
 def test_case_j_no_valid_input_releases_guard(window, monkeypatch):
     """Case J：无有效输入提前返回 → guard 释放，不锁死（按钮随素材状态）。"""
     window.media_paths = []
-    monkeypatch.setattr("twobyteasr.ui.QMessageBox.information", lambda *a, **k: None)
+    monkeypatch.setattr("twobyteasr.app.ui.QMessageBox.information", lambda *a, **k: None)
     window._start_run()
     assert window._run_in_progress is False, "验证提前返回必须释放 guard"
     # 无素材时开始按钮本来就应禁用（与素材状态一致，非锁死）；
@@ -397,13 +397,13 @@ def test_smoke_real_mainwindow_start_duplicate_cancel_restart(monkeypatch):
     import subtitle_core as legacy
 
     win = MainWindow([], legacy, _FakePipeline(), None)
-    monkeypatch.setattr("twobyteasr.ui.QMessageBox.information", lambda *a, **k: None)
+    monkeypatch.setattr("twobyteasr.app.ui.QMessageBox.information", lambda *a, **k: None)
     monkeypatch.setattr(win, "_ensure_cuda_runtime", lambda: True)
     monkeypatch.setattr(win, "_ensure_runtime_environment", lambda: True)
     monkeypatch.setattr(win, "_save_asr_configuration", lambda **kw: True)
     monkeypatch.setattr(win, "_save_ai_configuration", lambda **kw: True)
     monkeypatch.setattr(win, "_show_task_notification", lambda *a, **k: None)
-    monkeypatch.setattr("twobyteasr.ui.apply_ui_language", lambda *a, **k: None)
+    monkeypatch.setattr("twobyteasr.app.ui.apply_ui_language", lambda *a, **k: None)
     monkeypatch.setattr(PipelineWorker, "start", lambda self: None)
     win.media_paths = ["dummy.mp4"]
     win.show()

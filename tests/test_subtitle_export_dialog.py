@@ -7,11 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import studio_export_ui, subtitle_export_widgets
-from twobyteasr.completion_export import CompletionExportDialog
-from twobyteasr.studio_export_ui import SubtitleExportDialog
-from twobyteasr.studio_subtitle_export import SubtitleExportOptions, planned_subtitle_files
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.exports import studio_export_ui, subtitle_export_widgets
+from twobyteasr.exports.completion_export import CompletionExportDialog
+from twobyteasr.exports.studio_export_ui import SubtitleExportDialog
+from twobyteasr.exports.studio_subtitle_export import SubtitleExportOptions, planned_subtitle_files
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 APP = QApplication.instance() or QApplication([])
 
@@ -144,7 +144,7 @@ def test_translations_add_language_layers(tmp_path):
 
 
 def test_completion_dialog_chips_preview_and_export(tmp_path, monkeypatch):
-    from twobyteasr import completion_export
+    from twobyteasr.exports import completion_export
     project = _project(tmp_path)
     dialog = CompletionExportDialog(project, "直播.42250669220.456-467")
     dialog.show()

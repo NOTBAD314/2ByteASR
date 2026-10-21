@@ -14,7 +14,7 @@ def main():
     if not out.is_relative_to(root/'tmp'):raise ValueError('Output must remain in tmp')
     out.mkdir(parents=True,exist_ok=True)
     import numpy as np
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     audit=json.loads((args.audit/'result.json').read_text('utf8'))
     result=dict(capture='Application QAudioSink callback before device',human_listening=False,
         baseline='Same source and rate, bundled mpv --no-config scaletempo2, PCM file output; not physical-device output',cases=[])

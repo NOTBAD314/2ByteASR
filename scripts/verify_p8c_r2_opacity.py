@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.color_picker import SimpleColorDialog, percent_to_alpha
-from twobyteasr.state_ownership_audit import StateOwnershipAudit
+from twobyteasr.design.color_picker import SimpleColorDialog, percent_to_alpha
+from twobyteasr.acceptance.state_ownership_audit import StateOwnershipAudit
 
 
 PERCENTS = (0, 1, 25, 50, 75, 99, 100)

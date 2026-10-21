@@ -7,8 +7,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import subtitle_translation as st
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.subtitle_rules import subtitle_translation as st
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 JA = [
     "行くぞ！", "ちょっと待って、まだ準備できてない", "やばい", "マジで", "このボス強すぎる",
@@ -123,7 +123,7 @@ def test_status_follows_text_edit_and_undo():
 
 
 def test_split_and_merge_statuses_and_candidates():
-    from twobyteasr.studio_commands import merge_cues_command, split_cue_command
+    from twobyteasr.timeline.studio_commands import merge_cues_command, split_cue_command
 
     project = make_project()
     apply_all(project)
@@ -144,11 +144,10 @@ def test_split_and_merge_statuses_and_candidates():
 
     merge = merge_cues_command(project, ["c2", "c3"])
     merge.redo()
-    assert st.cue_status(project, "c2") == "needs_update"
-    [merged] = st.split_merge_candidates(project)
-    assert merged["kind"] == "merge"
-    assert [parent["cue_id"] for parent in merged["parents"]] == ["c2", "c3"]
-    assert "c3" in st.records_of(project)  # gone cue keeps its record for undo
+    assert st.cue_status(project, "c2") == "done"
+    assert st.records_of(project)["c2"]["text"] == "糟了 真的假的"
+    assert [parent["cue_id"] for parent in st.records_of(project)["c2"]["merge_sources"]] == ["c2", "c3"]
+    assert "c3" not in st.records_of(project)  # the command owns undo state
     assert "c3" not in st.sync_render_view(project)
     merge.undo()
     assert st.cue_status(project, "c3") == "done"
@@ -156,7 +155,7 @@ def test_split_and_merge_statuses_and_candidates():
 
 
 def test_split_reference_reaches_the_prompt():
-    from twobyteasr.studio_commands import split_cue_command
+    from twobyteasr.timeline.studio_commands import split_cue_command
 
     project = make_project()
     apply_all(project)
@@ -400,7 +399,7 @@ def test_failed_retranslation_keeps_a_current_translation():
 
 
 def test_provider_error_retries_then_fatal_error_stops():
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.ai_providers import AIProviderError
 
     project = make_project()
     calls = []

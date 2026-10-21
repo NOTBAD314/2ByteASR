@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox
 
-from twobyteasr import model_workshop as workshop
+from twobyteasr.local_models import model_workshop as workshop
 
 APP = QApplication.instance() or QApplication([])
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,9 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def window(monkeypatch):
     import subtitle_core as legacy
-    from twobyteasr import ui
-    from twobyteasr.model_registry import ModelRegistry
-    from twobyteasr import ctc_alignment
+    from twobyteasr.app import ui
+    from twobyteasr.local_models.model_registry import ModelRegistry
+    from twobyteasr.recognition import ctc_alignment
 
     if os.environ.get("TIMELINE_MODEL_SCREENSHOTS"):
         APP.setStyle("Fusion")
@@ -75,7 +75,7 @@ def test_windows_picker_and_workshop_hide_apple_only_models(window):
 
 
 def test_apple_silicon_keeps_mlx_and_windows_rejects_copied_weights(monkeypatch):
-    from twobyteasr import ui
+    from twobyteasr.app import ui
     mlx = next(m for m in workshop.MODELS if m.key == "mlx_qwen_aligner")
     monkeypatch.setattr(workshop, "_host_platform_tag", lambda: "darwin-arm64")
     assert workshop.model_platform_available(mlx)
@@ -122,7 +122,7 @@ def test_ctc_use_enables_parent_and_immediately_refreshes_home(window):
     assert "CTC" not in win.subtitle_language_hint.text()
     win._modal_host._request_close()
     screenshot(win, "ctc-off-home")
-    from twobyteasr.settings import load_runtime_settings
+    from twobyteasr.storage.settings import load_runtime_settings
     saved = load_runtime_settings()[0]
     assert saved["models"]["firered_asr_backend"] == "qwen_aligner"
     assert saved["switches"]["use_ja_ctc_aligner"] is False

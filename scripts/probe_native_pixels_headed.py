@@ -26,7 +26,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 import os
 
 

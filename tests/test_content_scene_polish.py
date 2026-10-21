@@ -4,8 +4,8 @@ import json
 from types import SimpleNamespace
 
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr.models import SpeechSegment, WordUnit
-from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry, TermResolver, apply_to_segments
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry, TermResolver, apply_to_segments
 
 
 def library(identity='custom-game', name='自定义比赛', revision='7', terms=()):
@@ -21,7 +21,7 @@ def snapshot():
 
 
 def test_scene_priority_unique_domains_and_mixed_without_remote_guess():
-    from twobyteasr.content_scene import resolve_content_scene
+    from twobyteasr.recognition.content_scene import resolve_content_scene
     owner = SimpleNamespace(enable_domain_terms=True, game_name='')
     scene = resolve_content_scene(owner, snapshot())
     assert scene.domain == '自定义比赛' and scene.source == 'enabled_glossary_metadata'
@@ -40,7 +40,7 @@ def test_scene_priority_unique_domains_and_mixed_without_remote_guess():
 
 
 def test_local_aliases_keep_canonical_case_original_pronunciation_and_ordinary_media(context):
-    from twobyteasr.content_scene import resolve_content_scene
+    from twobyteasr.recognition.content_scene import resolve_content_scene
     _, owner, _ = context
     owner.enable_domain_terms = True; owner.glossary_snapshot = snapshot()
     resolver = TermResolver(snapshot()); scene = resolve_content_scene(owner)
@@ -65,8 +65,8 @@ def test_local_aliases_keep_canonical_case_original_pronunciation_and_ordinary_m
 
 
 def test_actual_model_messages_contain_scene_spans_entities_and_prompt_version(context, monkeypatch):
-    from twobyteasr import polishing
-    from twobyteasr.asr_provider_snapshot import POLISH_PROMPT_VERSION
+    from twobyteasr.subtitle_rules import polishing
+    from twobyteasr.providers.asr_provider_snapshot import POLISH_PROMPT_VERSION
     _, owner, _ = context
     owner.enable_domain_terms = True; owner.glossary_snapshot = snapshot()
     row = SpeechSegment(1, 0, 2, '球球交出了建议', .8, [], primary_source='moss-dialogue',
@@ -80,7 +80,7 @@ def test_actual_model_messages_contain_scene_spans_entities_and_prompt_version(c
         suspects = [dict(zip(body['suspect_fields'], value)) for value in body['suspects']]
         results = [{'suspect_id': value['suspect_id'], 'disposition': 'review', 'evidence': '需听审'} for value in suspects]
         return json.dumps({'checked_ids': [1], 'cues': [], 'suspect_results': results}, ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(complete=complete))
     result = polishing.call_correction_api([row], [], '', '', '素材', '', [], [], [],
         glossary_evidence=snapshot().evidence())
     assert result[1] == row.text
@@ -94,11 +94,11 @@ def test_actual_model_messages_contain_scene_spans_entities_and_prompt_version(c
 
 
 def test_missing_suspect_receipt_is_not_quality_pass(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True; owner.glossary_snapshot = snapshot()
     row = SpeechSegment(8, 0, 1, 'Ghost到了', .8, [], primary_source='moss-dialogue')
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(
         complete=lambda *a, **kw: json.dumps({'checked_ids': [8], 'cues': []})))
     result = polishing.call_correction_api([row], [], '', '', '', '', [], [], [], glossary_evidence=snapshot().evidence())
     assert result.succeeded == {8}
@@ -106,10 +106,29 @@ def test_missing_suspect_receipt_is_not_quality_pass(context, monkeypatch):
     assert receipt['unreviewed_suspects'] and receipt['quality_state'] == 'pending_suspect_adjudication'
 
 
+def test_receipt_for_a_suspect_never_sent_is_dropped_without_a_retry(context, monkeypatch):
+    # 2026-10-18 (日常 19 batch 11): with no suspects sent the model invented "s127-1"
+    # and the whole batch was retried as if the answer were broken.
+    from twobyteasr.subtitle_rules import polishing
+    _, owner, _ = context
+    row = SpeechSegment(127, 0, 1, '普通的一句话', .8, [], primary_source='moss-dialogue')
+    calls = []
+    def complete(messages, **kwargs):
+        calls.append(json.loads(messages[1]['content']))
+        return json.dumps({'checked_ids': [127], 'cues': [], 'suspect_results': [
+            {'suspect_id': 's127-1', 'disposition': 'keep', 'evidence': '模型自拟'}]}, ensure_ascii=False)
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(complete=complete))
+    result = polishing.call_correction_api([row], [], '', '', '', '', [], [], [])
+    assert len(calls) == 1 and calls[0]['suspects'] == [] and result.succeeded == {127}
+    events = [json.loads(line) for line in open(owner.event_log_path, encoding='utf-8')]
+    dropped = [e for e in events if e.get('event') == 'terminology_unsolicited_suspect_receipts_dropped']
+    assert len(dropped) == 1 and dropped[0]['suspect_ids'] == ['s127-1']
+
+
 def test_position_candidates_revision_cache_and_explicit_spans(context):
-    from twobyteasr.terminology_retrieval import retrieve_candidates, _catalog_index
-    from twobyteasr.correction_safety import apply_correction_edits
-    from twobyteasr.content_scene import resolve_content_scene
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates, _catalog_index
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
+    from twobyteasr.recognition.content_scene import resolve_content_scene
     _, owner, _ = context
     owner.enable_domain_terms = True; owner.glossary_snapshot = snapshot()
     row = SpeechSegment(9, 0, 1, '球球看见球球', .8, [])
@@ -128,11 +147,11 @@ def test_position_candidates_revision_cache_and_explicit_spans(context):
 
 
 def test_actual_reference_family_moss_dialogue_uses_firered_and_model_labels_do_not_add_votes(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     row = SpeechSegment(38, 0, 1, 'panda也收掉了stu', .78, [], primary_source='moss-dialogue',
         moss_text='panda也收掉了stu', firered_text='padman也收掉了st', qwen_asr_text='个帕德曼也收掉了stew')
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(complete=lambda *a, **kw:
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(complete=lambda *a, **kw:
         json.dumps({'checked_ids': [38], 'cues': [{'id': 38, 'edits': [{'from': 'panda', 'to': 'padman', 'basis': 'firered+qwen3'}]}]})))
     result = polishing.call_correction_api([row], [], '', '', '', '', [], [], [])
     assert result[38] == row.text
@@ -143,7 +162,7 @@ def test_actual_reference_family_moss_dialogue_uses_firered_and_model_labels_do_
 
 
 def test_local_confirmed_alias_identity_cannot_be_reversed_by_asr_votes(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot((library(terms=(
@@ -153,7 +172,7 @@ def test_local_confirmed_alias_identity_cannot_be_reversed_by_asr_votes(context,
         moss_text='球球到了一个位置', firered_text='CHICHOO到了一个位置', qwen_asr_text='CHICHOO到了一个位置')
     apply_to_segments([row], owner.glossary_snapshot)
     assert row.text == 'CHIOCHOO到了一个位置'
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(complete=lambda *a, **kw:
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **kw: SimpleNamespace(complete=lambda *a, **kw:
         json.dumps({'checked_ids': [49], 'cues': [{'id': 49, 'edits': [
             {'from': 'CHIOCHOO', 'to': 'CHICHOO', 'start': 0, 'end': 8, 'basis': 'glossary+firered+qwen3+context'}]}]})))
     result = polishing.call_correction_api([row], [], '', '', '', '', [], [], [], glossary_evidence=owner.glossary_snapshot.evidence())
@@ -170,7 +189,7 @@ def test_local_confirmed_alias_identity_cannot_be_reversed_by_asr_votes(context,
         return json.dumps({'checked_ids': [50], 'cues': [], 'suspect_results': [
             {'suspect_id': value['suspect_id'], 'disposition': 'replace',
              'candidate_id': 'invented-candidate', 'evidence': ''} for value in suspects]})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **kw:
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **kw:
         SimpleNamespace(complete=contradictory_receipt))
     polishing.call_correction_api([suspect_row], [], '', '', '', '', [], [], [], glossary_evidence=owner.glossary_snapshot.evidence())
     receipt = suspect_row.caption_arbitration['terminology_polish']

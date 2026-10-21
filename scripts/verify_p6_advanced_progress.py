@@ -12,10 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.advanced_renderer import AdvancedRendererBackend
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_render import (
+from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.exports.studio_render import (
     STAGE_ADVANCED_RENDER,
     STAGE_ENCODE,
     STAGE_MUX,

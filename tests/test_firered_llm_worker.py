@@ -24,7 +24,7 @@ def test_firered_llm_worker_refuses_empty_transcripts():
 
 
 def test_production_adapter_uses_only_the_isolated_interpreter():
-    from twobyteasr import asr
+    from twobyteasr.recognition import asr
 
     source = inspect.getsource(asr._run_firered_llm_worker)
     assert 'resolve_runtime_python("firered_llm")' in source
@@ -33,7 +33,7 @@ def test_production_adapter_uses_only_the_isolated_interpreter():
 
 
 def test_primary_firered_llm_routes_to_isolated_adapter(monkeypatch):
-    from twobyteasr import asr
+    from twobyteasr.recognition import asr
 
     expected = [{"start": 0.0, "end": 1.0, "text": "主力证据"}]
     calls = []
@@ -55,7 +55,7 @@ def test_primary_firered_llm_routes_to_isolated_adapter(monkeypatch):
 
 
 def test_review_firered_llm_routes_to_isolated_adapter(monkeypatch):
-    from twobyteasr import asr
+    from twobyteasr.recognition import asr
 
     expected = [{"start": 0.0, "end": 1.0, "text": "复核证据"}]
     calls = []

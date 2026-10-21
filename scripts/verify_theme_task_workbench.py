@@ -28,8 +28,8 @@ def main():
     from PySide6.QtWidgets import QApplication
     from PySide6.QtTest import QTest
     from PySide6.QtCore import Qt
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
-    from twobyteasr.theme_manager import apply_theme
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.design.theme_manager import apply_theme
     app=QApplication([]);apply_theme('grape',app)
     concept=dict(id='A',name='王国之泪 · 环纹方向',pending=True,technical_status='pending',composition='测试夹具：用于验证进度状态，不冒充模型作品。')
     d=ThemeConceptDialog([concept],{});d.resize(1120,820);d.show();QTest.qWait(350)

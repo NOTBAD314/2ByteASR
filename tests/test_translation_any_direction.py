@@ -9,8 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import subtitle_translation as st
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.subtitle_rules import subtitle_translation as st
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 ZH = ["我们先去打这个Boss", "等一下我还没准备好", "这个技能其实还挺好用的", "漂亮！"]
 KO = {"我们先去打这个Boss": "먼저 이 보스부터 잡자", "等一下我还没准备好": "잠깐만 아직 준비 안 됐어",
@@ -44,15 +44,16 @@ class FakeProvider:
 
 
 def test_targets_are_every_other_language_of_the_source():
-    assert st.targets_for("zh") == ("en", "ja", "ko")
-    assert st.targets_for("ja") == ("zh-Hans", "zh-Hant", "en", "ko")
-    assert st.targets_for("en") == ("zh-Hans", "zh-Hant", "ja", "ko")
+    european = ("es", "de", "fr", "pt", "it", "ru")                  # targets since 2026-10-19
+    assert st.targets_for("zh") == ("en", "ja", "ko", *european)
+    assert st.targets_for("ja") == ("zh-Hans", "zh-Hant", "en", "ko", *european)
+    assert st.targets_for("en") == ("zh-Hans", "zh-Hant", "ja", "ko", *european)
     assert st.targets_for("") == st.targets_for("ja")              # projects without a record: Japanese
     assert st.same_language("zh", "zh-Hant") and not st.same_language("zh", "ko")
     for alias, target in (("KO", "ko"), ("한국어", "ko"), ("english", "en"), ("日本語", "ja"), ("zh_TW", "zh-Hant")):
         assert st.normalize_target(alias) == target
     with pytest.raises(ValueError):
-        st.normalize_target("fr")
+        st.normalize_target("xx")
 
 
 def test_chinese_targets_keep_their_prompts_and_versions():
@@ -115,7 +116,7 @@ def test_chinese_project_translates_into_korean_and_records_the_pair(tmp_path):
     assert st.status_counts(project, target="ko")["done"] == 4
     assert st.status_counts(project, target="en")["needs_update"] == 4    # another target is not current
 
-    from twobyteasr import studio_subtitle_export as export
+    from twobyteasr.exports import studio_subtitle_export as export
     exported = export.export_language_layers(project, tmp_path, "实况")
     names = {artifact.layer: artifact.path.name for artifact in exported.artifacts}
     assert names == {"original": "实况.zh.srt", "translation": "实况.ko.srt", "bilingual": "实况.bilingual.srt"}
@@ -123,7 +124,7 @@ def test_chinese_project_translates_into_korean_and_records_the_pair(tmp_path):
 
 
 def test_recognition_time_translation_runs_unless_the_target_is_the_source(monkeypatch, tmp_path):
-    from twobyteasr import recognition_translation as rt
+    from twobyteasr.subtitle_rules import recognition_translation as rt
     monkeypatch.setattr(rt, "cache_path", lambda: tmp_path / "cache.json")
     cues = [SimpleNamespace(cue_id=index, start=float(index), end=index + .9, text=text, speaker="S00")
             for index, text in enumerate(ZH, 1)]
@@ -141,8 +142,8 @@ def test_recognition_time_translation_runs_unless_the_target_is_the_source(monke
 
 
 def test_settings_and_run_options_accept_every_target():
-    from twobyteasr.service import RunOptions
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.recognition.service import RunOptions
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
     for target in st.TARGETS:
         RunOptions(translation_script=target)
         settings = json.loads(json.dumps(DEFAULT_SETTINGS))
@@ -151,12 +152,12 @@ def test_settings_and_run_options_accept_every_target():
         assert normalized["subtitle_language"]["translation_script"] == target
         assert not [w for w in warnings if "translation_script" in w]
     with pytest.raises(ValueError):
-        RunOptions(translation_script="fr")
+        RunOptions(translation_script="xx")
 
 
 def test_translation_line_falls_back_to_a_face_with_the_script():
-    from twobyteasr import bilingual_layout as layout
-    from twobyteasr.font_metadata import has_character
+    from twobyteasr.caption_style import bilingual_layout as layout
+    from twobyteasr.caption_style.font_metadata import has_character
     fonts = Path(__file__).resolve().parents[1] / "assets" / "fonts"
     assert has_character(str(fonts / "SourceHanSansSC-Medium.otf"), 0, "가")
     assert not has_character(str(fonts / "ZCOOLKuaiLe-Regular.ttf"), 0, "가")

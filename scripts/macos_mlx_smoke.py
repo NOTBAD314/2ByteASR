@@ -53,7 +53,8 @@ def main(argv=None) -> int:
                        '2BYTEASR_MODEL_ROOT': str(models)})
     sys.path.insert(0, str(ROOT))
     import numpy as np
-    from twobyteasr import macos_model_prepare, mlx_backend
+    from twobyteasr.local_models import macos_model_prepare
+    from twobyteasr.recognition import mlx_backend
     keys = [key for key in args.keys.split(',') if key]
     result = {'keys': keys, 'machine': os.uname().machine, 'macos': __import__('platform').mac_ver()[0],
               'script': SCRIPT, 'kind': 'smoke and speed/memory record on TTS speech; not an accuracy benchmark'}

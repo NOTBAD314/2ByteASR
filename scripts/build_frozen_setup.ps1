@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory=$true)][string]$PayloadDir,
     [string]$ReleaseDir = "",
-    [switch]$QA
+    [switch]$QA,
+    [ValidatePattern('^[a-z0-9-]{1,64}$')]
+    [string]$CandidateId = ''
 )
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -19,7 +21,10 @@ foreach ($required in @("2ByteASR.exe", "2ByteASRUpdater.exe", "2byteasr_compone
 $files = @(Get-ChildItem -LiteralPath $payload -File -Recurse -Force)
 $bad = @($files | Where-Object {
     $relative = $_.FullName.Substring($payload.Length + 1)
-    $relative -match '(^|[\\/])(\.git|__pycache__|\.pytest_cache|\.mimosa|tmp|logs|reports|Projects)([\\/]|$)' -or
+    $privateFolder = $relative -match '(^|[\\/])(\.git|__pycache__|\.pytest_cache|\.mimosa|tmp|logs|reports)([\\/]|$)'
+    $projectFolder = $relative -match '(^|[\\/])Projects([\\/]|$)'
+    $projectCode = $relative -match '^twobyteasr[\\/]projects[\\/].+\.py$'
+    $privateFolder -or ($projectFolder -and -not $projectCode) -or
     $_.Extension -in @('.log', '.2byteproj', '.2byteasr', '.pyc', '.pyo') -or
     $_.Name -in @('secrets.json', 'secrets.dat', '.env')
 })
@@ -41,6 +46,10 @@ if ($QA -and -not (Test-Path -LiteralPath (Join-Path $payload '2byteasr-qa-profi
 if (Test-Path -LiteralPath $output) { throw "Output already exists: $output" }
 $compilerArgs = @('/Qp')
 if ($QA) { $compilerArgs += '/DQAInstall=1' }
+if ($CandidateId) {
+    if (-not $QA) { throw 'CandidateId requires the isolated QA profile marker and -QA' }
+    $compilerArgs += "/DCandidateId=$CandidateId"
+}
 $numericVersion = ($version -split "[-+]")[0]
 $compilerArgs += @("/DPayloadDir=$payload", "/DReleaseDir=$release", "/DMyAppVersion=$version", "/DMyAppNumericVersion=$numericVersion", (Join-Path $projectRoot 'installer\2ByteASR-frozen.iss'))
 & $compiler @compilerArgs

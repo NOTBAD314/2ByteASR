@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from PySide6.QtWidgets import QApplication, QComboBox, QCheckBox
-from twobyteasr.ui import MainWindow
-from twobyteasr.settings import load_runtime_settings
+from twobyteasr.app.ui import MainWindow
+from twobyteasr.storage.settings import load_runtime_settings
 import json
 
 

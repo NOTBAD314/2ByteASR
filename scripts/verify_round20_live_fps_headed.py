@@ -26,8 +26,8 @@ SHOTS = ROOT / "tmp" / "r20-verify"
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.web_theme import builtin_web_themes
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_design.web_theme import builtin_web_themes
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -207,7 +207,7 @@ def main() -> int:
         check("cue_switch_first_frame", True, "no adjacent cue (skipped)")
 
     # ---- D) renderer telemetry: still renders should not fight the pump ----
-    from twobyteasr.renderer_service import GLOBAL_RENDERER_SERVICE
+    from twobyteasr.rendering.renderer_service import GLOBAL_RENDERER_SERVICE
 
     # live_* 响应不携带 telemetry 字段（只有 render 类携带）——此检查改由
     # WEB_LIVE_FRAME 帧数承担（playback_fps/replay 已覆盖），此处仅验证

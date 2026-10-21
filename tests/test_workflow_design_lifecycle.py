@@ -3,8 +3,8 @@ from types import SimpleNamespace
 from tests.test_studio_style_controller import _page, _finish
 from tests.test_round14_web_theme_apply_fixes import _theme_payload
 from tests.theme_fixture import bind_ready_draft
-from twobyteasr.studio_edit_sequence import sequence_of, projected_cues
-from twobyteasr.studio_project import save_project,load_project
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, projected_cues
+from twobyteasr.projects.studio_project import save_project,load_project
 
 def test_independent_request_and_delete_before_return_terminate_current_only(tmp_path,monkeypatch):
     app,page=_page(tmp_path,monkeypatch)

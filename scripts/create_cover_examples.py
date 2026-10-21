@@ -14,10 +14,10 @@ def main():
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QFontDatabase
     from PySide6.QtCore import Qt
-    from twobyteasr.cover_document import CoverDocument
-    from twobyteasr.cover_samples import sample_documents,demo_character
-    from twobyteasr.cover_psd import save_psd
-    from twobyteasr.cover_render import CoverRenderer,export_image
+    from twobyteasr.cover.cover_document import CoverDocument
+    from twobyteasr.cover.cover_samples import sample_documents,demo_character
+    from twobyteasr.cover.cover_psd import save_psd
+    from twobyteasr.cover.cover_render import CoverRenderer,export_image
     app=QApplication([])
     for font in (root/'assets/fonts').glob('*.otf'):QFontDatabase.addApplicationFont(str(font))
     if args.source_image:

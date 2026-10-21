@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea, QWidget  # noqa: E402
 
-from twobyteasr.model_workshop import (  # noqa: E402
+from twobyteasr.local_models.model_workshop import (  # noqa: E402
     MODELS,
     ModelTechnicalDialog,
     ModelWorkshopPage,
@@ -149,7 +149,7 @@ def test_benchmark_filter_requires_a_concrete_value_not_a_reference_number():
     ],
 )
 def test_every_workshop_model_has_complete_technical_metadata(key):
-    from twobyteasr.model_evaluation_metadata import get_profile
+    from twobyteasr.local_models.model_evaluation_metadata import get_profile
 
     profile = get_profile(key)
     assert profile["responsibility"]
@@ -205,7 +205,7 @@ def test_every_workshop_model_has_complete_technical_metadata(key):
 
 @pytest.mark.parametrize("model", MODELS, ids=lambda model: model.key)
 def test_every_workshop_model_has_fully_english_technical_metadata(model):
-    from twobyteasr.model_evaluation_metadata import get_profile
+    from twobyteasr.local_models.model_evaluation_metadata import get_profile
 
     def strings(value):
         if isinstance(value, dict):
@@ -227,8 +227,8 @@ def test_every_workshop_model_has_fully_english_technical_metadata(model):
 
 def test_workshop_metrics_use_verified_group_scores_with_official_evidence():
     """2026-09-18 轮：占位参考指数退役，卡片分数来自核实基准组。"""
-    from twobyteasr.model_evaluation_metadata import get_profile
-    from twobyteasr.model_workshop import _metric_evidence
+    from twobyteasr.local_models.model_evaluation_metadata import get_profile
+    from twobyteasr.local_models.model_workshop import _metric_evidence
 
     firered = next(item for item in MODELS if item.key == "firered")
     firered_llm = next(item for item in MODELS if item.key == "firered_llm")

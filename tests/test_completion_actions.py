@@ -12,12 +12,12 @@ from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
-from twobyteasr.completion_widgets import CompletionActionCard, CompletionActionGrid, CompletionSecondaryGroup, CompletionTaskSelector
-from twobyteasr.ui_theme import blend_hex
-from twobyteasr.main_ui_helpers import completion_stage_evidence, polishing_completion_details
-from twobyteasr.service import MediaResult, QueueResult, RunOptions
-from twobyteasr.ui import MainWindow, append_log_html_keep_left
-from twobyteasr.ui_theme import theme_definition
+from twobyteasr.app.completion_widgets import CompletionActionCard, CompletionActionGrid, CompletionSecondaryGroup, CompletionTaskSelector
+from twobyteasr.design.ui_theme import blend_hex
+from twobyteasr.app.main_ui_helpers import completion_stage_evidence, polishing_completion_details
+from twobyteasr.recognition.service import MediaResult, QueueResult, RunOptions
+from twobyteasr.app.ui import MainWindow, append_log_html_keep_left
+from twobyteasr.design.ui_theme import theme_definition
 
 APP = QApplication.instance() or QApplication([])
 
@@ -47,7 +47,7 @@ def completion_shell(monkeypatch):
 
 def test_success_then_startup_failure_does_not_restore_previous_counts_or_directory(completion_shell, tmp_path):
     from twobyteasr.i18n import apply_ui_language
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     project_path = tmp_path/'previous.2byteproj'
     save_project(SubtitleProject(media=StudioMedia(path='previous.mp4', duration_ms=2000), cues=[
         StudioCue('cue1', 0, 1000, '第一句'), StudioCue('cue2', 1000, 2000, '第二句')]), project_path)
@@ -124,7 +124,7 @@ def test_web_failure_is_not_text_polishing_failure():
 
 @pytest.mark.parametrize('key', ['warm', 'grape', 'charcoal'])
 def test_three_cards_share_theme_accent_and_reflow(key, monkeypatch):
-    import twobyteasr.completion_widgets as controls
+    import twobyteasr.app.completion_widgets as controls
     monkeypatch.setattr(controls, 'theme_key', lambda: key)
     cards = [CompletionActionCard(title, '用途说明', 'fa5s.film', hue=hue)
              for title, hue in (('导出字幕', 'primary'), ('打开字幕工作台', 'brand'), ('完成并返回主菜单', 'finish'))]
@@ -211,8 +211,8 @@ def test_retry_uses_frozen_options_without_reading_home_settings(monkeypatch):
 
 
 def test_export_dialog_preserves_dotted_media_stem():
-    from twobyteasr.completion_export import CompletionExportDialog
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia
+    from twobyteasr.exports.completion_export import CompletionExportDialog
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia
     project = SubtitleProject(media=StudioMedia(path='', duration_ms=0))
     dialog = CompletionExportDialog(project, '比赛.42250669220.456-467')
     assert dialog.name.text() == '比赛.42250669220.456-467'
@@ -255,7 +255,7 @@ def test_secondary_actions_are_one_readable_group_and_wrap_when_narrow():
 
 
 def test_return_requires_saved_project_but_never_requires_srt(completion_shell, monkeypatch, tmp_path):
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     from PySide6.QtWidgets import QMessageBox
     project_path = tmp_path/'saved.2byteproj'
     save_project(SubtitleProject(media=StudioMedia(path='actual.mp4', duration_ms=1000),
@@ -281,7 +281,7 @@ def test_return_requires_saved_project_but_never_requires_srt(completion_shell, 
 
 
 def test_completion_report_path_identity_keeps_same_media_tasks_separate(completion_shell, tmp_path):
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     tasks = []
     for index, text in enumerate(('第一份', '第二份')):
         path = tmp_path/f'{index}.2byteproj'

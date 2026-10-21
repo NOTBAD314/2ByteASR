@@ -12,10 +12,10 @@ def main():
     root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root))
     out=root/'tmp/visible-playback-v2/placement'/time.strftime('%Y%m%d-%H%M%S');out.mkdir(parents=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'))
-    from twobyteasr.web_theme import theme_archive_html
-    from twobyteasr.local_subtitle_theme import local_subtitle_theme
-    from twobyteasr.renderer_service import RendererService,RendererJob
-    from twobyteasr.web_placement import normalize_placement
+    from twobyteasr.caption_design.web_theme import theme_archive_html
+    from twobyteasr.caption_style.local_subtitle_theme import local_subtitle_theme
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_style.web_placement import normalize_placement
     design=json.loads((root/'tests/fixtures/polar_bear_f38c393_concepts.json').read_text('utf8'))
     design.setdefault('selected_concept_id',design['concepts'][0]['id'])
     theme=local_subtitle_theme(design);text='北极熊也要认真滑雪'

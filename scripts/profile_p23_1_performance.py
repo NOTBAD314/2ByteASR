@@ -14,10 +14,10 @@ os.environ.setdefault("LOCALAPPDATA", str(ROOT / "tmp" / "p23.1-localappdata"))
 sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_commands import set_cues_timing_offset_command
-from twobyteasr.studio_project import load_project
-from twobyteasr.studio_timing import recommend_many
-from twobyteasr.studio_ui import CueTableModel, WaveformTimeline
+from twobyteasr.timeline.studio_commands import set_cues_timing_offset_command
+from twobyteasr.projects.studio_project import load_project
+from twobyteasr.timeline.studio_timing import recommend_many
+from twobyteasr.studio.studio_ui import CueTableModel, WaveformTimeline
 
 
 def measure(action, count=7):

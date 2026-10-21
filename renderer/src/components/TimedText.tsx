@@ -220,7 +220,7 @@ export const TimedText: React.FC<{
     })}</React.Fragment>;
   })}</>;
   if (!plan?.spans?.length) return <>{text}</>;
-  return <>{plan.spans.map((span, index) => {
+  return <>{letters.slice(0,plan.spans[0].char_start).join('')}{plan.spans.map((span, index) => {
     const started = milliseconds >= span.start_ms;
     const highlight = started && (plan.mode !== 'word_current' || milliseconds < span.end_ms);
     return <span key={index} style={{

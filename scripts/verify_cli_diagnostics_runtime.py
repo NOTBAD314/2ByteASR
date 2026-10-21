@@ -14,9 +14,10 @@ from types import SimpleNamespace
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QVBoxLayout
 
-from twobyteasr import ui
-from twobyteasr.provider_diagnostics import redact_diagnostics
-from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+from twobyteasr.app import ui
+from twobyteasr.providers import endpoint_editor_ui
+from twobyteasr.providers.provider_diagnostics import redact_diagnostics
+from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
 
 
 def run_cli_ui_checks(owner, output):
@@ -75,7 +76,7 @@ def run_cli_ui_checks(owner, output):
         plan = {'executable': target, 'version': diagnostics['cli_version'],
                 'supported': True, 'command': [target, 'update'],
                 'message': '使用这份官方 CLI 的自更新命令；保留现有登录凭据。'}
-        original_provider = ui.provider_for_stage
+        original_provider = endpoint_editor_ui.provider_for_stage
         original_question = ui.QMessageBox.question
         class PreviewOnly:
             def cli_update_plan(self):
@@ -93,12 +94,12 @@ def run_cli_ui_checks(owner, output):
             QTimer.singleShot(120, capture_and_cancel)
             return box.exec()
         try:
-            ui.provider_for_stage = lambda *_a, **_k: PreviewOnly()
+            endpoint_editor_ui.provider_for_stage = lambda *_a, **_k: PreviewOnly()
             ui.QMessageBox.question = question
             editor.start_cli_update()
             checks['update_cancel_no_worker'] = getattr(editor, '_update_worker', None) is None
         finally:
-            ui.provider_for_stage = original_provider
+            endpoint_editor_ui.provider_for_stage = original_provider
             ui.QMessageBox.question = original_question
     finally:
         dialog.close()

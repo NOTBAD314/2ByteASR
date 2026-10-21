@@ -13,7 +13,7 @@ def main():
     parser.add_argument('evidence',type=Path)
     parser.add_argument('--media',type=Path,required=True)
     args=parser.parse_args()
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     from PIL import Image
     import numpy as np
     out=args.evidence.resolve();renderer=ROOT/'renderer'

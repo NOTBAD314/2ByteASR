@@ -12,7 +12,7 @@ def main():
     args=parser.parse_args();out=args.output.resolve()
     if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('Use a new folder under workspace/tmp')
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out);sys.path.insert(0,str(root))
-    from twobyteasr.studio_project import SubtitleProject
+    from twobyteasr.projects.studio_project import SubtitleProject
     project=SubtitleProject.from_dict(json.loads(args.project.read_text(encoding='utf-8-sig')))
     fixture=out/'fixture.2byteproj';fixture.write_text(json.dumps(project.to_dict(),ensure_ascii=False,indent=2),encoding='utf8')
     if args.recover_from:
@@ -25,7 +25,7 @@ def main():
     env['TWOBYTEASR_COVER_RECOVERY']='1' if args.recover_from else '0'
     env['TWOBYTEASR_COVER_STUDIO_REGRESSION']='1' if args.studio_regression else '0'
     cmd=[str(args.exe.resolve())] if args.exe else [sys.executable,'-X','utf8','-B',str(root/'quick_start.py')]
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     with (out/'application.log').open('wb') as log:
         result=run_hidden_subprocess(cmd,cwd=root,env=env,stdout=log,stderr=log,timeout=480,purpose='isolated cover Photopea workflow acceptance')
     # The daily root launcher is asynchronous. Wait for its actual child receipt.

@@ -148,15 +148,15 @@ def resolved_data_paths() -> dict[str, Path]:
     from . import runtime_paths
     paths = {'user_data_root': runtime_paths.user_data_root(), 'temp': Path(tempfile.gettempdir())}
     probes = (
-        ('settings_root', 'twobyteasr.settings', 'stable_settings_root'),
-        ('project_library', 'twobyteasr.studio_project', 'project_library_root'),
-        ('studio_data', 'twobyteasr.studio_project', 'studio_data_root'),
-        ('recognition_history_index', 'twobyteasr.recognition_history', 'default_history_index_path'),
-        ('reports', 'twobyteasr.reporting', '_default_report_root'),
-        ('secrets', 'twobyteasr.llm_config', 'secrets_path'),
-        ('project_profiles', 'twobyteasr.project_profiles', 'project_profiles_path'),
-        ('process_log', 'twobyteasr.process_diagnostics', 'process_log_path'),
-        ('startup_trace', 'twobyteasr.startup_trace', '_trace_path'),
+        ('settings_root', 'twobyteasr.storage.settings', 'stable_settings_root'),
+        ('project_library', 'twobyteasr.projects.studio_project', 'project_library_root'),
+        ('studio_data', 'twobyteasr.projects.studio_project', 'studio_data_root'),
+        ('recognition_history_index', 'twobyteasr.recognition.recognition_history', 'default_history_index_path'),
+        ('reports', 'twobyteasr.recognition.reporting', '_default_report_root'),
+        ('secrets', 'twobyteasr.providers.llm_config', 'secrets_path'),
+        ('project_profiles', 'twobyteasr.recognition.recognition_profiles', 'project_profiles_path'),
+        ('process_log', 'twobyteasr.diagnostics.process_diagnostics', 'process_log_path'),
+        ('startup_trace', 'twobyteasr.diagnostics.startup_trace', '_trace_path'),
         ('runtime_root', 'twobyteasr.runtime_paths', 'managed_runtime_root'),
     )
     import importlib
@@ -165,7 +165,7 @@ def resolved_data_paths() -> dict[str, Path]:
             paths[name] = Path(getattr(importlib.import_module(module_name), attr)())
         except Exception as exc:  # a broken resolver is reported, not hidden
             paths[name] = Path(f'<unresolved {type(exc).__name__}>')
-    reporting = sys.modules.get('twobyteasr.reporting')
+    reporting = sys.modules.get('twobyteasr.recognition.reporting')
     if reporting is not None:
         paths['reporting.REPORT_ROOT'] = Path(reporting.REPORT_ROOT)
     legacy = sys.modules.get('subtitle_core')

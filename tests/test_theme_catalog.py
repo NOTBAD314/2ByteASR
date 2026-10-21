@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.ui_theme import (THEME_FAMILIES, THEME_ORDER, THEME_TRAITS, THEMES, contrast_ratio,
+from twobyteasr.design.ui_theme import (THEME_FAMILIES, THEME_ORDER, THEME_TRAITS, THEMES, contrast_ratio,
                                  ordered_themes, theme_display_label, theme_family_label)
 
 ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL = {"grape", "warm", "plum", "lavender", "slate"}
 NEW = set(THEMES) - ORIGINAL
-LANGUAGES = ("zh", "zh-Hant", "en", "ja", "ko")
+LANGUAGES = ("zh", "zh-Hant", "en", "ja", "ko", "es", "de", "fr", "pt", "it", "ru")
 
 # (foreground, background, minimum) — the bar every 2026-10-14 theme meets.
 READABILITY = (
@@ -119,7 +119,7 @@ def test_no_module_branches_on_a_theme_key():
 
 @pytest.mark.parametrize("key", sorted(THEMES))
 def test_timeline_palette_follows_theme_brightness_and_reads(key):
-    from twobyteasr.timeline_theme import timeline_palette
+    from twobyteasr.design.timeline_theme import timeline_palette
 
     palette = timeline_palette(key)
     theme = THEMES[key]

@@ -799,6 +799,8 @@ def run_windows(model, processor, audio, messages, device, dtype, progress, rece
     half = policy["overlap_seconds"] / 2
     context_limit = int(model.config.text_config.max_position_embeddings)
     progress.set_phase("audio_encoding")
+    # A >131072-token task must reach planning before the processor rejects it.
+    # Counting tokens needs only the sample count and tokenizer, not full PCM features.
     full_prompt = planning_prompt_length(processor, len(audio), messages)
     ops = progress.ops or DeviceOps(torch, "cuda", device)
     usable, total, fraction = ops.usable()
@@ -1081,6 +1083,46 @@ def _vendored_verify_model_files(model_name, model_root, *, install_root):
     return target
 
 
+def _read_only_weights(install_root):
+    """``twobyteasr/read_only_weights.py`` loaded by path (2026-10-15).
+
+    Same reason as ``_vendored_verify_model_files``: importing the package
+    would load the GUI bundle's cp310 .pyd files into this 3.12 worker.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "twobyteasr_read_only_weights", Path(install_root) / "twobyteasr" / "read_only_weights.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_model(model_source, dtype, device, install_root, torch, progress):
+    """``(model, weights_loader)``; on Windows the checkpoint is mapped read-only (2026-10-15).
+
+    safetensors maps the 1.7 GB file copy-on-write, which Windows charges in
+    full against RAM plus page file. The loader itself is unchanged; any
+    problem with the read-only route falls back to it.
+    """
+    from transformers import AutoModelForCausalLM
+
+    def load():
+        return AutoModelForCausalLM.from_pretrained(model_source, trust_remote_code=True, dtype="auto",
+                                                    attn_implementation="sdpa").to(dtype=dtype).to(device).eval()
+
+    def report(error_type, detail):
+        progress.emit(read_only_load_failed=f"{error_type}: {detail}")
+
+    if os.name == "nt":
+        try:
+            weights = _read_only_weights(install_root)
+        except Exception as exc:
+            report(type(exc).__name__, str(exc)[:300])
+        else:
+            return weights.load(torch, load, lambda model: [model], report=report)
+    return load(), "official"
+
+
 def resolve_model(requested, install_root):
     script_local = (Path(__file__).resolve().parent / "models" / "MOSS-Transcribe-Diarize")
     if (script_local / "config.json").is_file():
@@ -1161,6 +1203,10 @@ def save_chunk_checkpoint(checkpoint_dir, run_signature, result):
 
 
 def main():
+    # numpy and scipy each load OpenBLAS, which commits about 24 MB per CPU
+    # thread at import (1.5 GB on a 32-thread CPU). Audio comes through PyAV
+    # and the model runs in torch; nothing here uses that BLAS (2026-10-15).
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     install_root = script_dir if (script_dir / "dependencies.lock.json").is_file() else script_dir.parent
@@ -1191,7 +1237,7 @@ def main():
         import numpy as np
         import torch
         import transformers
-        from transformers import AutoModelForCausalLM, AutoProcessor
+        from transformers import AutoProcessor
         from moss_transcribe_diarize import parse_transcript
         from moss_transcribe_diarize.inference_utils import build_transcription_messages, load_audio_item
         kind, device, dtype = resolve_device(torch, args.device)
@@ -1232,8 +1278,8 @@ def main():
         ops.empty_cache()
         ops.reset_peak()
         model_started = time.monotonic()
-        model = AutoModelForCausalLM.from_pretrained(model_source, trust_remote_code=True,
-                    dtype="auto", attn_implementation="sdpa").to(dtype=dtype).to(device).eval()
+        model, weights_loader = load_model(model_source, dtype, device, install_root, torch, progress)
+        progress.emit(weights_loader=weights_loader)
         processor = AutoProcessor.from_pretrained(model_source, trust_remote_code=True)
         if int(processor.feature_extractor.sampling_rate) != 16000:
             raise ValueError("MOSS processor采样率不匹配任务16k时钟。")

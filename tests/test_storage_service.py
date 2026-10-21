@@ -6,7 +6,7 @@ import threading
 import time
 import pytest
 from twobyteasr.runtime_paths import RuntimePaths
-from twobyteasr.storage_service import StorageService, safe_path, GiB
+from twobyteasr.storage.storage_service import StorageService, safe_path, GiB
 
 
 @pytest.fixture
@@ -176,7 +176,7 @@ def test_receipt_counts_bounded_and_missing_registry_pruned(service):
 
 
 def test_database_failure_consumer_still_protected(service,monkeypatch):
-    from twobyteasr import storage_service
+    from twobyteasr.storage import storage_service
     path=add(service);scan=service.scan(include_models=False)
     class Unavailable:
         def lease(self,path):
@@ -202,7 +202,7 @@ def test_local_audio_and_waveform_need_accessible_original(service,tmp_path):
 
 
 def test_historical_log_needs_contract_and_explicit_adoption(service,monkeypatch):
-    from twobyteasr import storage_legacy
+    from twobyteasr.storage import storage_legacy
     root=service.paths.log_root;root.mkdir(parents=True)
     good=root/'auto_asr_20261006_123000_99999999_abcdef.jsonl'
     row=dict(event='run_started',pid=99999999,time='2026-10-06T12:30:00+0800',

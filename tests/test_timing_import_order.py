@@ -6,7 +6,7 @@
 ``segment_content_timeline``, ``locally_repair_resegmented_cue``).
 
 Under the launcher entry order (``import moss_firered_pipeline`` first),
-``twobyteasr.timing`` is imported before that backfill runs, so a plain
+``twobyteasr.subtitle_rules.timing`` is imported before that backfill runs, so a plain
 ``from subtitle_core import *`` leak is missing and the first call raises
 ``NameError``.  The module now resolves them via deferred imports; these
 tests exercise the real call paths in an isolated process so the module
@@ -21,8 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 _CHECK_SCRIPT = (
     "import moss_firered_pipeline\n"
-    "from twobyteasr.models import SpeechSegment, SubtitleCue\n"
-    "import twobyteasr.timing as timing\n"
+    "from twobyteasr.recognition.transcript_data import SpeechSegment, SubtitleCue\n"
+    "import twobyteasr.subtitle_rules.timing as timing\n"
     "seg = SpeechSegment(segment_id=1, start=1.0, end=2.0, text='测试',"
     " confidence=0.9, words=[])\n"
     "tokens = [{'start': 1.1, 'end': 1.9, 'text': '测试'}]\n"

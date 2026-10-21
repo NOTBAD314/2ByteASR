@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 def install_guards() -> None:
     """Disable incidental probes while keeping the audited provider path real."""
-    from ..ui import EndpointEditor
-    from ..studio_ai_flow import StudioAIFlowMixin
+    from ..app.ui import EndpointEditor
+    from ..studio.studio_ai_flow import StudioAIFlowMixin
     from ..test_isolation import install_pytest_network_guard
     EndpointEditor._queue_model_discovery = lambda *a, **kw: None
     StudioAIFlowMixin._start_ai_provider_probe = lambda *a, **kw: None
@@ -24,7 +24,7 @@ def start(window, output: Path) -> None:
     import sys
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
-    from ..build_identity import load_build_identity
+    from ..diagnostics.build_identity import load_build_identity
 
     def execute():
         code = run(output)
@@ -46,12 +46,12 @@ def run(output: Path) -> int:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from ..test_isolation import install_pytest_network_guard
-    from ..studio_ai import GLOBAL_PROVIDER_REGISTRY
-    from ..theme_manager import apply_application_theme
-    from ..studio_theme import build_secondary_surface_qss
-    from .. import llm_config
-    from ..studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
-    from ..studio_translation_dialog import SubtitleTranslationDialog
+    from ..caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
+    from ..design.theme_manager import apply_application_theme
+    from ..design.studio_theme import build_secondary_surface_qss
+    from ..providers import llm_config
+    from ..projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
+    from ..studio.studio_translation_dialog import SubtitleTranslationDialog
     install_pytest_network_guard()
     app = QApplication.instance() or QApplication([])
     theme = apply_application_theme(app, 'grape')
@@ -111,7 +111,7 @@ def run(output: Path) -> int:
 
     try:
         with patch.object(GLOBAL_PROVIDER_REGISTRY, 'settings', return_value=settings), \
-             patch('twobyteasr.network_policy.post', post):
+             patch('twobyteasr.providers.network_policy.post', post):
             dialog = SubtitleTranslationDialog(page)
             dialog.setStyleSheet(build_secondary_surface_qss(theme))
             dialog.show()

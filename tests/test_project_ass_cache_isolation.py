@@ -1,9 +1,9 @@
 import threading
 from types import SimpleNamespace
 
-from twobyteasr.ass_compile_actor import AssCompileActor
-from twobyteasr.studio_project import SubtitleProject, StudioCue, StudioMedia
-from twobyteasr.studio_revisions import StudioRevisionStore
+from twobyteasr.rendering.ass_compile_actor import AssCompileActor
+from twobyteasr.projects.studio_project import SubtitleProject, StudioCue, StudioMedia
+from twobyteasr.projects.studio_revisions import StudioRevisionStore
 
 
 def revision(text):

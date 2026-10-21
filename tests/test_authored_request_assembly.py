@@ -1,7 +1,7 @@
 import pytest
-from twobyteasr.provider_input_budget import prepare_input,InputBudgetError
-from twobyteasr.authored_prompt import assemble
-from twobyteasr.caption_creative_pipeline import ThemeLedger, AUTHORED_OUTPUT_SCHEMA
+from twobyteasr.providers.provider_input_budget import prepare_input,InputBudgetError
+from twobyteasr.caption_design.authored_prompt import assemble
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger, AUTHORED_OUTPUT_SCHEMA
 
 
 def test_soft_budget_requires_this_endpoint_evidence_and_hard_limit_wins():

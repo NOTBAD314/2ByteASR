@@ -2,7 +2,7 @@
 import threading
 from types import SimpleNamespace
 
-from twobyteasr.pipeline_runtime import finalize_cues, run_parallel_stages
+from twobyteasr.recognition.pipeline_runtime import finalize_cues, run_parallel_stages
 
 
 class _ParallelLegacy:
@@ -83,6 +83,9 @@ class _FinalizeLegacy:
     def collect_review_items(self, *_args):
         self.calls.append("reviews")
 
+    def relock_display_timing(self, cues, *_args, **_kwargs):
+        self.calls.append("relock")
+
 
 def test_finalize_cues_preserves_the_established_stage_order():
     legacy = _FinalizeLegacy()
@@ -102,6 +105,7 @@ def test_finalize_cues_preserves_the_established_stage_order():
         "display_gap",
         "validate",
         "reviews",
+        "relock",
     ]
     assert [p['phase'] for name,p in legacy.events if name=='display_boundary_phase'] == [
         'grouped_before_display', 'normalized_and_vad_onsets', 'speaker_reading_tail',

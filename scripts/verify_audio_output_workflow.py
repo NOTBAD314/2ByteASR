@@ -7,10 +7,10 @@ import sys
 
 
 def prepare_fixture(root, out, *, gap=True, background=False):
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,AudioTrack,AudioClip,sync_linked_av_contract,save_project
-    from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,AudioTrack,AudioClip,sync_linked_av_contract,save_project
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     ffmpeg=root/'tools/ffmpeg/bin/ffmpeg.exe'
     sources=[]
     for name,freq,color in [('v1',440,'navy'),('v2',880,'maroon')]:

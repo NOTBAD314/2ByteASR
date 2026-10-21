@@ -1,7 +1,7 @@
 ﻿import sys
 import types
 
-from twobyteasr import asr
+from twobyteasr.recognition import asr
 
 
 def _fake_torch(monkeypatch):

@@ -12,15 +12,15 @@ def main():
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     (out/'config/2byteasr_settings.json').write_text(json.dumps(DEFAULT_SETTINGS,ensure_ascii=False),'utf8')
     if args.restart_from:
         shutil.copytree(args.restart_from/'qsettings',out/'qsettings',dirs_exist_ok=True)
     from PySide6.QtCore import QSettings
     settings=QSettings('2ByteASR','2ByteASR');settings.setValue('appearance/theme','grape');settings.sync()
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,save_project
-    from twobyteasr.studio_edit_sequence import sequence_of
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,save_project
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
+    from twobyteasr.system.processes import run_hidden_subprocess
     assets=root/'tmp/cue-affix-inspector-20260929/assets';assets.mkdir(parents=True,exist_ok=True)
     media=assets/'playback.mp4'
     if not media.exists():

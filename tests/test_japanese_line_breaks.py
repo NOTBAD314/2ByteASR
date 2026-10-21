@@ -3,8 +3,8 @@ import pytest
 
 import subtitle_core  # noqa: F401  (legacy core first: segmentation star-imports it)
 
-from twobyteasr import japanese_morphology as jm
-from twobyteasr.runtime import get_runtime_context
+from twobyteasr.subtitle_rules import japanese_morphology as jm
+from twobyteasr.recognition.run_context import get_runtime_context
 
 
 def tags(spec):
@@ -72,7 +72,7 @@ def japanese_document():
 
 
 def test_segmentation_uses_task_phrases_for_substrings(japanese_document):
-    from twobyteasr.segmentation import chinese_word_spans, segmenter_forbidden_boundary_offsets
+    from twobyteasr.subtitle_rules.segmentation import chinese_word_spans, segmenter_forbidden_boundary_offsets
     assert japanese_document.measured_segments == 4 and japanese_document.heuristic_segments == 0
     # A cue that starts mid-segment still finds its phrases in the task document.
     words = [word for _start, _end, word in chinese_word_spans("みんなにわかるように伝えないとね")]
@@ -82,7 +82,7 @@ def test_segmentation_uses_task_phrases_for_substrings(japanese_document):
 
 
 def test_local_repair_cuts_long_japanese_line_only_between_phrases(japanese_document):
-    from twobyteasr.segmentation import locally_repair_resegmented_cue
+    from twobyteasr.subtitle_rules.segmentation import locally_repair_resegmented_cue
     text = "高すぎたかもっとみんなにわかるように伝えないとね"
     units = [subtitle_core.WordUnit(i * 0.2, i * 0.2 + 0.18, char, 0.9) for i, char in enumerate(text)]
     cues = locally_repair_resegmented_cue(text, units, comfort_max_chars=12)
@@ -96,13 +96,13 @@ def test_local_repair_cuts_long_japanese_line_only_between_phrases(japanese_docu
 
 
 def test_heuristic_fallback_splits_interjections_inside_hiragana_runs():
-    from twobyteasr.language_rules import heuristic_japanese_phrase_spans
+    from twobyteasr.subtitle_rules.language_rules import heuristic_japanese_phrase_spans
     words = [word for _s, _e, word in heuristic_japanese_phrase_spans("言ってたのにねいやーこんな")]
     assert "いやー" in words
 
 
 def test_two_character_opener_joins_the_next_japanese_line():
-    from twobyteasr.cue_cleanup import merge_isolated_two_character_cues
+    from twobyteasr.subtitle_rules.cue_cleanup import merge_isolated_two_character_cues
     context = get_runtime_context()
     previous = context.task_language
     context.task_language = "ja"
@@ -117,8 +117,8 @@ def test_two_character_opener_joins_the_next_japanese_line():
 
 
 def test_studio_refine_checks_breaks_against_the_projects_tagged_texts():
-    from twobyteasr.language_rules import language_scope
-    from twobyteasr.sentence_refine import _japanese_boundaries
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+    from twobyteasr.subtitle_rules.sentence_refine import _japanese_boundaries
     payload = {"tagger_version": "0.2.11", "results": [
         {"text": text, "words": words} for text, words in TAGGED.items()]}
     document = jm.build_document(list(TAGGED), payload)
@@ -129,3 +129,59 @@ def test_studio_refine_checks_breaks_against_the_projects_tagged_texts():
             measured = _japanese_boundaries(text)
     # The coarse rule cannot split the hiragana stretch; the tagged document can.
     assert 7 not in coarse and 7 in measured and 9 not in measured
+
+
+def content_units(text):
+    from twobyteasr.subtitle_rules.text_rules import content_exact
+    return [subtitle_core.WordUnit(i * 0.2, i * 0.2 + 0.18, char, 0.9) for i, char in enumerate(content_exact(text))]
+
+
+def test_a_chant_is_cut_between_whole_units():
+    """2026-10-18 (日常 19): 「メガネ」×11 was one phrase, so the last-resort split cut メ|ガネ."""
+    from twobyteasr.subtitle_rules.language_rules import language_scope, repeat_unit_offsets
+    from twobyteasr.subtitle_rules.segmentation import chinese_word_spans, locally_repair_resegmented_cue
+    assert sorted(repeat_unit_offsets("メガネ" * 4)) == [3, 6, 9]
+    assert repeat_unit_offsets("メガネメガネ") == set() and repeat_unit_offsets("ーーーーーー") == set()
+    chant = "メガネ" * 11 + "！"
+    payload = {"tagger_version": "0.2.11", "results": [
+        {"text": chant, "words": [["メガネ" * 11, "名詞"], ["!", "補助記号"]]}]}
+    document = jm.build_document([chant], payload)
+    expected = ["メガネメガネメガネ", "メガネメガネメガネメガネ", "メガネメガネメガネメガネ！"]
+    with language_scope("ja"):
+        with jm.phrase_scope(document):
+            assert {word for _s, _e, word in chinese_word_spans(chant)} == {"メガネ"}
+            assert [cue.text for cue in locally_repair_resegmented_cue(chant, content_units(chant))] == expected
+        assert [cue.text for cue in locally_repair_resegmented_cue(chant, content_units(chant))] == expected
+
+
+def test_last_resort_split_is_balanced_and_never_starts_a_line_with_a_small_kana():
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+    from twobyteasr.subtitle_rules.segmentation import bad_line_start, locally_repair_resegmented_cue
+    assert bad_line_start("えーと", 1) and bad_line_start("ちゃん", 1) and not bad_line_start("えーと", 2)
+    with language_scope("ja"):
+        long_line = "今までもそしてこれからも永遠にお目にかかれないことやってみようかと思います"
+        pieces = [cue.text for cue in locally_repair_resegmented_cue(long_line, content_units(long_line))]
+        assert pieces == ["今までもそしてこれからも", "永遠にお目にかかれないこと", "やってみようかと思います"]
+        line = "えーとじゃあままあとりあえず今日は食べちゃいましょう"
+        assert [cue.text for cue in locally_repair_resegmented_cue(line, content_units(line))] == [
+            "えーとじゃあままあとりあえず", "今日は食べちゃいましょう"]
+        # Never inside a doubled word (スイスイ, サメサメ, サミサミ), also when the
+        # 5 s limit forces a cut in the katakana run (0.36 s a character).
+        line = "スイスイサメサメパクサミサミパクこれならこれなんだ"
+        for step in (0.2, 0.36):
+            units = [subtitle_core.WordUnit(i * step, i * step + step * 0.9, char, 0.9) for i, char in enumerate(line)]
+            pieces = [cue.text for cue in locally_repair_resegmented_cue(line, units)]
+            cuts = {sum(len(piece) for piece in pieces[:index]) for index in range(1, len(pieces))}
+            assert "".join(pieces) == line and len(pieces) > 1
+            assert not cuts & {1, 2, 3, 5, 6, 7, 11, 12, 13}
+
+
+def test_hard_break_inside_a_word_counts_at_the_edge_it_snaps_to():
+    """2026-10-18 (日常 19): two AI line-breaking batches fell back for this."""
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+    from twobyteasr.subtitle_rules.segmentation import missing_hard_break_offsets
+    text = "そうですかメガネメガネメガネ"
+    with language_scope("ja"):
+        assert missing_hard_break_offsets(text, [7], [8]) == []      # メガ|ネ snaps to メガネ|
+        assert missing_hard_break_offsets(text, [7], [7]) == []
+        assert missing_hard_break_offsets(text, [7], [11]) == [7]

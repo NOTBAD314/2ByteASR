@@ -7,18 +7,19 @@ from PySide6.QtCore import QPoint, QSettings
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
 
 
 @pytest.fixture
 def workspace(tmp_path, monkeypatch):
-    from twobyteasr import studio_export_ui, theme_manager
+    from twobyteasr.exports import studio_export_ui
+    from twobyteasr.design import theme_manager
     app = QApplication.instance() or QApplication([])
     ini = lambda *a: QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     monkeypatch.setattr(studio_export_ui, "QSettings", ini)
     monkeypatch.setattr(theme_manager, "_settings", ini)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    from twobyteasr.typography import application_font
+    from twobyteasr.design.typography import application_font
     app.setFont(application_font())
     theme_manager.apply_theme("warm", app)
     project = SubtitleProject(media=StudioMedia(path=str(tmp_path / "video.mp4"), duration_ms=8000))
@@ -53,8 +54,8 @@ def test_export_fields_fit_and_stay_stable_on_retheme(workspace, size):
     app.processEvents()
     assert [(w.width(), w.height()) for w in fields] == sizes
     assert window.settings_scroll.horizontalScrollBar().maximum() == 0
-    from twobyteasr.theme_manager import apply_theme
-    from twobyteasr.ui_theme import THEMES
+    from twobyteasr.design.theme_manager import apply_theme
+    from twobyteasr.design.ui_theme import THEMES
     for key, theme in THEMES.items():
         apply_theme(key, app)
         window.refresh_theme_palette()

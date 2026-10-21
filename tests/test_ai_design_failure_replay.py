@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 from urllib.parse import quote
 import pytest
-from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set
-from twobyteasr.theme_texture_resource import checked_css_urls,validate_svg_texture
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set
+from twobyteasr.caption_design.theme_texture_resource import checked_css_urls,validate_svg_texture
 
 def test_original_balatro_response_keeps_all_artwork_and_theme_labels(tmp_path):
     payload=json.loads((Path(__file__).parent/'fixtures/balatro-deepseek-4f5564.json').read_text('utf8'))

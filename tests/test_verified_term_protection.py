@@ -9,7 +9,7 @@ prefix/suffix/alias 残留命中而视为已核验；只有满足独立 ASR 证�
 import pytest
 
 import subtitle_core  # noqa: F401
-from twobyteasr.polishing import filter_untrusted_polished_text
+from twobyteasr.subtitle_rules.polishing import filter_untrusted_polished_text
 
 BASELINE = "我们进入音乐区域开始演出"
 VERIFIED = ["音乐区域"]

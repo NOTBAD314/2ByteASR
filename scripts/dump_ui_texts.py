@@ -23,7 +23,7 @@ def main() -> int:
     import moss_firered_pipeline
     import subtitle_core
     from PySide6.QtWidgets import QApplication, QAbstractButton, QComboBox, QLabel, QLineEdit
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     payload = json.loads(SETTINGS.read_text(encoding="utf-8"))
     backup = json.loads(SETTINGS.read_text(encoding="utf-8"))

@@ -4,14 +4,14 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.caption_scene import CaptionScene
-from twobyteasr.studio_caption_timeline import KEY, STASH_KEY
-from twobyteasr.studio_cue_controller import StudioCueController
-from twobyteasr.studio_edit_commands import generate_edit_command, restore_full_sequence_command
-from twobyteasr.studio_edit_sequence import HighlightCandidate, sequence_of, store_sequence
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_runtime_state import state_for
-from twobyteasr.studio_session import StudioSession
+from twobyteasr.rendering.caption_scene import CaptionScene
+from twobyteasr.timeline.studio_caption_timeline import KEY, STASH_KEY
+from twobyteasr.studio.studio_cue_controller import StudioCueController
+from twobyteasr.timeline.studio_edit_commands import generate_edit_command, restore_full_sequence_command
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate, sequence_of, store_sequence
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.projects.studio_runtime_state import state_for
+from twobyteasr.projects.studio_session import StudioSession
 
 
 def _app():
@@ -158,7 +158,7 @@ def test_overlap_protection_keeps_cues_apart_when_recovered_cues_repeat_an_id():
     # 2026-10-11 688 s run: content recovery appended cues numbered 1 and 2
     # again; the id-keyed protection gave cue "1" at 102 s the end of the
     # first caption (102280..1067) and the project could not be saved.
-    from twobyteasr.display_timing import protect_runtime_display_tails
+    from twobyteasr.subtitle_rules.display_timing import protect_runtime_display_tails
 
     def seg(start, end, speaker):
         return SimpleNamespace(start=start, end=end, speaker=speaker, moss_start=start, moss_end=end,

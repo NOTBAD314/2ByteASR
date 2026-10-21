@@ -8,8 +8,8 @@ import pytest
 
 
 def test_recovery_reuses_edited_project_without_duplicating(tmp_path):
-    from twobyteasr.recognition_recovery import recover_report
-    from twobyteasr.studio_project import load_project, save_project
+    from twobyteasr.recognition.recognition_recovery import recover_report
+    from twobyteasr.projects.studio_project import load_project, save_project
     srt=tmp_path/'captions.srt';srt.write_text('1\n00:00:01,000 --> 00:00:02,000\n真实字幕\n','utf8')
     report=tmp_path/'report.json';report.write_text(json.dumps({'media':{'path':str(tmp_path/'missing.mp4')},
         'result':{'outputs':{'srt':str(srt)}}}),'utf8')
@@ -22,9 +22,9 @@ def test_recovery_reuses_edited_project_without_duplicating(tmp_path):
 
 
 def test_incremental_ids_are_stable_and_sorted(monkeypatch):
-    from twobyteasr.runtime import RuntimeContext,activate_runtime_context
-    from twobyteasr.asr_progress import PrimaryProgress
-    events=[];monkeypatch.setattr('twobyteasr.cache.record_run_event',lambda kind,**kw:events.append((kind,kw)))
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
+    from twobyteasr.recognition.asr_progress import PrimaryProgress
+    events=[];monkeypatch.setattr('twobyteasr.recognition.cache.record_run_event',lambda kind,**kw:events.append((kind,kw)))
     context=RuntimeContext(job_id='fixed')
     with activate_runtime_context(context):
         progress=PrimaryProgress('source.flv',3)
@@ -41,10 +41,10 @@ def test_owned_api_cancel_terminates_requests_and_process_tree(tmp_path,monkeypa
     import psutil
     from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
     import subtitle_core
-    from twobyteasr import asr
-    from twobyteasr.runtime import RuntimeContext,activate_runtime_context
-    from twobyteasr.service import CancellationToken,CancelledError
-    from twobyteasr.cache import run_event_observer
+    from twobyteasr.recognition import asr
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
+    from twobyteasr.recognition.service import CancellationToken,CancelledError
+    from twobyteasr.recognition.cache import run_event_observer
     arrived=threading.Event();release=threading.Event()
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -57,7 +57,7 @@ def test_owned_api_cancel_terminates_requests_and_process_tree(tmp_path,monkeypa
     threading.Thread(target=server.serve_forever,daemon=True).start()
     endpoint=dict(provider='custom',protocol='openai_transcription',model='test',
         url=f'http://127.0.0.1:{server.server_port}/audio/transcriptions',api_key='test-only-dummy')
-    monkeypatch.setattr('twobyteasr.llm_config.qwen_asr_endpoint_from_settings',lambda _:endpoint)
+    monkeypatch.setattr('twobyteasr.providers.llm_config.qwen_asr_endpoint_from_settings',lambda _:endpoint)
     monkeypatch.setattr(asr,'build_qwen_asr_context',lambda *_:'')
     monkeypatch.setattr(asr,'CLOUD_BATCH_WORKERS',1)
     token=CancellationToken();context=RuntimeContext(cancellation_token=token)

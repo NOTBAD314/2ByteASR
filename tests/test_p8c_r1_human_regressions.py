@@ -9,11 +9,11 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainterPath
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_live_renderer import outside_stroke_ring, render_live_snapshot
-from twobyteasr.advanced_preview import AdvancedPreviewIdentity, AdvancedPreviewPhase, AdvancedPreviewStateMachine
-from twobyteasr.ai_providers import AntigravityCLIProvider, ProviderStatus
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_ui import WaveformTimeline
+from twobyteasr.rendering.advanced_live_renderer import outside_stroke_ring, render_live_snapshot
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewIdentity, AdvancedPreviewPhase, AdvancedPreviewStateMachine
+from twobyteasr.providers.ai_providers import AntigravityCLIProvider, ProviderStatus
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.studio.studio_ui import WaveformTimeline
 from tests.test_p8b_stroke_contract import _snapshot
 from scripts.verify_p8c_runtime import _studio_settings_path_for_profile
 

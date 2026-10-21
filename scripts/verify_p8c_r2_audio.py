@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.audio_engine import StudioAudioEngine
+from twobyteasr.playback.audio_engine import StudioAudioEngine
 
 
 def _wait(app: QApplication, predicate, timeout: float) -> bool:

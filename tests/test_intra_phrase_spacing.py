@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from twobyteasr.intra_phrase_spacing import apply_intra_phrase_spacing
+from twobyteasr.subtitle_rules.intra_phrase_spacing import apply_intra_phrase_spacing
 
 
 def words(*pairs):

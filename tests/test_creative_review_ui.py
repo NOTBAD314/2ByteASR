@@ -22,7 +22,7 @@ def test_unreviewed_pixels_hold_selection_and_application(tmp_path,monkeypatch):
 
 def test_ready_with_failed_peer_keeps_selected_theme_usable(tmp_path,monkeypatch):
     from types import SimpleNamespace
-    from twobyteasr.theme_draft import canonical_theme, digest
+    from twobyteasr.caption_design.theme_draft import canonical_theme, digest
     app,page=_page(tmp_path,monkeypatch)
     try:
         ledger,result=authored(tmp_path/'ledger')

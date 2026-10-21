@@ -5,13 +5,13 @@ import pytest
 
 import subtitle_core  # noqa: F401  (legacy core first: segmentation star-imports it)
 
-from twobyteasr import language_rules as lr
-from twobyteasr.cue_forced_alignment import (CUE_ALIGNMENT_PREFIX, attach_project_evidence, evidence_row,
+from twobyteasr.subtitle_rules import language_rules as lr
+from twobyteasr.recognition.cue_forced_alignment import (CUE_ALIGNMENT_PREFIX, attach_project_evidence, evidence_row,
                                              remap_whitespace_only)
-from twobyteasr.cue_word_alignment import cue_words
-from twobyteasr.runtime import get_runtime_context
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_timing import resolve_split
+from twobyteasr.recognition.cue_word_alignment import cue_words
+from twobyteasr.recognition.run_context import get_runtime_context
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.timeline.studio_timing import resolve_split
 
 
 def test_kanji_alone_do_not_make_japanese_but_kana_do():
@@ -43,7 +43,7 @@ def japanese_task():
 
 
 def test_japanese_output_text_keeps_kanji_and_skips_chinese_rewrites(japanese_task):
-    from twobyteasr import text_rules
+    from twobyteasr.subtitle_rules import text_rules
     assert text_rules.normalize_output_text("天気いいを買いに行くって、思ってるんじゃ") == "天気いいを買いに行くって思ってるんじゃ"
     assert text_rules.content_only("ねえねえ、聞こえなかった？") == "ねえねえ聞こえなかった"
     japanese_task.task_language = ""
@@ -51,14 +51,14 @@ def test_japanese_output_text_keeps_kanji_and_skips_chinese_rewrites(japanese_ta
 
 
 def test_kana_count_as_content_for_lengths_and_offsets():
-    from twobyteasr.text_rules import content_only, display_length
+    from twobyteasr.subtitle_rules.text_rules import content_only, display_length
     assert display_length("恐ろしいわすえ恐ろしいわこの子らもしかして") == 21
     assert content_only("没事 开一把就知道了，OK！") == "没事开一把就知道了ok"   # Chinese unchanged
 
 
 def test_japanese_phrase_protection_blocks_cuts_inside_words():
     import subtitle_core  # noqa: F401  (segmentation is loaded through the legacy core)
-    from twobyteasr import segmentation
+    from twobyteasr.subtitle_rules import segmentation
     with lr.language_scope("ja"):
         assert segmentation.snap_boundaries_away_from_word_interiors("私が本当に天才だって", [6, 10]) == [5, 10]
     spans = [w for *_unused, w in lr.japanese_phrase_spans("もしかして私が本当に天才だって思ってるんじゃ")]
@@ -103,7 +103,7 @@ def test_whitespace_only_delivery_changes_keep_alignment_and_other_changes_drop_
 
 
 def test_aligner_tokens_keep_original_substrings_and_job_keys():
-    from twobyteasr.asr import aligner_tokens
+    from twobyteasr.recognition.asr import aligner_tokens
     payload = {"results": [{"id": "S01@1000-2000", "text": "ＡＢＣを2024年に",
                             "segments": [dict(char_start=0, char_end=4, start_ms=1000, end_ms=1300, granularity="word",
                                               start_basis="model", end_basis="model"),

@@ -3,9 +3,9 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from fractions import Fraction
 from pathlib import Path
 import pytest
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.export_media import probe_media, SequentialExportDecoder, ExportMediaError
-from twobyteasr.clip_time_mapper import project_to_source_exact
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.exports.export_media import probe_media, SequentialExportDecoder, ExportMediaError
+from twobyteasr.timeline.clip_time_mapper import project_to_source_exact
 FFMPEG=Path(__file__).resolve().parents[1]/'tools/ffmpeg/bin/ffmpeg.exe'
 
 @pytest.mark.parametrize('fps',['30','60','30000/1001','60000/1001'])

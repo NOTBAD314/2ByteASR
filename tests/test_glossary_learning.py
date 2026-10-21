@@ -1,6 +1,6 @@
 import json
 
-from twobyteasr.glossary_learning import (
+from twobyteasr.glossary.glossary_learning import (
     GlossaryLearningStore,
     extract_term_replacements,
     new_evidence_token,

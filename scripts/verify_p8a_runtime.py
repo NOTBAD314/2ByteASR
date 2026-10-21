@@ -44,8 +44,8 @@ def _second_media(explicit: Path | None) -> Path:
 
 
 def _prepare_project(media: Path, output_dir: Path) -> Path:
-    from twobyteasr.models import SubtitleCue
-    from twobyteasr.studio_project import create_studio_outputs, load_project
+    from twobyteasr.recognition.transcript_data import SubtitleCue
+    from twobyteasr.projects.studio_project import create_studio_outputs, load_project
 
     output_dir.mkdir(parents=True, exist_ok=True)
     txt = output_dir / f"{media.stem}.txt"
@@ -72,7 +72,7 @@ def _prepare_project(media: Path, output_dir: Path) -> Path:
 
 
 def _path_parity() -> dict:
-    from twobyteasr.model_registry import scan_model_registry
+    from twobyteasr.local_models.model_registry import scan_model_registry
     from twobyteasr.runtime_paths import (
         build_runtime_paths,
         reset_runtime_paths,

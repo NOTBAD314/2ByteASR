@@ -51,9 +51,9 @@ def web_released(page) -> tuple[bool, str]:
 
 def main() -> int:
     app = QApplication.instance() or QApplication([])
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.web_theme import builtin_web_themes
-    from twobyteasr.live_web_preview import GLOBAL_WEB_STRIP_STORE
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
+    from twobyteasr.rendering.live_web_preview import GLOBAL_WEB_STRIP_STORE
 
     page = SubtitleStudioPage()
     page.resize(1600, 920)

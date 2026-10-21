@@ -18,15 +18,15 @@ def main():
     app=QApplication([])
     import numpy as np
     from PIL import Image
-    from twobyteasr.studio_project import StudioMedia,StudioCue,SubtitleStyle,SubtitleProject,save_project
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.visual_design_graph import graph_from_style_recipe
-    from twobyteasr.advanced_renderer import AdvancedRendererBackend,compile_composition_data
-    from twobyteasr.renderer_service import RendererService,RendererJob
-    from twobyteasr.studio_render import RenderJob,RenderSettings
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.export_timeline import write_export_ass
-    from twobyteasr.video_export import capture_video_graph
+    from twobyteasr.projects.studio_project import StudioMedia,StudioCue,SubtitleStyle,SubtitleProject,save_project
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.visual_design_graph import graph_from_style_recipe
+    from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend,compile_composition_data
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
+    from twobyteasr.exports.studio_render import RenderJob,RenderSettings
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.exports.export_timeline import write_export_ass
+    from twobyteasr.exports.video_export import capture_video_graph
     ffmpeg=ROOT/'tools/ffmpeg/bin/ffmpeg.exe'
     source=out/'background.mp4'
     run_hidden_subprocess([str(ffmpeg),'-v','error','-y','-f','lavfi','-i','color=white:s=640x360:r=30:d=4',

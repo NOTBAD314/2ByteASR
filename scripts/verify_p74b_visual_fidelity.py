@@ -37,10 +37,10 @@ os.environ["TWOBYTEASR_CHILD_PROCESS_LOG"] = str(RUN / "child-processes.jsonl")
 
 from PySide6.QtGui import QImage
 
-from twobyteasr.advanced_renderer import compile_composition_data
-from twobyteasr.renderer_service import RendererJob, RendererService
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.visual_design_graph import (
+from twobyteasr.rendering.advanced_renderer import compile_composition_data
+from twobyteasr.rendering.renderer_service import RendererJob, RendererService
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_design.visual_design_graph import (
     VisualDesignGraph,
     comic_burst_graph,
     glitch_graph,

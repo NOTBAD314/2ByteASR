@@ -33,7 +33,7 @@ def test_explicit_namespaces_and_spawn_are_isolated():
 
 
 def test_source_config_does_not_migrate_user_settings():
-    from twobyteasr.settings import stable_settings_root,_legacy_settings_candidates
+    from twobyteasr.storage.settings import stable_settings_root,_legacy_settings_candidates
     assert stable_settings_root()==isolation_root()/'config'
     assert _legacy_settings_candidates()==[]
     assert not any(k.endswith('_API_KEY') for k in os.environ)

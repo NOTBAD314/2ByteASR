@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.ai_providers import OpenAICompatibleProvider
-from twobyteasr.llm_adapter import LLMRequestError, _gemini_fast_reasoning
-from twobyteasr.provider_service import ProviderService
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr import subtitle_translation as st
+from twobyteasr.providers.ai_providers import OpenAICompatibleProvider
+from twobyteasr.providers.llm_adapter import LLMRequestError, _gemini_fast_reasoning
+from twobyteasr.providers.provider_service import ProviderService
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.subtitle_rules import subtitle_translation as st
 from twobyteasr.subtitle_rules.translation_diagnostics import TranslationLog, provider_evidence
 
 BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -45,7 +45,7 @@ def test_real_broker_translates_91_and_logs_request_answer_and_usage(monkeypatch
         assert body["reasoning_effort"] == "low"
         return Response({"choices": [{"message": {"content": json.dumps(answer(body["messages"]))}, "finish_reason": "stop"}],
                          "usage": {"prompt_tokens": 200, "completion_tokens": 100, "total_tokens": 300}})
-    monkeypatch.setattr("twobyteasr.network_policy.post", post)
+    monkeypatch.setattr("twobyteasr.providers.network_policy.post", post)
     p, log, service = project(91), TranslationLog(tmp_path), ProviderService()
     original = copy.deepcopy(p.cues)
     try:
@@ -58,7 +58,7 @@ def test_real_broker_translates_91_and_logs_request_answer_and_usage(monkeypatch
         assert rows[0]["event"] == "started" and rows[-1]["summary"]["succeeded"] == 91
         response = next(r for r in rows if r["event"] == "response")
         assert response["usage"]["total_tokens"] == 300
-        assert next(r for r in rows if r["event"] == "request")["messages"]
+        assert next(r for r in rows if r["event"] == "request")["messages_included"] is False
     finally:
         service.shutdown()
 
@@ -120,7 +120,8 @@ def test_log_redacts_secrets_and_never_collects_thoughts(tmp_path):
     log(provider_evidence(provider))
     text = log.path.read_text(encoding="utf8")
     assert secret not in text and "abc-secret" not in text and "private thought" not in text
-    assert "final answer" in text
+    assert "final answer" not in text
+    assert "final_content_preview_characters" in text
 
 
 def test_logging_failure_never_discards_translations(tmp_path):
@@ -135,8 +136,8 @@ def test_logging_failure_never_discards_translations(tmp_path):
 def test_dialog_shows_redacted_reason_and_copies_log(monkeypatch, tmp_path):
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_ai import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.studio_translation_dialog import SubtitleTranslationDialog
+    from twobyteasr.caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.studio.studio_translation_dialog import SubtitleTranslationDialog
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY, "settings", lambda: SETTINGS)
     p = project()
@@ -154,6 +155,6 @@ def test_dialog_shows_redacted_reason_and_copies_log(monkeypatch, tmp_path):
         assert "HTTP 400" in dialog.status.text()
         assert "abc-secret" not in dialog.request_log.toPlainText()
         dialog._copy_log()
-        assert '"messages"' in app.clipboard().text() and "abc-secret" not in app.clipboard().text()
+        assert '"messages_included": false' in app.clipboard().text() and "abc-secret" not in app.clipboard().text()
     finally:
         dialog.deleteLater()

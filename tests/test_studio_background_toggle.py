@@ -7,9 +7,9 @@ from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QCheckBox, QScrollArea, QToolButton
 
 from tests.test_studio_style_controller import _finish, _page
-from twobyteasr.visual_design_graph import apply_background_to_graph
-from twobyteasr.style_resolution import resolve_cue_visual
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_design.visual_design_graph import apply_background_to_graph
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _panel(page, cue_id="a"):
@@ -189,7 +189,7 @@ def test_label_column_grows_for_longer_translations(tmp_path, monkeypatch):
 
 
 def test_preset_combo_ends_a_long_name_in_an_ellipsis(tmp_path, monkeypatch):
-    from twobyteasr.studio_style_widgets import ElidedComboBox
+    from twobyteasr.caption_style.studio_style_widgets import ElidedComboBox
 
     app, page = _page(tmp_path, monkeypatch)
     assert isinstance(page.style_preset, ElidedComboBox)
@@ -286,7 +286,7 @@ def test_active_rows_fade_their_color_from_the_right(tmp_path, monkeypatch):
 
 
 def test_new_font_family_drops_the_old_face_in_the_recipe(tmp_path, monkeypatch):
-    from twobyteasr.studio_project import default_style
+    from twobyteasr.projects.studio_project import default_style
 
     app, page = _page(tmp_path, monkeypatch)
     page.session.project.styles[0] = default_style()
@@ -308,7 +308,7 @@ def test_new_font_family_drops_the_old_face_in_the_recipe(tmp_path, monkeypatch)
 
 
 def test_missing_weight_message_names_the_face_in_use():
-    from twobyteasr.font_metadata import local_faces, resolve_local_face
+    from twobyteasr.caption_style.font_metadata import local_faces, resolve_local_face
 
     faces = [face for face in local_faces() if face.family == "Source Han Sans SC"]
     family = faces[0].aliases[0] if faces else "Source Han Sans SC"

@@ -1,7 +1,7 @@
 """User-facing material regressions, independent of renderer implementation."""
 from scripts.author_balatro_material import definitions,build_theme
 from scripts.author_balatro_candidates import candidates
-from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set
 
 
 def test_paper_print_gets_continuous_time_and_never_metal_sweep():

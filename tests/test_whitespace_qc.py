@@ -18,12 +18,12 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.cue_word_alignment import cue_words
-from twobyteasr.studio_caption_timeline import KEY, ensure_independent_captions
-from twobyteasr.studio_commands import ApplySafeFixesCommand
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_qc import QCResult, SubtitleQCEngine, build_safe_fix_plan, normalize_safe_text
-from twobyteasr.studio_runtime_state import state_for
+from twobyteasr.recognition.cue_word_alignment import cue_words
+from twobyteasr.timeline.studio_caption_timeline import KEY, ensure_independent_captions
+from twobyteasr.timeline.studio_commands import ApplySafeFixesCommand
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.subtitle_rules.studio_qc import QCResult, SubtitleQCEngine, build_safe_fix_plan, normalize_safe_text
+from twobyteasr.projects.studio_runtime_state import state_for
 
 
 def _app():

@@ -2,7 +2,7 @@
 import copy
 import pytest
 
-from twobyteasr.letter_motion import PRESETS, choreograph, sample
+from twobyteasr.caption_style.letter_motion import PRESETS, choreograph, sample
 
 
 def plan(mode):

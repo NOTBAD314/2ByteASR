@@ -10,8 +10,8 @@ import json
 import pytest
 
 import subtitle_core
-from twobyteasr import output as output_module
-from twobyteasr import reporting as task_reporting
+from twobyteasr.subtitle_rules import output as output_module
+from twobyteasr.recognition import reporting as task_reporting
 
 
 @pytest.fixture(autouse=True)

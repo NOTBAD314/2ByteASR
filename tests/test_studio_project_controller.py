@@ -9,17 +9,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_project import (
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     load_project,
     save_project,
 )
-from twobyteasr.studio_project_controller import StudioProjectController
-from twobyteasr.studio_project_flow import StudioProjectFlowMixin
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project_controller import StudioProjectController
+from twobyteasr.studio.studio_project_flow import StudioProjectFlowMixin
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 PROJECT_WRAPPERS = {
@@ -53,7 +53,7 @@ def test_project_controller_is_a_plain_state_free_collaborator():
     )
     source = inspect.getsource(inspect.getmodule(StudioProjectController))
     assert "from .studio_ui" not in source
-    assert "import twobyteasr.studio_ui" not in source
+    assert "import twobyteasr.studio.studio_ui" not in source
     assert "QThread" not in source
     assert "threading" not in source
     assert "Thread(" not in source

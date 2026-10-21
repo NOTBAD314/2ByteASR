@@ -2,12 +2,19 @@
 
 Starts the real app (source, or ``--exe`` for a frozen candidate) on a private
 desktop with an isolated data folder and runs the ``ui-polish`` acceptance
-scenario (``twobyteasr/ui_polish_audit.py``). The runner prepares, under
+scenario (``twobyteasr/acceptance/ui_polish_audit.py``). The runner prepares, under
 ``--output``: a recognition report with long resource names, a Studio project
 whose captions carry measured per-character words (recognition slips, a filler
 line), the interface zoom, and optionally links to installed models
 (``--models``; only the folders the checks need, read-only, removed after the
 run) plus speech media for the Home 匹配文稿 run (``--media``). Offline; no AI.
+
+2026-10-16: ``--match-language en`` (or ``ja``) runs Home 匹配文稿 in that
+language through Qwen3-ASR + Qwen3-ForcedAligner, with ``--match-script``
+(English default: ``tests/fixtures/script_match_en_narration.txt``, 40 lines).
+``--speak "Microsoft Zira Desktop"`` reads the script aloud with that Windows
+voice into the output folder and uses it as the media, recording where each
+line is spoken so the captions' times are checked too.
 """
 from __future__ import annotations
 
@@ -23,6 +30,20 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 MODEL_FOLDERS = ('FireRedASR2-AED', 'FireRedVAD', 'spkrec-ecapa-voxceleb', 'MOSS-Transcribe-Diarize',
                  'Qwen3-ASR-1.7B', 'Qwen3-ForcedAligner-0.6B', 'wav2vec2-large-xlsr-53-japanese')
 JUNCTION = 0xA0000003
+MATCH_SCRIPTS = {'en': ROOT / 'tests' / 'fixtures' / 'script_match_en_narration.txt'}
+SPEAK_PS1 = r'''param([string]$OutDir, [string]$LinesFile, [string]$Voice)
+Add-Type -AssemblyName System.Speech
+$lines = @(Get-Content -Encoding UTF8 $LinesFile)
+$format = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000, [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+for ($i = 0; $i -lt $lines.Count; $i++) {
+  $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+  $synth.SelectVoice($Voice)
+  $synth.Rate = 1
+  $synth.SetOutputToWaveFile((Join-Path $OutDir ("line$i.wav")), $format)
+  $synth.Speak($lines[$i])
+  $synth.Dispose()
+}
+'''
 
 
 def _report(path: Path) -> Path:
@@ -44,8 +65,8 @@ def _report(path: Path) -> Path:
 
 def _fixture(out: Path) -> Path:
     """Captions with measured per-character words, like FireRed evidence."""
-    from twobyteasr.sample_project import ensure_sample_project, sample_root
-    from twobyteasr.studio_project import project_from_runtime_cues, save_project
+    from twobyteasr.app.sample_project import ensure_sample_project, sample_root
+    from twobyteasr.projects.studio_project import project_from_runtime_cues, save_project
     ensure_sample_project()
     media = sample_root() / '范例影片.mp4'
     heard = [(400, '大家好欢迎回到直播间今天我们继续打至东国'), (5200, '派门在哪里呢我们先去找找看'),
@@ -97,6 +118,40 @@ def _runtime_shim(real_python: Path, target: Path) -> Path:
     return target / 'Scripts' / 'python.exe'
 
 
+def _speak(lines: list[str], voice: str, out: Path, gap: float = 0.25) -> tuple[Path, Path]:
+    """Each script line read by a Windows voice, joined with short pauses.
+
+    Returns the 16 kHz mono WAV and a JSON file with each line's span (ms).
+    """
+    import subprocess
+    import wave
+    parts = out / 'speech'
+    parts.mkdir()
+    (parts / 'lines.txt').write_text('\n'.join(lines) + '\n', 'utf-8')
+    (parts / 'speak.ps1').write_text(SPEAK_PS1, 'utf-8-sig')
+    subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(parts / 'speak.ps1'),
+                    '-OutDir', str(parts), '-LinesFile', str(parts / 'lines.txt'), '-Voice', voice], check=True)
+    pause = b'\x00\x00' * int(16000 * gap)
+    pcm, spans, cursor = bytearray(), [], gap
+    for index in range(len(lines)):
+        with wave.open(str(parts / f'line{index}.wav'), 'rb') as clip:
+            frames, seconds = clip.readframes(clip.getnframes()), clip.getnframes() / clip.getframerate()
+        pcm += pause + frames
+        spans.append([round(cursor * 1000), round((cursor + seconds) * 1000)])
+        cursor += seconds + gap
+    pcm += pause
+    media = out / 'match-speech.wav'
+    with wave.open(str(media), 'wb') as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16000)
+        target.writeframes(bytes(pcm))
+    expected = out / 'match-speech.json'
+    expected.write_text(json.dumps({'voice': voice, 'gap_s': gap, 'seconds': round(cursor, 2), 'lines': spans},
+                                   indent=1), 'utf-8')
+    return media, expected
+
+
 def _unlink(links) -> None:
     for link in links:
         try:
@@ -119,18 +174,32 @@ def main() -> int:
                              '(needed by frozen builds)')
     parser.add_argument('--moss-python', type=Path, help='MOSS runtime python (language plans)')
     parser.add_argument('--media', type=Path, help='speech media whose words match the scenario script')
-    parser.add_argument('--timeout', type=int, default=900)
+    parser.add_argument('--match-language', choices=('en', 'ja'),
+                        help='run Home 匹配文稿 in this language (Qwen3-ASR + Qwen3-ForcedAligner) instead of Chinese')
+    parser.add_argument('--match-script', type=Path, help='script for --match-language, one caption per line')
+    parser.add_argument('--speak', metavar='VOICE',
+                        help='read the --match-language script aloud with this Windows voice and use it as --media')
+    parser.add_argument('--timeout', type=int, help='seconds (default 900; 1500 with --match-language)')
     args = parser.parse_args()
     out = args.output.resolve()
     if out.exists() or not out.is_relative_to(ROOT / 'tmp'):
         raise ValueError('A fresh output directory under the repository tmp/ is required')
+    script = args.match_script or MATCH_SCRIPTS.get(args.match_language)
+    if args.match_language and script is None:
+        parser.error(f'--match-language {args.match_language} needs --match-script')
+    if args.speak and not args.match_language:
+        parser.error('--speak reads the --match-language script')
     out.mkdir(parents=True)
+    expected = None
+    if args.speak:  # the lines as 匹配文稿 reads them: non-empty, edges trimmed
+        lines = [line.strip() for line in script.read_text('utf-8').splitlines() if line.strip()]
+        args.media, expected = _speak(lines, args.speak, out)
     profile = out / 'profile'
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(profile)
     sys.path.insert(0, str(ROOT))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr import ui_zoom
+    from twobyteasr.app import ui_zoom
     ui_zoom.set_zoom_percent(args.zoom)   # isolated QSettings shared with the app (same test root)
     report = _report(out / 'fixture_字幕任务报告.json')
     fixture = _fixture(out)
@@ -149,6 +218,11 @@ def main() -> int:
                    TWOBYTEASR_UI_POLISH_REPORT=str(report), TWOBYTEASR_UI_POLISH_THEME=args.theme)
         if args.media:
             env['TWOBYTEASR_UI_POLISH_MEDIA'] = str(args.media.resolve())
+        if args.match_language:
+            env['TWOBYTEASR_UI_POLISH_MATCH_LANGUAGE'] = args.match_language
+            env['TWOBYTEASR_UI_POLISH_MATCH_SCRIPT'] = str(script.resolve())
+        if expected:
+            env['TWOBYTEASR_UI_POLISH_MATCH_EXPECTED'] = str(expected)
         if args.main_runtime:
             env['TWOBYTEASR_MAIN_PYTHON'] = str(_runtime_shim(args.main_runtime, profile / 'runtime-shim' / 'main'))
         elif args.main_python:
@@ -157,7 +231,8 @@ def main() -> int:
             env['TWOBYTEASR_MOSS_PYTHON'] = str(args.moss_python)
         command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT / 'quick_start.py')]
         from isolated_windows_desktop import run_on_desktop
-        code = run_on_desktop(command, cwd=ROOT, env=env, output=out / 'process', timeout=args.timeout)
+        timeout = args.timeout or (1500 if args.match_language else 900)
+        code = run_on_desktop(command, cwd=ROOT, env=env, output=out / 'process', timeout=timeout)
     finally:
         _unlink(links)
     path = out / 'result.json'
@@ -165,7 +240,9 @@ def main() -> int:
     summary = dict(passed=bool(result.get('passed')) and code == 0 and bool(result.get('gui_shutdown')), exit=code,
                    shutdown=result.get('gui_shutdown'), executable=result.get('executable'),
                    checks=[(c['name'], c['passed']) for c in result.get('checks', [])],
-                   skipped=result.get('skipped'), errors=[e[-800:] for e in result.get('errors', [])])
+                   skipped=result.get('skipped'), errors=[e[-800:] for e in result.get('errors', [])],
+                   home_match={k: v for k, v in result.get('metrics', {}).items()
+                               if k.startswith('home') and not k.endswith(('_cues', '_timing_deltas_ms'))})
     (out / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=2), 'utf-8')
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     return 0 if summary['passed'] else 1

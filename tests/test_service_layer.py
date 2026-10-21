@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.service import CancellationToken, RunOptions, run_media_queue as _run_media_queue
+from twobyteasr.recognition.service import CancellationToken, RunOptions, run_media_queue as _run_media_queue
 
 # These tests own FakePipeline/runtime doubles. Production keeps the mandatory
 # environment gate; use its explicit test opt-out so assertions reach the fake.
@@ -201,7 +201,7 @@ def test_skip_overwrite_policy_does_not_call_processor(tmp_path, monkeypatch):
     media_path = _media(tmp_path, "existing.wav")
     target = tmp_path / "existing.2byteproj"
     target.write_text("existing", encoding="utf-8")
-    monkeypatch.setattr("twobyteasr.studio_project.canonical_project_path", lambda _: target)
+    monkeypatch.setattr("twobyteasr.projects.studio_project.canonical_project_path", lambda _: target)
     result = run_media_queue(
         [media_path],
         RunOptions(overwrite_policy="skip"),

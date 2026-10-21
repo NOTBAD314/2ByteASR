@@ -38,11 +38,11 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
-    from twobyteasr.studio_project import (
+    from twobyteasr.projects.studio_project import (
         StudioCue, StudioMedia, StudioSpeaker, SubtitleStyle, SubtitleProject, save_project,
     )
-    from twobyteasr.web_theme import builtin_web_themes
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
 
     project = SubtitleProject(media=StudioMedia(path=str(video)))
     project.speakers.append(StudioSpeaker(id="S01", name="水墨"))

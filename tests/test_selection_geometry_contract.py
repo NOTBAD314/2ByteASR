@@ -1,8 +1,8 @@
 import io,os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PIL import Image,ImageDraw
-from twobyteasr.selection_geometry import alpha_bounds
-from twobyteasr.studio_mpv import mpv_startup_arguments
+from twobyteasr.studio.selection_geometry import alpha_bounds
+from twobyteasr.playback.studio_mpv import mpv_startup_arguments
 
 def test_native_renderer_receives_shipped_fonts():
     from pathlib import Path
@@ -24,6 +24,6 @@ def test_full_stage_effect_is_excluded_from_subject_geometry():
 def test_missing_measured_pixels_have_no_invisible_resize_hit_target():
     from PySide6.QtCore import QPoint,QRectF
     from types import SimpleNamespace
-    from twobyteasr.studio_position_overlay import SubtitlePositionOverlay
+    from twobyteasr.studio.studio_position_overlay import SubtitlePositionOverlay
     owner=SimpleNamespace(_subtitle_rect=lambda:QRectF())
     assert SubtitlePositionOverlay._handle_at(owner,QPoint(0,0))==''

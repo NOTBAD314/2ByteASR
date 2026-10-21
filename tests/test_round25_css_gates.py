@@ -11,7 +11,7 @@ pytestqt = pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt, QObject
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.web_theme import (
+from twobyteasr.caption_design.web_theme import (
     WebThemeValidationError,
     WebThemeDocument,
     builtin_web_themes,
@@ -62,8 +62,8 @@ def test_gate_balanced_theme_still_passes():
 
 def test_publish_gate_flushes_trailing_frame():
     _app()
-    from twobyteasr import studio_advanced_flow
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.studio import studio_advanced_flow
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
     project = SubtitleProject(media=StudioMedia(path="x.mp4"))
     project.cues.append(StudioCue(id="w1", start_ms=0, end_ms=1200, text="甲"))
@@ -129,8 +129,8 @@ def test_publish_gate_flushes_trailing_frame():
 def test_renderer_warm_waits_for_ready_project_and_web_cues():
     _app()
     from PySide6.QtCore import QTimer
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
     scheduled: list[tuple[int, object]] = []
     original_single_shot = QTimer.singleShot
@@ -165,8 +165,8 @@ def test_renderer_warm_waits_for_ready_project_and_web_cues():
         assert all(cb != page._warm_web_renderer_service for _, cb in scheduled)
 
         # 含特效字幕 → 媒体 READY 后延迟 15s 排 warm（避开启动/挂载窗口）。
-        from twobyteasr.style_recipe import StyleRecipe
-        from twobyteasr.web_theme import builtin_web_themes
+        from twobyteasr.caption_style.style_recipe import StyleRecipe
+        from twobyteasr.caption_design.web_theme import builtin_web_themes
 
         recipe = StyleRecipe(
             name="W", engine="remotion",
@@ -189,7 +189,7 @@ def test_renderer_warm_waits_for_ready_project_and_web_cues():
 
 
 def test_gate_rejects_flat_plate_background():
-    from twobyteasr.web_theme import _reject_flat_plate
+    from twobyteasr.caption_design.web_theme import _reject_flat_plate
     payload=_balatro()
     payload['cueHtml']='<div class="plate">{{text}}</div>'
     payload['cueCss']='.plate{font-family:var(--wt-font);background:rgba(14,16,18,.82);border:2px solid #C9A227;}'
@@ -198,7 +198,7 @@ def test_gate_rejects_flat_plate_background():
 
 
 def test_gate_gradient_plate_and_glass_exemption_pass():
-    from twobyteasr.web_theme import _reject_flat_plate
+    from twobyteasr.caption_design.web_theme import _reject_flat_plate
     payload=_balatro();payload['cueHtml']='<div class="plate">{{text}}</div>'
     payload['cueCss']='.plate{font-family:var(--wt-font);background:linear-gradient(#333,#111);}'
     _reject_flat_plate(WebThemeDocument.from_dict(payload),'工业字幕')

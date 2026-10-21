@@ -8,17 +8,18 @@ from types import SimpleNamespace
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr import studio_review_ui, window_constraints
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_qc import QCCandidate
-from twobyteasr.studio_review import (
+from twobyteasr.studio import studio_review_ui
+from twobyteasr.app import window_constraints
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.subtitle_rules.studio_qc import QCCandidate
+from twobyteasr.subtitle_rules.studio_review import (
     REVIEW_NEXT_GUARD_MS,
     REVIEW_PREROLL_MS,
     REVIEW_TAIL_MS,
     ReviewPlayback,
     review_playback_window,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def _app():

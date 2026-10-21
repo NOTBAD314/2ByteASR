@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from twobyteasr.advanced_renderer import normalized_visual_snapshot, scale_visual_for_composition
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.rendering.advanced_renderer import normalized_visual_snapshot, scale_visual_for_composition
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
 from dataclasses import replace
 
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.visual_design_graph import (
     VisualDesignGraph,
     comic_burst_graph,
     style_recipe_from_graph,
 )
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _snapshot(width: float):
@@ -57,14 +57,10 @@ def test_snapshot_overrides_stale_visual_graph_stroke_width():
 def test_reference_pixel_conversion_occurs_once_at_preview_compiler_boundary():
     visual = normalized_visual_snapshot(_snapshot(20))
     compiled = scale_visual_for_composition(visual, composition_width=640)
-    # A graph cue is drawn by VisualDesignGraphSubtitle from textLayer, which
-    # applies the 640/1920 factor itself; Python leaves every value canonical.
-    assert compiled["strokes"][0]["width"] == 20
-    assert compiled["visualGraph"]["textLayer"]["strokes"][0]["width"] == 20
-    # Without a graph (TrustedSubtitle) the flat strokes are converted here, once.
-    trusted = {key: value for key, value in visual.items() if key != "visualGraph"}
-    compiled = scale_visual_for_composition(trusted, composition_width=640)
     assert round(compiled["strokes"][0]["width"], 4) == round(20 / 3, 4)
+    # Graph values remain canonical; its trusted TS compiler applies the same
+    # 640/1920 factor once when it constructs CSS.
+    assert compiled["visualGraph"]["textLayer"]["strokes"][0]["width"] == 20
 
 
 def test_canonical_stroke_levels_are_strictly_ordered():
@@ -109,9 +105,6 @@ def test_shadow_blur_radius_is_canonical_reference_pixel_alias():
     })
     visual = normalized_visual_snapshot(snapshot)
     assert visual["shadow"]["blur"] == 12
-    # Graph cues keep reference pixels (the graph compiler scales them).
-    assert scale_visual_for_composition(visual, composition_width=640)["shadow"]["blur"] == 12
-    trusted = {key: value for key, value in visual.items() if key != "visualGraph"}
-    compiled = scale_visual_for_composition(trusted, composition_width=640)
+    compiled = scale_visual_for_composition(visual, composition_width=640)
     assert compiled["shadow"]["blur"] == 4
     assert visual["visualGraph"]["textLayer"]["shadow"]["blur_radius"] == 12

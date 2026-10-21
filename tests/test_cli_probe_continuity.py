@@ -13,9 +13,9 @@ def isolated_cli_logs(tmp_path,monkeypatch):
     monkeypatch.setenv('LOCALAPPDATA',str(tmp_path/'local'))
     monkeypatch.setenv('APPDATA',str(tmp_path/'roaming'))
 
-from twobyteasr.ai_providers import AIProviderError, AntigravityCLIProvider, CLIProvider, ProviderStatus
-from twobyteasr.llm_config import activate_ai_service, update_active_profile, cache_service_models, service_model_catalog
-from twobyteasr.provider_service import ProviderService
+from twobyteasr.providers.ai_providers import AIProviderError, AntigravityCLIProvider, CLIProvider, ProviderStatus
+from twobyteasr.providers.llm_config import activate_ai_service, update_active_profile, cache_service_models, service_model_catalog
+from twobyteasr.providers.provider_service import ProviderService
 
 
 def test_real_first_byte_precedes_exit_and_redacts_failure():
@@ -69,7 +69,7 @@ def test_shared_runtime_ignores_ui_options_and_keeps_model_identity(monkeypatch)
             calls.append(kwargs)
             return ProviderStatus(True,True,'real High response',())
         def complete(self,*args,**kwargs):return 'ok'
-    monkeypatch.setattr('twobyteasr.provider_service.adapter_for_stage',lambda *_a,**_k:Adapter(model='gemini-3.8-flash-high',executable='fixture'))
+    monkeypatch.setattr('twobyteasr.providers.provider_service.adapter_for_stage',lambda *_a,**_k:Adapter(model='gemini-3.8-flash-high',executable='fixture'))
     broker = ProviderService()
     home = broker.client_for_stage(settings,'polish')
     home.validate(timeout=20,use_cache=False)

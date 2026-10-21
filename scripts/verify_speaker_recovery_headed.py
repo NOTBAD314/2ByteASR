@@ -31,10 +31,10 @@ def main():
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.speaker_recovery import load_candidate_snapshot, candidate_statistics
-    from twobyteasr.studio_project import load_project, save_project, save_autosave
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_speaker_manager import SpeakerManagerDialog
+    from twobyteasr.recognition.speaker_recovery import load_candidate_snapshot, candidate_statistics
+    from twobyteasr.projects.studio_project import load_project, save_project, save_autosave
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_speaker_manager import SpeakerManagerDialog
     hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
               for path in [args.project, *args.cache.glob("*.json")]}
     project = load_project(args.project)

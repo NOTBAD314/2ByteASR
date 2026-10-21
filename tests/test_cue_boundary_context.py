@@ -2,10 +2,10 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_cue_controller import StudioCueController
-from twobyteasr.studio_runtime_state import state_for
-from twobyteasr.selection_scope import SelectionScope
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.studio.studio_cue_controller import StudioCueController
+from twobyteasr.projects.studio_runtime_state import state_for
+from twobyteasr.timeline.selection_scope import SelectionScope
 
 
 @pytest.fixture

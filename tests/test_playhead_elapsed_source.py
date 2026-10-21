@@ -1,14 +1,14 @@
 from types import SimpleNamespace
 
-from twobyteasr.playback_clock import PlaybackClock
-from twobyteasr.studio_playback_flow import StudioPlaybackFlowMixin
+from twobyteasr.playback.playback_clock import PlaybackClock
+from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
 
 
 def test_flush_uses_same_elapsed_source_as_visual_tick(monkeypatch):
     # Windows Python 3.10 monotonic uses 15.625ms GetTickCount64. The Qt
     # elapsed clock already drives visual_tick, so a newer flush must consume
     # that same elapsed value rather than sampling the coarse clock again.
-    monkeypatch.setattr('twobyteasr.playback_clock.time.monotonic', lambda: .016)
+    monkeypatch.setattr('twobyteasr.playback.playback_clock.time.monotonic', lambda: .016)
     clock = PlaybackClock(now=0.)
     clock.force_position(500., paused=False, now=0.)
     clock.sample_presentation(now=.015, elapsed_ms=15.)

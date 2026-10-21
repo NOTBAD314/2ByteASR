@@ -4,9 +4,9 @@ import time
 from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.secondary_video import SecondaryVideoSource, SourceState
-from twobyteasr.video_decode_pipe import VideoDecodePipe
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.playback.secondary_video import SecondaryVideoSource, SourceState
+from twobyteasr.playback.video_decode_pipe import VideoDecodePipe
 
 FFMPEG = Path(__file__).resolve().parents[1] / "tools/ffmpeg/bin/ffmpeg.exe"
 pytestmark = pytest.mark.skipif(not FFMPEG.is_file(), reason="bundled ffmpeg required")

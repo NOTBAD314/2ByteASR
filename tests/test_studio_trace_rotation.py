@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from twobyteasr import runtime_trace
+from twobyteasr.diagnostics import runtime_trace
 from twobyteasr.runtime_paths import RuntimePaths
-from twobyteasr.runtime_trace import RuntimeTraceWriter
-from twobyteasr.storage_service import StorageService
+from twobyteasr.diagnostics.runtime_trace import RuntimeTraceWriter
+from twobyteasr.storage.storage_service import StorageService
 
 
 def _logs(tmp_path) -> Path:
@@ -33,7 +33,7 @@ def test_trace_log_rotates_to_one_previous_file(tmp_path, monkeypatch):
 
 
 def test_rotated_trace_is_recognized_and_not_protected(tmp_path, monkeypatch):
-    from twobyteasr import storage_legacy
+    from twobyteasr.storage import storage_legacy
     data = tmp_path / "data"
     logs = data / "logs"
     logs.mkdir(parents=True)

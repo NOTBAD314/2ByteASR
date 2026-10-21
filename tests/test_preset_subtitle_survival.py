@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, load_project,
     save_project,
 )
@@ -41,7 +41,7 @@ def _project(tmp_path):
 
 
 def _page(tmp_path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     app = _app()
     page = SubtitleStudioPage()
@@ -61,7 +61,7 @@ def _close(page):
 
 
 def _presets():
-    from twobyteasr.style_presets import StylePresetStore
+    from twobyteasr.caption_style.style_presets import StylePresetStore
 
     return [key for key in StylePresetStore().all() if key != "default"] or ["default"]
 
@@ -184,7 +184,7 @@ def test_advanced_cues_stay_in_live_ass_revision(tmp_path):
     """
     page = _page(tmp_path)
     try:
-        from twobyteasr.style_recipe import (
+        from twobyteasr.caption_style.style_recipe import (
             StyleRecipe, recipe_payload_for_style, route_recipe,
         )
 
@@ -210,8 +210,8 @@ def test_advanced_cue_without_frame_falls_back_to_native_owner(tmp_path):
     """web 帧未就绪时，播头所在 advanced cue 的所有权应回退 native。"""
     page = _page(tmp_path)
     try:
-        from twobyteasr.runtime_trace import GLOBAL_STUDIO_TRACE
-        from twobyteasr.style_recipe import StyleRecipe
+        from twobyteasr.diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
+        from twobyteasr.caption_style.style_recipe import StyleRecipe
 
         payload = _remotion_recipe_payload()
         style_id = page.project.cues[0].style_id or "default"

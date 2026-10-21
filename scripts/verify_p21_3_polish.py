@@ -36,8 +36,8 @@ def main() -> int:
 
     import moss_firered_pipeline
     import subtitle_core
-    import twobyteasr.ui as ui
-    from twobyteasr.ui import MainWindow
+    import twobyteasr.app.ui as ui
+    from twobyteasr.app.ui import MainWindow
 
     class EventCounter(QObject):
         def __init__(self):

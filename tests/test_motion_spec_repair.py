@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.caption_creative_pipeline import ThemeLedger, accept_authored_set
-from twobyteasr.motion_spec_repair import apply_patches, changed_paths, collect_range_issues
-from twobyteasr.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger, accept_authored_set
+from twobyteasr.caption_design.motion_spec_repair import apply_patches, changed_paths, collect_range_issues
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
 from scripts.author_balatro_candidates import candidates
 
 
@@ -94,7 +94,7 @@ def test_late_cancel_never_commits(tmp_path):
 
 @pytest.mark.parametrize('change',['operation','generation','page_generation','finished','cancel','project'])
 def test_old_request_identity_rejected(change):
-    from twobyteasr.studio_theme_draft import StudioThemeDraftController
+    from twobyteasr.caption_design.studio_theme_draft import StudioThemeDraftController
     cancel=threading.Event();project=object()
     obj=SimpleNamespace(provider_operation='op',generation_running=True,phase='PROVIDER',current=SimpleNamespace(generation=2),project=project,
         page=SimpleNamespace(project=project,_ai_request_generation=2,_close_requested=False))

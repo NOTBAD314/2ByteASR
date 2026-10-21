@@ -22,7 +22,7 @@ class _Cache:
         self.covered_until_ms = covered_until_ms
 
     def read_window(self, start_ms, end_ms, pixel_width):
-        from twobyteasr.waveform_cache import WaveformLevel
+        from twobyteasr.playback.waveform_cache import WaveformLevel
 
         self.calls.append((start_ms, end_ms))
         end = end_ms if self.covered_until_ms is None else min(end_ms, self.covered_until_ms)
@@ -35,7 +35,7 @@ class _Cache:
 
 def _timeline():
     QApplication.instance() or QApplication([])
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
     return WaveformTimeline()
 
 

@@ -12,11 +12,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr.media_time import MediaTimeMapping
-from twobyteasr.models import SpeechSegment, WordUnit
-from twobyteasr.studio_mpv import mpv_startup_arguments
-from twobyteasr.studio_ui import MpvCanvas
-from twobyteasr.waveform_cache import WaveformCache
+from twobyteasr.timeline.media_time import MediaTimeMapping
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+from twobyteasr.playback.studio_mpv import mpv_startup_arguments
+from twobyteasr.studio.studio_ui import MpvCanvas
+from twobyteasr.playback.waveform_cache import WaveformCache
 
 
 def test_media_time_mapping_keeps_project_source_and_stream_domains_distinct():
@@ -41,7 +41,7 @@ def test_ffprobe_stream_start_time_is_not_scaled_by_timebase(tmp_path):
     import json
     from types import SimpleNamespace
 
-    from twobyteasr.media_service import MediaService
+    from twobyteasr.media.media_service import MediaService
 
     media = tmp_path / "fixture.flv"
     media.write_bytes(b"fixture")
@@ -137,7 +137,7 @@ def test_primary_mpv_startup_never_opens_audio_device():
 
 
 def test_audio_engine_has_no_continuous_clock_timer():
-    from twobyteasr import audio_engine
+    from twobyteasr.playback import audio_engine
 
     source = inspect.getsource(audio_engine.StudioAudioEngine)
     assert "QTimer" not in source
@@ -243,7 +243,7 @@ def test_audited_model_stage_emits_one_failure_for_empty_result(tmp_path):
 
 
 def test_runtime_fingerprint_reports_p9a_r6_symbols():
-    from twobyteasr.build_identity import runtime_fingerprint_payload
+    from twobyteasr.diagnostics.build_identity import runtime_fingerprint_payload
 
     features = runtime_fingerprint_payload()["features"]
     assert features["P9A_R6_CANONICAL_MEDIA_TIME_PRESENT"] is True

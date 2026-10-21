@@ -2,8 +2,8 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
-from twobyteasr.studio_project import SubtitleProject, StudioCue, StudioMedia
-from twobyteasr import studio_subtitle_export as export
+from twobyteasr.projects.studio_project import SubtitleProject, StudioCue, StudioMedia
+from twobyteasr.exports import studio_subtitle_export as export
 
 def project(text="中文😀字幕"):
     p = SubtitleProject(media=StudioMedia(path="synthetic.mp4", duration_ms=3000),
@@ -58,7 +58,7 @@ def test_locked_publish_target_reports_partial_success(tmp_path, monkeypatch):
     assert len(list(tmp_path.iterdir())) == 2
 
 def test_success_all_formats_reopens_with_same_unicode_and_times(tmp_path):
-    from twobyteasr.studio_project import save_project, load_project
+    from twobyteasr.projects.studio_project import save_project, load_project
     p = project()
     loaded = load_project(save_project(p, tmp_path / "input.2byteproj"))
     artifacts = export.export_subtitle_artifacts(loaded, tmp_path / "out", "result", export.SubtitleExportOptions(frozenset({"json", "txt", "srt", "ass"})))
@@ -66,7 +66,7 @@ def test_success_all_formats_reopens_with_same_unicode_and_times(tmp_path):
     assert all(export.verify_subtitle_artifact(a, loaded).valid for a in artifacts)
 
 def test_speaker_filename_collisions_remain_unique_on_windows(tmp_path):
-    from twobyteasr.studio_project import StudioSpeaker
+    from twobyteasr.projects.studio_project import StudioSpeaker
     p = project()
     ids = ["A", "A_3", "a"]
     p.speakers = [StudioSpeaker(s, s) for s in ids]

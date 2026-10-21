@@ -33,8 +33,8 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 
-from twobyteasr.ui import FramelessPopupCombo, _ComboPopup
-from twobyteasr.model_workshop import ModelDownloadDialog, WorkshopModel
+from twobyteasr.app.ui import FramelessPopupCombo, _ComboPopup
+from twobyteasr.local_models.model_workshop import ModelDownloadDialog, WorkshopModel
 
 
 def _make_dummy_model():

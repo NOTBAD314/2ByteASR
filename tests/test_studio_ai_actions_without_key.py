@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _settings(**models):
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     settings["models"].update(models)
     return settings
@@ -31,7 +31,7 @@ def _settings(**models):
 
 def _keys(monkeypatch, stored=None, legacy=""):
     """Key lookups see only ``stored`` (provider → key) and ``legacy`` (Bailian env/legacy bucket)."""
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     stored = dict(stored or {})
     monkeypatch.setattr(llm_config, "read_scoped_api_key",
                         lambda provider, base_url="": (stored.get(provider, ""), "test" if provider in stored else ""))
@@ -41,14 +41,14 @@ def _keys(monkeypatch, stored=None, legacy=""):
 # ---------------------------------------------------------------- the rule
 
 def test_default_settings_without_any_key_count_as_missing(monkeypatch):
-    from twobyteasr.llm_config import text_ai_key_missing
+    from twobyteasr.providers.llm_config import text_ai_key_missing
     _keys(monkeypatch)
     assert text_ai_key_missing(_settings(), "polish")
     assert text_ai_key_missing(_settings(), "group")
 
 
 def test_a_saved_or_environment_key_is_not_missing(monkeypatch):
-    from twobyteasr.llm_config import text_ai_key_missing
+    from twobyteasr.providers.llm_config import text_ai_key_missing
     _keys(monkeypatch, {"bailian": "sk-test"})
     assert not text_ai_key_missing(_settings(), "polish")
     assert not text_ai_key_missing(_settings(), "group")
@@ -57,7 +57,7 @@ def test_a_saved_or_environment_key_is_not_missing(monkeypatch):
 
 
 def test_only_the_step_without_a_key_is_missing(monkeypatch):
-    from twobyteasr.llm_config import text_ai_key_missing
+    from twobyteasr.providers.llm_config import text_ai_key_missing
     _keys(monkeypatch, {"deepseek": "sk-test"})
     settings = _settings(group_provider="deepseek", group_base_url="https://api.deepseek.com/v1",
                          group_model="deepseek-chat")
@@ -67,7 +67,7 @@ def test_only_the_step_without_a_key_is_missing(monkeypatch):
 
 
 def test_a_local_loopback_service_and_cli_accounts_need_no_key(monkeypatch):
-    from twobyteasr.llm_config import activate_ai_service, text_ai_key_missing
+    from twobyteasr.providers.llm_config import activate_ai_service, text_ai_key_missing
     _keys(monkeypatch)
     local = dict(provider="custom", base_url="http://127.0.0.1:11434/v1", model="qwen3:8b")
     settings = _settings(**{f"{role}_{key}": value for role in ("polish", "group") for key, value in local.items()})
@@ -83,7 +83,7 @@ def test_a_local_loopback_service_and_cli_accounts_need_no_key(monkeypatch):
 
 
 def test_other_configuration_problems_are_left_to_the_request(monkeypatch):
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     _keys(monkeypatch)
 
     def broken(*_args, **_kwargs):
@@ -109,7 +109,7 @@ def _answer_note(button_name, seen):
 
 
 def test_the_note_offers_the_explainer_or_cancel(monkeypatch):
-    from twobyteasr import api_key_explainer
+    from twobyteasr.app import api_key_explainer
     opened = []
     monkeypatch.setattr(api_key_explainer, "open_api_key_explainer",
                         lambda window, **_kw: opened.append(window) or "setup")
@@ -130,7 +130,7 @@ def test_the_note_offers_the_explainer_or_cancel(monkeypatch):
 
 # ---------------------------------------------------------------- Studio AI 断句
 
-from twobyteasr.studio_sentence_refine_ui import StudioSentenceRefineMixin  # noqa: E402
+from twobyteasr.studio.studio_sentence_refine_ui import StudioSentenceRefineMixin  # noqa: E402
 
 
 class _Studio(StudioSentenceRefineMixin, QWidget):
@@ -150,11 +150,11 @@ class _Studio(StudioSentenceRefineMixin, QWidget):
 
 
 def _studio(monkeypatch, *, missing):
-    from twobyteasr import api_key_explainer
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-    from twobyteasr import llm_config
-    from twobyteasr import settings as settings_module
-    from twobyteasr import studio_sentence_refine_ui as refine_ui
+    from twobyteasr.app import api_key_explainer
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.providers import llm_config
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.studio import studio_sentence_refine_ui as refine_ui
     project = SubtitleProject(media=StudioMedia(path="", duration_ms=8000),
                               cues=[StudioCue("c1", 0, 2000, "第一句话很长"), StudioCue("c2", 2000, 4000, "第二句")])
     project.studio_state["ai_sentence_refine"] = {"failed_cue_ids": ["c2"]}
@@ -212,9 +212,9 @@ def test_studio_ai_split_with_nothing_to_do_does_not_ask_for_a_key(monkeypatch):
 # ---------------------------------------------------------------- AI 词库校对 「AI 校对」
 
 def _proofread(monkeypatch, *, missing):
-    from twobyteasr import api_key_explainer
-    from twobyteasr.glossary_proofread import GlossaryProofreadPage
-    from twobyteasr import llm_config
+    from twobyteasr.app import api_key_explainer
+    from twobyteasr.glossary.glossary_proofread import GlossaryProofreadPage
+    from twobyteasr.providers import llm_config
     page = GlossaryProofreadPage(SimpleNamespace(studio_page=None, _prepare_glossary_for_task=lambda: True))
     asked, runs, checked = [], [], []
     monkeypatch.setattr(llm_config, "text_ai_key_missing", lambda settings, stage: checked.append(stage) or missing)
@@ -271,8 +271,8 @@ def test_new_strings_have_english_japanese_korean_and_traditional_chinese():
 
 def _guard(monkeypatch, *, missing):
     """``text_ai_key_missing`` answers ``missing``; the note is recorded instead of shown."""
-    from twobyteasr import api_key_explainer
-    from twobyteasr import llm_config
+    from twobyteasr.app import api_key_explainer
+    from twobyteasr.providers import llm_config
     asked, checked = [], []
     monkeypatch.setattr(llm_config, "text_ai_key_missing", lambda settings, stage: checked.append(stage) or missing)
     monkeypatch.setattr(api_key_explainer, "offer_api_key_help", lambda widget: asked.append(widget) or "cancel")
@@ -280,13 +280,13 @@ def _guard(monkeypatch, *, missing):
 
 
 def _project():
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
     return SubtitleProject(media=StudioMedia(path="", duration_ms=8000),
                            cues=[StudioCue("c1", 0, 2000, "第一句话"), StudioCue("c2", 2000, 4000, "第二句")])
 
 
 def test_ask_for_key_if_missing_checks_once_leaves_a_status_and_asks(monkeypatch):
-    from twobyteasr.api_key_explainer import ask_for_key_if_missing
+    from twobyteasr.app.api_key_explainer import ask_for_key_if_missing
     asked, checked = _guard(monkeypatch, missing=True)
     lines = []
     assert ask_for_key_if_missing("w", {}, "polish", status=lambda: lines.append("status"))
@@ -296,7 +296,7 @@ def test_ask_for_key_if_missing_checks_once_leaves_a_status_and_asks(monkeypatch
     assert asked == [] and checked == ["group"] and lines == ["status"]
 
 
-from twobyteasr.studio_ai_flow import StudioAIFlowMixin  # noqa: E402
+from twobyteasr.studio.studio_ai_flow import StudioAIFlowMixin  # noqa: E402
 
 
 class _Design(StudioAIFlowMixin):
@@ -337,8 +337,8 @@ class _Design(StudioAIFlowMixin):
 
 @pytest.mark.parametrize("missing", [True, False])
 def test_ai_design_generate_revise_and_adjust(monkeypatch, missing):
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr import studio_ai_flow
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.studio import studio_ai_flow
     asked, checked = _guard(monkeypatch, missing=missing)
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY, "settings", lambda: _settings())
     dialogs = []
@@ -367,7 +367,7 @@ def _find_replace(project, **extra):
 
 @pytest.mark.parametrize("missing", [True, False])
 def test_find_replace_ai_cleanup(monkeypatch, missing):
-    from twobyteasr import studio_find_replace
+    from twobyteasr.studio import studio_find_replace
     asked, checked = _guard(monkeypatch, missing=missing)
     calls, filled = [], []
     monkeypatch.setattr(studio_find_replace, "request_text_cleanup", lambda *a, **kw: calls.append(a) or [])
@@ -383,7 +383,7 @@ def test_find_replace_ai_cleanup(monkeypatch, missing):
 
 
 def test_find_replace_glossary_ai_preview_without_a_key(monkeypatch):
-    from twobyteasr import studio_find_replace
+    from twobyteasr.studio import studio_find_replace
     asked, checked = _guard(monkeypatch, missing=True)
     started = []
     monkeypatch.setattr(studio_find_replace, "_GlossaryReviewThread", lambda *a, **kw: started.append(a))
@@ -396,9 +396,9 @@ def test_find_replace_glossary_ai_preview_without_a_key(monkeypatch):
 
 def test_translation_without_a_key_explains_instead_of_a_grey_button(monkeypatch):
     from PySide6.QtWidgets import QPushButton
-    from twobyteasr import api_key_explainer
-    from twobyteasr.studio_ai import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.studio_translation_dialog import SubtitleTranslationDialog
+    from twobyteasr.app import api_key_explainer
+    from twobyteasr.caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.studio.studio_translation_dialog import SubtitleTranslationDialog
     asked = []
     monkeypatch.setattr(api_key_explainer, "offer_api_key_help", lambda widget: asked.append(widget) or "cancel")
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY, "settings", lambda: _settings())
@@ -415,8 +415,8 @@ def test_translation_without_a_key_explains_instead_of_a_grey_button(monkeypatch
 
 def test_translation_other_configuration_problems_keep_the_grey_button(monkeypatch):
     from PySide6.QtWidgets import QPushButton
-    from twobyteasr.studio_ai import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.studio_translation_dialog import SubtitleTranslationDialog
+    from twobyteasr.caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.studio.studio_translation_dialog import SubtitleTranslationDialog
 
     def broken():
         raise RuntimeError("settings unreadable")
@@ -428,7 +428,7 @@ def test_translation_other_configuration_problems_keep_the_grey_button(monkeypat
 
 
 def _term_page(settings):
-    from twobyteasr.main_ui_glossary import TermLibraryDialog
+    from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
     page = SimpleNamespace(state={"game": "原神"}, ai_update_status=QLabel(), toasts=[], managers=[],
                            _ai_update_settings=lambda: settings)
     page._show_toast = page.toasts.append
@@ -444,7 +444,7 @@ def _term_page(settings):
 
 @pytest.mark.parametrize("missing", [True, False])
 def test_term_library_ai_build_and_resume(monkeypatch, missing):
-    from twobyteasr.main_ui_glossary import TermLibraryDialog
+    from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
     asked, checked = _guard(monkeypatch, missing=missing)
     page = _term_page(_settings())
     for mode in ("full", "incremental"):
@@ -468,7 +468,7 @@ def test_term_library_ai_build_and_resume(monkeypatch, missing):
 
 
 def test_batch_glossary_update_without_a_key(monkeypatch):
-    from twobyteasr import glossary_skill_ui
+    from twobyteasr.glossary import glossary_skill_ui
     asked, checked = _guard(monkeypatch, missing=True)
     workers = []
     monkeypatch.setattr(glossary_skill_ui, "BatchGlossaryUpdateWorker", lambda *a, **kw: workers.append(a))
@@ -479,7 +479,7 @@ def test_batch_glossary_update_without_a_key(monkeypatch):
 
 
 def test_highlights_without_a_key_keep_the_local_result_and_send_nothing(monkeypatch):
-    from twobyteasr import studio_highlight_analyzer as analyzer
+    from twobyteasr.studio import studio_highlight_analyzer as analyzer
     _guard(monkeypatch, missing=True)
     calls = []
 

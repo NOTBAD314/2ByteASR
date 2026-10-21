@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from twobyteasr import cue_boundary_refine as cbr
+from twobyteasr.recognition import cue_boundary_refine as cbr
 
 SR = 16000
 
@@ -67,3 +67,16 @@ def test_runtime_cues_keep_alignment_edges_in_step():
     assert left.forced_alignment["segments"][-1]["end_ms"] == receipts[0]["new_ms"]
     assert right.forced_alignment["segments"][0]["start_ms"] == receipts[0]["new_ms"]
     assert events[0][0] == "cut_pause_snap" and events[0][1]["moved"] == 1
+
+
+def test_runtime_cut_lands_on_the_frame_grid():
+    """2026-10-18 (日常 19): a raw millisecond cut came after the frame quantizing."""
+    fps = 24000 / 1001
+    pcm = audio([(500, 2000, "speech"), (2200, 4000, "speech")])
+    left = SimpleNamespace(start=0.4, end=2.5, speaker="S01", forced_alignment=None)
+    right = SimpleNamespace(start=2.5, end=4.2, speaker="S01", forced_alignment=None)
+    legacy = SimpleNamespace(record_run_event=lambda name, **values: None)
+    receipts = cbr.apply_to_runtime_cues([left, right], pcm, legacy, fps=fps)
+    assert len(receipts) == 1 and left.end == right.start
+    assert abs(right.start * fps - round(right.start * fps)) < 1e-9
+    assert receipts[0]["new_ms"] == round(right.start * 1000)

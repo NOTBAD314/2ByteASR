@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack, QColor
-from twobyteasr.audio_engine import build_audio_decode_command, build_audio_mix_command
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, save_project, load_project
-from twobyteasr.studio_track_gain import track_gain_db, gain_command, gain_amplitude
-from twobyteasr.studio_media_pool import set_video_track_state
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.processes import run_hidden_subprocess
+from twobyteasr.playback.audio_engine import build_audio_decode_command, build_audio_mix_command
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, save_project, load_project
+from twobyteasr.timeline.studio_track_gain import track_gain_db, gain_command, gain_amplitude
+from twobyteasr.timeline.studio_media_pool import set_video_track_state
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.system.processes import run_hidden_subprocess
 
 FFMPEG = Path(__file__).resolve().parents[1]/"tools/ffmpeg/bin/ffmpeg.exe"
 
@@ -78,8 +78,8 @@ def test_each_mix_input_has_independent_gain(tone):
 
 @pytest.mark.parametrize('rate', [1., 2., 4.])
 def test_gain_export_renders_the_same_amplitude(tone, tmp_path, rate):
-    from twobyteasr.audio_export import audio_mix_arguments
-    from twobyteasr.video_export import capture_video_graph
+    from twobyteasr.exports.audio_export import audio_mix_arguments
+    from twobyteasr.exports.video_export import capture_video_graph
     project = SubtitleProject(media=StudioMedia(path=str(tone[0]), duration_ms=1000, width=160, height=90))
     project.validate()
     set_video_track_state(project,'V1',locked=False)
@@ -102,7 +102,7 @@ def test_gain_export_renders_the_same_amplitude(tone, tmp_path, rate):
 
 @pytest.mark.parametrize('paused,epoch,drains', [(False, 7, True), (True, 7, False), (False, 6, False)])
 def test_only_natural_current_generation_end_drains(paused, epoch, drains):
-    from twobyteasr.audio_engine import StudioAudioEngine
+    from twobyteasr.playback.audio_engine import StudioAudioEngine
     silent = []
     engine = SimpleNamespace(_draining=False, _shutdown_requested=False, _session_generation=1,
         _last_payload={'paused': paused, 'transport_generation': (epoch, 0)},
@@ -125,7 +125,7 @@ def test_aac_priming_does_not_remove_head_or_tail(tone, tmp_path, start, rate):
 
 
 def test_fit_command_resets_canvas_geometry_without_changing_opacity():
-    from twobyteasr.studio_video_flow import StudioVideoFlowMixin
+    from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
     stored = []
     page = SimpleNamespace(_updating_video_transform_ui=False, timeline=SimpleNamespace(playhead_ms=500),
         _selected_video_clip=lambda: (SimpleNamespace(id='V2',locked=False), SimpleNamespace(id='clip')),
@@ -138,15 +138,15 @@ def test_fit_command_resets_canvas_geometry_without_changing_opacity():
 
 
 def test_three_fit_modes_produce_distinct_nonmatching_aspects():
-    from twobyteasr.video_compositor import layer_geometry
+    from twobyteasr.playback.video_compositor import layer_geometry
     sizes = [layer_geometry(1600,900,{'transform':{'fit_mode':mode}},640,480)[0].size()
              for mode in ('contain','cover','stretch')]
     assert [(s.width(),s.height()) for s in sizes] == [(1200,900),(1600,1200),(1600,900)]
 
 
 def test_dark_home_cards_follow_each_theme_and_grape_is_burgundy():
-    from twobyteasr.home_studio_entry import studio_paper_colors
-    from twobyteasr.ui_theme import THEMES
+    from twobyteasr.app.home_studio_entry import studio_paper_colors
+    from twobyteasr.design.ui_theme import THEMES
     assert len({studio_paper_colors(t)[0] for t in THEMES.values()}) == len(THEMES)
     grape = THEMES['grape']
     assert QColor(grape.accent).red() > QColor(grape.accent).blue()

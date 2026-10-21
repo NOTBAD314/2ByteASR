@@ -12,23 +12,23 @@ from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QColorDialog, QInputDialog, QLabel, QWidget
 
-from twobyteasr.advanced_preview import (
+from twobyteasr.rendering.advanced_preview import (
     AdvancedPreviewIdentity,
     AdvancedPreviewPhase,
     AdvancedPreviewStateMachine,
 )
-from twobyteasr.motion_library import MotionPreset, MotionPresetStore, SYSTEM_MOTIONS
-from twobyteasr.advanced_renderer import normalized_visual_snapshot
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_project import (
+from twobyteasr.caption_style.motion_library import MotionPreset, MotionPresetStore, SYSTEM_MOTIONS
+from twobyteasr.rendering.advanced_renderer import normalized_visual_snapshot
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.projects.studio_project import (
     StudioCue, StudioMedia, SubtitleProject, SubtitleStyle, save_project,
 )
-from twobyteasr.studio_ui import (
+from twobyteasr.studio.studio_ui import (
     AdvancedLiveCanvas, FillEditorDialog, MotionBrowserDialog, SubtitleStudioPage,
 )
-from twobyteasr.style_recipe import FillSpec, StyleRecipe, VisualStyleRecipe
-from twobyteasr.visual_design_graph import clean_subtitle_graph, style_recipe_from_graph
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.style_recipe import FillSpec, StyleRecipe, VisualStyleRecipe
+from twobyteasr.caption_design.visual_design_graph import clean_subtitle_graph, style_recipe_from_graph
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app():
@@ -343,7 +343,7 @@ def test_gradient_stop_uses_main_color_picker():
 def test_style_color_dialog_is_themed_simple_picker(tmp_path, monkeypatch):
     _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    from twobyteasr.color_picker import SimpleColorDialog
+    from twobyteasr.design.color_picker import SimpleColorDialog
 
     page = SubtitleStudioPage()
     page._generate_waveform = lambda *_args, **_kwargs: None
@@ -386,31 +386,9 @@ def test_motion_browser_cards_are_live(tmp_path, monkeypatch):
     app, page = _page(tmp_path, monkeypatch)
     dialog = MotionBrowserDialog(page.project.styles[-1], page)
     dialog.show(); app.processEvents()
-    cards = dialog.findChildren(__import__("twobyteasr.studio_motion_browser", fromlist=["MotionCard"]).MotionCard)
-    # 0.8.0: the library opens on 精选字效; 基础动效 / 旧版动效 hold the rest.
-    featured = [preset for preset in dialog.store.all().values() if preset.category == "精选字效"]
-    assert dialog._active_filter() == "featured"
-    assert len(cards) == len(featured) >= 6
-    assert len(dialog.store.all()) >= 12
-
-    def animating(card):
-        # Featured / 基础 cards draw with MotionSample (its clock loops the
-        # sample); 旧版动效 cards keep StylePreview's looping motion timer.
-        if hasattr(card.preview, "clock"):
-            return card.preview.timer.isActive()
-        return card.preview._motion_timer.isActive()
-
-    assert all(not animating(card) for card in cards)
-    cards[0].start_preview()
-    app.processEvents()
-    assert animating(cards[0])
-    cards[0].stop_preview()
-    assert not animating(cards[0])
-    legacy = next(button for button in dialog.filter_group.buttons() if button.property("filterKind") == "legacy")
-    legacy.click()
-    app.processEvents()
-    cards = [dialog.grid.itemAt(index).widget() for index in range(dialog.grid.count())]
-    assert cards and all(not animating(card) for card in cards)
+    cards = dialog.findChildren(__import__("twobyteasr.caption_style.studio_motion_browser", fromlist=["MotionCard"]).MotionCard)
+    assert len(cards) >= 12
+    assert all(not card.preview._motion_timer.isActive() for card in cards)
     cards[0].start_preview()
     app.processEvents()
     assert cards[0].preview._motion_timer.isActive()

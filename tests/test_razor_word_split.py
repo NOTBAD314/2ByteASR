@@ -17,15 +17,15 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.cue_word_alignment import cue_words
-from twobyteasr.studio_caption_timeline import (
+from twobyteasr.recognition.cue_word_alignment import cue_words
+from twobyteasr.timeline.studio_caption_timeline import (
     CLOCK, KEY, ensure_independent_captions, recover_caption_words, ripple_caption_range, shift_caption,
 )
-from twobyteasr.studio_commands import split_cue_command
-from twobyteasr.studio_project import (
+from twobyteasr.timeline.studio_commands import split_cue_command
+from twobyteasr.projects.studio_project import (
     StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, load_project, save_project,
 )
-from twobyteasr.studio_timing import SplitBlocked, describe_split, resolve_split
+from twobyteasr.timeline.studio_timing import SplitBlocked, describe_split, resolve_split
 
 HEARD = [('呃', 3473, 4060), ('主', 4060, 4260), ('播', 4260, 4660), ('投', 4660, 4940),
          ('的', 4940, 5180), ('是', 5180, 5513), ('对', 5513, 6060), ('面', 6060, 6260),
@@ -219,7 +219,7 @@ def test_old_empty_receipts_are_recovered_from_saved_evidence_on_the_neighbour_c
 def test_controller_refuses_a_commit_that_differs_from_the_preview(tmp_path, monkeypatch):
     app = _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
     p = make_project(False)
     page = SubtitleStudioPage()
     monkeypatch.setattr(page.video, "load", lambda *a, **k: None)
@@ -242,7 +242,7 @@ def test_controller_refuses_a_commit_that_differs_from_the_preview(tmp_path, mon
 
 def test_trimmed_display_keeps_word_times_for_the_preview():
     """Trimming only moves the display envelope; words keep their clock."""
-    from twobyteasr.studio_caption_timeline import sync_caption_interval_words
+    from twobyteasr.timeline.studio_caption_timeline import sync_caption_interval_words
     p = make_project()
     target = cue(p, '2')
     previous = (target.start_ms, target.end_ms)

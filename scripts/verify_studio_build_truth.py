@@ -21,7 +21,7 @@ def main():
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     sys.path.insert(0,str(root))
-    from twobyteasr.build_identity import source_snapshot_files,source_snapshot_sha256
+    from twobyteasr.diagnostics.build_identity import source_snapshot_files,source_snapshot_sha256
     from PyInstaller.archive.readers import CArchiveReader
     exe=args.exe.resolve();bundle=exe.parent
     archive=CArchiveReader(str(exe))
@@ -41,7 +41,7 @@ def main():
         if packed.is_file():
             if source.read_bytes()!=packed.read_bytes():result['errors'].append(f'raw mismatch: {relative}')
             result['raw'].append(relative.as_posix())
-        elif (source.suffix in {'.spec', '.iss'} or relative.as_posix() in {
+        elif (source.suffix in {'.spec', '.iss', '.cs'} or relative.as_posix() in {
                 'packaging/version_info.txt',
                 '.github/workflows/macos-experimental.yml'}
                 or relative.as_posix().startswith('packaging/macos/')):

@@ -43,9 +43,9 @@ def main(argv=None):
              "resolved_packages":installed.splitlines(),"install_report":str(report),"registered":False}
     payload['native_wheels_verified']=verified
     if args.register:
-        from twobyteasr.platform_macos import configure_macos_paths
+        from twobyteasr.system.platform_macos import configure_macos_paths
         configure_macos_paths(ROOT)
-        from twobyteasr.runtime_registry import register_runtime
+        from twobyteasr.system.runtime_registry import register_runtime
         register_runtime("main",str(interpreter),source="macos-cpu-experimental")
         payload["registered"]=True
     args.receipt.write_text(json.dumps(payload,ensure_ascii=False,indent=2)+"\n",encoding="utf8")

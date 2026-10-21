@@ -51,7 +51,7 @@ def probe_device():
 
 def failure_category(text):
     """``(category, message)`` of a failed readiness check for the installer."""
-    from twobyteasr.asr import windows_commit_limit_error
+    from twobyteasr.recognition.asr import windows_commit_limit_error
     text=str(text)
     if windows_commit_limit_error(text):
         # The line naming the error (a worker event: its own text and VRAM reading); the whole output stays in the receipt.
@@ -78,7 +78,7 @@ def main():
     sys.stdout.reconfigure(encoding='utf8');sys.stderr.reconfigure(encoding='utf8')
     os.environ['HF_HUB_OFFLINE']='1';os.environ['TRANSFORMERS_OFFLINE']='1'
     from twobyteasr.runtime_paths import get_runtime_paths,user_data_root
-    from twobyteasr.runtime_registry import resolve_runtime_python
+    from twobyteasr.system.runtime_registry import resolve_runtime_python
     contract=json.loads((root/'dependencies.lock.json').read_text('utf8'))
     model=args.model
     if model == 'omni_asr_llm_7b':
@@ -91,7 +91,7 @@ def main():
     import numpy as np
     if blas_threads is None:os.environ.pop('OPENBLAS_NUM_THREADS')
     else:os.environ['OPENBLAS_NUM_THREADS']=blas_threads
-    from twobyteasr import asr
+    from twobyteasr.recognition import asr
     sample=root/'assets/diagnostics/speech_en.wav'
     with wave.open(str(sample),'rb') as stream:
         rate=stream.getframerate()
@@ -102,7 +102,10 @@ def main():
     hardware=probe_device()
     cuda=hardware['cuda'];device=hardware['device']
     code_hash=hashlib.sha256()
-    for path in [Path(__file__),root/'twobyteasr/asr.py',sample,*sorted(root.glob('*_worker.py'))]:
+    for path in [Path(__file__),root/'twobyteasr/recognition/asr.py',
+                 root/'twobyteasr/recognition/qwen_runtime_compat.py',
+                 root/'twobyteasr/recognition/native_tokenizer_paths.py',
+                 sample,*sorted(root.glob('*_worker.py'))]:
         code_hash.update(path.read_bytes())
     signature=hashlib.sha256(json.dumps(dict(model=contract['models'][model],runtime=resolve_runtime_python(role),install_root=str(root),
         resources={key:contract['models'][key] for key in contract['models'][model].get('required_models',[])},
@@ -141,13 +144,22 @@ def main():
             if not output or not all(0<=x['start']<x['end']<=duration+.2 for x in output):
                 raise RuntimeError('对齐 worker 没有返回有效时间戳')
         elif model=='ja_ctc_aligner':
-            from twobyteasr import ctc_alignment
+            from twobyteasr.recognition import ctc_alignment
             payload=ctc_alignment.run_worker(audio,[dict(id='readiness',text='こんにちはきょうはいいてんきです',
                 window_start_ms=0,window_end_ms=int(duration*1000))])
             output=payload['results'][0]
             chars=output.get('chars') or []
             if output.get('status')!='aligned' or not chars or not all(0<=c['start_ms']<c['end_ms']<=duration*1000+200 for c in chars):
                 raise RuntimeError('CTC 对齐 worker 没有返回有效字符时间')
+        elif model=='mfa_aligner':
+            # 2026-10-19: experimental MFA (own conda runtime): it loads and aligns a Chinese and a Japanese line.
+            from twobyteasr.recognition import mfa_aligner
+            window=dict(window_start_ms=0,window_end_ms=int(duration*1000))
+            payload=mfa_aligner.run_aligner(audio,[dict(id='readiness-zh',text='你好今天天气很好',language='Chinese',**window),
+                dict(id='readiness-ja',text='こんにちはきょうはいいてんきです',language='Japanese',**window)])
+            output=payload['results']
+            if not any(row.get('status')=='aligned' for row in output):
+                raise RuntimeError('MFA 对齐 worker 没有对上任何一句')
         elif model=='firered_aed':
             output=asr._transcribe_firered_worker(audio,duration,str(get_runtime_paths().model_root/'FireRedASR2-AED'))
         elif model=='firered_llm':

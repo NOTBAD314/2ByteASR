@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_every_exposed_provider_has_its_own_guide_file():
-    from twobyteasr import api_setup_catalog as catalog
-    from twobyteasr.llm_config import AI_SERVICE_SPECS
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.providers import api_setup_catalog as catalog
+    from twobyteasr.providers.llm_config import AI_SERVICE_SPECS
+    from twobyteasr.app.ui import ASR_API_PRESETS
     asr_keys = {guide.key for guide in catalog.ASR_GUIDES}
     assert set(ASR_API_PRESETS) <= asr_keys
     for service in AI_SERVICE_SPECS:
@@ -32,7 +32,7 @@ def test_every_exposed_provider_has_its_own_guide_file():
 def test_every_guide_covers_the_eight_required_parts():
     """2026-10-14: what it does, links, steps from zero, activation/payment/storage,
     each field, what is prefilled, what a passing test shows, failures with a next step."""
-    from twobyteasr import api_setup_catalog as catalog
+    from twobyteasr.providers import api_setup_catalog as catalog
     markers = (
         ('在兔白里做什么',),
         ('https://',),
@@ -61,7 +61,7 @@ def test_every_guide_covers_the_eight_required_parts():
 
 
 def test_guide_links_are_official_and_dated():
-    from twobyteasr import api_setup_catalog as catalog
+    from twobyteasr.providers import api_setup_catalog as catalog
     official = re.compile(r'^https://([a-z0-9.-]+\.)?(mosi\.cn|aliyun\.com|xfyun\.cn|groq\.com|openai\.com|'
                           r'openrouter\.ai|microsoft\.com|deepseek\.com|google\.dev|x\.ai|qwencloud\.com|'
                           r'alibabacloud\.com|azure\.com|google\.com|chatgpt\.com|antigravity\.google|'
@@ -78,7 +78,7 @@ class Host:
         self.models = models or {}
 
     def make(self):
-        from twobyteasr.api_setup_dialog import SetupHost
+        from twobyteasr.providers.api_setup_dialog import SetupHost
         return SetupHost(settings=lambda: {'models': dict(self.models)}, saved_key=lambda provider, url: '',
                          saved_oss_credentials=lambda: ('', ''),
                          save=lambda provider, values, primary: (self.saved.append((provider, values, primary))
@@ -92,7 +92,7 @@ def qapp():
 
 
 def test_dialog_builds_every_provider_page(qapp):
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     dialog = ApiSetupDialog(None, Host().make(), kind='asr', initial='mosi_moss_pro', show_advanced=True)
     seen = dialog.provider_choices()
     for kind, key in seen:
@@ -109,7 +109,7 @@ def test_header_close_has_room_for_its_glyph_and_is_not_the_first_focus(qapp):
     and the role's minimum height made it 38 px tall; it also took the first
     focus, so the dialog opened with an empty focus ring (2026-10-13)."""
     from PySide6.QtWidgets import QPushButton, QStyle, QStyleOptionButton
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     dialog = ApiSetupDialog(None, Host().make(), kind='asr', initial='qwen_cloud_filetrans')
     dialog.show()
     qapp.processEvents()
@@ -127,7 +127,7 @@ def test_header_close_has_room_for_its_glyph_and_is_not_the_first_focus(qapp):
 
 
 def test_bailian_page_turns_any_pasted_host_into_exact_addresses(qapp):
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     host = Host({'qwen_asr_api_provider': 'qwen31_filetrans', 'qwen_asr_api_model': 'qwen-audio-3.1-asr-flash-filetrans',
                  'qwen_asr_api_url': 'https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription',
                  'oss_bucket': '2byte', 'oss_region': 'cn-hangzhou'})
@@ -163,7 +163,7 @@ def test_bailian_page_turns_any_pasted_host_into_exact_addresses(qapp):
 
 
 def test_qwen_cloud_page_needs_only_a_key_and_rejects_other_hosts(qapp):
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     host = Host()
     dialog = ApiSetupDialog(None, host.make(), kind='asr', initial='qwen_cloud_filetrans')
     assert dialog._guide.key == 'qwen_cloud_filetrans'
@@ -189,7 +189,7 @@ def test_qwen_cloud_page_needs_only_a_key_and_rejects_other_hosts(qapp):
 
 
 def test_mosi_page_prefills_base_url_and_never_doubles_v1(qapp):
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     host = Host()
     dialog = ApiSetupDialog(None, host.make(), kind='asr', initial='mosi_moss_pro')
     assert dialog._value('url') == 'https://api.mosi.cn/v1'
@@ -204,12 +204,12 @@ def test_mosi_page_prefills_base_url_and_never_doubles_v1(qapp):
 
 
 def catalog_first_asr_guide():
-    from twobyteasr import api_setup_catalog as catalog
+    from twobyteasr.providers import api_setup_catalog as catalog
     return catalog.ASR_GUIDES[0]
 
 
 def test_upload_route_is_never_chosen_for_the_user():
-    from twobyteasr.api_setup_catalog import resolve_upload_mode, upload_mode_label
+    from twobyteasr.providers.api_setup_catalog import resolve_upload_mode, upload_mode_label
     assert resolve_upload_mode({}, 'qwen31_filetrans') == 'missing'
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': 'b'}, 'qwen_cloud_filetrans',
                                has_oss_credentials=False) == 'missing'
@@ -220,9 +220,9 @@ def test_upload_route_is_never_chosen_for_the_user():
 
 
 def test_missing_upload_route_stops_before_any_upload(monkeypatch):
-    from twobyteasr import llm_config
-    from twobyteasr.cloud_api_worker import filetrans_storage
-    from twobyteasr.recognition_choices import cloud_asr_readiness, run_disclosure
+    from twobyteasr.providers import llm_config
+    from twobyteasr.providers.cloud_api_worker import filetrans_storage
+    from twobyteasr.recognition.recognition_choices import cloud_asr_readiness, run_disclosure
     monkeypatch.setattr(llm_config, 'read_asr_api_key', lambda provider, url: ('sk-test', 'saved'))
     monkeypatch.setattr(llm_config, 'read_oss_credentials', lambda: ('', ''))
     models = {'qwen_asr_api_provider': 'qwen31_filetrans', 'qwen_asr_api_protocol': 'dashscope_filetrans',
@@ -244,7 +244,7 @@ def test_missing_upload_route_stops_before_any_upload(monkeypatch):
 
 
 def test_text_provider_guide_opens_from_cli_service_id(qapp):
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     dialog = ApiSetupDialog(None, Host().make(), kind='text', initial='grok_account', show_advanced=True)
     assert dialog._guide.key == 'cli_accounts'
     assert not dialog.save_button.isVisible()
@@ -252,7 +252,7 @@ def test_text_provider_guide_opens_from_cli_service_id(qapp):
 
 
 def test_recognition_test_cost_note_never_claims_free():
-    from twobyteasr.cloud_api_test import estimate_test_cost
+    from twobyteasr.providers.cloud_api_test import estimate_test_cost
     assert '¥' in estimate_test_cost({'model': 'moss-transcribe-diarize-pro'})
     note = estimate_test_cost({'model': 'qwen3-asr-flash-filetrans'})
     assert '免费' not in note and '无法事先估算' in note
@@ -262,7 +262,7 @@ def test_recognition_test_cost_note_never_claims_free():
 
 
 def test_bailian_free_check_uses_official_model_list(monkeypatch):
-    from twobyteasr.cloud_api_test import PASS, FAIL, free_checks
+    from twobyteasr.providers.cloud_api_test import PASS, FAIL, free_checks
 
     class Response:
         def __init__(self, code, body):
@@ -295,7 +295,7 @@ def test_bailian_free_check_uses_official_model_list(monkeypatch):
 
 
 def test_run_disclosure_names_engine_uploads_and_timestamp_source():
-    from twobyteasr.recognition_choices import disclosure_text, run_disclosure
+    from twobyteasr.recognition.recognition_choices import disclosure_text, run_disclosure
     settings = {'models': {'primary_asr_backend': 'api', 'qwen_asr_api_provider': 'mosi_moss_pro',
                            'qwen_asr_api_model': 'moss-transcribe-diarize-pro', 'qwen_asr_api_url': 'https://api.mosi.cn/v1',
                            'firered_asr_backend': 'off', 'qwen_asr_backend': 'off'}, 'switches': {}}
@@ -310,7 +310,7 @@ def test_run_disclosure_names_engine_uploads_and_timestamp_source():
 
 
 def test_cloud_followups_only_change_what_cannot_run():
-    from twobyteasr.recognition_choices import HostProfile, cloud_followups
+    from twobyteasr.recognition.recognition_choices import HostProfile, cloud_followups
     no_gpu = HostProfile('win32', 'amd64', nvidia_tool=False, main_runtime=True, mlx_runtime=False)
     patch, notes = cloud_followups({'firered_asr_backend': 'local', 'qwen_asr_backend': 'local'},
                                    {'firered_aed', 'qwen_aligner'}, no_gpu)
@@ -324,7 +324,7 @@ def test_cloud_followups_only_change_what_cannot_run():
 # ---------------------------------------------------------------- 2026-10-18 walkthrough
 
 def test_walkthrough_steps_follow_the_official_pages():
-    from twobyteasr import api_setup_catalog as catalog
+    from twobyteasr.providers import api_setup_catalog as catalog
     roles = {(g.kind, g.key): [s.role for s in catalog.walkthrough(g)] for g in catalog.ALL_GUIDES}
     # User (2026-10-18): MOSI gives free credit, so trying it needs no top-up step.
     assert roles[('asr', 'mosi_moss_pro')] == ['account', 'key', 'paste']
@@ -345,7 +345,7 @@ def test_walkthrough_steps_follow_the_official_pages():
 
 
 def test_mosi_walkthrough_says_free_credit_and_rings_real_screenshots():
-    from twobyteasr import api_setup_catalog as catalog
+    from twobyteasr.providers import api_setup_catalog as catalog
     guide = catalog.guide_for('mosi_moss_pro', 'asr')
     account, key, paste = catalog.walkthrough(guide)
     assert '50 积分' in account.note and account.note_kind == 'free'
@@ -358,7 +358,7 @@ def test_mosi_walkthrough_says_free_credit_and_rings_real_screenshots():
 def test_every_screenshot_shows_the_page_its_button_opens():
     """2026-10-18: official-site pictures; signed-in ones were taken in the user's session, keys blocked out."""
     from PIL import Image
-    from twobyteasr import api_setup_catalog as catalog
+    from twobyteasr.providers import api_setup_catalog as catalog
     shots = 0
     for guide in catalog.ALL_GUIDES:
         for step in catalog.walkthrough(guide):
@@ -379,7 +379,7 @@ def test_every_screenshot_shows_the_page_its_button_opens():
 
 def test_saved_key_opens_on_paste_and_ticks_the_web_steps(qapp):
     from dataclasses import replace
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     host = replace(Host().make(), saved_key=lambda provider, url: 'sk-saved-abcd')
     dialog = ApiSetupDialog(None, host, kind='asr', initial='mosi_moss_pro')
     assert dialog._page_kind == 'paste' and dialog._done[:2] == [True, True] and dialog._done[2] is False
@@ -388,8 +388,8 @@ def test_saved_key_opens_on_paste_and_ticks_the_web_steps(qapp):
 
 
 def test_steps_advance_and_a_passing_check_leads_to_saving(qapp):
-    from twobyteasr import cloud_api_test as tests
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers import cloud_api_test as tests
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     host = Host()
     dialog = ApiSetupDialog(None, host.make(), kind='asr', initial='mosi_moss_pro')
     assert dialog._page_kind == 'step' and dialog._index == 0
@@ -420,7 +420,7 @@ def test_steps_advance_and_a_passing_check_leads_to_saving(qapp):
 def test_text_ai_last_step_opens_the_ai_settings(qapp):
     from dataclasses import replace
     from PySide6.QtWidgets import QPushButton
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     opened = []
     host = replace(Host().make(), open_text_settings=opened.append)
     dialog = ApiSetupDialog(None, host, kind='text', initial='deepseek')
@@ -434,7 +434,7 @@ def test_text_ai_last_step_opens_the_ai_settings(qapp):
 
 
 def test_provider_menu_lists_services_with_a_few_honest_words(qapp):
-    from twobyteasr.api_setup_dialog import ApiSetupDialog
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
     dialog = ApiSetupDialog(None, Host().make(), kind='asr', initial='mosi_moss_pro')
     dialog._fill_provider_menu()
     texts = [action.text() for action in dialog.provider_menu.actions()]

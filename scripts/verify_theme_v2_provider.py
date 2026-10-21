@@ -16,12 +16,12 @@ def main():
     settings=json.loads((root/'2byteasr_settings.json').read_text('utf8'))
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),TMP=str(out/'temp'),TEMP=str(out/'temp'),QT_QPA_PLATFORM='offscreen')
     (out/'temp').mkdir()
-    from twobyteasr.llm_config import activate_ai_service,update_active_profile
+    from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile
     activate_ai_service(settings,'grok_account');update_active_profile(settings,model='grok-4.6')
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
     selected=GLOBAL_PROVIDER_REGISTRY.selection(settings,stage='polish')
     assert selected.model=='grok-4.6',selected.model
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
     project=SubtitleProject(media=StudioMedia(path='',width=1920,height=1080,duration_ms=3000),
         cues=[StudioCue('design-cue',0,3000,'啊感觉他就是你看')])
     instruction='为中文游戏实况设计北极熊滑雪主题字幕：圆润白熊戴滑雪镜，文字优先，字幕附近一处主符号。透明画布，默认底部安全区。不要普通黑条、廉价霓虹、emoji、随机装饰或密集粒子。字体、绒毛/冰晶/镜片材质和动作统一，入场有主题语义，保持克制、出场干净。给出三个构图、字体、符号和材质真正不同的方向供人选择。'
@@ -33,7 +33,7 @@ def main():
     def event(value):
         with (out/'stages.jsonl').open('a',encoding='utf8') as stream:stream.write(json.dumps(value,ensure_ascii=False,default=str)+'\n')
         if value.get('design'):(out/'design-checkpoint.json').write_text(json.dumps(value['design'],ensure_ascii=False,indent=2),encoding='utf8')
-    from twobyteasr.studio_ai import request_web_theme_design
+    from twobyteasr.caption_design.studio_ai import request_web_theme_design
     print('EVIDENCE',out,flush=True)
     start=time.monotonic()
     try:

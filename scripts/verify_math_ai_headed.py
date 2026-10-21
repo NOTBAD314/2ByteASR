@@ -38,8 +38,8 @@ def main() -> int:
     from twobyteasr.test_isolation import install
     install()
     import subtitle_core as legacy
-    from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
-    from twobyteasr.math_text import STATE_KEY, state_value
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
+    from twobyteasr.subtitle_rules.math_text import STATE_KEY, state_value
 
     name = '数学科普'
     library = legacy.create_learned_content(name, create_new=True)

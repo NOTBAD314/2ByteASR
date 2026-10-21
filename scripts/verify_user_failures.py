@@ -10,7 +10,7 @@ def main():
     args=parser.parse_args();out=args.output.resolve()
     if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('Use a fresh directory under repository tmp')
     out.mkdir(parents=True);(out/'temp').mkdir();(out/'sources').mkdir()
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     ffmpeg=root/'tools/ffmpeg/bin/ffmpeg.exe'
     def make(name,freq,color=None):
         path=out/'sources'/name
@@ -21,10 +21,10 @@ def main():
         run_hidden_subprocess(command+[path],check=True,capture_output=True,timeout=35,purpose='small synthetic acceptance media')
         return path
     sources=[make('video-440.mp4',440,'0x183347'),make('video-660.mp4',660,'0x303438'),make('audio-880.wav',880)]
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,SubtitleStyle,save_project,hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
-    from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip,set_video_track_state
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,SubtitleStyle,save_project,hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip,set_video_track_state
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     p=SubtitleProject(media=StudioMedia(str(sources[0]),duration_ms=120000,width=640,height=360))
     p.validate()
     hydrate_media_contract(p,probe_media_identity(str(sources[0])))

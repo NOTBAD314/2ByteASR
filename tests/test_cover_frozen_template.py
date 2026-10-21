@@ -4,9 +4,9 @@ from pathlib import Path
 import time
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QDialog
-from twobyteasr.cover_document import CoverDocument
-from twobyteasr.cover_editor import CoverEditor
-from twobyteasr.cover_local_library import LocalCoverLibrary
+from twobyteasr.cover.cover_document import CoverDocument
+from twobyteasr.cover.cover_editor import CoverEditor
+from twobyteasr.cover.cover_local_library import LocalCoverLibrary
 from tests.test_cover_local_workflow import png, document, wait_job, app
 
 
@@ -55,8 +55,8 @@ def test_opaque_design_foreground_is_preserved_and_explained(app):
 
 
 def test_empty_track_refuses_black_cover(tmp_path,app):
-    from twobyteasr.frame_export import save_project_frame
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia
+    from twobyteasr.exports.frame_export import save_project_frame
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia
     project=SubtitleProject(media=StudioMedia('fixture.mp4',duration_ms=6000,width=640,height=360))
     with pytest.raises(ValueError,match='空轨'):
         save_project_frame(project,dict(width=640,height=360,media_pool=[],video_tracks=[]),1000,tmp_path,'frame',
@@ -64,7 +64,8 @@ def test_empty_track_refuses_black_cover(tmp_path,app):
 
 
 def test_late_capture_after_project_switch_never_opens_editor(app,monkeypatch):
-    from twobyteasr import cover_studio,export_timeline,video_export,frame_export
+    from twobyteasr.cover import cover_studio
+    from twobyteasr.exports import export_timeline, video_export, frame_export
     page=QWidget();page.save_state=QLabel(page)
     page.project=SimpleNamespace(media=SimpleNamespace(path='fixture.mp4'))
     page.timeline=SimpleNamespace(playhead_ms=1200);page.video=SimpleNamespace(set_paused=lambda _:None)

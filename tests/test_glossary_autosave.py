@@ -12,8 +12,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 import subtitle_core as legacy
-from twobyteasr import glossary_autosave as autosave
-from twobyteasr.glossary_learning import GlossaryLearningStore, extract_term_replacements
+from twobyteasr.glossary import glossary_autosave as autosave
+from twobyteasr.glossary.glossary_learning import GlossaryLearningStore, extract_term_replacements
 
 
 @pytest.fixture

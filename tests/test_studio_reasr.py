@@ -1,8 +1,8 @@
 import subprocess
 from pathlib import Path
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_reasr import build_clip_command, clip_bounds, run_local_reasr
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_reasr import build_clip_command, clip_bounds, run_local_reasr
 
 
 ROOT = Path(__file__).resolve().parents[1]

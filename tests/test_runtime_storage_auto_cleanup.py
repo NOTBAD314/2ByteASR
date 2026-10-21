@@ -13,11 +13,11 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
-from twobyteasr import model_runtime_cleanup as cleanup
-from twobyteasr.model_storage import format_bytes
-from twobyteasr.runtime_usage import runtime_disk_usage
-from twobyteasr.storage_ui import StoragePanel, maintain_registered_storage
-from twobyteasr import runtime_download_cache as cache_module
+from twobyteasr.local_models import model_runtime_cleanup as cleanup
+from twobyteasr.local_models.model_storage import format_bytes
+from twobyteasr.storage.runtime_usage import runtime_disk_usage
+from twobyteasr.storage.storage_ui import StoragePanel, maintain_registered_storage
+from twobyteasr.system import runtime_download_cache as cache_module
 from tests.test_model_runtime_cleanup import fixture as runtime_fixture
 from tests.test_runtime_download_cache import fixture as cache_fixture, runner as cache_runner
 from tests.test_storage_maintenance_ui import qapp, service  # noqa: F401  (fixtures)
@@ -70,7 +70,7 @@ def test_idle_maintenance_no_longer_waits_forever_on_an_interrupted_install(serv
     runtimes = service.paths.user_data_root / 'runtimes'; runtimes.mkdir(parents=True)
     marker = runtimes / 'download-cache-maintenance.json'
     calls = []
-    monkeypatch.setattr('twobyteasr.storage_ui.run_uv_maintenance', lambda *a, **kw: calls.append('uv'))
+    monkeypatch.setattr('twobyteasr.storage.storage_ui.run_uv_maintenance', lambda *a, **kw: calls.append('uv'))
     for state in ('installing', 'paused', 'failed', 'ready', 'maintained'):
         marker.write_text(json.dumps({'state': state, 'updated_at': time.time() - 30 * 86400}), encoding='utf8')
         maintain_registered_storage(service, Event())
@@ -109,7 +109,7 @@ def test_automatic_cleanup_switch_off_keeps_old_runtimes(service, tmp_path, monk
 
 
 def test_successful_install_asks_the_main_window_to_maintain_now():
-    from twobyteasr.model_workshop import ModelWorkshopPage
+    from twobyteasr.local_models.model_workshop import ModelWorkshopPage
     requests = []
     window = SimpleNamespace(_storage_maintenance=SimpleNamespace(request_soon=lambda: requests.append(True)))
     page = SimpleNamespace(refresh=lambda: None, _sync_download_activity=lambda: None, window=lambda: window)
@@ -121,7 +121,7 @@ def test_successful_install_asks_the_main_window_to_maintain_now():
 
 def test_request_soon_runs_the_six_hourly_check_now(qapp, monkeypatch):  # noqa: F811
     from PySide6.QtWidgets import QWidget
-    from twobyteasr.storage_ui import IdleStorageMaintenance
+    from twobyteasr.storage.storage_ui import IdleStorageMaintenance
     owner = QWidget()
     maintenance = IdleStorageMaintenance(owner)
     maintenance.last_attempt = time.time()

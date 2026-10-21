@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr.ui import MainWindow
+from twobyteasr.app.ui import MainWindow
 
 
 def main() -> int:

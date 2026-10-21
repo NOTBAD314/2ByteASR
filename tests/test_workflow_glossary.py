@@ -1,12 +1,12 @@
 import time
 from types import SimpleNamespace
-from twobyteasr.glossary_build import normalize_catalogs
-from twobyteasr.glossary_skill import normalize_searched_terms
-from twobyteasr.glossary_sources import mediawiki_api_url
-from twobyteasr.glossary_task_manager import GlossaryTaskState, GlossaryUpdateManager
+from twobyteasr.glossary.glossary_build import normalize_catalogs
+from twobyteasr.glossary.glossary_skill import normalize_searched_terms
+from twobyteasr.glossary.glossary_sources import mediawiki_api_url
+from twobyteasr.glossary.glossary_task_manager import GlossaryTaskState, GlossaryUpdateManager
 
 def test_observed_catalog_alias_does_not_require_another_search(monkeypatch):
-    monkeypatch.setattr('twobyteasr.glossary_build.is_safe_web_url',lambda url:(True,''))
+    monkeypatch.setattr('twobyteasr.glossary.glossary_build.is_safe_web_url',lambda url:(True,''))
     result = normalize_catalogs({'pages':[{'url':'https://wiki.biligame.com/yh/角色','title':'异环角色','covers':'characters'}]})
     assert len(result['catalogs'])==1
 

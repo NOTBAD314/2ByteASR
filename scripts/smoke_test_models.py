@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 
 def installed_keys() -> set[str]:
-    from twobyteasr.model_workshop import installed_model_keys
+    from twobyteasr.local_models.model_workshop import installed_model_keys
 
     return installed_model_keys(ROOT)
 

@@ -7,14 +7,14 @@ from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPalette
 from PySide6.QtWidgets import QApplication, QComboBox, QMenu, QStyle, QStyleOptionViewItem
 
-from twobyteasr.studio_project import StudioMedia, SubtitleProject
-from twobyteasr.studio_render_ui import StudioRenderDialog
-from twobyteasr.studio_theme import (
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
+from twobyteasr.exports.studio_render_ui import StudioRenderDialog
+from twobyteasr.design.studio_theme import (
     SECONDARY_SURFACE_QSS,
     StudioComboBox,
     create_studio_menu,
 )
-from twobyteasr.studio_ui import LazyFontComboBox, ShortcutSettingsDialog
+from twobyteasr.studio.studio_ui import LazyFontComboBox, ShortcutSettingsDialog
 
 
 def _app():
@@ -145,7 +145,7 @@ def test_font_delegate_renders_readable_palette_owned_rows():
 
 def test_shortcut_and_render_dialogs_fit_common_dpi_sizes(tmp_path, monkeypatch):
     app = _app()
-    monkeypatch.setattr("twobyteasr.studio_render_ui.cached_encoder_choices", lambda *_args: ["libx264"])
+    monkeypatch.setattr("twobyteasr.exports.studio_render_ui.cached_encoder_choices", lambda *_args: ["libx264"])
     shortcuts = ShortcutSettingsDialog({}, None)
     render = StudioRenderDialog(_project(tmp_path), str(tmp_path / "preview.ass"), 0.0)
 
@@ -176,7 +176,7 @@ def test_shortcut_and_render_dialogs_fit_common_dpi_sizes(tmp_path, monkeypatch)
 def test_render_dialog_filters_codecs_by_container(tmp_path, monkeypatch):
     _app()
     monkeypatch.setattr(
-        "twobyteasr.studio_render_ui.cached_encoder_choices",
+        "twobyteasr.exports.studio_render_ui.cached_encoder_choices",
         lambda _ffmpeg, codec: {
             "h264": ["libx264"],
             "hevc": ["libx265"],
@@ -200,7 +200,7 @@ def test_render_dialog_filters_codecs_by_container(tmp_path, monkeypatch):
 
 def test_render_dialog_defaults_archive_projects_to_exports(tmp_path, monkeypatch):
     _app()
-    monkeypatch.setattr("twobyteasr.studio_render_ui.cached_encoder_choices", lambda *_args: ["libx264"])
+    monkeypatch.setattr("twobyteasr.exports.studio_render_ui.cached_encoder_choices", lambda *_args: ["libx264"])
     archive = tmp_path / "2ByteASR Projects" / "source"
     exports = archive / "exports"
     exports.mkdir(parents=True)
@@ -230,14 +230,14 @@ def test_render_dialog_cold_cache_scans_encoders_in_background(tmp_path, monkeyp
         return {}
 
     monkeypatch.setattr(
-        "twobyteasr.studio_render_ui.scan_encoder_capabilities", fake_scan
+        "twobyteasr.exports.studio_render_ui.scan_encoder_capabilities", fake_scan
     )
 
     def fail_synchronous_probe(*_args, **_kwargs):
         raise AssertionError("dialog must not probe encoders on the UI thread")
 
     monkeypatch.setattr(
-        "twobyteasr.studio_render.available_encoders", fail_synchronous_probe
+        "twobyteasr.exports.studio_render.available_encoders", fail_synchronous_probe
     )
 
     render = StudioRenderDialog(_project(tmp_path), str(tmp_path / "preview.ass"), 0.0)

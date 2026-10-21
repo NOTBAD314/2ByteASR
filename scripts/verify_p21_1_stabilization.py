@@ -22,7 +22,7 @@ def _probe_header() -> int:
 
     import moss_firered_pipeline
     import subtitle_core
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     app = QApplication.instance() or QApplication([])
     cjk_font = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "msyh.ttc"
@@ -80,11 +80,11 @@ def main() -> int:
 
     import moss_firered_pipeline
     import subtitle_core
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-    from twobyteasr.studio_render import scan_encoder_capabilities
-    from twobyteasr.studio_render_ui import StudioRenderDialog
-    from twobyteasr.studio_ui import MpvCanvas, SubtitleStudioPage
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.exports.studio_render import scan_encoder_capabilities
+    from twobyteasr.exports.studio_render_ui import StudioRenderDialog
+    from twobyteasr.studio.studio_ui import MpvCanvas, SubtitleStudioPage
+    from twobyteasr.app.ui import MainWindow
 
     app = QApplication.instance() or QApplication([])
     cjk_font = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / "msyh.ttc"

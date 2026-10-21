@@ -30,10 +30,10 @@ if str(ROOT) not in sys.path:
 
 import psutil
 
-from twobyteasr import asr
-from twobyteasr.incremental_asr import ASRChunkSpec, CueDelta, IncrementalASRPipeline
-from twobyteasr.processes import popen_hidden_subprocess, stop_process_tree
-from twobyteasr.runtime_cache import RuntimeCacheManager
+from twobyteasr.recognition import asr
+from twobyteasr.recognition.incremental_asr import ASRChunkSpec, CueDelta, IncrementalASRPipeline
+from twobyteasr.system.processes import popen_hidden_subprocess, stop_process_tree
+from twobyteasr.storage.runtime_cache import RuntimeCacheManager
 
 
 TEN_MINUTES_MS = 10 * 60 * 1000

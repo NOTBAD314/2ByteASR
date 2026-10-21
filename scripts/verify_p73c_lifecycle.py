@@ -24,8 +24,8 @@ from PySide6.QtWidgets import QApplication
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.runtime_cache import GLOBAL_RUNTIME_CACHE
+from twobyteasr.app import ui
+from twobyteasr.storage.runtime_cache import GLOBAL_RUNTIME_CACHE
 
 
 SOURCE_PROJECT = ROOT / "tmp" / "p66-runtime" / "formal" / "p66-real-hour.2byteproj"

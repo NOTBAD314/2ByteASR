@@ -5,12 +5,12 @@ from PySide6.QtCore import Qt,QPoint
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,VideoClip,VideoTrack,AudioClip,AudioTrack,save_project,load_project
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_media_pool import sync_linked_av_contract,active_video_clips
-from twobyteasr.studio_selection import forward_selection,move_selection_command,delete_selection_command
-from twobyteasr.studio_transitions import set_transition,transition_windows,transition_gain,reconcile_transitions
-from twobyteasr.studio_timeline import WaveformTimeline
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,VideoClip,VideoTrack,AudioClip,AudioTrack,save_project,load_project
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.timeline.studio_media_pool import sync_linked_av_contract,active_video_clips
+from twobyteasr.timeline.studio_selection import forward_selection,move_selection_command,delete_selection_command
+from twobyteasr.timeline.studio_transitions import set_transition,transition_windows,transition_gain,reconcile_transitions
+from twobyteasr.studio.studio_timeline import WaveformTimeline
 
 @pytest.fixture(scope='module',autouse=True)
 def app():
@@ -97,7 +97,7 @@ def test_real_qt_forward_and_marquee_match_move(app):
 
 
 def test_transitions_follow_razor_terminals_and_group_move():
-    from twobyteasr.studio_clip_edit import clip_edit_command
+    from twobyteasr.timeline.studio_clip_edit import clip_edit_command
     p=project()
     seam=set_transition(p,'video','V2','v2a','v2b',duration_ms=600)
     tail=set_transition(p,'video','V2','v2b',edge='out',duration_ms=600)
@@ -123,7 +123,7 @@ def test_duplicate_clip_id_windows_remain_track_scoped():
 
 
 def test_unified_delete_preserves_unselected_caption_and_locked_v1():
-    from twobyteasr.studio_selection import ClipSelection
+    from twobyteasr.timeline.studio_selection import ClipSelection
     p=project();original=copy.deepcopy(p.video_tracks[0])
     command=delete_selection_command(p,ClipSelection(video_ids={'v2a'},cue_ids={'c1'}));command.redo()
     assert p.video_tracks[0]==original and [c.id for c in p.cues]==['c2']
@@ -132,7 +132,7 @@ def test_unified_delete_preserves_unselected_caption_and_locked_v1():
 
 
 def test_selection_cancel_linked_and_new_project_reset(app):
-    from twobyteasr.studio_selection import ClipSelection,expand_linked_selection,remove_linked_selection
+    from twobyteasr.timeline.studio_selection import ClipSelection,expand_linked_selection,remove_linked_selection
     p=project();s=expand_linked_selection(p,ClipSelection(video_ids={'v2a'},cue_ids={'c1'}))
     assert len(s.audio_ids)==1
     remove_linked_selection(p,s,'audio',next(iter(s.audio_ids)))
@@ -145,13 +145,13 @@ def test_selection_cancel_linked_and_new_project_reset(app):
 def test_shortcut_existing_conflicts_empty_and_input_guard(tmp_path,monkeypatch):
     import json
     from types import SimpleNamespace
-    import twobyteasr.studio_ui as ui
+    import twobyteasr.studio.studio_ui as ui
     from twobyteasr.i18n import translate
     path=tmp_path/'studio-settings.json'
     path.write_text(json.dumps({'shortcuts':{'save':'Ctrl+D','play_pause':'A','undo':'Ctrl+Shift+D','selection_tool':''}}),'utf8')
     monkeypatch.setattr(ui,'studio_settings_path',lambda:path)
     # 2026-10-13: Studio reads its keys through the shared shortcut registry.
-    import twobyteasr.shortcut_registry as registry
+    import twobyteasr.studio.shortcut_registry as registry
     monkeypatch.setattr(registry,'settings_path',lambda:path)
     dummy=SimpleNamespace();loaded=ui.SubtitleStudioPage._load_shortcut_values(dummy)
     assert loaded['save']=='Ctrl+D' and loaded['play_pause']=='A' and loaded['selection_tool']==''
@@ -169,7 +169,7 @@ def test_toolbar_wraps_without_overlap_and_narrow_highlight(app):
     from PySide6.QtWidgets import QWidget,QVBoxLayout,QHBoxLayout,QLineEdit,QPushButton,QLabel
     from PySide6.QtCore import QRectF
     from types import SimpleNamespace
-    from twobyteasr.studio_toolbar_layout import install_command_groups
+    from twobyteasr.studio.studio_toolbar_layout import install_command_groups
     host=QWidget();outer=QVBoxLayout(host);old=QHBoxLayout();outer.addLayout(old);widgets=[]
     for i in range(18):
         w=QPushButton('Timeline control '+str(i));old.addWidget(w);widgets.append(w)
@@ -194,7 +194,7 @@ def test_normal_overlap_still_uses_topmost_without_transition():
 
 def test_escape_cancels_group_before_shortcut_dispatch_and_preserves_forward_cursor(app):
     from types import SimpleNamespace
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
     t=WaveformTimeline();t.resize(1200,500);t.set_project(project());t.set_visible_window(0,10000);t.show();app.processEvents()
     t.set_tool_mode('track_forward');row=t._video_track_rect('V2');point=QPoint(round(t._time_to_x(2000)),round(row.center().y()))
     state=[];commits=[];t.interaction_changed.connect(state.append);t.group_move_committed.connect(lambda *_:commits.append(True))

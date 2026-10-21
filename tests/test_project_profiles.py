@@ -1,4 +1,4 @@
-from twobyteasr.project_profiles import ProjectProfileStore
+from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
 
 def profile_values():

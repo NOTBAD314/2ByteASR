@@ -18,7 +18,7 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_live_canvas import AdvancedLiveCanvas
+from twobyteasr.rendering.studio_live_canvas import AdvancedLiveCanvas
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -94,7 +94,7 @@ def test_layer_callback_keeps_canvas_anchor():
     canvas = _canvas_with_layers(owner)
     # Materialize a tracked scene the way a visualGraph-backed snapshot does
     # (the fake snapshot has no recipe, so set_visual compiled nothing).
-    from twobyteasr.visual_design_graph import (
+    from twobyteasr.caption_design.visual_design_graph import (
         CompiledLiveScene, MotionGraph, MotionKeyframe, MotionTrack,
         TextLayer, VisualDesignGraph,
     )
@@ -131,7 +131,7 @@ def test_layer_callback_keeps_canvas_anchor():
 def test_bounds_hint_stays_within_raster():
     owner = _RecordingOwner()
     canvas = _canvas_with_layers(owner)
-    from twobyteasr.visual_design_graph import (
+    from twobyteasr.caption_design.visual_design_graph import (
         CompiledLiveScene, MotionGraph, MotionKeyframe, MotionTrack,
         TextLayer, VisualDesignGraph,
     )

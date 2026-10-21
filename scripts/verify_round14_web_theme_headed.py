@@ -25,8 +25,8 @@ PROJECT = ROOT / "tmp" / "realproj" / "real-copy.2byteproj"
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.web_theme import builtin_web_themes
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_design.web_theme import builtin_web_themes
 
 RESULTS: list[tuple[str, bool, str]] = []
 STAMPS: list[float] = []
@@ -93,7 +93,7 @@ def main() -> int:
     )
     check("apply_button_reapplies", isinstance(payload_other.get("webTheme"), dict))
 
-    from twobyteasr.studio_style_controller import StudioStyleController
+    from twobyteasr.caption_style.studio_style_controller import StudioStyleController
 
     persisted: list[object] = []
     original_persist = StudioStyleController._persist_ai_design

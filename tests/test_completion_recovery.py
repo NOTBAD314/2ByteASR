@@ -13,10 +13,10 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QTextEdit, QWidget
 
-from twobyteasr.recognition_history import parse_recognition_report
-from twobyteasr.service import MediaResult, QueueResult
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project, save_project
-from twobyteasr.ui import MainWindow
+from twobyteasr.recognition.recognition_history import parse_recognition_report
+from twobyteasr.recognition.service import MediaResult, QueueResult
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project, save_project
+from twobyteasr.app.ui import MainWindow
 
 APP = QApplication.instance() or QApplication([])
 
@@ -93,7 +93,8 @@ def test_missing_artifact_does_not_rewrite_completed_task_as_save_failure(comple
 
 
 def test_verified_recovery_rebinds_saved_export_target_without_rewriting_history(completion_shell, tmp_path, monkeypatch):
-    from twobyteasr import completion_export, recognition_recovery
+    from twobyteasr.exports import completion_export
+    from twobyteasr.recognition import recognition_recovery
 
     original = tmp_path / 'damaged.2byteproj'
     original.write_bytes(b'{ damaged original project')
@@ -142,6 +143,45 @@ def test_verified_recovery_rebinds_saved_export_target_without_rewriting_history
     assert shell.switched_pages == [0]
     assert parse_recognition_report(report_path).status == 'failed'
     assert all(path.read_bytes() == raw for path, raw in protected.items())
+
+
+def test_recovery_without_previous_report_lets_the_user_pick_one(completion_shell, tmp_path, monkeypatch):
+    """更多操作 → 恢复已有识别结果… with no usable earlier report opens a report picker.
+
+    Until 2026-10-15 `app/ui.py` used QFileDialog without importing it, so this
+    path raised NameError inside the Qt slot and no picker appeared.
+    """
+    from PySide6 import QtWidgets
+    from twobyteasr.app import ui
+    from twobyteasr.recognition import recognition_recovery
+
+    assert ui.QFileDialog is QtWidgets.QFileDialog
+    picked, recovered, warnings = [], [], []
+    answer = ['']
+
+    class Picker:
+        @staticmethod
+        def getOpenFileName(parent, caption, folder, filters):
+            picked.append((parent, str(caption), filters))
+            return answer[0], filters
+
+    def recover(path):
+        recovered.append(path)
+        raise RuntimeError('报告无法读取')
+    monkeypatch.setattr(ui, 'QFileDialog', Picker)
+    monkeypatch.setattr(recognition_recovery, 'recover_report', recover)
+    monkeypatch.setattr(ui.QMessageBox, 'warning', lambda parent, title, text: warnings.append((str(title), str(text))))
+    shell = completion_shell
+    shell._last_recognition_report = str(tmp_path / 'moved_字幕任务报告.json')
+
+    shell._recover_recognition_output()          # the earlier report is gone: ask; cancelling does nothing
+    assert [(parent, caption) for parent, caption, _ in picked] == [(shell, '选择已有字幕任务报告')]
+    assert recovered == [] and warnings == []
+
+    answer[0] = str(tmp_path / 'chosen_字幕任务报告.json')
+    shell._recover_recognition_output()          # the chosen report goes to recovery
+    assert len(picked) == 2 and recovered == [answer[0]]
+    assert warnings and warnings[0][0] == '恢复未完成' and '报告无法读取' in warnings[0][1]
 
 
 def test_return_requires_recovered_autosave_even_when_undo_stack_is_clean(completion_shell, tmp_path):

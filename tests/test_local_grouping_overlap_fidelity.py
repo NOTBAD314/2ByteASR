@@ -12,8 +12,8 @@ def overlap_sources():
 
 def test_local_overlap_keeps_whole_sources_real_times_and_review(monkeypatch):
     import subtitle_core as core
-    from twobyteasr import grouping
-    from twobyteasr.runtime import RuntimeContext,activate_runtime_context
+    from twobyteasr.subtitle_rules import grouping
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
     rows=overlap_sources(); original=copy.deepcopy(rows); events=[]
     monkeypatch.setattr(grouping,"record_run_event",lambda event,**data:events.append((event,data)))
     with activate_runtime_context(RuntimeContext(),legacy=core):
@@ -35,7 +35,7 @@ def test_local_overlap_keeps_whole_sources_real_times_and_review(monkeypatch):
 @pytest.mark.parametrize("damage",["drop","duplicate","source_word_reversal","copy_to_other_owner"])
 def test_batch_protection_still_rejects_corrupted_local_producer(monkeypatch,damage):
     import subtitle_core as core
-    from twobyteasr import grouping
+    from twobyteasr.subtitle_rules import grouping
     rows=[core.SpeechSegment(1,0,1,"先确认宝箱位置",.8,[],speaker="S01"),
           core.SpeechSegment(2,.5,1.5,"我检查右边",.8,[],speaker="S02")]
     def damaged(batch,*args):
@@ -53,7 +53,7 @@ def test_batch_protection_still_rejects_corrupted_local_producer(monkeypatch,dam
 
 def test_nonoverlapping_sources_keep_normal_local_resegmentation(monkeypatch):
     import subtitle_core as core
-    from twobyteasr import grouping
+    from twobyteasr.subtitle_rules import grouping
     events=[]
     monkeypatch.setattr(grouping,"record_run_event",lambda event,**data:events.append(event))
     row=core.SpeechSegment(1,10,13,"可以说是对迄今战斗规则的一种颠覆",.8,[],speaker="S01")

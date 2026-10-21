@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$InstallPrerequisites,
     [switch]$DownloadModels,
@@ -29,6 +29,28 @@ $SetupEnvironment = Join-Path $PSScriptRoot "setup_environment.ps1"
 $DownloadModelScript = Join-Path $PSScriptRoot "download_models.ps1"
 $Launcher = Join-Path $ProjectRoot "2ByteASR.exe"
 $SetupMarker = Join-Path $ProjectRoot "2byteasr.setup-complete"
+
+# Frozen distributions already contain the GUI and tools. Bootstrap only
+# their managed model runtimes; never search/install a global Python or Git.
+if ((Test-Path -LiteralPath $Launcher) -and (Test-Path -LiteralPath (Join-Path $ProjectRoot '2byteasr_build.json'))) {
+    if ($Repair) {
+        $roles = if ($RepairRole.Count) { $RepairRole -join ',' } else { 'main' }
+        & (Join-Path $PSScriptRoot 'setup_managed_backend.ps1') -ModelKey 'moss,firered_vad,firered_aed,qwen_asr,qwen_aligner,speaker_embedding' -RepairRoles $roles
+        if ($LASTEXITCODE -ne 0) { throw "专用环境重建失败：$LASTEXITCODE" }
+    } elseif ($DownloadModels -and -not $CheckOnly) {
+        & $DownloadModelScript -Yes -IncludeQwen:$IncludeQwen -Minimal:$MinimalModels
+        if ($LASTEXITCODE -ne 0) { throw "模型准备失败：$LASTEXITCODE" }
+    } else {
+        Write-Host '[就绪] 程序已安装。首次打开时选择识别方式，由兔白准备专用环境。'
+    }
+    if (-not $NoLaunch -and -not $CheckOnly) {
+        Start-Process -FilePath $Launcher -WorkingDirectory $ProjectRoot -WindowStyle Hidden
+    }
+    exit 0
+}
+if ($env:TWOBYTEASR_DEVELOPER_RUNTIMES -ne '1') {
+    throw '安装目录缺少完整的兔白程序或构建清单，请重新安装候选包。未搜索或修改系统 Python。源码开发者可显式设置 TWOBYTEASR_DEVELOPER_RUNTIMES=1。'
+}
 
 # 安装步骤进度：标题栏 + Write-Progress 双通道，用户随时知道进度与等待时间
 $script:StepIndex = 0

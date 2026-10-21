@@ -5,7 +5,7 @@ Usage:
         [--exe dist/2ByteASR/2ByteASR.exe] [--runs 2] [--ai]
 
 The normal window adds the media with the Home file button and presses Start
-(twobyteasr/perf_recognition_audit.py), repeating in one process. Model choices
+(twobyteasr/acceptance/perf_recognition_audit.py), repeating in one process. Model choices
 (models/switches/performance) are copied from the daily settings into an
 isolated profile; AI proofreading/sentence grouping stay off unless --ai, which
 also borrows the existing encrypted key store read only. Interpreters, the
@@ -127,11 +127,11 @@ def main():
 
     # The acceptance guard requires an owned project inside the output; it is
     # not opened (the audit works from Home).
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     startup_project = save_project(SubtitleProject(media=StudioMedia(path=str(media), duration_ms=1000),
                                                    cues=[StudioCue("c1", 0, 900, "placeholder")]),
                                    out / "startup-project.2byteproj")
-    from twobyteasr.glossary_live_resources import MANIFEST_ENV
+    from twobyteasr.acceptance.glossary_live_resources import MANIFEST_ENV
     env = os.environ.copy()
     env.update(TWOBYTEASR_TEST_ROOT=str(out), TWOBYTEASR_ACCEPTANCE_SCENARIO="perf-recognition",
                TWOBYTEASR_ACCEPTANCE_DIR=str(out), TWOBYTEASR_INVOKER_CWD=str(ROOT),

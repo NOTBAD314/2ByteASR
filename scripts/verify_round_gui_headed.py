@@ -45,7 +45,7 @@ B_CONFIG = {
 
 def _iso(tmp: Path):
     os.environ["LOCALAPPDATA"] = str(tmp)
-    import twobyteasr.settings as settings_module
+    import twobyteasr.storage.settings as settings_module
 
     settings_module.stable_settings_root = lambda: tmp
 
@@ -63,8 +63,8 @@ def main() -> int:
     app = QApplication.instance() or QApplication([])
     _iso(tmp)
     import subtitle_core as legacy
-    import twobyteasr.ui as ui_module
-    from twobyteasr.project_profiles import ProjectProfileStore
+    import twobyteasr.app.ui as ui_module
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
     report = {"phase": args.phase, "checks": [], "failures": []}
 
@@ -158,8 +158,8 @@ def main() -> int:
     check("delete_ok", store.delete(c.id) is True)
 
     # 6) 应用设置打开计时 ×3（真窗口）
-    from twobyteasr.application_settings import read_studio_preferences, project_library_root
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings import read_studio_preferences, project_library_root
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     prefs = read_studio_preferences()
     timings = []
     for i in range(3):

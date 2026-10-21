@@ -48,7 +48,7 @@ def main():
         os.environ['TWOBYTEASR_TEST_ROOT']=str(output)
         from twobyteasr.test_isolation import install
         install()
-        from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
+        from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
         seed=output/'input'/'seed.2byteproj';seed.parent.mkdir()
         save_project(SubtitleProject(media=StudioMedia(path='')),seed)
         env=os.environ.copy();env.update(TWOBYTEASR_TEST_ROOT=str(output),
@@ -78,10 +78,11 @@ def main():
     from twobyteasr.runtime_paths import RuntimePaths
     keys=('install_root','user_data_root','model_root','cache_root','project_root','config_root','log_root','renderer_asset_root','temp_root')
     actual_paths=RuntimePaths(*(Path(roots[k]) for k in keys))
-    from twobyteasr.storage_service import StorageService
-    from twobyteasr import storage_settings_audit,application_settings_ui
-    from twobyteasr.storage_ui import app_busy,loaded_media_graph
-    from twobyteasr.blank_project_audit import _capture
+    from twobyteasr.storage.storage_service import StorageService
+    from twobyteasr.acceptance import storage_settings_audit
+    from twobyteasr.app import application_settings_ui
+    from twobyteasr.storage.storage_ui import app_busy,loaded_media_graph
+    from twobyteasr.acceptance.blank_project_audit import _capture
     from PySide6.QtCore import QObject,QTimer,Qt
     from PySide6.QtWidgets import QApplication,QMessageBox,QPushButton,QLabel
     from PySide6.QtTest import QTest
@@ -212,7 +213,7 @@ def main():
             def finish(self):
                 self.timer.stop();application_settings_ui.ApplicationSettingsDialog.__init__=original
                 if self.dialog and self.dialog.isVisible():self.dialog._saved_values=self.dialog._values();self.dialog.reject()
-                from twobyteasr import blank_project_audit
+                from twobyteasr.acceptance import blank_project_audit
                 self.result['provider_calls']=blank_project_audit._provider_calls
                 self.result['blocked_external_connections']=list(blank_project_audit._blocked_external_connections)
                 (output/'result.json').write_text(json.dumps(self.result,ensure_ascii=False,indent=2),'utf8')

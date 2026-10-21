@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr.models import SpeechSegment
-from twobyteasr.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry, TermResolver
-from twobyteasr.terminology_retrieval import (
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry, TermResolver
+from twobyteasr.glossary.terminology_retrieval import (
     retrieve_candidates, short_latin_identifier_patch_supported, pending_identifier_suggestions,
 )
 
@@ -37,12 +37,12 @@ def replay_provider(monkeypatch, calls):
         return json.dumps({'checked_ids':[x['id'] for x in body['cues']],
             'cues':[{'id':x['id'], 'edits':x['production_returned_edits']}
                     for x in actual if x['id'] in {c['id'] for c in body['cues']}]}, ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
         lambda *a, **k: SimpleNamespace(complete=complete))
 
 
 def enable_current_game(context):
-    from twobyteasr.runtime import sync_legacy_runtime
+    from twobyteasr.recognition.run_context import sync_legacy_runtime
     core, owner, cache = context
     owner.game_name = '瓦罗兰特'
     owner.enable_domain_terms = True
@@ -52,7 +52,7 @@ def enable_current_game(context):
 
 
 def test_current_real_rejected_proposal_passes_only_with_same_cue_moss_and_repeats(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     owner, _ = enable_current_game(context)
     calls = []
     replay_provider(monkeypatch, calls)
@@ -112,7 +112,7 @@ def test_short_id_evidence_cannot_be_borrowed_or_delete_unmatched_words(mutation
     ('So了还在往里走', {'from':'So了还在','to':'S0pp','basis':'glossary+context'}, 'Sop还在往里走'),
 ])
 def test_ordinary_chinese_and_english_stay_unchanged_even_with_real_neighbor_ids(text, edit, moss):
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     cue = SpeechSegment(8, 0, 1, text, .8, [], moss_text=moss, firered_text=text, qwen_asr_text=text)
     neighbors = [x for x in rows() if x.segment_id != 8]
     candidates = retrieve_candidates(snapshot(), [cue, *neighbors])
@@ -124,7 +124,7 @@ def test_ordinary_chinese_and_english_stay_unchanged_even_with_real_neighbor_ids
 
 
 def test_full_pipeline_retains_short_id_patch_with_derived_timing_and_batch_cache(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     owner, cache = enable_current_game(context)
     monkeypatch.setattr(polishing, 'discover_global_domain_term_mappings', lambda *a: [])
     calls = []
@@ -142,7 +142,7 @@ def test_full_pipeline_retains_short_id_patch_with_derived_timing_and_batch_cach
 
 
 def test_short_id_support_does_not_override_primary_speaker_overlap_protection():
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     source = rows()
     cue = next(x for x in source if x.segment_id == 8)
     candidates = retrieve_candidates(snapshot(), source)
@@ -156,7 +156,8 @@ def test_short_id_support_does_not_override_primary_speaker_overlap_protection()
 
 
 def test_rule_version_invalidates_polish_without_invalidating_asr(context, monkeypatch):
-    from twobyteasr import cache, terminology_retrieval
+    from twobyteasr.recognition import cache
+    from twobyteasr.glossary import terminology_retrieval
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = snapshot()

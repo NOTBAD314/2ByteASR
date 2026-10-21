@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from twobyteasr.model_workshop import (
+from twobyteasr.local_models.model_workshop import (
     CANONICAL_MODEL_ORDER,
     MODELS,
     ModelCard,
@@ -29,7 +29,7 @@ from twobyteasr.model_workshop import (
     RatingBar,
     _stars,
 )
-from twobyteasr.ui import MainWindow
+from twobyteasr.app.ui import MainWindow
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,8 +88,8 @@ def _app():
 
 def test_no_decorative_black_dot_labels_on_settings_and_cards():
     """截图黑斑根因：装饰性 ● 与 ●●●○○ 星点盖住信息。语义状态须保留文字。"""
-    source_ui = (ROOT / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
-    source_ws = (ROOT / "twobyteasr" / "model_workshop.py").read_text(encoding="utf-8")
+    source_ui = (ROOT / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
+    source_ws = (ROOT / "twobyteasr" / "local_models" / "model_workshop.py").read_text(encoding="utf-8")
     assert 'QLabel("●  游戏 / 内容名称")' not in source_ui
     assert 'QLabel("●  当前步骤")' not in source_ui
     assert 'f"●  {title}"' not in source_ui
@@ -101,10 +101,10 @@ def test_no_decorative_black_dot_labels_on_settings_and_cards():
 def test_media_card_is_primary_accessible_action_without_double_open(monkeypatch):
     _app()
     import subtitle_core as legacy
-    from twobyteasr.ui import MediaPickCard
+    from twobyteasr.app.ui import MediaPickCard
 
     opens = []
-    monkeypatch.setattr("twobyteasr.ui._select_media_paths", lambda _parent: opens.append("dialog") or [])
+    monkeypatch.setattr("twobyteasr.app.ui._select_media_paths", lambda _parent: opens.append("dialog") or [])
     win = MainWindow([], legacy, object(), None)
     card = win.media_frame
     assert isinstance(card, MediaPickCard)
@@ -300,8 +300,8 @@ def test_workshop_and_main_share_backend_selection():
 
 
 def test_completed_groups_remain_wired():
-    ui = (ROOT / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
-    workshop = (ROOT / "twobyteasr" / "model_workshop.py").read_text(encoding="utf-8")
+    ui = (ROOT / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
+    workshop = (ROOT / "twobyteasr" / "local_models" / "model_workshop.py").read_text(encoding="utf-8")
     assert "def _ensure_runtime_environment" in ui
     assert "source_combo" in workshop
     assert "AUTO" in workshop or "user_facing_source_choices" in workshop

@@ -6,8 +6,8 @@ import subprocess
 
 import pytest
 
-from twobyteasr.audio_engine import studio_ffmpeg_path
-from twobyteasr.avsync import AVSyncMap, probe_av_stream_indices, scan_timestamp_gaps
+from twobyteasr.playback.audio_engine import studio_ffmpeg_path
+from twobyteasr.playback.avsync import AVSyncMap, probe_av_stream_indices, scan_timestamp_gaps
 
 
 def _tools():

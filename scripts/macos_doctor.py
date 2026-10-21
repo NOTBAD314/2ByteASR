@@ -21,13 +21,13 @@ def main(argv=None) -> int:
     parser.add_argument("--require-host",action="store_true")
     parser.add_argument("--probe-torch",action="store_true")
     args=parser.parse_args(argv)
-    from twobyteasr.platform_macos import device_capabilities
+    from twobyteasr.system.platform_macos import device_capabilities
     payload={"platform":sys.platform,"architecture":platform.machine(),"python":platform.python_version(),
              "macos":platform.mac_ver()[0],"native_arm64":sys.platform=="darwin" and platform.machine()=="arm64",
              "imports":{},"tools":{},"validation":{"app_build":False,"model":False,"studio":False,
              "physical_ime":False,"human_listening":False,"developer_id":False,"notarized":False}}
-    for name in ("numpy","PySide6.QtCore","PySide6.QtMultimedia","twobyteasr.studio_mpv",
-                 "twobyteasr.media_service","twobyteasr.ui","moss_firered_pipeline","subtitle_core"):
+    for name in ("numpy","PySide6.QtCore","PySide6.QtMultimedia","twobyteasr.playback.studio_mpv",
+                 "twobyteasr.media.media_service","twobyteasr.app.ui","moss_firered_pipeline","subtitle_core"):
         try:
             importlib.import_module(name)
             payload["imports"][name]={"passed":True}

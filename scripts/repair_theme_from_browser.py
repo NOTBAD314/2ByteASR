@@ -34,9 +34,9 @@ def main():
 不要改构图和位置；不要改白熊与镜片；不要改任何keyframe的transform或时长，只准改字缘颜色和描边宽度等文字颜色属性。输出完整九分节，每个===标题===单独一行。'''
     (out/'necessary-repair.txt').write_text(instruction,encoding='utf8')
     settings=json.loads((root/'2byteasr_settings.json').read_text('utf8'))
-    from twobyteasr.llm_config import activate_ai_service,update_active_profile
+    from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile
     activate_ai_service(settings,'grok_account');update_active_profile(settings,model='grok-4.6')
-    from twobyteasr.studio_ai import refine_web_theme_design
+    from twobyteasr.caption_design.studio_ai import refine_web_theme_design
     start=time.monotonic();print('EVIDENCE',out,flush=True)
     result=refine_web_theme_design(json.loads((source/'theme.json').read_text('utf8')),instruction,
         cue_text='啊感觉他就是你看',runtime_settings=settings,deadline_seconds=600,

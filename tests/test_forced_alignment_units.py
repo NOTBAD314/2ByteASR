@@ -85,7 +85,7 @@ def test_slots_on_the_window_edge_are_clamped_not_measured():
 
 
 def test_adjacent_cues_of_one_speaker_are_aligned_as_one_run():
-    from twobyteasr.cue_forced_alignment import plan_runs, split_run_row
+    from twobyteasr.recognition.cue_forced_alignment import plan_runs, split_run_row
     rows = [dict(key=1, start_ms=18518, end_ms=19770, speaker="S01", text="昨日は雨降るって"),
             dict(key=2, start_ms=19770, end_ms=21230, speaker="S01", text="言ってたのにね"),
             dict(key=3, start_ms=21300, end_ms=22000, speaker="S02", text="おはよう"),
@@ -122,7 +122,7 @@ def test_adjacent_cues_of_one_speaker_are_aligned_as_one_run():
 
 def test_a_real_pause_ends_a_run_even_when_display_times_touch():
     from types import SimpleNamespace
-    from twobyteasr.cue_forced_alignment import alignment_jobs, longest_silence_ms
+    from twobyteasr.recognition.cue_forced_alignment import alignment_jobs, longest_silence_ms
     regions = [{"start": 1.0, "end": 2.0}, {"start": 3.0, "end": 4.0}]
     assert longest_silence_ms(regions, 1500, 3150) == 1000
     cues = [SimpleNamespace(start=1.0, end=2.7, speaker="S01", text="一つ目"),      # display end bridged to 2.7

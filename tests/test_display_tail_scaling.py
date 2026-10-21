@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import display_timing as timing
+from twobyteasr.subtitle_rules import display_timing as timing
 
 
 def legacy_plan(project):
@@ -90,14 +90,14 @@ def test_full_plan_matches_legacy_with_nested_equal_start_and_unsorted_cues(evid
 
 
 def test_measured_boundaries_are_computed_once_per_cue(monkeypatch):
-    from twobyteasr import cue_word_alignment
+    from twobyteasr.recognition import cue_word_alignment
     project = project_fixture(20, evidence='words')
     original = cue_word_alignment.cue_words
     observed = []
 
-    def counted(view, cue):
+    def counted(view, cue, **kwargs):
         observed.append(cue.id)
-        return original(view, cue)
+        return original(view, cue, **kwargs)
 
     monkeypatch.setattr(cue_word_alignment, 'cue_words', counted)
     timing.project_display_tail_plan(project)

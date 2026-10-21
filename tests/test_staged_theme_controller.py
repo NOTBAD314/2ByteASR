@@ -27,7 +27,7 @@ def test_incremental_completion_keeps_task_alive_and_cancel_rejects_old_callback
     finally:_finish(page)
 
 def test_saved_discovery_ignores_broken_files_and_never_claims_remote_running(tmp_path):
-    from twobyteasr.saved_theme_tasks import saved_tasks
+    from twobyteasr.caption_design.saved_theme_tasks import saved_tasks
     for name,value in [('valid',json.dumps(dict(pipeline='authored-stages-1',raw_user_prompt='北极熊',status='implementing',
             partial_concepts=[dict(id='A',motion_preview={'status':'motion_ready'})]))),('broken','{')]:
         path=tmp_path/name/'creative';path.mkdir(parents=True);(path/'ledger.json').write_text(value,'utf8')
@@ -51,7 +51,7 @@ def test_later_provider_timeout_keeps_selected_operation(tmp_path,monkeypatch):
 
 
 def test_saved_dialog_keeps_explicit_legacy_record_entry(tmp_path,monkeypatch):
-    from twobyteasr.saved_theme_tasks import SavedThemeTasksDialog,QFileDialog
+    from twobyteasr.caption_design.saved_theme_tasks import SavedThemeTasksDialog,QFileDialog
     app,page=_page(tmp_path,monkeypatch)
     try:
         path=str(tmp_path/'old-ledger.json')

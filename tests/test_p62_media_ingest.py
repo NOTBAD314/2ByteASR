@@ -10,16 +10,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.media_ingest import (
+from twobyteasr.media.media_ingest import (
     MediaIngestResult,
     discover_same_stem_xml,
     ingest_media,
     result_matches_request,
 )
-from twobyteasr.processes import hidden_subprocess_kwargs, run_hidden_subprocess
-from twobyteasr.studio_project import StudioMedia, SubtitleProject
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.studio_video_track import VideoThumbnailCache
+from twobyteasr.system.processes import hidden_subprocess_kwargs, run_hidden_subprocess
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_video_track import VideoThumbnailCache
 
 
 def _app() -> QApplication:
@@ -78,17 +78,11 @@ def test_child_process_instrumentation_records_hidden_duration(monkeypatch, tmp_
 
 
 def test_studio_runtime_has_no_direct_subprocess_launch_calls():
-    from twobyteasr import (
-        advanced_preview,
-        advanced_renderer,
-        studio_helpers,
-        studio_mpv,
-        studio_project_controller,
-        studio_reasr,
-        studio_render,
-        studio_video_track,
-        waveform_cache,
-    )
+    from twobyteasr.rendering import advanced_preview, advanced_renderer
+    from twobyteasr.studio import studio_helpers, studio_reasr, studio_video_track
+    from twobyteasr.playback import studio_mpv, waveform_cache
+    from twobyteasr.projects import studio_project_controller
+    from twobyteasr.exports import studio_render
 
     offenders = []
     for module in (
@@ -116,7 +110,7 @@ def test_studio_runtime_has_no_direct_subprocess_launch_calls():
 
 
 def test_p74c_probe_duration_uses_stream_when_format_is_missing():
-    from twobyteasr.media_service import probe_duration_ms
+    from twobyteasr.media.media_service import probe_duration_ms
 
     assert probe_duration_ms({"duration": "12.5"}, []) == 12500
     assert probe_duration_ms({}, [
@@ -269,7 +263,7 @@ def test_begin_ingest_returns_in_loading_state_before_worker(monkeypatch, tmp_pa
     page.project = SubtitleProject(media=StudioMedia(path=""))
     scheduled = []
     monkeypatch.setattr(
-        "twobyteasr.studio_ui.QTimer.singleShot",
+        "twobyteasr.studio.studio_ui.QTimer.singleShot",
         lambda delay, *callbacks: scheduled.append((delay, callbacks[-1])),
     )
 
@@ -295,7 +289,7 @@ def test_thumbnail_pending_key_is_deduplicated(monkeypatch, tmp_path):
         def start(self):
             started.append(self.args)
 
-    monkeypatch.setattr("twobyteasr.studio_video_track.threading.Thread", FakeThread)
+    monkeypatch.setattr("twobyteasr.studio.studio_video_track.threading.Thread", FakeThread)
     monkeypatch.setattr(
         VideoThumbnailCache,
         "_disk_path",

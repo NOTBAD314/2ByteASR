@@ -11,8 +11,8 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
-from twobyteasr import mcp_clients
-from twobyteasr import mcp_common as common
+from twobyteasr.local_mcp import mcp_clients
+from twobyteasr.local_mcp import mcp_common as common
 
 EXE = r"C:\Program Files\兔白 字幕\2ByteASR.exe"
 
@@ -211,7 +211,7 @@ def test_claude_code_user_config_merge(home, monkeypatch):
 
 def test_settings_page_asks_before_enabling_and_writes_only_after_confirming(home, monkeypatch):
     from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     app = QApplication.instance() or QApplication([])
     folder = claude_folder(home)
     monkeypatch.setattr(mcp_clients, "claude_desktop_started_at", lambda platform=None: 0.0)  # Claude closed
@@ -250,7 +250,7 @@ def test_settings_page_asks_before_enabling_and_writes_only_after_confirming(hom
 
 def test_settings_page_refuses_while_claude_desktop_runs(home, monkeypatch):
     from PySide6.QtWidgets import QApplication, QMessageBox
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     app = QApplication.instance() or QApplication([])
     folder = claude_folder(home)
     monkeypatch.setattr(mcp_clients, "claude_desktop_started_at", lambda platform=None: time.time() - 600)

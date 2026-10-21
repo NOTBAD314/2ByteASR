@@ -6,8 +6,8 @@ import time
 import pytest
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
-from twobyteasr import gui_stall_watchdog as watchdog_module
-from twobyteasr.gui_stall_watchdog import GuiStallWatchdog
+from twobyteasr.diagnostics import gui_stall_watchdog as watchdog_module
+from twobyteasr.diagnostics.gui_stall_watchdog import GuiStallWatchdog
 
 
 @pytest.fixture
@@ -79,6 +79,8 @@ def test_gap_the_sampler_never_saw_is_still_reported(app, monkeypatch):
     monkeypatch.setattr(GuiStallWatchdog, "_emit", lambda self, record: emitted.append(dict(record)))
     watchdog = GuiStallWatchdog()  # sampler thread not started
     watchdog._previous_beat = time.perf_counter() - 0.6
+    if watchdog._previous_awake is not None:
+        watchdog._previous_awake -= 0.6
     watchdog._beat()
     watchdog._beat()  # next beat attaches context and emits
     assert [r["kind"] for r in emitted] == ["GUI_STALL"]
@@ -117,3 +119,11 @@ def test_hang_dump_left_to_audits_and_pytest(monkeypatch):
     assert watchdog_module._hang_dump_path().name.startswith("gui-hang-")
     monkeypatch.setenv("TWOBYTEASR_HANG_DUMP", "0")
     assert watchdog_module._hang_dump_path() is None
+
+
+def test_sleep_and_debugger_are_distinct_from_unknown_deschedule():
+    from twobyteasr.diagnostics.gui_stall_watchdog import pause_reason
+    assert pause_reason(6, .1) == 'system_sleep_or_hibernation'
+    assert pause_reason(6, 6, True) == 'debugger_attached'
+    assert pause_reason(.6, .6) == ''
+    assert pause_reason(6, None) == ''

@@ -15,9 +15,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.asr import call_qwen_asr_api
-from twobyteasr.llm_config import validate_qwen_asr_endpoint
-from twobyteasr.model_workshop import (
+from twobyteasr.recognition.asr import call_qwen_asr_api
+from twobyteasr.providers.llm_config import validate_qwen_asr_endpoint
+from twobyteasr.local_models.model_workshop import (
     MODELS,
     _browser_groups,
     _model_roles,
@@ -57,7 +57,7 @@ def test_role_picker_still_offers_api_models():
 
 
 def test_new_api_presets_registered():
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.app.ui import ASR_API_PRESETS
 
     assert ASR_API_PRESETS["openrouter_word"]["url"].startswith("https://openrouter.ai/")
     assert ASR_API_PRESETS["openrouter_word"]["protocol"] == "openrouter_verbose_json"
@@ -83,7 +83,7 @@ def test_azure_protocol_passes_whitelists():
             "api_key": "k",
         }
     )
-    from twobyteasr.ui import persist_asr_configuration
+    from twobyteasr.app.ui import persist_asr_configuration
 
     class _Legacy:
         RUNTIME_SETTINGS = {"models": {}, "switches": {}}
@@ -127,7 +127,7 @@ def test_azure_transcription_uses_api_key_header(monkeypatch):
     fake_requests = types.ModuleType("requests")
     fake_requests.post = _fake_post
     monkeypatch.setattr(
-        "twobyteasr.llm_config.qwen_asr_endpoint_from_settings",
+        "twobyteasr.providers.llm_config.qwen_asr_endpoint_from_settings",
         lambda settings: {
             "provider": "azure",
             "protocol": "azure_transcription",

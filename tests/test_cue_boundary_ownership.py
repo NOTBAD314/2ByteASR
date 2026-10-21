@@ -4,12 +4,12 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker
-from twobyteasr.studio_runtime_state import state_for, DirtyDomain
-from twobyteasr.studio_session import StudioSession
-from twobyteasr.studio_revisions import StudioRevisionStore
-from twobyteasr.studio_playback_flow import StudioPlaybackFlowMixin
-from twobyteasr.studio_cue_table import CueTableModel
+from twobyteasr.projects.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker
+from twobyteasr.projects.studio_runtime_state import state_for, DirtyDomain
+from twobyteasr.projects.studio_session import StudioSession
+from twobyteasr.projects.studio_revisions import StudioRevisionStore
+from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
+from twobyteasr.studio.studio_cue_table import CueTableModel
 
 APP = QApplication.instance() or QApplication([])
 
@@ -62,7 +62,7 @@ def test_selection_shares_frozen_render_metadata(monkeypatch):
     store=StudioRevisionStore(p);runtime=state_for(p);runtime.subscribe(store.consume)
     before=store.render
     def no_freeze(*args):raise AssertionError('selection must not freeze the render project')
-    monkeypatch.setattr('twobyteasr.studio_revisions.freeze_json', no_freeze)
+    monkeypatch.setattr('twobyteasr.projects.studio_revisions.freeze_json', no_freeze)
     with runtime.transaction(p, action_id='select_cue', dirty=DirtyDomain.CUE_SELECTION|DirtyDomain.TIMELINE_PIXELS,
                              selection_before='S1-0',selection_after='S1-1'):
         pass
@@ -74,7 +74,7 @@ def test_selection_shares_frozen_render_metadata(monkeypatch):
 
 
 def test_timeline_activity_keeps_static_raster_and_selection():
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
     timeline=WaveformTimeline();timeline.resize(1000,400);timeline.set_project(project())
     timeline.set_selected('S1-0');timeline.show();APP.processEvents()
     timeline.grab()
@@ -95,8 +95,8 @@ def test_session_close_retires_passive_activity():
 def test_background_cache_prepares_all_lookahead_cues_and_preserves_style():
     import time
     import threading
-    from twobyteasr.caption_playback_cache import PlaybackCaptionCache
-    from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+    from twobyteasr.rendering.caption_playback_cache import PlaybackCaptionCache
+    from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
     p=project();store=StudioRevisionStore(p);cache=PlaybackCaptionCache()
     ready=[];errors=[]
     cache.ready.connect(lambda key,ids:ready.extend(ids));cache.failed.connect(errors.append)
@@ -115,8 +115,8 @@ def test_background_cache_prepares_all_lookahead_cues_and_preserves_style():
 
 def test_web_worker_survives_inactive_clock_and_only_stops_explicitly(monkeypatch):
     import time
-    from twobyteasr.live_web_preview import LiveWebPreviewWorker
-    from twobyteasr import renderer_service
+    from twobyteasr.rendering.live_web_preview import LiveWebPreviewWorker
+    from twobyteasr.rendering import renderer_service
     sessions=[]
     class Session:
         def __init__(self,*args):sessions.append(self)
@@ -131,9 +131,9 @@ def test_web_worker_survives_inactive_clock_and_only_stops_explicitly(monkeypatc
 
 def test_first_web_frame_decodes_on_background_worker():
     import base64,time,threading
-    from twobyteasr.latest_work import LatestWork
-    from twobyteasr.live_web_preview import WebFrame
-    from twobyteasr.studio_advanced_flow import StudioAdvancedFlowMixin
+    from twobyteasr.rendering.latest_work import LatestWork
+    from twobyteasr.rendering.live_web_preview import WebFrame
+    from twobyteasr.studio.studio_advanced_flow import StudioAdvancedFlowMixin
     png=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==')
     data=WebFrame(png,1,'cue',1,1);received=[];runner=LatestWork('test-web-decode')
     page=SimpleNamespace(_web_frame_is_current=lambda x:True,_web_frame_decode_runner=runner,

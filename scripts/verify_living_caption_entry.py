@@ -23,9 +23,9 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(setup)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.caption_living_motion import examples,compose
-    from twobyteasr.web_theme import WebThemeDocument
-    from twobyteasr.source_artifact import frame,from_theme,token,unframe
+    from twobyteasr.caption_design.caption_living_motion import examples,compose
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.source_artifact import frame,from_theme,token,unframe
     theme=WebThemeDocument.from_dict(dict(name='CRT · 通电提示',**compose(dict(examples()[0],emphasis=['自动战斗'])))).to_dict()
     calls=[];original=[None];cut=[None];implementations=[0]
     class Handler(BaseHTTPRequestHandler):
@@ -69,8 +69,8 @@ def main():
                 data=json.dumps({'id':'local-fault','choices':[{'message':{'role':'assistant','content':text},'finish_reason':finish}]}).encode()
                 self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler);threading.Thread(target=server.serve_forever,daemon=True).start()
-    from twobyteasr.settings import DEFAULT_SETTINGS
-    from twobyteasr.llm_config import activate_ai_service,update_active_profile,save_api_key_for
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
+    from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile,save_api_key_for
     settings=copy.deepcopy(DEFAULT_SETTINGS);activate_ai_service(settings,'custom')
     address=f'http://127.0.0.1:{server.server_port}/v1';update_active_profile(settings,base_url=address,model='local-caption-fixture')
     save_api_key_for('custom',address,'local-fixture-only')

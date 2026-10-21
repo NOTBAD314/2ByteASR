@@ -3,10 +3,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from twobyteasr.artwork_recovery import inspect_source, save_recovery, saved_recovery, merge_completion
-from twobyteasr.source_artifact import frame, to_theme
-from twobyteasr.caption_type_effects import examples, compose
-from twobyteasr.caption_creative_pipeline import ThemeLedger
+from twobyteasr.caption_design.artwork_recovery import inspect_source, save_recovery, saved_recovery, merge_completion
+from twobyteasr.caption_design.source_artifact import frame, to_theme
+from twobyteasr.caption_design.caption_type_effects import examples, compose
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
 
 
 def test_no_body_is_not_a_recoverable_html_failure():
@@ -41,7 +41,7 @@ def test_duplicate_section_cannot_be_spliced():
 
 @pytest.mark.parametrize('definition',examples())
 def test_new_effects_use_same_safe_runtime_and_keep_semantic_text(definition):
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     theme=WebThemeDocument.from_dict(dict(name='test',**compose(definition))).to_dict()
     assert 'data-semantic-text="true"' in theme['cueHtml']
     assert '{{words}}' in theme['cueHtml'] and len(theme['motionSpec']['tracks'])<=32
@@ -50,7 +50,7 @@ def test_new_effects_use_same_safe_runtime_and_keep_semantic_text(definition):
 
 
 def test_search_is_before_planning_and_reuses_saved_evidence_without_network(tmp_path):
-    from twobyteasr.caption_reference_search import search_references, prompt_evidence
+    from twobyteasr.caption_design.caption_reference_search import search_references, prompt_evidence
     calls=[]
     def fetch(url,timeout):
         calls.append(url)
@@ -65,14 +65,14 @@ def test_search_is_before_planning_and_reuses_saved_evidence_without_network(tmp
 
 
 def test_search_failure_is_honest_cached_fallback(tmp_path):
-    from twobyteasr.caption_reference_search import search_references
+    from twobyteasr.caption_design.caption_reference_search import search_references
     def fail(*args):raise TimeoutError('offline')
     value=search_references(ThemeLedger(tmp_path,'CRT字幕'),fetch=fail)
     assert value['status']=='cached_reference_only' and not value['new_web_search_this_request']
 
 
 def test_single_balatro_finishes_in_one_model_call_without_source_regeneration(tmp_path):
-    from twobyteasr.authored_generation import generate_staged
+    from twobyteasr.caption_design.authored_generation import generate_staged
     calls=[]
     class Client:
         def complete(self,*args,**kwargs):
@@ -87,8 +87,8 @@ def test_single_balatro_finishes_in_one_model_call_without_source_regeneration(t
 
 
 def test_bodyless_real_failure_category_is_explicit(tmp_path):
-    from twobyteasr.authored_generation import generate_staged,normalize_directions
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.caption_design.authored_generation import generate_staged,normalize_directions
+    from twobyteasr.providers.ai_providers import AIProviderError
     class Client:
         def complete(self,*a,**kw):raise AIProviderError('Provider未完整生成正文（finish_reason=length，正文0字符）',category='structured_output_truncated')
     ledger=ThemeLedger(tmp_path,'岩刻')
@@ -100,9 +100,9 @@ def test_bodyless_real_failure_category_is_explicit(tmp_path):
 
 @pytest.mark.parametrize('complete',[False,True])
 def test_saved_source_completion_uses_only_missing_sections_and_preserves_source(tmp_path,complete):
-    from twobyteasr.authored_generation import generate_staged,normalize_directions
-    from twobyteasr.source_artifact import from_theme,token
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.authored_generation import generate_staged,normalize_directions
+    from twobyteasr.caption_design.source_artifact import from_theme,token
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     theme=WebThemeDocument.from_dict(dict(name='原作品',**compose(examples()[0]))).to_dict()
     raw=from_theme(theme,'old')
     if not complete:raw=raw.split('===PARAMETERS===')[0]+'===PARAMETERS===\n{"motionSpec":'
@@ -125,7 +125,7 @@ def test_saved_source_completion_uses_only_missing_sections_and_preserves_source
 
 
 def test_unrelated_search_results_are_never_forwarded(tmp_path):
-    from twobyteasr.caption_reference_search import search_references
+    from twobyteasr.caption_design.caption_reference_search import search_references
     def fetch(url,timeout):
         if 'bing.com' not in url:raise TimeoutError()
         return b'<rss><channel><item><title>Invoice lottery</title><link>https://example.com/tax</link></item></channel></rss>'
@@ -136,8 +136,8 @@ def test_unrelated_search_results_are_never_forwarded(tmp_path):
 def test_short_preview_failure_keeps_valid_primary_preview(tmp_path,monkeypatch):
     from io import BytesIO
     from PIL import Image
-    from twobyteasr.authored_generation import generate_staged,normalize_directions
-    from twobyteasr.authored_preview import render_candidate_preview,reusable_preview
+    from twobyteasr.caption_design.authored_generation import generate_staged,normalize_directions
+    from twobyteasr.caption_design.authored_preview import render_candidate_preview,reusable_preview
     directions=normalize_directions({'candidates':[dict(name='试验',design='完整效果框与字面动效的测试方向',components=examples()[0])]})
     class Client:
         def complete(self,*a,**k):pytest.fail('No model call')
@@ -151,15 +151,15 @@ def test_short_preview_failure_keeps_valid_primary_preview(tmp_path,monkeypatch)
         def live_pause(self,*a,**k):return output.getvalue()
         def _live_request(self,*a,**k):return {'diagnostics':{}}
         def close(self):pass
-    monkeypatch.setattr('twobyteasr.renderer_service.LiveRendererSession',Renderer)
-    monkeypatch.setattr('twobyteasr.theme_draft.validate_draft_frames',lambda *a,**k:{'passed':True})
-    monkeypatch.setattr('twobyteasr.authored_motion_review.capture_motion_review',lambda *a,**k:([],{}))
+    monkeypatch.setattr('twobyteasr.rendering.renderer_service.LiveRendererSession',Renderer)
+    monkeypatch.setattr('twobyteasr.caption_design.theme_draft.validate_draft_frames',lambda *a,**k:{'passed':True})
+    monkeypatch.setattr('twobyteasr.caption_design.authored_motion_review.capture_motion_review',lambda *a,**k:([],{}))
     def movie(service,html,folder,ident,**kwargs):
         if ident.endswith('-short'):raise OSError('disk failed for supplemental file')
         paths={key:folder/('primary.'+ext) for key,ext in [('video','mp4'),('gif','gif')]}
         for path in paths.values():path.write_bytes(b'primary artifact fixture')
         return dict(status='motion_ready',**{key:str(path) for key,path in paths.items()})
-    monkeypatch.setattr('twobyteasr.theme_direction_preview.render_motion_preview',movie)
+    monkeypatch.setattr('twobyteasr.caption_design.theme_direction_preview.render_motion_preview',movie)
     receipt=render_candidate_preview(concept,tmp_path/'preview','字幕')
     assert receipt['motion']['status']=='motion_ready' and receipt['short_motion'] is None
     assert receipt['advisory_failures'][0]['blocking'] is False
@@ -168,7 +168,7 @@ def test_short_preview_failure_keeps_valid_primary_preview(tmp_path,monkeypatch)
 
 def test_failed_peer_and_aesthetic_advice_do_not_disable_valid_candidate():
     from PySide6.QtWidgets import QApplication,QPushButton
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
     app=QApplication.instance() or QApplication([])
     good=dict(id='A',name='已完成',creative_version='test',authored_theme=compose(examples()[0]),
         motion_preview={'status':'motion_ready'},preview_integrity_verified=True,visual_review={'accepted':False,'notes':'继续改进字体'})

@@ -18,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QFont, QFontMetrics, QFontMetricsF  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.glossary_proofread import (adopt_text, issue_pair, line_units, parse_term_input,  # noqa: E402
+from twobyteasr.glossary.glossary_proofread import (adopt_text, issue_pair, line_units, parse_term_input,  # noqa: E402
                                            parse_term_lines, rebase_issue, rebase_issues, suggestion_mark, window_text,
                                            wrap_units)
 
@@ -192,7 +192,7 @@ def _wait_saved(page, seconds=20):
 
 
 def _page():
-    from twobyteasr.glossary_proofread import GlossaryProofreadPage
+    from twobyteasr.glossary.glossary_proofread import GlossaryProofreadPage
     return GlossaryProofreadPage(SimpleNamespace(studio_page=None, _prepare_glossary_for_task=lambda: True))
 
 
@@ -203,7 +203,7 @@ def _close(page):
 
 
 def _save(tmp_path, name, cues, glossary_ids=(), snapshot=None):
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     project = SubtitleProject(media=StudioMedia(path="", duration_ms=8000),
                               cues=[StudioCue(cue_id, a, b, text) for cue_id, a, b, text in cues])
     project.glossary_ids = list(glossary_ids)
@@ -228,7 +228,7 @@ def _row(page, cue_id):
 def test_every_caption_is_listed_readable_and_editable_without_a_library(tmp_path):
     """古龙 → 骨龙 is a direct edit: written to the project at once, no library."""
     import subtitle_core as legacy
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "plain", [("c1", 0, 2000, "嗯 然后古龙首发"), ("c2", 2000, 4000, "非常尴尬的一幕"),
                                      ("c3", 4000, 6000, "我们看下一局")])
     catalog = [dict(row) for row in legacy.glossary_catalog()]
@@ -291,7 +291,7 @@ def test_every_caption_is_listed_readable_and_editable_without_a_library(tmp_pat
 
 def test_new_terms_follow_the_single_chosen_library_and_ask_when_several(tmp_path):
     from PySide6.QtCore import Qt
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     first = _library("目标甲", ("龙威", "龙威"))
     second = _library("目标乙", ("火狗", "火狗"))
     path = _save(tmp_path, "target", [("c1", 0, 2000, "嗯 然后古龙首发")], glossary_ids=[first])
@@ -317,7 +317,7 @@ def test_new_terms_follow_the_single_chosen_library_and_ask_when_several(tmp_pat
         page._edit_committed("c1", "嗯 然后骨龙首发")
         page._remember("c1")
         import subtitle_core as legacy
-        from twobyteasr.terminology import snapshot_glossaries
+        from twobyteasr.glossary.terminology import snapshot_glossaries
         terms = {library.id: {(alias, term.canonical) for term in library.terms for alias in term.aliases}
                  for library in snapshot_glossaries(legacy, [first, second]).libraries}
         assert ("古龙", "骨龙") in terms[second] and ("古龙", "骨龙") not in terms[first]
@@ -329,8 +329,8 @@ def test_new_terms_follow_the_single_chosen_library_and_ask_when_several(tmp_pat
 
 def test_user_spellings_keep_their_case_from_library_to_subtitle(tmp_path):
     import subtitle_core as legacy
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.terminology import snapshot_glossaries
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.glossary.terminology import snapshot_glossaries
     path = _save(tmp_path, "case", [("c1", 0, 2000, "berlin和s0pp还有zhe"), ("c2", 2000, 4000, "chiochoo来了")])
     page = _page()
     try:
@@ -356,7 +356,7 @@ def test_user_spellings_keep_their_case_from_library_to_subtitle(tmp_path):
 
 
 def test_ambiguous_term_lines_wait_for_a_decision(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "ambiguous", [("c1", 0, 2000, "lord来了")])
     page = _page()
     try:
@@ -375,7 +375,7 @@ def test_ambiguous_term_lines_wait_for_a_decision(tmp_path):
 
 
 def test_only_adopted_proposals_are_written_back(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     identity = _library("勾选检查", ("autumn", "Autumn"), ("CHIOCHOO", "CHICHOO"))
     path = _save(tmp_path, "ticked", [("c1", 0, 2000, "还是在等autumn出结果"), ("c2", 2000, 4000, "而且CHIOCHOO能奶自己"),
                                       ("c3", 4000, 6000, "非常尴尬的一幕")], glossary_ids=[identity])
@@ -403,7 +403,7 @@ def test_only_adopted_proposals_are_written_back(tmp_path):
 
 
 def test_changed_subtitles_are_never_overwritten_by_a_stale_review(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     identity = _library("陈旧检查", ("CHIOCHOO", "CHICHOO"))
     path = _save(tmp_path, "stale", [("c1", 0, 2000, "而且CHIOCHOO能奶自己")], glossary_ids=[identity])
     page = _page()
@@ -422,7 +422,7 @@ def test_changed_subtitles_are_never_overwritten_by_a_stale_review(tmp_path):
 
 
 def test_a_manual_edit_reanchors_or_expires_old_proposals(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     identity = _library("过期检查", ("CHIOCHOO", "CHICHOO"), ("autumn", "Autumn"))
     path = _save(tmp_path, "expire", [("c1", 0, 2000, "CHIOCHOO和autumn")], glossary_ids=[identity])
     page = _page()
@@ -444,8 +444,8 @@ def test_a_manual_edit_reanchors_or_expires_old_proposals(tmp_path):
 
 def test_suspected_names_with_a_candidate_are_recommended(tmp_path):
     """2026-10-10 (user): the library candidate is recommended; one click adopts it."""
-    from twobyteasr.studio_glossary_service import GlossaryReviewPreview
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.glossary.studio_glossary_service import GlossaryReviewPreview
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "assoc", [("c1", 0, 2000, "嗯 然后古龙首发"), ("c2", 2000, 4000, "对刚刚的水灵"),
                                      ("c3", 4000, 6000, "哦 又是盾")])
     page = _page()
@@ -471,9 +471,9 @@ def test_suspected_names_with_a_candidate_are_recommended(tmp_path):
 
 
 def test_late_results_never_touch_a_caption_edited_meanwhile(tmp_path):
-    from twobyteasr.studio_glossary_service import GlossaryReviewPreview
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.studio_text_tools import TextOccurrence
+    from twobyteasr.glossary.studio_glossary_service import GlossaryReviewPreview
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.studio.studio_text_tools import TextOccurrence
     path = _save(tmp_path, "late", [("c1", 0, 2000, "而且CHIOCHOO能奶自己")])
     page = _page()
     try:
@@ -492,7 +492,7 @@ def test_late_results_never_touch_a_caption_edited_meanwhile(tmp_path):
 
 
 def test_preview_is_requested_by_stable_caption_id(tmp_path, monkeypatch):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "play", [("b", 2000, 4000, "第二句"), ("a", 0, 2000, "第一句")])
     page = _page()
     calls = []
@@ -511,8 +511,8 @@ def test_preview_is_requested_by_stable_caption_id(tmp_path, monkeypatch):
 
 def test_conflicting_spellings_are_decided_per_project_without_touching_glossaries(tmp_path):
     import subtitle_core as legacy
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.terminology import snapshot_glossaries
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.glossary.terminology import snapshot_glossaries
     first = _library("冲突甲", ("CHIOCHOO", "CHIOCHOO"), category="选手 ID")
     second = _library("冲突乙", ("CHICHOO", "CHICHOO"), ("CHIOCHOO", "CHICHOO"), category="选手 ID")
     path = _save(tmp_path, "conflict", [("c1", 0, 2000, "而且CHIOCHOO能奶自己")], glossary_ids=[first, second])
@@ -551,7 +551,7 @@ def test_conflicting_spellings_are_decided_per_project_without_touching_glossari
 
 
 def test_libraries_are_inherited_from_the_recognition_snapshot_by_id(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     identity = _library("继承词库", ("CHIOCHOO", "CHICHOO"))
     _library("另一个游戏", ("CHIOCHOO", "别的写法"))
     path = _save(tmp_path, "inherit", [("c1", 0, 2000, "而且CHIOCHOO能奶自己")],
@@ -571,7 +571,7 @@ def test_libraries_are_inherited_from_the_recognition_snapshot_by_id(tmp_path):
 
 
 def test_results_for_a_replaced_project_are_dropped(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     identity = _library("切换检查", ("CHIOCHOO", "CHICHOO"))
     first = _save(tmp_path, "first", [("c1", 0, 2000, "而且CHIOCHOO能奶自己")], glossary_ids=[identity])
     second = _save(tmp_path, "second", [("x1", 0, 2000, "完全不同的工程")])
@@ -587,7 +587,7 @@ def test_results_for_a_replaced_project_are_dropped(tmp_path):
 
 
 def test_rows_show_the_speaker_display_name(tmp_path):
-    from twobyteasr.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
+    from twobyteasr.projects.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
                                            load_project, save_project)
     project = SubtitleProject(media=StudioMedia(path="", duration_ms=2000),
                               cues=[StudioCue("c1", 0, 2000, "还是在等autumn出结果", speaker_id="S01")],
@@ -606,7 +606,7 @@ def test_completion_title_pill_is_a_button_only_with_an_action():
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtCore import QEvent
-    from twobyteasr.completion_widgets import CompletionTitle
+    from twobyteasr.app.completion_widgets import CompletionTitle
     title = CompletionTitle("字幕已生成 · 部分AI校对未完成")
     title.resize(900, 80)
     clicks = []
@@ -628,7 +628,7 @@ def test_completion_title_pill_is_a_button_only_with_an_action():
 
 
 def test_completion_task_line_names_a_changed_project_count():
-    from twobyteasr.completion_summary import completion_summary
+    from twobyteasr.app.completion_summary import completion_summary
     outcome = SimpleNamespace(final_cues=49, polish_status="completed", polish_label="", core_errors=(),
                               review_issue_count=0, search_label="")
     same = completion_summary({}, outcome, project_loaded=True, project_cues=49)
@@ -644,7 +644,7 @@ def test_edit_button_opens_the_editor_and_ctrl_h_enter_replaces_the_whole_projec
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QInputMethodEvent
     from PySide6.QtTest import QTest
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "editbutton", [("c1", 0, 2000, "原石不够了"), ("c2", 2000, 4000, "再去抽卡吧"),
                                           ("c3", 4000, 6000, "抽卡和原石抽卡")])
     page = _page()
@@ -707,7 +707,7 @@ def test_edit_button_opens_the_editor_and_ctrl_h_enter_replaces_the_whole_projec
 
 def test_right_click_offers_the_proposal_words_for_the_whole_project(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMenu
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     identity = _library("右键词库", ("古龙", "骨龙"))
     path = _save(tmp_path, "context", [("c1", 0, 2000, "这里出现了一只古龙"), ("c2", 2000, 4000, "古龙又来了古龙"),
                                        ("c3", 4000, 6000, "古代的事")], glossary_ids=[identity])
@@ -735,7 +735,7 @@ def test_right_click_offers_the_proposal_words_for_the_whole_project(tmp_path, m
 
 def test_one_spelling_per_sound_follows_the_first_or_the_users_edit(tmp_path):
     """2026-10-10 (user): once 原石 is written, later 源石 should follow it."""
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "consistency", [("c1", 0, 2000, "原石不够了"), ("c2", 2000, 4000, "再抽一次源石"),
                                            ("c3", 4000, 6000, "继续攻势"), ("c4", 6000, 8000, "这个公式"),
                                            ("c5", 8000, 9000, "嗯然后古龙首发"), ("c6", 9000, 9900, "古龙叔叔看")])
@@ -768,8 +768,8 @@ def test_one_spelling_per_sound_follows_the_first_or_the_users_edit(tmp_path):
 def test_two_recognizers_readings_are_offered(tmp_path, monkeypatch):
     """2026-10-10 (user): FireRed and Qwen heard 今天运气站/在, the caption kept 天命之暗."""
     from types import SimpleNamespace
-    import twobyteasr.studio_qc as studio_qc
-    from twobyteasr.studio_project import load_project
+    import twobyteasr.subtitle_rules.studio_qc as studio_qc
+    from twobyteasr.projects.studio_project import load_project
     readings = {"c1": ("就是那个什么今天运气站我这边暴风雪", "就是那个什么今天运气在我这边暴风雪"),
                 "c2": ("这个阵容上分好爽啊", "这个阵容上分好爽啊")}
 
@@ -803,7 +803,7 @@ def test_click_after_scroll_before_repaint_hits_the_row_now_under_the_mouse(tmp_
     """Hit boxes from the previous paint must not decide a click (busy UI)."""
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "staleclick", [(f"c{i}", i * 2000, i * 2000 + 1500, f"第{i}句字幕内容") for i in range(60)])
     page = _page()
     try:
@@ -825,7 +825,7 @@ def test_click_after_scroll_before_repaint_hits_the_row_now_under_the_mouse(tmp_
 
 def test_an_applied_spelling_is_followed_not_unified_back(tmp_path):
     """After a write the edit is the project's text; 骨龙 (changed from 古龙) still wins."""
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project, save_project
     project = SubtitleProject(media=StudioMedia(path="", duration_ms=8000), cues=[
         StudioCue("c1", 0, 2000, "古龙来了", original_text="古龙来了"),
         StudioCue("c2", 2000, 4000, "骨龙首发", original_text="古龙首发")])
@@ -843,8 +843,8 @@ def test_an_applied_spelling_is_followed_not_unified_back(tmp_path):
 
 
 def test_interface_zoom_scales_the_list_and_returns_exactly(tmp_path):
-    from twobyteasr import ui_zoom
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.app import ui_zoom
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "zoom", [(f"c{i}", i * 1000, i * 1000 + 900, "非常尴尬的一幕还有古龙" * 3) for i in range(30)])
     page = _page()
     try:
@@ -869,14 +869,14 @@ def test_interface_zoom_scales_the_list_and_returns_exactly(tmp_path):
         APP.processEvents()
         assert page.list.heights == heights and page.local_button.minimumHeight() == button
     finally:
-        from twobyteasr import ui_zoom as zoom
+        from twobyteasr.app import ui_zoom as zoom
         zoom.set_zoom_percent(100)
         _close(page)
 
 
 def test_mark_colors_read_on_every_theme():
-    from twobyteasr.glossary_proofread import contrast, mark_colors
-    from twobyteasr.ui_theme import THEMES
+    from twobyteasr.glossary.glossary_proofread import contrast, mark_colors
+    from twobyteasr.design.ui_theme import THEMES
     for theme in THEMES.values():
         colors = mark_colors(theme)
         assert contrast(colors["error_text"], colors["error_fill"]) >= 4.5, theme.key
@@ -893,7 +893,7 @@ def test_mark_colors_read_on_every_theme():
 # --------------------------------------------------------------------------
 
 def test_a_proposal_marks_and_describes_only_the_characters_that_change():
-    from twobyteasr.glossary_proofread import change_summary, suggestion_marks, text_changes
+    from twobyteasr.glossary.glossary_proofread import change_summary, suggestion_marks, text_changes
     text = "击杀之后切到魔草巫灵坍缩"
     issue = dict(_issue(text, "巫", "乌", kind="evidence"))
     assert suggestion_marks(text, issue) == [(8, 9, "乌")]
@@ -925,13 +925,13 @@ def test_a_proposal_marks_and_describes_only_the_characters_that_change():
 
 
 def _terms():
-    from twobyteasr.glossary_proofread import TermIndex
+    from twobyteasr.glossary.glossary_proofread import TermIndex
     return TermIndex([("疫病吐息", "skill"), ("突袭", "skill"), ("魔草巫灵", "spirit"), ("布克棱岩", "spirit"),
                       ("CHIOCHOO", "选手 ID"), ("CHICHOO", "选手 ID")])
 
 
 def test_proposals_inside_one_whole_name_are_one_group():
-    from twobyteasr.glossary_proofread import issue_groups
+    from twobyteasr.glossary.glossary_proofread import issue_groups
     terms = _terms()
     # 疫病吐息 is one skill: 疫病 → 一命 (both recognizers) and 吐息 → 突袭 (near
     # sound) are one decision, asked (the library already spells the skill).
@@ -968,7 +968,7 @@ def test_proposals_inside_one_whole_name_are_one_group():
 
 
 def _grouped_page(tmp_path, cues):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     path = _save(tmp_path, "groups", cues)
     page = _page()
     page.resize(1400, 800)
@@ -1025,7 +1025,7 @@ def test_a_whole_name_is_adopted_ignored_and_undone_as_one(tmp_path):
         # Both asked groups are answered now (疫病吐息 adopted and taken back, 巫 ignored).
         assert page.proposal_counts()["asked"] == 0 and page._groups(rows["c2"])[0]["reviewed"]
         page._flush_save()
-        from twobyteasr.studio_project import load_project
+        from twobyteasr.projects.studio_project import load_project
         assert [cue.text for cue in load_project(path).cues] == ["两层疫病吐息", "击杀之后切到魔草巫灵坍缩", "最好还是直接切到布克棱岩"]
     finally:
         _close(page)
@@ -1103,7 +1103,7 @@ def test_select_text_in_search_results_then_batch_replace_typing_only_the_new_wo
 
 
 def test_replacing_in_a_filtered_list_never_reaches_unlisted_captions(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     page, path = _grouped_page(tmp_path, [("c1", 0, 2000, "抽卡抽卡"), ("c2", 2000, 4000, "再去抽卡吧"),
                                           ("c3", 4000, 6000, "抽卡和原石")])
     try:
@@ -1155,8 +1155,8 @@ def test_a_click_on_a_mark_adopts_but_a_drag_over_it_only_selects(tmp_path):
 
 
 def test_unsaved_proofreading_is_never_dropped_when_the_save_fails(tmp_path, monkeypatch):
-    import twobyteasr.studio_project as storage
-    from twobyteasr.studio_project import load_project
+    import twobyteasr.projects.studio_project as storage
+    from twobyteasr.projects.studio_project import load_project
     page, path = _grouped_page(tmp_path, [("c1", 0, 2000, "原来的字幕")])
     real_save = storage.save_project
     failing = {"on": True}
@@ -1193,7 +1193,7 @@ def test_unsaved_proofreading_is_never_dropped_when_the_save_fails(tmp_path, mon
 
 
 def test_leaving_by_another_page_writes_the_file_first(tmp_path):
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     page, path = _grouped_page(tmp_path, [("c1", 0, 2000, "原来的字幕")])
     try:
         page._write({"c1": "校对后的字幕"}, label="改一句", manual=True)
@@ -1208,7 +1208,7 @@ def test_flush_save_never_reports_a_still_running_save_as_written():
     """A save slower than the wait (slow/network drive) used to be dropped and
     reported as written, so Studio could load and later overwrite the older
     file. The page now keeps the thread and says the file is still written."""
-    from twobyteasr.glossary_proofread import GlossaryProofreadPage
+    from twobyteasr.glossary.glossary_proofread import GlossaryProofreadPage
 
     class SlowThread:
         def __init__(self):

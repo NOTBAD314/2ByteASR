@@ -12,13 +12,13 @@ from PySide6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from twobyteasr import asr
-from twobyteasr.studio_autocut import (
+from twobyteasr.recognition import asr
+from twobyteasr.studio.studio_autocut import (
     auto_cut_silence_command,
     compute_silence_ranges_ms,
     source_ranges_to_timeline,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 
 def _app() -> QApplication:
@@ -78,7 +78,7 @@ def test_failed_chunks_recovered_by_sweep(monkeypatch, tmp_path):
     monkeypatch.setattr(asr, "_ASR_API_THROTTLE", _NoThrottle())
     monkeypatch.setattr(asr, "build_qwen_asr_context", lambda _p: "ctx")
     monkeypatch.setattr(
-        "twobyteasr.llm_config.qwen_asr_endpoint_from_settings",
+        "twobyteasr.providers.llm_config.qwen_asr_endpoint_from_settings",
         lambda _s: {"url": "http://x", "api_key": "k", "model": "m",
                     "protocol": "openrouter_verbose_json", "provider": "openrouter_word"},
     )
@@ -123,7 +123,7 @@ def test_compute_silence_ranges_finds_long_gaps():
 
 
 def test_source_ranges_map_through_sequence():
-    from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment
 
     sequence = EditSequence(
         source_path="a.flv",
@@ -142,7 +142,7 @@ def test_source_ranges_map_through_sequence():
 
 def test_auto_cut_command_ripples_sequence_and_cues():
     _app()
-    from twobyteasr.studio_edit_sequence import (
+    from twobyteasr.timeline.studio_edit_sequence import (
         VideoSegment, ensure_edit_sequence, sequence_of, store_sequence,
     )
 
@@ -168,7 +168,7 @@ def test_auto_cut_command_ripples_sequence_and_cues():
     assert after.timeline_duration_ms == 14_000, after.timeline_duration_ms
     cue2 = next(cue for cue in project.cues if cue.id == "c2")
     assert (cue2.start_ms, cue2.end_ms) == (12_000, 14_000)
-    from twobyteasr.studio_edit_sequence import projected_cues, source_cue_id_of
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues, source_cue_id_of
     projected = next(cue for cue in projected_cues(project) if source_cue_id_of(cue.id) == "c2")
     assert (projected.start_ms, projected.end_ms) == (6_000, 8_000)
     command.undo()

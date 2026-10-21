@@ -15,19 +15,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage
 
-from twobyteasr.advanced_live_renderer import (
+from twobyteasr.rendering.advanced_live_renderer import (
     composite_live_scene_layers,
     render_live_layers,
     render_live_snapshot,
 )
-from twobyteasr.art_direction import (
+from twobyteasr.caption_design.art_direction import (
     ART_DIRECTION_TEMPLATES,
     ArtDirectionSpec,
     _direction,
     validate_graph_for_direction,
 )
-from twobyteasr.studio_ai import _STYLE_DESIGN_SYSTEM
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.studio_ai import _STYLE_DESIGN_SYSTEM
+from twobyteasr.caption_design.visual_design_graph import (
     DECORATION_PRIMITIVES,
     MOTION_PROPERTIES,
     PANEL_PRIMITIVES,

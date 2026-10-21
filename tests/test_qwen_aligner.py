@@ -3,13 +3,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from twobyteasr.asr import (
+from twobyteasr.recognition.asr import (
     _funasr_generate,
     align_qwen_transcript_segments,
     funasr_timestamp_tokens,
     reference_chunks_to_timeline_tokens,
 )
-from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
 
 
 def test_whisper_chunks_can_supply_a_conservative_subtitle_timeline():

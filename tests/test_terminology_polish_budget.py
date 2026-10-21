@@ -8,10 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr import domain_terms, polishing
-from twobyteasr.ai_providers import AIProviderError
-from twobyteasr.provider_input_budget import POLICIES, prepare_input, RetryBudget, retry_delay
-from twobyteasr.models import SpeechSegment
+from twobyteasr.glossary import domain_terms
+from twobyteasr.subtitle_rules import polishing
+from twobyteasr.providers.ai_providers import AIProviderError
+from twobyteasr.providers.provider_input_budget import POLICIES, prepare_input, RetryBudget, retry_delay
+from twobyteasr.recognition.transcript_data import SpeechSegment
 
 
 def cue(i,text):
@@ -47,7 +48,7 @@ def test_complete_request_splits_and_reuses_only_successful_children(context,mon
         if ids[0] in failing:
             raise AIProviderError('explicit permission denial',category='permission_denied')
         return json.dumps({'checked_ids':[item['id'] for item in json.loads(messages[1]['content'])['cues']],'cues':[]})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     first=call(rows,cache)
     assert first.succeeded=={101,103} and first.failures=={102:'permission_denied'}
     assert calls==[[101],[102],[103]]
@@ -67,7 +68,7 @@ def test_single_abnormal_cue_does_not_drop_neighbors_or_repeat(context,monkeypat
     def complete(messages,**kwargs):
         calls.extend(item['id'] for item in json.loads(messages[1]['content'])['cues'])
         return json.dumps({'checked_ids':[item['id'] for item in json.loads(messages[1]['content'])['cues']],'cues':[]})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     result=call(rows)
     assert calls==[7,9] and result.failures=={8:'request_too_large'}
     assert set(result)=={7,8,9} and result[8]==rows[1].text
@@ -79,7 +80,7 @@ def test_unknown_or_duplicate_edit_ids_are_rejected(context,monkeypatch,ids):
     def complete(*a,**k):
         attempts.append(1)
         return json.dumps({'checked_ids':[11],'cues':[{'id':i,'text':'越权内容'} for i in ids]})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     monkeypatch.setattr(polishing,'API_RETRIES',1)
     result=call([cue(11,'原文')])
     assert result=={11:'原文'} and result.failures and len(attempts)==1
@@ -94,7 +95,7 @@ def term_fixture(monkeypatch,context,response,evidence=True):
         if evidence:
             kwargs['request_diagnostics']['search_evidence']=[{'tool':'web_search','urls':['https://example.org/term']}]
         return json.dumps(response,ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     monkeypatch.setattr(domain_terms,'persist_learned_mappings',lambda *a:None)
     return owner,calls
 
@@ -137,7 +138,7 @@ def test_many_candidates_share_complete_evidence_without_repeated_contexts(conte
 def test_missing_or_invalid_coverage_receipt_never_counts_as_success(context,monkeypatch,checked):
     def complete(*a,**k):
         return json.dumps({'checked_ids':checked,'cues':[]})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     monkeypatch.setattr(polishing,'API_RETRIES',1)
     result=call([cue(11,'未检查正文')])
     assert not result.succeeded and result.failures and result[11]=='未检查正文'
@@ -164,8 +165,8 @@ def test_shared_retry_budget_is_atomic_and_deterministic_failures_do_not_sleep()
 
 
 def test_late_result_cannot_write_stage_cache(context):
-    from twobyteasr.cache import run_cached_stage
-    from twobyteasr.service import CancellationToken,CancelledError
+    from twobyteasr.recognition.cache import run_cached_stage
+    from twobyteasr.recognition.service import CancellationToken,CancelledError
     from pathlib import Path
     _,owner,cache=context
     owner.cancellation_token=CancellationToken()
@@ -178,7 +179,7 @@ def test_late_result_cannot_write_stage_cache(context):
 
 
 def test_completion_summary_exposes_partial_success_and_retry():
-    from twobyteasr.main_ui_helpers import polishing_completion_details
+    from twobyteasr.app.main_ui_helpers import polishing_completion_details
     lines,retry=polishing_completion_details({'polishing_summary':{'success_batches':4,'success_cues':80,
         'fallback_batches':2,'fallback_cues':40,'failure_categories':{'transport_length':40}},
         'terminology_summary':{'status':'partial','verified_count':60,'unverified_count':20,
@@ -189,7 +190,7 @@ def test_completion_summary_exposes_partial_success_and_retry():
 
 
 def test_grouping_final_request_packing_reuses_successful_children(context,monkeypatch):
-    from twobyteasr import grouping
+    from twobyteasr.subtitle_rules import grouping
     _,owner,cache=context
     rows=[cue(i,'测验正文'+str(i)) for i in (21,22,23)]
     for row in rows:row.speaker='S01'

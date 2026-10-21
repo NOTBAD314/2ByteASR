@@ -6,8 +6,8 @@ import time
 from types import SimpleNamespace
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
-from twobyteasr.caption_pixel_cache import CaptionPixelCache
-from twobyteasr.playback_clock import PlaybackClock
+from twobyteasr.rendering.caption_pixel_cache import CaptionPixelCache
+from twobyteasr.playback.playback_clock import PlaybackClock
 
 APP=QApplication.instance() or QApplication([])
 
@@ -25,7 +25,7 @@ def test_pixels_are_prepared_off_gui_and_revision_keys_never_alias(monkeypatch):
         threads.append(threading.get_ident())
         image=QImage(20,10,QImage.Format_ARGB32);image.fill(snapshot.color)
         return image
-    monkeypatch.setattr('twobyteasr.advanced_live_renderer.render_live_snapshot',render)
+    monkeypatch.setattr('twobyteasr.rendering.advanced_live_renderer.render_live_snapshot',render)
     cache=CaptionPixelCache(budget_bytes=1200)
     old=('project',1,'A');new=('project',2,'A');ready=[]
     cache.ready.connect(ready.append)
@@ -46,7 +46,7 @@ def test_close_discards_an_inflight_frame(monkeypatch):
     def render(*args,**kwargs):
         entered.set();release.wait(2)
         image=QImage(2,2,QImage.Format_ARGB32);image.fill(0xffffffff);return image
-    monkeypatch.setattr('twobyteasr.advanced_live_renderer.render_live_snapshot',render)
+    monkeypatch.setattr('twobyteasr.rendering.advanced_live_renderer.render_live_snapshot',render)
     cache=CaptionPixelCache();ready=[];cache.ready.connect(ready.append)
     cache.request('old',SimpleNamespace(cue_id='A'),None,2,2,1)
     assert entered.wait(2)
@@ -61,7 +61,7 @@ def test_packed_file_is_ready_before_handoff_and_has_explicit_teardown(monkeypat
         for y in range(4,12):
             for x in range(7,25):image.setPixel(x,y,0xffffffff)
         return image
-    monkeypatch.setattr('twobyteasr.advanced_live_renderer.render_live_snapshot',render)
+    monkeypatch.setattr('twobyteasr.rendering.advanced_live_renderer.render_live_snapshot',render)
     cache=CaptionPixelCache(raw_folder=tmp_path);ready=[];cache.ready.connect(ready.append)
     cache.request('B',SimpleNamespace(cue_id='B'),None,40,20,1)
     pump_until(lambda:ready)
@@ -104,10 +104,10 @@ def test_caption_identity_waits_for_observed_frame_while_ui_predicts_progress():
 
 
 def test_background_preparation_keeps_native_cues_native_and_authored_advanced(monkeypatch):
-    from twobyteasr.caption_playback_cache import PlaybackCaptionCache
-    from twobyteasr.studio_project import SubtitleProject,StudioCue,StudioSpeaker,SubtitleStyle,StudioMedia
-    from twobyteasr.studio_revisions import StudioRevisionStore
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.rendering.caption_playback_cache import PlaybackCaptionCache
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioCue,StudioSpeaker,SubtitleStyle,StudioMedia
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
     project=SubtitleProject(media=StudioMedia('fixture.mp4',duration_ms=3000),speakers=[StudioSpeaker('one'),StudioSpeaker('two')],
         styles=[SubtitleStyle(id='default',name='default'),SubtitleStyle(id='plain',name='plain')],cues=[
             StudioCue('A',0,1000,'甲甲甲甲','one',style_id='plain'),

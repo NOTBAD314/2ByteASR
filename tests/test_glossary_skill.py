@@ -7,9 +7,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import glossary_skill as gs
-from twobyteasr import ai_providers as _ai_providers
-from twobyteasr.glossary_skill import (
+from twobyteasr.glossary import glossary_skill as gs
+from twobyteasr.providers import ai_providers as _ai_providers
+from twobyteasr.glossary.glossary_skill import (
     GlossarySearchError,
     SearchedTerm,
     apply_term_updates,
@@ -272,7 +272,7 @@ def test_run_term_search_rejects_provider_without_search(monkeypatch):
         "provider_profiles": {"deepseek": {"model": "deepseek-v4-pro"}},
     }
     monkeypatch.setattr(
-        "twobyteasr.llm_config.read_scoped_api_key",
+        "twobyteasr.providers.llm_config.read_scoped_api_key",
         lambda *_a, **_k: ("sk-test", "test"),
     )
     with pytest.raises(GlossarySearchError) as exc_info:

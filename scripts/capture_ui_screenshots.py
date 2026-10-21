@@ -25,12 +25,12 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QVBoxLayout  # noqa: E4
 
 import moss_firered_pipeline  # noqa: E402
 import subtitle_core  # noqa: E402
-import twobyteasr.ui as ui  # noqa: E402
-from twobyteasr.smart_glossary import (  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
+from twobyteasr.glossary.smart_glossary import (  # noqa: E402
     AiEnhancementError,
     GlossaryCandidate,
 )
-from twobyteasr.model_workshop import ModelPickerPanel  # noqa: E402
+from twobyteasr.local_models.model_workshop import ModelPickerPanel  # noqa: E402
 
 OUT_DIR = Path(
     os.environ.get("TWO_BYTE_ASR_UI_SHOT_DIR", ROOT / "screenshots" / "ui-density")

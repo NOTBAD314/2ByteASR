@@ -24,7 +24,7 @@ def main():
     os.environ.update(LOCALAPPDATA=str(output/'local'), APPDATA=str(output/'roaming'),
         QT_QPA_PLATFORM='windows', QT_SCALE_FACTOR='1', DASHSCOPE_API_KEY='sk-local-test-dummy')
     os.environ['TWOBYTEASR_SEEK_CACHE_ROOT'] = str((args.seek_cache or root/'tmp/long-project-cache/seek').resolve())
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     probe = run_hidden_subprocess([str(root/'tools/ffmpeg/bin/ffprobe.exe'), '-v', 'error',
         '-show_streams', '-show_format', '-of', 'json', str(args.media.resolve())],
         purpose='read-only long-media metadata', timeout=15, capture_output=True, check=True)
@@ -32,8 +32,8 @@ def main():
     (output/'media-metadata.json').write_text(json.dumps(metadata, indent=2), encoding='utf8')
     duration = round(float(metadata['format']['duration'])*1000)
     video = next(s for s in metadata['streams'] if s['codec_type']=='video')
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, VideoTransform, load_project, save_project
-    from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, VideoTransform, load_project, save_project
+    from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
     original = load_project(args.cues)
     project = SubtitleProject(media=StudioMedia(path=str(args.media.resolve()), duration_ms=duration,
         width=video['width'], height=video['height']), cues=original.cues, speakers=original.speakers,
@@ -48,7 +48,7 @@ def main():
         clip.transform = VideoTransform(scale_x=.45, scale_y=.45, position_x=.28 if index==1 else .73)
         if args.mode=='transitions':
             import copy
-            from twobyteasr.studio_media_pool import sync_linked_av_contract
+            from twobyteasr.timeline.studio_media_pool import sync_linked_av_contract
             clip.source_in_ms=611234;clip.source_out_ms=613234;clip.timeline_out_ms=2000
             right=add_video_clip(project,track.id,asset.asset_id,timeline_in_ms=2000,
                 source_in_ms=3661234,source_out_ms=3669234)
@@ -57,8 +57,8 @@ def main():
             sync_linked_av_contract(project)
     fixture = save_project(project, output/'fixture.2byteproj')
     if args.mode=='ai':
-        from twobyteasr.studio_project import StudioCue
-        from twobyteasr.web_theme import parse_web_theme_sections
+        from twobyteasr.projects.studio_project import StudioCue
+        from twobyteasr.caption_design.web_theme import parse_web_theme_sections
         project.cues=[StudioCue('original',0,3000,'我送的不是货，是整个人类的希望',speaker_id=project.speakers[0].id if project.speakers else '')]
         for track in project.video_tracks[1:]:track.enabled=False
         fixture=save_project(project,output/'fixture.2byteproj')
@@ -79,13 +79,13 @@ def main():
         run_hidden_subprocess([str(args.exe.resolve())], cwd=root, purpose='frozen long-project acceptance',
             timeout=max(600,args.seconds+240), check=True)
     else:
-        from twobyteasr.studio_acceptance_audit import isolate_acceptance_settings, start_acceptance
+        from twobyteasr.acceptance.studio_acceptance_audit import isolate_acceptance_settings, start_acceptance
         isolate_acceptance_settings()
         from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import QTimer
         import subtitle_core
-        from twobyteasr.ui import MainWindow, _register_bundled_fonts, _app_font
-        from twobyteasr.theme_manager import apply_theme
+        from twobyteasr.app.ui import MainWindow, _register_bundled_fonts, _app_font
+        from twobyteasr.design.theme_manager import apply_theme
         app = QApplication([])
         _register_bundled_fonts(); app.setFont(_app_font()); apply_theme('warm', app)
         window = MainWindow([], subtitle_core, object(), None)

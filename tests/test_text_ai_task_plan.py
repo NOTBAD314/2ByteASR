@@ -6,9 +6,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
-from twobyteasr.recognition_plan import text_ai_plan, bind_text_ai_snapshots
-from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-from twobyteasr.llm_config import validate_endpoint, endpoint_requires_key
+from twobyteasr.recognition.text_ai_plan import text_ai_plan, bind_text_ai_snapshots
+from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+from twobyteasr.providers.llm_config import validate_endpoint, endpoint_requires_key
 
 
 @pytest.mark.parametrize('old_models', [{}, {'polish_model':'old', 'ai_service':'deepseek'}])
@@ -36,9 +36,10 @@ def test_enabled_roles_are_frozen_independently_and_analysis_has_none():
 
 
 def test_persistence_and_profile_restart_preserve_explicit_off(tmp_path,monkeypatch):
-    from twobyteasr import ui, llm_config
-    from twobyteasr.project_profiles import ProjectProfileStore,normalize_llm_config
-    from twobyteasr.settings import DEFAULT_SETTINGS,save_runtime_settings,load_runtime_settings
+    from twobyteasr.app import ui
+    from twobyteasr.providers import llm_config
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore,normalize_llm_config
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS,save_runtime_settings,load_runtime_settings
     endpoint=dict(service='deepseek',provider='deepseek',transport='openai_compatible',model='stale',base_url='',protocol='auto')
     forbidden=lambda *a,**k:pytest.fail('Disabled form requested credentials')
     monkeypatch.setattr(ui,'read_api_key',forbidden);monkeypatch.setattr(ui,'resolve_api_key',forbidden)
@@ -89,7 +90,7 @@ def local_server():
 
 
 def request_local(url,diagnostics=None):
-    from twobyteasr.asr_http_transport import complete
+    from twobyteasr.providers.asr_http_transport import complete
     return complete([{'role':'user','content':'原创测试'}],model='local-test',api_key='',url=url+'/chat/completions',
         base_url=url,provider='custom',max_tokens=64,timeout=(1,2),request_diagnostics=diagnostics)
 
@@ -103,14 +104,14 @@ def test_legitimate_no_auth_service_really_sends_without_authorization(local_ser
 
 @pytest.mark.parametrize('status,category', [(401,'auth_error'),(403,'auth_error'),(429,'rate_limited'),(404,'configuration_error'),(500,'server_error')])
 def test_actual_transport_classifies_http_failure(local_server,status,category):
-    from twobyteasr.llm_adapter import LLMRequestError
+    from twobyteasr.providers.llm_adapter import LLMRequestError
     url,state=local_server;state['status']=status
     with pytest.raises(LLMRequestError) as info: request_local(url)
     assert info.value.category == category
 
 
 def test_actual_transport_rejects_unparseable_response(local_server):
-    from twobyteasr.llm_adapter import LLMRequestError
+    from twobyteasr.providers.llm_adapter import LLMRequestError
     url,state=local_server;state['body']=b'not-json'
     with pytest.raises(LLMRequestError) as info: request_local(url)
     assert info.value.category == 'parse_failure'
@@ -118,7 +119,7 @@ def test_actual_transport_rejects_unparseable_response(local_server):
 
 def test_network_and_tls_error_categories():
     import requests
-    from twobyteasr.asr_provider_snapshot import classify_request_error
+    from twobyteasr.providers.asr_provider_snapshot import classify_request_error
     assert classify_request_error(requests.ConnectTimeout()) == 'connect_timeout'
     assert classify_request_error(requests.ReadTimeout()) == 'read_idle_timeout'
     assert classify_request_error(requests.ConnectionError()) == 'connection_error'
@@ -127,7 +128,7 @@ def test_network_and_tls_error_categories():
 
 @pytest.mark.parametrize('code,category',[('model_not_found','model_not_supported'),('unsupported_parameter','unsupported_parameters'),('content_policy_violation','provider_refusal')])
 def test_model_protocol_and_explicit_refusal_are_distinct(local_server,code,category):
-    from twobyteasr.llm_adapter import LLMRequestError
+    from twobyteasr.providers.llm_adapter import LLMRequestError
     url,state=local_server;state.update(status=400,body={'error':{'code':code}})
     with pytest.raises(LLMRequestError) as info: request_local(url)
     assert info.value.category==category

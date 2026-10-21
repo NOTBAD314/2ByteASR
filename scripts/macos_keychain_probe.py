@@ -36,7 +36,7 @@ def main(argv=None) -> int:
     # The item name is still the separate test item (2026-10-14).
     real_home = os.environ.get('HOME', '')
     sys.path.insert(0, str(ROOT))
-    from twobyteasr import llm_config, macos_keychain
+    from twobyteasr.providers import llm_config, macos_keychain
     if real_home and os.environ.get('HOME') != real_home:
         import subprocess
         original_run = macos_keychain._run

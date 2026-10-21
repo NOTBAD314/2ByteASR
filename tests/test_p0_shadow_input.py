@@ -5,7 +5,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from tests.test_studio_style_controller import _page,_finish
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 @pytest.mark.parametrize('graph',[False,True])
@@ -13,7 +13,7 @@ def test_keyboard_refresh_commit_shadow_and_undo(tmp_path,monkeypatch,graph):
     app,page=_page(tmp_path,monkeypatch)
     try:
         if graph:
-            from twobyteasr.visual_design_graph import VisualDesignGraph
+            from twobyteasr.caption_design.visual_design_graph import VisualDesignGraph
             recipe=page._base_recipe_for_style(page.project.styles[0]).to_dict()
             recipe['engine']='remotion'
             recipe['visualGraph']=VisualDesignGraph(name='Polar shadow input fixture').to_dict()
@@ -46,7 +46,7 @@ def test_keyboard_refresh_commit_shadow_and_undo(tmp_path,monkeypatch,graph):
         assert build_visual_cue_snapshot(page.project,'a').shadow['blur_radius']==19
         control.stepUp();QTest.qWait(220)
         assert build_visual_cue_snapshot(page.project,'a').shadow['blur_radius']==20
-        from twobyteasr.studio_project import save_project,load_project
+        from twobyteasr.projects.studio_project import save_project,load_project
         expected=build_visual_cue_snapshot(page.project,'a').shadow
         reopened=load_project(save_project(page.project,tmp_path/'shadow-reopen.2byteproj'))
         assert build_visual_cue_snapshot(reopened,'a').shadow==expected

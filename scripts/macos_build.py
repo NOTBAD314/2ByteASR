@@ -217,7 +217,7 @@ def main(argv=None):
     output.mkdir(parents=True)
     source=output/"source"
     inputs=copy_snapshot(ROOT,source)
-    from twobyteasr.build_identity import create_build_metadata
+    from twobyteasr.diagnostics.build_identity import create_build_metadata
     build_id=version+"-macos-arm64-"+args.source_sha[:12]
     identity=create_build_metadata(ROOT,channel=build_id)
     metadata=output/"2byteasr_build.json"
@@ -256,7 +256,7 @@ def main(argv=None):
     browser_script.write_text("import {ensureBrowser} from '@remotion/renderer'; import fs from 'node:fs'; const r=await ensureBrowser({chromeMode:'headless-shell',logLevel:'info'}); fs.writeFileSync(process.argv[2],JSON.stringify(r,null,2));\n",encoding="utf8")
     run([node,browser_script,output/"native-browser.json"],cwd=source/"renderer",env=env,log=output/"browser-prepare.log")
     browser_script.unlink()
-    from twobyteasr.platform_browser import bundled_browser
+    from twobyteasr.rendering.platform_browser import bundled_browser
     browser=bundled_browser(source/"renderer",platform="darwin",machine="arm64")
     if not browser.is_file() or "arm64" not in subprocess.check_output(["/usr/bin/lipo","-archs",str(browser)],text=True).split(): raise RuntimeError("Native arm64 Chromium was not prepared")
     tools["browser"]={"path":str(browser),"sha256":sha256(browser),"version":subprocess.check_output([str(browser),"--version"],text=True).strip(),"origin":"locked Remotion ensureBrowser"}

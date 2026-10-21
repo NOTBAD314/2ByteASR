@@ -16,6 +16,8 @@ Typical next release (only the version file changes by hand):
         --notes-file docs/releases/0.6.6.md
     # after the owner publishes:
     python -B scripts/release_pipeline.py verify-public --tag v0.6.6 --assets releases/0.6.6
+    # mainland mirror (token in ~/.config/gitcode/token.txt or GITCODE_TOKEN):
+    python -B scripts/release_pipeline.py gitcode --tag v0.6.6 --assets releases/0.6.6
 
 Rules: outputs are never overwritten; a published release or its assets are
 never replaced (``upload`` refuses); the signing key stays outside the
@@ -32,14 +34,17 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))  # gitcode_release
 
-from twobyteasr.update_manifest import (  # noqa: E402
+from twobyteasr.app.update_manifest import (  # noqa: E402
     APP_ID, ARCH, ARCHIVE_INDEX_NAME, COMPONENT_ORDER, COMPONENTS_FILENAME, PLATFORM, PRODUCT,
     UPDATE_MANIFEST_NAME, UPDATE_SCHEMA, UPDATE_SIGNATURE_NAME, build_installed_manifest,
     entries_from_record, environment_contracts, file_sha256, model_contracts, parse_update_manifest,
@@ -488,6 +493,92 @@ def cmd_verify_public(args) -> None:
         raise SystemExit(1)
 
 
+# --------------------------------------------------------------------------- gitcode
+
+
+def cmd_gitcode(args) -> None:
+    """Mirror the published GitHub release to GitCode, then check it anonymously.
+
+    Safe to run again: files already on GitCode are skipped. Older component
+    archives that the update manifest still references are fetched from
+    GitHub, checked against the signed manifest and added to their own tag.
+    """
+    import gitcode_release as gc
+    assets = Path(args.assets).resolve()
+    files = upload_list(assets)
+    release = _release_by_tag(args.tag)
+    if not release or release.get("draft"):
+        raise SystemExit(f"{args.tag} is not published on GitHub; GitCode only mirrors published releases")
+    manifest_bytes = (assets / UPDATE_MANIFEST_NAME).read_bytes()
+    verify_manifest_signature(manifest_bytes, (assets / UPDATE_SIGNATURE_NAME).read_bytes())
+    manifest = json.loads(manifest_bytes)
+    if manifest.get("tag") != args.tag:
+        raise SystemExit(f"{assets / UPDATE_MANIFEST_NAME} belongs to {manifest.get('tag')}, not {args.tag}")
+    token = gc.read_token(Path(args.token_file) if args.token_file else None)
+    client = gc.GitCode(token, log=_log)
+    title = args.title or release.get("name") or args.tag
+    notes = Path(args.notes_file).read_text("utf-8") if args.notes_file else (release.get("body") or args.tag)
+    referenced = gc.referenced_archives(manifest, args.tag)
+    tags = [args.tag] + sorted({item["tag"] for item in referenced})
+    if not args.skip_push:
+        _run(["git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main",
+              *[f"refs/tags/{t}:refs/tags/{t}" for t in tags]], cwd=ROOT)
+        gc.push_refs(ROOT, ["+refs/remotes/origin/main:refs/heads/main",
+                            *[f"refs/tags/{t}:refs/tags/{t}" for t in tags]], token, log=_log)
+    current = client.release(args.tag) or client.create_release(args.tag, title, notes,
+                                                                bool(release.get("prerelease")))
+    have = client.uploaded(current)
+    for path in files:
+        if path.name in have:
+            _log(f"gitcode: already there: {args.tag}/{path.name}")
+        else:
+            client.upload(args.tag, path)
+    cache = ROOT / "tmp" / "gitcode-referenced"
+    for tag in tags[1:]:
+        older = client.release(tag) or client.create_release(
+            tag, f"2ByteASR {tag.lstrip('v')}（程序内更新组件镜像）", gc.COMPONENT_NOTES.format(tag=tag))
+        have = client.uploaded(older)
+        for item in referenced:
+            if item["tag"] == tag and item["name"] not in have:
+                path = gc.fetch_verified(item["github"], cache / tag / item["name"], item["size"], item["sha256"])
+                client.upload(tag, path)
+    if not release.get("prerelease"):
+        client.mark_latest(args.tag, title, notes)
+    _gitcode_verify(args, assets, files, referenced, release, gc)
+
+
+def _gitcode_verify(args, assets: Path, files: list[Path], referenced: list[dict], release: dict, gc) -> None:
+    handlers = [urllib.request.ProxyHandler({"https": args.verify_proxy, "http": args.verify_proxy}
+                                           if args.verify_proxy else {})]
+    opener = urllib.request.build_opener(*handlers)
+    report = {"tag": args.tag, "checked_at": datetime.now(timezone.utc).isoformat(), "anonymous": True,
+              "proxy": args.verify_proxy or "", "assets": [], "referenced": []}
+    small = 50 * 1024 * 1024
+    for path in files:
+        size = path.stat().st_size
+        row = gc.verify_download(f"{gc.DOWNLOAD}{args.tag}/{urllib.parse.quote(path.name)}", size,
+                                 file_sha256(path) if args.full or size < small else None, opener=opener)
+        report["assets"].append({"name": path.name, **row})
+    for item in referenced:
+        row = gc.verify_download(f"{gc.DOWNLOAD}{item['tag']}/{urllib.parse.quote(item['name'])}", item["size"],
+                                 item["sha256"] if args.full or item["size"] < small else None, opener=opener)
+        report["referenced"].append({"name": item["name"], "tag": item["tag"], **row})
+    report["latest_tag"] = gc.GitCode().latest_tag()
+    report["latest_ok"] = bool(release.get("prerelease")) or report["latest_tag"] == args.tag
+    report["all_ok"] = (report["latest_ok"] and all(r["ok"] for r in report["assets"])
+                        and all(r["ok"] for r in report["referenced"]))
+    stamp = datetime.now().strftime('%Y%m%dT%H%M%S')
+    out = assets / f"gitcode-verification-{stamp}.json"
+    number = 1
+    while out.exists():  # reports are never overwritten; a quick re-run gets its own file
+        number += 1
+        out = assets / f"gitcode-verification-{stamp}-{number}.json"
+    _write_json(out, report)
+    _log(f"gitcode verification all_ok={report['all_ok']} -> {out}")
+    if not report["all_ok"]:
+        raise SystemExit(1)
+
+
 # --------------------------------------------------------------------- verify-source
 
 
@@ -579,6 +670,17 @@ def main() -> None:
     p.add_argument("--tag", required=True)
     p.add_argument("--full", action="store_true")
     p.set_defaults(func=cmd_verify_public)
+    p = sub.add_parser("gitcode", help="mirror the published release to GitCode (mainland download source)")
+    p.add_argument("--assets", required=True)
+    p.add_argument("--tag", required=True)
+    p.add_argument("--title", help="release title (default: the GitHub release title)")
+    p.add_argument("--notes-file", help="release notes (default: the GitHub release body)")
+    p.add_argument("--token-file", help="file holding only the GitCode token (default ~/.config/gitcode/token.txt "
+                                         "or GITCODE_TOKEN)")
+    p.add_argument("--skip-push", action="store_true", help="tags and main are already on GitCode")
+    p.add_argument("--full", action="store_true", help="hash every file in the check, not only small ones")
+    p.add_argument("--verify-proxy", help="check downloads through this proxy (e.g. a mainland relay)")
+    p.set_defaults(func=cmd_gitcode)
     p = sub.add_parser("verify-source", help="clean checkout of the release commit reproduces the build fingerprint")
     p.add_argument("--build", required=True)
     p.add_argument("--commit", required=True)

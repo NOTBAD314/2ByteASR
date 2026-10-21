@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from twobyteasr.indexed_media import IndexedMediaCache
-from twobyteasr.timeline_media import resolve_audio_layers, resolve_video_graph, TIME_CONTRACT
+from twobyteasr.media.indexed_media import IndexedMediaCache
+from twobyteasr.exports.timeline_media import resolve_audio_layers, resolve_video_graph, TIME_CONTRACT
 
 ROOT = Path(__file__).resolve().parents[1]
 FFMPEG = ROOT/'tools/ffmpeg/bin/ffmpeg.exe'
@@ -126,11 +126,11 @@ def test_healthy_containers_preserve_content_and_identity(gappy,tmp_path,suffix)
     [(0,7500,9500,0),(1,8000,10000,4000)],  # ordinary delete: retain gap
 ])
 def test_task_pcm_content_order_gap_and_warm_cache(gappy,tmp_path,monkeypatch,pieces):
-    from twobyteasr import indexed_media
-    from twobyteasr.recognition_input import capture_recognition_snapshot,prepare_recognition_input
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia
-    from twobyteasr.studio_edit_sequence import EditSequence,VideoSegment,store_sequence
-    from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
+    from twobyteasr.media import indexed_media
+    from twobyteasr.recognition.recognition_input import capture_recognition_snapshot,prepare_recognition_input
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence,VideoSegment,store_sequence
+    from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
     from scipy.signal import correlate
     _,sources=gappy
     monkeypatch.setattr(indexed_media,'GLOBAL_INDEXED_MEDIA',IndexedMediaCache(tmp_path/'seek'))

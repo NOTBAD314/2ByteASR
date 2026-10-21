@@ -8,9 +8,9 @@ APP=QApplication.instance() or QApplication([])
 
 
 def test_text_review_allows_duration_probe_but_rejects_real_content_changes():
-    from twobyteasr.glossary_proofread import _TextReviewBinding
-    from twobyteasr.studio_find_replace import PreviewBinding
-    from twobyteasr.studio_project import SubtitleProject,StudioCue,StudioMedia
+    from twobyteasr.glossary.glossary_proofread import _TextReviewBinding
+    from twobyteasr.studio.studio_find_replace import PreviewBinding
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioCue,StudioMedia
     p=SubtitleProject(media=StudioMedia('original.mp4',duration_ms=5000),
                       cues=[StudioCue('a',0,1000,'原句')]);p.validate()
     binding=_TextReviewBinding.capture(p);ordinary=PreviewBinding.capture(p)
@@ -24,7 +24,7 @@ def test_text_review_allows_duration_probe_but_rejects_real_content_changes():
 
 
 def test_native_maximized_transition_is_not_shrunk_by_qt_normal_constraints(monkeypatch):
-    from twobyteasr import window_constraints as bounds
+    from twobyteasr.app import window_constraints as bounds
     w=QWidget();w.setGeometry(0,0,1200,800)
     monkeypatch.setattr(bounds,'available_rect',lambda *_a,**_k:QRect(8,8,1184,784))
     monkeypatch.setattr(bounds,'_native_window_is_special',lambda _w:True)
@@ -41,9 +41,9 @@ def test_native_maximized_transition_is_not_shrunk_by_qt_normal_constraints(monk
 def test_studio_proofread_uses_unsaved_text_and_applies_one_undo(tmp_path,monkeypatch):
     from tests.test_studio_style_controller import _page,_finish
     from tests.test_glossary_proofread import _wait
-    from twobyteasr.glossary_proofread import GlossaryProofreadPage
-    from twobyteasr.studio_project import save_project,load_project
-    from twobyteasr.studio_commands import SetCueFieldsCommand
+    from twobyteasr.glossary.glossary_proofread import GlossaryProofreadPage
+    from twobyteasr.projects.studio_project import save_project,load_project
+    from twobyteasr.timeline.studio_commands import SetCueFieldsCommand
     import subtitle_core as legacy
     _,studio=_page(tmp_path,monkeypatch)
     legacy.add_learned_mapping('入口词库','CHIOCHOO','CHICHOO',origin='手动')
@@ -74,8 +74,8 @@ def test_studio_proofread_uses_unsaved_text_and_applies_one_undo(tmp_path,monkey
 
 
 def test_explicit_editor_binding_supports_unsaved_document_and_rejects_replacement(monkeypatch):
-    from twobyteasr.glossary_proofread import GlossaryProofreadPage
-    from twobyteasr.studio_project import SubtitleProject,StudioCue,StudioMedia
+    from twobyteasr.glossary.glossary_proofread import GlossaryProofreadPage
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioCue,StudioMedia
     first=SubtitleProject(media=StudioMedia(''),cues=[StudioCue('a',0,1000,'原句')]);first.validate()
     second=SubtitleProject.from_dict(first.to_dict())
     studio=SimpleNamespace(project_path=None,session=SimpleNamespace(project=first))

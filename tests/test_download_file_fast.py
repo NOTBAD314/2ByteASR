@@ -17,7 +17,9 @@ RESUME_PAYLOAD = bytes(range(256)) * (12 * 1024)
 
 
 def identity_part(output, url, payload, *, chunk=None):
-    digest = hashlib.sha256(json.dumps([url,len(payload),hashlib.sha256(payload).hexdigest(),4],sort_keys=True).encode()).hexdigest()[:12]
+    # Layout version is part of the production resume identity. A fixture
+    # with the old layout must not be silently reused by the new downloader.
+    digest = hashlib.sha256(json.dumps([url,len(payload),hashlib.sha256(payload).hexdigest(),4,2],sort_keys=True).encode()).hexdigest()[:12]
     return output.with_name(output.name + '.part.127_0_0_1_' + digest + (f'.{chunk:03d}' if chunk is not None else ''))
 
 

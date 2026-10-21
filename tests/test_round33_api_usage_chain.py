@@ -19,7 +19,7 @@ def _app() -> QApplication:
 
 
 def test_endpoint_reads_provider_scoped_key(monkeypatch):
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
 
     calls: list[tuple[str, str]] = []
 
@@ -47,14 +47,14 @@ def test_model_state_uses_card_provider_key(monkeypatch):
     _app()
     from pathlib import Path
 
-    from twobyteasr import model_workshop as mw
+    from twobyteasr.local_models import model_workshop as mw
 
     saved: dict[str, str] = {"openrouter_word": "sk-or", "dashscope_qwen_audio": "sk-dash"}
 
     def _fake_read(provider, base):
         return (saved.get(str(provider), ""), "scoped")
 
-    monkeypatch.setattr("twobyteasr.llm_config.read_api_key", _fake_read)
+    monkeypatch.setattr("twobyteasr.providers.llm_config.read_api_key", _fake_read)
     page = mw.ModelWorkshopPage(
         Path("."),
         {
@@ -76,7 +76,7 @@ def test_model_state_uses_card_provider_key(monkeypatch):
 
 
 def test_api_transcription_plan():
-    from twobyteasr.recognition_plans import RECOGNITION_PLANS, matching_plan, recognition_plan
+    from twobyteasr.recognition.recognition_plans import RECOGNITION_PLANS, matching_plan, recognition_plan
 
     plan = recognition_plan("api")
     assert plan.primary == "api" and plan.review == "api" and plan.timeline == "off"
@@ -85,8 +85,8 @@ def test_api_transcription_plan():
 
 
 def test_mai_card_branding():
-    from twobyteasr.model_workshop import MODELS
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.local_models.model_workshop import MODELS
+    from twobyteasr.app.ui import ASR_API_PRESETS
 
     mai = next(m for m in MODELS if m.key == "mai_transcribe_2_word")
     assert mai.logo_asset is None, "MAI 是微软模型，不得复用 OpenAI logo"
@@ -96,8 +96,8 @@ def test_mai_card_branding():
 
 
 def test_api_combo_label_shows_provider_and_model(monkeypatch):
-    from twobyteasr import llm_config
-    from twobyteasr.model_workshop import _api_combo_label
+    from twobyteasr.providers import llm_config
+    from twobyteasr.local_models.model_workshop import _api_combo_label
 
     monkeypatch.setattr(llm_config, "read_api_key", lambda p, b: ("sk", "scoped"))
     label, ready = _api_combo_label(
@@ -110,7 +110,7 @@ def test_api_combo_label_shows_provider_and_model(monkeypatch):
 
 
 def test_persist_uses_scoped_existing_key(monkeypatch):
-    from twobyteasr.ui import persist_asr_configuration
+    from twobyteasr.app.ui import persist_asr_configuration
 
     class _Legacy:
         RUNTIME_SETTINGS = {"models": {}, "switches": {}}
@@ -120,7 +120,7 @@ def test_persist_uses_scoped_existing_key(monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "twobyteasr.ui.resolve_api_key", lambda stage: ("", "none")
+        "twobyteasr.app.ui.resolve_api_key", lambda stage: ("", "none")
     )
     read_calls: list[tuple[str, str]] = []
 
@@ -128,9 +128,9 @@ def test_persist_uses_scoped_existing_key(monkeypatch):
         read_calls.append((str(provider), str(base)))
         return ("sk-saved", "scoped")
 
-    from twobyteasr import ui as ui_module
+    from twobyteasr.app import ui as ui_module
 
-    monkeypatch.setattr("twobyteasr.llm_config.read_api_key", _fake_read)
+    monkeypatch.setattr("twobyteasr.providers.llm_config.read_api_key", _fake_read)
     validated = persist_asr_configuration(
         _Legacy(),
         {

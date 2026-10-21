@@ -37,20 +37,20 @@ def test_language_setting_accepts_zh_hant():
 
 
 def test_api_setup_tutorial_follows_the_ui_language():
-    from twobyteasr.api_setup_catalog import guide_for
+    from twobyteasr.providers.api_setup_catalog import guide_for
     guide = guide_for('mosi_moss_pro')
     hant = guide.guide_text(ROOT, language='zh-Hant')
     hans = guide.guide_text(ROOT, language='zh')
     assert hant.startswith('<!-- 由 scripts/make_zh_hant.py') and '申請與設定' in hant
     assert hans.startswith('# 申请与设置') and hant != hans
     assert all((ROOT / 'docs/api-setup' / g.guide_file.replace('.zh-CN.md', '.zh-Hant.md')).is_file()
-               for g in __import__('twobyteasr.api_setup_catalog', fromlist=['ALL_GUIDES']).ALL_GUIDES)
+               for g in __import__('twobyteasr.providers.api_setup_catalog', fromlist=['ALL_GUIDES']).ALL_GUIDES)
 
 
 def test_code_literals_load_only_for_zh_hant_and_cover_untranslated_help(monkeypatch):
     """Help texts without an English key (catalog tooltips) still show 繁體 (2026-10-14)."""
     from twobyteasr import i18n
-    from twobyteasr.api_setup_catalog import guide_for
+    from twobyteasr.providers.api_setup_catalog import guide_for
     assert 'zh-Hant' not in i18n._TRANSLATIONS or i18n._TRANSLATIONS['zh-Hant']  # lazy: absent until used
     region = guide_for('qwen31_filetrans').fields[0]
     table = i18n.language_table('zh-Hant')
@@ -64,7 +64,7 @@ def test_code_literals_load_only_for_zh_hant_and_cover_untranslated_help(monkeyp
 
 def test_ui_literal_converts_composed_program_text_but_translate_keeps_user_text():
     from twobyteasr import i18n
-    from twobyteasr.api_setup_catalog import guide_for
+    from twobyteasr.providers.api_setup_catalog import guide_for
     key_help = next(f.help for f in guide_for('mosi_moss_pro').fields if f.key == 'api_key')
     hant = i18n.ui_literal(key_help, 'zh-Hant')
     # Folded ``_KEY_HELP + '…'`` catalog text gets the phrase conversion.

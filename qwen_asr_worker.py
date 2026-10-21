@@ -22,6 +22,10 @@ def _atomic_write(path: Path, payload: object) -> None:
 
 
 def main() -> None:
+    # numpy and scipy each load OpenBLAS, which commits about 24 MB per CPU
+    # thread at import (1.5 GB on a 32-thread CPU). The audio features and the
+    # model run in torch; nothing here uses that BLAS (2026-10-15).
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
@@ -33,8 +37,11 @@ def main() -> None:
     # Import app Python sources after this role's site-packages, never the
     # frozen GUI's binary extensions ahead of the managed environment.
     sys.path.append(str(root))
+    from twobyteasr.recognition.qwen_runtime_compat import prepare_qwen_import
+    prepare_qwen_import()
     import torch
     from qwen_asr import Qwen3ASRModel
+    from twobyteasr import read_only_weights
     from twobyteasr.model_integrity import verify_model_files
 
     verify_model_files("qwen_asr", Path(args.model_dir), root=root)
@@ -51,22 +58,27 @@ def main() -> None:
     sample_rate = int(policy.get("sample_rate", 0))
     if not 1 <= batch_size <= 12 or not 1 <= max_new_tokens <= 4096 or sample_rate != 16000:
         raise RuntimeError("Invalid Qwen worker generation policy")
-    # Spoken language for every window: "Chinese", "Japanese", "English", or None
-    # to let Qwen3-ASR identify it. Policies without the key keep the Chinese default.
+    # Spoken language for every window: "Chinese", "Japanese", "English", "Korean",
+    # "Spanish", "German", "French", "Portuguese", "Italian", "Russian" (2026-10-19),
+    # or None to let Qwen3-ASR identify it. Policies without the key keep the Chinese default.
     language = policy.get("language", "Chinese")
-    if language not in {None, "Chinese", "Japanese", "English"}:
+    if language not in {None, "Chinese", "Japanese", "English", "Korean", "Spanish", "German", "French",
+                        "Portuguese", "Italian", "Russian"}:
         raise RuntimeError("Invalid Qwen worker language")
     if not jobs:
         raise RuntimeError("Qwen3-ASR manifest is empty")
     load_started = time.perf_counter()
     _emit("loading", python=sys.executable, model_path=str(Path(args.model_dir).resolve()), pid=os.getpid())
-    model = Qwen3ASRModel.from_pretrained(
+    # 2026-10-15: on Windows the safetensors shards are mapped read-only
+    # (twobyteasr/read_only_weights.py); the loader is the official one.
+    model, weights_loader = read_only_weights.load(torch, lambda: Qwen3ASRModel.from_pretrained(
         str(args.model_dir), local_files_only=True,
         dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
         device_map="cuda:0", max_inference_batch_size=batch_size, max_new_tokens=max_new_tokens,
-    )
+    ), lambda loaded: [loaded.model],
+        report=lambda error_type, detail: _emit("read_only_load_failed", error_type=error_type, detail=detail))
     load_ms = (time.perf_counter() - load_started) * 1000.0
-    _emit("loaded", elapsed_ms=round(load_ms, 3))
+    _emit("loaded", elapsed_ms=round(load_ms, 3), weights_loader=weights_loader)
     try:
         results = []
         inference_started = time.perf_counter()

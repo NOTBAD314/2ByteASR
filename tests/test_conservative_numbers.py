@@ -2,8 +2,8 @@ import copy
 
 import pytest
 
-from twobyteasr.models import SpeechSegment, WordUnit
-from twobyteasr.number_fidelity import format_numbers, format_segment
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+from twobyteasr.subtitle_rules.number_fidelity import format_numbers, format_segment
 
 
 @pytest.mark.parametrize('source,expected', [
@@ -40,7 +40,7 @@ def test_adverb_shifen_keeps_source_while_scores_and_minutes_convert(source, exp
 
 def test_adverb_shifen_is_one_judgement_for_restore_cuts_and_check():
     import subtitle_core as legacy  # noqa: F401  (loads the core before the timing helpers)
-    from twobyteasr.number_fidelity import numeric_event_values, numeric_unsafe_cut_offsets
+    from twobyteasr.subtitle_rules.number_fidelity import numeric_event_values, numeric_unsafe_cut_offsets
     # An AI edit that wrote the adverb as 10分 is restored; a score is not.
     result, receipts = format_numbers('10分感谢 打了10分', source_text='十分感谢 打了十分')
     assert result == '十分感谢 打了10分'
@@ -54,8 +54,8 @@ def test_adverb_shifen_is_one_judgement_for_restore_cuts_and_check():
 
 def test_adverb_shifen_survives_grouping_and_final_check():
     import subtitle_core as legacy
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.pipeline_runtime import finalize_cues
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.pipeline_runtime import finalize_cues
     source = '十分感谢大家 这把打了十分 等了十分钟 五点三十分'
     words = [WordUnit(i * .12, (i + 1) * .12, c, .9) for i, c in enumerate(source) if c != ' ']
     segment = SpeechSegment(1, 0, len(source) * .12, source, .9, words, speaker='S01')
@@ -99,7 +99,7 @@ def test_disabled_switch_keeps_existing_and_source_styles_unchanged():
 
 
 def test_format_segment_updates_final_fields_and_keeps_whole_word_spans(monkeypatch):
-    from twobyteasr import number_fidelity
+    from twobyteasr.subtitle_rules import number_fidelity
     monkeypatch.setattr(number_fidelity, 'preference', lambda: True)
     s = SpeechSegment(7, 0, 2, '一个 一百二十 二十', 1,
         [WordUnit(0, .3, '一个', 1), WordUnit(.5, 1, '一百二十', 1), WordUnit(1.3, 2, '二十', 1)],
@@ -118,10 +118,10 @@ def test_format_segment_updates_final_fields_and_keeps_whole_word_spans(monkeypa
 
 def test_production_editorial_grouping_final_and_outputs_follow_new_policy():
     import subtitle_core as legacy
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.pipeline_runtime import finalize_cues
-    from twobyteasr.output import render_txt, render_srt
-    from twobyteasr.terminology import snapshot_from_pairs
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.pipeline_runtime import finalize_cues
+    from twobyteasr.subtitle_rules.output import render_txt, render_srt
+    from twobyteasr.glossary.terminology import snapshot_from_pairs
     source = '一个 两个办法 二十 二十 零点五秒 百分之二 二十里香'
     words = [WordUnit(i * .12, (i + 1) * .12, c, .9) for i, c in enumerate(source) if c != ' ']
     segment = SpeechSegment(1, 0, len(source) * .12, source, .9, words, speaker='S03')
@@ -141,8 +141,8 @@ def test_production_editorial_grouping_final_and_outputs_follow_new_policy():
 
 def test_policy_and_switch_participate_in_runtime_cache_signature():
     import subtitle_core as legacy
-    from twobyteasr.number_fidelity import RULE_VERSION
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.subtitle_rules.number_fidelity import RULE_VERSION
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     signatures = []
     for enabled in (False, True):
         with activate_runtime_context(RuntimeContext(asr_settings_snapshot={'switches': {'prefer_arabic_numbers': enabled}}), legacy=legacy):
@@ -153,9 +153,9 @@ def test_policy_and_switch_participate_in_runtime_cache_signature():
 
 def test_ai_small_integer_proposal_is_restored_before_final_pipeline(monkeypatch):
     import subtitle_core as legacy
-    from twobyteasr.number_fidelity import restore_source_number_style
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.pipeline_runtime import finalize_cues
+    from twobyteasr.subtitle_rules.number_fidelity import restore_source_number_style
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.pipeline_runtime import finalize_cues
     source = '一个 一个 1个编号 二十 二十'
     ai_returned = '1个 1个 1个编号 二十 二十'
     restored, receipts = restore_source_number_style(source, ai_returned)
@@ -175,8 +175,8 @@ def test_ai_small_integer_proposal_is_restored_before_final_pipeline(monkeypatch
 @pytest.mark.parametrize('enabled,expected', [(True, '2:3 0.5:2'), (False, '二:三 零点五:二')])
 def test_explicit_ratios_survive_actual_editorial_grouping_and_finalization(enabled, expected):
     import subtitle_core as legacy
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.pipeline_runtime import finalize_cues
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.pipeline_runtime import finalize_cues
     source = '二:三 零点五:二'
     segment = SpeechSegment(1, 0, 2, source, .9, [], speaker='S01')
     context = RuntimeContext(asr_settings_snapshot={'switches': {'prefer_arabic_numbers': enabled}})
@@ -188,10 +188,10 @@ def test_explicit_ratios_survive_actual_editorial_grouping_and_finalization(enab
 
 
 def test_saved_numeric_mapping_never_becomes_acoustic_word_evidence(tmp_path, monkeypatch):
-    from twobyteasr import number_fidelity
-    from twobyteasr.models import SubtitleCue
-    from twobyteasr.studio_project import create_studio_outputs, load_project
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.subtitle_rules import number_fidelity
+    from twobyteasr.recognition.transcript_data import SubtitleCue
+    from twobyteasr.projects.studio_project import create_studio_outputs, load_project
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     monkeypatch.setattr(number_fidelity, 'preference', lambda: True)
     segment = SpeechSegment(1, 0, 2, '二十 二十', .9,
         [WordUnit(0, .5, '二十', .9), WordUnit(1.5, 2, '二十', .9)], speaker='S01')

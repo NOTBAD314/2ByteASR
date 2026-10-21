@@ -8,10 +8,10 @@ and as properties on ThemeDefinition.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from ..typography import REGULAR, MEDIUM, SEMIBOLD, BOLD, HEAVY
+from .typography import REGULAR, MEDIUM, SEMIBOLD, BOLD, HEAVY
 
 if TYPE_CHECKING:
-    from ..ui_theme import ThemeDefinition
+    from .ui_theme import ThemeDefinition
 
 # Spec scale. ui_theme still has SPACE_5 = 20 for legacy callers.
 SPACE_SCALE = (4, 8, 12, 16, 24, 32)

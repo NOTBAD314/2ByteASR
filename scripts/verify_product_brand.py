@@ -46,9 +46,9 @@ def main():
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QFrame, QDialog
     import quick_start
-    import twobyteasr.ui as ui
-    from twobyteasr.theme_manager import theme_key
-    from twobyteasr.ui_theme import theme_definition
+    import twobyteasr.app.ui as ui
+    from twobyteasr.design.theme_manager import theme_key
+    from twobyteasr.design.ui_theme import theme_definition
     result = {'passed': False, 'checks': [], 'entry': 'quick_start.main', 'profile': str(out)}
     def check(name, value, detail=None):
         result['checks'].append({'name':name, 'passed':bool(value), 'detail':detail})

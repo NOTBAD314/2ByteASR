@@ -26,21 +26,21 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_find_replace import PreviewBinding, apply_occurrences
-from twobyteasr.studio_glossary_service import preview_glossary_correction
-from twobyteasr.studio_project import (
+from twobyteasr.studio.studio_find_replace import PreviewBinding, apply_occurrences
+from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+from twobyteasr.projects.studio_project import (
     StudioCue, StudioMedia, SubtitleProject, load_project, save_project,
 )
-from twobyteasr.studio_runtime_state import state_for
-from twobyteasr.studio_text_tools import values_from_occurrences
-from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
+from twobyteasr.projects.studio_runtime_state import state_for
+from twobyteasr.studio.studio_text_tools import values_from_occurrences
+from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
 
 
 @pytest.fixture
 def no_cloud(monkeypatch):
     import subtitle_core  # Initialize the legacy facade before its re-exports.
-    import twobyteasr.asr_provider_snapshot as providers
-    import twobyteasr.polishing as polishing
+    import twobyteasr.providers.asr_provider_snapshot as providers
+    import twobyteasr.subtitle_rules.polishing as polishing
 
     calls = []
 

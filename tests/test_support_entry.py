@@ -7,7 +7,8 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from twobyteasr import i18n, support_entry as support
+from twobyteasr import i18n
+from twobyteasr.app import support_entry as support
 
 
 @pytest.fixture
@@ -22,8 +23,8 @@ def context(monkeypatch, tmp_path):
 
 
 def test_only_one_user_key_changes_and_survives_other_preferences(context, monkeypatch):
-    from twobyteasr import theme_manager
-    from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+    from twobyteasr.design import theme_manager
+    from twobyteasr.storage.settings import load_runtime_settings, save_runtime_settings
     app, factory = context
     monkeypatch.setattr(theme_manager, '_settings', factory)
     settings = factory()

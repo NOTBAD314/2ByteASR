@@ -14,19 +14,19 @@ import pytest
 
 import subtitle_core
 import moss_firered_pipeline as pipeline_module
-from twobyteasr import ai_providers
-from twobyteasr import polishing as polishing_module
-from twobyteasr.correction_safety import reference_consensus_edits
-from twobyteasr.main_ui_helpers import _is_ai_config_failure
-from twobyteasr.processes import run_subprocess_with_tree_kill
-from twobyteasr.text_similarity import _phonetic_text_cached, phonetic_text
+from twobyteasr.providers import ai_providers
+from twobyteasr.subtitle_rules import polishing as polishing_module
+from twobyteasr.subtitle_rules.correction_safety import reference_consensus_edits
+from twobyteasr.app.main_ui_helpers import _is_ai_config_failure
+from twobyteasr.system.processes import run_subprocess_with_tree_kill
+from twobyteasr.subtitle_rules.text_similarity import _phonetic_text_cached, phonetic_text
 
 
 @pytest.fixture(autouse=True)
 def isolated_asr_task(monkeypatch, tmp_path):
     """Each test is a new task; credentials/network must not come from the host."""
-    from twobyteasr import llm_config
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.providers import llm_config
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     import requests
     monkeypatch.setattr(llm_config, "read_scoped_api_key", lambda *a, **k: ("", "fixture"))
     monkeypatch.setattr(llm_config, "resolve_api_key", lambda *a, **k: ("", "fixture"))
@@ -52,8 +52,8 @@ def _segment(segment_id, text, *, start=0.0, end=2.0):
 
 
 def test_analysis_has_no_unused_cloud_text_credential_gate(monkeypatch):
-    from twobyteasr.runtime import get_runtime_context
-    from twobyteasr import asr_provider_snapshot
+    from twobyteasr.recognition.run_context import get_runtime_context
+    from twobyteasr.providers import asr_provider_snapshot
     get_runtime_context().recognition_purpose='analysis'
     monkeypatch.setattr(asr_provider_snapshot,'resolve_provider_snapshot',
                         lambda *a:pytest.fail('Analysis must not resolve unused text provider'))
@@ -268,7 +268,7 @@ def _preflight_settings(monkeypatch, service_id):
         "switches": {"use_ai_grouping": True},
     }
     monkeypatch.setattr(subtitle_core, "RUNTIME_SETTINGS", settings, raising=True)
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
 
     monkeypatch.setattr(llm_config, "read_scoped_api_key", lambda *a, **k: ("", ""))
 

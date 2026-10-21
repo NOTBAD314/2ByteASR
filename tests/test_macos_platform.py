@@ -6,11 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
-from twobyteasr.platform_browser import bundled_browser
-from twobyteasr.platform_macos import configure_macos_paths, cpu_factory_settings, device_capabilities
-from twobyteasr.platform_media import executable_name
-from twobyteasr.platform_mpv import native_video_arguments, preview_surface, UnixIPCStream, cleanup_unix_ipc, unix_ipc_path
-from twobyteasr.platform_audio import audio_endpoint, valid_audio_endpoint, audio_backend
+from twobyteasr.rendering.platform_browser import bundled_browser
+from twobyteasr.system.platform_macos import configure_macos_paths, cpu_factory_settings, device_capabilities
+from twobyteasr.system.platform_media import executable_name
+from twobyteasr.playback.platform_mpv import native_video_arguments, preview_surface, UnixIPCStream, cleanup_unix_ipc, unix_ipc_path
+from twobyteasr.playback.platform_audio import audio_endpoint, valid_audio_endpoint, audio_backend
 
 
 def test_windows_player_arguments_preserve_hwnd_and_d3d11():

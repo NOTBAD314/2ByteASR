@@ -4,7 +4,7 @@
 "继续继续有话题他处理不了继续那" twice at overlapping times, so the caption lost
 word timing (``overlapping_token_streams``) and grouping aligned to duplicates.
 """
-from twobyteasr.asr_schema import flatten_segment_tokens, normalize_firered_worker_result
+from twobyteasr.recognition.asr_schema import flatten_segment_tokens, normalize_firered_worker_result
 
 
 def _jobs():

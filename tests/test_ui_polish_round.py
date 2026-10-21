@@ -18,7 +18,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFrame
 
-from twobyteasr.ui import (
+from twobyteasr.app.ui import (
     CollapsibleFrame,
     MainWindow,
     TermLibraryDialog,
@@ -103,7 +103,7 @@ def test_recognition_plan_shows_three_role_cards_and_ready_state(monkeypatch):
     }
     for key, value in ready_models.items():
         monkeypatch.setitem(legacy.RUNTIME_SETTINGS.setdefault("models", {}), key, value)
-    import twobyteasr.ui as ui_mod
+    import twobyteasr.app.ui as ui_mod
 
     monkeypatch.setattr(
         ui_mod,
@@ -126,10 +126,9 @@ def test_recognition_plan_shows_three_role_cards_and_ready_state(monkeypatch):
 
 def test_recognition_card_recovery_appears_when_api_key_missing(monkeypatch):
     _app()
-    monkeypatch.setattr(
-        "twobyteasr.ui.resolve_api_key", lambda _stage: ("", "missing")
-    )
-    monkeypatch.setattr("twobyteasr.ui.installed_model_keys", lambda _root: set())
+    for module in ("twobyteasr.app.ui", "twobyteasr.providers.endpoint_editor_ui"):
+        monkeypatch.setattr(f"{module}.resolve_api_key", lambda _stage: ("", "missing"))
+    monkeypatch.setattr("twobyteasr.app.ui.installed_model_keys", lambda _root: set())
     win = _main_window()
     win.primary_asr_backend.setCurrentIndex(win.primary_asr_backend.findData("api"))
     win._refresh_asr_summary()
@@ -142,7 +141,7 @@ def test_recognition_card_recovery_appears_when_api_key_missing(monkeypatch):
 
 def test_recognition_card_recovery_points_to_workshop_when_model_missing(monkeypatch):
     _app()
-    monkeypatch.setattr("twobyteasr.ui.installed_model_keys", lambda _root: set())
+    monkeypatch.setattr("twobyteasr.app.ui.installed_model_keys", lambda _root: set())
     win = _main_window()
     win._refresh_asr_summary()
     card = win.recognition_plan.cards["primary"]
@@ -242,7 +241,7 @@ def test_glossary_delete_game_and_delete_term_are_separate():
 
 def test_glossary_smart_build_entry_opens_with_game_context(monkeypatch):
     _app()
-    from twobyteasr.ui import SmartGlossaryDialog
+    from twobyteasr.app.ui import SmartGlossaryDialog
 
     win = _main_window()
     dialog = _open_terms(win)
@@ -262,14 +261,15 @@ def test_glossary_smart_build_entry_opens_with_game_context(monkeypatch):
 
 def test_smart_build_without_api_key_disables_ai_enhancement(monkeypatch):
     _app()
-    from twobyteasr.ui import SmartGlossaryDialog
+    from twobyteasr.app.ui import SmartGlossaryDialog
 
     def no_key(_stage):
         return "", "missing"
 
-    monkeypatch.setattr("twobyteasr.ui.resolve_api_key", no_key)
+    monkeypatch.setattr("twobyteasr.app.ui.resolve_api_key", no_key)
+    monkeypatch.setattr("twobyteasr.providers.endpoint_editor_ui.resolve_api_key", no_key)
     monkeypatch.setattr(
-        "twobyteasr.main_ui_smart_glossary.validate_endpoint",
+        "twobyteasr.glossary.main_ui_smart_glossary.validate_endpoint",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("缺少 API 密钥")),
     )
     win = _main_window()
@@ -286,10 +286,10 @@ def test_smart_build_without_api_key_disables_ai_enhancement(monkeypatch):
 
 def test_smart_build_external_ai_prompt_enters_tsv_preview_flow(monkeypatch):
     app = _app()
-    from twobyteasr.ui import SmartGlossaryDialog
+    from twobyteasr.app.ui import SmartGlossaryDialog
 
     monkeypatch.setattr(
-        "twobyteasr.main_ui_smart_glossary.validate_endpoint",
+        "twobyteasr.glossary.main_ui_smart_glossary.validate_endpoint",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("缺少 API 密钥")),
     )
     win = _main_window()

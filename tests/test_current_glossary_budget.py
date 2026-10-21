@@ -15,10 +15,10 @@ def legacy():
 
 
 def test_fresh_minecraft_403_has_failure_outcome_and_preserves_cursor(monkeypatch):
-    from twobyteasr import glossary_build as gb, glossary_sources as gs, minecraft_catalogs as mc
-    from twobyteasr.glossary_outcome import empty_result_message
+    from twobyteasr.glossary import glossary_build as gb, glossary_sources as gs, minecraft_catalogs as mc
+    from twobyteasr.glossary.glossary_outcome import empty_result_message
     monkeypatch.setattr(gb, 'detect_search_capability', lambda s:dict(provider_search=False, model='test', service='test'))
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a:None)
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a:None)
     monkeypatch.setattr(mc, 'fetch_official_terms', lambda *a:(_ for _ in ()).throw(ValueError('http_403')))
     calls=[]
     def blocked(site, params, board, *a, **k):
@@ -35,7 +35,7 @@ def test_fresh_minecraft_403_has_failure_outcome_and_preserves_cursor(monkeypatc
 
 
 def test_source_verified_empty_is_distinct_from_failure_or_new_candidates():
-    from twobyteasr.glossary_outcome import collection_outcome
+    from twobyteasr.glossary.glossary_outcome import collection_outcome
     valid=dict(url='https://example.com',read=True,enumeration_complete=True,catalog_member_count=0)
     assert collection_outcome([], [valid])['status']=='no_changes'
     assert collection_outcome([], [])['status']=='no_verified_content'
@@ -43,7 +43,7 @@ def test_source_verified_empty_is_distinct_from_failure_or_new_candidates():
 
 
 def test_verified_names_do_not_double_count_resource_keys_or_sources():
-    from twobyteasr.glossary_outcome import collection_outcome
+    from twobyteasr.glossary.glossary_outcome import collection_outcome
     names=[dict(term='石头',verification='catalog_verified'),
            dict(term='石头',verification='page_verified'),
            dict(term='未核对',verification='sourced')]
@@ -56,7 +56,7 @@ def test_verified_names_do_not_double_count_resource_keys_or_sources():
 
 
 def test_checkpoint_fresh_scope_expiry_and_game_boundary():
-    from twobyteasr.glossary_outcome import resumable_checkpoint
+    from twobyteasr.glossary.glossary_outcome import resumable_checkpoint
     old=dict(game='我的世界',done_urls=['fresh','stale'],category_cursors={'fresh':{},'stale':{}},
         source_results=[dict(url='fresh',read=True,fetched_at=1000),dict(url='stale',read=True,fetched_at=1,evidence_url='asset')],
         candidates=[dict(verification='catalog_verified',sources=[dict(url='asset')])])
@@ -69,7 +69,7 @@ def test_checkpoint_fresh_scope_expiry_and_game_boundary():
 
 
 def test_official_translation_filter_not_navigation_or_description():
-    from twobyteasr.minecraft_catalogs import translation_terms
+    from twobyteasr.glossary.minecraft_catalogs import translation_terms
     payload={'entity.minecraft.creeper':'苦力怕','block.minecraft.stone':'石头',
         'item.minecraft.apple':'苹果','item.minecraft.apple.description':'描述','menu.start':'开始',
         'enchantment.minecraft.sharpness':'锋利','enchantment.minecraft.sharpness.desc':'%s 伤害',
@@ -84,7 +84,7 @@ def test_official_translation_filter_not_navigation_or_description():
 
 
 def test_failed_outcome_is_not_green_task_and_still_reviewable():
-    from twobyteasr.glossary_task_manager import GlossaryUpdateManager,GlossaryTaskState
+    from twobyteasr.glossary.glossary_task_manager import GlossaryUpdateManager,GlossaryTaskState
     manager=GlossaryUpdateManager(object())
     task=GlossaryTaskState('a','game','full','service','model',time.time(),status='running')
     manager._tasks['a']=task
@@ -94,7 +94,7 @@ def test_failed_outcome_is_not_green_task_and_still_reviewable():
 
 
 def test_native_schema_projection_keeps_images_user_constraints_and_is_idempotent():
-    from twobyteasr.provider_input_budget import project_transport_messages,compact
+    from twobyteasr.providers.provider_input_budget import project_transport_messages,compact
     schema={'type':'object','required':['name'],'properties':{'name':{'type':'string'}}}
     messages=[{'role':'user','content':[{'type':'text','text':'保留完整框体\n'+compact(schema)},
         {'type':'image_url','image_url':{'url':'data:image/png;base64,unchanged'}}]}]
@@ -107,7 +107,7 @@ def test_native_schema_projection_keeps_images_user_constraints_and_is_idempoten
 
 
 def test_restore_reference_hash_preserved_missing_or_changed_rejected(tmp_path):
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,saved_reference_images
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,saved_reference_images
     p=tmp_path/'ref.png';p.write_bytes(b'original-pixels')
     ledger=ThemeLedger(tmp_path/'draft','测试',references=[(p,'current-media')])
     ledger.value['provider_inputs']=[dict(pixels_attached=True)]
@@ -120,8 +120,8 @@ def test_restore_reference_hash_preserved_missing_or_changed_rejected(tmp_path):
 
 
 def test_fixed_implementation_over_budget_stops_before_planning(tmp_path):
-    from twobyteasr.authored_generation import generate_staged
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.authored_generation import generate_staged
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
     ledger=ThemeLedger(tmp_path,'长'*40000)
     client=SimpleNamespace(complete=lambda *a,**k:pytest.fail('must not send planning'))
     with pytest.raises(Exception, match='固定实现契约'):
@@ -130,10 +130,10 @@ def test_fixed_implementation_over_budget_stops_before_planning(tmp_path):
 
 
 def test_broker_resolves_cli_transport_before_preflight(monkeypatch):
-    from twobyteasr.provider_service import ProviderService
-    from twobyteasr.llm_config import activate_ai_service,endpoint_from_settings
-    from twobyteasr.provider_input_budget import compact
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.providers.provider_service import ProviderService
+    from twobyteasr.providers.llm_config import activate_ai_service,endpoint_from_settings
+    from twobyteasr.providers.provider_input_budget import compact
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     import copy
     settings=copy.deepcopy(DEFAULT_SETTINGS);activate_ai_service(settings,'grok_account')
     assert 'transport' not in endpoint_from_settings(settings,'polish')
@@ -149,10 +149,10 @@ def test_broker_resolves_cli_transport_before_preflight(monkeypatch):
 def test_staged_grok_fixed_contract_is_sendable_with_reference(tmp_path):
     import copy,io
     from PIL import Image
-    from twobyteasr.authored_generation import generate_staged
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    from twobyteasr.llm_config import activate_ai_service
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.caption_design.authored_generation import generate_staged
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.providers.llm_config import activate_ai_service
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     settings=copy.deepcopy(DEFAULT_SETTINGS);activate_ai_service(settings,'grok_account')
     image=io.BytesIO();Image.new('RGB',(960,540)).save(image,format='PNG')
     parts=[dict(type='image_url',image_url=dict(url='data:image/png;base64,'+base64.b64encode(image.getvalue()).decode()))]

@@ -33,10 +33,10 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import (load_project,save_project,SubtitleProject,StudioCue,StudioSpeaker)
-    from twobyteasr.studio_edit_sequence import projected_cues
-    from twobyteasr.style_resolution import resolve_cue_visual
-    from twobyteasr.subtitle_stacking import initialize_project_layout
+    from twobyteasr.projects.studio_project import (load_project,save_project,SubtitleProject,StudioCue,StudioSpeaker)
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues
+    from twobyteasr.caption_style.style_resolution import resolve_cue_visual
+    from twobyteasr.caption_style.subtitle_stacking import initialize_project_layout
     source=load_project(out/'real-ge.2byteproj');cues=list(projected_cues(source))
     pairs=[(a,b) for i,a in enumerate(cues) for b in cues[i+1:] if a.speaker_id!=b.speaker_id
            and min(a.end_ms,b.end_ms)-max(a.start_ms,b.start_ms)>150]
@@ -74,7 +74,7 @@ def main():
     unchanged=all(sha(path)==value for path,value in protected.items())
     result['protected_originals_unchanged']=unchanged;result['exit_code']=code
     if result.get('videos'):
-        from twobyteasr.processes import run_hidden_subprocess
+        from twobyteasr.system.processes import run_hidden_subprocess
         result['video_fully_decoded']=True
         for row in result['videos']:
             video=Path(row['path']);decode=run_hidden_subprocess([str(root/'tools/ffmpeg/bin/ffmpeg.exe'),

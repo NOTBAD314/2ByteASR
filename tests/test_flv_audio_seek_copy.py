@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from twobyteasr.audio_engine import build_audio_decode_command, studio_ffmpeg_path
-from twobyteasr.indexed_media import (
+from twobyteasr.playback.audio_engine import build_audio_decode_command, studio_ffmpeg_path
+from twobyteasr.media.indexed_media import (
     AUDIO_SEEK_COPY_NAME,
     AUDIO_SEEK_MARKER_NAME,
     audio_seek_copy_ready,
@@ -114,13 +114,13 @@ def test_decode_command_without_copy_reads_the_original(tmp_path):
 def test_media_cache_builds_copy_in_background_and_then_serves_it(tmp_path, monkeypatch):
     """Preview path: unknown -> background build -> {"path", "offset_ms"}; MP4 never."""
     import time as _time
-    from twobyteasr.indexed_media import IndexedMediaCache
+    from twobyteasr.media.indexed_media import IndexedMediaCache
     ffmpeg, _ffprobe = _tools()
     flv = tmp_path / "media" / "live.flv"
     flv.parent.mkdir()
     _make_flv(ffmpeg, flv, audio_delay_s=0.08)
     cache = IndexedMediaCache(root=tmp_path / "seek")
-    monkeypatch.setattr("twobyteasr.storage_service.safe_path", lambda *a, **k: True)
+    monkeypatch.setattr("twobyteasr.storage.storage_service.safe_path", lambda *a, **k: True)
     assert cache.audio_seek_source(str(flv)) is None  # starts the build
     deadline = _time.monotonic() + 30
     ready = None

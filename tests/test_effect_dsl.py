@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.effect_dsl import (
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.caption_style.effect_dsl import (
     EffectValidationError,
     builtin_effects,
     compile_effect_override,
@@ -11,8 +11,8 @@ from twobyteasr.effect_dsl import (
     compile_position_motion_segments,
     validate_effect,
 )
-from twobyteasr.style_presets import BUILTIN_PRESETS, StylePresetStore
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.caption_style.style_presets import BUILTIN_PRESETS, StylePresetStore
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
 
 
 def test_effect_dsl_validates_bounds_and_rejects_raw_fields():

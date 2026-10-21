@@ -36,9 +36,9 @@ from PySide6.QtWidgets import QApplication
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.p64_runtime_audit import _print_window, _window_bounds
-from twobyteasr.window_audit import qt_top_level_widgets, win32_top_level_windows
+from twobyteasr.app import ui
+from twobyteasr.acceptance.p64_runtime_audit import _print_window, _window_bounds
+from twobyteasr.acceptance.window_audit import qt_top_level_widgets, win32_top_level_windows
 
 
 def progress(message: str) -> None:

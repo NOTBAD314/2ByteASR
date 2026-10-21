@@ -12,8 +12,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--baseline', action='store_true')
     options = parser.parse_args()
-    from twobyteasr.web_theme import parse_web_theme_sections, WebThemeDocument, theme_archive_html
-    from twobyteasr.renderer_service import RendererService, RendererJob
+    from twobyteasr.caption_design.web_theme import parse_web_theme_sections, WebThemeDocument, theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService, RendererJob
     from PIL import Image
     import numpy as np
     original = (ROOT/'tests/fixtures/death_stranding_original.txt').read_text(encoding='utf8')

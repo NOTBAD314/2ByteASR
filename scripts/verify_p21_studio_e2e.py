@@ -16,8 +16,8 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtGui import QFont, QFontDatabase  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.ass_compiler import compile_ass  # noqa: E402
-from twobyteasr.studio_project import (  # noqa: E402
+from twobyteasr.rendering.ass_compiler import compile_ass  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     StudioCue,
     StudioMedia,
     SubtitleProject,
@@ -26,9 +26,9 @@ from twobyteasr.studio_project import (  # noqa: E402
     project_backup_path,
     save_project,
 )
-from twobyteasr.studio_render import RenderJob, RenderSettings, run_render_job  # noqa: E402
-from twobyteasr.studio_review import store_review_risks  # noqa: E402
-from twobyteasr.studio_ui import SubtitleStudioPage  # noqa: E402
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, run_render_job  # noqa: E402
+from twobyteasr.subtitle_rules.studio_review import store_review_risks  # noqa: E402
+from twobyteasr.studio.studio_ui import SubtitleStudioPage  # noqa: E402
 
 
 FFMPEG = ROOT / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"

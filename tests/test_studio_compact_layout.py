@@ -15,14 +15,14 @@ APP = QApplication.instance() or QApplication([])
 
 
 def _project():
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
     return SubtitleProject(media=StudioMedia(path="", duration_ms=20_000),
                            cues=[StudioCue("c1", 0, 20_000, "一句")])
 
 
 def test_same_key_at_the_same_place_clears_the_point_with_one_undo_step():
-    from twobyteasr.project_range import range_points, range_summary
-    from twobyteasr.studio_edit_assembly import StudioEditAssemblyMixin
+    from twobyteasr.projects.project_range import range_points, range_summary
+    from twobyteasr.studio.studio_edit_assembly import StudioEditAssemblyMixin
 
     project = _project()
     page = SimpleNamespace(project=project, undo_stack=QUndoStack(), save_state=QLabel(),
@@ -51,7 +51,7 @@ def test_same_key_at_the_same_place_clears_the_point_with_one_undo_step():
 
 
 def test_reading_rows_show_two_lines_and_elide_only_past_them():
-    from twobyteasr.studio_cue_table import CueReadingDelegate
+    from twobyteasr.studio.studio_cue_table import CueReadingDelegate
     delegate = CueReadingDelegate()
     font = delegate.text_font(QFont())
     short = delegate._wrapped("一句短字幕", font, 300)
@@ -66,7 +66,7 @@ def test_reading_rows_show_two_lines_and_elide_only_past_them():
 
 def test_scope_chips_are_one_row_with_short_labels_and_full_tooltips():
     from PySide6.QtWidgets import QRadioButton
-    from twobyteasr.studio_style_widgets import StyleScopeSelector
+    from twobyteasr.caption_style.studio_style_widgets import StyleScopeSelector
     scope = StyleScopeSelector()
     for label, data in (("当前字幕", "current"), ("已选择字幕", "selected"), ("当前说话人", "speaker"), ("全部字幕", "all")):
         scope.addItem(label, data)
@@ -81,7 +81,7 @@ def test_scope_chips_are_one_row_with_short_labels_and_full_tooltips():
 
 
 def test_style_preview_shows_the_selected_line_and_the_sample_on_demand():
-    from twobyteasr.studio_style_widgets import StylePreview
+    from twobyteasr.caption_style.studio_style_widgets import StylePreview
     preview = StylePreview()
     preview.enable_sample_toggle()
     assert preview.display_text() == "示例字幕 Aa 123"  # nothing selected yet

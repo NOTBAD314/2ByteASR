@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_project import project_from_runtime_cues, save_project
+from twobyteasr.projects.studio_project import project_from_runtime_cues, save_project
 
 
 EXE = ROOT / "dist" / "2ByteASR" / "2ByteASR.exe"

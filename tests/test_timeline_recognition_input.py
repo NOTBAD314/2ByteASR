@@ -5,12 +5,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from twobyteasr.recognition_input import (capture_recognition_snapshot,
+from twobyteasr.recognition.recognition_input import (capture_recognition_snapshot,
     prepare_recognition_input, attach_timeline_result)
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_edit_sequence import (EditSequence, VideoSegment,
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.timeline.studio_edit_sequence import (EditSequence, VideoSegment,
     store_sequence, projected_cues, timeline_duration_ms)
-from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
+from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_result_is_timeline_local_and_does_not_overwrite_full(project):
 
 
 def test_new_recognition_does_not_inherit_old_host_or_hidden_anonymous_id(project):
-    from twobyteasr.studio_project import StudioSpeaker
+    from twobyteasr.projects.studio_project import StudioSpeaker
     project.speakers=[StudioSpeaker('NEMO_01',is_host=True),StudioSpeaker('OLD')]
     project.studio_state.update(speaker_track_order=['OLD','NEMO_01'],
                                subtitle_track_visibility={'NEMO_01':False},last_selected_cue='old-cue')
@@ -106,7 +106,7 @@ def test_new_recognition_does_not_inherit_old_host_or_hidden_anonymous_id(projec
 def test_restore_original_and_undo_keep_both_domains(project):
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_edit_commands import restore_full_sequence_command
+    from twobyteasr.timeline.studio_edit_commands import restore_full_sequence_command
     app = QApplication.instance() or QApplication([])
     snapshot = capture_recognition_snapshot(project)
     recognized = SubtitleProject(media=StudioMedia(path=""),cues=[StudioCue("original",2100,2900,"改稿")])
@@ -120,7 +120,7 @@ def test_restore_original_and_undo_keep_both_domains(project):
 
 
 def test_rate_and_gap_are_preserved(project,tmp_path):
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     seq = copy.deepcopy(sequence_of(project))
     seq.segments = [VideoSegment("cut0",project.media.path,2000,4000,1000,2000),
                     VideoSegment("repeat",project.media.path,2000,4000,3000,5000)]

@@ -1,8 +1,8 @@
 import numpy as np
 
 import subtitle_core
-from twobyteasr import asr
-from twobyteasr.asr import call_qwen_asr_api
+from twobyteasr.recognition import asr
+from twobyteasr.recognition.asr import call_qwen_asr_api
 
 
 class FakeResponse:

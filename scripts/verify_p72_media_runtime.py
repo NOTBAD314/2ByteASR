@@ -24,10 +24,10 @@ os.environ["TWOBYTEASR_CHILD_PROCESS_LOG"] = str(RUN_ROOT / "child-processes.jso
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.media_service import MediaService
-from twobyteasr.resource_governor import ResourceGovernor
-from twobyteasr.runtime_cache import RuntimeCacheManager
-from twobyteasr.waveform_cache import WaveformCache, generate_progressive_waveform_cache
+from twobyteasr.media.media_service import MediaService
+from twobyteasr.system.resource_governor import ResourceGovernor
+from twobyteasr.storage.runtime_cache import RuntimeCacheManager
+from twobyteasr.playback.waveform_cache import WaveformCache, generate_progressive_waveform_cache
 
 
 def measured(callback):

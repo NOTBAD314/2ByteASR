@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from twobyteasr.theme_persistence import write_text_atomic
+from twobyteasr.storage.atomic_files import write_text_atomic
 
 def test_transient_reader_lock_keeps_previous_file_until_replace(tmp_path,monkeypatch):
     path=tmp_path/'ledger.json';path.write_text('old')

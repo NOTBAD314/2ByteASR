@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     SubtitleProject,
     StudioCue,
     StudioMedia,

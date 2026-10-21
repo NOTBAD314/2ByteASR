@@ -26,7 +26,7 @@ def main() -> int:
     if not args.allow_network:
         parser.error('需要显式 --allow-network（只读取 ModelScope 公开元数据）')
     import requests
-    from twobyteasr.download_diagnostics import AnonymousAuth
+    from twobyteasr.local_models.download_diagnostics import AnonymousAuth
     from twobyteasr.repository_download import effective_spec, load_model_sources, planned_sources
 
     lock = json.loads((ROOT / 'dependencies.lock.json').read_text('utf-8-sig'))['models']

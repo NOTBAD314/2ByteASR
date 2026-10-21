@@ -6,19 +6,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.llm_config import (
+from twobyteasr.providers.llm_config import (
     activate_ai_service,
     active_service_values,
     resolved_service_values,
     service_model_catalog,
 )
-from twobyteasr.studio_review import (
+from twobyteasr.subtitle_rules.studio_review import (
     audit_current_project_review,
     review_hypotheses_from_project,
     ReviewEvidenceAggregator,
 )
-from twobyteasr.studio_project import StudioMedia, SubtitleProject, StudioCue
-from twobyteasr.studio_ui import MpvCanvas, SubtitleStudioPage
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, StudioCue
+from twobyteasr.studio.studio_ui import MpvCanvas, SubtitleStudioPage
 
 
 def _app():
@@ -84,7 +84,7 @@ def test_review_audit_action_requires_current_project(tmp_path, monkeypatch):
         cues=[StudioCue("cue-1", 0, 1000, "示例")],
     )
     monkeypatch.setattr(
-        "twobyteasr.studio_review.studio_data_root",
+        "twobyteasr.subtitle_rules.studio_review.studio_data_root",
         lambda: tmp_path / "SubtitleStudioPreview",
     )
     output = audit_current_project_review(project, project_path=tmp_path / "current.2byteproj")
@@ -125,7 +125,7 @@ def test_review_audit_does_not_turn_missing_model_support_into_project_wide_risk
         "第一句"
     ]
     monkeypatch.setattr(
-        "twobyteasr.studio_review.studio_data_root",
+        "twobyteasr.subtitle_rules.studio_review.studio_data_root",
         lambda: tmp_path / "SubtitleStudioPreview",
     )
     output = audit_current_project_review(project, project_path=tmp_path / "current.2byteproj")
@@ -177,7 +177,7 @@ def test_review_treats_cross_cue_asr_segment_as_boundary_evidence():
 
 
 def test_qc_does_not_relabel_cross_cue_moss_text_as_model_conflict():
-    from twobyteasr.studio_qc import SubtitleQCEngine
+    from twobyteasr.subtitle_rules.studio_qc import SubtitleQCEngine
 
     cue = StudioCue("cue-1", 1_000, 2_000, "当前这一句", evidence_refs=["segment:1"])
     project = SubtitleProject(
@@ -211,7 +211,7 @@ def test_identical_pixels_do_not_suppress_next_cue_activation(tmp_path, monkeypa
     page.project = project
     active = [project.cues[0]]
     published = []
-    from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+    from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
     monkeypatch.setattr(page,"_prepared_caption_snapshot",lambda cue_id,width,height:build_visual_cue_snapshot(project,cue_id,width=width,height=height,fps=30))
     monkeypatch.setattr(page, "_renderer_cue_at_playhead", lambda: active[0])
     monkeypatch.setattr(

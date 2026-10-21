@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.ai_providers import AIProviderError
-from twobyteasr.design_task_budget import DesignTaskBudget,transport_retry_delay
-from twobyteasr.design_progress import PublicProgress,aggregate_activity,compact_status
+from twobyteasr.providers.ai_providers import AIProviderError
+from twobyteasr.caption_design.design_task_budget import DesignTaskBudget,transport_retry_delay
+from twobyteasr.caption_design.design_progress import PublicProgress,aggregate_activity,compact_status
 
 
 def test_shared_allowance_absolute_deadline_and_cancellation():
@@ -22,7 +22,7 @@ def test_shared_allowance_absolute_deadline_and_cancellation():
 
 
 def test_retry_after_and_permanent_failures():
-    from twobyteasr.provider_stream import retry_after_seconds
+    from twobyteasr.providers.provider_stream import retry_after_seconds
     e=AIProviderError('429',category='rate_limited');e.retry_after_seconds=120
     assert transport_retry_delay(e)==120
     for category in ('quota_exhausted','auth_error','cancelled','request_rejected','request_too_large'):
@@ -51,7 +51,7 @@ def test_local_and_heartbeat_never_forge_content_and_private_thinking_is_not_sav
 
 
 def test_responses_public_summary_is_distinct_from_reasoning_and_body():
-    from twobyteasr.provider_stream import responses_body
+    from twobyteasr.providers.provider_stream import responses_body
     packets=[{'type':'response.reasoning.delta','delta':'PRIVATE'},
              {'type':'response.reasoning_summary_text.delta','delta':'public summary'},
              {'type':'response.output_text.delta','delta':'art'},
@@ -64,7 +64,7 @@ def test_responses_public_summary_is_distinct_from_reasoning_and_body():
 
 
 def test_nonstreaming_interface_reports_transport_then_complete_body(monkeypatch):
-    from twobyteasr.provider_stream import request_chat
+    from twobyteasr.providers.provider_stream import request_chat
     class Response:
         status_code=200
         headers={'Content-Type':'application/json'}
@@ -81,7 +81,7 @@ def test_nonstreaming_interface_reports_transport_then_complete_body(monkeypatch
 
 
 def test_http_retry_after_and_exhausted_quota_are_preserved(monkeypatch):
-    from twobyteasr.provider_stream import request_chat,StreamProtocolError
+    from twobyteasr.providers.provider_stream import request_chat,StreamProtocolError
     class Response:
         status_code=429
         headers={'Content-Type':'application/json','Retry-After':'120'}
@@ -97,12 +97,12 @@ def test_http_retry_after_and_exhausted_quota_are_preserved(monkeypatch):
 
 
 def test_no_hidden_deepseek_deadline_multiplier():
-    from twobyteasr.theme_generation_policy import authored_request_budget
+    from twobyteasr.caption_design.theme_generation_policy import authored_request_budget
     assert authored_request_budget('deepseek',{'ai_design_cli_timeout_seconds':150},candidate_count=1)[1].concepts==150
 
 
 def test_builtin_easing_is_preserved_without_expression_evaluation():
-    from twobyteasr.theme_motion import validate_motion_spec
+    from twobyteasr.caption_design.theme_motion import validate_motion_spec
     spec=dict(version=2,runtime='gsap',tracks=[dict(selector='.copy',phase='build',
         ease='power4.out',start=0,end=1,**{'from':{'y':18},'to':{'y':0}})])
     assert validate_motion_spec(spec)['tracks'][0]['ease']=='power4.out'
@@ -111,7 +111,7 @@ def test_builtin_easing_is_preserved_without_expression_evaluation():
 
 
 def test_expired_local_preview_cannot_restart_renderer():
-    from twobyteasr.design_recovery import preview_with_recovery
+    from twobyteasr.caption_design.design_recovery import preview_with_recovery
     calls=[]
     with pytest.raises(AIProviderError,match='总预算'):
         preview_with_recovery(lambda **kw:calls.append(kw),remaining=lambda:0,
@@ -120,7 +120,7 @@ def test_expired_local_preview_cannot_restart_renderer():
 
 
 def test_deadline_expiring_inside_renderer_is_not_user_cancellation():
-    from twobyteasr.design_recovery import preview_with_recovery
+    from twobyteasr.caption_design.design_recovery import preview_with_recovery
     seconds=[1]
     def render(**kwargs):
         seconds[0]=0
@@ -133,13 +133,13 @@ def test_deadline_expiring_inside_renderer_is_not_user_cancellation():
 
 @pytest.mark.parametrize('kind',['one_candidate','render_repair','implementation_completion'])
 def test_raw_artifact_stream_explicitly_disables_repeated_deepseek_thinking(monkeypatch,kind):
-    from twobyteasr.ai_providers import OpenAICompatibleProvider
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider
     provider=OpenAICompatibleProvider(dict(provider='deepseek',model='fixture',api_key='fixture',
         url='https://api.deepseek.com/chat/completions',base_url='https://api.deepseek.com'))
-    monkeypatch.setattr('twobyteasr.provider_input_budget.prepare_input',lambda messages,**kw:(messages,{}))
+    monkeypatch.setattr('twobyteasr.providers.provider_input_budget.prepare_input',lambda messages,**kw:(messages,{}))
     calls=[]
     def send(url,headers,body,*a,**kw):calls.append(body);return 'source artifact'
-    monkeypatch.setattr('twobyteasr.provider_stream.request_chat',send)
+    monkeypatch.setattr('twobyteasr.providers.provider_stream.request_chat',send)
     provider.complete([dict(role='user',content='retained direction')],json_schema=None,
         on_stream_event=lambda *_:None,operation_kind='generate',input_scope={'kind':kind})
     assert 'response_format' not in calls[0]
@@ -148,9 +148,9 @@ def test_raw_artifact_stream_explicitly_disables_repeated_deepseek_thinking(monk
 
 def test_transient_recovery_uses_saved_direction_and_same_task_budget(tmp_path,monkeypatch):
     from tests.test_authored_generation import Client,fixture
-    from twobyteasr.authored_generation import generate_staged
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    monkeypatch.setattr('twobyteasr.design_task_budget.wait_for_retry',lambda *a:None)
+    from twobyteasr.caption_design.authored_generation import generate_staged
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    monkeypatch.setattr('twobyteasr.caption_design.design_task_budget.wait_for_retry',lambda *a:None)
     rows,directions=fixture()
     client=Client([AIProviderError('503',category='transport_error'),rows[0]['generated_source']])
     ledger=ThemeLedger(tmp_path,'金属机械文字')
@@ -165,9 +165,9 @@ def test_transient_recovery_uses_saved_direction_and_same_task_budget(tmp_path,m
 
 def test_no_third_repair_request_when_transient_errors_persist(tmp_path,monkeypatch):
     from tests.test_authored_generation import Client,fixture
-    from twobyteasr.authored_generation import generate_staged
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    monkeypatch.setattr('twobyteasr.design_task_budget.wait_for_retry',lambda *a:None)
+    from twobyteasr.caption_design.authored_generation import generate_staged
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    monkeypatch.setattr('twobyteasr.caption_design.design_task_budget.wait_for_retry',lambda *a:None)
     _,directions=fixture()
     client=Client([AIProviderError('503',category='transport_error') for _ in range(4)])
     ledger=ThemeLedger(tmp_path,'金属机械文字')
@@ -181,7 +181,7 @@ def test_no_third_repair_request_when_transient_errors_persist(tmp_path,monkeypa
 def test_empty_preview_terminal_refresh_and_scroll_retention():
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
     c=dict(id='A',name='方向',pending=True,technical_status='pending')
     d=ThemeConceptDialog([c],{})
     assert d.primary.text()=='停止并保留'
@@ -196,7 +196,7 @@ def test_empty_preview_terminal_refresh_and_scroll_retention():
 def test_restored_local_source_does_not_invent_a_remote_task_clock():
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
     d=ThemeConceptDialog([dict(id='A',name='本地作品',technical_status='ready',authored_theme={'name':'作品'})],{})
     assert '源已保存' in d.status.text()
     assert '准备任务' not in d.status.text() and '尚无作品正文' not in d.status.text()
@@ -204,9 +204,9 @@ def test_restored_local_source_does_not_invent_a_remote_task_clock():
 
 
 def test_theme_guidance_has_no_unrelated_presets(tmp_path):
-    from twobyteasr.authored_prompt import assemble
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    from twobyteasr.caption_reference_search import queries_for,prompt_evidence
+    from twobyteasr.caption_design.authored_prompt import assemble
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.caption_reference_search import queries_for,prompt_evidence
     ledger=ThemeLedger(tmp_path,'塞尔达主题')
     prompt,receipt=assemble(ledger,direction={'name':'方向','design':'字与环纹'},artifact_identity='a')
     assert 'CRT用持续缓慢扫描' not in prompt
@@ -215,6 +215,6 @@ def test_theme_guidance_has_no_unrelated_presets(tmp_path):
     assert queries_for('塞尔达主题')[0].startswith('Nintendo')
     ledger.value['reference_search']={'status':'cached','translation':['旧禁止'], 'sources':[]}
     assert 'translation' not in prompt_evidence(ledger)
-    from twobyteasr.design_recovery import implementation_message
+    from twobyteasr.caption_design.design_recovery import implementation_message
     repair,assembly=implementation_message(ledger,{'name':'方向','design':'字与环纹'},'b')
     assert 'verified_components' not in assembly['components']

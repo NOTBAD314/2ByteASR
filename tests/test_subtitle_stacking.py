@@ -9,7 +9,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from twobyteasr.subtitle_stacking import StackLayout, compute_stack_layout
+from twobyteasr.caption_style.subtitle_stacking import StackLayout, compute_stack_layout
 
 
 class FakeResolved:
@@ -81,9 +81,9 @@ def test_even_one_frame_overlap_is_readable():
 
 def test_native_worker_frozen_revision_supports_overlap():
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
-    from twobyteasr.studio_revisions import StudioRevisionStore
-    from twobyteasr.ass_compiler import compile_ass_revision
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.ass_compiler import compile_ass_revision
     app=QApplication.instance() or QApplication([])
     p=SubtitleProject(media=StudioMedia('sample.mp4',duration_ms=3000),cues=[
         StudioCue('a',0,2000,'earlier'),StudioCue('b',1000,3000,'later')])
@@ -168,8 +168,8 @@ def test_measured_html_bounds_keep_the_temporal_allocator_available():
 
 def test_ass_compiler_lifts_overlapping_cues(tmp_path):
     """End to end: overlapping cues produce different \\pos y in compiled ASS."""
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-    from twobyteasr.ass_compiler import compile_ass
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+    from twobyteasr.rendering.ass_compiler import compile_ass
 
     project = SubtitleProject(
         media=StudioMedia(path="D:/fixture.mp4", duration_ms=20_000),
@@ -178,7 +178,7 @@ def test_ass_compiler_lifts_overlapping_cues(tmp_path):
         StudioCue(id="A", start_ms=10_000, end_ms=12_000, text="第一条字幕", speaker_id="S01"),
         StudioCue(id="B", start_ms=11_000, end_ms=13_000, text="第二条抢话", speaker_id="S02"),
     ]
-    from twobyteasr.subtitle_stacking import initialize_project_layout
+    from twobyteasr.caption_style.subtitle_stacking import initialize_project_layout
     initialize_project_layout(project)
     text = compile_ass(project)
     pos_lines = [line for line in text.splitlines() if "\\pos(" in line]

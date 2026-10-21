@@ -24,7 +24,7 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(out/'data')
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, save_project
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, save_project
     fixture = save_project(SubtitleProject(media=StudioMedia(path='', duration_ms=0)), out/'fixture.2byteproj')
     subprocess.run([str(ROOT/'tools/ffmpeg/bin/ffmpeg.exe'), '-hide_banner', '-loglevel', 'error',
         '-f', 'lavfi', '-i', 'color=c=0x203344:s=960x540:r=60:d=24',

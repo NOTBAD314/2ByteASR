@@ -14,10 +14,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr import math_text
-from twobyteasr.math_text import NBSP, convert, formula_to_unicode, math_spans
-from twobyteasr.punctuation_style import MODE_ADD, MODE_NONE, MODE_ORIGINAL, state_value, style_text
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.subtitle_rules import math_text
+from twobyteasr.subtitle_rules.math_text import NBSP, convert, formula_to_unicode, math_spans
+from twobyteasr.subtitle_rules.punctuation_style import MODE_ADD, MODE_NONE, MODE_ORIGINAL, state_value, style_text
 
 TEXTS = [
     r"这个三角形的面积是 $\frac{\sqrt{3}}{4}a^2$",
@@ -82,7 +82,7 @@ def test_delimiters_follow_the_markdown_rule(text, spans):
 
 
 def test_spaces_inside_a_formula_do_not_break_lines():
-    from twobyteasr.caption_text_layout import wrap_caption_text
+    from twobyteasr.caption_style.caption_text_layout import wrap_caption_text
     text = convert(r"结果是 $\int_0^1 x^2\,dx = \frac{1}{3}$ 对吧")[0]
     assert "∫₀¹" + NBSP + "x²" + NBSP + "dx" in text
     layout = wrap_caption_text(text, len, 16)  # the formula (15 characters) fits a line, not after "结果是 "
@@ -113,7 +113,7 @@ def test_add_punctuation_ends_a_line_that_ends_with_a_formula():
 
 
 def test_switch_off_exports_exactly_as_before(tmp_path):
-    from twobyteasr import studio_subtitle_export as export
+    from twobyteasr.exports import studio_subtitle_export as export
     options = export.SubtitleExportOptions(formats=frozenset({"srt", "txt", "json", "ass"}))
     outputs = {}
     for label, project in (("absent", make_project()), ("off", make_project(math=False))):
@@ -126,8 +126,8 @@ def test_switch_off_exports_exactly_as_before(tmp_path):
 
 @pytest.mark.parametrize("punctuation", [None, MODE_NONE])
 def test_every_export_shows_formulas_and_the_project_is_untouched(tmp_path, punctuation):
-    from twobyteasr import studio_subtitle_export as export
-    from twobyteasr.ass_compiler import compile_ass
+    from twobyteasr.exports import studio_subtitle_export as export
+    from twobyteasr.rendering.ass_compiler import compile_ass
     project = make_project(math=True, punctuation=punctuation)
     before = copy.deepcopy(project.to_dict())
     expected = [style_text(text, punctuation or MODE_ORIGINAL, math=True).text for text in TEXTS]
@@ -155,7 +155,7 @@ def test_every_export_shows_formulas_and_the_project_is_untouched(tmp_path, punc
 
 
 def test_language_layers_convert_translation_formulas(tmp_path):
-    from twobyteasr import studio_subtitle_export as export
+    from twobyteasr.exports import studio_subtitle_export as export
     project = make_project(math=True)
     project.generation_metadata["language"] = {"code": "ja"}
     project.generation_metadata["translations"] = {"c0": r"面积是 $x^2$"}
@@ -166,9 +166,9 @@ def test_language_layers_convert_translation_formulas(tmp_path):
 
 
 def test_burn_in_snapshot_and_preview_revision_show_formulas():
-    from twobyteasr.export_timeline import export_project_snapshot
-    from twobyteasr.studio_revisions import StudioRevisionStore
-    from twobyteasr.ass_compiler import compile_ass_revision
+    from twobyteasr.exports.export_timeline import export_project_snapshot
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.ass_compiler import compile_ass_revision
     project = make_project(math=True)
     snapshot = export_project_snapshot(project)
     assert plain(snapshot.cues[1].text) == "对它积分：∫₀¹ x² dx = 1/3"
@@ -181,9 +181,9 @@ def test_burn_in_snapshot_and_preview_revision_show_formulas():
 
 def test_burn_in_ass_matches_the_preview_with_no_punctuation(tmp_path):
     """The export snapshot is styled once; compiling it must not strip a formula's commas."""
-    from twobyteasr.export_timeline import write_export_ass
-    from twobyteasr.studio_revisions import StudioRevisionStore
-    from twobyteasr.ass_compiler import compile_ass_revision
+    from twobyteasr.exports.export_timeline import write_export_ass
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.ass_compiler import compile_ass_revision
     project = make_project(math=True, punctuation=MODE_NONE)
     project.cues[0].text = r"函数 $f(a,b) = 1.5a$，好的。"
     path = tmp_path / "burn.ass"
@@ -199,8 +199,8 @@ def test_burn_in_ass_matches_the_preview_with_no_punctuation(tmp_path):
 def test_switch_is_one_undo_step_and_survives_saving(qapp, tmp_path):
     from types import SimpleNamespace
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_project import load_project, save_project
-    from twobyteasr.studio_punctuation import apply_math_formulas, permanent_changes
+    from twobyteasr.projects.studio_project import load_project, save_project
+    from twobyteasr.studio.studio_punctuation import apply_math_formulas, permanent_changes
     project = make_project()
     stack = QUndoStack()
     page = SimpleNamespace(project=project, undo_stack=stack)
@@ -224,7 +224,7 @@ def test_menu_entry_toggles_and_follows_undo(qapp):
     from types import SimpleNamespace
     from PySide6.QtGui import QUndoStack
     from PySide6.QtWidgets import QMenu
-    from twobyteasr.studio_punctuation import build_menu
+    from twobyteasr.studio.studio_punctuation import build_menu
     project = make_project()
     stack = QUndoStack()
     page = SimpleNamespace(project=project, undo_stack=stack)

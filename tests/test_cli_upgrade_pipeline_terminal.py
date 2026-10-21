@@ -3,15 +3,15 @@ import threading
 
 import pytest
 
-from twobyteasr.ai_providers import AIProviderError
-from twobyteasr.models import SpeechSegment
+from twobyteasr.providers.ai_providers import AIProviderError
+from twobyteasr.recognition.transcript_data import SpeechSegment
 
 
 @pytest.mark.parametrize("stage", ["polish", "group"])
 def test_cli_upgrade_is_terminal_without_outer_retry_or_local_fallback(monkeypatch, stage):
     from tests.test_p5_llm_pipeline import _current_snapshot_fixture
-    from twobyteasr import polishing, grouping
-    from twobyteasr import provider_input_budget
+    from twobyteasr.subtitle_rules import polishing, grouping
+    from twobyteasr.providers import provider_input_budget
     _current_snapshot_fixture(monkeypatch)
     monkeypatch.setattr(polishing, "polish_llm_settings", lambda: {
         "provider": "custom", "model": "fixture", "base_url": "https://example.test",
@@ -22,7 +22,7 @@ def test_cli_upgrade_is_terminal_without_outer_retry_or_local_fallback(monkeypat
             calls.append(kwargs)
             raise AIProviderError("Grok CLI 版本过旧。服务端收到 1.0.5，要求至少 1.0.13。",
                                   category="upgrade_required")
-    monkeypatch.setattr("twobyteasr.ai_providers.provider_for_stage", lambda *a, **k: Provider())
+    monkeypatch.setattr("twobyteasr.providers.ai_providers.provider_for_stage", lambda *a, **k: Provider())
     monkeypatch.setattr(grouping, "provider_for_stage", lambda *a, **k: Provider())
     def no_retry(*args):
         raise AssertionError("server-required update must never be retried")

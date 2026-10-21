@@ -23,12 +23,12 @@ def main():
     args=parser.parse_args();out=args.output.resolve()
     if not out.is_relative_to(root/'tmp'):raise ValueError('trial output must be in repository tmp')
     out.mkdir(parents=True,exist_ok=True)
-    from twobyteasr.caption_design_trials import CaptionPreferences,TrialInput,SCHEMA,validate_spec,compile_static_candidate,local_specs
-    from twobyteasr.llm_config import activate_ai_service,get_provider_profiles,endpoint_from_settings,resolved_service_values
-    from twobyteasr.provider_registry import ProviderRegistry
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.provider_diagnostics import redact_diagnostics
-    from twobyteasr.web_theme_compiler import parse_object
+    from twobyteasr.caption_design.caption_design_trials import CaptionPreferences,TrialInput,SCHEMA,validate_spec,compile_static_candidate,local_specs
+    from twobyteasr.providers.llm_config import activate_ai_service,get_provider_profiles,endpoint_from_settings,resolved_service_values
+    from twobyteasr.providers.provider_registry import ProviderRegistry
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_diagnostics import redact_diagnostics
+    from twobyteasr.caption_design.web_theme_compiler import parse_object
     raw=args.settings.read_bytes();settings=json.loads(raw)
     preferences=CaptionPreferences(root/'docs/design/caption-preferences.json')
     if not preferences.path.is_file():preferences.write(preferences.read())

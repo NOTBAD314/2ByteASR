@@ -3,8 +3,8 @@ import json
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from twobyteasr.authored_generation import generate_staged
-from twobyteasr.caption_creative_pipeline import ThemeLedger
+from twobyteasr.caption_design.authored_generation import generate_staged
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
 
 def fixture():
     rows=json.loads((Path(__file__).parent/'fixtures/balatro-deepseek-4f5564.json').read_text('utf8'))['candidates']
@@ -24,7 +24,7 @@ class Client:
         if isinstance(value,Exception):raise value
         if kwargs.get('response_kind')=='source_artifact':
             import re
-            from twobyteasr.source_artifact import from_theme,token
+            from twobyteasr.caption_design.source_artifact import from_theme,token
             marker=re.findall(r'2BYTE-ARTWORK/1 ([a-f0-9]{24})',messages[0]['content'])[-1]
             raw=from_theme(value,'fixture').replace(token('fixture'),marker)
         else:raw=json.dumps(value,ensure_ascii=False)
@@ -82,7 +82,7 @@ def test_cancel_preserves_completed_candidate_and_stops_following_requests(tmp_p
     assert saved['candidate_states']['A']['status']=='complete'
 
 def test_real_render_diagnostic_repairs_only_one_new_version(tmp_path):
-    from twobyteasr.theme_draft import DraftValidationError
+    from twobyteasr.caption_design.theme_draft import DraftValidationError
     rows,directions=fixture();renders=[]
     client=Client([directions,rows[0]['generated_source'],rows[0]['generated_source'],
         rows[1]['generated_source'],rows[2]['generated_source']])
@@ -101,7 +101,7 @@ def test_real_render_diagnostic_repairs_only_one_new_version(tmp_path):
     repair_text=client.calls[2][0][0]['content']
     assert 'isolated test' not in repair_text
     assert 'actual long text clipped' in repair_text
-    from twobyteasr.provider_input_budget import prepare_input
+    from twobyteasr.providers.provider_input_budget import prepare_input
     _,report=prepare_input(client.calls[2][0],schema=client.calls[2][1]['json_schema'],
         max_tokens=32000,operation='generate',scope=client.calls[2][1]['input_scope'])
     assert report['passed']
@@ -115,7 +115,7 @@ def test_shared_renderer_failure_never_asks_model_to_redesign(tmp_path):
     assert all(not s.get('render_repairs') for s in ledger.value['candidate_states'].values())
 
 def test_single_matching_envelope_recovery_preserves_source_and_rejects_peers(tmp_path):
-    from twobyteasr.authored_generation import candidate_source
+    from twobyteasr.caption_design.authored_generation import candidate_source
     rows,_=fixture();ledger=ThemeLedger(tmp_path,'Balatro')
     assert candidate_source({'candidates':[rows[2]]},'C',ledger)==rows[2]['generated_source']
     assert ledger.value['normalization'][0]['action']=='unwrap_single_matching_candidate'
@@ -129,7 +129,7 @@ def test_single_matching_envelope_recovery_preserves_source_and_rejects_peers(tm
     ('request_too_large','local_budget'),('structured_output_truncated','response_without_source'),
     ('structured_output_reasoning_exhausted','response_without_source'),('provider_no_body','response_without_source')])
 def test_failure_boundaries_do_not_retry_or_disable_peers(tmp_path,category,stage):
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.ai_providers import AIProviderError
     rows,directions=fixture()
     failures=[AIProviderError(category,category=category)]*(1 if category=='request_too_large' else 2)
     client=Client([directions,*failures,rows[1]['generated_source'],rows[2]['generated_source']])
@@ -140,12 +140,12 @@ def test_failure_boundaries_do_not_retry_or_disable_peers(tmp_path,category,stag
 
 
 def test_budget_blocked_card_rebuilds_only_its_saved_direction(tmp_path,monkeypatch):
-    from twobyteasr.ai_providers import AIProviderError
-    from twobyteasr.caption_creative_pipeline import retry_saved_candidate
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr import authored_preview
-    from twobyteasr.authored_prompt import VERSION
+    from twobyteasr.providers.ai_providers import AIProviderError
+    from twobyteasr.caption_design.caption_creative_pipeline import retry_saved_candidate
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design import authored_preview
+    from twobyteasr.caption_design.authored_prompt import VERSION
     rows,directions=fixture()
     ledger,result=run(tmp_path/'original',Client([directions,
         AIProviderError('local limit',category='request_too_large'),
@@ -177,7 +177,7 @@ def test_budget_blocked_card_rebuilds_only_its_saved_direction(tmp_path,monkeypa
 
 
 def test_native_failure_without_completed_artifact_cannot_be_promoted(tmp_path):
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.ai_providers import AIProviderError
     rows,directions=fixture()
     client=Client([AIProviderError('old native error',category='structured_output_schema'),AIProviderError('completion failed',category='structured_output_schema')])
     ledger,result=run(tmp_path,client,retained={'directions':directions},only_candidate='A')

@@ -8,9 +8,9 @@ from __future__ import annotations
 import copy
 import random
 
-from twobyteasr.studio_caption_timeline import KEY
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_revisions import StudioRevisionStore, freeze_json
+from twobyteasr.timeline.studio_caption_timeline import KEY
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.projects.studio_revisions import StudioRevisionStore, freeze_json
 
 
 def _project(count=300):
@@ -69,3 +69,17 @@ def test_unchanged_receipts_are_reused_not_refrozen():
     new = dict(dict(after.items)["instances"].items)
     assert new["c11"] is old["c11"]
     assert new["c10"] is not old["c10"] and dict(new["c10"].items)["text"] == "改过的字幕"
+
+def test_original_archive_shared_but_in_place_changes_are_detected():
+    from dataclasses import asdict
+    project = _project(200)
+    project.studio_state[KEY]['source_archive'] = [asdict(c) for c in project.cues]
+    store = StudioRevisionStore(project)
+    def archive():
+        return dict(dict(store._frozen_studio_state().items)[KEY].items)['source_archive']
+    original = archive()
+    project.studio_state['manual_caption_text']['c1'] = '新文字'
+    assert archive() is original
+    project.studio_state[KEY]['source_archive'][0]['text'] = '原档案被显式修正'
+    assert archive() is not original
+    assert store._frozen_studio_state() == freeze_json(project.studio_state)

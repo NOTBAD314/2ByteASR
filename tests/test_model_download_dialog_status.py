@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.model_workshop import MODELS, ModelDownloadDialog
+from twobyteasr.local_models.model_workshop import MODELS, ModelDownloadDialog
 
 ROOT = Path(__file__).parents[1]
 
@@ -35,6 +35,51 @@ def _dialog():
     model = next(model for model in MODELS if model.download_key == 'funasr_nano')
     return ModelDownloadDialog(ROOT, model)
 
+
+def test_hidden_bridge_delivers_sparse_output_while_child_is_still_running(tmp_path):
+    import sys,time
+    from PySide6.QtCore import QProcess
+    from PySide6.QtTest import QTest
+    from twobyteasr.local_models.model_workshop import _HiddenProcessBridge
+    app=QApplication.instance() or QApplication([])
+    bridge=_HiddenProcessBridge()
+    bridge.setWorkingDirectory(str(tmp_path))
+    bridge.start(sys.executable,['-I','-u','-c',"import time;print('SPARSE_PHASE',flush=True);time.sleep(5)"])
+    received=b''
+    try:
+        deadline=time.monotonic()+2
+        while time.monotonic()<deadline and b'SPARSE_PHASE' not in received:
+            QTest.qWait(30)
+            received+=bytes(bridge.readAllStandardOutput())
+        assert b'SPARSE_PHASE' in received
+        assert bridge.state()==QProcess.ProcessState.Running
+    finally:
+        bridge.kill()
+        bridge.waitForFinished(3000)
+        QTest.qWait(50)
+
+
+def test_next_weight_file_leaves_the_previous_file_verification_phase():
+    dialog=_dialog()
+    dialog._handle_progress_line(_line('[2BYTEASR_PROGRESS]',phase='verify',percent=100,downloaded=100,total=100,speed=0))
+    assert dialog._phase=='files_verifying'
+    dialog._handle_progress_line(_line('[2BYTEASR_PROGRESS]',phase='download',percent=20,downloaded=200,total=1000,speed=100))
+    assert dialog._phase=='weights_downloading'
+    dialog._phase='files_verifying'
+    dialog._handle_progress_line(_line('[2BYTEASR_FILE]',file='config.json',index=2,total=3,phase='downloading'))
+    assert dialog._phase=='weights_downloading'
+    dialog.close()
+
+
+def test_uv_build_backend_timeout_is_not_reported_as_a_version_conflict():
+    dialog=_dialog()
+    dialog.log.appendPlainText('[运行库] uv pip install local-moss\nNo solution found when resolving setuptools, wheel\nFailed to fetch https://pypi.org/simple/wheel/\noperation timed out')
+    dialog.log.appendPlainText(_line('[2BYTEASR_INSTALL_ERROR]',phase='dependencies_installing',message='子程序退出码 1'))
+    message=dialog._actionable_failure_message(1)
+    assert '超时' in message
+    assert '依赖版本冲突' not in message
+    assert 'TUN' not in message
+    dialog.close()
 
 def test_status_shows_source_switch_reuse_whole_model_progress_resume_and_verification():
     dialog = _dialog()
@@ -88,6 +133,21 @@ def test_failure_after_every_source_explains_what_the_user_can_do():
     assert 'Hugging Face 官方 → HF 镜像（可能回源官方）（已尝试备援）' in message
     assert '所有下载来源都没有连通' in message and '继续重试' in message
     assert 'HF_OFFICIAL →' not in message
+    dialog.deleteLater()
+
+
+def test_page_file_failure_says_what_to_change_not_that_the_model_is_broken():
+    """2026-10-15 report: the aligner load hit Windows' commit limit (os error 1455)."""
+    dialog = _dialog()
+    for line in (
+        _line('[2BYTEASR_SOURCE]', mode='MODELSCOPE', label='ModelScope', host='modelscope.cn', attempt=1, total=1, status='trying'),
+        _line('[2BYTEASR_INSTALL_ERROR]', phase='model_loading', category='system_memory',
+              message='[2BYTEASR_QWEN3_ALIGNER] {"event": "failed", "detail": "页面文件太小，无法完成操作。 (os error 1455)"}'),
+    ):
+        dialog.log.appendPlainText(line)
+    message = dialog._actionable_failure_message(1)
+    assert '虚拟内存' in message and '系统管理的大小' in message and '继续重试' in message
+    assert 'os error 1455' in message and '模型加载失败' not in message
     dialog.deleteLater()
 
 
@@ -182,4 +242,132 @@ def test_no_remaining_time_from_tiny_config_files():
     feed(_line('[2BYTEASR_FILE]', file='merges.txt', size=1_671_853))
     feed(_line('[2BYTEASR_PROGRESS]', percent=1, downloaded=20_000, total=1_671_853, speed=266, phase='download'))
     assert '剩余约' not in dialog.progress_status.text()
+    dialog.deleteLater()
+
+
+def test_runtime_pytorch_download_shows_progress_source_and_switch():
+    # 0.7.1 user, 2026-10-14: "Downloading torch (2.4GiB)" and then nothing for minutes.
+    dialog = _dialog()
+    feed = dialog._handle_progress_line
+    gib = 1024 ** 3
+    base = dict(file='torch-2.11.0+cu126-cp310-cp310-win_amd64.whl', package='torch', index=1, count=2,
+                total=2 * int(1.2 * gib))
+    feed(_line('[2BYTEASR_RUNTIME_DOWNLOAD]', **base, downloaded=base['total'] // 2, speed=1024 ** 2,
+               source='PyTorch 官方', host='download.pytorch.org', phase='download'))
+    text = dialog.progress_status.text()
+    assert text.splitlines()[0] == '正在下载运行环境：PyTorch（1/2）'
+    assert '1.20 GiB / 2.40 GiB  ·  50%  ·  1.0 MB/s  ·  剩余约 20 分 28 秒' in text
+    assert '来源：PyTorch 官方（download.pytorch.org）' in text
+    assert (dialog.progress.maximum(), dialog.progress.value()) == (100, 50)
+    trying = {'kind': 'trying', 'from': 'PyTorch 官方', 'to': '上海交大 PyTorch 镜像', 'from_rate': 0.9 * 1024 ** 2, 'offset': 1}
+    feed(_line('[2BYTEASR_RUNTIME_DOWNLOAD]', **base, downloaded=base['total'] // 2, speed=8 * 1024 ** 2,
+               source='上海交大 PyTorch 镜像', host='mirror.sjtu.edu.cn', phase='download', event=trying))
+    assert 'PyTorch 官方 最近只有 0.9 MB/s，正在试用 上海交大 PyTorch 镜像' in dialog.progress_status.text()
+    event = {'kind': 'switched', 'from': 'PyTorch 官方', 'to': '上海交大 PyTorch 镜像',
+             'from_rate': 0.9 * 1024 ** 2, 'to_rate': 15 * 1024 ** 2, 'offset': base['total'] // 2}
+    feed(_line('[2BYTEASR_RUNTIME_DOWNLOAD]', **base, downloaded=int(1.5 * gib), speed=15 * 1024 ** 2,
+               source='上海交大 PyTorch 镜像', host='s3.jcloud.sjtu.edu.cn', phase='download', event=event))
+    text = dialog.progress_status.text()
+    assert '来源：上海交大 PyTorch 镜像（s3.jcloud.sjtu.edu.cn）' in text
+    assert 'PyTorch 官方 只有 0.9 MB/s，已改用 上海交大 PyTorch 镜像（15.0 MB/s），从 1.20 GiB 处继续' in text
+    feed(_line('[2BYTEASR_RUNTIME_DOWNLOAD]', **base, downloaded=int(2.4 * gib), source='上海交大 PyTorch 镜像',
+               host='s3.jcloud.sjtu.edu.cn', phase='verify'))
+    assert dialog.progress_status.text().startswith('正在校验 PyTorch 的 SHA-256…')
+    assert dialog.progress.maximum() == 0  # busy while hashing
+    feed(_line('[2BYTEASR_RUNTIME_DOWNLOAD]', **base, downloaded=int(2.4 * gib), source='上海交大 PyTorch 镜像',
+               host='s3.jcloud.sjtu.edu.cn', phase='done'))
+    assert dialog.progress_status.text().startswith('PyTorch 已下载并通过 SHA-256 校验，继续安装运行环境…')
+    assert dialog.progress.maximum() == 0  # uv still installs; no false 100 %
+    failed = {'kind': 'failed', 'from': 'PyTorch 官方', 'to': '南京大学 PyTorch 镜像', 'offset': 0}
+    feed(_line('[2BYTEASR_RUNTIME_DOWNLOAD]', **dict(base, package='torchaudio', index=2, total=1_519_595), downloaded=1000,
+               speed=0, source='南京大学 PyTorch 镜像', host='mirror.nju.edu.cn', phase='download', event=failed))
+    text = dialog.progress_status.text()
+    assert text.splitlines()[0] == '正在下载运行环境：torchaudio（2/2）'
+    assert 'PyTorch 官方 未成功，已改用 南京大学 PyTorch 镜像，从 0.0 MiB 处继续' in text
+    dialog.deleteLater()
+
+
+def test_runtime_download_lines_drive_progress_but_stay_out_of_the_raw_log():
+    dialog = _dialog()
+    marker = _line('[2BYTEASR_RUNTIME_DOWNLOAD]', file='torch.whl', package='torch', index=1, count=2,
+                   downloaded=10 << 20, total=100 << 20, speed=1 << 20, source='PyTorch 官方',
+                   host='download.pytorch.org', phase='download')
+    readable = '[PyTorch] torch 已下载 10%（10.0 MiB / 100.0 MiB）'
+    chunks = [(marker + '\n' + readable + '\n').encode('utf8')]
+    dialog.process.readAllStandardOutput = lambda: chunks.pop() if chunks else b''
+    dialog._read_output()
+    log = dialog.log.toPlainText()
+    assert readable in log and '[2BYTEASR_RUNTIME_DOWNLOAD]' not in log
+    assert dialog._last_log_at > 0  # "最后日志" counts these lines as activity
+    assert '10%' in dialog.progress_status.text()
+    dialog.deleteLater()
+
+
+def test_pause_message_says_what_a_retry_really_resumes():
+    dialog = _dialog()
+    dialog._paused = True
+    dialog._finished_v2(1, None)
+    text = dialog.progress_status.text()
+    assert text == '任务已暂停。重试时先校验已有文件：模型权重和 PyTorch 安装包从断点继续下载，已完成的依赖直接复用。'
+    assert '复用分片' not in text
+    dialog.deleteLater()
+
+
+def test_source_choice_explains_the_runtime_sources():
+    dialog = _dialog()
+    tip = dialog.source_combo.toolTip()
+    assert 'ModelScope 或 HF 镜像' in tip and '运行环境' in tip and 'SHA-256' in tip
+    dialog.deleteLater()
+
+
+def test_quiet_runtime_step_says_the_process_is_still_working(monkeypatch):
+    import time
+    from PySide6.QtCore import QProcess
+    dialog = _dialog()
+    monkeypatch.setattr(dialog.process, 'state', lambda: QProcess.ProcessState.Running)
+    now = time.monotonic()
+    dialog._started_at, dialog._last_log_at = now - 90, now - 56
+    dialog._phase = 'interpreter_preparing'  # e.g. uv downloading the private Python
+    dialog._refresh_activity_clock()
+    assert dialog.activity_status.text().endswith('正在等待子程序输出；达到阶段期限后会停止并说明原因')
+    dialog._last_log_at = now - 5
+    dialog._refresh_activity_clock()
+    assert '不逐行报告进度' not in dialog.activity_status.text()
+    dialog._last_log_at, dialog._phase = now - 56, 'weights_downloading'  # weights report every second
+    dialog._refresh_activity_clock()
+    assert '不逐行报告进度' not in dialog.activity_status.text()
+    dialog.deleteLater()
+
+
+def test_log_keeps_the_readers_place_and_follows_only_at_the_bottom():
+    # User report 2026-10-14: while MOSS downloaded, every new line pulled the
+    # log back to the bottom, so earlier lines could not be read.
+    dialog = _dialog()
+    dialog.resize(900, 640)
+    dialog.show()
+    dialog.log_toggle.setChecked(True)  # the raw log is collapsed by default
+    QApplication.processEvents()
+    chunks = []
+    dialog.process.readAllStandardOutput = lambda: chunks.pop(0) if chunks else b''
+
+    def feed(first, count):
+        chunks.append(''.join(f'line {n}\n' for n in range(first, first + count)).encode('utf8'))
+        dialog._read_output()
+        QApplication.processEvents()
+
+    feed(0, 300)
+    bar = dialog.log.verticalScrollBar()
+    assert bar.maximum() > 0 and bar.value() == bar.maximum()
+    selection = dialog.log.textCursor()  # the reader selects some text...
+    selection.setPosition(5)
+    selection.setPosition(12, selection.MoveMode.KeepAnchor)
+    dialog.log.setTextCursor(selection)
+    bar.setValue(10)  # ...and scrolls up
+    feed(300, 60)
+    assert bar.value() == 10
+    assert dialog.log.textCursor().selectionStart() == 5 and dialog.log.textCursor().selectionEnd() == 12
+    assert dialog.log.toPlainText().rstrip().endswith('line 359')
+    bar.setValue(bar.maximum())  # back at the bottom: follow again
+    feed(360, 60)
+    assert bar.value() == bar.maximum() and dialog.log.toPlainText().rstrip().endswith('line 419')
     dialog.deleteLater()

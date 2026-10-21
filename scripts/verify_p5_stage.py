@@ -15,8 +15,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import FillEditorDialog, MotionBrowserDialog, SubtitleStudioPage
-from twobyteasr.studio_project import SubtitleStyle
+from twobyteasr.studio.studio_ui import FillEditorDialog, MotionBrowserDialog, SubtitleStudioPage
+from twobyteasr.projects.studio_project import SubtitleStyle
 
 
 SHOTS = ROOT / "tmp" / "p5-accept"
@@ -90,8 +90,8 @@ def main() -> int:
     cards = motion.findChildren(type(motion.host), "")
     motion.close()
 
-    from twobyteasr.studio_export_ui import StudioExportWorkspace
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
     project = SubtitleProject(
         media=StudioMedia(path="source.mp4", duration_ms=10_000, width=1920, height=1080),

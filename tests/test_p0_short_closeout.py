@@ -19,8 +19,8 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 
 
 def test_separate_mix_retains_longer_lane_after_short_input_eof(tmp_path):
-    from twobyteasr.audio_engine import build_audio_mix_command
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.playback.audio_engine import build_audio_mix_command
+    from twobyteasr.system.processes import run_hidden_subprocess
     layers=[]
     for index,seconds in enumerate((1,3)):
         path=tmp_path/f'lane{index}.wav'
@@ -37,7 +37,7 @@ def test_separate_mix_retains_longer_lane_after_short_input_eof(tmp_path):
 
 
 def test_cli_drains_large_stderr_and_finishes_json_without_eof(tmp_path):
-    from twobyteasr.ai_providers import GrokCLIProvider
+    from twobyteasr.providers.ai_providers import GrokCLIProvider
     code=tmp_path/'stream.py'
     code.write_text("import json,sys,time\nsys.stderr.write('x'*200000);sys.stderr.flush()\n"
         "value=json.dumps({'brief':{'safe':True},'concepts':[1,2,3]})\n"
@@ -53,7 +53,7 @@ def test_cli_drains_large_stderr_and_finishes_json_without_eof(tmp_path):
 
 
 def test_cli_does_not_accept_truncated_json(tmp_path):
-    from twobyteasr.ai_providers import GrokCLIProvider,AIProviderError
+    from twobyteasr.providers.ai_providers import GrokCLIProvider,AIProviderError
     code=tmp_path/'truncated.py'
     code.write_text("import json,sys,time\nprint(json.dumps({'event':'step_update','step_update':{'step_type':'agent_response','text_delta':'{\\\"brief\\\":'}}),flush=True)\ntime.sleep(20)\n",encoding='utf8')
     provider=GrokCLIProvider(executable=sys.executable)
@@ -64,8 +64,8 @@ def test_cli_does_not_accept_truncated_json(tmp_path):
 
 
 def test_broker_requires_login_button_intent(monkeypatch):
-    from twobyteasr.provider_service import ProviderService
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.provider_service import ProviderService
+    from twobyteasr.providers.ai_providers import AIProviderError
     service=ProviderService()
     monkeypatch.setattr(service,'_runtime_for',lambda *a:pytest.fail('must not create login adapter'))
     with pytest.raises(AIProviderError) as error:service.login({},'polish')
@@ -73,7 +73,7 @@ def test_broker_requires_login_button_intent(monkeypatch):
 
 
 def test_missing_private_node_never_falls_back_to_path(tmp_path,monkeypatch):
-    from twobyteasr.processes import renderer_node_command,renderer_child_environment
+    from twobyteasr.system.processes import renderer_node_command,renderer_child_environment
     import shutil
     monkeypatch.setattr(shutil,'which',lambda *_:pytest.fail('system Node fallback'))
     with pytest.raises(RuntimeError,match='Runtime 缺失或损坏'):renderer_node_command(tmp_path/'renderer','service.mjs')
@@ -83,8 +83,8 @@ def test_missing_private_node_never_falls_back_to_path(tmp_path,monkeypatch):
 
 def test_concepts_checkpoint_survives_second_request_failure(monkeypatch):
     from tests.test_hero_theme_compiler import setup,design as make_design
-    from twobyteasr import studio_ai
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.providers.ai_providers import AIProviderError
     design=make_design('b')
     design['concepts'][1]['design']['metaphor']='北极熊探看字幕'
     project,settings,calls,traces=setup(monkeypatch,[AIProviderError('second request timed out',category='timeout')])
@@ -103,7 +103,7 @@ def test_concepts_checkpoint_survives_second_request_failure(monkeypatch):
 
 def test_retry_theme_code_does_not_request_concepts_again(monkeypatch):
     from tests.test_hero_theme_compiler import setup,design as make_design,hero
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
     design=make_design('b')
     project,settings,calls,traces=setup(monkeypatch,[json.dumps(hero(True))])
     result=studio_ai.request_web_theme_design(project,'cue','北极熊',settings,resume_design=design)

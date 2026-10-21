@@ -15,10 +15,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.asr import build_qwen_asr_chunks
-from twobyteasr.studio_edit_sequence import HighlightCandidate, _string_list
-from twobyteasr.studio_highlight_ui import HighlightAssistantPanel
-from twobyteasr.studio_project import (
+from twobyteasr.recognition.asr import build_qwen_asr_chunks
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate, _string_list
+from twobyteasr.studio.studio_highlight_ui import HighlightAssistantPanel
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
@@ -180,7 +180,7 @@ def test_analysis_transcript_keeps_final_cues(tmp_path):
 def test_renderer_restore_waits_for_visibility(tmp_path):
     _app()
     from PySide6.QtTest import QTest
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     page.resize(1200, 800)

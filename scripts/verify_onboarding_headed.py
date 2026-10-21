@@ -3,7 +3,7 @@
 Everything lives in a fresh directory under the repository tmp/: a generated
 demo project (short local video, punctuation test lines), and two isolated
 data folders. Three launches on a private Windows desktop, each running
-twobyteasr/onboarding_settings_audit.py inside the app:
+twobyteasr/acceptance/onboarding_settings_audit.py inside the app:
 
   fresh     profile-a, a first launch
   restart   profile-a again (what the first launch saved must still be there)
@@ -27,9 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MAKE_INPUT = r'''
 import json, sys
 from pathlib import Path
-from twobyteasr import sample_project
-from twobyteasr.onboarding_settings_audit import PUNCTUATION_LINES
-from twobyteasr.studio_project import load_project, save_project
+from twobyteasr.app import sample_project
+from twobyteasr.acceptance.onboarding_settings_audit import PUNCTUATION_LINES
+from twobyteasr.projects.studio_project import load_project, save_project
 target = Path(sys.argv[1])
 sample_project.sample_root = lambda: target / "media"
 path = sample_project.ensure_sample_project()
@@ -45,7 +45,7 @@ print(json.dumps(dict(project=str(saved), project_id=project.project_id, media=s
 '''
 
 STUDIO_PATH = r'''
-from twobyteasr.studio_project import studio_settings_path
+from twobyteasr.projects.studio_project import studio_settings_path
 print(studio_settings_path())
 '''
 

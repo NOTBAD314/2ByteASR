@@ -17,12 +17,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import time
 
-from twobyteasr.audio_engine import decoder_restart_required
-from twobyteasr.playback_clock import (
+from twobyteasr.playback.audio_engine import decoder_restart_required
+from twobyteasr.playback.playback_clock import (
     PlaybackClock,
     backward_replay_windows,
 )
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.visual_design_graph import (
     MotionGraph,
     MotionKeyframe,
     MotionTrack,
@@ -287,7 +287,7 @@ def test_validate_structural_variants_accepts_distinct_fallback_family():
 
 
 def _design_project():
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
     return SubtitleProject(
         media=StudioMedia(path="fixture.mp4", duration_ms=4_000, width=1920, height=1080),
@@ -298,9 +298,9 @@ def _design_project():
 def test_cli_transport_generates_in_two_phases_with_300s_budget(monkeypatch):
     from types import SimpleNamespace
 
-    from twobyteasr import studio_ai
-    from twobyteasr.art_direction import fallback_art_directions
-    from twobyteasr.visual_design_graph import (
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_design.art_direction import fallback_art_directions
+    from twobyteasr.caption_design.visual_design_graph import (
         comic_burst_graph,
         glitch_graph,
         streamer_gaming_graph,
@@ -367,9 +367,9 @@ def test_cli_transport_generates_in_two_phases_with_300s_budget(monkeypatch):
 def test_http_transport_keeps_one_shot_budget(monkeypatch):
     from types import SimpleNamespace
 
-    from twobyteasr import studio_ai
-    from twobyteasr.art_direction import fallback_art_directions
-    from twobyteasr.visual_design_graph import (
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_design.art_direction import fallback_art_directions
+    from twobyteasr.caption_design.visual_design_graph import (
         comic_burst_graph,
         glitch_graph,
         streamer_gaming_graph,

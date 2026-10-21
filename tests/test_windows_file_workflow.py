@@ -9,9 +9,9 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QWidget, QLabel
 from PySide6.QtTest import QTest
-from twobyteasr.media_intake import parse_media_arguments, validate_media_paths
-from twobyteasr.single_instance import SingleInstanceGuard
-from twobyteasr.desktop_intake import DesktopIntake
+from twobyteasr.media.media_intake import parse_media_arguments, validate_media_paths
+from twobyteasr.app.single_instance import SingleInstanceGuard
+from twobyteasr.app.desktop_intake import DesktopIntake
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = QApplication.instance() or QApplication([])
@@ -57,7 +57,7 @@ def test_ipc_real_process_unicode_retry_and_crash(tmp_path):
     name="2ByteASR-file-test-"+uuid.uuid4().hex
     receipt=tmp_path/"receipt.json"
     code = """from PySide6.QtCore import QCoreApplication,QTimer
-from twobyteasr.single_instance import SingleInstanceGuard
+from twobyteasr.app.single_instance import SingleInstanceGuard
 import json,sys
 from pathlib import Path
 app=QCoreApplication([])
@@ -90,7 +90,7 @@ g.release()
     g.release()
 
 def test_async_intake_reuses_media_state_and_defers_while_busy(tmp_path,monkeypatch):
-    import twobyteasr.desktop_intake as intake
+    import twobyteasr.app.desktop_intake as intake
     monkeypatch.setattr(intake,"_remember_media_directory",lambda paths:None)
     class Window(QWidget):
         def __init__(self):

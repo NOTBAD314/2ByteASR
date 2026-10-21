@@ -4,11 +4,11 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
-from twobyteasr.studio_edit_sequence import sequence_of, projected_cues, source_cue_id_of
-from twobyteasr.studio_edit_commands import ripple_trim_command, restore_full_sequence_command, razor_video_command
-from twobyteasr.studio_autocut import auto_cut_silence_command, source_ranges_to_timeline
-from twobyteasr.studio_subtitle_export import _compile_format
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, projected_cues, source_cue_id_of
+from twobyteasr.timeline.studio_edit_commands import ripple_trim_command, restore_full_sequence_command, razor_video_command
+from twobyteasr.studio.studio_autocut import auto_cut_silence_command, source_ranges_to_timeline
+from twobyteasr.exports.studio_subtitle_export import _compile_format
 
 
 def make_project(recognized=False):

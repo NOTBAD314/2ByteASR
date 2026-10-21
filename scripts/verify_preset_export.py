@@ -39,8 +39,8 @@ def main():
         TWOBYTEASR_CAPTION_AUDIT_MODE='preset-export', TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),
         TWOBYTEASR_STARTUP_OPEN_STUDIO='1', TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         TWOBYTEASR_STARTUP_TRACE=str(out/'startup.jsonl'))
-    from twobyteasr.studio_project import load_project, save_project, StudioSpeaker
-    from twobyteasr.style_presets import StylePresetStore
+    from twobyteasr.projects.studio_project import load_project, save_project, StudioSpeaker
+    from twobyteasr.caption_style.style_presets import StylePresetStore
     p = load_project(args.project)
     # The real media, layout, style and cue times remain; this one cue is the
     # specified 15-CJK geometry probe, and B provides a distinct speaker scope.
@@ -50,7 +50,7 @@ def main():
     save_project(p, out/'fixture.2byteproj')
     store = StylePresetStore(); store.path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.presets, store.path)
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(root/'quick_start.py')]
     with (out/'process.log').open('w', encoding='utf8') as log:
         child = run_hidden_subprocess(command, cwd=root, env=os.environ.copy(), stdout=log,

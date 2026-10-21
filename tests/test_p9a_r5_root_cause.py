@@ -14,19 +14,19 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr import ui
-from twobyteasr.ai_providers import AIProviderError, AntigravityCLIProvider
-from twobyteasr.audio_engine import (
+from twobyteasr.app import ui
+from twobyteasr.providers.ai_providers import AIProviderError, AntigravityCLIProvider
+from twobyteasr.playback.audio_engine import (
     _PcmRingDevice,
     decoder_restart_required,
     trim_startup_pcm,
 )
-from twobyteasr.llm_config import active_service_values
-from twobyteasr.p74d_runtime_audit import lifecycle_events_since
-from twobyteasr.p9a_r1_packaged_audit import audio_sample_matches_target
-from twobyteasr.studio_mpv import mpv_startup_arguments
-from twobyteasr.studio_ai import _provider_failure_message
-from twobyteasr.studio_ui import MpvCanvas
+from twobyteasr.providers.llm_config import active_service_values
+from twobyteasr.acceptance.p74d_runtime_audit import lifecycle_events_since
+from twobyteasr.acceptance.p9a_r1_packaged_audit import audio_sample_matches_target
+from twobyteasr.playback.studio_mpv import mpv_startup_arguments
+from twobyteasr.caption_design.studio_ai import _provider_failure_message
+from twobyteasr.studio.studio_ui import MpvCanvas
 
 
 def _app():
@@ -514,7 +514,7 @@ def test_antigravity_process_trace_records_execution_contract(monkeypatch):
             return '{"response":"2ByteASR_OK"}', ""
 
     monkeypatch.setattr(
-        "twobyteasr.ai_providers.popen_hidden_subprocess",
+        "twobyteasr.providers.ai_providers.popen_hidden_subprocess",
         lambda *_args, **_kwargs: Process(),
     )
     provider = AntigravityCLIProvider(executable="agy.exe")

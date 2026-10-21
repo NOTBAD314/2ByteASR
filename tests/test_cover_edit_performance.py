@@ -7,19 +7,19 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage
 
 from tests.test_timeline_flv_content_clock import gappy, FFMPEG
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_commands import SetCueFieldsCommand
-from twobyteasr.studio_revisions import StudioRevisionStore
-from twobyteasr.studio_runtime_state import state_for
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.timeline.studio_commands import SetCueFieldsCommand
+from twobyteasr.projects.studio_revisions import StudioRevisionStore
+from twobyteasr.projects.studio_runtime_state import state_for
 
 
 def test_cover_uses_same_content_frame_as_preview_after_flv_gaps(gappy, tmp_path, monkeypatch):
-    from twobyteasr import indexed_media
-    from twobyteasr.indexed_media import IndexedMediaCache
-    from twobyteasr.frame_export import save_project_frame, decode_frame
-    from twobyteasr.video_export import capture_video_graph
-    from twobyteasr.export_timeline import export_project_snapshot
-    from twobyteasr.studio_media_pool import add_media_asset, add_video_clip
+    from twobyteasr.media import indexed_media
+    from twobyteasr.media.indexed_media import IndexedMediaCache
+    from twobyteasr.exports.frame_export import save_project_frame, decode_frame
+    from twobyteasr.exports.video_export import capture_video_graph
+    from twobyteasr.exports.export_timeline import export_project_snapshot
+    from twobyteasr.timeline.studio_media_pool import add_media_asset, add_video_clip
     app=QApplication.instance() or QApplication([])
     _,sources=gappy
     cache=IndexedMediaCache(tmp_path/'seek'); monkeypatch.setattr(indexed_media,'GLOBAL_INDEXED_MEDIA',cache)
@@ -58,9 +58,9 @@ def test_edit_defers_persistence_but_save_captures_latest_evidence(monkeypatch):
     assert saved.to_payload()['cues'][0]['text']=='新文字'
     assert saved.to_payload()['asr_evidence']==p.asr_evidence
     assert saved.to_payload()['generation_metadata']==p.generation_metadata
-    from twobyteasr.studio_revisions import thaw_json
+    from twobyteasr.projects.studio_revisions import thaw_json
     assert thaw_json(store.render.generation_metadata)=={'translations':{'a':'Original'}}
-    from twobyteasr.studio_commands import SetCueTranslationCommand
+    from twobyteasr.timeline.studio_commands import SetCueTranslationCommand
     SetCueTranslationCommand(p,'a','Edited').redo()
     assert thaw_json(store.render.generation_metadata)['translations']['a']=='Edited'
     command.undo()
@@ -71,7 +71,7 @@ def test_edit_defers_persistence_but_save_captures_latest_evidence(monkeypatch):
 
 
 def test_waveform_retirement_keeps_lease_until_worker_releases_it():
-    from twobyteasr.waveform_cache import WaveformCache
+    from twobyteasr.playback.waveform_cache import WaveformCache
     entered=threading.Event(); release=threading.Event(); done=threading.Event(); threads=[]
     class Lease:
         def __exit__(self,*_):

@@ -1,5 +1,5 @@
-from twobyteasr.studio_fonts import missing_project_fonts
-from twobyteasr.studio_project import StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.caption_style.studio_fonts import missing_project_fonts
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, SubtitleStyle
 
 
 def test_missing_project_fonts_is_case_insensitive_and_unique():

@@ -30,23 +30,23 @@ def main():
     if not out.is_relative_to(ROOT/'tmp') or out.exists():raise ValueError('Use a fresh repository tmp directory')
     out.mkdir(parents=True)
     original_local=Path(os.environ['LOCALAPPDATA'])
-    from twobyteasr.settings import SETTINGS_FILENAME,DEFAULT_SETTINGS,_merge_known_settings
+    from twobyteasr.storage.settings import SETTINGS_FILENAME,DEFAULT_SETTINGS,_merge_known_settings
     source=original_local/'2ByteASR'/SETTINGS_FILENAME;before=source.read_bytes()
     settings,_=_merge_known_settings(DEFAULT_SETTINGS,json.loads(before));settings=copy.deepcopy(settings)
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out/'isolation')
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     secret_source=original_local/'2ByteASR'/'secrets.dat'
     reader=llm_config._read_secrets
     llm_config._read_secrets=lambda:reader(read_only_path=secret_source)
     settings['models'].update(ai_design_mode='full' if args.full_source else 'drafts',
         ai_design_candidate_count=3,ai_design_concurrency=2,ai_design_max_repair_calls=0)
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
     selection=GLOBAL_PROVIDER_REGISTRY.selection(settings,stage='polish')
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    from twobyteasr.caption_style_reference import attach_reference
-    from twobyteasr.authored_prompt import assemble
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.caption_style_reference import attach_reference
+    from twobyteasr.caption_design.authored_prompt import assemble
     ledger=ThemeLedger(out/'preflight',PROMPT);attach_reference(ledger)
     ledger.value.update(requested_candidates=3,component_drafts=not args.full_source,
         creative_context=dict(subtitle_text='这种就属于是点了自动战斗'))
@@ -59,12 +59,12 @@ def main():
         print(json.dumps(dict(provider=selection.provider,model=selection.model,prepared=True,external_calls=0)));return 0
     budget=out/'call-budget.json'
     budget.write_text(json.dumps(dict(limits=dict(generation=4 if args.full_source else 1,repair=0,redo=0),calls=[])), 'utf8')
-    from twobyteasr.ai_design_call_budget import install_acceptance_budget
+    from twobyteasr.acceptance.ai_design_call_budget import install_acceptance_budget
     install_acceptance_budget(budget)
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.studio_project import SubtitleProject,StudioCue,StudioMedia
-    from twobyteasr.caption_creative_pipeline import request_creative_options
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioCue,StudioMedia
+    from twobyteasr.caption_design.caption_creative_pipeline import request_creative_options
     project=SubtitleProject(media=StudioMedia('',duration_ms=6000,width=1920,height=1080),
         cues=[StudioCue('sample',0,6000,'这种就属于是点了自动战斗')])
     try:
@@ -76,7 +76,7 @@ def main():
             status=c.get('technical_status'),origin=c.get('source_origin'),ledger=c.get('ledger_path')) for c in result.concepts]),ensure_ascii=False))
     finally:
         (out/'settings-unchanged.json').write_text(json.dumps(dict(unchanged=source.read_bytes()==before)),'utf8')
-        from twobyteasr.renderer_service import GLOBAL_RENDERER_SERVICE
+        from twobyteasr.rendering.renderer_service import GLOBAL_RENDERER_SERVICE
         GLOBAL_RENDERER_SERVICE.shutdown()
     return 0
 

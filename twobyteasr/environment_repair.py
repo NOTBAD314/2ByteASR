@@ -15,8 +15,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from twobyteasr import environment as env_module
-from twobyteasr.processes import run_hidden_subprocess
+from twobyteasr.system import environment as env_module
+from twobyteasr.system.processes import run_hidden_subprocess
 
 _ROLE_ORDER = ("main", "moss", "firered_llm")
 _ROLE_LABELS = {"main": "Main", "moss": "MOSS", "firered_llm": "FireRed LLM"}
@@ -79,7 +79,7 @@ def role_paths(role):
     """
     if role not in _ROLE_ORDER:
         raise EnvironmentRepairError(f"未知环境角色：{role}")
-    from twobyteasr.runtime_registry import intended_runtime_root
+    from twobyteasr.system.runtime_registry import intended_runtime_root
 
     directory = ".venv-firered-llm" if role == "firered_llm" else f".venv-{role}"
     legacy_live = os.path.join(project_root(), directory)
@@ -254,7 +254,7 @@ def install_role_from_lock(role, staging_path):
     console codepage is GBK.
     """
     if sys.platform == 'darwin':
-        from .platform_macos import macos_copy
+        from .system.platform_macos import macos_copy
         raise EnvironmentRepairError(macos_copy(
             '请在模型工坊的 SenseVoice 卡片选择“安装 / 修复独立环境”；软件会自动准备 CPU 运行库，原环境保持。',
             'Use Prepare / Repair on the SenseVoice card in Model Workshop. The app prepares its private CPU runtime and preserves the previous environment.',
@@ -313,6 +313,8 @@ def repair_roles(
     swap_fn=None,
 ):
     """Rebuild each listed role in its own staging venv, then swap only on pass."""
+    if os.name == 'nt' and install_fn is None and preflight_fn is None and swap_fn is None:
+        return _repair_managed_roles(roles)
     installer = install_fn or install_role_from_lock
     runner = preflight_fn or _default_preflight
     swapper = swap_fn or atomic_replace_directory
@@ -415,6 +417,44 @@ def repair_roles(
         )
     finally:
         env_module.reset_preflight_cache()
+
+
+def _repair_managed_roles(roles):
+    """Production repair shares bootstrap, validation and pointer publication.
+
+    No existing venv is renamed, deleted, or used as the creator interpreter.
+    The bootstrap works even when there is no usable Python on the machine.
+    """
+    import json
+    from pathlib import Path
+    from .system.deployment import managed_environment, run_command
+    from .system.runtime_registry import load_registry, runtimes_root
+    roles = list(dict.fromkeys(roles))
+    if not roles or any(role not in _ROLE_ORDER for role in roles):
+        return RepairResult(ok=False, error='未知或空的运行环境修复范围')
+    registry = load_registry()
+    models=set()
+    defaults={'main':{'firered_vad','firered_aed','qwen_asr','qwen_aligner','speaker_embedding'},
+              'moss':{'moss'},'firered_llm':{'firered_llm'}}
+    for role in roles:
+        models.update(defaults[role])
+        path=Path(registry.get(role,{}).get('python_executable') or '')
+        try:
+            if path.resolve().is_relative_to(runtimes_root().resolve()):
+                models.update(json.loads((path.parent.parent/'managed-runtime.json').read_text('utf8')).get('models',[]))
+        except (ValueError,OSError,TypeError): pass
+    helper=Path(install_root())/'scripts/setup_managed_backend.ps1'
+    powershell=Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+    runtime=runtimes_root();runtime.mkdir(parents=True,exist_ok=True)
+    try:
+        run_command([powershell,'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,
+                     '-ModelKey',','.join(sorted(models)),'-RepairRoles',','.join(roles)],
+                    cwd=runtime,phase='environment_repair',component=','.join(roles),timeout=3700,
+                    env=managed_environment(runtime=runtime))
+        return RepairResult(ok=True,roles_repaired=roles,kept_old=True,success_message=success_message(roles))
+    except Exception as exc:
+        return RepairResult(ok=False,kept_old=True,error=str(exc))
+    finally: env_module.reset_preflight_cache()
 
 
 def _load_runtime_settings():

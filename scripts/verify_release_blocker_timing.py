@@ -13,12 +13,12 @@ def main():
     install()
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.web_theme import WebThemeDocument
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
-    from twobyteasr.studio_render import RenderSettings,RenderJob
-    from twobyteasr.advanced_renderer import AdvancedRendererBackend
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
+    from twobyteasr.exports.studio_render import RenderSettings,RenderJob
+    from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend
     from PIL import Image
     ffmpeg=args.renderer.resolve().parent/'tools/ffmpeg/bin/ffmpeg.exe'
     media=out/'blue.mp4'

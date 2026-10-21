@@ -1,9 +1,9 @@
 from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.glossary_build import extract_catalog_names
-from twobyteasr.glossary_skill import SearchedTerm, diff_term_updates, bind_search_sources
-from twobyteasr.video_compositor import VideoCompositionScene
+from twobyteasr.glossary.glossary_build import extract_catalog_names
+from twobyteasr.glossary.glossary_skill import SearchedTerm, diff_term_updates, bind_search_sources
+from twobyteasr.playback.video_compositor import VideoCompositionScene
 
 def test_existing_alias_requires_receipt():
     term=SearchedTerm(term='娜娜莉',aliases=('捏造别名',),verification='unverified')

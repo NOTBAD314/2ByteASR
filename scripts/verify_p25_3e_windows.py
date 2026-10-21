@@ -25,20 +25,20 @@ from PySide6.QtCore import QRect, QTimer, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QApplication, QColorDialog, QMainWindow
 
-from twobyteasr.advanced_preview import AdvancedPreviewCache, AdvancedPreviewPhase
-from twobyteasr.advanced_renderer import (
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewCache, AdvancedPreviewPhase
+from twobyteasr.rendering.advanced_renderer import (
     AdvancedRendererBackend,
     compile_composition_data,
     normalized_visual_snapshot,
 )
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.motion_library import MotionPresetStore
-from twobyteasr.studio_project import load_project, save_project
-from twobyteasr.studio_render import RenderJob, RenderSettings, windows_subprocess_kwargs
-from twobyteasr.studio_ui import FillEditorDialog, MotionBrowserDialog, SubtitleStudioPage
-from twobyteasr.style_recipe import FillSpec, StyleRecipe, route_recipe
-from twobyteasr.ui import APP_QSS
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.caption_style.motion_library import MotionPresetStore
+from twobyteasr.projects.studio_project import load_project, save_project
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, windows_subprocess_kwargs
+from twobyteasr.studio.studio_ui import FillEditorDialog, MotionBrowserDialog, SubtitleStudioPage
+from twobyteasr.caption_style.style_recipe import FillSpec, StyleRecipe, route_recipe
+from twobyteasr.app.ui import APP_QSS
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 SOURCE_PROJECT = ROOT / "tmp" / "p25.3c" / "mixed-authoritative-visuals.2byteproj"
@@ -312,7 +312,7 @@ class Acceptance:
             dialog = MotionBrowserDialog(style, self.window)
             dialog.show(); dialog.raise_(); dialog.activateWindow()
             self.app.processEvents()
-            cards = dialog.findChildren(__import__("twobyteasr.studio_ui", fromlist=["MotionCard"]).MotionCard)
+            cards = dialog.findChildren(__import__("twobyteasr.studio.studio_ui", fromlist=["MotionCard"]).MotionCard)
             image = self.screenshot("I-motion-browser.png")
             live = len(cards) >= 12 and all(card.preview._motion_timer.isActive() and card.preview._motion_loop for card in cards)
             dialog.close(); dialog.deleteLater()

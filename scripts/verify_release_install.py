@@ -208,7 +208,7 @@ def cmd_compare(args) -> None:
 
 
 def _settings_for(backend: str) -> dict:
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     settings = json.loads(json.dumps(DEFAULT_SETTINGS))
     models = settings.setdefault("models", {})
     if backend == "sensevoice":
@@ -235,7 +235,7 @@ def cmd_recognize(args) -> None:
     config = paths["root"] / "config" / "2byteasr_settings.json"
     if args.backend and not config.exists():
         config.write_text(json.dumps(_settings_for(args.backend), ensure_ascii=False, indent=2), "utf-8")
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     startup_project = save_project(SubtitleProject(media=StudioMedia(path=str(media), duration_ms=1000),
                                                    cues=[StudioCue("c1", 0, 900, "placeholder")]),
                                    run_dir / "startup-project.2byteproj")

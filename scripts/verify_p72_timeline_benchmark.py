@@ -35,8 +35,8 @@ from PySide6.QtWidgets import QApplication
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.studio_edit_sequence import (
+from twobyteasr.app import ui
+from twobyteasr.timeline.studio_edit_sequence import (
     EditSequence,
     HighlightCandidate,
     TimelineMarker,
@@ -44,14 +44,14 @@ from twobyteasr.studio_edit_sequence import (
     runtime_of,
     store_sequence,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.window_audit import qt_top_level_widgets, win32_top_level_windows
+from twobyteasr.acceptance.window_audit import qt_top_level_widgets, win32_top_level_windows
 
 
 DURATION_MS = 6 * 60 * 60 * 1000

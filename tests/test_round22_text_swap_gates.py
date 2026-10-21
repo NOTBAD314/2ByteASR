@@ -8,7 +8,7 @@ pytestqt = pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.web_theme import (
+from twobyteasr.caption_design.web_theme import (
     WebThemeDocument,
     builtin_web_themes,
     theme_archive_html,
@@ -38,7 +38,7 @@ def test_archive_html_embeds_set_cue_template():
 def test_worker_theme_key_separates_text():
     """同主题换文案：不置 dirty（走 live_text 快路径）；换主题才整页重载。"""
     _app()
-    from twobyteasr.live_web_preview import LiveWebPreviewWorker
+    from twobyteasr.rendering.live_web_preview import LiveWebPreviewWorker
 
     worker = LiveWebPreviewWorker(loop_seconds=2.4)
     theme = _doom()
@@ -87,7 +87,7 @@ def test_gate_washed_out_plate_rejected_unless_glass():
 
 
 def test_service_exposes_live_text():
-    from twobyteasr.renderer_service import RendererService
+    from twobyteasr.rendering.renderer_service import RendererService
 
     assert hasattr(RendererService, "live_text")
     assert hasattr(RendererService, "live_play")

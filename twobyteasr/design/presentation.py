@@ -20,7 +20,7 @@ def button_role(button: QAbstractButton, role: str = "secondary", *, icon: str =
     if not button.accessibleName():
         button.setAccessibleName(button.text() or button.toolTip())
     if icon:
-        from ..themed_icons import install_themed_icon
+        from .themed_icons import install_themed_icon
         install_themed_icon(button, icon, "on_accent" if role == "primary" else "primary")
     return button
 

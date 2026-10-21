@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr.models import SpeechSegment
-from twobyteasr.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry, TermResolver
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry, TermResolver
 
 
 def fixture():
@@ -27,7 +27,7 @@ def rows():
 
 
 def test_canonical_only_real_recall_uses_complete_latin_tokens():
-    from twobyteasr.terminology_retrieval import retrieve_candidates
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
     source = rows()
     catalog = snapshot()
     assert all(not term.aliases for library in catalog.libraries for term in library.terms)
@@ -45,7 +45,7 @@ def test_canonical_only_real_recall_uses_complete_latin_tokens():
 
 
 def test_replayed_retained_provider_proposals_pass_safety_and_keep_case(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = snapshot()
@@ -56,7 +56,7 @@ def test_replayed_retained_provider_proposals_pass_safety_and_keep_case(context,
         body = json.loads(messages[1]['content'])
         assert {'BerLIN','S0pp'} <= set(body['enabled_glossary_evidence']['canonical_terms'])
         return json.dumps({'checked_ids':[x.segment_id for x in source],'cues':actual_proposals},ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     result = polishing.call_correction_api(source,[],'','','真实原稿','瓦罗兰特',[],[],[],
         glossary_evidence=owner.glossary_snapshot.evidence())
     assert result[4] == 'BerLIN也没有接住'
@@ -77,8 +77,8 @@ def test_replayed_retained_provider_proposals_pass_safety_and_keep_case(context,
     ('prefixBorlin也没有接住',{'from':'Borlin','to':'BerLIN','basis':'glossary+context'}),
 ])
 def test_text_context_does_not_authorize_ambiguous_or_fragment_edits(text,edit):
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     row = SpeechSegment(77,0,1,text,.85,[])
     candidates = retrieve_candidates(snapshot(),[row])
     final, accepted = apply_correction_edits(text,[],[edit],independent_sources=[],
@@ -87,8 +87,8 @@ def test_text_context_does_not_authorize_ambiguous_or_fragment_edits(text,edit):
 
 
 def test_similar_enabled_names_are_ambiguous_and_existing_name_is_preserved():
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     row = SpeechSegment(77,0,1,'Borlin也没有接住',.85,[])
     candidates = retrieve_candidates(snapshot(['BerLIN','Barlin']),[row])
     assert all(x['ambiguous'] for x in candidates)
@@ -99,7 +99,7 @@ def test_similar_enabled_names_are_ambiguous_and_existing_name_is_preserved():
 
 
 def test_only_polish_cache_changes_for_case_alias_or_revision(context, monkeypatch):
-    from twobyteasr import cache
+    from twobyteasr.recognition import cache
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = snapshot(['berlin','s0pp','zhe'])
@@ -120,7 +120,7 @@ def test_only_polish_cache_changes_for_case_alias_or_revision(context, monkeypat
 
 
 def test_full_polish_cache_reuses_call_and_records_unadopted_real_names(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, cache = context
     owner.enable_domain_terms=True
     owner.glossary_snapshot=snapshot()
@@ -131,7 +131,7 @@ def test_full_polish_cache_reuses_call_and_records_unadopted_real_names(context,
         count.append(1)
         return json.dumps({'checked_ids':[x.segment_id for x in actual],'cues':[{'id':4,'edits':[
             {'from':'Borlin','to':'BerLIN','basis':'glossary+context'}]}]},ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     for attempt in range(2):
         result=polishing.polish_subtitles(copy.deepcopy(actual),'真实原稿',cache)
         assert result[0].text=='BerLIN也没有接住'
@@ -143,14 +143,14 @@ def test_full_polish_cache_reuses_call_and_records_unadopted_real_names(context,
 
 
 def test_confirmed_mapping_remains_separate_offline_rule():
-    from twobyteasr.terminology import snapshot_from_pairs
+    from twobyteasr.glossary.terminology import snapshot_from_pairs
     explicit=snapshot_from_pairs([('错写ID','Exact0Name'),('错误中文','正确中文')])
     assert TermResolver(explicit).resolve('错写ID和错误中文').text=='Exact0Name和正确中文'
     assert not snapshot().libraries[0].terms[0].aliases
 
 
 def test_rejected_ambiguous_model_name_retains_text_and_open_quality_review(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms=True
     owner.glossary_snapshot=snapshot()
@@ -158,7 +158,7 @@ def test_rejected_ambiguous_model_name_retains_text_and_open_quality_review(cont
     def complete(messages, **kwargs):
         return json.dumps({'checked_ids':[8],'cues':[{'id':8,'edits':[
             {'from':'So了','to':'S0pp','basis':'glossary+context'}]}]},ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     result=polishing.call_correction_api([source],[],'','','真实原稿','瓦罗兰特',[],[],[],
         glossary_evidence=owner.glossary_snapshot.evidence())
     assert result[8]=='So了还在往里走'

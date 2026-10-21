@@ -401,39 +401,6 @@ def test_auto_takes_shared_files_from_partial_copy_and_only_the_rest_elsewhere(t
     assert (tmp_path / 'd' / 'model.pt').read_bytes() == weight
 
 
-def _installer():
-    path = ROOT / 'scripts' / 'install_managed_backend.py'
-    spec = importlib.util.spec_from_file_location('mainland_installer', path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_slow_official_pytorch_prefers_the_hashed_mirror_but_fast_official_stays(monkeypatch):
-    installer = _installer()
-    pins = ['torch==2.11.0+cu128', 'torchaudio==2.11.0+cu128']
-    probed = []
-
-    def rates(official, mirror):
-        def probe(url, limit_s=10.0):
-            probed.append(url)
-            return official if 'download.pytorch.org' in url else mirror
-        return probe
-
-    monkeypatch.setattr(installer, 'probe_rate', rates(1.0 * 2**20, 17.0 * 2**20))
-    reason = installer.slow_official_pytorch(ROOT, 'cu128', '3.10.19', pins)
-    assert reason and '1.0 MB/s' in reason
-    assert probed[0] == 'https://download.pytorch.org/whl/cu128/torch-2.11.0%2Bcu128-cp310-cp310-win_amd64.whl'
-    assert probed[1].endswith('/cu128/torch-2.11.0%2Bcu128-cp310-cp310-win_amd64.whl')
-    probed.clear()
-    monkeypatch.setattr(installer, 'probe_rate', rates(30.0 * 2**20, 17.0 * 2**20))
-    assert installer.slow_official_pytorch(ROOT, 'cu128', '3.10.19', pins) is None
-    assert len(probed) == 1  # a fast official host is not compared with mirrors at all
-    monkeypatch.setattr(installer, 'probe_rate', rates(1.0 * 2**20, 1.5 * 2**20))
-    assert installer.slow_official_pytorch(ROOT, 'cu128', '3.10.19', pins) is None  # mirror not clearly faster
-    assert installer.slow_official_pytorch(ROOT, 'cpu', '3.10.19', ['torch==2.11.0+cpu']) is None
-
-
 def test_hash_table_closure_includes_requirement_extras():
     # nemo_toolkit[asr] needs datasets, lhotse, ...; a closure locked without the
     # extra made the canary mirror install unsatisfiable (found 2026-10-14).

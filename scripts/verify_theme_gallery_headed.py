@@ -2,7 +2,7 @@
 
 Usage: python scripts/verify_theme_gallery_headed.py --output tmp/<fresh dir> [--exe path\\to\\2ByteASR.exe]
 Runs on a private Windows desktop with isolated user data; see
-twobyteasr/theme_gallery_audit.py for the checks.
+twobyteasr/acceptance/theme_gallery_audit.py for the checks.
 """
 from __future__ import annotations
 
@@ -34,11 +34,11 @@ def main() -> int:
     install()
     if args.language:
         # Written into the isolated profile only (install() redirected every data root).
-        from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+        from twobyteasr.storage.settings import load_runtime_settings, save_runtime_settings
         settings, _path, _warnings = load_runtime_settings()
         settings.setdefault('ui', {})['language'] = args.language
         save_runtime_settings(settings)
-    from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
     fixture = output / 'projects' / 'theme-fixture' / 'theme-fixture.2byteproj'
     fixture.parent.mkdir(parents=True)
     save_project(SubtitleProject(

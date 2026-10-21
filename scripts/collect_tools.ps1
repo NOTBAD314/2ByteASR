@@ -75,10 +75,25 @@ function Install-MpvTool {
     $archive = Join-Path $DownloadRoot $archiveName
     $extractRoot = Join-Path $DownloadRoot "mpv-extract"
     Write-Host "[工具] 下载 mpv / libass 预览运行时 ..." -ForegroundColor Cyan
-    Invoke-Download `
-        "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260814/$archiveName" `
-        $archive
-    Assert-ExpectedHash $archive $archiveName
+    # 上游 shinchiro/mpv-winbuild-cmake 只保留最近 30 个发布，20260814 原地址已失效（404）。
+    # 同一个原包（未改动，SHA-256 相同）存档在本项目 v0.6.5 发布及 GitCode 镜像；逐个镜像校验。
+    $mpvDownloaded = $false
+    foreach ($mpvUrl in @(
+        "https://github.com/NOTBAD314/2ByteASR/releases/download/v0.6.5/$archiveName",
+        "https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.6.5/$archiveName",
+        "https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.6.5/$archiveName"
+    )) {
+        try {
+            Invoke-Download $mpvUrl $archive
+            Assert-ExpectedHash $archive $archiveName
+            $mpvDownloaded = $true
+            break
+        } catch {
+            Write-Warning "mpv 下载或校验失败（$mpvUrl）：$($_.Exception.Message)"
+            Remove-Item $archive -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (-not $mpvDownloaded) { throw "mpv 下载失败：GitHub、GitCode 与代理镜像均不可用或校验不符。" }
 
     $extractor = $null
     foreach ($candidate in @(

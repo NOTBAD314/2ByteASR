@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QMovie
 from PySide6.QtTest import QTest
 from PIL import Image
-from twobyteasr.candidate_preview_player import CandidatePreviewPlayer
+from twobyteasr.caption_design.candidate_preview_player import CandidatePreviewPlayer
 
 @pytest.fixture(scope='module')
 def app():
@@ -30,7 +30,7 @@ def test_png_playback_retains_alpha_crop_and_real_media_time(app,tmp_path):
     assert context.currentPixmap().size().width()==40
 
 def test_enlarged_preview_uses_the_same_png_sequence(app,tmp_path):
-    from twobyteasr.theme_concept_dialog import MotionPreviewDialog
+    from twobyteasr.caption_design.theme_concept_dialog import MotionPreviewDialog
     Image.new('RGBA',(40,20),(255,255,255,0)).save(tmp_path/'0000.png')
     motion=dict(transparent_frames=str(tmp_path),fps=24,frame_count=1,duration_ms=1000,subject_bbox=[8,3,32,17],context={})
     dialog=MotionPreviewDialog(dict(name='透明放大',motion_preview=motion),None)

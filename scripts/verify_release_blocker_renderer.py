@@ -17,9 +17,9 @@ def main():
     os.environ['QT_QPA_PLATFORM']='offscreen'
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.processes import run_hidden_subprocess,renderer_node_command,renderer_child_environment
-    from twobyteasr.renderer_service import RendererService,RendererJob
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.system.processes import run_hidden_subprocess,renderer_node_command,renderer_child_environment
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
     from PIL import Image
     requests=[]
     class Trap(BaseHTTPRequestHandler):

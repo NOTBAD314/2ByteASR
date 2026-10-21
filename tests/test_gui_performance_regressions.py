@@ -11,8 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEvent, QObject, QSize
 from PySide6.QtWidgets import QApplication, QPushButton, QStackedWidget, QWidget
 
-import twobyteasr.ui as ui
-from twobyteasr.model_workshop import MODELS, ModelCard, ModelWorkshopPage
+import twobyteasr.app.ui as ui
+from twobyteasr.local_models.model_workshop import MODELS, ModelCard, ModelWorkshopPage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,7 +81,7 @@ def test_technical_dialog_cache_reuses_the_same_widget_tree(monkeypatch):
     language = {"value": "zh"}
     monkeypatch.setattr(ui, "current_language", lambda: language["value"])
     monkeypatch.setattr(
-        "twobyteasr.model_workshop.current_language",
+        "twobyteasr.local_models.model_workshop.current_language",
         lambda: language["value"],
     )
     parent = QWidget()

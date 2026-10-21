@@ -19,9 +19,9 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
-    from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip
     ffmpeg=root/'tools/ffmpeg/bin/ffmpeg.exe';ffprobe=ffmpeg.with_name('ffprobe.exe')
     if args.synthetic:
         media=out/'wideband.mp4'

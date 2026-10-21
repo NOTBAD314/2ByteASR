@@ -53,7 +53,7 @@ def main() -> int:
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
     fixture = output / 'projects' / 'startup-empty' / 'startup-empty.2byteproj'
     fixture.parent.mkdir(parents=True)
     save_project(SubtitleProject(media=StudioMedia(path='', display_name='Startup empty', duration_ms=0)), fixture)

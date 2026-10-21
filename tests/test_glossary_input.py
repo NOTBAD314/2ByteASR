@@ -1,7 +1,7 @@
 """Delimiter inference is limited to the explicit local mapping mode."""
 import pytest
 
-from twobyteasr.glossary_input import parse_term_line, validate_term_records
+from twobyteasr.glossary.glossary_input import parse_term_line, validate_term_records
 
 
 @pytest.mark.parametrize('separator', [' → ', ' -> ', ' => ', ' - ', ' ', '    ', '\t'])

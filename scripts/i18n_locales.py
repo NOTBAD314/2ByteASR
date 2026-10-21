@@ -16,8 +16,9 @@ Usage:
   python scripts/i18n_locales.py add BATCH.json
       Merge {"<zh>": {"en": "...", "ja": "...", "ko": "..."}, ...} into the
       catalogs and rewrite them in canonical form. Every entry needs en and ja;
-      ko (한국어, 2026-10-14) is optional: a string without it shows the
-      English at runtime and `check` counts it as waiting.
+      ko (한국어, 2026-10-14) and es / de / fr / pt / it / ru (2026-10-19) are
+      optional: a string without them shows the English at runtime and
+      `check` counts it as waiting.
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCALE_DIR = ROOT / "twobyteasr" / "locales"
 LANGUAGES = ("en", "ja")
 # Optional catalogs: may lag behind en/ja, never carry unknown keys.
-OPTIONAL_LANGUAGES = ("ko",)
+OPTIONAL_LANGUAGES = ("ko", "es", "de", "fr", "pt", "it", "ru")
 
 
 def _pairs_without_duplicates(pairs):
@@ -94,7 +95,7 @@ def problems() -> list[str]:
 
 
 def optional_problems(language: str, source_keys) -> list[str]:
-    """ko.json may lag behind en/ja (missing keys show English at runtime)."""
+    """ko.json and the 2026-10-19 catalogs may lag behind en/ja (missing keys show English at runtime)."""
     path = LOCALE_DIR / f"{language}.json"
     if not path.is_file():
         return [f"{language}.json missing"]
@@ -156,8 +157,8 @@ def hant_problems(source_keys) -> list[str]:
 def missing() -> dict[str, list[str]]:
     tables = {language: load(language) for language in LANGUAGES}
     result: dict[str, list[str]] = {}
-    for path in sorted((ROOT / "twobyteasr").glob("*.py")):
-        if "audit" in path.stem:
+    for path in sorted((ROOT / "twobyteasr").rglob("*.py")):
+        if "audit" in path.stem or "__pycache__" in path.parts:
             continue
         tree = ast.parse(path.read_text("utf-8-sig"))
         for node in ast.walk(tree):
@@ -176,7 +177,8 @@ def missing() -> dict[str, list[str]]:
 
 def add(batch_path: Path) -> int:
     batch = json.loads(batch_path.read_text(encoding="utf-8"), object_pairs_hook=_pairs_without_duplicates)
-    tables = {language: load(language) for language in LANGUAGES + OPTIONAL_LANGUAGES}
+    tables = {language: load(language) for language in LANGUAGES + OPTIONAL_LANGUAGES
+              if language in LANGUAGES or (LOCALE_DIR / f"{language}.json").is_file()}
     for source, pair in batch.items():
         if (not isinstance(pair, dict) or not set(LANGUAGES) <= set(pair)
                 or not set(pair) <= set(LANGUAGES + OPTIONAL_LANGUAGES)):
@@ -187,7 +189,7 @@ def add(batch_path: Path) -> int:
                 raise SystemExit(f"{source!r}: empty {language}")
             if fields(source) != fields(value):
                 raise SystemExit(f"{source!r}: {language} placeholders differ")
-            tables[language][source] = value
+            tables.setdefault(language, {})[source] = value
     for language, table in tables.items():
         write(language, table)
     return len(batch)

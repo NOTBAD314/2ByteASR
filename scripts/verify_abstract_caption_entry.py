@@ -31,7 +31,7 @@ def main():
             data=json.dumps({'object':'list','data':[{'id':'local-caption-fixture','object':'model'}]}).encode()
             self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
         def do_POST(self):
-            from twobyteasr.source_artifact import frame,token
+            from twobyteasr.caption_design.source_artifact import frame,token
             payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
             parts=[]
             for message in payload['messages']:
@@ -66,8 +66,8 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(setup)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.settings import DEFAULT_SETTINGS
-    from twobyteasr.llm_config import activate_ai_service,update_active_profile,save_api_key_for
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
+    from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile,save_api_key_for
     import copy
     settings=copy.deepcopy(DEFAULT_SETTINGS);activate_ai_service(settings,'custom')
     address=f'http://127.0.0.1:{server.server_port}/v1'

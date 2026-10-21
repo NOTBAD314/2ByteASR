@@ -8,16 +8,16 @@ from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtWidgets import QWidget
 from PySide6.QtTest import QTest
 
-import twobyteasr.studio_hub as studio_hub
-import twobyteasr.studio_media_flow as studio_media_flow
-import twobyteasr.studio_project as studio_project
-import twobyteasr.studio_project_flow as studio_project_flow
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_hub import StudioHubMixin
-from twobyteasr.studio_sentence_refine_ui import StudioSentenceRefineMixin
-from twobyteasr.studio_review_ui import StudioReviewMixin
-from twobyteasr.studio_ui import SubtitleStudioPage
+import twobyteasr.studio.studio_hub as studio_hub
+import twobyteasr.studio.studio_media_flow as studio_media_flow
+import twobyteasr.projects.studio_project as studio_project
+import twobyteasr.studio.studio_project_flow as studio_project_flow
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_hub import StudioHubMixin
+from twobyteasr.studio.studio_sentence_refine_ui import StudioSentenceRefineMixin
+from twobyteasr.studio.studio_review_ui import StudioReviewMixin
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 HUB_METHODS = (
@@ -267,3 +267,34 @@ def test_project_hub_uses_one_searchable_scrollable_library(tmp_path, monkeypatc
     assert page.project_sort.currentData() == "recent"
     assert page.all_projects_layout.horizontalSpacing() == 24
     page.close_page()
+
+
+def test_hub_preference_save_keeps_reduce_motion_and_startup_page(tmp_path, monkeypatch):
+    # 2026-10-15: a second _save_hub_preferences in studio_hub rebuilt the
+    # whole studio_preferences object from its own arguments and dropped
+    # reduce_motion / startup_page written by Application Settings.
+    monkeypatch.setenv("2BYTEASR_USER_DATA_ROOT", str(tmp_path / "data"))
+    settings = studio_project.studio_settings_path()
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"recent_projects": [], "studio_preferences": {
+        "reduce_motion": True, "startup_page": "project_library", "autosave_enabled": True,
+    }}), encoding="utf-8")
+    app = studio_ui.QApplication.instance() or studio_ui.QApplication([])
+    page = SubtitleStudioPage()
+    refreshes = []
+    monkeypatch.setattr(page, "_refresh_visible_library", lambda: refreshes.append(True))
+    library = str(tmp_path / "library")
+    try:
+        page._save_hub_preferences(library, False, 120, 9, True, False, "official")
+        page._save_hub_preferences(library, False, 300, 9, True, False, "official")
+    finally:
+        page.close_page()
+    payload = json.loads(settings.read_text(encoding="utf-8"))
+    preferences = payload["studio_preferences"]
+    assert preferences.get("reduce_motion") is True
+    assert preferences.get("startup_page") == "project_library"
+    assert (preferences["autosave_enabled"], preferences["autosave_interval_seconds"],
+            preferences["recovery_policy"]) == (False, 300, "official")
+    assert payload["project_root"] == library
+    # Only the save that moved the library root refreshes the visible library.
+    assert refreshes == [True]

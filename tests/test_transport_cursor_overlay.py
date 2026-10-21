@@ -1,8 +1,8 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker
-from twobyteasr.studio_timeline import WaveformTimeline
+from twobyteasr.projects.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker
+from twobyteasr.studio.studio_timeline import WaveformTimeline
 
 APP = QApplication.instance() or QApplication([])
 

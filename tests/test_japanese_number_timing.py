@@ -9,11 +9,11 @@ The lines below are the user's three formatted lines from their job log.
 import pytest
 
 import subtitle_core as legacy  # noqa: F401  (loads the core before the timing helpers)
-from twobyteasr.models import SpeechSegment, WordUnit
-from twobyteasr.number_fidelity import format_segment
-from twobyteasr.segmentation_alignment import segment_content_timeline
-from twobyteasr.text_rules import content_only, display_length
-from twobyteasr.timing import build_local_source_cues
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+from twobyteasr.subtitle_rules.number_fidelity import format_segment
+from twobyteasr.subtitle_rules.segmentation_alignment import segment_content_timeline
+from twobyteasr.subtitle_rules.text_rules import content_only, display_length
+from twobyteasr.subtitle_rules.timing import build_local_source_cues
 from tests.test_stage9_cache_and_budget import context  # noqa: F401  (fixture)
 
 USER_LINES = [
@@ -54,7 +54,8 @@ def test_enough_shifen_line_is_not_formatted():
 
 
 def _polish_unchanged(monkeypatch, segment):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
+
     def checked_output(*args, **kwargs):
         result = polishing.PolishBatchResult({1: segment.text}, succeeded={1})
         result.details = {1: {'validated_text': segment.text, 'accepted_edits': [], 'rejected_edits': []}}
@@ -87,8 +88,8 @@ UNCONVERTED = [
 
 @pytest.mark.parametrize('text,start,end', UNCONVERTED)
 def test_unconverted_user_lines_pass_the_final_check_rebuild(text, start, end):
-    from twobyteasr.language_rules import language_scope
-    from twobyteasr.subtitle_fidelity import recover_final_content
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+    from twobyteasr.subtitle_rules.subtitle_fidelity import recover_final_content
     chars = [char for char in text if content_only(char)]
     step = (end - start) / len(chars)
     tokens = [dict(start=start + index * step, end=start + (index + 1) * step - 0.01, text=char, confidence=0.9)

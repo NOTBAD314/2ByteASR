@@ -1,6 +1,6 @@
 import json,subprocess
 from pathlib import Path
-from twobyteasr.codex_cli_provider import CodexCLIProvider
+from twobyteasr.providers.codex_cli_provider import CodexCLIProvider
 
 
 def test_omitted_modalities_follow_installed_cli_protocol(monkeypatch,tmp_path):
@@ -22,16 +22,16 @@ def test_omitted_modalities_follow_installed_cli_protocol(monkeypatch,tmp_path):
 
 
 def test_blank_cli_model_survives_settings_api_defaults_without_reading_keys(monkeypatch,tmp_path):
-    from twobyteasr.llm_config import activate_ai_service,update_active_profile,endpoint_from_settings
-    from twobyteasr.settings import save_runtime_settings
+    from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile,endpoint_from_settings
+    from twobyteasr.storage.settings import save_runtime_settings
     settings={'models':{},'switches':{'unified_glm_processing':True}}
     activate_ai_service(settings,'codex_cli');update_active_profile(settings,model='')
     saved,_,_=save_runtime_settings(settings,tmp_path)
-    monkeypatch.setattr('twobyteasr.llm_config.read_scoped_api_key',lambda *a:(_ for _ in ()).throw(AssertionError('CLI must not read API keys')))
+    monkeypatch.setattr('twobyteasr.providers.llm_config.read_scoped_api_key',lambda *a:(_ for _ in ()).throw(AssertionError('CLI must not read API keys')))
     endpoint=endpoint_from_settings(saved,'polish')
     assert endpoint['model']=='' and endpoint['base_url']=='' and endpoint['api_key']==''
-    from twobyteasr.ai_providers import adapter_for_stage
-    from twobyteasr.provider_service import ProviderService
+    from twobyteasr.providers.ai_providers import adapter_for_stage
+    from twobyteasr.providers.provider_service import ProviderService
     assert adapter_for_stage(saved,'polish').model==''
     key=ProviderService._config_key(saved,'polish',None)
     saved['models']['polish_model']='unrelated-api-default'

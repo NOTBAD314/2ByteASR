@@ -65,9 +65,9 @@ from PySide6.QtCore import QEvent, QPoint, QTimer, Qt, QCoreApplication, QProces
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QComboBox
 
-from twobyteasr.ui import MainWindow, FramelessPopupCombo
-from twobyteasr.model_workshop import ModelDownloadDialog, WorkshopModel, MODELS
-from twobyteasr.llm_config import read_api_key, save_api_key_for, secrets_path
+from twobyteasr.app.ui import MainWindow, FramelessPopupCombo
+from twobyteasr.local_models.model_workshop import ModelDownloadDialog, WorkshopModel, MODELS
+from twobyteasr.providers.llm_config import read_api_key, save_api_key_for, secrets_path
 
 
 @pytest.fixture
@@ -132,7 +132,7 @@ def test_api_key_persist_in_real_gui(win: MainWindow):
     # To validate "different provider scope does not get our key", we must test against
     # a clean DPAPI file that only contains what we explicitly save in this run.
     import tempfile
-    import twobyteasr.llm_config as lc
+    import twobyteasr.providers.llm_config as lc
     tmpdir = Path(tempfile.mkdtemp(prefix="p0_gui_key_isolated_"))
     isolated = tmpdir / "secrets.dat"
     def _isolated_secrets_path():

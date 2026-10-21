@@ -791,6 +791,14 @@
     ]
   },
   {
+    "name": "pylatexenc",
+    "version": "2.11",
+    "license": "MIT",
+    "license_files": [
+      "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt"
+    ]
+  },
+  {
     "name": "pynndescent",
     "version": "0.6.0",
     "license": "BSD-2-Clause",
@@ -1344,14 +1352,6 @@
     "license": null,
     "license_files": [
       "licenses/python/wheel-0.45.1/LICENSE.txt"
-    ]
-  },
-  {
-    "name": "pylatexenc",
-    "version": "2.11",
-    "license": "MIT",
-    "license_files": [
-      "licenses/python/pylatexenc-2.11/licenses/LICENSE.txt"
     ]
   }
 ]

@@ -8,13 +8,13 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment, store_sequence, projected_cues
-from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
-from twobyteasr.export_timeline import write_export_ass
-from twobyteasr.video_export import capture_video_graph
-from twobyteasr.studio_render import RenderJob, RenderSettings, run_render_job
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence, projected_cues
+from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
+from twobyteasr.exports.export_timeline import write_export_ass
+from twobyteasr.exports.video_export import capture_video_graph
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, run_render_job
 
 FFMPEG = Path(__file__).resolve().parents[1] / "tools/ffmpeg/bin/ffmpeg.exe"
 pytestmark = pytest.mark.skipif(not FFMPEG.is_file(), reason="bundled FFmpeg required")
@@ -66,7 +66,7 @@ def test_export_content_cadence(tmp_path, source_rate, output_rate, speed, route
                        width=320, height=180, fps=output_fps, audio_codec="aac"),
         duration_seconds=duration, video_graph=graph)
     if route == "static":
-        from twobyteasr.advanced_renderer import AdvancedRendererBackend
+        from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend
         AdvancedRendererBackend().render(snapshot, FFMPEG, job)
     else:
         run_render_job(FFMPEG, job)

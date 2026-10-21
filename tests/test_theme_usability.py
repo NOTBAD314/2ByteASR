@@ -1,9 +1,9 @@
 import copy
 from types import SimpleNamespace
 import pytest
-from twobyteasr.theme_local_polish import polish_theme
-from twobyteasr.web_placement import cue_placement,scaled_placement
-from twobyteasr.caption_proxy import eligible
+from twobyteasr.caption_design.theme_local_polish import polish_theme
+from twobyteasr.caption_style.web_placement import cue_placement,scaled_placement
+from twobyteasr.rendering.caption_proxy import eligible
 
 
 def artwork():
@@ -40,7 +40,7 @@ def test_polish_without_semantic_binding_fails_without_modifying_source():
 
 
 def test_scaling_keeps_visual_anchor_and_relative_motion():
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
     p=SubtitleProject(media=StudioMedia(path='',width=1920,height=1080,duration_ms=3000),
         cues=[StudioCue('cue',0,3000,'等比缩放')]);p.validate();cue=p.cues[0]
     old=cue_placement(p,cue);a=(.52,.76);value=scaled_placement(p,cue,1.4,a)

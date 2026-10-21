@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 from twobyteasr.runtime_paths import RuntimePaths
-from twobyteasr.storage_service import StorageService
-from twobyteasr.storage_ui import (StoragePanel, app_busy, maintain_registered_storage,
+from twobyteasr.storage.storage_service import StorageService
+from twobyteasr.storage.storage_ui import (StoragePanel, app_busy, maintain_registered_storage,
     run_uv_maintenance, _uv_result_text)
-from twobyteasr.model_download_cache import MARKER, write_transaction
-from twobyteasr.runtime_download_cache import RuntimeCacheResult
+from twobyteasr.local_models.model_download_cache import MARKER, write_transaction
+from twobyteasr.system.runtime_download_cache import RuntimeCacheResult
 
 
 @pytest.fixture
@@ -109,7 +109,7 @@ def test_last_counts_not_truncated_and_uv_cancel_is_unmeasured(service, monkeypa
     (service.state_root / 'last-cleanup.json').write_text(json.dumps(dict(time=time.time(),
         logical_removed_bytes=123, deleted=[{}], skipped=[], failed=[], pending=[],
         counts=dict(deleted=301, skipped=402, failed=503, pending=604))), encoding='utf8')
-    monkeypatch.setattr('twobyteasr.runtime_download_cache.prune_runtime_download_cache',
+    monkeypatch.setattr('twobyteasr.system.runtime_download_cache.prune_runtime_download_cache',
         lambda *a, **kw: RuntimeCacheResult('cancelled', 'controlled partial cancellation'))
     result = run_uv_maintenance(service, Event())
     payload = json.loads((service.state_root / 'last-uv-cleanup.json').read_text('utf8'))
@@ -132,7 +132,7 @@ def test_uv_record_refuses_state_directory_junction(service, tmp_path, monkeypat
     outside = tmp_path / 'outside'; outside.mkdir()
     from tests.test_model_removal import junction
     junction(service.state_root, outside)
-    monkeypatch.setattr('twobyteasr.runtime_download_cache.prune_runtime_download_cache',
+    monkeypatch.setattr('twobyteasr.system.runtime_download_cache.prune_runtime_download_cache',
         lambda *a, **kw: RuntimeCacheResult('skipped', 'busy'))
     result = run_uv_maintenance(service, Event())
     assert not list(outside.iterdir()) and '未保存' in result.detail

@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def main() -> int:

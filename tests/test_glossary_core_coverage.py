@@ -1,6 +1,6 @@
 from pathlib import Path
-from twobyteasr.glossary_build import _covers_seed_category, harvest_title_names, _clean_extracted_name
-from twobyteasr.glossary_sources import category_members, HealthBoard, WikiSite
+from twobyteasr.glossary.glossary_build import _covers_seed_category, harvest_title_names, _clean_extracted_name
+from twobyteasr.glossary.glossary_sources import category_members, HealthBoard, WikiSite
 
 
 def test_equipment_and_structured_entity_names_not_navigation():
@@ -11,7 +11,7 @@ def test_equipment_and_structured_entity_names_not_navigation():
 
 
 def test_api_error_does_not_consume_continuation(monkeypatch):
-    monkeypatch.setattr('twobyteasr.glossary_sources._api_get',lambda *a,**k:{'error':{'code':'badcontinue'}})
+    monkeypatch.setattr('twobyteasr.glossary.glossary_sources._api_get',lambda *a,**k:{'error':{'code':'badcontinue'}})
     cursor={'current':{'title':'Category:角色','depth':0},'continue':'token','names':['甲'],'queue':[],'visited':['Category:角色']}
     result=category_members(WikiSite('https://example.com/api.php'),'Category:角色',board=HealthBoard(),cursor=cursor)
     assert result==['甲'] and not result.complete
@@ -19,13 +19,13 @@ def test_api_error_does_not_consume_continuation(monkeypatch):
 
 
 def test_skill_titles_require_semantic_container_and_reject_placeholders():
-    from twobyteasr.glossary_build import harvest_character_skills
+    from twobyteasr.glossary.glossary_build import harvest_character_skills
     html='<nav class="title-line">导航</nav><div class="skill-box"><div class="title-line"><b>终局清账</b></div><div>这不是技能名</div></div><div class="skill-box"><div class="skill-title">{{{缺失}}}</div></div>'
     assert harvest_character_skills(html)==['终局清账']
 
 
 def test_default_recommendation_requires_both_evidence_and_value():
-    from twobyteasr.glossary_skill import SearchedTerm,diff_term_updates
+    from twobyteasr.glossary.glossary_skill import SearchedTerm,diff_term_updates
     base=dict(category_key='character',category='角色',sources=({'url':'https://example.com/roster'},))
     candidates=[SearchedTerm('可靠',verification='catalog_verified',**base),
         SearchedTerm('网址',verification='sourced',**base),
@@ -42,7 +42,7 @@ def test_category_resume_continuation_and_child_preserve_progress(monkeypatch):
             return {'query':{'categorymembers':[{'title':'甲','ns':0},{'title':'Category:已公开','ns':14}]},'continue':{'cmcontinue':'next-page'}}
         if params['cmtitle']=='Category:角色':return {'query':{'categorymembers':[{'title':'乙','ns':0}]}}
         return {'query':{'categorymembers':[{'title':'丙','ns':0}]}}
-    monkeypatch.setattr('twobyteasr.glossary_sources._api_get',api)
+    monkeypatch.setattr('twobyteasr.glossary.glossary_sources._api_get',api)
     cursor={};board=HealthBoard();site=WikiSite('https://example.com/api.php')
     first=category_members(site,'Category:角色',board=board,max_pages=1,cursor=cursor)
     assert first==['甲'] and not first.complete
@@ -54,7 +54,7 @@ def test_category_resume_continuation_and_child_preserve_progress(monkeypatch):
 
 def test_adoption_preserves_evidence_and_existing_manual_record(tmp_path,monkeypatch):
     import subtitle_core as legacy
-    from twobyteasr import glossary_skill as gs
+    from twobyteasr.glossary import glossary_skill as gs
     monkeypatch.setattr(legacy,'LEARNED_TERMS_PATH',str(tmp_path/'terms.json'))
     monkeypatch.setattr(gs,'update_history_path',lambda:tmp_path/'history.json')
     legacy.add_learned_mapping('测试','旧词','旧词')

@@ -3,7 +3,7 @@ from collections import Counter
 from pathlib import Path
 
 import subtitle_core
-from twobyteasr import output
+from twobyteasr.subtitle_rules import output
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "p14_real_task_report.json"
@@ -110,7 +110,7 @@ def test_split_batch_fallbacks_are_counted_per_original_batch(capsys):
     """2026-10-14 user report: a 2-hour Japanese job finished every stage, then
     failed with ``invalid literal for int() with base 10: '2.1.2'`` because a
     batch split twice (truncated model output) had fallen back."""
-    from twobyteasr import reporting
+    from twobyteasr.recognition import reporting
     subtitle_core.reset_review_items()
     for index in ("2.1.2", "2.2", 4):
         subtitle_core.add_review_item(1, "校对回退", "fixture", f"batch {index}", priority=3,

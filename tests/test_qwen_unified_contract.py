@@ -3,9 +3,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import subtitle_core as core
-from twobyteasr import asr
-from twobyteasr.correction_safety import reference_consensus_edits,apply_reference_consensus_corrections
-from twobyteasr.caption_arbitration import arbitrate
+from twobyteasr.recognition import asr
+from twobyteasr.subtitle_rules.correction_safety import reference_consensus_edits,apply_reference_consensus_corrections
+from twobyteasr.recognition.caption_arbitration import arbitrate
 
 @pytest.mark.parametrize("frozen",[False,True])
 def test_source_frozen_identical_context_pcm_policy(monkeypatch,tmp_path,frozen):
@@ -16,7 +16,7 @@ def test_source_frozen_identical_context_pcm_policy(monkeypatch,tmp_path,frozen)
     monkeypatch.setattr(asr,'resolve_qwen_asr_local_source',lambda:'fixed-model')
     monkeypatch.setattr(asr,'media_cache_context',lambda p:{'cache_dir':str(tmp_path)})
     monkeypatch.setattr(asr,'_main_worker_python',lambda:sys.executable)
-    monkeypatch.setattr(asr,'SCRIPT_DIR',str(Path(asr.__file__).resolve().parents[1]))
+    monkeypatch.setattr(asr,'SCRIPT_DIR',str(Path(asr.__file__).resolve().parents[2]))
     def run(cmd,output,**kw):
         m=json.loads(Path(cmd[cmd.index('--manifest')+1]).read_text('utf8'));j=m['jobs'][0]
         assert '真实标题' in j['context'] and 'shared_audio' not in j['context']
@@ -45,7 +45,7 @@ def test_source_frozen_identical_context_pcm_policy(monkeypatch,tmp_path,frozen)
 @pytest.mark.parametrize('rows',[[],[dict(segment_id=2,text='错号')],[dict(segment_id=1,text='多段'),dict(segment_id=1,text='重复')]])
 def test_partial_reordered_duplicate_errors(monkeypatch,tmp_path,rows):
     monkeypatch.setattr(asr,'_main_worker_python',lambda:sys.executable)
-    monkeypatch.setattr(asr,'SCRIPT_DIR',str(Path(asr.__file__).resolve().parents[1]))
+    monkeypatch.setattr(asr,'SCRIPT_DIR',str(Path(asr.__file__).resolve().parents[2]))
     monkeypatch.setattr(asr,'_run_isolated_asr_worker',lambda *a,**k:{'results':rows})
     pcm=np.ones(3,dtype=np.float32)
     with pytest.raises(RuntimeError,match='missing, reordered or duplicate'):
@@ -79,7 +79,7 @@ def test_worker_batch_pcm_and_tail_protocol_only(monkeypatch,tmp_path):
     monkeypatch.setitem(sys.modules,'torch',torch);monkeypatch.setitem(sys.modules,'qwen_asr',types.SimpleNamespace(Qwen3ASRModel=Qwen))
     monkeypatch.setattr('twobyteasr.model_integrity.verify_model_files',lambda *a,**k:None)
     monkeypatch.setattr(sys,'argv',['worker','--manifest',str(m),'--output',str(out),'--model-dir',str(tmp_path)])
-    runpy.run_path(str(Path(asr.__file__).resolve().parents[1]/'qwen_asr_worker.py'),run_name='__main__')
+    runpy.run_path(str(Path(asr.__file__).resolve().parents[2]/'qwen_asr_worker.py'),run_name='__main__')
     assert [len(c['audio']) for c in calls]==[2,1]
     for got,want in zip([a[0] for c in calls for a in c['audio']],arrays):assert np.array_equal(got,want)
     result=json.loads(out.read_text('utf8'));assert [r['segment_id'] for r in result['results']]==[1,2,3] and result['policy']==policy
@@ -90,5 +90,5 @@ def test_worker_batch_pcm_and_tail_protocol_only(monkeypatch,tmp_path):
     # replace the retained successful output.
     before=out.read_bytes();np.save(jobs[-1]['path'],np.array([99],dtype=np.float32),allow_pickle=False)
     with pytest.raises(SystemExit) as failed:
-        runpy.run_path(str(Path(asr.__file__).resolve().parents[1]/'qwen_asr_worker.py'),run_name='__main__')
+        runpy.run_path(str(Path(asr.__file__).resolve().parents[2]/'qwen_asr_worker.py'),run_name='__main__')
     assert failed.value.code==1 and out.read_bytes()==before

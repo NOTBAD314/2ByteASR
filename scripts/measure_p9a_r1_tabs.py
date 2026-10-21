@@ -13,9 +13,9 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_theme import build_studio_qss
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.theme_manager import apply_application_theme
+from twobyteasr.design.studio_theme import build_studio_qss
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.design.theme_manager import apply_application_theme
 
 
 def main() -> int:

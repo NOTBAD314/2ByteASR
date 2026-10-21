@@ -10,7 +10,7 @@ import sys
 import zipfile
 
 import pytest
-from twobyteasr.runtime_download_cache import clean_runtime_download_cache
+from twobyteasr.system.runtime_download_cache import clean_runtime_download_cache
 
 
 def test_official_manual_clean_preserves_hardlinked_installed_package(tmp_path):

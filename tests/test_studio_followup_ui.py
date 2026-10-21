@@ -5,8 +5,8 @@ import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.home_studio_entry import StudioEntryCard, studio_paper_colors
-from twobyteasr.ui_theme import theme_definition
+from twobyteasr.app.home_studio_entry import StudioEntryCard, studio_paper_colors
+from twobyteasr.design.ui_theme import theme_definition
 
 @pytest.fixture(scope="module")
 def app():
@@ -24,10 +24,10 @@ def test_paper_card_background_click_and_keyboard_enter(app):
 
 
 def test_drop_into_new_v3_v4_preserves_destination_time_and_undo(app, tmp_path, monkeypatch):
-    from twobyteasr.media_ingest import MediaIngestResult
-    from twobyteasr.studio_media_pool import create_video_track
-    from twobyteasr.studio_project import StudioMedia, SubtitleProject
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.media.media_ingest import MediaIngestResult
+    from twobyteasr.timeline.studio_media_pool import create_video_track
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
     page = SubtitleStudioPage()
     project = SubtitleProject(media=StudioMedia(path=str(tmp_path/'base.mp4'), duration_ms=10000))
     project.validate(); create_video_track(project)

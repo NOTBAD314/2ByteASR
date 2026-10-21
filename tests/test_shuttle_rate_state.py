@@ -4,7 +4,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QComboBox
-from twobyteasr.studio_playback_flow import StudioPlaybackFlowMixin
+from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
 
 
 class Page(StudioPlaybackFlowMixin, QWidget):

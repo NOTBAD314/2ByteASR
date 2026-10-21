@@ -5,11 +5,11 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, AudioTrack, AudioClip, save_project, load_project
-from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_video_track_state
-from twobyteasr.studio_media_commands import media_graph_command
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_clip_edit import playhead_edit_command, ripple_ranges_command, reassign_clips_command, clip_edit_command
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, AudioTrack, AudioClip, save_project, load_project
+from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_video_track_state
+from twobyteasr.timeline.studio_media_commands import media_graph_command
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.timeline.studio_clip_edit import playhead_edit_command, ripple_ranges_command, reassign_clips_command, clip_edit_command
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -108,7 +108,7 @@ def test_move_to_primary_and_back_preserves_identity_settings_and_audio(tmp_path
     c.effects['blendMode']='screen'
     c.playback_rate=2
     c.timeline_out_ms=40000
-    from twobyteasr.studio_project import sync_linked_av_contract
+    from twobyteasr.projects.studio_project import sync_linked_av_contract
     sync_linked_av_contract(p)
     source = copy.deepcopy(c)
     a = next(a for a in p.audio_tracks[1].clips if a.linked_video_clip_id==c.id)
@@ -148,8 +148,8 @@ def test_multi_select_keeps_spacing():
 
 
 def test_moved_caption_owner_survives_split_save_undo_without_guessing_v2(tmp_path):
-    from twobyteasr.studio_project import StudioCue
-    from twobyteasr.studio_edit_sequence import projected_cues
+    from twobyteasr.projects.studio_project import StudioCue
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues
     p=project();p.cues=[StudioCue('voice',5000,9000,'字幕跟随')]
     old=copy.deepcopy(p.to_dict())
     command=reassign_clips_command(p,'V1','V2',[p.video_tracks[0].clips[0].id],start=70000)
@@ -167,7 +167,7 @@ def test_moved_caption_owner_survives_split_save_undo_without_guessing_v2(tmp_pa
 
 
 def test_empty_video_delete_preserves_independent_audio():
-    from twobyteasr.studio_track_delete import DeleteTrackCommand
+    from twobyteasr.timeline.studio_track_delete import DeleteTrackCommand
     p=project();c=p.video_tracks[1].clips[0]
     reassign_clips_command(p,'V2','V1',[c.id],append=True).redo()
     audio=p.audio_tracks[1]
@@ -180,8 +180,8 @@ def test_empty_video_delete_preserves_independent_audio():
 
 
 def test_locked_properties_and_linked_gain_refuse():
-    from twobyteasr.studio_media_pool import rename_video_track,reorder_video_track
-    from twobyteasr.studio_track_gain import gain_command
+    from twobyteasr.timeline.studio_media_pool import rename_video_track,reorder_video_track
+    from twobyteasr.timeline.studio_track_gain import gain_command
     p=project();set_video_track_state(p,'V2',locked=True);before=p.to_dict()
     for action in (lambda:set_video_track_state(p,'V2',enabled=False),
                    lambda:rename_video_track(p,'V2','x'),lambda:reorder_video_track(p,'V1',1),
@@ -191,8 +191,8 @@ def test_locked_properties_and_linked_gain_refuse():
 
 
 def test_recognition_instance_ownership_follows_cross_lane_and_locked_caption_rejects():
-    from twobyteasr.studio_project import StudioCue
-    from twobyteasr.studio_edit_sequence import projected_cues
+    from twobyteasr.projects.studio_project import StudioCue
+    from twobyteasr.timeline.studio_edit_sequence import projected_cues
     p=project();p.cues=[StudioCue('voice',5000,9000,'识别快照',speaker_id='S1'),
                         StudioCue('independent',50000,51000,'独立字幕',speaker_id='S2')]
     p.generation_metadata['timeline_recognition']={'sequence':copy.deepcopy(sequence_of(p).to_dict())}
@@ -207,7 +207,7 @@ def test_recognition_instance_ownership_follows_cross_lane_and_locked_caption_re
 
 def test_primary_rebind_uses_source_clock_and_explicit_project_coordinate(tmp_path):
     from types import SimpleNamespace
-    from twobyteasr.studio_video_canvas import MpvCanvas
+    from twobyteasr.studio.studio_video_canvas import MpvCanvas
     canvas=MpvCanvas()
     posts=[]
     canvas.controller=SimpleNamespace(running=True,
@@ -225,7 +225,7 @@ def test_primary_rebind_uses_source_clock_and_explicit_project_coordinate(tmp_pa
 
 def test_secondary_deep_source_seek_is_not_clamped_to_project_duration():
     from types import SimpleNamespace
-    from twobyteasr.studio_video_canvas import MpvCanvas
+    from twobyteasr.studio.studio_video_canvas import MpvCanvas
     canvas=MpvCanvas();posts=[]
     canvas.controller=SimpleNamespace(running=True,post_seek=lambda seconds,**kw:posts.append(seconds) or True)
     canvas._duration=25
@@ -240,7 +240,7 @@ def test_secondary_deep_source_seek_is_not_clamped_to_project_duration():
     (True,'READY',False,False),(False,'MEDIA_OPENING',True,False),(False,'READY',False,True)])
 def test_late_source_rebind_preserves_pending_play_request(buffered,startup,requested,expected):
     from types import SimpleNamespace
-    from twobyteasr.studio_video_flow import StudioVideoFlowMixin
+    from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
     pauses=[]
     page=SimpleNamespace(video=SimpleNamespace(_paused=True,_buffered_play_pending=buffered,
         _startup_state=startup,_startup_play_requested=requested,set_paused=pauses.append),

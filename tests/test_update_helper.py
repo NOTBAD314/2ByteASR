@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr import update_manifest as um
+from twobyteasr.app import update_manifest as um
 
 ROOT = Path(__file__).resolve().parents[1]
 CSC = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
@@ -53,7 +53,7 @@ def case(tmp_path, binaries):
     install, staging = tmp_path / "Programs" / "2ByteASR", tmp_path / "updates" / "s" / "abc"
     install.mkdir(parents=True)
     shutil.copy2(fake, install / "2ByteASR.exe")
-    _write(install, "twobyteasr/ui.py", b"old ui")
+    _write(install, "twobyteasr/app/ui.py", b"old ui")
     _write(install, "twobyteasr/retired.py", b"retired")
     _write(install, "renderer/node_modules/x.js", b"renderer")
     for name in um.PRESERVED_FILES:
@@ -62,12 +62,12 @@ def case(tmp_path, binaries):
     (install / um.COMPONENTS_FILENAME).write_text(json.dumps(old), encoding="utf-8")
     staging.mkdir(parents=True)
     shutil.copy2(fake, staging / "2ByteASR.exe")
-    _write(staging, "twobyteasr/ui.py", b"new ui")
+    _write(staging, "twobyteasr/app/ui.py", b"new ui")
     _write(staging, "twobyteasr/added.py", b"added")
     new_install = tmp_path / "expected"
     shutil.copytree(install, new_install)
     (new_install / "twobyteasr/retired.py").unlink()
-    _write(new_install, "twobyteasr/ui.py", b"new ui")
+    _write(new_install, "twobyteasr/app/ui.py", b"new ui")
     _write(new_install, "twobyteasr/added.py", b"added")
     new_manifest = um.build_installed_manifest(new_install, version="0.6.6")
     (staging / um.COMPONENTS_FILENAME).write_text(json.dumps(new_manifest), encoding="utf-8")
@@ -77,7 +77,7 @@ def case(tmp_path, binaries):
     helper.parent.mkdir(parents=True)
     shutil.copy2(helper_src, helper)
     return {"install": install, "staging": staging, "helper": helper, "tmp": tmp_path,
-            "replace": ["2ByteASR.exe", "twobyteasr/ui.py", "twobyteasr/added.py"],
+            "replace": ["2ByteASR.exe", "twobyteasr/app/ui.py", "twobyteasr/added.py"],
             "remove": ["twobyteasr/retired.py"]}
 
 
@@ -110,7 +110,7 @@ def test_apply_replaces_only_planned_files_and_keeps_user_data(case):
     before = _tree(case["install"])
     assert _run(case, _plan(case)) == 0
     after = _tree(case["install"])
-    assert (case["install"] / "twobyteasr/ui.py").read_bytes() == b"new ui"
+    assert (case["install"] / "twobyteasr/app/ui.py").read_bytes() == b"new ui"
     assert (case["install"] / "twobyteasr/added.py").read_bytes() == b"added"
     assert not (case["install"] / "twobyteasr/retired.py").exists()
     for name in (*um.PRESERVED_FILES, "my-notes.txt", "renderer/node_modules/x.js"):
@@ -136,7 +136,7 @@ def test_locked_readonly_or_missing_files_abort_before_any_change(case):
     before = _tree(case["install"])
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateFileW.restype = ctypes.c_void_p
-    handle = kernel32.CreateFileW(str(case["install"] / "twobyteasr/ui.py"), 0x80000000, 0, None, 3, 0x80, None)
+    handle = kernel32.CreateFileW(str(case["install"] / "twobyteasr/app/ui.py"), 0x80000000, 0, None, 3, 0x80, None)
     try:
         assert _run(case, _plan(case)) == 2
         assert "占用" in _result(case)["detail"]
@@ -153,13 +153,13 @@ def test_locked_readonly_or_missing_files_abort_before_any_change(case):
     (case["staging"] / "twobyteasr/added.py").unlink()
     assert _run(case, _plan(case)) == 2
     assert "暂存文件缺失" in _result(case)["detail"]
-    assert (case["install"] / "twobyteasr/ui.py").read_bytes() == b"old ui"
+    assert (case["install"] / "twobyteasr/app/ui.py").read_bytes() == b"old ui"
 
 
 def test_insufficient_space_aborts(case):
     assert _run(case, _plan(case, extra=["reserve_bytes\t9000000000000000"])) == 2
     assert "空间不足" in _result(case)["detail"]
-    assert (case["install"] / "twobyteasr/ui.py").read_bytes() == b"old ui"
+    assert (case["install"] / "twobyteasr/app/ui.py").read_bytes() == b"old ui"
 
 
 def test_running_program_blocks_the_update(case):
@@ -172,7 +172,7 @@ def test_running_program_blocks_the_update(case):
     finally:
         process.kill()
         process.wait()
-    assert (case["install"] / "twobyteasr/ui.py").read_bytes() == b"old ui"
+    assert (case["install"] / "twobyteasr/app/ui.py").read_bytes() == b"old ui"
 
 
 @pytest.mark.parametrize("bad", [
@@ -193,7 +193,7 @@ def test_restart_confirmation_keeps_new_version(case):
     code = _run(case, _plan(case, restart=True),
                 env={"TWOBYTEASR_FAKE_BEHAVIOR": "confirm", "TWOBYTEASR_FAKE_STARTED": str(marker)})
     assert code == 0
-    assert (case["install"] / "twobyteasr/ui.py").read_bytes() == b"new ui"
+    assert (case["install"] / "twobyteasr/app/ui.py").read_bytes() == b"new ui"
     assert "confirm-" in marker.read_text()
 
 
@@ -212,17 +212,17 @@ def test_new_version_that_fails_to_start_is_rolled_back(case):
 def test_interrupted_journal_is_recovered(case):
     install = case["install"]
     backup = install / ".update-backup" / "tx"
-    (backup / "twobyteasr").mkdir(parents=True)
-    os.replace(install / "twobyteasr/ui.py", backup / "twobyteasr/ui.py")
-    (install / "twobyteasr/ui.py").write_bytes(b"half-written new ui")
+    (backup / "twobyteasr" / "app").mkdir(parents=True)
+    os.replace(install / "twobyteasr/app/ui.py", backup / "twobyteasr/app/ui.py")
+    (install / "twobyteasr/app/ui.py").write_bytes(b"half-written new ui")
     state = install / ".update-state"
     state.mkdir(exist_ok=True)
     (state / "journal.txt").write_text(
         f"2BYTEASR-UPDATE-JOURNAL\t1\nTXID\ttx\nBACKUP\t{backup}\nFROM\t0.6.5\nTO\t0.6.6\n"
-        "MOVED\ttwobyteasr/ui.py\nPLACED\ttwobyteasr/ui.py\n", encoding="utf-8")
+        "MOVED\ttwobyteasr/app/ui.py\nPLACED\ttwobyteasr/app/ui.py\n", encoding="utf-8")
     result = subprocess.run([str(case["helper"]), "--rollback", str(install), "--quiet"], timeout=60)
     assert result.returncode == 0
-    assert (install / "twobyteasr/ui.py").read_bytes() == b"old ui"
+    assert (install / "twobyteasr/app/ui.py").read_bytes() == b"old ui"
     assert not (state / "journal.txt").exists()
 
 
@@ -242,7 +242,7 @@ def test_prune_after_setup_removes_only_exact_retired_files(case):
     assert result.returncode == 0
     assert not (install / "twobyteasr/retired.py").exists()
     assert retired_changed.exists()
-    for name in (*um.PRESERVED_FILES, "my-notes.txt", "twobyteasr/ui.py"):
+    for name in (*um.PRESERVED_FILES, "my-notes.txt", "twobyteasr/app/ui.py"):
         assert (install / name).exists()
 
 

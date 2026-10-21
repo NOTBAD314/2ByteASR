@@ -2,11 +2,11 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage
-from twobyteasr.frame_export import save_project_frame,safe_frame_name
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
-from twobyteasr.video_export import capture_video_graph
-from twobyteasr.export_timeline import export_project_snapshot
-from twobyteasr.processes import run_hidden_subprocess
+from twobyteasr.exports.frame_export import save_project_frame,safe_frame_name
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
+from twobyteasr.exports.video_export import capture_video_graph
+from twobyteasr.exports.export_timeline import export_project_snapshot
+from twobyteasr.system.processes import run_hidden_subprocess
 
 FFMPEG=Path(__file__).resolve().parents[1]/'tools/ffmpeg/bin/ffmpeg.exe'
 
@@ -31,8 +31,8 @@ def test_exact_frame_unique_outputs_and_caption_option(tmp_path):
 
 
 def test_frame_composes_layers_visibility_and_trim_rate(tmp_path):
-    from twobyteasr.studio_project import VideoTransform
-    from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip
+    from twobyteasr.projects.studio_project import VideoTransform
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip
     app=QApplication.instance() or QApplication([])
     paths=[]
     for color in ('red','blue','lime'):
@@ -63,10 +63,10 @@ def test_frame_composes_layers_visibility_and_trim_rate(tmp_path):
 def test_frame_inside_a_seam_draws_the_transition(tmp_path,look,milliseconds,check):
     # Same edit as the export check: red 0–1.5 s cut to blue, 1 s seam
     # 1.0–2.0 s. Without the transition only one clip covers each instant.
-    from twobyteasr.studio_project import VideoClip
-    from twobyteasr.studio_edit_sequence import sequence_of
-    from twobyteasr.studio_media_pool import sync_linked_av_contract
-    from twobyteasr.studio_transitions import set_transition
+    from twobyteasr.projects.studio_project import VideoClip
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_media_pool import sync_linked_av_contract
+    from twobyteasr.timeline.studio_transitions import set_transition
     app=QApplication.instance() or QApplication([])
     source=tmp_path/'red then blue.mkv'
     run_hidden_subprocess([str(FFMPEG),'-v','error','-y','-f','lavfi','-i','color=red:s=160x90:r=10:d=2',

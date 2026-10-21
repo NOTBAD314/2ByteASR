@@ -15,8 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.models import SubtitleCue
-from twobyteasr.studio_project import create_studio_outputs, load_project
+from twobyteasr.recognition.transcript_data import SubtitleCue
+from twobyteasr.projects.studio_project import create_studio_outputs, load_project
 
 
 V1 = ROOT / "tmp" / "p74b" / "headed-fixture-media" / "v1-blue-grid.mp4"

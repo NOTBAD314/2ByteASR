@@ -2,7 +2,7 @@
 """Actual path guards; all files and profiles belong to pytest's owned tmp."""
 from pathlib import Path
 import pytest
-from twobyteasr.studio_acceptance_audit import audit_directory,audit_tmp_root
+from twobyteasr.acceptance.studio_acceptance_audit import audit_directory,audit_tmp_root
 
 
 @pytest.fixture

@@ -21,7 +21,7 @@ def main():
         if not p.is_relative_to(ROOT) or not p.is_file() or digest(p)!=item['sha256']:
             raise ValueError('Source attachment mismatch: '+item['path'])
     sys.path.insert(0,str(ROOT))
-    from twobyteasr.build_identity import source_snapshot_sha256
+    from twobyteasr.diagnostics.build_identity import source_snapshot_sha256
     identity=receipt['identity']
     fingerprint,count=source_snapshot_sha256(ROOT,[ROOT/p for p in receipt['build_input_paths']])
     if (fingerprint,count)!=(identity['source_sha256'],identity['source_file_count']): raise ValueError('Build identity mismatch')

@@ -17,7 +17,7 @@ def test_single_compound_amount_avoids_arabic_chinese_hybrid():
 
 
 def test_cleanup_keeps_number_spelling_until_explicit_formatting_stage():
-    from twobyteasr.number_fidelity import format_numbers
+    from twobyteasr.subtitle_rules.number_fidelity import format_numbers
     assert subtitle_core.normalize_output_text("这1万多威力吗") == "这1万多威力吗"
     assert subtitle_core.normalize_output_text("这百分之1万有问题") == "这百分之1万有问题"
     assert subtitle_core.normalize_output_text("十六层毒") == "十六层毒"

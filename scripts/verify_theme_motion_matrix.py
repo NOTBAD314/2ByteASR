@@ -25,10 +25,10 @@ def main():
     from twobyteasr.test_isolation import install
     install()
     from PIL import Image
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html,export_theme_archive
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.theme_direction_preview import render_motion_preview
-    from twobyteasr.web_theme_fonts import font_use_receipt
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html,export_theme_archive
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
+    from twobyteasr.caption_design.web_theme_fonts import font_use_receipt
     theme=WebThemeDocument.from_dict(json.loads(args.theme.read_text('utf8'))).to_dict()
     (out/'theme.json').write_text(json.dumps(theme,ensure_ascii=False,indent=2),'utf8')
     result=dict(source=str(args.theme.resolve()),provider_calls=0,checks={},durations={})

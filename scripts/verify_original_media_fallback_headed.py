@@ -53,14 +53,14 @@ def main():
     os.environ.update(TWOBYTEASR_TEST_ROOT=str(output),PYTHONUTF8='1')
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.storage_service import safe_path
+    from twobyteasr.storage.storage_service import safe_path
     if not safe_path(source,(source.parent,)):raise ValueError('Original path contains links or cannot be verified')
 
     if args.worker:return run_ui(args,source,output)
-    from twobyteasr.audio_engine import studio_ffmpeg_path
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.indexed_media import IndexedMediaCache
-    from twobyteasr.studio_project import StudioMedia,StudioCue,StudioSpeaker,SubtitleProject,save_project
+    from twobyteasr.playback.audio_engine import studio_ffmpeg_path
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.media.indexed_media import IndexedMediaCache
+    from twobyteasr.projects.studio_project import StudioMedia,StudioCue,StudioSpeaker,SubtitleProject,save_project
     before=identity(source);ffmpeg=Path(studio_ffmpeg_path());probe=ffmpeg.with_name('ffprobe.exe' if os.name=='nt' else 'ffprobe')
     command=[str(probe),'-v','error','-show_entries',
         'format=duration,start_time,size:stream=codec_type,codec_name,width,height,avg_frame_rate',
@@ -125,9 +125,9 @@ def main():
 
 
 def render_sample(project,ffmpeg,probe,start,output):
-    from twobyteasr.ass_compiler import compile_ass
-    from twobyteasr.studio_render import RenderSettings,RenderJob,run_render_job
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.rendering.ass_compiler import compile_ass
+    from twobyteasr.exports.studio_render import RenderSettings,RenderJob,run_render_job
+    from twobyteasr.system.processes import run_hidden_subprocess
     ass=output/'sample.ass';ass.write_text(compile_ass(project),'utf-8-sig')
     target=output/'original-two-second.mp4';traces=[];started=time.monotonic()
     settings=RenderSettings(encoder='libx264',audio_codec='aac',preset='ultrafast',width=640,height=360,fps=25)
@@ -146,8 +146,8 @@ def render_sample(project,ffmpeg,probe,start,output):
 
 
 def run_ui(args,source,output):
-    from twobyteasr import media_storage_audit
-    from twobyteasr.indexed_media import GLOBAL_INDEXED_MEDIA
+    from twobyteasr.acceptance import media_storage_audit
+    from twobyteasr.media.indexed_media import GLOBAL_INDEXED_MEDIA
     GLOBAL_INDEXED_MEDIA._sync_scan_done.update((str(source),str(source.resolve())))
     GLOBAL_INDEXED_MEDIA.sync_map=lambda path:None
     def generation_denied(*args,**kwargs):
@@ -158,8 +158,8 @@ def run_ui(args,source,output):
         from PySide6.QtCore import QObject,QTimer,Qt
         from PySide6.QtWidgets import QApplication,QMessageBox,QFileDialog
         from PySide6.QtTest import QTest
-        from twobyteasr.blank_project_audit import _capture
-        from twobyteasr import blank_project_audit
+        from twobyteasr.acceptance.blank_project_audit import _capture
+        from twobyteasr.acceptance import blank_project_audit
         class Audit(QObject):
             def __init__(self):
                 super().__init__(window);self.page=window.studio_page;self.active=False

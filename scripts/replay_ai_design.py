@@ -11,9 +11,9 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 def replay(source: Path, output: Path, *, render=False, text=None):
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set,canonical,VERSION
-    from twobyteasr.authored_repair import collect_issues
-    from twobyteasr.web_theme_compiler import parse_object
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set,canonical,VERSION
+    from twobyteasr.caption_design.authored_repair import collect_issues
+    from twobyteasr.caption_design.web_theme_compiler import parse_object
     output.mkdir(parents=True,exist_ok=True)
     prior=json.loads(source.read_text('utf8'))
     raw_path=source.parent/'provider-original.txt'
@@ -35,9 +35,9 @@ def replay(source: Path, output: Path, *, render=False, text=None):
         row={'id':c['id'],'name':c['name'],'technical':c.get('technical_status','passed')}
         report['candidates'].append(row)
         if row['technical']=='failed' or not render:continue
-        from twobyteasr.renderer_service import RendererService
-        from twobyteasr.web_theme import theme_archive_html
-        from twobyteasr.theme_direction_preview import render_motion_preview
+        from twobyteasr.rendering.renderer_service import RendererService
+        from twobyteasr.caption_design.web_theme import theme_archive_html
+        from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
         from PIL import Image
         started=time.monotonic();service=RendererService()
         try:

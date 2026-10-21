@@ -16,7 +16,7 @@ def test_frozen_startup_log_goes_to_user_data(monkeypatch, tmp_path):
 
 
 def test_frozen_trace_goes_to_user_data(monkeypatch, tmp_path):
-    from twobyteasr import startup_trace
+    from twobyteasr.diagnostics import startup_trace
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     monkeypatch.delenv('TWOBYTEASR_STARTUP_TRACE', raising=False)
     monkeypatch.setenv('2BYTEASR_USER_DATA_ROOT', str(tmp_path/'user'))
@@ -28,18 +28,18 @@ def test_frozen_trace_goes_to_user_data(monkeypatch, tmp_path):
 
 
 def test_explicit_trace_destination_is_preserved(monkeypatch, tmp_path):
-    from twobyteasr import startup_trace
+    from twobyteasr.diagnostics import startup_trace
     monkeypatch.setattr(sys, 'frozen', True, raising=False)
     monkeypatch.setenv('TWOBYTEASR_STARTUP_TRACE', str(tmp_path/'explicit.jsonl'))
     assert startup_trace._trace_path() == tmp_path/'explicit.jsonl'
 
 
 def test_external_worker_in_installed_bundle_uses_user_log(monkeypatch, tmp_path):
-    from twobyteasr import startup_trace
+    from twobyteasr.diagnostics import startup_trace
     bundle=tmp_path/'application';bundle.mkdir()
     (bundle/'python310.dll').touch()
     monkeypatch.setattr(sys, 'frozen', False, raising=False)
-    monkeypatch.setattr(startup_trace, '__file__', str(bundle/'twobyteasr/startup_trace.py'))
+    monkeypatch.setattr(startup_trace, '__file__', str(bundle/'twobyteasr/diagnostics/startup_trace.py'))
     monkeypatch.delenv('TWOBYTEASR_STARTUP_TRACE', raising=False)
     monkeypatch.setenv('2BYTEASR_USER_DATA_ROOT', str(tmp_path/'user'))
     assert startup_trace._trace_path() == tmp_path/'user/2ByteASR/logs/startup-trace.jsonl'

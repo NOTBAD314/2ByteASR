@@ -8,11 +8,11 @@ from PySide6.QtCore import QEvent, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QUndoStack
 from PySide6.QtWidgets import QApplication, QWidget, QMessageBox
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
-from twobyteasr.studio_timeline import WaveformTimeline
-from twobyteasr.studio_commands import EditCueIntervalsCommand
-from twobyteasr.studio_selection import ClipSelection, copy_selection_command
-from twobyteasr.window_constraints import restore_minimized_window
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
+from twobyteasr.studio.studio_timeline import WaveformTimeline
+from twobyteasr.timeline.studio_commands import EditCueIntervalsCommand
+from twobyteasr.timeline.studio_selection import ClipSelection, copy_selection_command
+from twobyteasr.app.window_constraints import restore_minimized_window
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -110,7 +110,7 @@ def test_alt_drag_copies_multiple_cues_and_cancellation_creates_nothing(tmp_path
 
 
 def test_copy_cues_preserves_style_and_immutable_acoustic_provenance():
-    from twobyteasr.studio_caption_timeline import ensure_independent_captions, KEY
+    from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions, KEY
     p = project()
     ensure_independent_captions(p)
     p.cues[0].appearance_override = {'font_size': 42}
@@ -126,9 +126,9 @@ def test_copy_cues_preserves_style_and_immutable_acoustic_provenance():
 
 
 def test_copy_media_remaps_audio_and_collision_is_atomic():
-    from twobyteasr.studio_project import VideoTrack, VideoClip
-    from twobyteasr.studio_edit_sequence import sequence_of
-    from twobyteasr.studio_media_pool import sync_linked_av_contract
+    from twobyteasr.projects.studio_project import VideoTrack, VideoClip
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_media_pool import sync_linked_av_contract
     p = project()
     p.video_tracks[0].locked = True
     sequence_of(p).video_track_locked = True
@@ -168,7 +168,7 @@ def test_restore_keeps_window_state(maximized):
 
 @pytest.mark.parametrize('exists', [False, True])
 def test_last_card_delete_clears_recent_index_and_repeated_delete(tmp_path, monkeypatch, exists):
-    import twobyteasr.studio_hub as hub
+    import twobyteasr.studio.studio_hub as hub
     path = tmp_path/'last.2byteproj'
     if exists:
         path.write_text('fixture')
@@ -176,7 +176,7 @@ def test_last_card_delete_clears_recent_index_and_repeated_delete(tmp_path, monk
     settings.write_text(json.dumps({'recent_projects': [{'path': str(path).upper()}]}))
     index = {str(path): {'name': '最后一个'}}
     monkeypatch.setattr(hub, 'studio_settings_path', lambda: settings)
-    import twobyteasr.studio_project as sp
+    import twobyteasr.projects.studio_project as sp
     monkeypatch.setattr(sp, 'load_library_index', lambda: index.copy())
     monkeypatch.setattr(sp, 'save_library_index', lambda value: (index.clear(), index.update(value)))
     class Menu:
@@ -200,7 +200,7 @@ def test_last_card_delete_clears_recent_index_and_repeated_delete(tmp_path, monk
 
 @pytest.mark.parametrize('duration, playhead', [(500, 100), (10000, 9000), (0, 7000)])
 def test_manual_add_respects_playhead_short_media_and_undo(monkeypatch, duration, playhead):
-    from twobyteasr.studio_cue_controller import StudioCueController
+    from twobyteasr.studio.studio_cue_controller import StudioCueController
     p = SubtitleProject(media=StudioMedia('', duration_ms=duration), cues=[])
     p.validate()
     stack = QUndoStack()
@@ -218,7 +218,7 @@ def test_manual_add_respects_playhead_short_media_and_undo(monkeypatch, duration
 
 
 def test_uncreated_library_is_empty_and_stale_scan_cannot_restore_index(tmp_path, monkeypatch):
-    import twobyteasr.studio_hub as hub
+    import twobyteasr.studio.studio_hub as hub
     root = tmp_path/'uncreated-library'
     page = SimpleNamespace(_hub_scan_generation=0, recent_project_records=lambda: [])
     monkeypatch.setattr(hub, 'project_library_root', lambda: root)
@@ -250,8 +250,8 @@ def test_ctrl_multi_selection_changes_only_unlocked_selected_ends():
 
 
 def test_manual_add_on_locked_selected_speaker_creates_nothing(monkeypatch):
-    monkeypatch.setattr('twobyteasr.studio_cue_controller.bind_text', lambda *a: None)
-    from twobyteasr.studio_cue_controller import StudioCueController
+    monkeypatch.setattr('twobyteasr.studio.studio_cue_controller.bind_text', lambda *a: None)
+    from twobyteasr.studio.studio_cue_controller import StudioCueController
     p = project(); stack = QUndoStack()
     session = SimpleNamespace(project=p, selected_cue_id='', _cue_lookup={}, undo_stack=stack)
     page = SimpleNamespace(save_state=None, timeline=SimpleNamespace(playhead_ms=8000,

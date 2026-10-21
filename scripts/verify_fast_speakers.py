@@ -24,7 +24,7 @@ def main():
         assert wav.getnchannels()==1
         rate=wav.getframerate()
         audio=np.frombuffer(wav.readframes(wav.getnframes()),dtype='<i2').astype(np.float32)/32768
-    from twobyteasr.speaker_diarization import diarize
+    from twobyteasr.recognition.speaker_diarization import diarize
     records=[]
     for _ in range(2):
         rows,receipt=diarize(source['references'],audio,vad['data'],sample_rate=rate,

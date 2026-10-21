@@ -7,12 +7,12 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_edit_assembly import StudioEditAssemblyMixin
-from twobyteasr.studio_video_flow import StudioVideoFlowMixin
-from twobyteasr.studio_session import StudioSession
-from twobyteasr.studio_edit_sequence import sequence_of, HighlightCandidate
-from twobyteasr.studio_edit_commands import razor_video_command
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_edit_assembly import StudioEditAssemblyMixin
+from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
+from twobyteasr.projects.studio_session import StudioSession
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, HighlightCandidate
+from twobyteasr.timeline.studio_edit_commands import razor_video_command
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 APP = QApplication.instance() or QApplication([])
 
@@ -62,8 +62,8 @@ class Host(QObject, StudioEditAssemblyMixin, StudioVideoFlowMixin):
 
 @pytest.fixture
 def host(tmp_path, monkeypatch):
-    import twobyteasr.studio_edit_assembly as assembly
-    import twobyteasr.studio_video_flow as video
+    import twobyteasr.studio.studio_edit_assembly as assembly
+    import twobyteasr.studio.studio_video_flow as video
     monkeypatch.setattr(assembly, "HighlightAnalyzeWorker", DeferredWorker)
     monkeypatch.setattr(video, "QThread", DeferredWorker)
     monkeypatch.setattr(assembly, "studio_message_box", lambda *a: pytest.fail("late failure dialog"))
@@ -140,8 +140,8 @@ def test_autocut_preview_invalid_after_edit_or_repeated_apply(host):
 
 def test_real_thread_cancel_is_retained_until_finished(host, monkeypatch):
     from PySide6.QtCore import QThread
-    import twobyteasr.studio_edit_assembly as assembly
-    from twobyteasr.studio_analysis_request import cancel_analysis, _running_workers
+    import twobyteasr.studio.studio_edit_assembly as assembly
+    from twobyteasr.studio.studio_analysis_request import cancel_analysis, _running_workers
     class WaitingWorker(QThread):
         finished_ok = Signal(object)
         failed = Signal(str)

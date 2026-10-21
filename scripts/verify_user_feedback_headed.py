@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from twobyteasr.test_isolation import install
 install()
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, project_library_root
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, project_library_root
 out = Path(sys.argv[2]); project_library_root().mkdir(parents=True, exist_ok=True)
 p = SubtitleProject(media=StudioMedia(str(out/'source.mp4'), duration_ms=10000, width=640, height=360), cues=[
     StudioCue('a',1000,3000,'第一条字幕',speaker_id='S1'),StudioCue('b',5000,6500,'第二条字幕',speaker_id='S1')])

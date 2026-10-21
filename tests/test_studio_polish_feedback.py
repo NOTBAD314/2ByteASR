@@ -7,16 +7,16 @@ import pytest
 from PySide6.QtCore import QRect, QSettings, QPoint
 from PySide6.QtGui import QImage, QPixmap, QColor
 from PySide6.QtWidgets import QApplication, QWidget
-from twobyteasr.studio_live_canvas import AdvancedLiveCanvas
-from twobyteasr.theme_manager import apply_theme
-from twobyteasr.studio_theme import create_studio_menu, StudioComboBox
-from twobyteasr.ui_theme import THEMES
+from twobyteasr.rendering.studio_live_canvas import AdvancedLiveCanvas
+from twobyteasr.design.theme_manager import apply_theme
+from twobyteasr.design.studio_theme import create_studio_menu, StudioComboBox
+from twobyteasr.design.ui_theme import THEMES
 
 
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
-    monkeypatch.setattr('twobyteasr.theme_manager._settings', lambda: QSettings(str(tmp_path/'qt.ini'), QSettings.Format.IniFormat))
+    monkeypatch.setattr('twobyteasr.design.theme_manager._settings', lambda: QSettings(str(tmp_path/'qt.ini'), QSettings.Format.IniFormat))
     yield app
 
 

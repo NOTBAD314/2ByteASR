@@ -5,9 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import subtitle_core  # noqa: F401  (production import order: the facade first)
-from twobyteasr.pronouns import (flip_pronouns, is_pronoun_swap, pronoun_options,
+from twobyteasr.subtitle_rules.pronouns import (flip_pronouns, is_pronoun_swap, pronoun_options,
                                                 pronoun_positions, pronoun_swap_in_context)
-from twobyteasr.review_suggestions import (GLOSSARY, MODEL, PRONOUN, model_suggestions,
+from twobyteasr.subtitle_rules.review_suggestions import (GLOSSARY, MODEL, PRONOUN, model_suggestions,
                                                           review_suggestions)
 
 
@@ -83,7 +83,7 @@ def test_stale_mark_never_rewrites_changed_text():
 
 # AI correction ------------------------------------------------------------------
 def test_context_pronoun_fix_passes_the_safety_gate():
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     text, applied = apply_correction_edits('然后他就去打副本了', [], [
         {'from': '他', 'to': '她', 'start': 2, 'end': 3, 'type': 'pronoun_gender', 'evidence': '上句说姐姐'}],
         independent_sources=[])
@@ -92,7 +92,7 @@ def test_context_pronoun_fix_passes_the_safety_gate():
 
 
 def test_pronoun_rule_never_touches_words_or_other_single_characters():
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     decisions = []
     text, applied = apply_correction_edits('其他人先走', [], [{'from': '他', 'to': '她'}],
                                            independent_sources=[], decisions=decisions)
@@ -104,8 +104,8 @@ def test_pronoun_rule_never_touches_words_or_other_single_characters():
 
 
 def test_prompt_and_schema_carry_the_pronoun_rule():
-    from twobyteasr import polishing
-    from twobyteasr.asr_provider_snapshot import POLISH_PROMPT_VERSION
+    from twobyteasr.subtitle_rules import polishing
+    from twobyteasr.providers.asr_provider_snapshot import POLISH_PROMPT_VERSION
     enum = polishing.POLISH_SCHEMA['properties']['cues']['items']['properties']['edits']['items']['properties']['type']['enum']
     assert 'pronoun_gender' in enum
     assert '他/她/它' in polishing.PRONOUN_GENDER_RULE and 'pronoun_gender' in polishing.PRONOUN_GENDER_RULE
@@ -114,7 +114,7 @@ def test_prompt_and_schema_carry_the_pronoun_rule():
 
 # script matching in other languages ------------------------------------------
 def _chars(text, start, step=200):
-    from twobyteasr.script_match import Token
+    from twobyteasr.recognition.script_match import Token
     tokens, at = [], start
     for char in text:
         tokens.append(Token(at, at + step - 20, char, 'segment:0', 'S00'))
@@ -123,7 +123,7 @@ def _chars(text, start, step=200):
 
 
 def test_japanese_script_matches_across_kana_and_width():
-    from twobyteasr.script_match import match_script
+    from twobyteasr.recognition.script_match import match_script
     tokens = _chars('きょうはげーむをやります', 0) + _chars('アリガトウ', 4000)
     result = match_script(['今日はゲームをやります', 'ｱﾘｶﾞﾄｳ'], tokens, language='ja')
     first, second = result.lines
@@ -132,14 +132,14 @@ def test_japanese_script_matches_across_kana_and_width():
 
 
 def test_japanese_kanji_do_not_match_by_chinese_reading():
-    from twobyteasr.script_match import _key
+    from twobyteasr.recognition.script_match import _key
     # 市 and 是 share the Chinese reading shi.
     assert _key('市') == _key('是')
     assert _key('市', 'ja') != _key('是', 'ja')
 
 
 def test_english_script_matches_case_and_full_width_letters():
-    from twobyteasr.script_match import Token, match_script
+    from twobyteasr.recognition.script_match import Token, match_script
     words = [('Hello', 0, 400), ('everyone', 450, 1000), ('welcome', 2000, 2500), ('back', 2550, 2900)]
     tokens = [Token(start, end, text, 'segment:0', 'S00') for text, start, end in words]
     result = match_script(['ＨＥＬＬＯ everyone!', 'Welcome back.'], tokens, language='en')
@@ -149,7 +149,7 @@ def test_english_script_matches_case_and_full_width_letters():
 
 
 def test_home_route_picks_models_by_language():
-    from twobyteasr.home_script_match import script_language, uses_qwen
+    from twobyteasr.app.home_script_match import script_language, uses_qwen
     assert script_language(['今日はゲームをやります、ありがとう']) == 'ja'
     assert script_language(['Hello everyone, welcome back to the stream today']) == 'en'
     assert script_language(['大家好欢迎回来']) == 'zh'

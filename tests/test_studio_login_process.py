@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import processes
-from twobyteasr.ai_providers import AIProviderError, ProviderStatus, AntigravityCLIProvider
-from twobyteasr.codex_cli_provider import CodexCLIProvider
+from twobyteasr.system import processes
+from twobyteasr.providers.ai_providers import AIProviderError, ProviderStatus, AntigravityCLIProvider
+from twobyteasr.providers.codex_cli_provider import CodexCLIProvider
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows console contract')
@@ -30,7 +30,7 @@ def test_visible_child_with_spaces_has_new_console_and_no_hidden_flag(monkeypatc
 
 @pytest.mark.parametrize('logged_in,code', [(True, 0), (False, 1), (True, 1)])
 def test_login_progress_follows_creation_and_records_exit(monkeypatch, logged_in, code):
-    from twobyteasr import codex_cli_provider as module
+    from twobyteasr.providers import codex_cli_provider as module
     provider = CodexCLIProvider(executable=r'C:\Program Files\Codex\codex.exe')
     events = []
     process = SimpleNamespace(pid=321, stderr=io.StringIO('error Bearer private-value\n'),
@@ -50,7 +50,7 @@ def test_login_progress_follows_creation_and_records_exit(monkeypatch, logged_in
 
 
 def test_spawn_failure_never_claims_window_open(monkeypatch):
-    from twobyteasr import codex_cli_provider as module
+    from twobyteasr.providers import codex_cli_provider as module
     provider = CodexCLIProvider(executable='fixture.exe')
     monkeypatch.setattr(module, 'popen_hidden_subprocess', lambda *a, **k: (_ for _ in ()).throw(OSError('denied')))
     progress = []
@@ -67,7 +67,7 @@ def test_cancelled_before_spawn_does_not_open_oauth():
 
 
 def test_agy_hidden_exit_does_not_fall_back_to_console(monkeypatch):
-    from twobyteasr import ai_providers as module
+    from twobyteasr.providers import ai_providers as module
     import threading
     provider = AntigravityCLIProvider(executable='fixture-agy.exe')
     no_session = ProviderStatus(True, False, 'not logged in')
@@ -84,8 +84,8 @@ def test_agy_hidden_exit_does_not_fall_back_to_console(monkeypatch):
 @pytest.mark.parametrize('reason',['用户取消','启动失败'])
 def test_broker_rechecks_existing_account_after_failed_login(monkeypatch, reason):
     import threading
-    from twobyteasr.provider_service import ProviderService,ProviderHealth,ProviderHealthState
-    from twobyteasr.ai_providers import AITransport
+    from twobyteasr.providers.provider_service import ProviderService,ProviderHealth,ProviderHealthState
+    from twobyteasr.providers.ai_providers import AITransport
     adapter=SimpleNamespace(login=lambda **k:(_ for _ in ()).throw(AIProviderError(reason)),
         validate=lambda **k:ProviderStatus(True,True,'ready'))
     runtime=SimpleNamespace(adapter=adapter,login_lock=threading.Lock(),transport=AITransport.CODEX_CLI,
@@ -98,8 +98,8 @@ def test_broker_rechecks_existing_account_after_failed_login(monkeypatch, reason
 
 def test_broker_does_not_open_second_login_window(monkeypatch):
     import threading
-    from twobyteasr.provider_service import ProviderService,ProviderHealth,ProviderHealthState
-    from twobyteasr.ai_providers import AITransport
+    from twobyteasr.providers.provider_service import ProviderService,ProviderHealth,ProviderHealthState
+    from twobyteasr.providers.ai_providers import AITransport
     entered=threading.Event();release=threading.Event();calls=[]
     def login(**kw):
         calls.append(1);entered.set();release.wait(3)

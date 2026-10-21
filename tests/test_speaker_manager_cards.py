@@ -9,11 +9,11 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
-from twobyteasr.speaker_organization import apply_new_project_policy
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.speaker_recovery import candidate_snapshot
-from twobyteasr import studio_speaker_manager
-from twobyteasr.studio_speaker_manager import SpeakerManagerDialog
+from twobyteasr.projects.speaker_organization import apply_new_project_policy
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.recognition.speaker_recovery import candidate_snapshot
+from twobyteasr.studio import studio_speaker_manager
+from twobyteasr.studio.studio_speaker_manager import SpeakerManagerDialog
 
 APP = QApplication.instance() or QApplication([])
 

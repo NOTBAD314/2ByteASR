@@ -6,12 +6,12 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.advanced_live_renderer import render_live_snapshot, render_live_layers
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_live_canvas import AdvancedLiveCanvas
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-from twobyteasr.visual_design_graph import MotionGraph, glitch_graph
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot, render_live_layers
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.rendering.studio_live_canvas import AdvancedLiveCanvas
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.caption_design.visual_design_graph import MotionGraph, glitch_graph
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _snapshot(*, moving=False, effects=False):
@@ -64,7 +64,7 @@ def test_static_composite_keeps_all_pixels_without_second_raster(monkeypatch, dp
     owner, canvas = _visible_canvas()
     def unexpected_raster(*args, **kwargs):
         pytest.fail('A static complete composite must not be rasterized again as layers')
-    monkeypatch.setattr('twobyteasr.studio_live_canvas.render_live_layers', unexpected_raster)
+    monkeypatch.setattr('twobyteasr.rendering.studio_live_canvas.render_live_layers', unexpected_raster)
     canvas.set_visual(QPixmap.fromImage(complete), snapshot)
     assert canvas._compiled_scene is not None and not canvas._compiled_scene.tracks
     for milliseconds, paused in [(600,False), (1800,False), (3000,True), (4100,False)]:

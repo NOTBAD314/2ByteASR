@@ -8,9 +8,9 @@ import wave
 
 import pytest
 
-from twobyteasr import cache
+from twobyteasr.recognition import cache
 from twobyteasr.runtime_paths import RuntimePaths
-from twobyteasr.storage_service import StorageService
+from twobyteasr.storage.storage_service import StorageService
 
 
 @pytest.fixture
@@ -33,7 +33,8 @@ def age_directory(path):
 
 
 def test_recognition_cleanup_preserves_just_reused_timeline_input(owned_storage, monkeypatch):
-    from twobyteasr import recognition_input, timeline_media
+    from twobyteasr.recognition import recognition_input
+    from twobyteasr.exports import timeline_media
 
     # Exercise the real warm-hit validation, including WAV format and SHA.
     snapshot = dict(version=2, duration_ms=1000, audio_graph={"segments": []},
@@ -113,7 +114,7 @@ def test_recognition_cleanup_preserves_remote_evidence_and_missing_source_audio(
 
 
 def test_existing_idle_maintenance_still_reclaims_only_expired_owned_audio(owned_storage, tmp_path):
-    from twobyteasr.storage_ui import maintain_registered_storage
+    from twobyteasr.storage.storage_ui import maintain_registered_storage
 
     source = tmp_path / "source.wav"
     source.write_bytes(b"available source")

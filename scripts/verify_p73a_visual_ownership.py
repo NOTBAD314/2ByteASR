@@ -43,10 +43,10 @@ from PySide6.QtWidgets import QApplication
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.advanced_preview import AdvancedPreviewResidency
-from twobyteasr.p64_runtime_audit import _print_window, _window_bounds
-from twobyteasr.studio_project import (
+from twobyteasr.app import ui
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewResidency
+from twobyteasr.acceptance.p64_runtime_audit import _print_window, _window_bounds
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -54,12 +54,12 @@ from twobyteasr.studio_project import (
     SubtitleStyle,
     save_project,
 )
-from twobyteasr.style_recipe import (
+from twobyteasr.caption_style.style_recipe import (
     FillSpec,
     normalize_glow_contract,
     normalize_shadow_contract,
 )
-from twobyteasr.visual_runtime import VisualOwner
+from twobyteasr.rendering.visual_runtime import VisualOwner
 
 
 FIXTURES = (

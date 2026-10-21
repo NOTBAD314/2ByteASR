@@ -33,7 +33,7 @@ def relocate_media(value, original, replacement):
 
 def relocate_project_media(payload, original, replacement):
     """Validate the original autosave before rebinding its owned copy's source."""
-    from twobyteasr.media_graph_integrity import graph_integrity, validate_autosave_integrity
+    from twobyteasr.projects.media_graph_integrity import graph_integrity, validate_autosave_integrity
     original_integrity = validate_autosave_integrity(payload)
     result = relocate_media(payload, original, replacement)
     relocated_integrity = graph_integrity(result)
@@ -124,7 +124,7 @@ def main():
     os.environ['TWOBYTEASR_STARTUP_TRACE'] = str(output/'startup-trace.jsonl')
     old_path = payload['media']['path']
     payload, relocation = relocate_project_media(payload, old_path, str(source))
-    from twobyteasr.export_target_audit import content_hash, prepare_variant
+    from twobyteasr.acceptance.export_target_audit import content_hash, prepare_variant
     variant = prepare_variant(payload, args.variant)
     project_path = fixture/'audit.2byteproj'
     project_path.write_text(json.dumps(variant, ensure_ascii=False, indent=2), encoding='utf-8')

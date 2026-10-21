@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr import update_manifest as um
-from twobyteasr import updater
+from twobyteasr.app import update_manifest as um
+from twobyteasr.app import updater
 
 
 # ---------------------------------------------------------------- helpers
@@ -47,7 +47,7 @@ def _write(root: Path, rel: str, data: bytes) -> None:
 def _make_payload(root: Path, *, version="0.6.5", app_text=b"app-v1", renderer=b"renderer-v1") -> dict:
     _write(root, "2ByteASR.exe", b"MZ" + app_text)
     _write(root, "2ByteASRUpdater.exe", b"MZ-helper")
-    _write(root, "twobyteasr/ui.py", b"print(1)\n" + app_text)
+    _write(root, "twobyteasr/app/ui.py", b"print(1)\n" + app_text)
     _write(root, "twobyteasr/old_module.py", b"old")
     _write(root, "python310.dll", b"python-dll")
     _write(root, "PySide6/Qt6Core.dll", b"qt")
@@ -185,7 +185,7 @@ def test_classification_keeps_user_files_out_of_every_component():
     assert um.classify(".update-backup/x/2ByteASR.exe") is None
     assert um.classify("2ByteASR.exe") == "app"
     assert um.classify("base_library.zip") == "app"
-    assert um.classify("twobyteasr/ui.py") == "app"
+    assert um.classify("twobyteasr/app/ui.py") == "app"
     assert um.classify("renderer/service.mjs") == "app"
     assert um.classify("renderer/node_modules/a/b.js") == "renderer"
     assert um.classify("renderer/public/fonts/x.otf") == "renderer"
@@ -232,7 +232,7 @@ def test_signature_accepts_only_embedded_keys(trusted_key):
 def test_production_key_is_embedded_and_private_key_is_not_in_repository():
     root = Path(__file__).resolve().parents[1]
     assert um.TRUSTED_UPDATE_KEYS, "a public key must be embedded"
-    for path in (root / "twobyteasr").glob("*.py"):
+    for path in (root / "twobyteasr").rglob("*.py"):
         text = path.read_text("utf-8", errors="ignore")
         assert "PRIVATE KEY-----" not in text
         assert '"dpapi"' not in text or path.name == "update_manifest.py"
@@ -445,3 +445,118 @@ def test_archive_with_extra_or_tampered_member_is_rejected(tmp_path, isolated_st
     archive.write_bytes(body.getvalue())
     with pytest.raises(updater.UpdateError, match="校验不符"):
         updater._safe_extract(archive, "app", record["content_sha256"], tmp_path / "s2")
+
+
+# ------------------------------------------------------------------ GitCode
+# 2026-10-14: on a mainland line github.com failed outright while GitCode
+# served the same release files at ~14 MB/s.
+
+GITHUB_V066 = "https://github.com/NOTBAD314/2ByteASR/releases/download/v0.6.6/"
+GITCODE_V066 = "https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.6.6/"
+
+
+def _signed_sources(tmp_path, trusted_key, *, github_version="0.6.6", gitcode_version="0.6.6"):
+    """GitHub and GitCode copies of one signed release (each may carry its own version)."""
+    installed = tmp_path / "install"
+    _make_payload(installed)
+    files = {}
+    for host, version in (("github", github_version), ("gitcode", gitcode_version)):
+        if version is None:
+            continue
+        payload = tmp_path / f"new-{host}-{version}"
+        manifest, feed = _feed(payload, _make_payload(payload, version=version, app_text=b"app-" + version.encode()),
+                               version=version, base=f"https://github.com/NOTBAD314/2ByteASR/releases/download/v{version}/")
+        data = json.dumps(manifest).encode()
+        signature = um.sign_manifest(data, trusted_key)
+        if host == "github":
+            files.update(feed)
+            files[updater.STABLE_FEED] = data
+            files[updater.STABLE_FEED + ".sig"] = signature
+        else:
+            files.update({updater.gitcode_url(url): blob for url, blob in feed.items()})
+            files[updater.GITCODE_LATEST_API] = json.dumps({"tag_name": "v" + version}).encode()
+            manifest_url = f"https://gitcode.com/Notbad314/2ByteASR/releases/download/v{version}/{um.UPDATE_MANIFEST_NAME}"
+            files[manifest_url] = data
+            files[manifest_url + ".sig"] = signature
+    return installed, files
+
+
+def _unreachable(files, *hosts, log=None):
+    serve = _server(files, log=log)
+
+    def get(url, **kwargs):
+        if url.split("/")[2] in hosts or any(url.startswith(prefix) for prefix in updater.GITHUB_MIRRORS):
+            if log is not None:
+                log.append((url, {}))
+            raise ConnectionError("connection aborted")
+        return serve(url, **kwargs)
+    return get
+
+
+def test_gitcode_answers_and_serves_downloads_when_github_is_unreachable(tmp_path, isolated_state, trusted_key):
+    installed, files = _signed_sources(tmp_path, trusted_key, github_version=None)
+    log = []
+    getter = _unreachable(files, "github.com", log=log)
+    check = updater.check_for_update(request_get=getter, root=installed)
+    assert check.newer and check.latest_version == "0.6.6" and check.from_gitcode
+    assert check.source == GITCODE_V066 + um.UPDATE_MANIFEST_NAME
+    assert check.installer_url == GITCODE_V066 + "2ByteASR-Setup-0.6.6.exe"
+    assert check.release_url == "https://gitcode.com/Notbad314/2ByteASR/releases/tag/v0.6.6"
+    log.clear()
+    prepared = updater.prepare_update(check, request_get=getter, root=installed, wait_pid=1)
+    downloads = [url for url, _ in log if url.endswith(".zip")]
+    assert downloads and all(url.startswith(GITCODE_V066) for url in downloads)  # GitCode first, github.com never needed
+    assert prepared.version == "0.6.6"
+    # The cached check (no network) still knows where the manifest came from.
+    assert updater.check_for_update(request_get=getter, root=installed, use_cache=True).from_gitcode
+
+
+def test_a_lagging_mirror_never_hides_a_newer_release(tmp_path, isolated_state, trusted_key):
+    installed, files = _signed_sources(tmp_path, trusted_key, github_version="0.6.7", gitcode_version="0.6.6")
+    check = updater.check_for_update(request_get=_server(files), root=installed)
+    assert check.latest_version == "0.6.7" and not check.from_gitcode
+    assert check.installer_url.startswith("https://github.com/")
+    installed, files = _signed_sources(tmp_path / "b", trusted_key, github_version="0.6.6", gitcode_version="0.6.7")
+    check = updater.check_for_update(request_get=_server(files), root=installed)
+    assert check.latest_version == "0.6.7" and check.from_gitcode
+
+
+def test_unsigned_or_odd_gitcode_answers_never_win(tmp_path, isolated_state, trusted_key):
+    installed, files = _signed_sources(tmp_path, trusted_key, github_version="0.6.6", gitcode_version="0.6.7")
+    gitcode_manifest = "https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.6.7/" + um.UPDATE_MANIFEST_NAME
+    files[gitcode_manifest] = files[gitcode_manifest].replace(b"0.6.7", b"0.6.8", 1)  # signature no longer matches
+    check = updater.check_for_update(request_get=_server(files), root=installed)
+    assert check.latest_version == "0.6.6" and not check.from_gitcode
+    files[updater.GITCODE_LATEST_API] = json.dumps({"tag_name": "../../evil"}).encode()
+    assert not updater.check_for_update(request_get=_server(files), root=installed).from_gitcode
+    # GitHub down and GitCode unusable: one error naming both sources.
+    with pytest.raises(updater.UpdateError, match="GitHub.*\n?.*GitCode|GitCode.*\n?.*GitHub"):
+        updater.check_for_update(request_get=_unreachable(files, "github.com"), root=installed)
+
+
+def test_slow_source_does_not_hold_the_answer_beyond_the_grace(tmp_path, isolated_state, trusted_key, monkeypatch):
+    installed, files = _signed_sources(tmp_path, trusted_key)
+    release = threading.Event()
+    serve = _server(files)
+
+    def slow_github(url, **kwargs):
+        if url.startswith("https://github.com/"):
+            release.wait(10)  # a github.com that hangs, as on a mainland line
+        return serve(url, **kwargs)
+    monkeypatch.setattr(updater, "SOURCE_GRACE_SECONDS", 0.2)
+    import time as _time
+    started = _time.monotonic()
+    check = updater.check_for_update(request_get=slow_github, root=installed)
+    release.set()
+    assert check.from_gitcode and _time.monotonic() - started < 5
+
+
+def test_download_candidates_follow_the_answering_source():
+    url = GITHUB_V066 + "2ByteASR-0.6.6-app-abc.zip"
+    assert updater._candidates(url) == (url, GITCODE_V066 + "2ByteASR-0.6.6-app-abc.zip",
+                                        *(prefix + url for prefix in updater.GITHUB_MIRRORS))
+    assert updater._candidates(url, prefer_gitcode=True)[:2] == (GITCODE_V066 + "2ByteASR-0.6.6-app-abc.zip", url)
+    # The GitHub "latest" feed has no GitCode twin (GitCode lacks releases/latest/download).
+    assert updater._candidates(updater.STABLE_FEED) == (updater.STABLE_FEED,
+                                                       *(prefix + updater.STABLE_FEED for prefix in updater.GITHUB_MIRRORS))
+    assert updater._candidates("http://127.0.0.1:9/feed.json") == ("http://127.0.0.1:9/feed.json",)

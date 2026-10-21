@@ -1,7 +1,7 @@
 import copy
 import pytest
-from twobyteasr.theme_motion import validate_motion_spec
-from twobyteasr.motion_ownership import motion_schedule,MotionOwnershipError
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.motion_ownership import motion_schedule,MotionOwnershipError
 
 
 def fixture():

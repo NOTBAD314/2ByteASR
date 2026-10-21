@@ -10,9 +10,9 @@ from PySide6.QtCore import QPoint, Qt, QObject, QEvent
 from PySide6.QtGui import QUndoStack, QCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_commands import EditCueIntervalsCommand
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, load_project, save_project
-from twobyteasr.studio_timeline import WaveformTimeline
+from twobyteasr.timeline.studio_commands import EditCueIntervalsCommand
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, load_project, save_project
+from twobyteasr.studio.studio_timeline import WaveformTimeline
 
 
 @pytest.fixture(scope="module")
@@ -185,7 +185,7 @@ def test_snap_target_hysteresis_alt_release_and_minimum(scene):
 @pytest.mark.parametrize("zoom", [8000, 16000])
 def test_visible_snap_targets_use_same_screen_distance(scene, zoom):
     timeline, project, _ = scene
-    from twobyteasr.studio_project import VideoTrack, VideoClip
+    from twobyteasr.projects.studio_project import VideoTrack, VideoClip
     from types import SimpleNamespace
     import numpy as np
     project.speakers[0].name = "S01"

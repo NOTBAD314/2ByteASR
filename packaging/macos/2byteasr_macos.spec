@@ -12,8 +12,8 @@ if sys.platform != 'darwin':
 ROOT=Path(os.environ['TWOBYTEASR_MAC_SOURCE']).resolve()
 WORK=Path(os.environ['TWOBYTEASR_MAC_BUILD_ROOT']).resolve()
 sys.path.insert(0,str(ROOT))
-from twobyteasr.platform_macos import cpu_factory_settings
-from twobyteasr.settings import DEFAULT_SETTINGS
+from twobyteasr.system.platform_macos import cpu_factory_settings
+from twobyteasr.storage.settings import DEFAULT_SETTINGS
 from scripts.macos_build import is_macho, selected_media_libraries
 native=json.loads(Path(os.environ['TWOBYTEASR_MAC_NATIVE_INPUTS']).read_text(encoding='utf8'))
 VERSION=json.loads((ROOT/'2byteasr_version.json').read_text(encoding='utf8'))['version']

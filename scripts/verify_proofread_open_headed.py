@@ -24,8 +24,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 def deliver(source: Path, out: Path, job_id: str):
     """A stamped copy, as create_studio_outputs leaves a committed result."""
-    from twobyteasr.recognition_result import committed_result_reference, media_identity_for_task, stamp_result
-    from twobyteasr.studio_project import load_project, save_project
+    from twobyteasr.recognition.recognition_result import committed_result_reference, media_identity_for_task, stamp_result
+    from twobyteasr.projects.studio_project import load_project, save_project
     folder = out / "projects" / f"{source.stem}__{job_id}_1"
     for child in ("subtitles", "reports", "source", "autosave", "cache", "preview", "backup", "renders", "exports"):
         (folder / child).mkdir(parents=True, exist_ok=True)

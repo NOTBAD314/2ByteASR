@@ -71,7 +71,7 @@ def test_legacy_display_change_never_guesses_historical_case(tmp_path):
 
 def test_background_glossary_task_freezes_target_evidence_before_rename(monkeypatch):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.glossary_task_manager import GlossaryUpdateManager, GlossaryTaskRunner
+    from twobyteasr.glossary.glossary_task_manager import GlossaryUpdateManager, GlossaryTaskRunner
     app = QApplication.instance() or QApplication([])
     legacy.add_learned_mapping('任务库', 'Borlin', 'BerLIN')
     library_id = legacy.resolve_glossary_identity('任务库')

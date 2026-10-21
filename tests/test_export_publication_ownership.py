@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import export_validation as receipts
+from twobyteasr.exports import export_validation as receipts
 
 
 def job(output, *, overwrite=False):
@@ -80,7 +80,7 @@ def test_post_publication_observer_failure_preserves_success(tmp_path):
 
 
 def test_final_notification_failure_does_not_skip_other_notifications(tmp_path):
-    from twobyteasr.export_validation import notify_after_publication
+    from twobyteasr.exports.export_validation import notify_after_publication
     final = tmp_path/'final.mp4'
     current = job(final)
     staged = tmp_path/'staged.mp4'; staged.write_bytes(b'verified')
@@ -149,7 +149,7 @@ def test_cleanup_error_after_posix_commit_keeps_receipt(tmp_path, monkeypatch):
 
 
 def test_late_observer_error_never_restarts_a_published_native_export(tmp_path, monkeypatch):
-    from twobyteasr import studio_render
+    from twobyteasr.exports import studio_render
     final = tmp_path/'final.mp4'
     current = studio_render.RenderJob('', '', str(final), studio_render.RenderSettings(encoder='h264_nvenc'))
     calls = []

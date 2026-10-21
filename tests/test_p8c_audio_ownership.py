@@ -5,20 +5,20 @@ from types import SimpleNamespace
 
 from pathlib import Path
 
-from twobyteasr.audio_engine import StudioAudioEngine, _PcmRingDevice, build_audio_decode_command
-from twobyteasr.audio_playback_graph import AudioPlaybackGraph, solo_track_ids
+from twobyteasr.playback.audio_engine import StudioAudioEngine, _PcmRingDevice, build_audio_decode_command
+from twobyteasr.playback.audio_playback_graph import AudioPlaybackGraph, solo_track_ids
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtMultimedia import QVideoFrame
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.secondary_video_legacy import SecondaryVideoSource, _DecoderWorker
-from twobyteasr.studio_media_pool import (
+from twobyteasr.playback.secondary_video_legacy import SecondaryVideoSource, _DecoderWorker
+from twobyteasr.timeline.studio_media_pool import (
     effective_audio_master_track_id,
     set_audio_master_mode,
     set_audio_master_track,
     set_video_track_state,
 )
-from twobyteasr.studio_project import AudioTrack, AVTrackGroup, StudioMedia, SubtitleProject, VideoTrack
+from twobyteasr.projects.studio_project import AudioTrack, AVTrackGroup, StudioMedia, SubtitleProject, VideoTrack
 
 
 def _layers():
@@ -80,7 +80,7 @@ def test_secondary_source_exposes_gui_thread_audio_probe_defaults():
 
 
 def test_secondary_decoder_source_has_no_qaudiooutput_backend():
-    source = Path("twobyteasr/secondary_video.py").read_text(encoding="utf-8")
+    source = Path("twobyteasr/playback/secondary_video.py").read_text(encoding="utf-8")
     assert "QAudioOutput" not in source
     assert "setAudioOutput" not in source
 
@@ -247,7 +247,7 @@ def test_secondary_shutdown_defers_windows_video_backend_detach():
 
 
 def test_secondary_shutdown_parks_media_objects_for_app_exit():
-    from twobyteasr import secondary_video_legacy as secondary_video
+    from twobyteasr.playback import secondary_video_legacy as secondary_video
 
     class SignalProbe:
         def disconnect(self, _callback):

@@ -1,13 +1,13 @@
 ﻿from types import SimpleNamespace
 
 import subtitle_core
-from twobyteasr import cache as cache_module
-from twobyteasr.runtime import (
+from twobyteasr.recognition import cache as cache_module
+from twobyteasr.recognition.run_context import (
     RuntimeContext,
     activate_runtime_context,
     get_runtime_context,
 )
-from twobyteasr.service import RunOptions
+from twobyteasr.recognition.service import RunOptions
 
 
 def _legacy_namespace():

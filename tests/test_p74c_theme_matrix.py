@@ -8,9 +8,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.main_ui_theme import APP_QSS
-from twobyteasr.qss_retheme import retheme_qss
-from twobyteasr.ui_theme import THEMES, theme_definition
+from twobyteasr.design.main_ui_theme import APP_QSS
+from twobyteasr.design.qss_retheme import retheme_qss
+from twobyteasr.design.ui_theme import THEMES, theme_definition
 
 
 def _app():
@@ -19,19 +19,19 @@ def _app():
 
 def test_p74c_drag_overlay_uses_theme_scrim_in_all_themes(monkeypatch):
     _app()
-    from twobyteasr import ui as ui_module
-    from twobyteasr.ui import DropOverlay
+    from twobyteasr.app import home_widgets
+    from twobyteasr.app.ui import DropOverlay
 
     for key in THEMES:
         theme = theme_definition(key)
-        monkeypatch.setattr(ui_module, "theme_key", lambda: key)
+        monkeypatch.setattr(home_widgets, "theme_key", lambda: key)
         overlay = DropOverlay()
         assert theme.overlay_scrim in overlay.styleSheet(), key
         overlay.deleteLater()
 
 
 def test_p74c_help_popover_qss_follows_theme_tokens():
-    from twobyteasr.ui import api_help_popover_qss
+    from twobyteasr.app.ui import api_help_popover_qss
 
     for key in THEMES:
         theme = theme_definition(key)
@@ -53,7 +53,7 @@ def test_p74c_app_qss_message_box_and_endpoint_follow_theme():
 
 
 def test_p74c_glossary_sheets_use_theme_tokens():
-    from twobyteasr import main_ui_glossary as glossary
+    from twobyteasr.glossary import main_ui_glossary as glossary
 
     source = Path(glossary.__file__).read_text(encoding="utf-8")
     assert "rgba(47,44,38,90)" not in source

@@ -33,7 +33,7 @@ def _speaker_palette():
 
 
 def derive(project, *, target: int, speakers: int, seed: int, name: str):
-    from twobyteasr.studio_project import StudioSpeaker
+    from twobyteasr.projects.studio_project import StudioSpeaker
     rng = random.Random(seed)
     derived = copy.deepcopy(project)
     duration = int(getattr(derived.media, "duration_ms", 0) or max(c.end_ms for c in derived.cues) + 1000)
@@ -45,7 +45,7 @@ def derive(project, *, target: int, speakers: int, seed: int, name: str):
     speaker_ids = [s.id for s in derived.speakers][:speakers]
     style_ids = [s.id for s in derived.styles]
     # Four styles in use: the project's own plus derived size/colour variants.
-    from twobyteasr.studio_project import SubtitleStyle
+    from twobyteasr.projects.studio_project import SubtitleStyle
     while len(style_ids) < 4:
         source = derived.styles[len(style_ids) % len(derived.styles)]
         variant = replace(copy.deepcopy(source), id=f"perf-style-{len(style_ids)}",
@@ -94,7 +94,7 @@ def main() -> int:
     if not out.is_relative_to(ROOT / "tmp") or out.exists():
         raise SystemExit("Choose a fresh output directory under repository tmp")
     out.mkdir(parents=True)
-    from twobyteasr.studio_project import load_project, save_project
+    from twobyteasr.projects.studio_project import load_project, save_project
     base_bytes = args.base.read_bytes()
     (out / "base.2byteproj").write_bytes(base_bytes)
     project = load_project(args.base)

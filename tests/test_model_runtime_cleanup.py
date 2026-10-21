@@ -2,7 +2,7 @@ import json
 import hashlib
 from pathlib import Path
 
-from twobyteasr import model_runtime_cleanup as cleanup
+from twobyteasr.local_models import model_runtime_cleanup as cleanup
 
 
 def fixture(tmp_path):
@@ -53,7 +53,7 @@ def test_superseded_environment_real_files_removed_after_offline_health(tmp_path
     managed,current,old=fixture(tmp_path);monkeypatch.setattr(cleanup,'_running_paths',lambda:[])
     (tmp_path/'dependencies.lock.json').write_text(json.dumps({'managed_bootstrap':{'uv_version':'0.11.7'}}))
     uv=managed/'tools/uv-0.11.7/uv.exe';uv.parent.mkdir(parents=True);uv.write_bytes(b'fixture')
-    import twobyteasr.runtime_download_cache as cache
+    import twobyteasr.system.runtime_download_cache as cache
     health=[];monkeypatch.setattr(cache,'_healthy_runtimes',lambda *args:health.append(True))
     plan=next(p for p in cleanup.scan_unused_model_runtimes(data_root=tmp_path/'data') if p.root==old)
     result=cleanup.remove_unused_model_runtime(plan,install_root=tmp_path,data_root=tmp_path/'data')

@@ -10,12 +10,12 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.media_availability import (apply_availability, export_sources, probe_sources,
+from twobyteasr.media.media_availability import (apply_availability, export_sources, probe_sources,
                                            require_available, shutdown_probe_worker)
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_media_commands import media_graph_command
-from twobyteasr.studio_media_pool import relink_media_asset
-from twobyteasr.studio_project import StudioMedia, StudioCue, SubtitleProject
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.timeline.studio_media_commands import media_graph_command
+from twobyteasr.timeline.studio_media_pool import relink_media_asset
+from twobyteasr.projects.studio_project import StudioMedia, StudioCue, SubtitleProject
 
 
 def test_real_probe_recovers_stale_flags_and_distinguishes_corrupt_media(tmp_path):
@@ -66,7 +66,7 @@ def test_periodic_checks_reuse_one_worker_until_it_is_discarded(tmp_path):
 
 
 def test_idle_worker_exit_is_not_reported_as_offline_media(tmp_path, monkeypatch):
-    import twobyteasr.media_availability as availability
+    import twobyteasr.media.media_availability as availability
     source = tmp_path/'readable'
     source.write_bytes(b'a')
     shutdown_probe_worker()
@@ -117,7 +117,7 @@ def test_export_rejects_missing_asset_in_range_with_relink_message():
 
 
 def test_gap_clock_advances_after_seek_and_rejects_late_decoder():
-    from twobyteasr.playback_clock import PlaybackClock
+    from twobyteasr.playback.playback_clock import PlaybackClock
     clock = PlaybackClock()
     old = clock.begin_seek(5000).playback_generation
     snapshot = clock.begin_unattached_position(6000, paused=False)
@@ -135,7 +135,7 @@ def test_relink_updates_probe_metadata_but_keeps_clip_edits_and_undo(tmp_path):
     clip=p.video_tracks[0].clips[0];clip.source_in_ms=100;clip.source_out_ms=4100;clip.playback_rate=2
     clip.transform.rotation=17
     clip.timeline_out_ms=2000
-    from twobyteasr.studio_project import sync_linked_av_contract
+    from twobyteasr.projects.studio_project import sync_linked_av_contract
     sync_linked_av_contract(p)
     before=copy.deepcopy((p.media_pool,p.video_tracks,p.audio_tracks));asset=p.media_pool[0]
     stack=QUndoStack();stack.push(media_graph_command(p,'relink',lambda w:relink_media_asset(w,asset.asset_id,str(tmp_path/'new.mp4'),
@@ -148,9 +148,9 @@ def test_relink_updates_probe_metadata_but_keeps_clip_edits_and_undo(tmp_path):
 def test_primary_lane_marks_only_offline_segments_and_skips_their_thumbnails():
     from PySide6.QtCore import QRectF
     from PySide6.QtGui import QImage, QPainter
-    from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment
-    from twobyteasr.studio_video_track import paint_video_track
-    from twobyteasr.timeline_theme import timeline_palette
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment
+    from twobyteasr.studio.studio_video_track import paint_video_track
+    from twobyteasr.design.timeline_theme import timeline_palette
     app=QApplication.instance() or QApplication([])
     image=QImage(1000,80,QImage.Format_ARGB32_Premultiplied);image.fill(0)
     labels=[];painted_sources=[]

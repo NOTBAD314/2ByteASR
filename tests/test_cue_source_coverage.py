@@ -1,11 +1,11 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
-from twobyteasr.asr_source_evidence import cue_source_hypotheses, coverage_summary
+from twobyteasr.recognition.asr_source_evidence import cue_source_hypotheses, coverage_summary
 from twobyteasr.design.components import format_model_evidence_coverage
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project, save_project
-from twobyteasr.studio_qc import SubtitleQCEngine, review_candidates
-from twobyteasr.studio_review import ReviewEvidenceAggregator, review_evidence_coverage
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project, save_project
+from twobyteasr.subtitle_rules.studio_qc import SubtitleQCEngine, review_candidates
+from twobyteasr.subtitle_rules.studio_review import ReviewEvidenceAggregator, review_evidence_coverage
 
 
 def project(row, cue=None):
@@ -159,7 +159,7 @@ def test_ripple_edited_caption_uses_immutable_source_refs_not_current_video_cloc
     # The retained last word ends 27ms before the cue; moving the caption
     # does not turn that blank tail into additional model coverage.
     assert coverage_summary(observations)['partial']
-    from twobyteasr.cue_evidence_slice import cue_evidence
+    from twobyteasr.recognition.cue_evidence_slice import cue_evidence
     assert cue_evidence(p,cue,'firered_text') == 'stw点掉了一个'
     assert coverage_summary(observations)['conflict']
 
@@ -167,7 +167,7 @@ def test_ripple_edited_caption_uses_immutable_source_refs_not_current_video_cloc
 def test_real_ge_edg_saved_cues_keep_three_sources_after_cut_and_roundtrip(tmp_path):
     import json
     from pathlib import Path
-    from twobyteasr.cue_evidence_slice import cue_evidence
+    from twobyteasr.recognition.cue_evidence_slice import cue_evidence
     fixture = json.loads((Path(__file__).parent/'fixtures/ge_edg_20261005_cue_evidence.json').read_text(encoding='utf-8'))
     p = SubtitleProject(media=StudioMedia('fixture.mp4',duration_ms=60000),
         cues=[StudioCue(**row) for row in fixture['cues']], asr_evidence=fixture['asr_evidence'],
@@ -260,7 +260,7 @@ def test_current_text_does_not_vote_in_model_majority_or_acoustic_confidence():
 
 
 def test_real_gui_audit_selects_partial_same_text_and_actual_tail_projection_difference():
-    from twobyteasr.asr_evidence_audit import _review_cases
+    from twobyteasr.acceptance.asr_evidence_audit import _review_cases
     p = _real_new48_tail_project()
     cases = _review_cases(p)
     assert [(name, cue.id) for name, cue in cases] == [('agreement', '3'), ('conflict', '1'), ('tail-projection', '48')]
@@ -273,7 +273,7 @@ def test_real_gui_audit_selects_partial_same_text_and_actual_tail_projection_dif
 
 
 def test_legacy_serialized_confident_statistics_are_not_reused_for_tail_projection():
-    from twobyteasr.studio_review import cached_review_risks, store_review_risks
+    from twobyteasr.subtitle_rules.studio_review import cached_review_risks, store_review_risks
     p = _real_new48_tail_project()
     legacy = {'48': {'level': 'confident', 'score': 0, 'reasons': []}}
     p.studio_state['review_risks'] = deepcopy(legacy)
@@ -284,8 +284,8 @@ def test_legacy_serialized_confident_statistics_are_not_reused_for_tail_projecti
 
 
 def test_real_new48_normal_open_hydration_preserves_partial_word_scope_and_tail_review(tmp_path):
-    from twobyteasr.studio_caption_timeline import ensure_independent_captions
-    from twobyteasr.asr_evidence_audit import _review_cases
+    from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions
+    from twobyteasr.acceptance.asr_evidence_audit import _review_cases
     p = _real_new48_tail_project()
     raw = deepcopy(p.asr_evidence)
     before = {cue.id: cue_source_hypotheses(p, cue) for cue in p.cues}
@@ -305,7 +305,7 @@ def test_real_new48_normal_open_hydration_preserves_partial_word_scope_and_tail_
 
 
 def test_real_new48_missing_qwen_confidence_is_not_a_zero_percent_qc_risk():
-    from twobyteasr.studio_caption_timeline import ensure_independent_captions
+    from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions
     p = _real_new48_tail_project()
     row = p.asr_evidence['segment:50']
     assert row['qwen_confidence'] == 0 and 'qwen_confidence_available' not in row
@@ -319,7 +319,7 @@ def test_real_new48_missing_qwen_confidence_is_not_a_zero_percent_qc_risk():
 
 
 def test_real_new48_independent_move_and_ripple_preserve_original_tail_scope(tmp_path):
-    from twobyteasr.studio_caption_timeline import ensure_independent_captions, shift_caption, ripple_caption_range
+    from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions, shift_caption, ripple_caption_range
     p = _real_new48_tail_project()
     raw = deepcopy(p.asr_evidence)
     cue = next(c for c in p.cues if c.id == '48')

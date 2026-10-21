@@ -22,7 +22,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 _pages=[]
 
@@ -56,7 +56,7 @@ def _web_theme_project(tmp_path: Path) -> SubtitleProject:
 
 
 def _web_theme_page(tmp_path: Path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     os.environ["LOCALAPPDATA"] = str(tmp_path / "local")
     page = SubtitleStudioPage()
@@ -75,7 +75,7 @@ def _web_theme_page(tmp_path: Path):
 
 
 def _theme_payload() -> dict:
-    from twobyteasr.web_theme import builtin_web_themes
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
 
     return builtin_web_themes()["balatro-joker"].to_dict()
 
@@ -131,7 +131,7 @@ def test_web_theme_buttons_apply_to_current_selection(tmp_path):
     payload2 = page.project.style_recipes.get(cue2.style_id, {})
     assert isinstance(payload2.get("webTheme"), dict), "apply button must re-apply to the selected cue"
 
-    from twobyteasr.studio_style_controller import StudioStyleController
+    from twobyteasr.caption_style.studio_style_controller import StudioStyleController
 
     persisted: list[object] = []
     original_persist = StudioStyleController._persist_ai_design
@@ -149,7 +149,7 @@ def test_web_theme_buttons_apply_to_current_selection(tmp_path):
 
 def test_storyboard_widgets_built_hidden(tmp_path):
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     _pages.append(page)
@@ -167,7 +167,7 @@ def test_storyboard_widgets_built_hidden(tmp_path):
 
 def test_reveal_playhead_runway(tmp_path):
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     _pages.append(page)

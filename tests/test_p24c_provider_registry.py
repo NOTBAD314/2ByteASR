@@ -1,12 +1,12 @@
 """P1: DeepSeek provider model registry + server-error passthrough."""
 from __future__ import annotations
 
-from twobyteasr.llm_config import (
+from twobyteasr.providers.llm_config import (
     AI_SERVICE_SPECS,
     model_is_retired,
     service_model_catalog,
 )
-from twobyteasr.studio_ai import _provider_failure_message
+from twobyteasr.caption_design.studio_ai import _provider_failure_message
 
 
 class _FakeLLMError(Exception):

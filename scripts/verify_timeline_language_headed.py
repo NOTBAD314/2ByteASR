@@ -31,7 +31,7 @@ def main():
     os.environ["TWOBYTEASR_TEST_ROOT"] = str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
     project = out / "fixture.2byteproj"
     save_project(SubtitleProject(media=StudioMedia(path="", display_name="Timeline language fixture", duration_ms=0)), project)
     env = dict(os.environ, QT_QPA_PLATFORM="windows", PYTHONUTF8="1",

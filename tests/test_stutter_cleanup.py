@@ -8,7 +8,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from twobyteasr.stutter_cleanup import (find_repeats, ordinary_reduplication, ordinary_word_in_context,  # noqa: E402
+from twobyteasr.subtitle_rules.stutter_cleanup import (find_repeats, ordinary_reduplication, ordinary_word_in_context,  # noqa: E402
                                         plausible_name_span)
 
 
@@ -77,8 +77,8 @@ def test_common_words_are_not_name_signals_or_near_sound_targets():
 
 
 def test_deleting_a_stammer_keeps_the_fluent_copy_timing():
-    from twobyteasr.models import WordUnit
-    from twobyteasr.terminology import deletion_embedding, remap_words
+    from twobyteasr.recognition.transcript_data import WordUnit
+    from twobyteasr.glossary.terminology import deletion_embedding, remap_words
     words = [WordUnit(a, b, text, .9) for a, b, text in ((.0, .1, "这"), (.3, .4, "这"), (.4, .5, "次"),
              (.5, .6, "就"), (.6, .7, "学"), (.9, 1.0, "学"), (1.0, 1.2, "聪明"))]
     assert deletion_embedding("这这次就学学聪明", "这次就学聪明") == [1, 2, 3, 5, 6, 7]
@@ -88,9 +88,9 @@ def test_deleting_a_stammer_keeps_the_fluent_copy_timing():
 
 
 def test_stammer_write_back_keeps_exact_word_timing(tmp_path):
-    from twobyteasr.cue_word_alignment import cue_words
-    from twobyteasr.studio_commands import BatchReplaceTextCommand
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.recognition.cue_word_alignment import cue_words
+    from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
     project = SubtitleProject(media=StudioMedia(path="", duration_ms=2000),
                               cues=[StudioCue("c1", 0, 1000, "再再强调", evidence_refs=["segment:1"])])
     project.asr_evidence = {"segment:1": {"start_ms": 0, "end_ms": 1000, "final_timing_owner": "FireRed",
@@ -115,7 +115,7 @@ def test_stammer_write_back_keeps_exact_word_timing(tmp_path):
 
 
 def test_consistency_follows_first_spelling_or_preferred_and_skips_common_words():
-    from twobyteasr.stutter_cleanup import consistency_occurrences
+    from twobyteasr.subtitle_rules.stutter_cleanup import consistency_occurrences
     entries = [("a", 0, "原石不够了"), ("b", 1000, "再抽一次源石"), ("c", 2000, "继续攻势"), ("d", 3000, "这个公式"),
                ("e", 4000, "古龙来了"), ("f", 5000, "骨龙首发")]
     found = consistency_occurrences(entries)
@@ -126,7 +126,7 @@ def test_consistency_follows_first_spelling_or_preferred_and_skips_common_words(
 
 
 def test_two_recognizer_readings_skip_edges_names_and_particles():
-    from twobyteasr.transcript_evidence import evidence_occurrences
+    from twobyteasr.recognition.transcript_evidence import evidence_occurrences
     found = evidence_occurrences("就是那个什么天命之暗我这边暴风雪", "就是那个什么今天运气站我这边暴风雪",
                                  "就是那个什么今天运气在我这边暴风雪")
     assert [(h[1], h[2], h[3]) for h in found] == [("天命之暗", "今天运气站", False), ("天命之暗", "今天运气在", False)]

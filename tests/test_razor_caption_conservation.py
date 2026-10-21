@@ -3,10 +3,10 @@ import copy
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,load_project
-from twobyteasr.studio_edit_sequence import projected_cues,sequence_of
-from twobyteasr.studio_clip_edit import playhead_edit_command,clip_edit_command
-from twobyteasr.studio_media_pool import create_video_track,add_video_clip
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,load_project
+from twobyteasr.timeline.studio_edit_sequence import projected_cues,sequence_of
+from twobyteasr.timeline.studio_clip_edit import playhead_edit_command,clip_edit_command
+from twobyteasr.timeline.studio_media_pool import create_video_track,add_video_clip
 
 APP=QApplication.instance() or QApplication([])
 
@@ -47,7 +47,7 @@ def test_undo_redo_multicut_save_reopen_are_independent(tmp_path):
 
 
 def test_legacy_materialized_clip_id_keeps_captured_recognition_ownership(tmp_path):
-    from twobyteasr.studio_edit_sequence import store_sequence
+    from twobyteasr.timeline.studio_edit_sequence import store_sequence
     p=fixture();seq=copy.deepcopy(sequence_of(p))
     seq.segments[0].id='captured-original'
     store_sequence(p,seq)  # persisted legacy sequence and graph IDs differ

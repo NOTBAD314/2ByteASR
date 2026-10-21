@@ -13,7 +13,11 @@
 AppId={code:ApplicationId}
 #ifdef QAInstall
 AppName=2ByteASR QA
+#ifdef CandidateId
+DefaultDirName={localappdata}\Programs\2ByteASR-Candidate-{#CandidateId}
+#else
 DefaultDirName={localappdata}\Programs\2ByteASR-QA-20260927
+#endif
 OutputBaseFilename=2ByteASR-QA-Setup-{#MyAppVersion}
 CloseApplications=no
 UsePreviousAppDir=no

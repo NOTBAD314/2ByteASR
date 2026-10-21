@@ -10,7 +10,8 @@ def segment(core, index=1, text="这里已经校对完成"):
 
 
 def test_stage8_stage9_preflight_share_snapshot_despite_stale_modules(context, monkeypatch):
-    from twobyteasr import grouping, polishing, ai_providers
+    from twobyteasr.subtitle_rules import grouping, polishing
+    from twobyteasr.providers import ai_providers
     import moss_firered_pipeline as pipeline
     core, ctx, cache = context
     calls=[]
@@ -29,7 +30,7 @@ def test_stage8_stage9_preflight_share_snapshot_despite_stale_modules(context, m
     monkeypatch.setattr(grouping,"post_chat_completion",sender)
     # Production polish progress uses the SSE adapter boundary. Keep that
     # boundary isolated too; replacing only its non-streaming sender is stale.
-    monkeypatch.setattr('twobyteasr.llm_adapter.post_chat_completion_stream', sender)
+    monkeypatch.setattr('twobyteasr.providers.llm_adapter.post_chat_completion_stream', sender)
     pipeline._preflight_cloud_stages(core)
     row=segment(core)
     polished=polishing.call_correction_api([row], [], "", "", "test", "", [], [], [])
@@ -45,7 +46,7 @@ def test_stage8_stage9_preflight_share_snapshot_despite_stale_modules(context, m
 
 
 def test_production_group_second_run_has_zero_provider_requests(context, monkeypatch):
-    from twobyteasr import grouping
+    from twobyteasr.subtitle_rules import grouping
     core,ctx,cache=context
     calls=[]
     def sender(messages, **kwargs):
@@ -61,7 +62,7 @@ def test_production_group_second_run_has_zero_provider_requests(context, monkeyp
 
 
 def test_production_boundaries_preserve_spaces_and_punctuation(context, monkeypatch):
-    from twobyteasr import grouping
+    from twobyteasr.subtitle_rules import grouping
     core,ctx,_=context
     monkeypatch.setattr(grouping,'GROUPING_API_RETRIES',1)
     monkeypatch.setattr(grouping,'post_chat_completion',lambda messages,**kwargs: json.dumps({'boundaries':[2,json.loads(messages[-1]['content'])['total_length']]}))
@@ -72,9 +73,9 @@ def test_production_boundaries_preserve_spaces_and_punctuation(context, monkeypa
 
 
 @pytest.mark.parametrize('body,category',[('', 'empty_response'),('not JSON','parse_failure'),('{}','format_mismatch'),
-    ('{"boundaries":[999]}','format_mismatch'),('{"segmented_text":"改字","boundaries":[8]}','text_mutation_rejected')])
+    ('{"boundaries":[999]}','boundary_range'),('{"segmented_text":"改字","boundaries":[8]}','text_mutation_rejected')])
 def test_invalid_outputs_are_explicit_fallback_never_ai(context,monkeypatch,body,category):
-    from twobyteasr import grouping
+    from twobyteasr.subtitle_rules import grouping
     core,ctx,cache=context
     records=[]
     monkeypatch.setattr(grouping,'GROUPING_API_RETRIES',1)

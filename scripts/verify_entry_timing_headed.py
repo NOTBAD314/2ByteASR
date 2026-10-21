@@ -114,8 +114,8 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.runtime_trace import GLOBAL_STUDIO_TRACE
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 
     page = SubtitleStudioPage()
     page.resize(1600, 900)

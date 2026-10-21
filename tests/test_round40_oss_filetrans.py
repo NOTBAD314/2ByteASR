@@ -141,7 +141,7 @@ class FakeStorage:
         self.verify_calls = []
 
     def upload_audio(self, payload, extension, *, progress=None):
-        from twobyteasr.temp_audio_storage import StoredObject
+        from twobyteasr.providers.temp_audio_storage import StoredObject
 
         key = f"asr-temp/20260905/{uuid.uuid4().hex}.{extension}"
         self.uploads.append(key)
@@ -191,7 +191,7 @@ def _run_filetrans(monkeypatch, media_file, fake_requests, fake_storage, *, sett
         settings
         or {"models": {"qwen_asr_api_protocol": "dashscope_filetrans", "oss_auto_delete": True}},
     )
-    from twobyteasr.asr import _transcribe_qwen_filetrans
+    from twobyteasr.recognition.asr import _transcribe_qwen_filetrans
 
     return _transcribe_qwen_filetrans(
         str(media_file),
@@ -274,7 +274,7 @@ def test_same_named_local_files_get_distinct_uuid_keys(monkeypatch, media_file):
 
 
 def test_upload_progress_milestones_printed(capsys):
-    from twobyteasr.temp_audio_storage import OssTemporaryStorage
+    from twobyteasr.providers.temp_audio_storage import OssTemporaryStorage
 
     class _FakeBucket:
         def put_object(self, key, data, headers=None, progress_callback=None):
@@ -300,7 +300,7 @@ def test_upload_progress_milestones_printed(capsys):
 
 
 def _oss_storage_with_http(*, status):
-    from twobyteasr.temp_audio_storage import OssTemporaryStorage
+    from twobyteasr.providers.temp_audio_storage import OssTemporaryStorage
 
     class _FakeBucket:
         def __init__(self):
@@ -366,7 +366,7 @@ def test_expired_or_forbidden_url_blocks_and_cleans_up():
 def test_task_level_parameter_downgrade_retry(monkeypatch, media_file, capsys):
     """四十一轮用户实录：提交 200 但执行期 InvalidParameter.ParseError——
     提交侧 400 降级摸不到，必须任务级降级重提（撤 context → 撤 diarization）。"""
-    from twobyteasr.asr import _transcribe_qwen_filetrans
+    from twobyteasr.recognition.asr import _transcribe_qwen_filetrans
 
     class _RetryFake(FakeFiletransRequests):
         """第一次任务 FAILED(InvalidParameter.ParseError)；第二次成功。"""
@@ -438,7 +438,7 @@ def test_hard_task_failure_not_retried_and_object_deleted(monkeypatch, media_fil
 
 def test_filetrans_endpoint_migrated_to_workspace_domain():
     """四十一轮：旧 dashscope 中心域名 → 工作台域名；用户自定义地址不动。"""
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
 
     legacy_url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
     payload = {
@@ -467,8 +467,8 @@ def test_api_key_dialog_keeps_saved_custom_url(monkeypatch):
     from PySide6.QtWidgets import QApplication, QDialog, QLineEdit
 
     import subtitle_core as legacy
-    from twobyteasr import ui as ui_module
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app import ui as ui_module
+    from twobyteasr.app.ui import MainWindow
 
     custom_url = (
         "https://my-workspace.cn-beijing.maas.aliyuncs.com"
@@ -520,8 +520,8 @@ def test_api_key_dialog_keeps_saved_custom_url(monkeypatch):
 
 def test_cleanup_on_user_cancel(monkeypatch, media_file):
     """场景 7：用户取消 → CancelledError 且临时对象删除 + 尽力取消云端任务。"""
-    from twobyteasr import asr as asr_module
-    from twobyteasr.runtime import get_runtime_context
+    from twobyteasr.recognition import asr as asr_module
+    from twobyteasr.recognition.run_context import get_runtime_context
 
     class _Token:
         is_cancelled = False
@@ -560,8 +560,8 @@ def test_cleanup_on_user_cancel(monkeypatch, media_file):
 
 def test_existing_providers_unaffected():
     """场景 10：新增 filetrans 不破坏既有 provider/协议链。"""
-    from twobyteasr.llm_config import validate_qwen_asr_endpoint
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.providers.llm_config import validate_qwen_asr_endpoint
+    from twobyteasr.app.ui import ASR_API_PRESETS
 
     assert ASR_API_PRESETS["openrouter_word"]["protocol"] == "openrouter_verbose_json"
     assert ASR_API_PRESETS["qwen_filetrans"]["protocol"] == "dashscope_filetrans"
@@ -587,7 +587,7 @@ def test_existing_providers_unaffected():
 
 
 def test_settings_roundtrip_keeps_oss_fields():
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
 
     merged, _warnings = _merge_known_settings(DEFAULT_SETTINGS, DEFAULT_SETTINGS)
     models = merged["models"]
@@ -616,7 +616,7 @@ def test_settings_roundtrip_keeps_oss_fields():
 
 
 def test_oss_credentials_dpapi_roundtrip(monkeypatch):
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
 
     payload = {}
     written = {}
@@ -631,12 +631,12 @@ def test_oss_credentials_dpapi_roundtrip(monkeypatch):
 
 
 def test_storage_from_settings_requires_credentials(monkeypatch):
-    from twobyteasr.temp_audio_storage import oss_storage_from_settings
+    from twobyteasr.providers.temp_audio_storage import oss_storage_from_settings
 
     settings = {"models": {"oss_bucket": "2byte"}}
     monkeypatch.setenv("OSS_ACCESS_KEY_ID", "")
     monkeypatch.setenv("OSS_ACCESS_KEY_SECRET", "")
-    import twobyteasr.llm_config as llm_config
+    import twobyteasr.providers.llm_config as llm_config
 
     monkeypatch.setattr(
         llm_config, "read_secret_value", lambda *names: ("", "未配置")
@@ -656,9 +656,9 @@ def test_api_key_dialog_has_style_combo_and_selected_first():
     from PySide6.QtWidgets import QApplication, QDialog
 
     import subtitle_core as legacy
-    from twobyteasr import ui as ui_module
-    from twobyteasr.main_ui_popup import FramelessPopupCombo
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app import ui as ui_module
+    from twobyteasr.design.main_ui_popup import FramelessPopupCombo
+    from twobyteasr.app.ui import MainWindow
 
     app = QApplication.instance() or QApplication([])
     captured = []
@@ -704,7 +704,7 @@ def test_selected_first_moves_current_item_to_front_once_per_widget():
     """首次打开置顶一次；会话内再次选择/打开不再改变行位置（2026-09-17）。"""
     from PySide6.QtWidgets import QApplication
 
-    from twobyteasr.main_ui_popup import FramelessPopupCombo
+    from twobyteasr.design.main_ui_popup import FramelessPopupCombo
 
     app = QApplication.instance() or QApplication([])
     combo = FramelessPopupCombo()

@@ -11,10 +11,10 @@ def main():
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,VideoTrack,VideoClip,save_project
-    from twobyteasr.studio_media_pool import add_media_asset,sync_linked_av_contract
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,VideoTrack,VideoClip,save_project
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,sync_linked_av_contract
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     ffmpeg=ROOT/'tools/ffmpeg/bin/ffmpeg.exe'
     for name,color,tone in [('red','red',440),('blue','blue',880)]:
         run_hidden_subprocess([str(ffmpeg),'-v','error','-f','lavfi','-i',f'color={color}:s=480x270:r=30:d=8',

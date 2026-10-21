@@ -21,7 +21,7 @@ pytestqt = pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.web_theme import (
+from twobyteasr.caption_design.web_theme import (
     WebThemeValidationError,
     builtin_web_themes,
     validate_generated_theme,
@@ -44,7 +44,7 @@ def _balatro() -> dict:
 
 
 def test_strip_store_frame_lookup_and_completion():
-    from twobyteasr.live_web_preview import WebStripStore
+    from twobyteasr.rendering.live_web_preview import WebStripStore
 
     store = WebStripStore(budget_bytes=10 * 1024 * 1024)
     strip = store.create("k1", 1000.0)
@@ -63,7 +63,7 @@ def test_strip_store_frame_lookup_and_completion():
 
 
 def test_strip_store_lru_budget_eviction_protects_recording():
-    from twobyteasr.live_web_preview import WebStripStore
+    from twobyteasr.rendering.live_web_preview import WebStripStore
 
     store = WebStripStore(budget_bytes=64)
     s1 = store.create("old", 1000.0)
@@ -96,7 +96,7 @@ class _FakeRendererService:
 
     def _check(self) -> None:
         if self.fail:
-            from twobyteasr.renderer_service import RendererServiceError
+            from twobyteasr.rendering.renderer_service import RendererServiceError
 
             raise RendererServiceError("node is gone")
 
@@ -135,8 +135,8 @@ class _FakeRendererService:
 @pytest.fixture()
 def strip_env(monkeypatch):
     _app()
-    from twobyteasr import live_web_preview as lwp
-    from twobyteasr import renderer_service
+    from twobyteasr.rendering import live_web_preview as lwp
+    from twobyteasr.rendering import renderer_service
 
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("TWOBYTEASR_FORCE_WEB_LIVE", "1")
@@ -248,7 +248,7 @@ def test_worker_stays_idle_through_gap_until_explicit_stop(strip_env):
 def test_gate_rejects_infinite_on_text_layers():
     payload = _balatro()
     payload["cueCss"] += "\n.wt-text .wt-w { animation: wt-bad 1s infinite; }\n"
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     doc = WebThemeDocument.from_dict(payload)
     with pytest.raises(WebThemeValidationError, match="文字层"):
@@ -258,7 +258,7 @@ def test_gate_rejects_infinite_on_text_layers():
 def test_gate_rejects_fast_infinite_on_cue_plate():
     payload = _balatro()
     payload["cueCss"] += "\n.wt-cue { animation: wt-bounce 1.2s infinite; }\n"
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     doc = WebThemeDocument.from_dict(payload)
     with pytest.raises(WebThemeValidationError, match="慢周期"):
@@ -268,7 +268,7 @@ def test_gate_rejects_fast_infinite_on_cue_plate():
 def test_gate_allows_slow_plate_breathe():
     payload = _balatro()
     payload["cueCss"] += "\n.wt-cue { animation: wt-breathe 3.2s ease-in-out infinite; }\n"
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     validate_generated_theme(WebThemeDocument.from_dict(payload))
 
@@ -276,7 +276,7 @@ def test_gate_allows_slow_plate_breathe():
 def test_gate_requires_dur_anchored_exit():
     payload = _balatro()
     payload["cueCss"] = payload["cueCss"].replace("var(--wt-dur)", "var(--wt-duration)")
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     doc = WebThemeDocument.from_dict(payload)
     with pytest.raises(WebThemeValidationError, match="--wt-dur"):
@@ -284,7 +284,7 @@ def test_gate_requires_dur_anchored_exit():
 
 
 def test_builtin_balatro_passes_generation_gates():
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     validate_generated_theme(WebThemeDocument.from_dict(_balatro()))
 
@@ -322,13 +322,13 @@ def test_node_service_live_traffic_keeps_idle_timer():
 
 def test_scope_apply_queues_strip_warm():
     _app()
-    from twobyteasr import studio_advanced_flow
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-    from twobyteasr.web_theme import builtin_web_themes
+    from twobyteasr.studio import studio_advanced_flow
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
 
     project = SubtitleProject(media=StudioMedia(path="x.mp4"))
     style_id = project.styles[0].id
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
 
     recipe = StyleRecipe(
         name="BJ", engine="remotion",

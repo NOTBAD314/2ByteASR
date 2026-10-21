@@ -11,8 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget  # noqa: E402
 
-from twobyteasr import ui_zoom  # noqa: E402
-from twobyteasr.ui_navigation import SIDEBAR_WIDTH, WorkspaceNavigation, WorkspaceSidebar  # noqa: E402
+from twobyteasr.app import ui_zoom  # noqa: E402
+from twobyteasr.design.ui_navigation import SIDEBAR_WIDTH, WorkspaceNavigation, WorkspaceSidebar  # noqa: E402
 
 ROOT = Path(__file__).parents[1]
 
@@ -33,9 +33,9 @@ def _app():
 
 
 def _pages(tmp_path):
-    from twobyteasr.model_workshop import ModelWorkshopPage
-    from twobyteasr.recognition_history import RecognitionHistoryPage
-    from twobyteasr.ui import TermLibraryPage
+    from twobyteasr.local_models.model_workshop import ModelWorkshopPage
+    from twobyteasr.recognition.recognition_history import RecognitionHistoryPage
+    from twobyteasr.app.ui import TermLibraryPage
 
     owner = QWidget()
     workshop = ModelWorkshopPage(ROOT, {"models": {}})
@@ -194,7 +194,7 @@ def test_language_minimum_width_is_not_scaled_twice_by_the_zoom(monkeypatch):
 
 
 def test_settle_layout_walks_only_the_visible_tree(monkeypatch):
-    from twobyteasr import ui_motion
+    from twobyteasr.design import ui_motion
     app = _app()
     root = QWidget()
     layout = QVBoxLayout(root)

@@ -1,7 +1,8 @@
 import sys
 from types import SimpleNamespace
 
-from twobyteasr import asr, model_integrity
+from twobyteasr.recognition import asr
+from twobyteasr import model_integrity
 
 
 def test_funasr_falls_back_to_cpu_when_cuda_kernel_probe_fails(monkeypatch):

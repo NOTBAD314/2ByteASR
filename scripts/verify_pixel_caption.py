@@ -10,13 +10,13 @@ def main():
     if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('Use new repository tmp output')
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out/'isolation');os.environ['QT_QPA_PLATFORM']='offscreen'
     from PIL import Image,ImageChops
-    from twobyteasr.caption_components import compose
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html,export_theme_archive,import_theme_archive
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,canonical,digest
-    from twobyteasr.authored_preview import render_candidate_preview
-    from twobyteasr.renderer_service import RendererService,GLOBAL_RENDERER_SERVICE
-    from twobyteasr.live_web_preview import prepare_web_configuration
-    from twobyteasr.caption_proxy import CaptionProxyStore
+    from twobyteasr.caption_design.caption_components import compose
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html,export_theme_archive,import_theme_archive
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,canonical,digest
+    from twobyteasr.caption_design.authored_preview import render_candidate_preview
+    from twobyteasr.rendering.renderer_service import RendererService,GLOBAL_RENDERER_SERVICE
+    from twobyteasr.rendering.live_web_preview import prepare_web_configuration
+    from twobyteasr.rendering.caption_proxy import CaptionProxyStore
     text='这瓶药剂，真的能喝吗？';report={'kind':'local_fixture','provider_calls':0,'modes':{}};concepts=[]
     service=RendererService()
     try:

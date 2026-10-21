@@ -89,8 +89,8 @@ def child(args):
     cli_config = auth_source.parent/'config.toml'
     if cli_config.is_file():
         shutil.copyfile(cli_config, private_cli/'config.toml')
-    from twobyteasr import settings as settings_module
-    from twobyteasr import llm_config
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.providers import llm_config
     settings, warnings = settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS, read(plan['settings_path']))
     settings_module.stable_settings_root = lambda: out/'profile/config'
     settings_module.load_runtime_settings = lambda *a, **k: (copy.deepcopy(settings), str(out/'profile/config/2byteasr_settings.json'), warnings)
@@ -102,13 +102,13 @@ def child(args):
         prior = llm_config._read_secrets
         llm_config._read_secrets = lambda **_: prior(read_only_path=owned_secret)
     import subtitle_core as core
-    from twobyteasr import polishing, grouping
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.service import CancellationToken
-    from twobyteasr.terminology import GlossarySnapshot, apply_to_segments
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot, POLISH_PROMPT_VERSION, GROUP_PROMPT_VERSION
-    from twobyteasr.provider_service import ProviderService, GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.provider_diagnostics import redact_diagnostics
+    from twobyteasr.subtitle_rules import polishing, grouping
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.service import CancellationToken
+    from twobyteasr.glossary.terminology import GlossarySnapshot, apply_to_segments
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot, POLISH_PROMPT_VERSION, GROUP_PROMPT_VERSION
+    from twobyteasr.providers.provider_service import ProviderService, GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_diagnostics import redact_diagnostics
     if Path(core.__file__).resolve().parent != source:
         raise RuntimeError('Source import isolation failed')
     core.adopt_profile_runtime_settings(settings, warnings)
@@ -137,7 +137,7 @@ def child(args):
     def save_dispatched():
         # Generic diagnostic redaction reparses embedded JSON strings. Preserve
         # prompt whitespace byte-for-byte except actual credential patterns.
-        from twobyteasr.provider_diagnostics import _PATTERNS
+        from twobyteasr.providers.provider_diagnostics import _PATTERNS
         public = redact_diagnostics(dispatched)
         for original, record in zip(dispatched, public):
             exact = copy.deepcopy(original['messages'])

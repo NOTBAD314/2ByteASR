@@ -16,6 +16,7 @@
 | FireRedASR2S | 安装树/开发目录`third_party/FireRedASR2S/`及[补丁](source-materials/build-records/firered-local.patch) | 基础`4e7d9aaf4482a47cec1724807026b9b151926eb5`，5处实质修改、49处换行差异、53个上游文件未纳入；上游原版不是实际修改版 |
 | MOSS代码 | 安装树/开发目录`third_party/MOSS-Transcribe-Diarize/`及LICENSE | 对应`eda4b9f13f1574765a80438c9797780a9bd48112`，原审计确认vendor干净；权重revision另列 |
 | GPL GIMP桥接插件 | `assets/gimp/2byte-cover-bridge.py`及COPYING-GIMP.txt | 已提供可编辑源；完整GIMP不在Setup中，插件既有GPL不能被统一禁止销售条款覆盖 |
+| FFmpeg/ffprobe n9.0.2-17-g2a571b6068（BtbN，2026-10-14起） | [构建仓库快照、依赖清单与说明](source-materials/btbn-ffmpeg-builds-6c9aec5f/README.md)；[版本](source-materials/build-records/btbn-ffmpeg-version.txt)、[buildconf](source-materials/build-records/btbn-ffmpeg-buildconf.txt) | 构建脚本、补丁、FFmpeg提交及105个依赖的固定仓库/提交齐全且2026-10-14逐项公开可取；依赖源码按§6(d)指向上游未另行打包；工具链未按提交固定、未作重建。详见文末2026-10-14节 |
 
 归档保留上游版权/许可。PyAV的BSD不替代编码库许可；本项目已撤销禁止出售目标，取得部分源码仍不等于全部对应源码和补丁已齐。
 
@@ -45,7 +46,7 @@
 
 | 组件 | 现有证据 | 仍需取得或验证 |
 |---|---|---|
-| FFmpeg9.0 gyan CLI | [buildconf](source-materials/build-records/ffmpeg-buildconf.txt)、[版本](source-materials/build-records/ffmpeg-version.txt)、GPLv3全文 | 提供者精确来源包、全部静态库版本/补丁/构建脚本和工具链。上面的8.1.1不适用于9.0 |
+| FFmpeg9.0 gyan CLI（截至0.7.1的已发布安装包） | [buildconf](source-materials/build-records/ffmpeg-buildconf.txt)、[版本](source-materials/build-records/ffmpeg-version.txt)、GPLv3全文 | 提供者精确来源包、全部静态库版本/补丁/构建脚本和工具链。上面的8.1.1不适用于9.0。2026-10-14起开发树已换为BtbN固定构建（文末新节），此缺口只适用于已发布的旧安装包 |
 | mpv0.41.0-923-g7b8915bc1 | [版本](source-materials/build-records/mpv-version.txt)、[构建](source-materials/build-records/mpv-build.txt)、Copyright | mpv7b8915bc1与FFmpeg1d7b14f61精确commit源码已补；libplacebo dirty补丁、其余链接依赖及实际构建配方仍缺 |
 | Qt/PySide/Shiboken6.9.2及Qt Multimedia FFmpeg | 对应全文/例外/部分头文件与[库探针](source-materials/build-records/dll-probes.json) | Qt完整6.9.2、PySide/Shiboken6.9.2官方源码已补且SHA匹配；实际wheel/Qt媒体构建配置与源码对应、必要替换说明仍需补，未进行替换测试不单独等同违规 |
 | PyAV其余编解码依赖 | 官方wheel对应、构建工程及上述主要源码包 | 11项Windows配方输入已按原SHA补齐；x264/x265版本疑虑已关闭。尚缺实际MSYS2运行库的精确包身份与所需源码/例外，不称全部对应源码已齐 |
@@ -179,3 +180,18 @@ README 列出的外部库确切版本（`git describe` 形式即上游提交）�
 - 来源：`VulkanRT-X64-1.4.363.0-Components.zip`（SHA-256 `a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a`），只取 `x64/vulkan-1.dll`（SHA-256 `e1fcfc9489beefa6a6d9d11d6c7517f6a2b7f16e0d3fb8f4103bee0210f314a3`）。
 - 源码：上游 [Vulkan-Loader v1.4.363](https://github.com/KhronosGroup/Vulkan-Loader/tree/v1.4.363)（`9e9518d2cf00054a220ae1a40f4406804b420ef5`）。Apache-2.0、MIT、HPND 都不要求提供源码，这里只记录出处；本项目没有自行重建核对二进制与标签逐字节对应。
 - 许可原文与版权：见[组件目录](COMPONENTS.md)第 624 条和 `materials/vulkan-loader/1.4.363.0/`。
+
+## 2026-10-17：随附 mpv 的上游原包已存档，构建配方提交已补
+
+以前：`tools/mpv/` 来自 shinchiro/mpv-winbuild-cmake 的 GitHub 发布 `20260814`。上游只保留最近 30 个发布，这一版已被删除，原下载地址返回 404，SourceForge 也没有这一版；上面 0.6.5 表里的“构建系统”只写了仓库地址，没写是哪个提交。现在：
+
+- **原包已取回并存档**：2026-10-17 从上游自动构建运行 [31755832255](https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/31755832255) 的附件 `mpv-x86_64`（编号 9203486021，2026-11-12 过期）取回 `mpv-x86_64-20260814-git-7b8915bc1d.7z`：33,583,248 字节，SHA-256 `1bf3b029da2c98e605e00e85f21ee3142f22a1dcc4ceb5c827b5c51e36e390f9`，与该运行上传发布时 GitHub 记录的摘要、本项目锁定的哈希都相同。
+- **存放位置**：未改动，追加到本项目 [v0.6.5 发布](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.6.5)，GitCode 镜像的同名发布也有一份。mpv 和 FFmpeg 的对应源码 `2ByteASR-0.5.0-ThirdParty-Sources.zip` 在同一个发布页；两边的发布说明都写明了对应源码在哪里。`scripts/collect_tools.ps1` 改从这里下载，锁定的哈希不变。
+- **未修改**：原包解出的 13 个文件，与 0.6.5 至 0.7.5 安装包随附的 `tools/mpv/` 逐字节相同。
+- **构建配方**：上游仓库提交 `cd1edc11dc6887a50f705717619d879f5a93a488`。运行记录、日志摘录和逐文件核对见 [构建记录](source-materials/build-records/mpv-upstream-run.txt)。上面 0.6.5 表的“构建系统”一格以这个提交为准。
+- **仍如实保留的缺口**：上游构建时多数依赖库取当时的最新 git 版本，运行日志不记录各库的提交。所以 mpv（`7b8915bc1`）和 FFmpeg（`1d7b14f61`）以外，静态链接库（libass、libplacebo、shaderc、SPIRV-Cross、LuaJIT 等）的精确源码版本仍无法确定。
+  - “尚未完整闭合的对应源码”一节 mpv 行写的“实际构建配方仍缺”，由本节补上；“其余链接依赖仍缺”照旧。
+  - 0.6.5 表“未提供”一格写的“无”不准确，以本节为准。
+- **配方快照与依赖来源清单**（2026-10-17 用户同意后取得）：见 [source-materials/shinchiro-mpv-winbuild-cmake-cd1edc11/](source-materials/shinchiro-mpv-winbuild-cmake-cd1edc11/README.md)。
+  - `packages.json` 逐个列出 113 个包的来源、固定方式、配方补丁，以及这次运行是否用到。这次用到 90 个，其中 84 个跟随分支，提交没有记录。
+  - 配方仓库**没有许可文件**。`licenses/` 会随安装包分发，所以 GitHub 生成的源码包（SHA-256 `d82f5f06…c4c2c`）不放进该目录。2026-10-17 用户决定：它只作内部证据，留在共享工作区 `tmp/mpv-archive-20261017/recipe/`，不随包分发；配方指向上游公开提交（做法同上文 splitter 旧版文件）。

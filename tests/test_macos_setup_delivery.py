@@ -143,7 +143,7 @@ def test_blank_controls_or_exit_failure_never_becomes_passed(tmp_path, monkeypat
     monkeypatch.setattr(blank.platform, 'machine', lambda: 'arm64')
     monkeypatch.setenv('TWOBYTEASR_TEST_ROOT', str(tmp_path/'tmp/prior'))
     isolation = ModuleType('twobyteasr.test_isolation'); isolation.install = lambda: None
-    project = ModuleType('twobyteasr.studio_project')
+    project = ModuleType('twobyteasr.projects.studio_project')
     project.StudioMedia = lambda **kw: kw
     project.SubtitleProject = lambda **kw: kw
     project.save_project = lambda value, path: path.write_text('{}', 'utf8')

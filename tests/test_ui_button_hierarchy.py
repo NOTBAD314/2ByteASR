@@ -8,14 +8,14 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QToolButton, QWidget
 
 from twobyteasr.design.presentation import button_role
-from twobyteasr.theme_manager import apply_theme
-from twobyteasr.ui_theme import THEMES
+from twobyteasr.design.theme_manager import apply_theme
+from twobyteasr.design.ui_theme import THEMES
 
 
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     instance = QApplication.instance() or QApplication([])
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     monkeypatch.setattr(theme_manager, "_settings", lambda: QSettings(str(tmp_path / "theme.ini"), QSettings.Format.IniFormat))
     return instance
 
@@ -48,8 +48,8 @@ def test_explicit_size_survives_legacy_id_and_theme_switch(app):
 
 
 def test_project_action_foreground_matches_icon_in_local_studio_sheet(app):
-    from twobyteasr.studio_theme import build_studio_qss
-    from twobyteasr.themed_icons import icon_role_color
+    from twobyteasr.design.studio_theme import build_studio_qss
+    from twobyteasr.design.themed_icons import icon_role_color
     root = QWidget()
     row = QHBoxLayout(root)
     button = button_role(QPushButton("打开工程"), "primary")

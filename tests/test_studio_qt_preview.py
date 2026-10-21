@@ -5,7 +5,7 @@ import pytest
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QColor
 from PySide6.QtWidgets import QApplication, QWidget
-from twobyteasr.studio_qt_preview import QtEmbeddedVideoController
+from twobyteasr.studio.studio_qt_preview import QtEmbeddedVideoController
 
 
 @pytest.fixture(scope='module')
@@ -25,7 +25,7 @@ def controller(app):
 
 
 def test_factory_keeps_windows_process_owner_and_mac_owned_child(app, monkeypatch):
-    import twobyteasr.studio_mpv as mpv
+    import twobyteasr.playback.studio_mpv as mpv
     marker = object()
     monkeypatch.setattr(mpv, 'MpvController', lambda: marker)
     assert mpv.create_preview_controller(platform='win32') is marker
@@ -41,7 +41,7 @@ def test_factory_keeps_windows_process_owner_and_mac_owned_child(app, monkeypatc
 
 def test_canvas_qt_start_never_promotes_native_window(app, monkeypatch, tmp_path):
     from PySide6.QtCore import Qt
-    from twobyteasr import studio_video_canvas
+    from twobyteasr.studio import studio_video_canvas
     canvas = studio_video_canvas.MpvCanvas()
     canvas.setAttribute(Qt.WA_NativeWindow, False)
     monkeypatch.setattr(studio_video_canvas, 'studio_data_root', lambda: tmp_path)
@@ -61,7 +61,7 @@ def test_canvas_qt_start_never_promotes_native_window(app, monkeypatch, tmp_path
 
 
 def test_canvas_mpv_start_keeps_owned_native_handle(app, monkeypatch, tmp_path):
-    from twobyteasr import studio_video_canvas
+    from twobyteasr.studio import studio_video_canvas
     seen = []
     controller = SimpleNamespace(running=False, start=lambda handle, **kw: seen.append(handle))
     canvas = studio_video_canvas.MpvCanvas()
@@ -153,7 +153,7 @@ def test_sync_player_operations_reject_worker_thread(controller):
 
 
 def test_stalled_playing_source_is_not_reported_alive(controller,monkeypatch):
-    import twobyteasr.studio_qt_preview as preview
+    import twobyteasr.studio.studio_qt_preview as preview
     controller._desired_paused = False
     controller._last_activity = 1.0
     monkeypatch.setattr(preview.time,'monotonic',lambda:10.0)
@@ -164,16 +164,16 @@ def test_stalled_playing_source_is_not_reported_alive(controller,monkeypatch):
 
 def test_windows_shortcut_defaults_are_unchanged(app,monkeypatch):
     import sys
-    from twobyteasr.studio_shortcuts import STUDIO_COMMANDS,studio_default_shortcuts
+    from twobyteasr.studio.studio_shortcuts import STUDIO_COMMANDS,studio_default_shortcuts
     monkeypatch.setattr(sys,'platform','win32')
     assert studio_default_shortcuts() == {key:row[1] for key,row in STUDIO_COMMANDS.items()}
 
 
 @pytest.mark.parametrize('native_supported,expected',[ (False,True),(True,False)])
 def test_single_cue_uses_scene_only_for_raster_only_backend(app,native_supported,expected):
-    from twobyteasr.caption_scene import CaptionScene
+    from twobyteasr.rendering.caption_scene import CaptionScene
     page = QWidget()
-    page.project = SimpleNamespace(render_settings={}, effects={})
+    page.project = SimpleNamespace(render_settings={})
     calls = []
     page.video = SimpleNamespace(controller=SimpleNamespace(supports_native_subtitles=native_supported),
                                 clear_caption_boundaries=lambda:calls.append('clear'))
@@ -182,7 +182,7 @@ def test_single_cue_uses_scene_only_for_raster_only_backend(app,native_supported
     page._revision_store = SimpleNamespace(render=None)
     page.position_overlay = SimpleNamespace(_content_rect=lambda:QRectF())
     scene = CaptionScene(page)
-    assert scene.present([SimpleNamespace(id='ordinary',effect_id='none')],500) is expected
+    assert scene.present([SimpleNamespace(id='ordinary')],500) is expected
     assert scene.active is expected
     assert bool(calls) is expected
     scene.close()

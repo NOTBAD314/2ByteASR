@@ -3,14 +3,14 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from copy import deepcopy
 from dataclasses import asdict
 import json
-from twobyteasr.font_metadata import resolve_local_face
-from twobyteasr.preset_application import preset_command
-from twobyteasr.studio_project import SubtitleProject, SubtitleStyle, StudioMedia, StudioCue, load_project, save_project
-from twobyteasr.resolved_caption_style import resolve_caption_style
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.advanced_renderer import normalized_visual_snapshot
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.style_presets import StylePresetStore
+from twobyteasr.caption_style.font_metadata import resolve_local_face
+from twobyteasr.exports.preset_application import preset_command
+from twobyteasr.projects.studio_project import SubtitleProject, SubtitleStyle, StudioMedia, StudioCue, load_project, save_project
+from twobyteasr.caption_style.resolved_caption_style import resolve_caption_style
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering.advanced_renderer import normalized_visual_snapshot
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.caption_style.style_presets import StylePresetStore
 
 def project():
     p=SubtitleProject(media=StudioMedia('fixture.mp4',duration_ms=2000,width=1920,height=1080),

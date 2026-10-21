@@ -37,17 +37,17 @@ from PySide6.QtGui import QFontDatabase, QGuiApplication
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_renderer import normalized_visual_snapshot
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.processes import child_process_start_count
-from twobyteasr.studio_ai import AIDesignSuggestion, style_recipe_for_prompt, visual_design_variants
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_project import StudioCue, SubtitleStyle
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_presets import BUILTIN_PRESETS
-from twobyteasr.style_recipe import FillSpec
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.window_audit import TopLevelWindowAudit, qt_top_level_widgets, win32_top_level_windows
+from twobyteasr.rendering.advanced_renderer import normalized_visual_snapshot
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.system.processes import child_process_start_count
+from twobyteasr.caption_design.studio_ai import AIDesignSuggestion, style_recipe_for_prompt, visual_design_variants
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.projects.studio_project import StudioCue, SubtitleStyle
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import BUILTIN_PRESETS
+from twobyteasr.caption_style.style_recipe import FillSpec
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.acceptance.window_audit import TopLevelWindowAudit, qt_top_level_widgets, win32_top_level_windows
 
 
 def pump(app: QApplication, milliseconds: int = 0) -> None:

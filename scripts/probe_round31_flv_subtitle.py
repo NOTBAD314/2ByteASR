@@ -22,8 +22,8 @@ PROJECT_DIR = ROOT / "tmp" / "round31-flv"
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def prop(page, name, default=None):

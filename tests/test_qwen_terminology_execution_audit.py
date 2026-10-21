@@ -9,7 +9,7 @@ def test_source_qwen_context_audit_does_not_shadow_runtime_recorder(monkeypatch,
     import json
     import sys
     from pathlib import Path
-    from twobyteasr import asr, cache
+    from twobyteasr.recognition import asr, cache
 
     events = []
     requests = []

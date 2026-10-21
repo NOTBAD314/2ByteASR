@@ -1,6 +1,6 @@
 import json
-from twobyteasr.public_api_response import message_evidence, observe, summary
-from twobyteasr import llm_adapter
+from twobyteasr.providers.public_api_response import message_evidence, observe, summary
+from twobyteasr.providers import llm_adapter
 
 def test_official_returned_fields_are_source_labelled_and_redacted():
     d=dict(endpoint='https://api.deepseek.com/v1/chat/completions',model='deepseek-v4-pro')

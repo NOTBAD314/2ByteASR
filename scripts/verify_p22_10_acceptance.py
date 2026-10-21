@@ -25,8 +25,8 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_project import load_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import load_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 SOURCE_PROJECT = Path(

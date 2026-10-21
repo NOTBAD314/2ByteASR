@@ -124,7 +124,7 @@ def _run_worker_in_process(worker, monkeypatch, command):
 
 @pytest.fixture
 def mlx_host(worker, monkeypatch, tmp_path):
-    from twobyteasr import asr, mlx_backend
+    from twobyteasr.recognition import asr, mlx_backend
     for folder in mlx_backend.FOLDERS.values():
         (tmp_path / folder).mkdir()
     monkeypatch.setattr(mlx_backend, 'platform_supported', lambda: True)
@@ -151,7 +151,7 @@ def test_probe_reports_device_and_versions(worker, monkeypatch, capsys):
 
 
 def test_aligner_receipt_has_the_pytorch_contract(mlx_host):
-    from twobyteasr import asr, mlx_backend
+    from twobyteasr.recognition import asr, mlx_backend
     audio = (np.random.default_rng(1).standard_normal(16000 * 3) * 0.05).astype(np.float32)
     jobs = [{'id': 'a', 'window_start_ms': 500, 'window_end_ms': 2500, 'text': 'hello brave new world',
              'language': 'English'}]
@@ -172,7 +172,7 @@ def test_aligner_receipt_has_the_pytorch_contract(mlx_host):
 
 
 def test_aligner_rejects_rewritten_text(mlx_host, monkeypatch, worker):
-    from twobyteasr import mlx_backend
+    from twobyteasr.recognition import mlx_backend
     original = worker._atomic_write
 
     def tamper(path, payload):
@@ -188,9 +188,9 @@ def test_aligner_rejects_rewritten_text(mlx_host, monkeypatch, worker):
 
 
 def test_primary_rows_are_marked_as_window_times(mlx_host, monkeypatch):
-    from twobyteasr import mlx_backend
+    from twobyteasr.recognition import mlx_backend
     events = []
-    monkeypatch.setattr('twobyteasr.cache.record_run_event', lambda name, **kw: events.append((name, kw)))
+    monkeypatch.setattr('twobyteasr.recognition.cache.record_run_event', lambda name, **kw: events.append((name, kw)))
     audio = np.zeros(16000 * 4, dtype=np.float32)
     rows = mlx_backend.transcribe_reference(audio, [{'start': 0.5, 'end': 3.5}], backend='mlx_qwen3_asr_1_7b',
                                             language='Chinese')
@@ -201,7 +201,7 @@ def test_primary_rows_are_marked_as_window_times(mlx_host, monkeypatch):
 
 
 def test_primary_dispatch_reaches_mlx(monkeypatch):
-    from twobyteasr import asr, mlx_backend
+    from twobyteasr.recognition import asr, mlx_backend
     seen = {}
     monkeypatch.setattr(mlx_backend, 'transcribe_reference',
                         lambda audio, regions, backend, language: seen.update(backend=backend) or [])
@@ -210,8 +210,8 @@ def test_primary_dispatch_reaches_mlx(monkeypatch):
 
 
 def test_mlx_aligner_selected_routes_and_missing_runtime_is_aligner_unavailable(monkeypatch):
-    from twobyteasr import asr, mlx_backend
-    from twobyteasr.runtime import get_runtime_context
+    from twobyteasr.recognition import asr, mlx_backend
+    from twobyteasr.recognition.run_context import get_runtime_context
     context = get_runtime_context()
     monkeypatch.setattr(context, 'asr_settings_snapshot', {'models': {'firered_asr_backend': 'mlx_qwen_aligner'}},
                         raising=False)
@@ -222,8 +222,8 @@ def test_mlx_aligner_selected_routes_and_missing_runtime_is_aligner_unavailable(
 
 
 def test_mlx_plans_need_only_the_mlx_runtime():
-    from twobyteasr.environment import required_environment_roles
-    from twobyteasr.hardware import require_local_torch_runtime, selected_cuda_components
+    from twobyteasr.system.environment import required_environment_roles
+    from twobyteasr.system.hardware import require_local_torch_runtime, selected_cuda_components
     local = {'models': {'primary_asr_backend': 'mlx_qwen3_asr', 'firered_asr_backend': 'mlx_qwen_aligner',
                         'qwen_asr_backend': 'off'}}
     cloud_align = {'models': {'primary_asr_backend': 'api', 'firered_asr_backend': 'mlx_qwen_aligner',
@@ -235,7 +235,7 @@ def test_mlx_plans_need_only_the_mlx_runtime():
 
 
 def test_settings_accept_both_mlx_backends():
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
     for primary in ('mlx_qwen3_asr', 'mlx_qwen3_asr_1_7b'):
         merged, warnings = _merge_known_settings(DEFAULT_SETTINGS, {'models': {
             'primary_asr_backend': primary, 'firered_asr_backend': 'mlx_qwen_aligner'}})
@@ -245,7 +245,7 @@ def test_settings_accept_both_mlx_backends():
 
 
 def test_workshop_cards_are_apple_silicon_only(monkeypatch):
-    from twobyteasr import model_workshop
+    from twobyteasr.local_models import model_workshop
     cards = {model.key: model for model in model_workshop.MODELS}
     aligner = cards['mlx_qwen_aligner']
     assert aligner.asr_capabilities == ('ALIGNMENT',) and '不是语音识别模型' in aligner.summary
@@ -259,13 +259,13 @@ def test_workshop_cards_are_apple_silicon_only(monkeypatch):
                                                            cards['mlx_qwen3_asr_0_6b'], 'platform_unavailable')
     assert action == ('仅限 Apple Silicon Mac', False)
     monkeypatch.setattr(model_workshop, '_host_platform_tag', lambda: 'darwin-arm64')
-    monkeypatch.setattr('twobyteasr.mlx_backend.runtime_python', lambda: '')
+    monkeypatch.setattr('twobyteasr.recognition.mlx_backend.runtime_python', lambda: '')
     assert compute(page, cards['mlx_qwen3_asr_0_6b'], 'primary') == 'runtime_missing'
     assert compute(page, cards['mlx_qwen3_asr_1_7b'], 'primary') == 'missing'
 
 
 def test_prepare_refuses_off_apple_silicon_and_unknown_keys(tmp_path):
-    from twobyteasr import macos_model_prepare
+    from twobyteasr.local_models import macos_model_prepare
     with pytest.raises(ValueError):
         macos_model_prepare.prepare_mlx(ROOT, models=tmp_path, source='AUTO', keys=['sensevoice'])
     if sys.platform != 'darwin':
@@ -294,9 +294,10 @@ def test_mlx_requirements_are_hash_pinned_and_match_the_lock():
 
 def test_first_run_presets_follow_the_computer(monkeypatch):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import mlx_backend, ui
+    from twobyteasr.recognition import mlx_backend
+    from twobyteasr.app import guided_setup_dialog, ui
     app = QApplication.instance() or QApplication([])
-    monkeypatch.setattr(ui, 'detect_cuda_runtime', lambda: None)
+    monkeypatch.setattr(guided_setup_dialog, 'detect_cuda_runtime', lambda: None)
     monkeypatch.setattr(mlx_backend, 'platform_supported', lambda: True)
     dialog = ui.GuidedSetupDialog()
     keys = [button.property('preset') for button in dialog.preset_group.buttons()]
@@ -331,7 +332,7 @@ def test_first_run_presets_follow_the_computer(monkeypatch):
 
 
 def test_cloud_followups_never_keep_mlx_off_apple_silicon():
-    from twobyteasr.recognition_choices import HostProfile, cloud_followups
+    from twobyteasr.recognition.recognition_choices import HostProfile, cloud_followups
     windows = HostProfile('win32', 'amd64', False, True, False)
     patch, notes = cloud_followups({'firered_asr_backend': 'mlx_qwen_aligner'}, {'qwen_aligner'}, windows)
     assert patch['firered_asr_backend'] == 'qwen_aligner' and 'Apple Silicon' in notes[0]

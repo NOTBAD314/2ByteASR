@@ -9,16 +9,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.clip_time_mapper import map_project_time
-from twobyteasr.studio_media_pool import (
+from twobyteasr.timeline.clip_time_mapper import map_project_time
+from twobyteasr.timeline.studio_media_pool import (
     add_media_asset,
     add_video_clip,
     create_video_track,
     set_video_track_state,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_ui import MpvCanvas, SubtitleStudioPage, WaveformTimeline
-from twobyteasr.video_compositor import VideoCompositionScene
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_ui import MpvCanvas, SubtitleStudioPage, WaveformTimeline
+from twobyteasr.playback.video_compositor import VideoCompositionScene
 
 
 def _app() -> QApplication:

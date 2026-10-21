@@ -10,16 +10,16 @@
 import pytest
 
 import subtitle_core
-from twobyteasr.correction_safety import apply_correction_edits
-from twobyteasr.models import SpeechSegment
-from twobyteasr.polishing import (
+from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.subtitle_rules.polishing import (
     _independent_asr_sources,
     _reference_family,
     filter_untrusted_polished_text,
 )
 
 try:
-    from twobyteasr.correction_safety import count_independent_asr_supports
+    from twobyteasr.subtitle_rules.correction_safety import count_independent_asr_supports
 except ImportError:  # TDD：函数尚未实现时，纯函数用例暂缓执行
     count_independent_asr_supports = None
 

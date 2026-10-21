@@ -1,8 +1,8 @@
 import copy
 import pytest
-from twobyteasr.authored_html import html_problems
-from twobyteasr.web_theme import sanitize_html
-from twobyteasr.authored_repair import apply_patch_transaction
+from twobyteasr.caption_design.authored_html import html_problems
+from twobyteasr.caption_design.web_theme import sanitize_html
+from twobyteasr.caption_design.authored_repair import apply_patch_transaction
 
 
 def test_declared_inline_svg_noise_and_merge_are_preserved():

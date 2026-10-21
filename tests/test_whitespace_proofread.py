@@ -18,10 +18,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 import subtitle_core  # noqa: F401  initialize the legacy facade before polishing
-from twobyteasr.studio_glossary_review import diff_occurrences, format_only_change, transplant_model_edits
-from twobyteasr.studio_glossary_service import preview_glossary_correction
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
+from twobyteasr.glossary.studio_glossary_review import diff_occurrences, format_only_change, transplant_model_edits
+from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
 
 TEXTS = ("这里怎么办 ", "好，我们走 ", "没事 开一把就知道了", "魔草巫灵、来了 ")
 
@@ -42,8 +42,8 @@ def project(*texts):
 
 def real_provider_snapshot(monkeypatch):
     from tests.test_stage9_provider_snapshot import config
-    from twobyteasr import llm_config
-    import twobyteasr.asr_provider_snapshot as provider
+    from twobyteasr.providers import llm_config
+    import twobyteasr.providers.asr_provider_snapshot as provider
     monkeypatch.setattr(llm_config, "read_scoped_api_key", lambda *a: ("fixture", "test"))
     snap = provider.resolve_provider_snapshot(config())
     monkeypatch.setattr(provider, 'resolve_provider_snapshot', lambda *_a, **_kw: snap)
@@ -61,13 +61,13 @@ def model_answers(monkeypatch, edits_for=lambda cue_id, text: []):
                 for row in rows for edits in [edits_for(row['id'], row['primary_text'])] if edits]
         return json.dumps({'checked_ids': [row['id'] for row in rows], 'cues': cues})
 
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *a, **k: SimpleNamespace(complete=complete))
     return sent
 
 
 def test_root_cause_the_safety_adjudicator_returns_normalized_text_without_edits():
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     corrected, applied = apply_correction_edits("这里怎么办 ", [], [], independent_sources=[])
     assert (corrected, applied) == ("这里怎么办", [])
     corrected, _ = apply_correction_edits("魔草巫灵、来了 ", [], [], independent_sources=[])
@@ -88,8 +88,8 @@ def test_zero_model_edits_produce_no_suggestion(monkeypatch):
 
 
 def test_timeout_fallback_produces_no_suggestion(monkeypatch):
-    from twobyteasr import polishing
-    from twobyteasr.provider_input_budget import RetryBudget
+    from twobyteasr.subtitle_rules import polishing
+    from twobyteasr.providers.provider_input_budget import RetryBudget
     real_provider_snapshot(monkeypatch)
     sent = model_answers(monkeypatch)
     monkeypatch.setattr(polishing, 'correction_task_budget',
@@ -105,10 +105,10 @@ def test_failed_request_produces_no_suggestion(monkeypatch):
     real_provider_snapshot(monkeypatch)
 
     def broken(messages, **_kwargs):
-        from twobyteasr.ai_providers import AIProviderError
+        from twobyteasr.providers.ai_providers import AIProviderError
         raise AIProviderError('offline', category='configuration_error')
 
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *a, **k: SimpleNamespace(complete=broken))
     p = project(*TEXTS)
     result = preview_glossary_correction(p, [c.id for c in p.cues], library(TermEntry('autumn', category='选手ID')), {})
@@ -118,8 +118,8 @@ def test_failed_request_produces_no_suggestion(monkeypatch):
 
 def test_real_model_edit_is_transplanted_onto_the_raw_text(monkeypatch):
     """Only 巫 -> 乌 is proposed; the cue's 、 and trailing space are not touched."""
-    import twobyteasr.polishing as polish
-    from twobyteasr.text_rules import clean_subtitle_text
+    import twobyteasr.subtitle_rules.polishing as polish
+    from twobyteasr.subtitle_rules.text_rules import clean_subtitle_text
 
     def correction(rows, *_a, **_kw):
         texts = {row.segment_id: clean_subtitle_text(row.text) for row in rows}

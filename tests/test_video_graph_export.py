@@ -4,11 +4,11 @@ from dataclasses import replace
 from pathlib import Path
 import pytest
 from PySide6.QtGui import QImage
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.studio_project import StudioMedia, SubtitleProject, VideoTransform
-from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
-from twobyteasr.studio_render import RenderJob, RenderSettings, run_render_job
-from twobyteasr.video_export import capture_video_graph, prepared_video_job
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, VideoTransform
+from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, run_render_job
+from twobyteasr.exports.video_export import capture_video_graph, prepared_video_job
 
 FFMPEG = Path(__file__).resolve().parents[1] / "tools/ffmpeg/bin/ffmpeg.exe"
 pytestmark = pytest.mark.skipif(not FFMPEG.is_file(), reason="bundled ffmpeg required")
@@ -33,7 +33,7 @@ def fixture(tmp_path):
         clip = add_video_clip(project, track.id, asset.asset_id, timeline_in_ms=0)
         clip.transform = VideoTransform(scale_x=.5, scale_y=.5, position_x=.25 if i == 2 else .75)
     ass = tmp_path / "empty.ass"
-    from twobyteasr.ass_compiler import compile_ass
+    from twobyteasr.rendering.ass_compiler import compile_ass
     ass.write_text(compile_ass(project), encoding="utf-8-sig")
     job = RenderJob(str(paths[0]), str(ass), str(tmp_path / "result.mkv"),
                     RenderSettings(container="mkv", encoder="libx264", preset="ultrafast",
@@ -122,9 +122,9 @@ def test_export_preserves_source_fps_audio_and_preview_range(fixture, tmp_path):
 
 
 def test_advanced_final_composite_keeps_video_graph(fixture, tmp_path, monkeypatch):
-    import twobyteasr.advanced_renderer as advanced
-    from twobyteasr.studio_project import StudioCue, SubtitleStyle
-    from twobyteasr.studio_ai import style_recipe_for_prompt
+    import twobyteasr.rendering.advanced_renderer as advanced
+    from twobyteasr.projects.studio_project import StudioCue, SubtitleStyle
+    from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
     project, job = fixture
     previews=[]
     job.preview_callback=lambda image,t,phase:previews.append((image.copy(),t,phase))

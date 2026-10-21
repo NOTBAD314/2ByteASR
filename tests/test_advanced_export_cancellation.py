@@ -8,7 +8,7 @@ import time
 import psutil
 import pytest
 
-from twobyteasr import advanced_renderer
+from twobyteasr.rendering import advanced_renderer
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows renderer descendant cleanup")
 

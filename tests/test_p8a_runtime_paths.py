@@ -7,9 +7,9 @@ import os
 import pytest
 from pathlib import Path
 
-from twobyteasr.model_registry import ModelHealth, installed_model_keys, scan_model_registry
-from twobyteasr.model_storage import build_storage_qss, scan_storage
-from twobyteasr.model_workshop import MODELS
+from twobyteasr.local_models.model_registry import ModelHealth, installed_model_keys, scan_model_registry
+from twobyteasr.local_models.model_storage import build_storage_qss, scan_storage
+from twobyteasr.local_models.model_workshop import MODELS
 from twobyteasr.runtime_paths import (
     MODEL_ROOT_ENV,
     bootstrap_runtime_paths,
@@ -17,7 +17,7 @@ from twobyteasr.runtime_paths import (
     reset_runtime_paths,
     set_model_root,
 )
-from twobyteasr.ui_theme import THEMES, theme_definition
+from twobyteasr.design.ui_theme import THEMES, theme_definition
 
 
 @pytest.fixture(autouse=True)
@@ -128,7 +128,7 @@ def test_storage_scan_uses_registry_not_install_relative_path(tmp_path, monkeypa
 
 
 def test_storage_qss_uses_current_theme_tokens_not_cream_hardcodes():
-    from twobyteasr.theme_manager import theme_key
+    from twobyteasr.design.theme_manager import theme_key
 
     qss = build_storage_qss()
     theme = theme_definition(theme_key())

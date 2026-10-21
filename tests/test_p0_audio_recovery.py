@@ -6,7 +6,7 @@ import wave
 from pathlib import Path
 import numpy as np
 from PySide6.QtWidgets import QApplication
-from twobyteasr.audio_engine import StudioAudioEngine
+from twobyteasr.playback.audio_engine import StudioAudioEngine
 
 
 def test_two_lane_endpoint_recovers_at_current_position(tmp_path,monkeypatch):

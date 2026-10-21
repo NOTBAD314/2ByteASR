@@ -4,8 +4,8 @@ import argparse,json,sys
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 
 def main():
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     from PIL import Image
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,default=ROOT/'examples/web-themes/balatro-20260911');a=p.parse_args()
     background=Image.open(ROOT/'tmp/caption-audit-20260910/visual/game.png').convert('RGBA')

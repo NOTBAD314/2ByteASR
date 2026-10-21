@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.macos_desktop_evidence import (preserve_owned_project, studio_snapshot,
+from twobyteasr.acceptance.macos_desktop_evidence import (preserve_owned_project, studio_snapshot,
                                             image_colour_observation)
 
 
@@ -23,8 +23,8 @@ def test_preview_measure_rejects_black_canvas_despite_coloured_bottom_handles():
 def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
     from PySide6.QtGui import QImage, QColor
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
-    from twobyteasr.studio_qt_preview import QtEmbeddedVideoController
-    from twobyteasr.macos_desktop_evidence import preserve_studio_preview
+    from twobyteasr.studio.studio_qt_preview import QtEmbeddedVideoController
+    from twobyteasr.acceptance.macos_desktop_evidence import preserve_studio_preview
     app = QApplication.instance() or QApplication([])
     canvas = QWidget(); canvas.resize(180, 120)
     controller = QtEmbeddedVideoController(canvas); controller.start()
@@ -52,8 +52,8 @@ def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
 def test_actual_transform_child_preserves_qt_video_under_show_update_and_hide():
     from PySide6.QtGui import QImage, QColor
     from PySide6.QtWidgets import QApplication, QWidget
-    from twobyteasr.studio_qt_preview import QtEmbeddedVideoController
-    from twobyteasr.studio_position_overlay import SubtitlePositionOverlay
+    from twobyteasr.studio.studio_qt_preview import QtEmbeddedVideoController
+    from twobyteasr.studio.studio_position_overlay import SubtitlePositionOverlay
     app = QApplication.instance() or QApplication([])
     canvas = QWidget(); canvas.resize(320, 240); canvas.setStyleSheet('background: black')
     controller = QtEmbeddedVideoController(canvas); controller.start()
@@ -85,8 +85,8 @@ from scripts.macos_collect_artifacts import selected_files
 
 def test_paused_native_frame_survives_stdout_backpressure_and_heartbeats(tmp_path):
     import os, queue, shutil, struct, subprocess, sys, threading, time
-    from twobyteasr.platform_media import ffmpeg_tool
-    from twobyteasr.video_decode_pipe import _read_exact
+    from twobyteasr.system.platform_media import ffmpeg_tool
+    from twobyteasr.playback.video_decode_pipe import _read_exact
     ffmpeg = ffmpeg_tool()
     if not ffmpeg.is_file():
         available = shutil.which('ffmpeg')
@@ -98,7 +98,7 @@ def test_paused_native_frame_survives_stdout_backpressure_and_heartbeats(tmp_pat
                     'testsrc2=s=640x360:r=30:d=2', '-c:v', 'libx264', str(media)],
                    check=True, capture_output=True, timeout=20)
     child = subprocess.Popen([sys.executable, '-c',
-                              'from twobyteasr.video_decode_worker import main; main()'],
+                              'from twobyteasr.playback.video_decode_worker import main; main()'],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              env=dict(os.environ, TWOBYTEASR_VIDEO_DECODE_BACKEND='cpu'))
     first_header, release, frames = threading.Event(), threading.Event(), queue.Queue()
@@ -150,8 +150,10 @@ def test_paused_native_frame_survives_stdout_backpressure_and_heartbeats(tmp_pat
 def test_export_workspace_probes_tool_from_relocated_install_root(tmp_path, monkeypatch, windows):
     from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import platform_media, runtime_paths, studio_export_ui, studio_render
-    from twobyteasr.studio_project import StudioMedia, SubtitleProject
+    from twobyteasr.system import platform_media
+    from twobyteasr import runtime_paths
+    from twobyteasr.exports import studio_export_ui, studio_render
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
     app = QApplication.instance() or QApplication([])
     install = tmp_path/'兔白 移動.app/Contents/Frameworks'
     executable = install/'tools/ffmpeg/bin'/('ffmpeg.exe' if windows else 'ffmpeg')
@@ -186,7 +188,10 @@ def test_frozen_native_worker_dispatch_precedes_inherited_gui_audit(monkeypatch,
     import sys
     from PySide6 import QtWidgets
     from scripts import macos_launch as launch
-    from twobyteasr import platform_macos, runtime_paths, settings, studio_acceptance_audit
+    from twobyteasr.system import platform_macos
+    from twobyteasr import runtime_paths
+    from twobyteasr.storage import settings
+    from twobyteasr.acceptance import studio_acceptance_audit
     seen = []
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, 'platform', 'darwin')
@@ -201,7 +206,7 @@ def test_frozen_native_worker_dispatch_precedes_inherited_gui_audit(monkeypatch,
     monkeypatch.setattr(settings, 'project_settings_path', forbidden)
     def worker(*args):
         seen.append(('worker', args)); return 17
-    module = 'twobyteasr.audio_process' if role == 'audio' else 'twobyteasr.video_decode_worker'
+    module = 'twobyteasr.playback.audio_process' if role == 'audio' else 'twobyteasr.playback.video_decode_worker'
     monkeypatch.setitem(sys.modules, module, SimpleNamespace(main=worker))
     assert launch.main() == 17
     assert seen == ['resources', ('worker', (['owned-argument'],) if role == 'audio' else ())]

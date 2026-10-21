@@ -16,12 +16,12 @@ import numpy as np
 import pytest
 
 import subtitle_core  # noqa: F401
-from twobyteasr import cache as cache_mod
-from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-from twobyteasr.service import CancelledError, CancellationToken
+from twobyteasr.recognition import cache as cache_mod
+from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+from twobyteasr.recognition.service import CancelledError, CancellationToken
 
 try:  # TDD：stop_process_tree 尚未提取到 processes.py 时暂缓相关用例
-    from twobyteasr.processes import stop_process_tree
+    from twobyteasr.system.processes import stop_process_tree
 except ImportError:
     stop_process_tree = None
 
@@ -87,7 +87,7 @@ def fake_popen(monkeypatch):
     # stop_process_tree 内部的 taskkill 走 subprocess.run（其内部会再调
     # Popen，撞上上面的 factory）；测试中 stub 掉真实进程终止命令。
     monkeypatch.setattr(
-        "twobyteasr.processes.subprocess.run", lambda *args, **kwargs: None
+        "twobyteasr.system.processes.subprocess.run", lambda *args, **kwargs: None
     )
     return queue
 

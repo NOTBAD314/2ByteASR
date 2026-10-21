@@ -17,9 +17,9 @@ def main():
     from twobyteasr.test_isolation import install
     install()
     import subtitle_core as legacy
-    from twobyteasr import glossary_build as gb
-    from twobyteasr.settings import DEFAULT_SETTINGS
-    from twobyteasr.llm_config import activate_ai_service
+    from twobyteasr.glossary import glossary_build as gb
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
+    from twobyteasr.providers.llm_config import activate_ai_service
     import copy
     settings=copy.deepcopy(DEFAULT_SETTINGS);activate_ai_service(settings,'antigravity')
     settings['models'].update(glossary_enrich_names=False,glossary_include_community=False,

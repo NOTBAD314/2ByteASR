@@ -16,13 +16,13 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.cue_word_alignment import cue_words
-from twobyteasr.studio_caption_timeline import ensure_independent_captions, shift_caption
-from twobyteasr.studio_commands import BatchReplaceTextCommand, SetCueFieldsCommand
-from twobyteasr.studio_project import (
+from twobyteasr.recognition.cue_word_alignment import cue_words
+from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions, shift_caption
+from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand, SetCueFieldsCommand
+from twobyteasr.projects.studio_project import (
     StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, load_project, save_project,
 )
-from twobyteasr.studio_timing import SplitPreview, describe_split
+from twobyteasr.timeline.studio_timing import SplitPreview, describe_split
 
 HEARD = [("我", 1000, 1200), ("用", 1200, 1400), ("了", 1400, 1600),
          ("chichoo", 1600, 2400), ("打", 2400, 2600), ("他", 2600, 2800)]

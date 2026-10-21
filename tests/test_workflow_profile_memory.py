@@ -1,4 +1,4 @@
-from twobyteasr.project_profiles import ProjectProfileStore
+from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
 def test_only_started_snapshot_wins_over_selected_saved_and_renamed(tmp_path):
     store = ProjectProfileStore(tmp_path/'profiles.json')

@@ -6,17 +6,17 @@ from pathlib import Path
 from types import SimpleNamespace
 from PySide6.QtWidgets import QApplication, QWidget
 from twobyteasr.design.studio_qss import StudioComponentTokens, build_studio_component_qss
-from twobyteasr.ui_theme import theme_definition
-from twobyteasr.studio_theme import build_studio_qss
-from twobyteasr.studio_performance import StudioPerformanceDialog
-from twobyteasr.playback_clock import PlaybackClock
+from twobyteasr.design.ui_theme import theme_definition
+from twobyteasr.design.studio_theme import build_studio_qss
+from twobyteasr.studio.studio_performance import StudioPerformanceDialog
+from twobyteasr.playback.playback_clock import PlaybackClock
 
 # Keep QApplication alive through pytest fixture teardown, as the other Qt modules do.
 _APP = QApplication.instance() or QApplication([])
 
 
 def test_new_component_styles_have_one_owner_and_custom_tokens():
-    legacy = Path("twobyteasr/studio_theme.py").read_text(encoding="utf-8")
+    legacy = Path("twobyteasr/design/studio_theme.py").read_text(encoding="utf-8")
     for name in ("stylePropertyRow", "motionPreset", "timelineTimecodeInput", "mediaPoolSearch"):
         assert "#" + name not in legacy
     for key in ("warm", "slate", "plum", "lavender"):

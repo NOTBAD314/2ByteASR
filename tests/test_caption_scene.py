@@ -6,11 +6,11 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage
-from twobyteasr.caption_scene import SceneRasterizer
-from twobyteasr.caption_playback_cache import PreparedCaption
-from twobyteasr.studio_project import StudioMedia, StudioCue, StudioSpeaker, SubtitleStyle, SubtitleProject
-from twobyteasr.style_recipe import RecipeRoute
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering.caption_scene import SceneRasterizer
+from twobyteasr.rendering.caption_playback_cache import PreparedCaption
+from twobyteasr.projects.studio_project import StudioMedia, StudioCue, StudioSpeaker, SubtitleStyle, SubtitleProject
+from twobyteasr.caption_style.style_recipe import RecipeRoute
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 @pytest.fixture(scope='module')
@@ -48,7 +48,7 @@ def test_authored_rows_all_have_pixels_at_original_locations(app, count):
 
 
 def test_bad_and_unprepared_cues_do_not_suppress_healthy_peers(app, monkeypatch):
-    import twobyteasr.advanced_live_renderer as live
+    import twobyteasr.rendering.advanced_live_renderer as live
     original=live.render_live_snapshot
     def render(snapshot, **kwargs):
         if snapshot.cue_id=='cue-1' and snapshot.style_recipe: raise ValueError('invalid style fixture')
@@ -65,9 +65,9 @@ def test_bad_and_unprepared_cues_do_not_suppress_healthy_peers(app, monkeypatch)
 
 
 def test_recognized_timeline_snapshot_is_not_projected_twice(app):
-    from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
-    from twobyteasr.studio_revisions import StudioRevisionStore
-    from twobyteasr.caption_playback_cache import materialize_caption_project
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.caption_playback_cache import materialize_caption_project
     p = SubtitleProject(media=StudioMedia('fixture.mp4', duration_ms=10000),
         cues=[StudioCue('8', 1500, 2400, '原有字幕')], styles=[SubtitleStyle('default','Default')])
     sequence = EditSequence(source_path='fixture.mp4', source_duration_ms=10000,
@@ -84,7 +84,7 @@ def test_recognized_timeline_snapshot_is_not_projected_twice(app):
 
 
 def test_layout_failure_does_not_kill_current_or_following_scene(app, monkeypatch):
-    import twobyteasr.subtitle_stacking as stacking
+    import twobyteasr.caption_style.subtitle_stacking as stacking
     def broken(*args, **kwargs): raise ValueError('broken sibling layout')
     monkeypatch.setattr(stacking, 'compute_stack_layout', broken)
     renderer = SceneRasterizer()
@@ -96,7 +96,7 @@ def test_layout_failure_does_not_kill_current_or_following_scene(app, monkeypatc
 
 def test_static_visual_graph_does_not_force_continuous_animation(app):
     from dataclasses import replace
-    from twobyteasr.caption_scene import animated_caption
+    from twobyteasr.rendering.caption_scene import animated_caption
     item=prepared(1)[0][1]
     snapshot=replace(item.snapshot,style_recipe={'visualGraph':{'motionGraph':{'tracks':[]}}})
     assert not animated_caption(replace(item,snapshot=snapshot))
@@ -105,7 +105,7 @@ def test_static_visual_graph_does_not_force_continuous_animation(app):
 
 
 def test_active_set_half_open_overlap_empty_hidden_and_authored_order():
-    from twobyteasr.caption_scene import active_cues
+    from twobyteasr.rendering.caption_scene import active_cues
     cues=[StudioCue('a',0,100,'A','S0'),StudioCue('b',50,150,'B','S1'),StudioCue('c',200,250,'C','S2')]
     page=SimpleNamespace(project=SimpleNamespace(cues=cues),session=SimpleNamespace(runtime=None),
         timeline=SimpleNamespace(hidden_speakers=set(),_speaker_ids=['S1','EMPTY','S0','S2']),_subtitle_track_visibility={})

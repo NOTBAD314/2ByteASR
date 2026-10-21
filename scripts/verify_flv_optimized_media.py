@@ -82,7 +82,7 @@ def main() -> int:
     print(f"FLV ready: {duration_s:.1f}s, {size_bytes/1e6:.1f} MB")
 
     # ------------------------------------------------- A: remux MP4 + cache
-    from twobyteasr.indexed_media import IndexedMediaCache
+    from twobyteasr.media.indexed_media import IndexedMediaCache
     cache = IndexedMediaCache(root=out_dir / "seek-cache")
 
     remux_started = time.perf_counter()
@@ -159,7 +159,7 @@ def main() -> int:
           f"flv={flv_seek_ms:.0f}ms optimized={mp4_seek_ms:.0f}ms")
 
     # ---------------------------------------------- waveform: progressive run
-    from twobyteasr.waveform_cache import (
+    from twobyteasr.playback.waveform_cache import (
         WaveformCache, generate_progressive_waveform_cache,
     )
     stages: list[tuple[str, float]] = []

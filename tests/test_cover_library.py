@@ -2,7 +2,7 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import struct
 import pytest
-from twobyteasr.cover_library import CoverLibrary
+from twobyteasr.cover.cover_library import CoverLibrary
 
 
 def psd():
@@ -20,7 +20,7 @@ def test_template_master_revisions_and_drafts_separate(tmp_path,monkeypatch):
     copy=library.duplicate(second)
     assert copy['id']!=second['id']
     assert library.draft()['template']==first['id']
-    import twobyteasr.cover_library as module
+    import twobyteasr.cover.cover_library as module
     atomic=module.atomic_bytes
     def fail_pointer(path,data):
         if str(path).endswith('.json'):raise PermissionError('readonly')

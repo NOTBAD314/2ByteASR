@@ -6,20 +6,20 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from twobyteasr.advanced_renderer import compile_composition_data
-from twobyteasr.font_system import resolve_style_font
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_export_ui import StudioExportWorkspace
-from twobyteasr.studio_project import (
+from twobyteasr.rendering.advanced_renderer import compile_composition_data
+from twobyteasr.caption_style.font_system import resolve_style_font
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     SubtitleStyle,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_recipe import StyleRecipe, route_recipe
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_recipe import StyleRecipe, route_recipe
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app():

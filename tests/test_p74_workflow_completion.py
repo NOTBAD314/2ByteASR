@@ -1,23 +1,23 @@
 import json
 
-from twobyteasr.font_system import SystemFontEntry, resolve_source_han_heavy
-from twobyteasr.studio_project import (
+from twobyteasr.caption_style.font_system import SystemFontEntry, resolve_source_han_heavy
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
 )
-from twobyteasr.studio_review import (
+from twobyteasr.subtitle_rules.studio_review import (
     ReviewReasonCode,
     ReviewSeverity,
     analyze_review_risks,
 )
-from twobyteasr.studio_subtitle_export import (
+from twobyteasr.exports.studio_subtitle_export import (
     SubtitleExportOptions,
     export_subtitle_artifacts,
     verify_subtitle_artifact,
 )
-from twobyteasr.style_presets import BUILTIN_PRESETS, StylePresetStore
+from twobyteasr.caption_style.style_presets import BUILTIN_PRESETS, StylePresetStore
 
 
 def _calibration_project():

@@ -21,10 +21,10 @@ def main():
     from PySide6.QtCore import Qt
     from PIL import Image
     import numpy as np
-    from twobyteasr.live_web_preview import prepare_web_configuration,LiveWebPreviewWorker
-    from twobyteasr.caption_proxy import proxy_store
-    from twobyteasr.renderer_service import RendererService,GLOBAL_RENDERER_SERVICE
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.rendering.live_web_preview import prepare_web_configuration,LiveWebPreviewWorker
+    from twobyteasr.rendering.caption_proxy import proxy_store
+    from twobyteasr.rendering.renderer_service import RendererService,GLOBAL_RENDERER_SERVICE
+    from twobyteasr.system.processes import run_hidden_subprocess
     app=QApplication.instance() or QApplication([]);result=dict(checks={},provider_calls=0,playback={})
     theme=json.loads(args.theme.read_text('utf8'));original=json.loads(args.original.read_text('utf8'))
     prepared=prepare_web_configuration(theme,'我很喜欢她这一套衣服',duration_seconds=6)

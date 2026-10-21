@@ -7,10 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel
 import subtitle_core as legacy
-from twobyteasr import ui
-from twobyteasr import llm_config
-from twobyteasr.project_profiles import ProjectProfile, ProjectProfileStore
-from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+from twobyteasr.app import ui
+from twobyteasr.providers import endpoint_editor_ui
+from twobyteasr.providers import llm_config
+from twobyteasr.recognition.recognition_profiles import ProjectProfile, ProjectProfileStore
+from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
 
 APP = QApplication.instance() or QApplication([])
 
@@ -29,12 +30,14 @@ class Host:
 def host(monkeypatch, tmp_path):
     # A profile save exercises production persistence; redirect it before any
     # test can reach the author's real AppData or provider secret store.
-    from twobyteasr.settings import save_runtime_settings
+    from twobyteasr.storage.settings import save_runtime_settings
     monkeypatch.setattr(legacy, 'save_runtime_settings', lambda values: save_runtime_settings(values, project_root=tmp_path))
     monkeypatch.setattr(legacy, 'save_api_keys', lambda **kwargs: None)
     monkeypatch.setattr(ui, 'save_api_key_for', lambda *args: None)
     monkeypatch.setattr(ui, "read_api_key", lambda *a: ("", "test"))
     monkeypatch.setattr(ui, "resolve_api_key", lambda *a: ("", "test"))
+    monkeypatch.setattr(endpoint_editor_ui, "read_api_key", lambda *a: ("", "test"))
+    monkeypatch.setattr(endpoint_editor_ui, "resolve_api_key", lambda *a: ("", "test"))
     monkeypatch.setattr(llm_config, "read_scoped_api_key", lambda *a: ("", "test"))
     monkeypatch.setattr(ui.EndpointEditor, "_queue_model_discovery", lambda *a: None)
     monkeypatch.setattr(legacy, "RUNTIME_SETTINGS", copy.deepcopy(legacy.RUNTIME_SETTINGS))
@@ -107,8 +110,8 @@ def test_old_cli_callbacks_cannot_touch_restored_profile(host, monkeypatch, kind
         def start(self): pass
         def isRunning(self): return True
         def requestInterruption(self): pass
-    monkeypatch.setattr(ui, 'ProviderConnectionTester', Worker)
-    monkeypatch.setattr(ui, 'ProviderLoginWorker', Worker)
+    monkeypatch.setattr(endpoint_editor_ui, 'ProviderConnectionTester', Worker)
+    monkeypatch.setattr(endpoint_editor_ui, 'ProviderLoginWorker', Worker)
     editor = host.polish_editor
     editor.restore_profile_values(config(service='grok_account', model='')['polish'], legacy.RUNTIME_SETTINGS)
     if kind == 'login': editor.start_login(); worker = editor._login_worker

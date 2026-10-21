@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from twobyteasr.cue_evidence_slice import slice_evidence
+from twobyteasr.recognition.cue_evidence_slice import slice_evidence
 
 
 def test_cue_slice_does_not_send_full_neighbor_dialogue():

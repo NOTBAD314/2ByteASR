@@ -22,13 +22,13 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
 )
-from twobyteasr.web_theme import (
+from twobyteasr.caption_design.web_theme import (
     builtin_web_themes,
     export_theme_archive,
     fallback_web_theme,
@@ -54,7 +54,7 @@ def _to_sections(theme: dict) -> str:
 
 
 def _install_fake_provider(monkeypatch, provider):
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
 
     monkeypatch.setattr(studio_ai, "provider_for_stage", lambda *_a, **_k: provider)
 
@@ -116,7 +116,7 @@ class _StallProvider:
         deadline = time.monotonic() + 6.0
         while time.monotonic() < deadline:
             if cancel_check is not None and cancel_check():
-                from twobyteasr.ai_providers import AIProviderError
+                from twobyteasr.providers.ai_providers import AIProviderError
 
                 raise AIProviderError("AI 请求已取消。", category="cancelled")
             time.sleep(0.05)
@@ -124,17 +124,17 @@ class _StallProvider:
 
 
 def _authored_provider(monkeypatch, provider):
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
     monkeypatch.setattr(GLOBAL_PROVIDER_SERVICE,'client_for_stage',lambda *a,**kw:provider)
     monkeypatch.setattr(GLOBAL_PROVIDER_REGISTRY,'selection',lambda *a,**kw:SimpleNamespace(provider='fixture',model='fixture'))
 
 
 def test_stall_watchdog_reports_timeout_without_authored_fallback(monkeypatch, tmp_path):
     import json
-    from twobyteasr import studio_ai
-    from twobyteasr.ai_providers import AIProviderError
-    from twobyteasr.theme_generation_policy import ThemeGenerationLimits
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.providers.ai_providers import AIProviderError
+    from twobyteasr.caption_design.theme_generation_policy import ThemeGenerationLimits
     _authored_provider(monkeypatch,_StallProvider())
     monkeypatch.setattr(ThemeGenerationLimits,'from_settings',lambda *a,**kw:ThemeGenerationLimits(8,8,.2))
     with pytest.raises(AIProviderError) as failure:
@@ -147,8 +147,8 @@ def test_stall_watchdog_reports_timeout_without_authored_fallback(monkeypatch, t
 
 def test_user_cancel_persists_trace_and_raises(monkeypatch, tmp_path):
     import json
-    from twobyteasr import studio_ai
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.providers.ai_providers import AIProviderError
     _authored_provider(monkeypatch,_StallProvider())
     with pytest.raises(AIProviderError) as failure:
         studio_ai.request_web_theme_design(_project(),'c0','测试',{'models':{}},ledger_root=tmp_path,cancel_check=lambda:True)
@@ -158,7 +158,7 @@ def test_user_cancel_persists_trace_and_raises(monkeypatch, tmp_path):
 
 
 def test_cli_stderr_surfaces_as_stream_event():
-    from twobyteasr.ai_providers import CLIProvider
+    from twobyteasr.providers.ai_providers import CLIProvider
 
     events: list[tuple[str, str]] = []
     state: dict = {}
@@ -211,7 +211,7 @@ class _PayloadProvider:
 
 
 def test_refine_roundtrip_applies_requested_change(monkeypatch, tmp_path):
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
 
     original = builtin_web_themes()["balatro-joker"].to_dict()
     # 二十一生成闸门：CONCEPT 需类名承诺清单。
@@ -233,8 +233,8 @@ def test_refine_roundtrip_applies_requested_change(monkeypatch, tmp_path):
 
 
 def test_refine_failure_keeps_original_theme(monkeypatch, tmp_path):
-    from twobyteasr import studio_ai
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     original = fallback_web_theme("原主题").to_dict()
     studio_ai = _install_fake_provider(
@@ -254,7 +254,7 @@ def test_refine_failure_keeps_original_theme(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_theme_archive_export_import_roundtrip(tmp_path):
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
 
     theme = builtin_web_themes()["balatro-joker"].to_dict()
     folder = export_theme_archive(theme, tmp_path, sample_text="归档测试字幕")
@@ -278,9 +278,9 @@ def test_theme_archive_export_import_roundtrip(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_http_provider_streams_then_falls_back(monkeypatch):
-    from twobyteasr.ai_providers import OpenAICompatibleProvider
-    from twobyteasr import ai_providers
-    from twobyteasr.llm_adapter import LLMRequestError
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider
+    from twobyteasr.providers import ai_providers
+    from twobyteasr.providers.llm_adapter import LLMRequestError
 
     endpoint = {
         "provider": "deepseek", "model": "m1", "api_key": "k", "url": "http://x/v1",
@@ -304,7 +304,7 @@ def test_http_provider_streams_then_falls_back(monkeypatch):
         return "plain-ok"
 
     provider = OpenAICompatibleProvider(endpoint, sender=fake_sender)
-    import twobyteasr.llm_adapter as llm_adapter
+    import twobyteasr.providers.llm_adapter as llm_adapter
 
     monkeypatch.setattr(llm_adapter, "post_chat_completion_stream", fake_stream)
     events: list[tuple[str, str]] = []
@@ -327,7 +327,7 @@ def test_http_provider_streams_then_falls_back(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_run_streaming_process_stall_watchdog():
-    from twobyteasr.advanced_renderer import _run_streaming_process
+    from twobyteasr.rendering.advanced_renderer import _run_streaming_process
 
     code = (
         "import sys, time\n"
@@ -353,7 +353,7 @@ def _app():
 
 
 def _page(tmp_path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     os.environ["LOCALAPPDATA"] = str(tmp_path / "local")
     page = SubtitleStudioPage()

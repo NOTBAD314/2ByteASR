@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.art_direction import (
+from twobyteasr.caption_design.art_direction import (
     ART_DIRECTION_TEMPLATES,
     DecorationDensity,
     art_direction_manifest,
@@ -18,7 +18,7 @@ from twobyteasr.art_direction import (
     validate_and_repair_graph,
     validate_graph_for_direction,
 )
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.visual_design_graph import (
     DecorationLayer,
     MotionGraph,
     MotionKeyframe,
@@ -28,7 +28,7 @@ from twobyteasr.visual_design_graph import (
     manga_impact_graph,
     streamer_gaming_graph,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 
 def test_curated_family_library_has_at_least_twelve_complete_templates():
@@ -65,9 +65,9 @@ def test_fallback_abc_are_semantically_and_structurally_distinct_directions():
 
 
 def test_offline_planner_pairs_each_direction_with_its_family_graph():
-    from twobyteasr import studio_ai
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.visual_design_graph import VisualDesignGraph
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.visual_design_graph import VisualDesignGraph
 
     directions = fallback_art_directions("美漫爆裂")
     recipes = studio_ai._fallback_graph_recipes(
@@ -164,7 +164,7 @@ def test_rhetoric_tokens_cannot_demand_primitives_the_family_forbids():
     validator demanded an IMPACT layer those families forbid, producing an
     unsatisfiable ART_DIRECTION_MISMATCH no local repair could resolve.
     """
-    from twobyteasr.art_direction import ArtDirectionSpec
+    from twobyteasr.caption_design.art_direction import ArtDirectionSpec
 
     direction = ArtDirectionSpec(
         concept_name="quiet editorial",
@@ -209,7 +209,7 @@ def test_rhetoric_tokens_cannot_demand_primitives_the_family_forbids():
 
 def test_real_deepseek_trace_responses_parse_schema_and_quality_pass():
     """Replay the two raw payloads from the 2026-08-30 packaged DeepSeek run."""
-    from twobyteasr.studio_ai import _parse_design_payload
+    from twobyteasr.caption_design.studio_ai import _parse_design_payload
 
     trace = json.loads(
         (Path(__file__).parent / "data" / "p9a_r2_deepseek_raw_responses.json")
@@ -230,7 +230,7 @@ def test_real_deepseek_trace_responses_parse_schema_and_quality_pass():
 
 
 def test_provider_contract_returns_directions_before_corresponding_graphs(monkeypatch):
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
 
     directions = (
         fallback_art_directions("美漫爆裂")[0],
@@ -288,7 +288,7 @@ def test_provider_contract_returns_directions_before_corresponding_graphs(monkey
 
 
 def test_provider_quality_repair_is_bounded_to_one_retry(monkeypatch):
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
 
     directions = (
         fallback_art_directions("美漫爆裂")[0],

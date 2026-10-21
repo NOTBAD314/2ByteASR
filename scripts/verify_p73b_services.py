@@ -36,19 +36,19 @@ os.environ["TWOBYTEASR_CHILD_PROCESS_LOG"] = str(RUN / "child-processes.jsonl")
 
 import psutil
 
-from twobyteasr.advanced_preview import AdvancedPreviewCache
-from twobyteasr.ai_providers import AIProviderError, provider_for_stage
-from twobyteasr.renderer_service import RendererJob, RendererService, RendererServiceError
-from twobyteasr.settings import load_runtime_settings
-from twobyteasr.studio_project import (
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewCache
+from twobyteasr.providers.ai_providers import AIProviderError, provider_for_stage
+from twobyteasr.rendering.renderer_service import RendererJob, RendererService, RendererServiceError
+from twobyteasr.storage.settings import load_runtime_settings
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
     SubtitleStyle,
 )
-from twobyteasr.style_recipe import FillSpec, normalize_glow_contract, normalize_shadow_contract
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.style_recipe import FillSpec, normalize_glow_contract, normalize_shadow_contract
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def ms(started: float) -> float:

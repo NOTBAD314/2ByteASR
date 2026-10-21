@@ -44,8 +44,8 @@ def main() -> int:
     switches.update(enable_ai_polish=False, use_ai_grouping=False, unified_glm_processing=False,
                     enable_qwen_asr_reference=False)
     legacy.configure_runtime_asr(models)
-    from twobyteasr.service import RunOptions, run_media_queue
-    from twobyteasr.speaker_strategy import resolve
+    from twobyteasr.recognition.service import RunOptions, run_media_queue
+    from twobyteasr.recognition.speaker_strategy import resolve
     options = RunOptions(settings_snapshot_json=json.dumps(legacy.RUNTIME_SETTINGS, ensure_ascii=False),
                          speaker_source=resolve(legacy.RUNTIME_SETTINGS), recognition_language='zh')
     started = time.perf_counter()
@@ -84,7 +84,7 @@ def main() -> int:
     if not project and media.result_ref_json:
         project = json.loads(media.result_ref_json).get('project_path', '')
     if project and Path(project).is_file():
-        from twobyteasr.studio_project import load_project
+        from twobyteasr.projects.studio_project import load_project
         loaded = load_project(project)
         cues = list(loaded.cues)
         receipt['project'] = {'path': project, 'cues': len(cues),

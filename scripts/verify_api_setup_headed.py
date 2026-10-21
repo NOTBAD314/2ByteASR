@@ -3,7 +3,7 @@
 Starts the real app (source, or ``--exe``) with an isolated data folder in the
 chosen theme (``--theme grape|warm``), walks MOSS 云端 at a narrow and a wide
 size, then 百炼, Qwen Cloud, 讯飞 and DeepSeek (see
-``twobyteasr/api_setup_audit.py``, redone for the 2026-10-18
+``twobyteasr/acceptance/api_setup_audit.py``, redone for the 2026-10-18
 walkthrough). Offline: no provider is contacted and no web page is opened.
 Screenshots and ``result.json`` land in ``--output``.
 """
@@ -37,7 +37,7 @@ def main() -> int:
     sys.path.insert(0, str(ROOT))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
     fixture = out / 'projects' / 'startup-empty' / 'startup-empty.2byteproj'
     fixture.parent.mkdir(parents=True)
     save_project(SubtitleProject(media=StudioMedia(path='', display_name='Startup empty', duration_ms=0)), fixture)

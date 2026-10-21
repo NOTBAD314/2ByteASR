@@ -67,9 +67,9 @@ def main() -> int:
             def __init__(self, *a, **kw):
                 super().__init__(str(run / "qt-settings.ini"), QSettings.Format.IniFormat)
         QtCore.QSettings = IsolatedSettings
-        from twobyteasr import settings as runtime_settings
+        from twobyteasr.storage import settings as runtime_settings
         runtime_settings.stable_settings_root = lambda: run / "config"
-        from twobyteasr import studio_project
+        from twobyteasr.projects import studio_project
         fixture_settings = run / "studio-settings.json"
         fixture_settings.write_text(json.dumps({"recent_projects": [], "studio_preferences": {
             "project_root": str(run / "projects"), "autosave_enabled": False,
@@ -80,12 +80,12 @@ def main() -> int:
 
         app = QApplication([])
         print("START UI imports", flush=True)
-        from twobyteasr.ui import MainWindow, _register_bundled_fonts, _app_font
+        from twobyteasr.app.ui import MainWindow, _register_bundled_fonts, _app_font
         # Match the real launch path; the older inventory omitted registration.
         _register_bundled_fonts()
         print("START application font", flush=True)
         app.setFont(_app_font())
-        from twobyteasr.theme_manager import apply_theme
+        from twobyteasr.design.theme_manager import apply_theme
         apply_theme(args.theme, app)
         print("START MainWindow", flush=True)
         import subtitle_core as legacy
@@ -154,7 +154,7 @@ def main() -> int:
 
         win._open_subtitle_studio()
         capture(win, "01-home-library")
-        from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+        from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
         settings = ApplicationSettingsDialog(
             win, {}, run / "projects", browse=lambda *a: None,
             clear_recent=lambda: None, reset_layout=lambda: None,
@@ -166,13 +166,13 @@ def main() -> int:
         settings.reject()
         settle()
 
-        from twobyteasr.studio_shortcuts import ShortcutSettingsDialog
+        from twobyteasr.studio.studio_shortcuts import ShortcutSettingsDialog
         shortcuts = ShortcutSettingsDialog({}, win)
         capture(shortcuts, "05-shortcuts")
         shortcuts.reject()
         settle()
 
-        from twobyteasr.studio_export_ui import StudioExportWorkspace
+        from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
         project = studio_project.SubtitleProject(
             media=studio_project.StudioMedia(path="", duration_ms=0),
             cues=[studio_project.StudioCue("baseline", 0, 3000, "字幕字体与页面层级基线")]

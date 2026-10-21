@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.display_timing import project_display_tail_plan, protect_runtime_display_tails
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.subtitle_rules.display_timing import project_display_tail_plan, protect_runtime_display_tails
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -66,7 +66,7 @@ def test_incomplete_or_estimated_words_do_not_guess_away_source_overlap(kind):
 
 
 def test_current_clock_words_survive_rigid_move_and_inner_spelling_edit():
-    from twobyteasr.studio_caption_timeline import ensure_independent_captions, sync_caption_interval_words
+    from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions, sync_caption_interval_words
     p = project(); ensure_independent_captions(p)
     for c in p.cues:
         before = (c.start_ms, c.end_ms)
@@ -90,7 +90,7 @@ def test_runtime_uses_same_exact_word_policy():
 
 
 def test_tail_extension_never_introduces_cross_speaker_overlap():
-    from twobyteasr.timing import extend_cue_tails_by_speaker
+    from twobyteasr.subtitle_rules.timing import extend_cue_tails_by_speaker
     cues = [SimpleNamespace(cue_id=1, start=0., end=1., speaker='A'),
             SimpleNamespace(cue_id=2, start=1.05, end=2., speaker='B')]
     extend_cue_tails_by_speaker(cues, 3., 60.)
@@ -98,7 +98,7 @@ def test_tail_extension_never_introduces_cross_speaker_overlap():
 
 
 def test_tail_extension_keeps_real_overlap_without_extending_it():
-    from twobyteasr.timing import extend_cue_tails_by_speaker
+    from twobyteasr.subtitle_rules.timing import extend_cue_tails_by_speaker
     cues = [SimpleNamespace(cue_id=1, start=0., end=1., speaker='A'),
             SimpleNamespace(cue_id=2, start=.9, end=2., speaker='B')]
     extend_cue_tails_by_speaker(cues, 3., 60.)
@@ -106,7 +106,7 @@ def test_tail_extension_keeps_real_overlap_without_extending_it():
 
 
 def test_tall_incoming_caption_does_not_inflate_gap_below_it():
-    from twobyteasr.subtitle_stacking import compute_stack_layout
+    from twobyteasr.caption_style.subtitle_stacking import compute_stack_layout
     def resolved(cue):
         return SimpleNamespace(style=SimpleNamespace(font_size=50, scale_y=100,
             outline_width=0, shadow=0), line_count=1,
@@ -119,7 +119,7 @@ def test_tall_incoming_caption_does_not_inflate_gap_below_it():
 
 
 def test_manual_obstacle_uses_its_actual_edge_without_a_full_extra_band():
-    from twobyteasr.subtitle_stacking import compute_stack_layout
+    from twobyteasr.caption_style.subtitle_stacking import compute_stack_layout
     cues = [SimpleNamespace(id='a', start_ms=0, end_ms=2000, transform={'position_locked':True}),
             SimpleNamespace(id='b', start_ms=1000, end_ms=3000, transform={})]
     def resolved(cue):
@@ -132,7 +132,7 @@ def test_manual_obstacle_uses_its_actual_edge_without_a_full_extra_band():
 
 
 def test_faint_shadow_halo_does_not_create_a_large_empty_band():
-    from twobyteasr.subtitle_stacking import compute_stack_layout
+    from twobyteasr.caption_style.subtitle_stacking import compute_stack_layout
     rows=[SimpleNamespace(id='a',start_ms=0,end_ms=2000),
           SimpleNamespace(id='b',start_ms=1000,end_ms=3000)]
     style=SimpleNamespace(font_size=50,scale_y=100,outline_width=8,shadow=9)
@@ -146,7 +146,7 @@ def test_faint_shadow_halo_does_not_create_a_large_empty_band():
 def test_layout_review_survives_background_save_of_view_preferences():
     from PySide6.QtWidgets import QApplication, QWidget
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.subtitle_layout_ui import SubtitleLayoutPreview
+    from twobyteasr.studio.subtitle_layout_ui import SubtitleLayoutPreview
     app=QApplication.instance() or QApplication([])
     page=QWidget(); page.project=project(); page.undo_stack=QUndoStack(page)
     page._changed=lambda:None
@@ -164,8 +164,8 @@ def test_layout_review_survives_background_save_of_view_preferences():
 def test_batch_preset_automatically_avoids_overlap_in_one_undo(automatic,geometry):
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.preset_application import preset_command
-    from twobyteasr.style_resolution import resolve_cue_visual
+    from twobyteasr.exports.preset_application import preset_command
+    from twobyteasr.caption_style.style_resolution import resolve_cue_visual
     app=QApplication.instance() or QApplication([])
     p=project(); p.studio_state['auto_subtitle_stacking']=automatic
     for c in p.cues:c.transform={'position_x':960,'position_y':1035}
@@ -184,7 +184,7 @@ def test_batch_preset_automatically_avoids_overlap_in_one_undo(automatic,geometr
 def test_handoff_preview_rejects_text_edits_after_word_boundary_review():
     from PySide6.QtWidgets import QApplication,QWidget
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.display_handoff_ui import DisplayHandoffPreview
+    from twobyteasr.studio.display_handoff_ui import DisplayHandoffPreview
     app=QApplication.instance() or QApplication([])
     page=QWidget();page.project=project();page.undo_stack=QUndoStack(page)
     hints=[];page._show_studio_hint=hints.append;page._changed=lambda:None

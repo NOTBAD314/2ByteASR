@@ -13,14 +13,14 @@ from PySide6.QtCore import QSize
 from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.secondary_video_legacy import SecondaryVideoSource, _DecoderWorker
-from twobyteasr.studio_media_pool import (
+from twobyteasr.playback.secondary_video_legacy import SecondaryVideoSource, _DecoderWorker
+from twobyteasr.timeline.studio_media_pool import (
     add_media_asset,
     add_video_clip,
     create_video_track,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def _app() -> QApplication:

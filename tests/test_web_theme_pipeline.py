@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.advanced_renderer import (
+from twobyteasr.rendering.advanced_renderer import (
     _normalized_recipe,
     normalized_visual_snapshot,
     split_renderer_cues,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -25,8 +25,8 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.style_recipe import StyleRecipe, route_recipe
-from twobyteasr.web_theme import (
+from twobyteasr.caption_style.style_recipe import StyleRecipe, route_recipe
+from twobyteasr.caption_design.web_theme import (
     WebThemeDocument,
     WebThemeValidationError,
     builtin_web_themes,
@@ -71,7 +71,7 @@ def test_builtin_themes_validate_and_carry_contract_markers():
 
 def test_builtin_doom95_pins_own_appearance():
     """十八轮：主题自带 appearance（theme-first），DOOM95 钉死像素字体栈。"""
-    from twobyteasr.web_theme import effective_appearance
+    from twobyteasr.caption_design.web_theme import effective_appearance
 
     doom = builtin_web_themes()["doom95"]
     own = doom.appearance
@@ -217,7 +217,7 @@ def test_fallback_web_theme_routes_by_instruction():
 
 
 def test_parse_web_theme_sections_tolerant_forms():
-    from twobyteasr.web_theme import parse_web_theme_sections
+    from twobyteasr.caption_design.web_theme import parse_web_theme_sections
 
     payload = parse_web_theme_sections(
         "好的，这是主题：\n"
@@ -236,8 +236,8 @@ def test_parse_web_theme_sections_tolerant_forms():
 def test_page_exposes_apply_web_theme_wrapper():
     """AI 面板回调与特效字幕库都通过 page._apply_web_theme 访问 controller
     （2026-09-02 第三轮：漏掉这个单行委托就是'生成成功但应用不到字幕'的根因）。"""
-    from twobyteasr.studio_ai_flow import StudioAIFlowMixin
-    from twobyteasr.studio_style_controller import StudioStyleController
+    from twobyteasr.studio.studio_ai_flow import StudioAIFlowMixin
+    from twobyteasr.caption_style.studio_style_controller import StudioStyleController
 
     assert callable(getattr(StudioAIFlowMixin, "_apply_web_theme", None))
     assert callable(getattr(StudioStyleController, "_apply_web_theme", None))
@@ -251,7 +251,7 @@ def test_ai_progress_bar_stage_mapping():
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(["bar"])
-    from twobyteasr.studio_ai_flow import StudioAIFlowMixin
+    from twobyteasr.studio.studio_ai_flow import StudioAIFlowMixin
 
     class _Fake:
         pass
@@ -274,7 +274,7 @@ def test_ai_progress_bar_stage_mapping():
 
 
 def test_cli_stream_line_normalization_covers_both_clis():
-    from twobyteasr.ai_providers import AntigravityCLIProvider
+    from twobyteasr.providers.ai_providers import AntigravityCLIProvider
 
     state: dict = {"text": "", "thinking": "", "final": None}
     events: list[tuple[str, str]] = []
@@ -330,7 +330,7 @@ def _to_sections(theme: dict) -> str:
 
 
 def test_request_web_theme_design_contract(monkeypatch, tmp_path):
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
 
     class FakeProvider:
         provider_id = "fake_web"
@@ -385,7 +385,7 @@ def test_request_web_theme_design_contract(monkeypatch, tmp_path):
 
 
 def test_request_web_theme_invalid_concepts_fail_without_fallback(monkeypatch, tmp_path):
-    from twobyteasr import studio_ai
+    from twobyteasr.caption_design import studio_ai
 
     class FakeProvider:
         provider_id = "fake_web"
@@ -398,8 +398,8 @@ def test_request_web_theme_invalid_concepts_fail_without_fallback(monkeypatch, t
             return "抱歉，我无法完成这个任务。"  # no sections, no JSON
 
     provider = FakeProvider()
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
     monkeypatch.setattr(GLOBAL_PROVIDER_SERVICE, "client_for_stage", lambda *_a, **_k: provider)
 
     class FakeSelection:

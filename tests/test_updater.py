@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr import updater
-from twobyteasr.updater import (
+from twobyteasr.app import updater
+from twobyteasr.app.updater import (
     UpdateError,
     confirm_started,
     current_version,

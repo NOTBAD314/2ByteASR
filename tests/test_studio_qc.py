@@ -3,9 +3,9 @@ from time import perf_counter
 
 from PySide6.QtGui import QUndoStack
 
-from twobyteasr.studio_commands import ApplySafeFixesCommand
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_qc import (
+from twobyteasr.timeline.studio_commands import ApplySafeFixesCommand
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.subtitle_rules.studio_qc import (
     QCResult,
     QCCategory,
     QCSeverity,
@@ -134,7 +134,7 @@ def test_model_agreement_normalizes_current_and_suppresses_low_confidence_priori
 
 
 def test_confidence_availability_metadata_and_alignment_scores_are_not_asr_scores():
-    from twobyteasr.studio_qc import _confidence_values
+    from twobyteasr.subtitle_rules.studio_qc import _confidence_values
     cue = StudioCue('metadata', 0, 2000, '先撤', evidence_refs=['r'])
     p = _project([cue], evidence={'r': dict(confidence=.62,
         qwen_confidence=0., qwen_confidence_available=False,
@@ -147,7 +147,7 @@ def test_confidence_availability_metadata_and_alignment_scores_are_not_asr_score
 
 
 def test_explicitly_available_qwen_zero_and_low_scores_remain_real_qc_evidence():
-    from twobyteasr.studio_qc import _confidence_values
+    from twobyteasr.subtitle_rules.studio_qc import _confidence_values
     for score in (0., .25):
         cue = StudioCue('qwen', 0, 2000, '先撤', evidence_refs=['r'])
         p = _project([cue], evidence={'r': dict(start_ms=0, end_ms=2000,
@@ -159,7 +159,7 @@ def test_explicitly_available_qwen_zero_and_low_scores_remain_real_qc_evidence()
 
 
 def test_explicit_generic_zero_and_low_scores_are_not_treated_as_qwen_placeholders():
-    from twobyteasr.studio_qc import _confidence_values
+    from twobyteasr.subtitle_rules.studio_qc import _confidence_values
     for score in (0., .31):
         cue = StudioCue('primary', 0, 2000, '先撤', evidence_refs=['r'])
         p = _project([cue], evidence={'r': dict(start_ms=0, end_ms=2000,
@@ -347,7 +347,7 @@ def test_sliced_scan_matches_full_analyze_and_chunks_are_bounded():
 
 def test_safe_fix_preserves_interjection_rhythm_spaces():
     """语气字后的单个空格=AI 断句节奏位；一键安全修复不得回滚。"""
-    from twobyteasr.studio_qc import normalize_safe_text
+    from twobyteasr.subtitle_rules.studio_qc import normalize_safe_text
 
     assert normalize_safe_text("对 对 很不错啊 嗯") == "对 对 很不错啊 嗯"
     assert normalize_safe_text("啊 我很喜欢这个角色") == "啊 我很喜欢这个角色"

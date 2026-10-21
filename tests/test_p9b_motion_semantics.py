@@ -21,8 +21,8 @@ import pytest
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_ui import AdvancedLiveCanvas
-from twobyteasr.visual_design_graph import (
+from twobyteasr.studio.studio_ui import AdvancedLiveCanvas
+from twobyteasr.caption_design.visual_design_graph import (
     CompiledLiveScene,
     MotionGraph,
     MotionKeyframe,
@@ -189,7 +189,7 @@ def test_publish_gap_phase_cannot_remove_mid_cue(monkeypatch):
             self.overlays.pop(int(overlay_id), None)
             return True
 
-    from twobyteasr.studio_ui import MpvCanvas
+    from twobyteasr.studio.studio_ui import MpvCanvas
 
     video = MpvCanvas()
     video.controller = Controller()

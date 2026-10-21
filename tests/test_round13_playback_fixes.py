@@ -23,7 +23,7 @@ from PySide6.QtWidgets import QApplication, QProgressBar, QPushButton
 
 import pytest
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 
 def _app() -> QApplication:
@@ -48,7 +48,7 @@ def _project(tmp_path: Path) -> SubtitleProject:
 # ---------------------------------------------------------------------------
 
 def test_web_theme_ready_routes_current_generation_to_validating_controller(tmp_path):
-    from twobyteasr.studio_ai_flow import StudioAIFlowMixin
+    from twobyteasr.studio.studio_ai_flow import StudioAIFlowMixin
     received=[]
     holder=SimpleNamespace(_ai_request_generation=7,_ai_request_active=True,
         _theme_drafts=lambda:SimpleNamespace(receive=lambda *args:received.append(args)))
@@ -63,7 +63,7 @@ def test_web_theme_ready_routes_current_generation_to_validating_controller(tmp_
 
 def test_stage_changed_records_design_stage_trace(tmp_path):
     _app()
-    from twobyteasr.studio_ai_flow import StudioAIFlowMixin
+    from twobyteasr.studio.studio_ai_flow import StudioAIFlowMixin
 
     holder = SimpleNamespace()
     holder._ai_stage_changed = StudioAIFlowMixin._ai_stage_changed.__get__(holder)
@@ -85,7 +85,7 @@ def test_stage_changed_records_design_stage_trace(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _preview_page(tmp_path: Path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     page.project = _project(tmp_path)
@@ -110,8 +110,8 @@ def test_natural_eof_keeps_mpv_attached(tmp_path):
 
 def test_true_gap_still_suspends(tmp_path):
     _app()
-    from twobyteasr.studio_media_pool import add_media_asset, add_video_clip
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.timeline.studio_media_pool import add_media_asset, add_video_clip
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     project = _project(tmp_path)
@@ -119,9 +119,9 @@ def test_true_gap_still_suspends(tmp_path):
     v2.write_bytes(b"v2")
     asset = add_media_asset(project, v2, fingerprint="v2", duration_ms=100_000)
     # Hole: V1 [0, 300s) ... V-clip [500s, 600s); playhead 450s is a real gap.
-    from twobyteasr.studio_media_pool import trim_video_clip_edges
+    from twobyteasr.timeline.studio_media_pool import trim_video_clip_edges
     trim_video_clip_edges(project,"V1",project.video_tracks[0].clips[0].id,timeline_out_ms=300_000)
-    from twobyteasr.studio_media_pool import create_video_track
+    from twobyteasr.timeline.studio_media_pool import create_video_track
 
     track = create_video_track(project)
     add_video_clip(project, track.id, asset.asset_id, timeline_in_ms=500_000)

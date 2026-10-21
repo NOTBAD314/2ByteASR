@@ -6,9 +6,10 @@ from types import SimpleNamespace
 import pytest
 from tests.test_stage9_cache_and_budget import context
 from tests.test_stage9_provider_snapshot import config
-from twobyteasr import completion_retry, domain_terms
-from twobyteasr.service import RunOptions
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.app import completion_retry
+from twobyteasr.glossary import domain_terms
+from twobyteasr.recognition.service import RunOptions
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
 
 
 def project():
@@ -28,7 +29,8 @@ def project():
 
 def test_retry_service_preserves_raw_id_scope_without_queue_asr_or_saving(context, monkeypatch):
     import moss_firered_pipeline as pipeline
-    from twobyteasr import service, studio_project
+    from twobyteasr.recognition import service
+    from twobyteasr.projects import studio_project
     _, _, cache = context
     original = project()
     before = copy.deepcopy((original.asr_evidence, original.cues))
@@ -37,7 +39,7 @@ def test_retry_service_preserves_raw_id_scope_without_queue_asr_or_saving(contex
         ids = [row['id'] for row in json.loads(messages[1]['content'])['cues']]
         calls.append(ids)
         return json.dumps({'checked_ids': ids, 'cues': []})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     monkeypatch.setattr(service, 'run_media_queue', lambda *a, **k: pytest.fail('retry entered full queue'))
     monkeypatch.setattr(pipeline, 'transcribe_moss_global', lambda *a, **k: pytest.fail('retry ran MOSS'))
     monkeypatch.setattr(studio_project, 'save_project', lambda *a, **k: pytest.fail('preview saved user project'))
@@ -77,14 +79,14 @@ def test_old_failure_count_without_record_evidence_does_not_guess_scope(context,
     original = project()
     for row in original.asr_evidence.values():
         row['caption_arbitration']['terminology_polish']['response_state'] = 'validated'
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: pytest.fail('unknown scope requested records'))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: pytest.fail('unknown scope requested records'))
     with pytest.raises(ValueError, match='失败处理记录范围'):
         completion_retry.completion_retry_preview(original,
             {'polishing_summary': {'fallback_cues': 1}}, RunOptions(settings_snapshot_json=json.dumps(config())))
 
 
 def test_original_snapshot_honors_selected_profile_and_rejects_changed_provider(context, monkeypatch):
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
     from dataclasses import replace
     original = project()
     settings = config()
@@ -99,7 +101,7 @@ def test_original_snapshot_honors_selected_profile_and_rejects_changed_provider(
 
 
 def test_report_endpoint_mismatch_cannot_redirect_retry(context):
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
     original = project()
     snapshot = resolve_provider_snapshot(config(), stage='polish')
     report = {'events': [{'event': 'asr_provider_snapshot', 'stage': 'polished', **snapshot.public_identity()}],

@@ -269,6 +269,10 @@ def estimated_morae(text: str) -> float:
             count += 1.5
         elif char.isascii() and char.isalpha():
             count += 0.5
+        elif 0xAC00 <= code <= 0xD7A3:
+            count += 1.0          # a Hangul syllable is one spoken syllable (2026-10-19)
+        elif 0xC0 <= code <= 0x24F or 0x400 <= code <= 0x4FF:
+            count += 0.5          # accented Latin and Cyrillic letters count like ASCII letters (2026-10-19)
         elif unicodedata.category(char).startswith("L"):
             count += 2.0          # kanji: readings are usually one or two morae
     return count

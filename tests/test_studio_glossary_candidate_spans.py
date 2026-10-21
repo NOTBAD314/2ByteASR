@@ -18,16 +18,16 @@ from twobyteasr.test_isolation import install
 install()
 
 import pytest
-from twobyteasr.studio_glossary_service import preview_glossary_correction
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
+from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
 
 
 @pytest.fixture
 def no_cloud(monkeypatch):
     import subtitle_core
-    import twobyteasr.asr_provider_snapshot as providers
-    import twobyteasr.polishing as polishing
+    import twobyteasr.providers.asr_provider_snapshot as providers
+    import twobyteasr.subtitle_rules.polishing as polishing
 
     calls = []
 
@@ -123,7 +123,7 @@ def test_valid_stu_near_shape_is_visible_unselected_at_its_own_offsets(no_cloud)
     {"asr_source": "moss_text"},
 ])
 def test_malformed_retrieved_span_cannot_become_checkable(no_cloud, monkeypatch, patch):
-    import twobyteasr.terminology_retrieval as retrieval
+    import twobyteasr.glossary.terminology_retrieval as retrieval
 
     actual_retrieve = retrieval.retrieve_candidates
 

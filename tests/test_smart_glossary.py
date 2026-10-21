@@ -19,7 +19,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from twobyteasr.smart_glossary import (  # noqa: E402
+from twobyteasr.glossary.smart_glossary import (  # noqa: E402
     STATUS_AI_SUGGESTED,
     STATUS_BUILTIN,
     STATUS_CANDIDATE,
@@ -288,7 +288,7 @@ def test_external_ai_prompt_and_tsv_are_preview_only_candidates():
 # ---------------------------------------------------------------- 网页来源安全
 
 def test_is_safe_web_url_rejects_private_and_loopback_hosts(monkeypatch):
-    from twobyteasr.smart_glossary import is_safe_web_url
+    from twobyteasr.glossary.smart_glossary import is_safe_web_url
 
     # 私网/回环/链路本地 IP 字面量：确定性拒绝（不依赖 DNS）
     assert is_safe_web_url("http://127.0.0.1/x")[0] is False
@@ -315,7 +315,7 @@ def test_is_safe_web_url_rejects_private_and_loopback_hosts(monkeypatch):
 
 
 def test_safe_web_url_checks_all_dns_results_and_supports_proxy_fake_ip(monkeypatch):
-    from twobyteasr.smart_glossary import is_safe_web_url
+    from twobyteasr.glossary.smart_glossary import is_safe_web_url
 
     monkeypatch.setattr(
         "socket.getaddrinfo",
@@ -337,7 +337,7 @@ def test_safe_web_url_checks_all_dns_results_and_supports_proxy_fake_ip(monkeypa
 
 
 def test_fetch_web_text_validates_each_redirect(monkeypatch):
-    from twobyteasr.smart_glossary import fetch_web_text
+    from twobyteasr.glossary.smart_glossary import fetch_web_text
 
     monkeypatch.setattr(
         "socket.getaddrinfo",

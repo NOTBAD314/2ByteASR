@@ -8,7 +8,7 @@ from PySide6.QtGui import QInputMethodEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QCheckBox, QLabel, QWidget
 import subtitle_core as legacy
-from twobyteasr.main_ui_glossary import TermLibraryDialog
+from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
 
 APP = QApplication.instance() or QApplication([])
 
@@ -114,7 +114,7 @@ def test_import_preview_preserves_confirmed_spelling_export_and_rename(dialog, t
     assert dialog.state['game'] == '新显示名'
     target = tmp_path / 'export.json'
     dialog._export_library_to(target)
-    from twobyteasr.main_ui_glossary import preview_term_import
+    from twobyteasr.glossary.main_ui_glossary import preview_term_import
     rows = preview_term_import(target.read_text('utf8'))
     assert {row['to'] for row in rows} == {'BerLIN', 'S0PP'}
 
@@ -197,7 +197,7 @@ def test_normal_ime_preedit_does_not_save_or_consume_space(dialog):
 
 
 def test_batch_mapping_table_edits_conflicts_and_real_revision_restore(dialog):
-    from twobyteasr.terminology import snapshot_glossaries
+    from twobyteasr.glossary.terminology import snapshot_glossaries
     create(dialog, '通用解析测试')
     library_id = legacy.resolve_glossary_identity('通用解析测试')
     before = snapshot_glossaries(legacy, (library_id,))

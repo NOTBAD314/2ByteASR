@@ -55,7 +55,7 @@ def _reverse_translations():
 def _zoom_state():
     """(percent, factor, active) of the interface zoom; never fails."""
     try:
-        from . import ui_zoom
+        from .app import ui_zoom
         percent = ui_zoom.zoom_percent()
         return percent, percent / 100.0, percent != ui_zoom.DEFAULT_PERCENT or bool(ui_zoom._state.get("touched"))
     except Exception:
@@ -364,7 +364,9 @@ def _qt_language(app, language):
     if previous is not None:
         app.removeTranslator(previous)
     translator = QTranslator(app)
-    locale = {'zh':'zh_CN','zh-Hant':'zh_TW','ja':'ja','en':'en','ko':'ko'}.get(language, 'zh_CN')
+    # Qt ships Portuguese as pt_BR only (the pt catalog uses Brazilian wording, 2026-10-19).
+    locale = {'zh':'zh_CN','zh-Hant':'zh_TW','ja':'ja','en':'en','ko':'ko','es':'es','de':'de','fr':'fr',
+              'pt':'pt_BR','it':'it','ru':'ru'}.get(language, 'zh_CN')
     if translator.load('qtbase_' + locale, QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
         app.installTranslator(translator)
     app._i18n_qt_translator = translator

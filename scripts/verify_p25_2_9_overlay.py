@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitlePositionOverlay, SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitlePositionOverlay, SubtitleStudioPage
 
 
 def pump(app: QApplication, seconds: float) -> None:

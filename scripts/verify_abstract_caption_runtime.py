@@ -13,10 +13,10 @@ def probe_extensions(service,out,result,check):
     """Real CSS-variable/local-mask/SVG/sequential-keyframe and fallback proof."""
     from PIL import Image
     import numpy as np
-    from twobyteasr.caption_components import compose
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
-    from twobyteasr.renderer_service import RendererJob
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.caption_components import compose
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererJob
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
     theme=dict(name='源码能力验证',**compose(dict(version=1)))
     theme['cueHtml']=theme['cueHtml'].replace('<div class="cap-type"',
         '<svg class="proof-svg" viewBox="0 0 400 4"><path class="proof-line" d="M0 2 L400 2" fill="none" stroke="#D9CB85" stroke-width="3" stroke-dasharray="400"/></svg>'
@@ -102,11 +102,11 @@ def main():
     if not out.is_relative_to(ROOT/'tmp'):raise ValueError('Use repository tmp')
     from PIL import Image
     import numpy as np
-    from twobyteasr.caption_components import compose
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
-    from twobyteasr.renderer_service import RendererService,RendererJob
-    from twobyteasr.theme_direction_preview import render_motion_preview
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.caption_components import compose
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
     service=RendererService();result=dict(kind='local-fixture',external_model_calls=0,checks={},cases=[],timings={})
     started=time.monotonic()
     def check(name,passed):
@@ -118,7 +118,7 @@ def main():
     try:
         for i in ([] if a.extensions_only else range(3)):
             dest=out/f'variant-{i}';dest.mkdir(exist_ok=True)
-            from twobyteasr.caption_surfaces import examples
+            from twobyteasr.caption_design.caption_surfaces import examples
             theme=dict(name=('印刷套边与压印','红蓝交接轨道','光谱折射玻璃')[i],
                 **compose(dict(examples()[i],emphasis=['自动战斗'])))
             theme=WebThemeDocument.from_dict(theme).to_dict()

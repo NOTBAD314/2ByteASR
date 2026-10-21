@@ -3,7 +3,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from dataclasses import replace
 import numpy as np
 from PySide6.QtWidgets import QApplication
-from twobyteasr.advanced_live_renderer import render_live_snapshot
+from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot
 from tests.test_caption_scene import prepared, alpha
 
 
@@ -27,7 +27,7 @@ def test_shadow_opacity_is_applied_once_and_text_is_unchanged():
 
 def test_processed_preview_fits_small_frames_and_dpr_on_resize():
     from PySide6.QtGui import QPixmap
-    from twobyteasr.studio_export_ui import ProcessedFrameView
+    from twobyteasr.exports.studio_export_ui import ProcessedFrameView
     app = QApplication.instance() or QApplication([])
     view = ProcessedFrameView()
     pixmap = QPixmap(320,180); pixmap.setDevicePixelRatio(2)

@@ -3,7 +3,7 @@
 Copies a Japanese project into a fresh owned tmp directory, isolates all app
 data there, borrows the existing models and main runtime read only (junction
 + hashed manifest), and runs the in-process `ctc-refine` scenario
-(twobyteasr/ctc_refine_audit.py) on a private Windows desktop: the real
+(twobyteasr/acceptance/ctc_refine_audit.py) on a private Windows desktop: the real
 timeline menu action, background CTC measurement, one undo step, undo/redo.
 Use --exe for a frozen candidate or the root launcher.
 """

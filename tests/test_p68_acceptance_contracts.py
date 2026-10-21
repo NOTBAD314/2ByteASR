@@ -17,9 +17,9 @@ from PySide6.QtGui import QColor, QMouseEvent, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFrame
 
-from twobyteasr import asr
-from twobyteasr.advanced_preview import AdvancedPreviewIdentity
-from twobyteasr.studio_ai import (
+from twobyteasr.recognition import asr
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewIdentity
+from twobyteasr.caption_design.studio_ai import (
     AIDesignSuggestion,
     _recipe_signature,
     _semantic_richness,
@@ -27,22 +27,22 @@ from twobyteasr.studio_ai import (
     style_recipe_for_prompt,
     visual_design_variants,
 )
-from twobyteasr.studio_edit_sequence import HighlightCandidate
-from twobyteasr.studio_edit_sequence import ensure_edit_sequence, store_sequence
-from twobyteasr.studio_project import (
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate
+from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence, store_sequence
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     SubtitleStyle,
     save_project,
 )
-from twobyteasr.studio_project_controller import StudioProjectController
-from twobyteasr.studio_theme import build_studio_qss
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_presets import BUILTIN_PRESETS, StylePresetStore
-from twobyteasr.style_recipe import FillSpec, route_recipe
-from twobyteasr.ui_theme import theme_definition
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.projects.studio_project_controller import StudioProjectController
+from twobyteasr.design.studio_theme import build_studio_qss
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import BUILTIN_PRESETS, StylePresetStore
+from twobyteasr.caption_style.style_recipe import FillSpec, route_recipe
+from twobyteasr.design.ui_theme import theme_definition
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app() -> QApplication:
@@ -102,7 +102,7 @@ def _advanced_page(monkeypatch, tmp_path) -> tuple[SubtitleStudioPage, object, Q
     # A structural model notification does not publish changed style data.
     # Commit this authored fixture through the same visual revision domain
     # used by production style commands before preparing any raster.
-    from twobyteasr.studio_runtime_state import DirtyDomain
+    from twobyteasr.projects.studio_runtime_state import DirtyDomain
     with page.session.runtime.transaction(page.project, action_id="fixture_gradient_style",
             dirty=DirtyDomain.CUE_STYLE, affected_cue_ids=(cue.id,)):
         pass
@@ -176,7 +176,7 @@ def test_project_open_waveform_async(monkeypatch, tmp_path):
         def start(self):
             started.append(self.name)
 
-    monkeypatch.setattr("twobyteasr.studio_ui.threading.Thread", FakeThread)
+    monkeypatch.setattr("twobyteasr.studio.studio_ui.threading.Thread", FakeThread)
     page._generate_waveform(str(media))
     assert started == ["studio-waveform"]
     assert str(media.resolve()) in page._waveform_inflight
@@ -345,7 +345,7 @@ def test_transform_mouse_drag_moves_subtitle(monkeypatch, tmp_path):
     style = next(item for item in page.project.styles if item.id == page.project.cues[0].style_id)
     assert after != before
     cue = page.project.cues[0]
-    from twobyteasr.style_resolution import resolve_cue_visual
+    from twobyteasr.caption_style.style_resolution import resolve_cue_visual
     resolved = resolve_cue_visual(page.project, cue).style
     assert (round(cue.transform['position_x']), round(cue.transform['position_y'])) == after
     assert (round(resolved.position_x), round(resolved.position_y)) == after
@@ -482,7 +482,7 @@ def test_ai_preview_real_motion(monkeypatch, tmp_path):
         return [(f'card-{relative_ms}',target,False) for _snapshot,relative_ms,_w,_h in requests]
     monkeypatch.setattr(page._advanced_preview_cache,'render_snapshot_batch',render_batch)
     import hashlib
-    from twobyteasr import studio_ai_flow
+    from twobyteasr.studio import studio_ai_flow
     composite=studio_ai_flow.composite_live_scene_layers
     samples=[]
     def measured(layers,scene,relative_ms,**kwargs):
@@ -516,14 +516,14 @@ def test_ai_recipe_supports_background_card():
 
 
 def test_ai_recipe_semantic_richness_retry(monkeypatch):
-    monkeypatch.setattr('twobyteasr.studio_ai.available_font_shortlist',lambda **_: {'serif':['SimSun'],'handwriting':['KaiTi'],'chinese_sans':['Microsoft YaHei UI']})
+    monkeypatch.setattr('twobyteasr.caption_design.studio_ai.available_font_shortlist',lambda **_: {'serif':['SimSun'],'handwriting':['KaiTi'],'chinese_sans':['Microsoft YaHei UI']})
     project = SubtitleProject(
         media=StudioMedia(path="fixture.mp4", duration_ms=4_000, width=1280, height=720),
         cues=[StudioCue("cue", 0, 2_400, "精彩操作")],
     )
     instruction = "1930s 橡皮管胶片动画风"
-    from twobyteasr.visual_design_graph import VisualDesignGraph, validate_structural_variants, style_recipe_from_graph
-    from twobyteasr.art_direction import score_visual_graph
+    from twobyteasr.caption_design.visual_design_graph import VisualDesignGraph, validate_structural_variants, style_recipe_from_graph
+    from twobyteasr.caption_design.art_direction import score_visual_graph
     valid = json.loads((Path(__file__).parent/'fixtures/retro_native_variants.json').read_text(encoding='utf8'))
     graphs = [VisualDesignGraph.from_dict(item) for item in valid]
     validate_structural_variants(graphs)
@@ -547,7 +547,7 @@ def test_ai_recipe_semantic_richness_retry(monkeypatch):
         def structured_complete(self, *_args, **_kwargs):
             return copy.deepcopy(responses.pop(0))
 
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
     result = request_style_design(project, "cue", instruction, {"models": {"polish": "fixture"}})
     score, _hits = _semantic_richness(result.recipe, instruction)
     assert result.provider_succeeded, result.rationale
@@ -559,7 +559,7 @@ def test_ai_recipe_semantic_richness_retry(monkeypatch):
 
 def test_ai_variant_diversity(monkeypatch):
     monkeypatch.setattr(
-        "twobyteasr.studio_ai.available_font_shortlist",
+        "twobyteasr.caption_design.studio_ai.available_font_shortlist",
         lambda *_a, **_k: {
             "serif": ["SimSun"],
             "handwriting": ["KaiTi"],

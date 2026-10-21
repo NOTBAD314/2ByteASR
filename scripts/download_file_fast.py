@@ -34,7 +34,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from twobyteasr.download_diagnostics import AnonymousAuth, public_url, redact, category, retryable, require_isolated_download_path
+from twobyteasr.local_models.download_diagnostics import AnonymousAuth, public_url, redact, category, retryable, require_isolated_download_path
 
 
 def print(*args, **kwargs):
@@ -566,6 +566,13 @@ def stream_download(
     """Single-stream downloader with a resumable ``.part`` file."""
     partial = _stream_part_path(out_file, host)
     failures = resumes = attempt = 0
+    # A process can stop after its last byte and before atomic publication.
+    # Requesting bytes=size- then returns 416 although the locked file is done.
+    if expected_sha256 and partial.is_file() and _valid_file(partial, size, expected_sha256):
+        _reused_bytes = size
+        os.replace(partial, out_file)
+        emit_progress(percent=100, downloaded=size, total=size, speed=0, phase='verify')
+        return 0
     while True:
         attempt += 1
         offset = partial.stat().st_size if partial.is_file() else 0

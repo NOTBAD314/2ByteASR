@@ -11,15 +11,15 @@ from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.theme_manager as theme_manager
-from twobyteasr.main_ui_theme import APP_QSS
-from twobyteasr.qss_retheme import retheme_qss
-from twobyteasr.studio_theme import (
+import twobyteasr.design.theme_manager as theme_manager
+from twobyteasr.design.main_ui_theme import APP_QSS
+from twobyteasr.design.qss_retheme import retheme_qss
+from twobyteasr.design.studio_theme import (
     SECONDARY_SURFACE_QSS,
     STUDIO_QSS,
     build_studio_qss,
 )
-from twobyteasr.ui_theme import THEMES, ThemeDefinition, theme_definition
+from twobyteasr.design.ui_theme import THEMES, ThemeDefinition, theme_definition
 
 TOKEN_FIELDS = (
     "key label app_background surface surface_elevated panel input_surface "
@@ -82,8 +82,8 @@ def test_theme_key_roundtrip_and_fallback(isolated_settings):
 
 
 def test_apply_theme_switches_palette_and_stylesheet(isolated_settings, tmp_path, monkeypatch):
-    import twobyteasr.studio_ui as studio_ui
-    import twobyteasr.studio_project as studio_project
+    import twobyteasr.studio.studio_ui as studio_ui
+    import twobyteasr.projects.studio_project as studio_project
 
     app = QApplication.instance() or QApplication([])
     settings = tmp_path / "settings.json"

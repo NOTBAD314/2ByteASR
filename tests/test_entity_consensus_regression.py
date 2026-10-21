@@ -1,8 +1,8 @@
 """Retained failure: missing player name is not a Chinese particle vote."""
 import subtitle_core  # Initialize the existing legacy facade before its exports.
-from twobyteasr.caption_arbitration import arbitrate
-from twobyteasr.correction_safety import apply_reference_consensus_corrections
-from twobyteasr.models import SpeechSegment
+from twobyteasr.recognition.caption_arbitration import arbitrate
+from twobyteasr.subtitle_rules.correction_safety import apply_reference_consensus_corrections
+from twobyteasr.recognition.transcript_data import SpeechSegment
 
 
 def test_sop_missing_in_both_references_never_becomes_so_particle():

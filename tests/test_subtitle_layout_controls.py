@@ -7,10 +7,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, SubtitleStyle
-from twobyteasr.subtitle_stacking import initialize_project_layout
-from twobyteasr.style_resolution import resolve_cue_visual
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker, SubtitleStyle
+from twobyteasr.caption_style.subtitle_stacking import initialize_project_layout
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
 
 
 def _page(tmp_path,monkeypatch):

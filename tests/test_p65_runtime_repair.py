@@ -11,12 +11,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from twobyteasr.ai_providers import AntigravityCLIProvider
-from twobyteasr.processes import canonical_subprocess_command
-from twobyteasr.studio_ai import request_style_design, style_recipe_for_prompt, visual_design_variants
-from twobyteasr.studio_edit_sequence import HighlightCandidate
-from twobyteasr.studio_highlight_ui import HighlightAssistantPanel
-from twobyteasr.studio_project import (
+from twobyteasr.providers.ai_providers import AntigravityCLIProvider
+from twobyteasr.system.processes import canonical_subprocess_command
+from twobyteasr.caption_design.studio_ai import request_style_design, style_recipe_for_prompt, visual_design_variants
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate
+from twobyteasr.studio.studio_highlight_ui import HighlightAssistantPanel
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
@@ -27,7 +27,7 @@ from twobyteasr.studio_project import (
     save_autosave,
     save_project,
 )
-from twobyteasr.studio_ui import StylePropertyRow, SubtitleStudioPage
+from twobyteasr.studio.studio_ui import StylePropertyRow, SubtitleStudioPage
 
 
 def _app() -> QApplication:
@@ -184,9 +184,9 @@ def test_real_provider_payload_keeps_three_distinct_animated_variants(monkeypatc
         def structured_complete(self, *_args, **_kwargs):
             return copy.deepcopy(payload)
 
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: FakeProvider())
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: FakeProvider())
     monkeypatch.setattr(
-        "twobyteasr.studio_ai.available_font_shortlist",
+        "twobyteasr.caption_design.studio_ai.available_font_shortlist",
         lambda **_kwargs: {
             "chinese_display": ["KaiTi"],
             "chinese_sans": ["Source Han Sans CN"],

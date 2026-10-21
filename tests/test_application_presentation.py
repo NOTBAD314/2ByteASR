@@ -4,13 +4,13 @@ import pytest
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QApplication, QWidget, QHBoxLayout, QSplitter, QLineEdit
 from twobyteasr.design.presentation import field_width
-from twobyteasr.ui_motion import atomic_layout, motion_duration
+from twobyteasr.design.ui_motion import atomic_layout, motion_duration
 
 
 @pytest.fixture
 def app(tmp_path,monkeypatch):
     instance=QApplication.instance() or QApplication([])
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     monkeypatch.setattr(theme_manager,'_settings',lambda:QSettings(str(tmp_path/'theme.ini'),QSettings.Format.IniFormat))
     monkeypatch.setenv('LOCALAPPDATA',str(tmp_path/'local'))
     return instance
@@ -51,15 +51,15 @@ def test_semantic_fields_let_path_grow_and_bound_short_values(app):
 
 
 def test_accent_icon_uses_the_same_foreground_as_text_for_every_theme():
-    from twobyteasr.themed_icons import icon_role_color
-    from twobyteasr.ui_theme import THEMES
+    from twobyteasr.design.themed_icons import icon_role_color
+    from twobyteasr.design.ui_theme import THEMES
     for theme in THEMES.values():
         assert icon_role_color('on_accent',theme)==theme.text_on_accent
 
 
 def test_settings_cancel_has_no_persistence_side_effect(app,monkeypatch):
-    from twobyteasr import application_settings as settings
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app import application_settings as settings
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     from PySide6.QtWidgets import QDialog
     writes=[]
     monkeypatch.setattr(settings,'save_hub_preferences',lambda *a,**kw:writes.append(a))
@@ -73,9 +73,39 @@ def test_settings_cancel_has_no_persistence_side_effect(app,monkeypatch):
     assert writes==[]
 
 
+def test_settings_cancel_after_browsing_pages_asks_only_for_real_edits(app,monkeypatch,tmp_path):
+    # 2026-10-15: QStackedWidget adds pages at the front of its child list and
+    # moves the page it shows to the end, so findChildren() order followed the
+    # pages visited and Cancel asked to save after merely browsing.
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
+    from PySide6.QtWidgets import QDialog, QMessageBox
+    asked=[]
+    monkeypatch.setattr(QMessageBox,'question',lambda *a,**kw:asked.append(str(a[2])) or QMessageBox.StandardButton.Cancel)
+    def browsed():
+        dialog=ApplicationSettingsDialog(None,{},tmp_path/'Projects',browse=lambda *a:None,
+                                         clear_recent=lambda:None,reset_layout=lambda:None)
+        for row in range(dialog.navigation.count()):
+            dialog.navigation.setCurrentRow(row);app.processEvents()
+        return dialog
+    dialog=browsed()
+    assert dialog._values()==dialog._saved_values
+    dialog.reject()
+    assert asked==[] and dialog.result()==QDialog.DialogCode.Rejected
+    dialog.deleteLater()
+    for edit in (lambda d:d.root_edit.setText(str(tmp_path/'Elsewhere')),
+                 lambda d:d.recovery_policy.setCurrentIndex(d.recovery_policy.findData('official')),
+                 lambda d:d.reduce_motion_box.setChecked(True)):
+        dialog=browsed();edit(dialog)
+        dialog.navigation.setCurrentRow(2);app.processEvents()
+        dialog.reject()
+        assert asked==['保存这些设置更改吗？'],asked
+        asked.clear();dialog.deleteLater()
+    app.processEvents()
+
+
 def test_settings_save_roundtrips_existing_preferences(app,monkeypatch):
-    from twobyteasr import application_settings as settings
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app import application_settings as settings
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     from PySide6.QtWidgets import QDialog
     writes=[]
     monkeypatch.setattr(settings,'read_studio_preferences',lambda:{'recent_project_count':17,'recovery_policy':'official'})

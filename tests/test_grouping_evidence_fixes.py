@@ -9,9 +9,9 @@ timing-locked turn rejected FireRed's 隐袭 as evidence for 影袭.
 from __future__ import annotations
 
 import subtitle_core as core
-from twobyteasr.models import SpeechSegment, SubtitleCue, WordUnit
-from twobyteasr.segmentation import inside_repeat_run, locally_repair_resegmented_cue, repair_mid_word_adjacent_cues
-from twobyteasr.segmentation_alignment import alignment_key, segment_content_timeline
+from twobyteasr.recognition.transcript_data import SpeechSegment, SubtitleCue, WordUnit
+from twobyteasr.subtitle_rules.segmentation import inside_repeat_run, locally_repair_resegmented_cue, repair_mid_word_adjacent_cues
+from twobyteasr.subtitle_rules.segmentation_alignment import alignment_key, segment_content_timeline
 
 
 def _uniform(start, end, text):

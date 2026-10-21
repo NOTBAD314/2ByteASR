@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.studio_shortcuts import _StudioNativeKeyFilter, _WindowsMessage
+from twobyteasr.studio.studio_shortcuts import _StudioNativeKeyFilter, _WindowsMessage
 
 
 pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Win32 message ABI')

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.model_removal import execute_removal, historical_model_removals, plan_model_removal
+from twobyteasr.local_models.model_removal import execute_removal, historical_model_removals, plan_model_removal
 
 
 def managed(tmp_path, *, specs=None):
@@ -160,7 +160,7 @@ def test_confirmation_ownership_changed_requires_new_confirmation(tmp_path):
 
 def test_external_model_detaches_then_explicit_delete_respects_user_assets(tmp_path,monkeypatch):
     from twobyteasr import runtime_paths
-    from twobyteasr.model_associations import is_model_detached
+    from twobyteasr.local_models.model_associations import is_model_detached
     parent=managed(tmp_path); external=tmp_path/'user-external';external.mkdir();root=model(external)
     monkeypatch.setenv(runtime_paths.USER_DATA_ENV,str(tmp_path/'local'))
     monkeypatch.setenv(runtime_paths.MODEL_ROOT_ENV,str(external))
@@ -171,7 +171,7 @@ def test_external_model_detaches_then_explicit_delete_respects_user_assets(tmp_p
         result=execute_removal(plan)
         assert result.completed and result.logical_bytes==0 and result.detached==[str(root)]
         assert is_model_detached(root) and (root/'weights.bin').exists()
-        from twobyteasr.model_registry import scan_model_registry
+        from twobyteasr.local_models.model_registry import scan_model_registry
         assert not scan_model_registry(install_root=tmp_path,model_root=external).installed_keys()
         assert runtime_paths.resolve_model_dir('Test',install_root=tmp_path)!=root
         explicit=plan_model_removal(tmp_path,'test',model_root=external,allow_external_delete=True)
@@ -181,8 +181,8 @@ def test_external_model_detaches_then_explicit_delete_respects_user_assets(tmp_p
 
 def test_detached_external_folder_is_not_production_discovered_again(tmp_path,monkeypatch):
     from twobyteasr import runtime_paths
-    from twobyteasr.model_associations import detach_model
-    from twobyteasr.model_registry import scan_model_registry
+    from twobyteasr.local_models.model_associations import detach_model
+    from twobyteasr.local_models.model_registry import scan_model_registry
     parent=managed(tmp_path);external=tmp_path/'external';external.mkdir();root=model(external)
     monkeypatch.setenv(runtime_paths.USER_DATA_ENV,str(tmp_path/'local'))
     monkeypatch.setenv(runtime_paths.MODEL_ROOT_ENV,str(external))

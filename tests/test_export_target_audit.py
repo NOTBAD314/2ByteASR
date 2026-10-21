@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 import pytest
 
-from twobyteasr.export_target_audit import (prepare_variant, validate_video_receipt,
+from twobyteasr.acceptance.export_target_audit import (prepare_variant, validate_video_receipt,
     validate_process_diagnostics, short_target_cases, active_main_encoding, file_sha256)
 
 
@@ -96,7 +96,7 @@ def _driver():
 
 
 def _autosave():
-    from twobyteasr.media_graph_integrity import graph_integrity
+    from twobyteasr.projects.media_graph_integrity import graph_integrity
     p = dict(media={'path': 'C:/real/source.mp4'},
         media_pool=[dict(asset_id='video', path='C:/real/source.mp4')],
         video_tracks=[dict(id='V1', clips=[dict(id='c1', asset_id='video', start_ms=0, end_ms=159400)])],
@@ -109,7 +109,7 @@ def _autosave():
 
 
 def test_relocated_autosave_rebinds_only_owned_validated_envelope():
-    from twobyteasr.media_graph_integrity import validate_autosave_integrity
+    from twobyteasr.projects.media_graph_integrity import validate_autosave_integrity
     original = _autosave()
     before = copy.deepcopy(original)
     result, receipt = _driver().relocate_project_media(original, 'C:/real/source.mp4', 'C:/tmp/frozen/source.mp4')

@@ -7,7 +7,7 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_video_canvas import MpvCanvas
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
 
 
 def test_native_pixel_slot_survives_epoch_change_until_reader_ack(tmp_path):

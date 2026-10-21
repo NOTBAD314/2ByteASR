@@ -16,8 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 import subtitle_core
-from twobyteasr import ai_providers
-from twobyteasr import domain_terms as domain_terms_module
+from twobyteasr.providers import ai_providers
+from twobyteasr.glossary import domain_terms as domain_terms_module
 
 
 def _segment(segment_id, text, *, start=0.0, end=2.0):
@@ -57,12 +57,12 @@ def _patch_domain_terms_common(monkeypatch):
         "collect_global_term_disputes",
         lambda *a, **k: [{"id":1,"primary_text":"听桥的声音","speaker":"S01"}],
     )
-    from twobyteasr.runtime import RuntimeContext
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.recognition.run_context import RuntimeContext
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
     owner=RuntimeContext(game_name='测试游戏')
     snapshot=resolve_provider_snapshot(subtitle_core.RUNTIME_SETTINGS)
     monkeypatch.setattr(domain_terms_module,'get_runtime_context',lambda:owner)
-    monkeypatch.setattr('twobyteasr.asr_provider_snapshot.task_provider_snapshot',lambda *a:snapshot)
+    monkeypatch.setattr('twobyteasr.providers.asr_provider_snapshot.task_provider_snapshot',lambda *a:snapshot)
     monkeypatch.setattr(
         domain_terms_module, "record_run_event", lambda *a, **k: None,
     )
@@ -217,7 +217,7 @@ def test_grouping_validate_grok_cli_moves_boundary_via_broker(monkeypatch):
 
 
 def test_grouping_validate_http_unchanged(monkeypatch):
-    monkeypatch.setattr('twobyteasr.llm_config.read_scoped_api_key',lambda *_:('fixture','test fixture'))
+    monkeypatch.setattr('twobyteasr.providers.llm_config.read_scoped_api_key',lambda *_:('fixture','test fixture'))
     monkeypatch.setattr(subtitle_core, "RUNTIME_SETTINGS", {
         "models": {
             "ai_service": "deepseek",
@@ -254,9 +254,9 @@ def test_group_editor_model_discovery_resolves_selected_service(monkeypatch):
     get_active_service 回落默认 grok_account，刷新模型拉到 Grok 列表。
     """
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.ai_providers import AITransport, transport_for_stage
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.ui import EndpointEditor
+    from twobyteasr.providers.ai_providers import AITransport, transport_for_stage
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.app.ui import EndpointEditor
 
     app = QApplication.instance() or QApplication([])
     settings = {"models": {"ai_service": "grok_account"}, "switches": {}}

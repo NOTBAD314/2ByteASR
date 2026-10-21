@@ -23,15 +23,15 @@ from PySide6.QtCore import QEvent, QPointF, QRect, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.studio_edit_sequence import ensure_edit_sequence  # noqa: E402
-from twobyteasr.studio_media_pool import (  # noqa: E402
+from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence  # noqa: E402
+from twobyteasr.timeline.studio_media_pool import (  # noqa: E402
     add_video_clip,
     create_video_track,
     sync_linked_av_contract,
     sync_primary_video_track_from_sequence,
 )
-from twobyteasr.studio_edit_sequence import sequence_of  # noqa: E402
-from twobyteasr.studio_project import (  # noqa: E402
+from twobyteasr.timeline.studio_edit_sequence import sequence_of  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     MediaAsset,
     StudioCue,
     StudioMedia,
@@ -39,7 +39,7 @@ from twobyteasr.studio_project import (  # noqa: E402
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage  # noqa: E402
+from twobyteasr.studio.studio_ui import SubtitleStudioPage  # noqa: E402
 
 OUT = ROOT / "tmp" / "verify-round48"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -178,8 +178,8 @@ def main() -> int:
 
     # ---- 主页回滚核验 ----------------------------------------------------------
     import subtitle_core
-    from twobyteasr import ui as ui_module
-    from twobyteasr.ui_recognition import RecognitionRoleCard
+    from twobyteasr.app import ui as ui_module
+    from twobyteasr.app.ui_recognition import RecognitionRoleCard
     from moss_firered_pipeline import moss_firered_pipeline
     window = ui_module.MainWindow(
         [], subtitle_core, moss_firered_pipeline, {"id": "round48-verify", "checks": 0}

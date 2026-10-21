@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import studio_mpv
-from twobyteasr.studio_mpv import (
+from twobyteasr.playback import studio_mpv
+from twobyteasr.playback.studio_mpv import (
     MpvController,
     mpv_environment,
     startup_failure_message,
@@ -142,8 +142,8 @@ def _app():
 def test_unloadable_mpv_fails_the_player_stage_at_once(tmp_path, monkeypatch):
     _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_readiness import StudioReadiness
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_readiness import StudioReadiness
     monkeypatch.setattr(StudioReadiness, "_start_mpv_player", lambda self, epoch: None)
     page = SubtitleStudioPage()
     try:

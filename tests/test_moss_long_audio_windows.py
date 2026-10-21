@@ -370,7 +370,7 @@ def test_untrusted_windows_are_rejected(monkeypatch, mutate):
 
 
 def test_report_shows_duration_on_failure_and_window_plan(monkeypatch):
-    from twobyteasr import reporting
+    from twobyteasr.recognition import reporting
     report = {'job_id': 'job', 'events': [], 'media': {'name': 'x.mp4'}}
     monkeypatch.setattr(reporting, '_active_report', report)
     reporting.record_media_event('task_audio_ready', job_id='job', seconds=8610.261)

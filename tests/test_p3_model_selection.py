@@ -8,8 +8,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import model_workshop as workshop
-from twobyteasr.model_workshop import ModelPickerPanel, ModelWorkshopPage
+from twobyteasr.local_models import model_workshop as workshop
+from twobyteasr.local_models.model_workshop import ModelPickerPanel, ModelWorkshopPage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +45,7 @@ def _installed_models(monkeypatch):
     installed = {"moss", "firered_vad", "speaker_embedding", "firered_aed"}
     monkeypatch.setattr(workshop, "installed_model_keys", lambda _root: set(installed))
     monkeypatch.setattr(
-        "twobyteasr.environment.fast_preflight",
+        "twobyteasr.system.environment.fast_preflight",
         lambda _stage: SimpleNamespace(ok=True),
     )
     return installed
@@ -124,7 +124,7 @@ def test_workshop_browser_role_survives_fifty_role_model_updates(monkeypatch):
         lambda _root: set(installed),
     )
     monkeypatch.setattr(
-        "twobyteasr.environment.fast_preflight",
+        "twobyteasr.system.environment.fast_preflight",
         lambda _stage: SimpleNamespace(ok=True),
     )
     settings = _runtime_settings()
@@ -153,11 +153,7 @@ def test_workshop_browser_role_survives_fifty_role_model_updates(monkeypatch):
         assert checked is not None
         assert checked.property("role") == role
         for model_key, card in page._cards.items():
-            # Platform-only builds (MLX on macOS) stay out of other hosts' lists.
-            expected = (
-                role in workshop._browser_groups(card.model)
-                and workshop.model_platform_available(card.model)
-            )
+            expected = role in workshop._browser_groups(card.model)
             assert card.isHidden() is not expected, (index, role, model_key)
 
     page._set_role("primary")

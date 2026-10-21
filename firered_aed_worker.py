@@ -74,6 +74,10 @@ def _atomic_write(path: Path, payload: object) -> None:
 
 
 def main() -> None:
+    # numpy and scipy each load OpenBLAS, which commits about 24 MB per CPU
+    # thread at import (1.5 GB on a 32-thread CPU). Features come from
+    # kaldi_native_fbank and the model runs in torch; nothing here uses that BLAS.
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
@@ -94,6 +98,9 @@ def main() -> None:
     source = root / "third_party" / "FireRedASR2S"
     sys.path.insert(0, str(source))
     import torch
+    from twobyteasr.recognition.native_tokenizer_paths import prepare_sentencepiece_unicode_paths
+    prepare_sentencepiece_unicode_paths()
+    from twobyteasr import read_only_weights
     from twobyteasr.model_integrity import verify_model_files
     from fireredasr2s.fireredasr2 import FireRedAsr2, FireRedAsr2Config
 
@@ -143,7 +150,12 @@ def main() -> None:
             decode_max_len=0, softmax_smoothing=1.25,
             aed_length_penalty=0.6, eos_penalty=1.0, return_timestamp=True,
         )
-        model = FireRedAsr2.from_pretrained("aed", str(args.model_dir), config)
+        # 2026-10-15: on Windows the 4.4 GB checkpoint is mapped read-only
+        # instead of read into private memory (twobyteasr/read_only_weights.py).
+        model, weights_loader = read_only_weights.load(
+            torch, lambda: FireRedAsr2.from_pretrained("aed", str(args.model_dir), config),
+            lambda loaded: [loaded.model], torch_load_mmap=True,
+            report=lambda error_type, detail: _emit("read_only_load_failed", error_type=error_type, detail=detail))
         _emit("device", kind=kind, requested=args.device)
         if kind == "mps":
             if args.mps_dtype == "float16":
@@ -155,7 +167,7 @@ def main() -> None:
         except Exception:
             pass
         load_ms=(time.perf_counter()-load_started)*1000
-        _emit("loaded", elapsed_ms=round(load_ms,3))
+        _emit("loaded", elapsed_ms=round(load_ms,3), weights_loader=weights_loader)
         import kaldiio
         measure(kaldiio,'load_mat','audio_read_ms')
         measure(model.model.encoder,'forward','encoder_ms',cuda=True)

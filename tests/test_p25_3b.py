@@ -10,13 +10,13 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from twobyteasr.advanced_preview import AdvancedPreviewCache
-from twobyteasr.advanced_renderer import advanced_preview_cache_key, split_renderer_cues
-from twobyteasr.studio_export_ui import StudioExportWorkspace
-from twobyteasr.studio_render import STAGE_ENCODE, export_progress
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_theme import SURFACE_DARK_PREVIEW, TEXT_PRIMARY
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewCache
+from twobyteasr.rendering.advanced_renderer import advanced_preview_cache_key, split_renderer_cues
+from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+from twobyteasr.exports.studio_render import STAGE_ENCODE, export_progress
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.design.studio_theme import SURFACE_DARK_PREVIEW, TEXT_PRIMARY
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def _app():

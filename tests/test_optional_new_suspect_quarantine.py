@@ -7,8 +7,8 @@ import pytest
 
 import subtitle_core  # noqa: F401 - initialize the existing compatibility facade first
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr import polishing
-from twobyteasr.models import SpeechSegment
+from twobyteasr.subtitle_rules import polishing
+from twobyteasr.recognition.transcript_data import SpeechSegment
 
 
 def row(identity, text='普通字幕'):
@@ -31,7 +31,7 @@ def install(monkeypatch, payload, *, structured=False):
         calls.append(messages)
         return copy.deepcopy(payload)
     provider = SimpleNamespace(**({'structured_complete': structured_complete} if structured else {'complete': complete}))
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **kw: provider)
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **kw: provider)
     return calls
 
 
@@ -139,8 +139,8 @@ def test_full_polish_and_cached_result_keep_unassigned_batch_review(context, mon
 def test_v13_cache_identity_and_native_schema_preserve_strict_mandatory_fields(context):
     from dataclasses import replace
     from jsonschema import validate, ValidationError
-    from twobyteasr.asr_provider_snapshot import POLISH_PROMPT_VERSION
-    from twobyteasr.cli_schema import request_schema
+    from twobyteasr.providers.asr_provider_snapshot import POLISH_PROMPT_VERSION
+    from twobyteasr.providers.cli_schema import request_schema
     _core, owner, _cache = context
     assert POLISH_PROMPT_VERSION == 'correction-edits-v14-pronoun-gender'
     old_versions = dict(owner.provider_snapshot.prompt_versions)
@@ -158,9 +158,9 @@ def test_v13_cache_identity_and_native_schema_preserve_strict_mandatory_fields(c
     {'id': 999, 'start': 6, 'end': 8, 'surface': '叶林', 'evidence': '不能归属'}, None])
 def test_studio_review_receipt_keeps_unassigned_rows_and_zero_edits_pending(context, monkeypatch, optional_row):
     from tests.test_stage9_provider_snapshot import config
-    from twobyteasr.studio_glossary_service import preview_glossary_correction
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-    from twobyteasr.terminology import GlossarySnapshot
+    from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+    from twobyteasr.glossary.terminology import GlossarySnapshot
     project = SubtitleProject(media=StudioMedia(path='private.mp4'),
         cues=[StudioCue('project-cue-29', 1000, 2000, '反手还能再推叶林')])
     before = copy.deepcopy(project)
@@ -186,8 +186,8 @@ def test_studio_review_receipt_keeps_unassigned_rows_and_zero_edits_pending(cont
 def test_completion_retry_receipt_keeps_unassigned_rows_without_applying_or_saving(context, monkeypatch, optional_row):
     from tests.test_completion_retry_preview import project
     from tests.test_stage9_provider_snapshot import config
-    from twobyteasr.completion_retry import completion_retry_preview
-    from twobyteasr.service import RunOptions
+    from twobyteasr.app.completion_retry import completion_retry_preview
+    from twobyteasr.recognition.service import RunOptions
     original = project()
     before = copy.deepcopy(original)
     calls = install(monkeypatch, {'checked_ids': [2], 'cues': [], 'new_suspects': [optional_row]})

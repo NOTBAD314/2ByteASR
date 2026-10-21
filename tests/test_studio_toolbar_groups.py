@@ -5,9 +5,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QSlider, QToolButton, QVBoxLayout, QWidget)
 
-from twobyteasr.studio_theme import build_studio_qss, apply_secondary_surface_theme
-from twobyteasr.studio_toolbar_layout import install_command_groups, toolbar_geometry_snapshot
-from twobyteasr.ui_theme import theme_definition
+from twobyteasr.design.studio_theme import build_studio_qss, apply_secondary_surface_theme
+from twobyteasr.studio.studio_toolbar_layout import install_command_groups, toolbar_geometry_snapshot
+from twobyteasr.design.ui_theme import theme_definition
 
 
 @pytest.fixture(scope="module")
@@ -167,7 +167,7 @@ def test_resize_roundtrip_is_deterministic(app):
 
 
 def test_secondary_surface_theme_and_theme_switch_cannot_redefine_toolbar(app, monkeypatch, tmp_path):
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     monkeypatch.setattr(theme_manager, "_settings", lambda: QSettings(str(tmp_path / "theme.ini"), QSettings.Format.IniFormat))
     page = toolbar(app)
     theme_manager.apply_application_theme(app, "grape")

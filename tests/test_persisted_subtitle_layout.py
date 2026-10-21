@@ -6,17 +6,17 @@ import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, SubtitleStyle,
     load_project, save_project, project_from_runtime_cues,
 )
-from twobyteasr.subtitle_stacking import initialize_project_layout, rearrange_subtitles_command
-from twobyteasr.style_resolution import resolve_cue_visual
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.ass_compiler import compile_ass, compile_ass_revision
-from twobyteasr.studio_revisions import StudioRevisionStore
-from twobyteasr.caption_playback_cache import materialize_caption_project
-from twobyteasr.studio_commands import SetCueFieldsCommand
+from twobyteasr.caption_style.subtitle_stacking import initialize_project_layout, rearrange_subtitles_command
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering.ass_compiler import compile_ass, compile_ass_revision
+from twobyteasr.projects.studio_revisions import StudioRevisionStore
+from twobyteasr.rendering.caption_playback_cache import materialize_caption_project
+from twobyteasr.timeline.studio_commands import SetCueFieldsCommand
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -65,7 +65,7 @@ def test_manual_order_is_authoritative_across_snapshot_ass_revision_and_reopen(t
     expected = anchors(p)
     assert expected['earlier'][1] < expected['later'][1]  # Swapped manual order is allowed.
     # Neither render nor reopen may call the allocation operation again.
-    import twobyteasr.subtitle_stacking as stacking
+    import twobyteasr.caption_style.subtitle_stacking as stacking
     monkeypatch.setattr(stacking,'compute_stack_layout',lambda *_a,**_k: pytest.fail('render reallocated layout'))
     for width,height in [(1920,1080),(1000,700),(800,450)]:
         assert {c.id: build_visual_cue_snapshot(p,c.id,width=width,height=height).position_y
@@ -96,7 +96,7 @@ def test_position_edit_does_not_move_peer_and_nonposition_edits_keep_anchor():
 
 
 def test_live_drag_preview_uses_pointer_anchor_without_committing_or_reoffsetting():
-    from twobyteasr.studio_revisions import preview_render_revision
+    from twobyteasr.projects.studio_revisions import preview_render_revision
     p = project()
     initialize_project_layout(p)
     p.cues[1].transform.update(position_x=950,position_y=980)
@@ -168,8 +168,8 @@ def test_real_generation_initializes_and_plain_runtime_metadata_is_preserved():
 
 
 def test_visible_ink_bounds_produce_compact_real_live_raster_gap():
-    from twobyteasr.advanced_live_renderer import render_live_snapshot
-    from twobyteasr.selection_geometry import image_bounds
+    from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot
+    from twobyteasr.studio.selection_geometry import image_bounds
     p = project()
     initialize_project_layout(p)
     bounds = {}

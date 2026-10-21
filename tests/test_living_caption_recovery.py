@@ -6,15 +6,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.authored_generation import generate_staged,normalize_directions
-from twobyteasr.caption_creative_pipeline import ThemeLedger
-from twobyteasr.caption_living_motion import compose,examples
-from twobyteasr.source_artifact import frame,from_theme,unframe
-from twobyteasr.artwork_recovery import inspect_source,save_recovery,saved_recovery,merge_completion
-from twobyteasr.ai_providers import AIProviderError
-from twobyteasr.web_theme import WebThemeDocument
-from twobyteasr.theme_motion import validate_motion_spec
-from twobyteasr.motion_ownership import motion_schedule
+from twobyteasr.caption_design.authored_generation import generate_staged,normalize_directions
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+from twobyteasr.caption_design.caption_living_motion import compose,examples
+from twobyteasr.caption_design.source_artifact import frame,from_theme,unframe
+from twobyteasr.caption_design.artwork_recovery import inspect_source,save_recovery,saved_recovery,merge_completion
+from twobyteasr.providers.ai_providers import AIProviderError
+from twobyteasr.caption_design.web_theme import WebThemeDocument
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.motion_ownership import motion_schedule
 
 
 def theme():
@@ -33,7 +33,7 @@ def test_materials_and_transition_grammar_combine_without_conflicting_tracks():
 
 @pytest.mark.parametrize('category,retries',[('render_timeout',1),('browser_startup',1),('render_error',1),('render_validation',0),('cancelled',0)])
 def test_local_preview_retry_never_calls_model_or_retries_bad_art(category,retries):
-    from twobyteasr.design_recovery import preview_with_recovery
+    from twobyteasr.caption_design.design_recovery import preview_with_recovery
     calls=[];events=[]
     def render(*a,**kw):
         calls.append(1)
@@ -169,13 +169,13 @@ def test_empty_direction_response_gets_one_compact_completion_with_provenance(tm
 
 
 def test_dialog_emits_distinct_recovery_actions():
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance() or QApplication([])
     concept=dict(id='A',name='未完成方向',technical_status='failed',technical_errors=[],authored_theme=theme())
     dialog=ThemeConceptDialog([concept],{})
     events=[];dialog.recovery_requested.connect(lambda ident,mode:events.append((ident,mode)))
-    from twobyteasr.design_recovery import recovery_actions
+    from twobyteasr.caption_design.design_recovery import recovery_actions
     labels={mode:label for mode,label,_ in recovery_actions(concept)}
     for mode in ['implementation','preview','rebuild']:
         next(a for a in dialog.more.menu().actions() if a.text()==labels[mode]).trigger()

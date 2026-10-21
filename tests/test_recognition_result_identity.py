@@ -9,13 +9,13 @@ import wave
 
 import pytest
 
-from twobyteasr.recognition_result import (
+from twobyteasr.recognition.recognition_result import (
     RecognitionResultMismatch, committed_result_reference, media_identity_for_task,
     recognition_project_path, verify_result_reference,
 )
-from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-from twobyteasr.service import CancellationToken, RunOptions, run_media_queue
-from twobyteasr.studio_project import create_studio_outputs, load_project, save_project
+from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+from twobyteasr.recognition.service import CancellationToken, RunOptions, run_media_queue
+from twobyteasr.projects.studio_project import create_studio_outputs, load_project, save_project
 from tests.test_service_layer import FakeLegacy, FakePipeline
 
 
@@ -34,7 +34,7 @@ def cues(text="本次字幕"):
 
 @pytest.fixture
 def owned_library(tmp_path, monkeypatch):
-    import twobyteasr.studio_project as storage
+    import twobyteasr.projects.studio_project as storage
     root = tmp_path / "Projects"
     monkeypatch.setattr(storage, "project_library_root", lambda *a, **k: root)
     return root
@@ -132,7 +132,7 @@ def test_ref_rejects_graph_or_manual_revision_only_changes_but_library_open_rema
     project = load_project(path)
     cue_before = [(c.id, c.start_ms, c.end_ms, c.text) for c in project.cues]
     audio_clip = project.audio_tracks[0].clips[0]
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     sequence = sequence_of(project)
     if change == "trim":
         sequence.segments[0].source_in_ms += 10
@@ -163,7 +163,7 @@ def test_runtime_metadata_refresh_does_not_change_pinned_input_graph(tmp_path, o
 
 @pytest.mark.parametrize("decoded,video_end,expected", [(67.6533125, 67576.75, 67653), (60.0, 72000.0, 72000), (67.6533125, 0.0, 70187)])
 def test_home_initial_graph_uses_decoded_duration_but_preserves_real_video_tail(tmp_path, owned_library, monkeypatch, decoded, video_end, expected):
-    from twobyteasr.media_service import GLOBAL_MEDIA_SERVICE, MediaMetadataSnapshot
+    from twobyteasr.media.media_service import GLOBAL_MEDIA_SERVICE, MediaMetadataSnapshot
     source = media(tmp_path)
     stat = source.stat()
     snapshot = MediaMetadataSnapshot(source_path=str(source), source_size=stat.st_size,
@@ -281,7 +281,7 @@ def test_cancel_after_commit_does_not_publish_success_or_reference(tmp_path, own
 
 
 def test_same_second_job_reports_have_distinct_paths(tmp_path, monkeypatch):
-    from twobyteasr import reporting
+    from twobyteasr.recognition import reporting
     monkeypatch.setattr(reporting, "REPORT_ROOT", tmp_path / "reports")
     path = media(tmp_path)
     for job,index in (("first",1), ("first",2), ("second",1)):
@@ -300,9 +300,9 @@ def test_reopening_a_delivered_result_accepts_the_users_edits(tmp_path, owned_li
     """2026-10-10 (user): after proofreading on the result page, 打开字幕工作台
     said 工程字幕数量或文本时间摘要与已保存结果不一致. Delivery stays exact; a
     reopen of the same job's project checks its identity, not its content."""
-    from twobyteasr.recognition_result import working_reference
-    from twobyteasr.studio_commands import BatchReplaceTextCommand
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.recognition.recognition_result import working_reference
+    from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     result = create(media(tmp_path), "reopen-job", "原来的字幕")
     path = Path(result["project"])
     project = load_project(path)
@@ -329,7 +329,7 @@ def test_reopening_a_delivered_result_accepts_the_users_edits(tmp_path, owned_li
 @pytest.mark.parametrize("change", ["path", "project_id", "job_id", "revision", "stamp_digest", "media",
                                     "media_file", "corrupt", "other_job"])
 def test_reopening_still_rejects_another_project_job_or_media(tmp_path, owned_library, change):
-    from twobyteasr.recognition_result import working_reference
+    from twobyteasr.recognition.recognition_result import working_reference
     source = media(tmp_path)
     result = create(source, "identity-job")
     ref = json.loads(result["result_ref_json"])
@@ -356,9 +356,9 @@ def test_pending_studio_reload_retry_accepts_later_proofreading(tmp_path, owned_
     """A Studio-run recognition whose in-app reload failed is retried on the
     next Studio entry. By then the result page may have proofread the project;
     the retry must check identity like any reopen, not the delivered digest."""
-    from twobyteasr.recognition_result import WORKING_SCOPE
-    from twobyteasr.studio_commands import BatchReplaceTextCommand
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.recognition.recognition_result import WORKING_SCOPE
+    from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+    from twobyteasr.app.ui import MainWindow
     result = create(media(tmp_path), "pending-job", "原来的字幕")
     path = Path(result["project"])
     project = load_project(path)

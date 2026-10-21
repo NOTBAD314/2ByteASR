@@ -6,12 +6,12 @@ from dataclasses import asdict
 import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_project import (StudioMedia, SubtitleProject, load_project, save_project,
+from twobyteasr.projects.studio_project import (StudioMedia, SubtitleProject, load_project, save_project,
                                       save_autosave_revision, recoverable_autosave)
-from twobyteasr.studio_revisions import StudioRevisionStore
-from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
-from twobyteasr.studio_media_commands import media_graph_command
-from twobyteasr.studio_runtime_state import state_for, DirtyDomain
+from twobyteasr.projects.studio_revisions import StudioRevisionStore
+from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+from twobyteasr.timeline.studio_media_commands import media_graph_command
+from twobyteasr.projects.studio_runtime_state import state_for, DirtyDomain
 
 
 def project_fixture():
@@ -80,7 +80,7 @@ def test_late_writer_and_other_instance_cannot_overwrite_new_graph(tmp_path):
 
 
 def test_corrupt_and_interrupted_writes_leave_valid_recovery(tmp_path, monkeypatch):
-    import twobyteasr.studio_project as model
+    import twobyteasr.projects.studio_project as model
     project = project_fixture()
     official = save_project(project, tmp_path / "project.2byteproj")
     store = StudioRevisionStore(project)
@@ -107,7 +107,7 @@ def test_corrupt_and_interrupted_writes_leave_valid_recovery(tmp_path, monkeypat
 
 def test_killed_writer_keeps_previous_complete_autosave(tmp_path):
     import subprocess, sys, time
-    from twobyteasr.processes import popen_hidden_subprocess
+    from twobyteasr.system.processes import popen_hidden_subprocess
     project = project_fixture()
     official = save_project(project, tmp_path / "project.2byteproj")
     store = StudioRevisionStore(project)
@@ -118,9 +118,9 @@ def test_killed_writer_keeps_previous_complete_autosave(tmp_path):
     script.write_text('''import sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-import twobyteasr.studio_project as model
-from twobyteasr.studio_revisions import StudioRevisionStore
-from twobyteasr.studio_media_pool import create_video_track
+import twobyteasr.projects.studio_project as model
+from twobyteasr.projects.studio_revisions import StudioRevisionStore
+from twobyteasr.timeline.studio_media_pool import create_video_track
 project = model.load_project(sys.argv[2])
 create_video_track(project)
 def before_replace(source, target):

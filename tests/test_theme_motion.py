@@ -1,7 +1,7 @@
 import copy
 import pytest
-from twobyteasr.theme_motion import validate_motion_spec
-from twobyteasr.web_theme import WebThemeDocument,parse_web_theme_sections
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.web_theme import WebThemeDocument,parse_web_theme_sections
 
 
 def spec():
@@ -35,7 +35,7 @@ def test_motion_roundtrip_and_static_css_boundary():
 
 
 def test_visual_rejection_cannot_be_averaged_away():
-    from twobyteasr.theme_art_direction_v2 import SCORE_LABELS,validate_visual_checks
+    from twobyteasr.caption_design.theme_art_direction_v2 import SCORE_LABELS,validate_visual_checks
     review=dict(passed=True,checks={k:dict(passed=True,evidence='保持帧对应结构清晰可见') for k in SCORE_LABELS},defects=[])
     review['checks']['theme_relevance']=dict(passed=False,evidence='熊只剩两个耳点，不能辨认主题身份')
     result=validate_visual_checks(review)

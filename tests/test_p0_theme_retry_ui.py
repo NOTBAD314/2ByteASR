@@ -8,8 +8,8 @@ from tests.test_studio_style_controller import _page,_finish
 
 
 def test_phase_timeout_retains_candidates_and_button_retries_only_code(tmp_path,monkeypatch):
-    from twobyteasr import studio_theme_draft,studio_ai
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.caption_design import studio_theme_draft, studio_ai
+    from twobyteasr.providers.ai_providers import AIProviderError
     app,page=_page(tmp_path,monkeypatch)
     try:
         design=json.loads((Path(__file__).parent/'fixtures/polar_bear_c40072_concepts.json').read_text(encoding='utf8'))
@@ -50,8 +50,8 @@ def test_phase_timeout_retains_candidates_and_button_retries_only_code(tmp_path,
 
 
 def test_partial_static_heroes_retry_before_selection(tmp_path,monkeypatch):
-    from twobyteasr import studio_ai
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.providers.ai_providers import AIProviderError
     from tests.test_hero_theme_compiler import design as make_design
     app,page=_page(tmp_path,monkeypatch)
     try:

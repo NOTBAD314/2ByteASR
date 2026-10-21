@@ -14,9 +14,9 @@ def render(quick=False):
     from io import BytesIO
     from PIL import Image
     from examples.zelda_wind_seal import theme_source
-    from twobyteasr.web_theme import WebThemeDocument,export_theme_archive,theme_archive_html
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.theme_direction_preview import render_motion_preview
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,export_theme_archive,theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
     theme=WebThemeDocument.from_dict(theme_source()).to_dict()
     archive=export_theme_archive(theme,OUT/'archives')
     service=RendererService();checks={};movies={}
@@ -61,10 +61,10 @@ def workbench():
     from PySide6.QtGui import QMovie
     from PySide6.QtWidgets import QApplication
     from PySide6.QtTest import QTest
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
-    from twobyteasr.theme_manager import apply_theme
-    from twobyteasr.ui_theme import THEMES
-    from twobyteasr.web_theme import import_theme_archive
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.design.theme_manager import apply_theme
+    from twobyteasr.design.ui_theme import THEMES
+    from twobyteasr.caption_design.web_theme import import_theme_archive
     app=QApplication.instance() or QApplication([])
     movie=json.loads((OUT/'render-result.json').read_text('utf8'))['movies']['6000']
     concept=dict(id='A',name='海拉鲁 · 风之封印',composition='本地原创示例：青绿断片纹环与金色三角徽记，薄石构承托正文；纹环触发、两翼展开、字组刻印，退出撤印并收回能量。',

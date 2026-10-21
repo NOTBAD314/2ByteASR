@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import shortcut_registry as reg
+from twobyteasr.studio import shortcut_registry as reg
 
 
 @pytest.fixture
@@ -99,7 +99,7 @@ def test_save_merges_into_studio_settings_and_notifies(qapp, tmp_path, monkeypat
 
 
 def _dispatch_page(**overrides):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
     calls = []
     callbacks = {name: (lambda name=name: calls.append(name)) for name in reg.BY_ID}
     callbacks["select_all"] = lambda: False  # nothing focused that can select
@@ -151,7 +151,7 @@ def test_contextual_command_declines_so_the_widget_gets_the_key(qapp):
 
 def test_settings_panel_records_resolves_unbinds_and_restores(qapp, tmp_path):
     from PySide6.QtGui import QKeySequence
-    from twobyteasr.studio_shortcuts import STUDIO_COMMANDS, ShortcutSettingsPanel
+    from twobyteasr.studio.studio_shortcuts import STUDIO_COMMANDS, ShortcutSettingsPanel
     panel = ShortcutSettingsPanel(reg.platform_defaults(), None)
     assert set(panel.values()) == set(STUDIO_COMMANDS)
     panel._editors["trim_start"].setKeySequence(QKeySequence("W"))
@@ -177,7 +177,7 @@ def test_settings_panel_records_resolves_unbinds_and_restores(qapp, tmp_path):
 
 def test_settings_panel_refuses_system_keys(qapp, monkeypatch):
     from PySide6.QtGui import QKeySequence
-    from twobyteasr.studio_shortcuts import ShortcutSettingsPanel
+    from twobyteasr.studio.studio_shortcuts import ShortcutSettingsPanel
     monkeypatch.setattr(reg, "reserved_reason", lambda sequence, platform=None: "系统使用" if sequence == "Alt+Tab" else "")
     panel = ShortcutSettingsPanel(reg.platform_defaults(), None)
     panel._editors["save"].setKeySequence(QKeySequence("Alt+Tab"))
@@ -186,7 +186,7 @@ def test_settings_panel_refuses_system_keys(qapp, monkeypatch):
 
 
 def test_application_page_covers_every_scope(qapp):
-    from twobyteasr.studio_shortcuts import ShortcutSettingsPanel
+    from twobyteasr.studio.studio_shortcuts import ShortcutSettingsPanel
     panel = ShortcutSettingsPanel(reg.current_values(), None, scopes=tuple(reg.SCOPE_LABELS), embedded=True)
     assert {"home.start_run", "proofread.find", "app.zoom_reset", "review_adopt_1", "trim_start"} <= set(panel.values())
     panel.deleteLater()
@@ -195,7 +195,7 @@ def test_application_page_covers_every_scope(qapp):
 def test_settings_dialog_does_not_ask_to_save_after_searching_shortcuts(tmp_path):
     from PySide6.QtGui import QKeySequence
     from PySide6.QtWidgets import QApplication, QKeySequenceEdit
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     app = QApplication.instance() or QApplication([])
     dialog = ApplicationSettingsDialog(None, {}, tmp_path / "Projects", browse=lambda *a: None,
                                        clear_recent=lambda: None, reset_layout=lambda: None)

@@ -24,11 +24,11 @@ def main():
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,load_project
-    from twobyteasr.studio_media_pool import create_video_track,add_media_asset,add_video_clip
-    from twobyteasr.studio_edit_sequence import sequence_of,projected_cues
-    from twobyteasr.studio_clip_edit import clip_edit_command
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project,load_project
+    from twobyteasr.timeline.studio_media_pool import create_video_track,add_media_asset,add_video_clip
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of,projected_cues
+    from twobyteasr.timeline.studio_clip_edit import clip_edit_command
     ffmpeg=ROOT/'tools/ffmpeg/bin/ffmpeg.exe'
     for name,color,tone in [('base','red',440),('edit','blue',880)]:
         run_hidden_subprocess([str(ffmpeg),'-v','error','-f','lavfi','-i',f'color={color}:s=640x360:r=30:d=20',

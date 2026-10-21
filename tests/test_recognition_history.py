@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
-from twobyteasr.recognition_history import (  # noqa: E402
+from twobyteasr.recognition.recognition_history import (  # noqa: E402
     RecognitionHistoryPage,
     RecognitionHistoryDetail,
     load_recognition_records,
@@ -148,7 +148,7 @@ def test_history_page_uses_exact_management_navigation(tmp_path):
     path.write_text(json.dumps(_report_payload(), ensure_ascii=False), encoding="utf-8")
     page = RecognitionHistoryPage(tmp_path)
     assert len(page.records) == 1
-    from twobyteasr.ui_navigation import WorkspaceNavigation
+    from twobyteasr.design.ui_navigation import WorkspaceNavigation
 
     navigation = page.findChild(WorkspaceNavigation)
     assert [button.text() for button in navigation.buttons.values()] == [
@@ -178,7 +178,7 @@ def test_history_loader_reuses_cached_summary_until_file_signature_changes(
     path.write_text(json.dumps(_report_payload(), ensure_ascii=False), encoding="utf-8")
     cache = {}
 
-    from twobyteasr import recognition_history
+    from twobyteasr.recognition import recognition_history
 
     original = recognition_history.parse_recognition_report
     parsed_paths = []
@@ -338,11 +338,11 @@ def test_multi_root_scan_dedupes_copies_and_keeps_distinct_runs(tmp_path):
 
 
 def test_repair_imports_legacy_reports_without_touching_originals(tmp_path, monkeypatch):
-    from twobyteasr import recognition_history as rh
-    from twobyteasr.recognition_history import repair_recognition_history
+    from twobyteasr.recognition import recognition_history as rh
+    from twobyteasr.recognition.recognition_history import repair_recognition_history
 
     monkeypatch.setattr(rh, "discover_legacy_report_roots", lambda: [])
-    from twobyteasr import reporting as _reporting
+    from twobyteasr.recognition import reporting as _reporting
 
     monkeypatch.setattr(_reporting, "LEGACY_REPORT_ROOTS", ())
 
@@ -368,7 +368,7 @@ def test_repair_imports_legacy_reports_without_touching_originals(tmp_path, monk
 
 
 def test_same_media_new_run_archives_previous_report(tmp_path, monkeypatch):
-    from twobyteasr import reporting
+    from twobyteasr.recognition import reporting
 
     monkeypatch.setattr(reporting, "REPORT_ROOT", tmp_path / "reports")
     clock = {"value": 0}

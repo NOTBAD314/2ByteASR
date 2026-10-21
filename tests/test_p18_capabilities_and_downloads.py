@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QProcess, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from twobyteasr.model_workshop import (  # noqa: E402
+from twobyteasr.local_models.model_workshop import (  # noqa: E402
     MODELS,
     ModelWorkshopPage,
     ModelDownloadDialog,
@@ -68,7 +68,7 @@ def test_duplicate_primary_review_checkpoint_warns_and_defaults_to_cancel(monkey
         "qwen_asr_backend": "off",
     }}
     monkeypatch.setattr(
-        "twobyteasr.model_workshop.installed_model_keys",
+        "twobyteasr.local_models.model_workshop.installed_model_keys",
         lambda _root: {"qwen_asr"},
     )
     page = ModelWorkshopPage(ROOT, settings)
@@ -222,13 +222,19 @@ def test_shared_model_hashes_apply_to_modelscope_and_hf_downloads():
         assert manifest.sha256 == {"model.bin": "a" * 64}
 
 
+# 2026-10-19: the MFA models exist only on Hugging Face (MontrealCorpusTools);
+# mainland downloads reach them through hf-mirror (AUTO tries it after HF).
+HF_MIRROR_ONLY = {"mfa_aligner"}
+
+
 def test_every_workshop_download_has_a_modelscope_route():
     import json
 
     lock = json.loads((ROOT / "dependencies.lock.json").read_text(encoding="utf-8"))
     download_keys = {model.download_key for model in MODELS if model.download_key}
     assert download_keys
-    assert all(lock["models"][key].get("modelscope_repository") for key in download_keys)
+    assert all(lock["models"][key].get("modelscope_repository") for key in download_keys - HF_MIRROR_ONLY)
+    assert all(lock["models"][key]["repository"].startswith("MontrealCorpusTools/") for key in HF_MIRROR_ONLY)
 
 
 def test_firered_empty_placeholder_configs_are_not_required():

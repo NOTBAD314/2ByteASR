@@ -7,7 +7,7 @@ APP = QApplication.instance() or QApplication([])
 
 
 def _start(values):
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
     settings = QSettings("2ByteASR", "2ByteASR")
     for key in ("mainWindow/geometry", "mainWindow/maximized"):
         settings.remove(key)

@@ -9,13 +9,13 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtMultimedia import QAudioFormat
-from twobyteasr.audio_engine import _PcmRingDevice, AudioOutputSpec
-from twobyteasr.audio_graph import capture_audio_graph, preview_audio_layers
-from twobyteasr.audio_export import capture_audio_mix
-from twobyteasr.video_export import capture_video_graph
-from twobyteasr.studio_project import SubtitleProject, StudioMedia
-from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_audio_master_mode
-from twobyteasr.studio_track_gain import gain_command
+from twobyteasr.playback.audio_engine import _PcmRingDevice, AudioOutputSpec
+from twobyteasr.playback.audio_graph import capture_audio_graph, preview_audio_layers
+from twobyteasr.exports.audio_export import capture_audio_mix
+from twobyteasr.exports.video_export import capture_video_graph
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia
+from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip, set_audio_master_mode
+from twobyteasr.timeline.studio_track_gain import gain_command
 
 @pytest.fixture(scope='module')
 def app():
@@ -25,7 +25,7 @@ def app():
 def project(tmp_path):
     p = SubtitleProject(media=StudioMedia(path=str(tmp_path/'one.mp4'),duration_ms=2000,width=160,height=90))
     p.validate()
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     p.video_tracks[0].locked = sequence_of(p).video_track_locked = False
     asset = add_media_asset(p,tmp_path/'two.mp4',duration_ms=4000,
         video_metadata={'has_video':True,'width':160,'height':90},audio_metadata={'has_audio':True})
@@ -52,7 +52,7 @@ def test_default_graph_is_serializable_and_export_uses_same_segments(project):
     ('mix_all','V2',{'V1','V2'}),
 ])
 def test_preview_consumes_resolved_track_selection_even_when_base_is_v1(project,mode,selected,expected):
-    from twobyteasr.audio_playback_graph import AudioPlaybackGraph
+    from twobyteasr.playback.audio_playback_graph import AudioPlaybackGraph
     set_audio_master_mode(project,mode)
     project.studio_state['selected_video_track_id']=selected
     layers=preview_audio_layers(capture_audio_graph(project),500)
@@ -64,7 +64,7 @@ def test_preview_consumes_resolved_track_selection_even_when_base_is_v1(project,
 
 
 def test_resolved_solo_and_silence_are_not_replaced_by_visible_video(project):
-    from twobyteasr.audio_playback_graph import AudioPlaybackGraph
+    from twobyteasr.playback.audio_playback_graph import AudioPlaybackGraph
     project.studio_state['audio_solo_track_ids']=['A2']
     graph=AudioPlaybackGraph(master_track_id='V1')
     decision=graph.consume_resolved(preview_audio_layers(capture_audio_graph(project),500),base_track_id='V1')
@@ -74,8 +74,8 @@ def test_resolved_solo_and_silence_are_not_replaced_by_visible_video(project):
 
 
 def test_preview_reuses_only_current_video_index_without_mutating_export(project, monkeypatch):
-    from twobyteasr.studio_video_flow import StudioVideoFlowMixin
-    from twobyteasr.indexed_media import GLOBAL_INDEXED_MEDIA
+    from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
+    from twobyteasr.media.indexed_media import GLOBAL_INDEXED_MEDIA
     raw = str(Path(project.media_pool[0].canonical_source).with_suffix('.flv'))
     project.media_pool[0].canonical_source = raw
     canonical = capture_audio_graph(project)
@@ -133,9 +133,9 @@ def test_ring_has_no_qiodevice_readahead_or_preroll_and_gain_does_not_reset(app)
 @pytest.mark.parametrize('mode',['default','positive-negative','mute','solo','linked-trim'])
 def test_actual_export_range_matches_preview_pcm(app, project, tmp_path, mode):
     import wave
-    from twobyteasr.audio_engine import build_audio_mix_command
-    from twobyteasr.audio_export import audio_mix_arguments
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.playback.audio_engine import build_audio_mix_command
+    from twobyteasr.exports.audio_export import audio_mix_arguments
+    from twobyteasr.system.processes import run_hidden_subprocess
     ffmpeg=Path(__file__).resolve().parents[1]/'tools/ffmpeg/bin/ffmpeg.exe'
     for index,asset in enumerate(project.media_pool):
         source=tmp_path/f'tone-{index}.wav'
@@ -149,7 +149,7 @@ def test_actual_export_range_matches_preview_pcm(app, project, tmp_path, mode):
     if mode=='mute':project.audio_tracks[0].muted=True
     if mode=='solo':project.studio_state['audio_solo_track_ids']=['A2']
     if mode=='linked-trim':
-        from twobyteasr.studio_media_pool import trim_video_clip_edges
+        from twobyteasr.timeline.studio_media_pool import trim_video_clip_edges
         clip=project.video_tracks[1].clips[0]
         trim_video_clip_edges(project,'V2',clip.id,timeline_in_ms=250,timeline_out_ms=1250)
     graph=capture_video_graph(project)

@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 import pytest
-from twobyteasr.source_artifact import frame, unframe, from_theme, to_theme
-from twobyteasr.ai_providers import CLIProvider
+from twobyteasr.caption_design.source_artifact import frame, unframe, from_theme, to_theme
+from twobyteasr.providers.ai_providers import CLIProvider
 
 
 def test_raw_source_roundtrip_and_program_serialization():

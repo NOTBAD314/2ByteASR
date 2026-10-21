@@ -5,10 +5,10 @@ import pytest
 from PySide6.QtGui import QRawFont
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import font_metadata as metadata
-from twobyteasr.cover_document import CoverDocument
-from twobyteasr.cover_editor import CoverEditor
-from twobyteasr.cover_render import text_font, CoverRenderer, export_image
+from twobyteasr.caption_style import font_metadata as metadata
+from twobyteasr.cover.cover_document import CoverDocument
+from twobyteasr.cover.cover_editor import CoverEditor
+from twobyteasr.cover.cover_render import text_font, CoverRenderer, export_image
 
 
 @pytest.fixture(scope='module')
@@ -28,7 +28,7 @@ def test_chinese_name_is_localized_family_not_full_style_or_japanese():
 
 def test_font_directories_collections_and_user_relative_registration(tmp_path, monkeypatch):
     import winreg
-    root = tmp_path/'app'; module = root/'twobyteasr/font_metadata.py'
+    root = tmp_path/'app'; module = root/'twobyteasr/caption_style/font_metadata.py'
     module.parent.mkdir(parents=True)
     asset = root/'assets/fonts/a.otf'; asset.parent.mkdir(parents=True); asset.touch()
     tools = root/'tools/fonts/b.ttc'; tools.parent.mkdir(parents=True); tools.touch()
@@ -83,7 +83,7 @@ def test_picker_localizes_searches_and_empty_input_preserves_identity(app, tmp_p
 
 
 def test_localized_selection_real_face_template_and_png(app, tmp_path):
-    from twobyteasr.cover_local_library import LocalCoverLibrary
+    from twobyteasr.cover.cover_local_library import LocalCoverLibrary
     from PySide6.QtGui import QImage
     doc = CoverDocument(width=640, height=360); title = doc.add_text('中文标题 · Aa')
     editor = CoverEditor(doc); editor.session.selected = {title.id}

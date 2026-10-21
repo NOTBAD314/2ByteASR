@@ -16,13 +16,13 @@ from PySide6.QtWidgets import QApplication
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.ass_compiler import compile_ass, compile_txt
-from twobyteasr.studio_commands import (
+from twobyteasr.rendering.ass_compiler import compile_ass, compile_txt
+from twobyteasr.timeline.studio_commands import (
     SetCueFieldsCommand,
     SetCuePresentationCommand,
     split_cue_command,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -30,9 +30,9 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.studio_render import RenderJob, RenderSettings, preview_job, run_render_job
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_presets import BUILTIN_PRESETS
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, preview_job, run_render_job
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import BUILTIN_PRESETS
 
 
 FFMPEG = ROOT / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"

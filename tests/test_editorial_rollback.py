@@ -33,7 +33,7 @@ def test_meaningful_isolated_character_is_kept_when_it_cannot_merge():
 
 
 def test_cosmetic_single_character_failure_rolls_back_instead_of_blocking_export(monkeypatch):
-    import twobyteasr.segmentation as segmentation
+    import twobyteasr.subtitle_rules.segmentation as segmentation
 
     original = [
         SubtitleCue(1, 0.0, 1.0, "第一句", speaker="S01"),

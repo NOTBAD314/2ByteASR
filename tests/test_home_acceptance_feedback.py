@@ -8,12 +8,12 @@ from PySide6.QtWidgets import QApplication, QComboBox, QCheckBox, QDialog, QWidg
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     monkeypatch.setattr(theme_manager, '_settings', lambda: QSettings(str(tmp_path/'theme.ini'), QSettings.Format.IniFormat))
     return app
 
 def test_picker_keeps_canceled_selection_in_place_until_reopened(app):
-    from twobyteasr.model_workshop import ModelPickerPanel, CANONICAL_MODEL_ORDER, MODELS, _model_roles
+    from twobyteasr.local_models.model_workshop import ModelPickerPanel, CANONICAL_MODEL_ORDER, MODELS, _model_roles
     keys = [key for key in CANONICAL_MODEL_ORDER if any(m.key == key and 'primary' in _model_roles(m) for m in MODELS)]
     class Controller(QObject):
         models_refreshed = Signal()
@@ -37,8 +37,9 @@ def test_picker_keeps_canceled_selection_in_place_until_reopened(app):
     picker.hide(); picker.deleteLater()
 
 def test_advanced_settings_edit_is_transactional(app, monkeypatch, tmp_path):
-    from twobyteasr import application_settings as settings, settings as runtime
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app import application_settings as settings
+    from twobyteasr.storage import settings as runtime
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     owner = QWidget(); owner.advanced_disclosure = True
     owner.legacy = SimpleNamespace(RUNTIME_SETTINGS={'switches': {}, 'cache': {}})
     for name in ('dialogue_coverage', 'expected_speakers', 'overwrite'):

@@ -4,8 +4,8 @@ import time
 from PySide6.QtCore import Qt
 from tests.test_storage_media_assets import cached
 from tests.test_storage_maintenance_ui import qapp,service
-from twobyteasr.storage_ui import StoragePanel
-from twobyteasr.studio_project import SubtitleProject,StudioMedia
+from twobyteasr.storage.storage_ui import StoragePanel
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia
 
 
 def test_loaded_missing_original_enables_normal_save_but_never_cleanup(service,qapp,monkeypatch):
@@ -25,7 +25,7 @@ def test_loaded_missing_original_enables_normal_save_but_never_cleanup(service,q
     assert not panel.selected.isEnabled() and not panel.recommended.isEnabled()
     chosen=[]
     def choose(*args,**kwargs):chosen.append(args);return str(target),'Media'
-    monkeypatch.setattr('twobyteasr.storage_ui.QFileDialog.getSaveFileName',choose)
+    monkeypatch.setattr('twobyteasr.storage.storage_ui.QFileDialog.getSaveFileName',choose)
     panel.save_media.click()
     deadline=time.monotonic()+4
     while time.monotonic()<deadline:

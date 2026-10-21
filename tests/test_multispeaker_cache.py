@@ -1,8 +1,8 @@
 import json
 
 import subtitle_core
-from twobyteasr.runtime import activate_runtime_context, get_runtime_context
-from twobyteasr.service import RunOptions
+from twobyteasr.recognition.run_context import activate_runtime_context, get_runtime_context
+from twobyteasr.recognition.service import RunOptions
 
 
 def _moss_task_context(expected_speakers):

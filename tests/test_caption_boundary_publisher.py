@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from twobyteasr.caption_boundary_publisher import CaptionBoundaryPublisher,BoundaryPixels
+from twobyteasr.rendering.caption_boundary_publisher import CaptionBoundaryPublisher,BoundaryPixels
 
 
 def fixture(gap=0):
@@ -52,8 +52,8 @@ def test_identical_web_pixels_skip_ipc_but_new_identity_still_binds():
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QImage
     from PySide6.QtCore import QRect
-    from twobyteasr.live_web_preview import WebFrame
-    from twobyteasr.studio_advanced_flow import StudioAdvancedFlowMixin
+    from twobyteasr.rendering.live_web_preview import WebFrame
+    from twobyteasr.studio.studio_advanced_flow import StudioAdvancedFlowMixin
     app=QApplication.instance() or QApplication([])
     raw=BytesIO();Image.new('RGBA',(2,2),'white').save(raw,format='PNG');payload=raw.getvalue()
     bound=[];posted=[]

@@ -10,17 +10,17 @@ def main():
     if not out.is_relative_to(root/'tmp'):raise ValueError('tmp output required')
     out.mkdir(parents=True,exist_ok=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen')
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.ass_compiler import compile_ass
-    from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-    from twobyteasr.studio_render import RenderJob,RenderSettings,run_render_job
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.rendering.ass_compiler import compile_ass
+    from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+    from twobyteasr.exports.studio_render import RenderJob,RenderSettings,run_render_job
+    from twobyteasr.system.processes import run_hidden_subprocess
     project=load_project(a.project);cue=project.cues[0]
     ass=out/'captions.ass';ass.write_text(compile_ass(project),encoding='utf8')
     movie=out/'caption-proof.mp4';ffmpeg=root/'tools/ffmpeg/bin/ffmpeg.exe'
     job=RenderJob(project.media.path,str(ass),str(movie),settings=RenderSettings(encoder='libx264',preset='ultrafast',
         width=1920,height=1080,fps=30,audio_codec='none'),start_seconds=1.1,duration_seconds=3,overwrite_existing=True)
-    from twobyteasr.advanced_renderer import split_renderer_cues,AdvancedRendererBackend,compile_composition_data
+    from twobyteasr.rendering.advanced_renderer import split_renderer_cues,AdvancedRendererBackend,compile_composition_data
     if split_renderer_cues(project)[1]:
         AdvancedRendererBackend().render(project,ffmpeg,job)
         (out/'composition.json').write_text(json.dumps(compile_composition_data(project,width=1920,height=1080,

@@ -19,11 +19,11 @@ from PySide6.QtWidgets import QApplication, QDialog
 import subtitle_core as legacy
 
 from twobyteasr.i18n import apply_ui_language
-from twobyteasr.main_ui_dialogs import SpringDialog
-from twobyteasr.studio_export_ui import StudioExportWorkspace
-from twobyteasr.studio_find_replace import FindReplaceDialog
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_render import (
+from twobyteasr.design.main_ui_dialogs import SpringDialog
+from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.exports.studio_render import (
     STAGE_ADVANCED_RENDER,
     STAGE_ENCODE,
     STAGE_MUX,
@@ -34,9 +34,9 @@ from twobyteasr.studio_render import (
     export_progress,
     run_render_job,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.theme_manager import apply_application_theme
-from twobyteasr.ui import MainWindow
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.design.theme_manager import apply_application_theme
+from twobyteasr.app.ui import MainWindow
 
 
 SHOTS = ROOT / "tmp" / "p53-accept"

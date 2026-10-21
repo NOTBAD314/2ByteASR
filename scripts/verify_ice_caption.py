@@ -20,11 +20,11 @@ def main():
     install()
     from PIL import Image
     import numpy as np
-    from twobyteasr.caption_components import compose
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html,import_theme_archive,export_theme_archive
-    from twobyteasr.renderer_service import RendererService,RendererJob
-    from twobyteasr.theme_direction_preview import render_motion_preview
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.caption_components import compose
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html,import_theme_archive,export_theme_archive
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
     text='这块石头这么圆 一定能推吧？'
     theme=WebThemeDocument.from_dict(dict(name='冰河世纪 · 霜脊冰刻',id='ice-age-frost-shelf',
         notes='本轮Codex原创组件重做；不是DeepSeek/Grok供应商新作。公开项目研究转译，原稿独立保留。',

@@ -12,11 +12,11 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QToolButton
 
-import twobyteasr.studio_project as studio_project
-import twobyteasr.studio_project_flow as studio_project_flow
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+import twobyteasr.projects.studio_project as studio_project
+import twobyteasr.studio.studio_project_flow as studio_project_flow
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ def _hub_with_projects(tmp_path, monkeypatch, hub_project_dir, count=3):
     monkeypatch.setattr(studio_ui, "studio_settings_path", lambda: settings)
     monkeypatch.setattr(studio_project_flow, "studio_settings_path", lambda: settings)
     monkeypatch.setattr(studio_project, "studio_settings_path", lambda: settings)
-    monkeypatch.setattr("twobyteasr.studio_hub.project_library_root", lambda:hub_project_dir)
+    monkeypatch.setattr("twobyteasr.studio.studio_hub.project_library_root", lambda:hub_project_dir)
     page = SubtitleStudioPage()
     monkeypatch.setattr(page, "_generate_waveform", lambda *_a, **_k: None)
     page.show_project_hub()

@@ -12,16 +12,16 @@ import pytest
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.advanced_live_renderer import (
+from twobyteasr.rendering.advanced_live_renderer import (
     composite_live_scene_layers,
     render_live_layers,
     render_live_scene_frame,
     render_live_snapshot,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-from twobyteasr.style_recipe import StyleRecipe, StyleRecipeValidationError
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.visual_design_graph import (
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.caption_style.style_recipe import StyleRecipe, StyleRecipeValidationError
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_design.visual_design_graph import (
     CompiledLiveScene,
     VisualDesignGraph,
     VisualDesignGraphValidationError,
@@ -34,16 +34,17 @@ from twobyteasr.visual_design_graph import (
     style_recipe_from_graph,
     validate_structural_variants,
 )
-from twobyteasr.visual_runtime import (
+from twobyteasr.rendering.visual_runtime import (
     CapabilitySupport,
     VisualCapability,
     VisualRenderer,
     VISUAL_CAPABILITY_MATRIX,
     renderer_capability_gaps,
 )
-from twobyteasr.studio_ai import request_style_design
-from twobyteasr.art_direction import fallback_art_directions
-from twobyteasr import studio_live_canvas, studio_ui
+from twobyteasr.caption_design.studio_ai import request_style_design
+from twobyteasr.caption_design.art_direction import fallback_art_directions
+from twobyteasr.rendering import studio_live_canvas
+from twobyteasr.studio import studio_ui
 
 
 _APP = None
@@ -431,7 +432,7 @@ def test_ai_style_v4_requests_graphs_and_sends_complete_product_context(monkeypa
                 ],
             }
 
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
     project = SubtitleProject(
         media=StudioMedia(path="D:/graph.mp4", duration_ms=2_400, width=1920, height=1080),
         cues=[StudioCue("graph-cue", 0, 2_400, "空中打拳", speaker_id="host")],
@@ -495,7 +496,7 @@ def test_ai_vision_frame_is_requested_only_for_declared_capability(tmp_path, mon
                 ],
             }
 
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: Provider())
     project = SubtitleProject(
         media=StudioMedia(path="D:/graph.mp4", duration_ms=2_400),
         cues=[StudioCue("graph-cue", 0, 2_400, "空中打拳")],

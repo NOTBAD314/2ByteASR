@@ -5,8 +5,8 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 def main():
-    from twobyteasr.web_theme import builtin_web_themes,theme_archive_html
-    from twobyteasr.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.web_theme import builtin_web_themes,theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
     from PIL import Image
     import numpy as np
     out=ROOT/'tmp/balatro-frames'/time.strftime('%Y%m%d-%H%M%S');out.mkdir(parents=True)

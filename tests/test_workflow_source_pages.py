@@ -1,9 +1,9 @@
 import pytest
-from twobyteasr import glossary_sources as sources
-from twobyteasr.glossary_skill import GlossarySearchError
+from twobyteasr.glossary import glossary_sources as sources
+from twobyteasr.glossary.glossary_skill import GlossarySearchError
 from tests.test_workflow_build_lifecycle import setup_build
 from tests.test_glossary_skill import _FakeLegacy, _grok_settings
-from twobyteasr import glossary_build as gb
+from twobyteasr.glossary import glossary_build as gb
 
 def test_second_page_budget_keeps_first_page_checkpoint(monkeypatch):
     setup_build(monkeypatch)

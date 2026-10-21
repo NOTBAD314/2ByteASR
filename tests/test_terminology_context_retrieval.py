@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr.models import SpeechSegment
-from twobyteasr.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry
 
 
 def real_fixture():
@@ -20,7 +20,7 @@ def real_cue():
 
 
 def test_real_wrong_chinese_names_retrieve_references_without_exact_source_spelling():
-    from twobyteasr.terminology_retrieval import retrieve_candidates
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
     fixture = real_fixture()
     snapshot = GlossarySnapshot.from_dict(fixture['snapshot'])
     candidates = retrieve_candidates(snapshot, [real_cue()])
@@ -34,7 +34,7 @@ def test_real_wrong_chinese_names_retrieve_references_without_exact_source_spell
 
 
 def test_actual_serialized_prompt_keeps_retrieved_nonliteral_references(context):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot.from_dict(real_fixture()['snapshot'])
@@ -48,7 +48,7 @@ def test_actual_serialized_prompt_keeps_retrieved_nonliteral_references(context)
 
 
 def test_highly_related_last_entry_survives_budget_and_irrelevant_entries_do_not(context):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot((GlossaryLibrary('fixture', '夹具', 'r1',
@@ -61,7 +61,7 @@ def test_highly_related_last_entry_survives_budget_and_irrelevant_entries_do_not
 
 
 def test_reference_context_model_proposal_can_pass_without_becoming_confirmed(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot.from_dict(real_fixture()['snapshot'])
@@ -71,7 +71,7 @@ def test_reference_context_model_proposal_can_pass_without_becoming_confirmed(co
     def complete(messages, **kw):
         calls.append(messages)
         return json.dumps({'checked_ids': [3], 'cues': [{'id': 3, 'edits': proposed}]}, ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     row = real_cue()
     result = polishing.call_correction_api([row], [], '', '', '洛克真实片段', '洛克王国：世界',
         [], [], [], glossary_evidence=owner.glossary_snapshot.evidence())
@@ -86,12 +86,12 @@ def test_reference_context_model_proposal_can_pass_without_becoming_confirmed(co
 
 
 def test_unrelated_confirmed_term_never_authorizes_ordinary_chinese_rewrite():
-    from twobyteasr.polishing import filter_untrusted_polished_text
+    from twobyteasr.subtitle_rules.polishing import filter_untrusted_polished_text
     assert filter_untrusted_polished_text('今天感觉无聊', '今天感觉厉害', [], ['洛克王国']) == '今天感觉无聊'
 
 
 def test_retained_real_deepseek_response_replay_keeps_supported_names_and_ordinary_negatives(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot.from_dict(real_fixture()['snapshot'])
@@ -102,7 +102,7 @@ def test_retained_real_deepseek_response_replay_keeps_supported_names_and_ordina
     def complete(messages, **kw):
         return json.dumps({'checked_ids': [x.segment_id for x in rows],
                            'cues': [x for x in fixture['returned'] if x['edits']]}, ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     result = polishing.call_correction_api(rows, [], '', '', '洛克真实片段', '洛克王国：世界',
         [], [], [], glossary_evidence=owner.glossary_snapshot.evidence())
     assert result[3] == '仪式巨像对阵炽心勇狮'
@@ -118,8 +118,8 @@ def test_retained_real_deepseek_response_replay_keeps_supported_names_and_ordina
 
 
 def test_ambiguous_homophone_candidates_remain_read_only(context):
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     snapshot = GlossarySnapshot((GlossaryLibrary('fixture', '夹具', 'r1', (),
         ('炽心勇狮', '炽心勇师')),))
     row = real_cue()
@@ -133,8 +133,8 @@ def test_ambiguous_homophone_candidates_remain_read_only(context):
 
 
 def test_context_does_not_count_two_copies_of_one_asr_family_or_rewrite_fragments():
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     snapshot = GlossarySnapshot.from_dict(real_fixture()['snapshot'])
     row = real_cue()
     candidates = retrieve_candidates(snapshot, [row])
@@ -157,7 +157,8 @@ def test_context_does_not_count_two_copies_of_one_asr_family_or_rewrite_fragment
 
 def test_real_final_payload_budget_excludes_lower_ranked_context_without_cutting_cues(context, monkeypatch):
     from dataclasses import replace
-    from twobyteasr import polishing, provider_input_budget
+    from twobyteasr.subtitle_rules import polishing
+    from twobyteasr.providers import provider_input_budget
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot.from_dict(real_fixture()['snapshot'])
@@ -182,7 +183,7 @@ def test_real_final_payload_budget_excludes_lower_ranked_context_without_cutting
 
 
 def test_complete_production_polish_keeps_context_edit_and_cached_diagnostic(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, cache = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot.from_dict(real_fixture()['snapshot'])
@@ -194,7 +195,7 @@ def test_complete_production_polish_keeps_context_edit_and_cached_diagnostic(con
         return json.dumps({'checked_ids': [3], 'cues': [{'id': 3, 'edits': [
             {'from': '仪式巨象', 'to': '仪式巨像', 'basis': 'glossary+context'},
             {'from': '赤心勇士', 'to': '炽心勇狮', 'basis': 'glossary+context'}]}]}, ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     for _ in range(2):
         result = polishing.polish_subtitles([real_cue()], '洛克真实片段', cache)
         assert result[0].text == '仪式巨像对阵炽心勇狮'
@@ -205,8 +206,9 @@ def test_complete_production_polish_keeps_context_edit_and_cached_diagnostic(con
 
 
 def test_snapshot_reference_and_rules_change_polish_cache_key(context, monkeypatch):
-    from twobyteasr.cache import cache_stage_signature
-    from twobyteasr import terminology_retrieval, number_fidelity
+    from twobyteasr.recognition.cache import cache_stage_signature
+    from twobyteasr.glossary import terminology_retrieval
+    from twobyteasr.subtitle_rules import number_fidelity
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot((GlossaryLibrary('fixture', '夹具', 'r1', (), ('仪式巨像',)),))
@@ -223,7 +225,7 @@ def test_snapshot_reference_and_rules_change_polish_cache_key(context, monkeypat
 
 @pytest.mark.parametrize('enabled', [True, False])
 def test_final_polish_retains_small_source_numbers_repetitions_and_saved_switch(context, monkeypatch, enabled):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     core, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot((GlossaryLibrary('fixture', '夹具', 'r1', (TermEntry('一技能'),)),))
@@ -234,7 +236,7 @@ def test_final_polish_retains_small_source_numbers_repetitions_and_saved_switch(
     def complete(messages, **kw):
         assert '普通整数1～9' in messages[0]['content']
         return json.dumps({'checked_ids': [19], 'cues': [{'id': 19, 'edits': proposed}]}, ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     source = '一个 一个 二十个 二十个 一技能'
     row = SpeechSegment(19, 1, 4, source, .85, [], primary_source='moss-host',
         moss_text=source, firered_text=source, qwen_asr_text=source)

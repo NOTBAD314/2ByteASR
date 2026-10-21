@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.model_task_metadata import task_for
-from twobyteasr.model_workshop import MODELS, ElideLabel, ModelCard, ModelWorkshopPage, _metric_evidence, model_task_badges, model_workflow
+from twobyteasr.local_models.model_task_metadata import task_for
+from twobyteasr.local_models.model_workshop import MODELS, ElideLabel, ModelCard, ModelWorkshopPage, _metric_evidence, model_task_badges, model_workflow
 
 APP = QApplication.instance() or QApplication([])
 MODELS_BY_KEY = {model.key: model for model in MODELS}

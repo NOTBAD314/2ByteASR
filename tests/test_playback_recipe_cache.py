@@ -1,4 +1,4 @@
-from twobyteasr.style_recipe import StyleRecipe,route_recipe,_route_serialized_recipe
+from twobyteasr.caption_style.style_recipe import StyleRecipe,route_recipe,_route_serialized_recipe
 
 
 def test_nested_mutation_invalidates_cached_renderer_decision():

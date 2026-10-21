@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_find_replace import PreviewBinding, apply_occurrences
-from twobyteasr.studio_text_tools import TextOccurrence
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_find_replace import PreviewBinding, apply_occurrences
+from twobyteasr.studio.studio_text_tools import TextOccurrence
 
 
 def page():
@@ -45,8 +45,8 @@ def test_apply_is_one_undo_and_preserves_timing_speaker_and_original():
 
 def test_word_mapping_is_derived_and_undo_restores_evidence(tmp_path):
     import copy
-    from twobyteasr.studio_project import save_project, load_project
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.projects.studio_project import save_project, load_project
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     a = page(); p = a.session.project
     p.asr_evidence = {'r': {'words': [
         {'text':'Borlin','start_ms':100,'end_ms':500},
@@ -77,7 +77,7 @@ def test_word_mapping_is_derived_and_undo_restores_evidence(tmp_path):
 
 
 def test_case_only_keeps_exact_word_times():
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     a = page(); p = a.session.project; p.cues[0].text = 'berlin也没有接住'
     p.asr_evidence = {'r': {'words':[{'text':'berlin','start_ms':100,'end_ms':500},
                                     {'text':'也没有接住','start_ms':500,'end_ms':1000}]}}
@@ -91,7 +91,7 @@ def test_case_only_keeps_exact_word_times():
 
 def test_case_only_after_spelling_change_keeps_derived_alignment_through_undo_redo():
     import copy
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     a = page(); p = a.session.project
     p.asr_evidence = {'r': {'words': [
         {'text': 'Borlin', 'start_ms': 100, 'end_ms': 500},
@@ -113,7 +113,7 @@ def test_case_only_after_spelling_change_keeps_derived_alignment_through_undo_re
 
 
 def test_case_only_cannot_promote_degraded_original_timing():
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     for owner in ('estimated', 'proportional', 'degraded', '估算', '均分'):
         a = page(); p = a.session.project; p.cues[0].text = 'berlin也没有接住'
         p.asr_evidence = {'r': {'final_timing_owner': owner, 'words': [
@@ -127,10 +127,10 @@ def test_case_only_cannot_promote_degraded_original_timing():
 
 
 def test_production_saved_term_mapping_keeps_alignment_provenance(tmp_path):
-    from twobyteasr.models import SpeechSegment, SubtitleCue, WordUnit
-    from twobyteasr.terminology import apply_to_segments, snapshot_from_pairs
-    from twobyteasr.studio_project import create_studio_outputs, load_project
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.recognition.transcript_data import SpeechSegment, SubtitleCue, WordUnit
+    from twobyteasr.glossary.terminology import apply_to_segments, snapshot_from_pairs
+    from twobyteasr.projects.studio_project import create_studio_outputs, load_project
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     for original, replacement, owner, has_words, expected in (
         ('Borlin', 'BerLIN', 'MOSS', True, 'derived_term_source_span'),
         ('berlin', 'BerLIN', 'MOSS', True, 'exact_token_text'),
@@ -158,8 +158,8 @@ def test_production_saved_term_mapping_keeps_alignment_provenance(tmp_path):
 
 def independent_page(original='Borlin', *, has_aligned_words=True):
     """Freeze a real source-to-timeline projection, with unrelated clocks."""
-    from twobyteasr.studio_caption_timeline import ensure_independent_captions, KEY
-    from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
+    from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions, KEY
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
     p = SubtitleProject(media=StudioMedia(path='isolated.mp4', duration_ms=20000),
         cues=[StudioCue('source',10000,12000,original+'也没有接住',speaker_id='S01',evidence_refs=['r'])],
         asr_evidence={'r': {'words': [
@@ -186,8 +186,8 @@ def independent_page(original='Borlin', *, has_aligned_words=True):
 
 def test_independent_term_spelling_mapping_uses_cue_clock_or_explicit_pending(tmp_path):
     import copy
-    from twobyteasr.cue_word_alignment import cue_words
-    from twobyteasr.studio_project import save_project,load_project
+    from twobyteasr.recognition.cue_word_alignment import cue_words
+    from twobyteasr.projects.studio_project import save_project,load_project
     for has_words in (True,False):
         a = independent_page(has_aligned_words=has_words)
         p = a.session.project; cue = p.cues[0]
@@ -229,8 +229,8 @@ def test_independent_term_spelling_mapping_uses_cue_clock_or_explicit_pending(tm
 
 def test_independent_case_only_term_keeps_projected_exact_times_on_reopen(tmp_path):
     import copy
-    from twobyteasr.cue_word_alignment import cue_words
-    from twobyteasr.studio_project import save_project,load_project
+    from twobyteasr.recognition.cue_word_alignment import cue_words
+    from twobyteasr.projects.studio_project import save_project,load_project
     a = independent_page('berlin'); p = a.session.project; cue = p.cues[0]
     evidence_before = copy.deepcopy(p.asr_evidence)
     words_before,reason_before = cue_words(p,cue)

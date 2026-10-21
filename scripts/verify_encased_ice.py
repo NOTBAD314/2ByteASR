@@ -87,11 +87,11 @@ def main():
     from twobyteasr.test_isolation import install
     install()
     from PIL import Image, ImageDraw, ImageFont
-    from twobyteasr.caption_components import compose
-    from twobyteasr.renderer_service import RendererJob, RendererService
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.theme_direction_preview import render_motion_preview
-    from twobyteasr.web_theme import (WebThemeDocument, export_theme_archive,
+    from twobyteasr.caption_design.caption_components import compose
+    from twobyteasr.rendering.renderer_service import RendererJob, RendererService
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
+    from twobyteasr.caption_design.web_theme import (WebThemeDocument, export_theme_archive,
                                     import_theme_archive, theme_archive_html)
 
     theme = (import_theme_archive(args.theme_json) if args.theme_json else
@@ -119,8 +119,8 @@ def main():
                   "new provider response and normal generation request (separate audit)",
                   "physical monitor playback and sound"],
               "note": "RGBA internal composition does not refract unknown background video."}
-    source_paths = [ROOT / name for name in ("twobyteasr/caption_ice.py", "twobyteasr/caption_ice_legacy.py",
-                    "twobyteasr/caption_components.py", "twobyteasr/motion_spec.py",
+    source_paths = [ROOT / name for name in ("twobyteasr/caption_design/caption_ice.py", "twobyteasr/caption_design/caption_ice_legacy.py",
+                    "twobyteasr/caption_design/caption_components.py", "twobyteasr/motion_spec.py",
                     "renderer/src/webThemeMotion.js", "renderer/src/webThemeClock.js")]
     result["source_sha256"] = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
                                for path in source_paths if path.is_file()}
@@ -271,7 +271,7 @@ def main():
                                          "production render parity (quick mode)", "archive reopen (quick mode)"])
         else:
             print("Running the normal AI draft production preflight (including composed text probes)", flush=True)
-            from twobyteasr.theme_draft import ThemeDraft, validate_draft_frames
+            from twobyteasr.caption_design.theme_draft import ThemeDraft, validate_draft_frames
             draft = ThemeDraft("encased-ice-review", 1, "ice-review", args.text,
                                provider="local-review", model="").with_theme(theme)
             result["production_draft_validation"] = validate_draft_frames(
@@ -396,8 +396,8 @@ def main():
                 check(name + "-last-encoded-rgba-frame-clear", movie["last_encoded_source_frame"]["alpha_max"] == 0)
                 # Decode the actual MP4, preserving the distinction that MP4 has
                 # opaque neutral pixels while its corresponding RGBA source is empty.
-                from twobyteasr.audio_engine import studio_ffmpeg_path
-                from twobyteasr.processes import run_hidden_subprocess
+                from twobyteasr.playback.audio_engine import studio_ffmpeg_path
+                from twobyteasr.system.processes import run_hidden_subprocess
                 run_hidden_subprocess([str(studio_ffmpeg_path()), "-v", "error", "-i", movie["video"],
                     "-f", "null", "-"], check=True, capture_output=True, timeout=45,
                     purpose="decode finite ice review movie")

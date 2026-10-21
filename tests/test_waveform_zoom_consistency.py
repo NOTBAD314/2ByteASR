@@ -26,7 +26,7 @@ def _app():
 
 
 def test_db_heights_absolute_scale():
-    from twobyteasr.studio_timeline import waveform_db_heights
+    from twobyteasr.studio.studio_timeline import waveform_db_heights
 
     heights = waveform_db_heights(np.array([0.0, 1.0, 0.5, 0.1, 0.004, 0.001], dtype="float32"))
     assert heights[0] == 0.0  # 数字静音=平线
@@ -50,7 +50,7 @@ class _FakeCache:
         self.calls = []
 
     def read_window(self, start_ms, end_ms, pixel_width):
-        from twobyteasr.waveform_cache import WaveformLevel
+        from twobyteasr.playback.waveform_cache import WaveformLevel
 
         self.calls.append((start_ms, end_ms, pixel_width))
         wide = (end_ms - start_ms) > 20000
@@ -68,7 +68,7 @@ def _path_points(path):
 
 def test_same_amplitude_same_visual_strength_across_zoom():
     _app()
-    from twobyteasr.studio_timeline import WaveformTimeline, waveform_db_heights
+    from twobyteasr.studio.studio_timeline import WaveformTimeline, waveform_db_heights
 
     quiet = np.full((80, 2), 0.1, dtype="float32")
     loud = quiet.copy()
@@ -97,7 +97,7 @@ def test_same_amplitude_same_visual_strength_across_zoom():
 
 def test_partial_prefix_keeps_time_positions():
     _app()
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
 
     # 覆盖中：100s 窗只解码出前 10s（10 个 1s 桶）。
     pairs = np.full((10, 2), 0.2, dtype="float32")
@@ -115,7 +115,7 @@ def test_partial_prefix_keeps_time_positions():
 
 
 def _synthetic_cache(tmp_path, lod0_frames, duration_ms=100000, incomplete=False):
-    from twobyteasr.waveform_cache import WaveformCache
+    from twobyteasr.playback.waveform_cache import WaveformCache
 
     root = tmp_path / "wc"
     root.mkdir(parents=True)

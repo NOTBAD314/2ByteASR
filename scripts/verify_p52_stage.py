@@ -16,8 +16,8 @@ os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import FillEditorDialog, SubtitleStudioPage
-from twobyteasr.studio_render import (
+from twobyteasr.studio.studio_ui import FillEditorDialog, SubtitleStudioPage
+from twobyteasr.exports.studio_render import (
     RenderJob,
     RenderSettings,
     load_encoder_capabilities,
@@ -26,8 +26,8 @@ from twobyteasr.studio_render import (
     scan_encoder_capabilities,
     VIDEO_ENCODERS,
 )
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.studio_project import load_project
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.projects.studio_project import load_project
 
 
 SHOTS = ROOT / "tmp" / "p52-accept"

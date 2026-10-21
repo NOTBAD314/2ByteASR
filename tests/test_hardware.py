@@ -1,6 +1,6 @@
 import pytest
 
-from twobyteasr import hardware
+from twobyteasr.system import hardware
 
 
 def _fake_probe(

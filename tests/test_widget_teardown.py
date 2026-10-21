@@ -18,8 +18,8 @@ from pathlib import Path
 import shiboken6
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.main_ui_popup import FramelessPopupCombo
-from twobyteasr.widget_teardown import delete_tree_before_collection
+from twobyteasr.design.main_ui_popup import FramelessPopupCombo
+from twobyteasr.design.widget_teardown import delete_tree_before_collection
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,10 +30,12 @@ from twobyteasr.test_isolation import install
 install()
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout
 app = QApplication([])
-from twobyteasr import mlx_backend, ui
-from twobyteasr.main_ui_dialogs import SpringDialog
-from twobyteasr.main_ui_popup import FramelessPopupCombo
-ui.detect_cuda_runtime = lambda: None
+from twobyteasr.recognition import mlx_backend
+from twobyteasr.app import guided_setup_dialog, ui
+from twobyteasr.design.main_ui_dialogs import SpringDialog
+from twobyteasr.design.main_ui_popup import FramelessPopupCombo
+# GuidedSetupDialog (app/guided_setup_dialog.py since 2026-10-15) runs the CUDA probe.
+guided_setup_dialog.detect_cuda_runtime = lambda: None
 mlx_backend.platform_supported = lambda: False
 
 

@@ -15,7 +15,7 @@ def main():
         QT_QPA_PLATFORM='windows',TWOBYTEASR_ACCEPTANCE_DIR=str(out),TWOBYTEASR_ACCEPTANCE_SCENARIO='recognition-delivery',
         TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),TWOBYTEASR_STARTUP_OPEN_STUDIO='1',TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1')
     command=[str(args.exe.resolve())] if args.exe else [sys.executable,str(root/'quick_start.py')]
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     results=[]
     for phase in ('recover','reopen'):
         env['TWOBYTEASR_RECOVERY_PHASE']=phase

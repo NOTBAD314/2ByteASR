@@ -14,9 +14,9 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
-from twobyteasr.ai_providers import provider_for_stage
-from twobyteasr.studio_ai import request_style_design
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project
+from twobyteasr.providers.ai_providers import provider_for_stage
+from twobyteasr.caption_design.studio_ai import request_style_design
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, load_project
 
 
 def _signature(variant) -> str:

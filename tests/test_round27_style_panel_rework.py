@@ -20,8 +20,8 @@ def _app():
 
 
 def _page(tmp_path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_project import (
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.projects.studio_project import (
         StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
     )
 
@@ -52,7 +52,7 @@ def _page(tmp_path):
 
 
 def _theme() -> dict:
-    from twobyteasr.web_theme import builtin_web_themes
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
 
     return builtin_web_themes()["strand-timefall"].to_dict()
 

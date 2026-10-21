@@ -43,7 +43,7 @@ class FakeSecurity:
 
 
 def test_keychain_round_trip_never_puts_secret_on_command_line():
-    from twobyteasr import macos_keychain
+    from twobyteasr.providers import macos_keychain
     fake = FakeSecurity()
     assert macos_keychain.available(runner=fake)
     assert macos_keychain.read(runner=fake) is None
@@ -56,13 +56,13 @@ def test_keychain_round_trip_never_puts_secret_on_command_line():
 
 
 def test_keychain_write_failure_is_reported():
-    from twobyteasr import macos_keychain
+    from twobyteasr.providers import macos_keychain
     with pytest.raises(macos_keychain.KeychainError):
         macos_keychain.write({'schema': 2}, runner=FakeSecurity(fail_write=True))
 
 
 def test_llm_config_uses_keychain_on_mac_and_falls_back_to_session(monkeypatch, tmp_path):
-    from twobyteasr import llm_config, macos_keychain
+    from twobyteasr.providers import llm_config, macos_keychain
     fake = FakeSecurity()
     monkeypatch.setattr(sys, 'platform', 'darwin')
     monkeypatch.setattr(llm_config, '_KEYCHAIN_STATE', {})
@@ -90,7 +90,7 @@ def test_llm_config_uses_keychain_on_mac_and_falls_back_to_session(monkeypatch, 
 
 def test_other_data_roots_never_share_the_daily_keychain_item(monkeypatch, tmp_path):
     from pathlib import Path
-    from twobyteasr import macos_keychain
+    from twobyteasr.providers import macos_keychain
     home = tmp_path / 'home'
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
     daily = home / 'Library' / 'Application Support'

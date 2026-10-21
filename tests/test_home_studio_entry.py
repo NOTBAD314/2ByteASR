@@ -1,4 +1,4 @@
-from twobyteasr.home_studio_entry import latest_studio_entry
+from twobyteasr.app.home_studio_entry import latest_studio_entry
 
 
 def test_latest_available_and_relative_or_generated_cover(tmp_path):

@@ -523,8 +523,8 @@ Invoke-External $MainPython @(
     (Join-Path $ProjectRoot "auto_asr.py"),
     (Join-Path $ProjectRoot "moss_firered_pipeline.py"),
     (Join-Path $ProjectRoot "subtitle_core.py"),
-    (Join-Path $ProjectRoot "twobyteasr\ui.py"),
-    (Join-Path $ProjectRoot "twobyteasr\model_workshop.py")
+    (Join-Path $ProjectRoot "twobyteasr\app\ui.py"),
+    (Join-Path $ProjectRoot "twobyteasr\local_models\model_workshop.py")
 )
 
 if ($UsingProjectUvCache -and (Test-Path -LiteralPath $ProjectUvCache)) {

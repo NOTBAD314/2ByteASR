@@ -8,7 +8,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QApplication, QToolButton, QWidget, QVBoxLayout, QStackedWidget
 from twobyteasr.i18n import apply_ui_language
-from twobyteasr.ui import MainWindow
+from twobyteasr.app.ui import MainWindow
 
 APP = QApplication.instance() or QApplication([])
 
@@ -79,7 +79,7 @@ def test_readable_fonts_and_short_window_keeps_card_sizes(language, monkeypatch)
     APP.processEvents()
     cards = shell.result_action_grid.cards
     heights = [card.height() for card in cards]
-    from twobyteasr.completion_widgets import COMPLETION_MAIN_HEIGHT
+    from twobyteasr.app.completion_widgets import COMPLETION_MAIN_HEIGHT
     assert len(set(heights)) == 1 and COMPLETION_MAIN_HEIGHT <= heights[0] <= max(card.desired_height(card.width()) for card in cards)+24
     # 2026-10-07 type scale: display title 24-28, card title 18-22, body 13-16.
     assert 24 <= shell.result_title.head_font().pixelSize() <= 28
@@ -159,10 +159,10 @@ def test_actual_navigation_gap_uses_parent_chain_and_leaves_other_pages_padding_
 
 
 def test_audit_accepts_polished_minimum_50_with_actual_height_52_and_measures_real_text():
-    from twobyteasr.completion_real_audit import secondary_control_measurement
+    from twobyteasr.acceptance.completion_real_audit import secondary_control_measurement
     shell, page = completion_page()
     page.resize(1320, 850); page.show(); apply_ui_language(page, 'zh'); APP.processEvents()
-    from twobyteasr.completion_widgets import COMPLETION_SECONDARY_HEIGHT as height
+    from twobyteasr.app.completion_widgets import COMPLETION_SECONDARY_HEIGHT as height
     for button in shell.result_action_grid.secondary_actions:
         button.setMinimumHeight(height - 2)
         APP.processEvents()

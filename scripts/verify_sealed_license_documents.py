@@ -60,7 +60,7 @@ def main():
     from PySide6.QtCore import QTimer, QUrl
     from PySide6.QtGui import QFontDatabase, QFont
     from PySide6.QtWidgets import QApplication, QTextBrowser, QLabel
-    from twobyteasr import license_documents
+    from twobyteasr.app import license_documents
     app = QApplication([])
     # This component harness does not run quick_start's font initialization.
     # Supply the same bundled font, instead of accepting an unreadable offscreen fallback.

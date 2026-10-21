@@ -43,7 +43,7 @@ def processes_inside(folder: Path) -> list[str]:
 
 
 def verify_install(install: Path) -> dict:
-    from twobyteasr.update_manifest import (COMPONENT_ORDER, COMPONENTS_FILENAME, PRESERVED_FILES,
+    from twobyteasr.app.update_manifest import (COMPONENT_ORDER, COMPONENTS_FILENAME, PRESERVED_FILES,
                                             entries_from_record, file_sha256, load_installed_manifest)
     manifest = load_installed_manifest(install)
     problems = []
@@ -87,7 +87,7 @@ def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 8765), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        from twobyteasr.studio_project import StudioMedia, SubtitleProject, StudioCue, save_project
+        from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, StudioCue, save_project
         media = root / "update-test-media" / Path(args.media).name
         media.parent.mkdir(parents=True, exist_ok=True)
         if not media.exists():

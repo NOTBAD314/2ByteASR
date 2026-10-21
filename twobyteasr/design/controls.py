@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..theme_manager import theme_key
-from ..ui_theme import theme_definition
+from .theme_manager import theme_key
+from .ui_theme import theme_definition
 
 
 def polar_to_offset(angle_deg: float, distance: float) -> tuple[float, float]:

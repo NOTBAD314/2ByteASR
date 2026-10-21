@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from twobyteasr.pipeline_runtime import run_parallel_stages
-from twobyteasr.service import CancelledError, CancellationToken
+from twobyteasr.recognition.pipeline_runtime import run_parallel_stages
+from twobyteasr.recognition.service import CancelledError, CancellationToken
 
 
 class _ParallelLegacy:
@@ -83,7 +83,7 @@ def test_parallel_stage_failure_still_waits_for_sibling():
 
 
 def test_qwen_cache_signature_changes_with_enabled_switch(monkeypatch):
-    import twobyteasr.cache as cache
+    import twobyteasr.recognition.cache as cache
 
     signature_enabled = cache.cache_stage_signature("qwen")
     monkeypatch.setattr(cache, "USE_QWEN_ASR_REFERENCE", False)
@@ -93,7 +93,7 @@ def test_qwen_cache_signature_changes_with_enabled_switch(monkeypatch):
 
 def test_attach_qwen_evidence_short_circuits_when_switch_disabled():
     import moss_firered_pipeline as pipeline
-    from twobyteasr.models import SpeechSegment
+    from twobyteasr.recognition.transcript_data import SpeechSegment
 
     segments = [
         SpeechSegment(

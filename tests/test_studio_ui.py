@@ -18,11 +18,11 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
-import twobyteasr.studio_ass_flow as studio_ass_flow
-import twobyteasr.studio_project_controller as studio_project_controller
-import twobyteasr.studio_project_flow as studio_project_flow
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_project import (
+import twobyteasr.studio.studio_ass_flow as studio_ass_flow
+import twobyteasr.projects.studio_project_controller as studio_project_controller
+import twobyteasr.studio.studio_project_flow as studio_project_flow
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -32,11 +32,11 @@ from twobyteasr.studio_project import (
     save_project,
     create_studio_outputs,
 )
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.studio_ai import request_style_design
-from twobyteasr.style_resolution import resolve_cue_visual
-from twobyteasr.visual_design_graph import compile_live_scene
-from twobyteasr.studio_ui import (
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.caption_design.studio_ai import request_style_design
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
+from twobyteasr.caption_design.visual_design_graph import compile_live_scene
+from twobyteasr.studio.studio_ui import (
     CueTableModel,
     MpvCanvas,
     ScrubDoubleSpinBox,
@@ -993,24 +993,21 @@ def test_p202_context_tabs_timeline_tools_and_splitters(tmp_path, monkeypatch):
     app.processEvents()
 
     drawer = page.context_drawer
-    tabs = drawer.tabBar()
-    assert drawer.count() == 6
-    expected = ("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")
+    assert drawer.count() == 5
+    expected = ("AI设计", "样式", "视频", "剪辑助手", "素材")
     # Full names stay reachable through tooltips in every width tier.
-    assert [drawer.tabToolTip(index) for index in range(6)] == list(expected)
-    # Widening the panel past the full-label width restores the full names;
-    # narrowing it to the 360 px minimum falls back to short names that still
-    # fit (icons go first). Both transitions must work from splitter drags,
-    # not only page resizes.
+    assert [drawer.tabToolTip(index) for index in range(5)] == list(expected)
+    # Widening the panel past the full-label threshold restores readable
+    # labels; narrowing it again falls back to the icon-only tier. Both
+    # transitions must work from splitter drags, not only page resizes.
     page.upper_splitter.setSizes([300, 660, 520])
     app.processEvents()
-    assert [drawer.tabText(index) for index in range(6)] == list(expected)
+    assert [drawer.tabText(index) for index in range(5)] == list(expected)
     page.upper_splitter.setSizes([360, 860, 360])
     app.processEvents()
-    assert [drawer.tabText(index) for index in range(6)] == ["AI", "样式", "动效", "视频", "剪辑", "素材"]
-    assert tabs.tabRect(5).right() < tabs.width()
+    assert [drawer.tabText(index) for index in range(5)] == [""] * 5
     assert not page.context_drawer.tabBar().usesScrollButtons()
-    for index in (0, 1, 3):  # AI设计, 样式, 视频 (动效 scrolls its own card list)
+    for index in range(3):
         area = page.context_drawer.widget(index)
         assert isinstance(area, QScrollArea)
         assert area.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1027,7 +1024,7 @@ def test_p202_context_tabs_timeline_tools_and_splitters(tmp_path, monkeypatch):
     assert "与下一条合并 (Ctrl+Shift+M)" in tooltips
     assert "删除当前字幕 (Delete)" in tooltips
 
-    page.context_drawer.setCurrentIndex(3)  # 视频
+    page.context_drawer.setCurrentIndex(2)
     page._collapse_context_panel()
     page.workspace_splitter.setSizes([510, 330])
     page.upper_splitter.setSizes([410, 760, 390])
@@ -1213,8 +1210,8 @@ def test_style_position_and_common_color_survive_save_and_compile(tmp_path, monk
         if item.id == loaded.cues[0].style_id
     )
     assert (style.position_x, style.position_y, style.primary_color) == (730, 880, "#F2A65A")
-    from twobyteasr.ass_compiler import compile_ass
-    from twobyteasr.ass_font_units import ass_font_style
+    from twobyteasr.rendering.ass_compiler import compile_ass
+    from twobyteasr.rendering.ass_font_units import ass_font_style
     native=ass_font_style(style,1920,1080)
     assert f"\\pos({round(native.position_x,2):g},{round(native.position_y,2):g})" in compile_ass(loaded)
     page.close_page()
@@ -1632,11 +1629,10 @@ def test_project_restores_and_captures_studio_navigation_state(tmp_path, monkeyp
     assert page.timeline.playhead_ms == 2500
     assert page.timeline.visible_duration_ms == 60_000
     assert page.timeline.visible_start_ms == 1000
-    # Legacy context_tab 3 is 视频 (old numbering kept 检查 at 1); today it is the 4th page.
-    assert page.context_drawer.currentIndex() == 3
+    assert page.context_drawer.currentIndex() == 2
     assert not page.context_panel.isVisible()
     page._show_context_panel()
-    assert page.context_drawer.currentIndex() == 3
+    assert page.context_drawer.currentIndex() == 2
     page.timeline.set_playhead(2800)
     page.timeline.visible_start_ms = 1500
     page._capture_studio_state()
@@ -1692,7 +1688,7 @@ def test_p203_trim_razor_follow_and_shortcut_registry(tmp_path, monkeypatch):
     page.select_cue("a")
     page._position_changed(1.7)
     assert page.selected_cue_id == "a"  # Playback never steals the editing selection.
-    assert set(page._shortcut_values) == set(__import__("twobyteasr.studio_ui", fromlist=["STUDIO_COMMANDS"]).STUDIO_COMMANDS)
+    assert set(page._shortcut_values) == set(__import__("twobyteasr.studio.studio_ui", fromlist=["STUDIO_COMMANDS"]).STUDIO_COMMANDS)
     app.processEvents()
     page.close_page()
     page.deleteLater()

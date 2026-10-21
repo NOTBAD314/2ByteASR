@@ -3,7 +3,7 @@ import json
 from types import SimpleNamespace
 
 import subtitle_core as legacy
-from twobyteasr.terminology import TermResolver, recognition_hotwords, snapshot_glossaries
+from twobyteasr.glossary.terminology import TermResolver, recognition_hotwords, snapshot_glossaries
 
 
 def row(source, target, category):
@@ -62,11 +62,11 @@ NAMES = {"陈千语", "佩丽卡", "莱万汀", "熔岩巨像", "源石"}
 
 
 def test_every_recognition_hint_receives_the_names_first():
-    from twobyteasr.asr_api_process import cloud_request_hints
-    from twobyteasr.mosi_asr import MODEL as MOSI_MODEL
-    from twobyteasr.qwen31_asr import FILETRANS
-    from twobyteasr import asr
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.providers.asr_api_process import cloud_request_hints
+    from twobyteasr.providers.mosi_asr import MODEL as MOSI_MODEL
+    from twobyteasr.providers.qwen31_asr import FILETRANS
+    from twobyteasr.recognition import asr
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     context = RuntimeContext(enable_domain_terms=True, enabled_glossary_ids=["zmd"], glossary_snapshot=snapshot())
     with activate_runtime_context(context):
         qwen = asr.build_qwen_asr_context("clip.mp4")

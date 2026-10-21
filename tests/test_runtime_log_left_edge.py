@@ -14,7 +14,7 @@ import pytest
 from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import QApplication, QTextEdit
 
-from twobyteasr.ui import (
+from twobyteasr.app.ui import (
     append_log_html_keep_left,
     keep_log_view_at_left,
     set_log_html_keep_left,
@@ -100,12 +100,12 @@ def test_manual_horizontal_scroll_still_works():
 # 真实 MainWindow 路径：_append_console_line / 完成页填充
 def test_main_window_console_paths_stay_left(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    import twobyteasr.settings as settings_module
+    import twobyteasr.storage.settings as settings_module
 
     settings_module.stable_settings_root = lambda: tmp_path
 
     import subtitle_core as legacy
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     window = ui_module.MainWindow([], legacy, object(), None)
     window.resize(1200, 800)

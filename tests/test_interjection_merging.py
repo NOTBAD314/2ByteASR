@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from twobyteasr.segmentation import (
+from twobyteasr.subtitle_rules.segmentation import (
     INTERJECTION_MERGES,
     merge_split_interjections,
     merge_split_interjections_in_cues,
@@ -31,7 +31,7 @@ def test_interjections_are_spaced_out():
 
 
 def test_cue_pipeline_merges_then_spaces():
-    from twobyteasr.models import SubtitleCue
+    from twobyteasr.recognition.transcript_data import SubtitleCue
 
     cues = [
         SubtitleCue(cue_id=1, start=0.0, end=1.0, text="哎 呦 哎 呦可以吗哎呀"),
@@ -61,7 +61,7 @@ def test_non_interjection_pairs_stay_untouched():
 
 
 def test_cue_list_merging_in_place():
-    from twobyteasr.models import SubtitleCue
+    from twobyteasr.recognition.transcript_data import SubtitleCue
 
     cues = [
         SubtitleCue(cue_id=1, start=0.0, end=1.0, text="哎 呦但是这个龙"),

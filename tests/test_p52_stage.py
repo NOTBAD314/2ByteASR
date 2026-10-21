@@ -8,11 +8,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.export_presets import PRODUCT_PRESETS
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_render import PROBE_FRAME_SIZE, probe_encoder_detail
-from twobyteasr.studio_theme import BRAND_DISPLAY_NAME
-from twobyteasr.studio_ui import FillEditorDialog, SubtitleStudioPage
+from twobyteasr.exports.export_presets import PRODUCT_PRESETS
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.exports.studio_render import PROBE_FRAME_SIZE, probe_encoder_detail
+from twobyteasr.design.studio_theme import BRAND_DISPLAY_NAME
+from twobyteasr.studio.studio_ui import FillEditorDialog, SubtitleStudioPage
 from twobyteasr.i18n import translate
 
 

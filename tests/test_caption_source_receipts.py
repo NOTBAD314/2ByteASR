@@ -1,9 +1,9 @@
 import copy
 from pathlib import Path
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.caption_source_receipts import initialize_recognition_receipts, recover_caption_sources
-from twobyteasr.studio_caption_timeline import caption_replacement_receipts
-from twobyteasr.asr_source_evidence import cue_source_hypotheses
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.timeline.caption_source_receipts import initialize_recognition_receipts, recover_caption_sources
+from twobyteasr.timeline.studio_caption_timeline import caption_replacement_receipts
+from twobyteasr.recognition.asr_source_evidence import cue_source_hypotheses
 
 
 def result():
@@ -39,7 +39,7 @@ def test_source_spans_survive_split_and_merge_even_without_word_alignment():
 
 
 def test_recovery_rejects_wrong_task_and_preserves_manual_edit(monkeypatch):
-    import twobyteasr.recognition_result as module
+    import twobyteasr.recognition.recognition_result as module
     p=result();source=copy.deepcopy(p);source.project_id='wrong-task'
     p.render_settings['_cue_domain']='timeline'
     p.generation_metadata['recognition_result']={'path':'foreign','job_id':'wrong'}
@@ -50,8 +50,8 @@ def test_recovery_rejects_wrong_task_and_preserves_manual_edit(monkeypatch):
 
 
 def test_mixed_local_and_neighbor_context_cannot_be_adopted(monkeypatch):
-    import twobyteasr.asr_source_evidence as evidence
-    from twobyteasr.studio_qc import model_evidence, review_candidates
+    import twobyteasr.recognition.asr_source_evidence as evidence
+    from twobyteasr.subtitle_rules.studio_qc import model_evidence, review_candidates
     p = result()
     monkeypatch.setattr(evidence, 'cue_source_hypotheses', lambda *_args, **_kwargs: [
         dict(model='moss', text='本条纠正', context_only=False),

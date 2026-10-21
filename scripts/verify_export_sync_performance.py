@@ -27,11 +27,11 @@ def main():
     os.environ.update(LOCALAPPDATA=str(out/'local'), APPDATA=str(out/'roaming'), QT_QPA_PLATFORM='offscreen')
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
-    from twobyteasr.studio_project import load_project, save_project
-    from twobyteasr.export_timeline import write_export_ass
-    from twobyteasr.studio_render import RenderJob, RenderSettings, run_render_job
-    from twobyteasr.video_export import capture_video_graph, prepared_video_job
-    from twobyteasr.studio_edit_sequence import timeline_duration_ms
+    from twobyteasr.projects.studio_project import load_project, save_project
+    from twobyteasr.exports.export_timeline import write_export_ass
+    from twobyteasr.exports.studio_render import RenderJob, RenderSettings, run_render_job
+    from twobyteasr.exports.video_export import capture_video_graph, prepared_video_job
+    from twobyteasr.timeline.studio_edit_sequence import timeline_duration_ms
     project = load_project(args.project)
     save_project(project, out/'project.2byteproj')
     write_export_ass(project, out/'export.ass', fps=60)
@@ -66,7 +66,7 @@ def main():
                 except psutil.Error:
                     pass
             event('resources', rows)
-            from twobyteasr.processes import run_hidden_subprocess
+            from twobyteasr.system.processes import run_hidden_subprocess
             gpu = run_hidden_subprocess(['nvidia-smi','--query-gpu=utilization.gpu,utilization.encoder,utilization.decoder,memory.used','--format=csv,noheader,nounits'],
                 purpose='export GPU measurement', capture_output=True, text=True, timeout=3)
             event('gpu', gpu.stdout.strip())

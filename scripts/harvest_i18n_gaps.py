@@ -32,7 +32,7 @@ def main() -> int:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     tmp = Path(tempfile.mkdtemp())
     os.environ["LOCALAPPDATA"] = str(tmp)
-    import twobyteasr.settings as settings_module
+    import twobyteasr.storage.settings as settings_module
 
     settings_module.stable_settings_root = lambda: tmp
 
@@ -43,9 +43,9 @@ def main() -> int:
     import subtitle_core as legacy
     import moss_firered_pipeline
     from twobyteasr import i18n
-    from twobyteasr.ui import MainWindow
-    from twobyteasr.application_settings import read_studio_preferences, project_library_root
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.ui import MainWindow
+    from twobyteasr.app.application_settings import read_studio_preferences, project_library_root
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
 
     app = QApplication.instance() or QApplication([])
 

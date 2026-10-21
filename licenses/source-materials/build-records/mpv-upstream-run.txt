@@ -1,0 +1,48 @@
+mpv 上游原包与构建运行记录（2026-10-17 整理）
+
+随附 tools/mpv/ = shinchiro/mpv-winbuild-cmake 发布 20260814 的 mpv-x86_64-20260814-git-7b8915bc1d.7z。
+上游只保留最近 30 个 GitHub 发布，该发布与标签已被删除（2026-10-17 查询 404），SourceForge 也没有这一版。
+
+构建运行：https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/31755832255
+  工作流 mpv clang（.github/workflows/mpv_clang.yml），2026-08-14T00:00:03Z 开始，结果 success
+  构建配方提交 cd1edc11dc6887a50f705717619d879f5a93a488（2026-08-06 "libsrt: disable pthread_atfork"）
+  x86_64 构建作业 94631245419；发布上传作业 94638827546
+
+原包：
+  名称 mpv-x86_64-20260814-git-7b8915bc1d.7z，33,583,248 字节
+  SHA-256 1bf3b029da2c98e605e00e85f21ee3142f22a1dcc4ceb5c827b5c51e36e390f9
+  2026-10-17 从该运行的 Actions 附件 mpv-x86_64（编号 9203486021，33,592,967 字节，
+  附件 SHA-256 24dac5b760331ea2c976be9ff3470a3369fe56efb5525feaf6a795c1fc1eef09，2026-11-12 过期）取回；
+  附件 zip 内只有这一个文件。与发布上传时 GitHub 记录的摘要相同。
+  项目存档（未改动）：
+    https://github.com/NOTBAD314/2ByteASR/releases/download/v0.6.5/mpv-x86_64-20260814-git-7b8915bc1d.7z
+    https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.6.5/mpv-x86_64-20260814-git-7b8915bc1d.7z
+
+上游日志摘录（x86_64 构建作业）：
+  2026-08-14T00:00:42.0293741Z cd1edc11dc6887a50f705717619d879f5a93a488
+  2026-08-14T00:38:05.6490703Z Creating archive: /__w/mpv-winbuild-cmake/mpv-winbuild-cmake/build_x86_64/mpv-x86_64-20260814-git-7b8915bc1d.7z
+  2026-08-14T00:38:30.5935023Z SHA256 digest of uploaded artifact is 24dac5b760331ea2c976be9ff3470a3369fe56efb5525feaf6a795c1fc1eef09
+  2026-08-14T00:38:30.7669341Z Artifact mpv-x86_64 has been successfully uploaded! Final size is 33592967 bytes. Artifact ID is 9203486021
+  2026-08-14T00:38:30.7682922Z Artifact download URL: https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/31755832255/artifacts/9203486021
+
+上游日志摘录（发布上传作业：du 输出与 GitHub 返回的附件记录）：
+  2026-08-14T00:43:07.2193642Z 32.0M	release/mpv-x86_64-20260814-git-7b8915bc1d.7z
+  {"id": 513715577, "name": "mpv-x86_64-20260814-git-7b8915bc1d.7z", "size": 33583248, "digest": "sha256:1bf3b029da2c98e605e00e85f21ee3142f22a1dcc4ceb5c827b5c51e36e390f9", "created_at": "2026-08-14T00:43:27Z", "browser_download_url": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260814/mpv-x86_64-20260814-git-7b8915bc1d.7z"}
+
+逐字节核对（上游原包解出 / 0.7.5 组件清单 2byteasr_components.json / 共享工作区 tools/mpv）：13 个文件全部相同
+  tools/mpv/d3dcompiler_43.dll  4481992  4b074a3976399dc735484f5d43d04b519b7bdee8ac719d9ab8ed6bd4e6be0345
+  tools/mpv/doc/manual.pdf  1038465  eb5737d6891726bef25e1b46b8cc88f39adf8bd34e059a5b469ee9b862545445
+  tools/mpv/doc/mpbindings.png  190376  d27b24e45be912eb14935c3540147a65ad3be513c3fe444f010ad543ae4cc352
+  tools/mpv/installer/mpv-icon.ico  270345  c42ee25aeddb88e741cf94fb12867f61edd012cd82ef346e43c5f01c27898434
+  tools/mpv/installer/mpv-install.bat  16984  906669f7c397d5137fd3e3dde5d78beff27dd0c51edd4b22ef7d27ae578f0436
+  tools/mpv/installer/mpv-uninstall.bat  3095  5770710c6e39549db0df6a0e88491f862b12d90ae14177968bbf2dbcce60ea27
+  tools/mpv/installer/updater.ps1  19608  01c35d27f90de8da36b5106511c8c4937c934b80708abd8d44c1edd925b6a98d
+  tools/mpv/mpv-register.bat  202  e3c354d13bfe4ae2b9bafbd1b7609753c47f78a3a4989b082f34d5a938aa7a09
+  tools/mpv/mpv-unregister.bat  206  d40f2f76e00e08287c39c15654e9350831e4418f1bd9619bc8dcff0dfb055e91
+  tools/mpv/mpv.com  3584  3b09e8c3bdffb80141a6717d1002029de7da25d1d63f07870c27db493dc10eaf
+  tools/mpv/mpv.exe  119761408  09dc5c350a70b536cc91015e7a856f77c933fa9d7f4c41563666e51c998a0243
+  tools/mpv/mpv/fonts.conf  2703  f141c1b89b172d22f213531646c21e288f0ebf3ec46484698896e1b33c626756
+  tools/mpv/updater.bat  818  120fd67c7d0109eb01961a47c301f77da7f6da18b80a7b39c5f7ea4664817f7b
+
+仍缺：上游构建时多数依赖库取当时的最新 git 版本（构建作业的 "ninja update" 对 84 个包执行 force-update），日志不记录各库提交；mpv（7b8915bc1）、FFmpeg（1d7b14f61）以外
+静态链接库的精确源码版本无法从这次运行确定。见 licenses/SOURCES.md 2026-10-17 节。

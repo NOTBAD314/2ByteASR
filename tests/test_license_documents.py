@@ -1,6 +1,6 @@
 from pathlib import Path
 import pytest
-from twobyteasr.license_documents import resolve_document
+from twobyteasr.app.license_documents import resolve_document
 
 def test_viewer_rejects_parent_traversal_and_unrelated_files(tmp_path):
     (tmp_path/'LICENSE').write_text('license')

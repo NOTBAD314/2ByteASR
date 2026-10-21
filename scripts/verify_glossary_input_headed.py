@@ -21,7 +21,7 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, save_project
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, save_project
     project = output / 'blank.2byteproj'
     save_project(SubtitleProject(media=StudioMedia(path='', duration_ms=0)), project)
     env = os.environ.copy()

@@ -14,13 +14,13 @@ from PySide6.QtCore import QRectF
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.ui_theme import THEME_FAMILIES, THEMES, contrast_ratio
+from twobyteasr.design.ui_theme import THEME_FAMILIES, THEMES, contrast_ratio
 
 
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     instance = QApplication.instance() or QApplication([])
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     monkeypatch.setattr(theme_manager, "_settings",
                         lambda: QSettings(str(tmp_path / "theme.ini"), QSettings.Format.IniFormat))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -29,13 +29,13 @@ def app(tmp_path, monkeypatch):
 
 
 def _dialog(tmp_path):
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     return ApplicationSettingsDialog(None, {}, tmp_path, browse=lambda *a: None, clear_recent=lambda: None,
                                      reset_layout=None)
 
 
 def test_gallery_groups_every_theme_and_selects_the_active_one(app):
-    from twobyteasr.theme_gallery import ThemeGallery
+    from twobyteasr.design.theme_gallery import ThemeGallery
     gallery = ThemeGallery("frost")
     assert gallery.count() == len(THEMES)
     assert gallery.currentData() == "frost" and gallery.currentText() == "银白 / 蓝"
@@ -51,7 +51,7 @@ def test_gallery_groups_every_theme_and_selects_the_active_one(app):
 
 
 def test_gallery_reflows_columns_and_cards_fit_their_text(app):
-    from twobyteasr.theme_gallery import ThemeGallery
+    from twobyteasr.design.theme_gallery import ThemeGallery
     gallery = ThemeGallery("grape")
     gallery.resize(640, 800)
     gallery.show()
@@ -66,7 +66,7 @@ def test_gallery_reflows_columns_and_cards_fit_their_text(app):
 
 
 def test_card_click_previews_and_cancel_restores_the_opening_theme(app, tmp_path):
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     applied = []
     real_apply = theme_manager.apply_theme
 
@@ -94,8 +94,8 @@ def test_card_click_previews_and_cancel_restores_the_opening_theme(app, tmp_path
 
 
 def test_arrow_keys_move_focus_without_switching_themes(app, tmp_path):
-    from twobyteasr import theme_manager
-    from twobyteasr.theme_gallery import ThemeGallery
+    from twobyteasr.design import theme_manager
+    from twobyteasr.design.theme_gallery import ThemeGallery
     chosen = []
     gallery = ThemeGallery("frost")
     gallery.themeChosen.connect(chosen.append)
@@ -113,7 +113,7 @@ def test_arrow_keys_move_focus_without_switching_themes(app, tmp_path):
 
 
 def test_miniature_paints_each_theme_distinctly(app):
-    from twobyteasr.theme_gallery import paint_theme_miniature
+    from twobyteasr.design.theme_gallery import paint_theme_miniature
     samples = set()
     for theme in THEMES.values():
         image = QImage(180, 110, QImage.Format.Format_ARGB32)
@@ -126,8 +126,8 @@ def test_miniature_paints_each_theme_distinctly(app):
 
 
 def test_white_text_on_accent_or_status_fill_takes_the_theme_ink():
-    from twobyteasr.main_ui_theme import APP_QSS
-    from twobyteasr.qss_retheme import retheme_qss
+    from twobyteasr.design.main_ui_theme import APP_QSS
+    from twobyteasr.design.qss_retheme import retheme_qss
     for key in ("obsidian", "graphite", "contrast", "slate", "neon"):
         theme = THEMES[key]
         qss = retheme_qss(APP_QSS, theme)
@@ -140,7 +140,8 @@ def test_white_text_on_accent_or_status_fill_takes_the_theme_ink():
 
 
 def test_workshop_score_bars_follow_the_theme(monkeypatch):
-    from twobyteasr import model_workshop, theme_manager
+    from twobyteasr.local_models import model_workshop
+    from twobyteasr.design import theme_manager
     for key, theme in THEMES.items():
         monkeypatch.setattr(theme_manager, "theme_key", lambda key=key: key)
         track, low, mid, high = model_workshop._score_palette()
@@ -150,7 +151,7 @@ def test_workshop_score_bars_follow_the_theme(monkeypatch):
 
 def test_gallery_follows_language_switch(app, monkeypatch):
     from twobyteasr import i18n
-    from twobyteasr.theme_gallery import ThemeGallery
+    from twobyteasr.design.theme_gallery import ThemeGallery
     gallery = ThemeGallery("obsidian")
     assert gallery.currentText() == "黑 / 黄"
     for language, name, family in (("en", "Black / Yellow", "Dark"), ("ja", "ブラック / イエロー", "ダーク"),

@@ -22,9 +22,9 @@ from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import studio_advanced_flow
-from twobyteasr.live_web_preview import _content_bounds, _decode_frame
-from twobyteasr.studio_video_canvas import MpvCanvas
+from twobyteasr.studio import studio_advanced_flow
+from twobyteasr.rendering.live_web_preview import _content_bounds, _decode_frame
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
 
 # 1x1 红 PNG（round19/24 同款已验证常量；offscreen 下 QImage.save 会 abort，
 # 手写 base64 会坏 header——libpng bad header 教训）。
@@ -263,7 +263,7 @@ def test_publish_accepts_legacy_qimage_payload():
 
 def test_same_cue_new_clock_or_content_binds_and_stale_frames_stay_rejected():
     from types import SimpleNamespace
-    from twobyteasr.live_web_preview import WebFrame
+    from twobyteasr.rendering.live_web_preview import WebFrame
     _app()
     overlay = _RecordingOverlay()
     harness = _publish_harness(overlay)

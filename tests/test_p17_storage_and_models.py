@@ -8,8 +8,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from twobyteasr.model_storage import residual_files, scan_storage, verify_model_files  # noqa: E402
-from twobyteasr.model_workshop import MODELS, ModelWorkshopPage  # noqa: E402
+from twobyteasr.local_models.model_storage import residual_files, scan_storage, verify_model_files  # noqa: E402
+from twobyteasr.local_models.model_workshop import MODELS, ModelWorkshopPage  # noqa: E402
 from twobyteasr.download_sources import resolve_from_lock  # noqa: E402
 
 
@@ -100,8 +100,8 @@ def test_residual_scan_requires_receipted_staging_and_preserves_development_tmp(
     outside = tmp_path.parent / "global-hf-cache-test.part"
     outside.write_bytes(b"do-not-touch")
     from types import SimpleNamespace
-    monkeypatch.setattr('twobyteasr.model_storage.get_runtime_paths',lambda:SimpleNamespace(model_root=tmp_path/'models'))
-    from twobyteasr.model_download_cache import write_transaction
+    monkeypatch.setattr('twobyteasr.local_models.model_storage.get_runtime_paths',lambda:SimpleNamespace(model_root=tmp_path/'models'))
+    from twobyteasr.local_models.model_download_cache import write_transaction
     stage=tmp_path/'models/.downloads/candidate/hf/identity';stage.mkdir(parents=True)
     staged=stage/'weight.part';staged.write_bytes(b'owned')
     write_transaction(stage,model_key='candidate',destination=tmp_path/'models/candidate',files=['weight.part'],state='paused')
@@ -127,7 +127,7 @@ def test_storage_verification_requires_locked_files(tmp_path):
 
 def test_current_model_protection_covers_all_roles(monkeypatch):
     app = _app()
-    monkeypatch.setattr("twobyteasr.model_workshop.installed_model_keys", lambda _root: set())
+    monkeypatch.setattr("twobyteasr.local_models.model_workshop.installed_model_keys", lambda _root: set())
     page = ModelWorkshopPage(ROOT, {"models": {
         "primary_asr_backend": "moss",
         "firered_asr_backend": "local",
@@ -149,18 +149,23 @@ def test_current_model_protection_covers_all_roles(monkeypatch):
 
 
 def test_omni_download_warns_on_sub_17_gib_gpu_but_allows_override(monkeypatch):
+    # Since 2026-10-15 the general graphics-card reminder (system/vram_check.py) covers this.
+    from twobyteasr.system import vram_check
     app = _app()
-    monkeypatch.setattr("twobyteasr.model_workshop.installed_model_keys", lambda _root: set())
-    monkeypatch.setattr("twobyteasr.hardware._visible_nvidia_gpu", lambda: ("RTX Test", 16 * 1024))
+    monkeypatch.setattr("twobyteasr.local_models.model_workshop.installed_model_keys", lambda _root: set())
+    monkeypatch.setattr(vram_check, "read_gpu_inventory",
+                        lambda **_kwargs: vram_check.GpuInventory("nvidia", "RTX Test", 16 * 1024))
+    monkeypatch.setattr(vram_check, "_ACKNOWLEDGED", set())
     page = ModelWorkshopPage(ROOT, {"models": {}})
     model = page._cards["omni_asr_llm_7b"].model
     downloads = []
     monkeypatch.setattr(page, "download_combination", lambda keys, name: downloads.append((keys, name)))
 
-    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.No)
+    asked = []
+    monkeypatch.setattr(page, "_ask_vram", lambda assessment: asked.append(assessment.level) or "cancel")
     page._download(model)
-    assert downloads == []
-    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: QMessageBox.StandardButton.Yes)
+    assert downloads == [] and asked == ["insufficient"]
+    monkeypatch.setattr(page, "_ask_vram", lambda assessment: "keep")
     page._download(model)
     assert downloads == [(["omni_asr_llm_7b"], "Omnilingual ASR LLM 7B")]
     page.deleteLater()

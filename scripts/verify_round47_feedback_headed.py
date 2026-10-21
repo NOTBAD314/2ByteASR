@@ -26,8 +26,8 @@ from PySide6.QtCore import QRect  # noqa: E402
 from PySide6.QtGui import QColor, QImage  # noqa: E402
 from PySide6.QtWidgets import QApplication, QToolButton  # noqa: E402
 
-from twobyteasr.studio_media_pool import add_video_clip, create_video_track  # noqa: E402
-from twobyteasr.studio_project import (  # noqa: E402
+from twobyteasr.timeline.studio_media_pool import add_video_clip, create_video_track  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     MediaAsset,
     StudioCue,
     StudioMedia,
@@ -35,7 +35,7 @@ from twobyteasr.studio_project import (  # noqa: E402
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage  # noqa: E402
+from twobyteasr.studio.studio_ui import SubtitleStudioPage  # noqa: E402
 
 OUT = ROOT / "tmp" / "verify-round47"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -109,8 +109,8 @@ def main() -> int:
         ],
         speakers=[StudioSpeaker(id="S01", name="主播")],
     )
-    from twobyteasr.studio_edit_sequence import ensure_edit_sequence
-    from twobyteasr.studio_project import sync_linked_av_contract
+    from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence
+    from twobyteasr.projects.studio_project import sync_linked_av_contract
 
     ensure_edit_sequence(project)
     create_video_track(project, "主视频轨")

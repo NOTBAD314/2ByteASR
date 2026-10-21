@@ -17,15 +17,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_helpers import probe_media_identity
-from twobyteasr.studio_project import (
+from twobyteasr.studio.studio_helpers import probe_media_identity
+from twobyteasr.projects.studio_project import (
     PROJECT_SUFFIX,
     library_project_snapshot,
     project_library_root,
     repair_project_library_metadata,
     studio_settings_path,
 )
-from twobyteasr.studio_project_controller import StudioProjectController
+from twobyteasr.projects.studio_project_controller import StudioProjectController
 
 
 TARGETS = ("未命名工程", "未命名工程 2", "未命名工程 3", "未命名工程 4")

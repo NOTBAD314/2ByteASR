@@ -5,13 +5,13 @@ import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
 
-from twobyteasr.media_ingest import MediaIngestResult
-from twobyteasr.studio_media_drop import MediaDropCommand
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker
-from twobyteasr.studio_edit_sequence import sequence_of, timeline_duration_ms
-from twobyteasr.speaker_evidence import scope_request_speakers, fuse_moss_speakers
-from twobyteasr.studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts
-from twobyteasr.completion_export import selected_result
+from twobyteasr.media.media_ingest import MediaIngestResult
+from twobyteasr.studio.studio_media_drop import MediaDropCommand
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, timeline_duration_ms
+from twobyteasr.recognition.speaker_evidence import scope_request_speakers, fuse_moss_speakers
+from twobyteasr.exports.studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts
+from twobyteasr.exports.completion_export import selected_result
 
 
 @pytest.fixture(scope="module")
@@ -80,8 +80,8 @@ def test_selected_export_keeps_unknown_and_gaps(tmp_path):
 
 def test_single_character_reply_is_not_cleaned_away():
     import subtitle_core  # Initialize the legacy facade before its extracted modules.
-    from twobyteasr.models import SubtitleCue
-    from twobyteasr.cue_cleanup import resolve_isolated_single_character_cues
+    from twobyteasr.recognition.transcript_data import SubtitleCue
+    from twobyteasr.subtitle_rules.cue_cleanup import resolve_isolated_single_character_cues
     cues = [SubtitleCue(1,0.,1.,"先走这里",speaker="S01"),
             SubtitleCue(2,.9,1.1,"嗯",speaker="S02"),
             SubtitleCue(3,1.1,2.,"再往前走",speaker="S01")]
@@ -93,8 +93,8 @@ def test_single_character_reply_is_not_cleaned_away():
 def test_caption_deadline_uses_source_clock_and_repeated_instance(app):
     from types import SimpleNamespace
     from PySide6.QtCore import QObject
-    from twobyteasr.studio_playback_flow import StudioPlaybackFlowMixin
-    from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
+    from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
     class Host(QObject, StudioPlaybackFlowMixin):
         pass
     page = Host()
@@ -121,8 +121,8 @@ def test_caption_deadline_uses_source_clock_and_repeated_instance(app):
 
 def test_primary_clip_rate_is_applied_once_to_decoder(app):
     from types import SimpleNamespace
-    from twobyteasr.studio_video_canvas import MpvCanvas
-    from twobyteasr.playback_clock import PlaybackClock
+    from twobyteasr.studio.studio_video_canvas import MpvCanvas
+    from twobyteasr.playback.playback_clock import PlaybackClock
     class FakeCanvas:
         _decoder_speed=MpvCanvas._decoder_speed
         set_source_rate_multiplier=MpvCanvas.set_source_rate_multiplier

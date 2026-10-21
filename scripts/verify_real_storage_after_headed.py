@@ -19,8 +19,8 @@ def prepare(output,inventory_path,project,protected_files):
     os.environ.update(TWOBYTEASR_TEST_ROOT=str(output),TWOBYTEASR_STARTUP_TRACE=str(output/'startup-trace.jsonl'))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.real_storage_after_audit import PATH_KEYS,small_file_fingerprint
-    from twobyteasr.storage_service import safe_path
+    from twobyteasr.acceptance.real_storage_after_audit import PATH_KEYS,small_file_fingerprint
+    from twobyteasr.storage.storage_service import safe_path
     if not safe_path(output,(ROOT/'tmp',)):raise ValueError('Output ancestor contains a link')
     raw=inventory_path.read_bytes();inventory=json.loads(raw.decode('utf8'));roots=inventory['roots']
     if any(not isinstance(roots[key],str) or not Path(roots[key]).is_absolute() for key in PATH_KEYS):raise ValueError('Explicit absolute RuntimePaths inventory required')
@@ -38,7 +38,7 @@ def prepare(output,inventory_path,project,protected_files):
     if sum(row.get('size',0) for row in baseline.values())>128*1024*1024:raise ValueError('Protected baseline total exceeds small-file bound')
     payload=json.loads(project.read_text('utf-8-sig'))
     if payload.get('schema_version')!=1 or not isinstance(payload.get('cues'),list):raise ValueError('Current project identity unknown')
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
     seed=output/'input'/'blank-seed.2byteproj';seed.parent.mkdir(parents=True);save_project(SubtitleProject(media=StudioMedia(path='')),seed)
     manifest=dict(schema_version=1,roots={key:roots[key] for key in PATH_KEYS},inventory_sha256=hashlib.sha256(raw).hexdigest(),
         protected_before=baseline,current_project=str(project),current_project_id=payload['project_id'],current_cue_count=len(payload['cues']),
@@ -72,7 +72,7 @@ def main():
     progress=output/'real-storage-after-progress.json'
     if progress.is_file():result['last_progress']=json.loads(progress.read_text('utf8'))
     result['thread_stacks']='real-storage-after-thread-stacks.log'
-    from twobyteasr.real_storage_after_audit import small_file_fingerprint
+    from twobyteasr.acceptance.real_storage_after_audit import small_file_fingerprint
     after={}
     for path in manifest['protected_before']:
         try:after[path]=small_file_fingerprint(path)

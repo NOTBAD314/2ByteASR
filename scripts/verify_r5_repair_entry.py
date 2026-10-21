@@ -20,7 +20,7 @@ def main():
     args=parser.parse_args()
     out=args.output.resolve()
     if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('Use a new tmp directory')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     original_local=Path(os.environ['LOCALAPPDATA'])
     run_hidden_subprocess([sys.executable,str(root/'scripts/verify_normal_ai_entry.py'),'--output',str(out),
         '--service','deepseek','--model','deepseek-v4-pro','--text-only','--prepare-only'],

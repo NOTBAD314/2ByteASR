@@ -20,8 +20,8 @@ from twobyteasr.design.controls import (  # noqa: E402
     polar_to_offset,
 )
 from twobyteasr.design.tokens import SPACE_SCALE, TYPE_SCALE, p9a_tokens  # noqa: E402
-from twobyteasr.studio_theme import build_studio_qss  # noqa: E402
-from twobyteasr.ui_theme import theme_definition  # noqa: E402
+from twobyteasr.design.studio_theme import build_studio_qss  # noqa: E402
+from twobyteasr.design.ui_theme import theme_definition  # noqa: E402
 
 
 REQUIRED_TOKEN_KEYS = {
@@ -160,7 +160,7 @@ def test_control_qss_uses_elevated_surface_without_gradients():
 
 
 def test_p9a_r5_build_id_and_polar_shadow_labels():
-    from twobyteasr.build_identity import BUILD_ROUND_ID, build_id_text, launch_identity_payload
+    from twobyteasr.diagnostics.build_identity import BUILD_ROUND_ID, build_id_text, launch_identity_payload
 
     payload = launch_identity_payload()
     assert payload["round_id"] == BUILD_ROUND_ID

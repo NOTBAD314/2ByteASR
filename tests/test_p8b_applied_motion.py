@@ -8,9 +8,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_live_renderer import composite_live_scene_layers, render_live_layers
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-from twobyteasr.visual_design_graph import (
+from twobyteasr.rendering.advanced_live_renderer import composite_live_scene_layers, render_live_layers
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.caption_design.visual_design_graph import (
     CompiledLiveScene,
     MotionGraph,
     MotionKeyframe,
@@ -20,7 +20,7 @@ from twobyteasr.visual_design_graph import (
     motion_phases,
     style_recipe_from_graph,
 )
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 _APP = None

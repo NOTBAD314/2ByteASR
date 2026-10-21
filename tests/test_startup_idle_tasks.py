@@ -12,7 +12,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.ui as ui
+import twobyteasr.app.ui as ui
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,7 +23,7 @@ def qapp():
 
 
 def test_importing_the_main_window_module_does_not_load_studio():
-    code = "import sys, twobyteasr.ui; print('twobyteasr.studio_ui' in sys.modules)"
+    code = "import sys, twobyteasr.app.ui; print('twobyteasr.studio.studio_ui' in sys.modules)"
     env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
     result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env,
                             capture_output=True, text=True, timeout=120)

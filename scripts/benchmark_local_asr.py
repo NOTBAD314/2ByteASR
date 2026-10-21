@@ -22,7 +22,7 @@ def _digest(text: str) -> str:
 def benchmark_firered(media_path: str, beam_size: int) -> dict:
     import torch
     import subtitle_core
-    from twobyteasr.asr import transcribe_firered_reference
+    from twobyteasr.recognition.asr import transcribe_firered_reference
 
     audio = subtitle_core.decode_audio_to_array(media_path)
     duration = len(audio) / subtitle_core.AUDIO_SAMPLE_RATE

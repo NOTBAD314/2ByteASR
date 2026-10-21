@@ -1,10 +1,10 @@
 import json
 
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.autosave_deadline import AutosaveDeadline
-from twobyteasr.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
-from twobyteasr.playback_clock import PlaybackClock
-from twobyteasr.studio_media_pool import (
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.projects.autosave_deadline import AutosaveDeadline
+from twobyteasr.projects.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
+from twobyteasr.playback.playback_clock import PlaybackClock
+from twobyteasr.timeline.studio_media_pool import (
     active_video_clip,
     add_media_asset,
     add_video_clip,
@@ -17,7 +17,7 @@ from twobyteasr.studio_media_pool import (
     set_video_track_state,
     trim_video_clip,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
@@ -25,8 +25,8 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.style_resolution import resolve_cue_visual
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _project(tmp_path):

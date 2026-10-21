@@ -11,23 +11,23 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_commands import (
+from twobyteasr.timeline.studio_commands import (
     add_cue_command,
     delete_cues_command,
     merge_cues_command,
     split_cue_command,
 )
-from twobyteasr.studio_runtime_state import state_for
-from twobyteasr.studio_ui import SubtitleStudioPage, WaveformTimeline
-from twobyteasr.studio_shortcuts import STUDIO_COMMANDS
-from twobyteasr.studio_timing import resolve_split
+from twobyteasr.projects.studio_runtime_state import state_for
+from twobyteasr.studio.studio_ui import SubtitleStudioPage, WaveformTimeline
+from twobyteasr.studio.studio_shortcuts import STUDIO_COMMANDS
+from twobyteasr.timeline.studio_timing import resolve_split
 
 
 def _app():
@@ -330,7 +330,7 @@ def test_razor_press_on_empty_space_anchors_nearest_and_release_anywhere_cuts():
 
 def test_shortcut_dialog_opens_and_merge_tool_defaults_to_b(tmp_path, monkeypatch):
     app = _app()
-    from twobyteasr.studio_shortcuts import ShortcutSettingsDialog, STUDIO_COMMANDS
+    from twobyteasr.studio.studio_shortcuts import ShortcutSettingsDialog, STUDIO_COMMANDS
 
     assert STUDIO_COMMANDS["merge_tool"][1] == "B"
     dialog = ShortcutSettingsDialog({"merge_tool": "B"}, None)
@@ -341,7 +341,7 @@ def test_shortcut_dialog_opens_and_merge_tool_defaults_to_b(tmp_path, monkeypatc
 
     # Legacy stored value "M" (old default, dialog was unopenable) migrates to B.
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    from twobyteasr.studio_project import studio_settings_path
+    from twobyteasr.projects.studio_project import studio_settings_path
 
     settings_file = studio_settings_path()
     settings_file.parent.mkdir(parents=True, exist_ok=True)
@@ -575,7 +575,7 @@ def test_splice_isolation_survives_subsequent_field_edits():
     project = _project()
     state_for(project)
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_commands import SetCueFieldsCommand
+    from twobyteasr.timeline.studio_commands import SetCueFieldsCommand
 
     stack = QUndoStack()
     stack.push(split_cue_command(project, "c1", 2500, "甲", "乙"))
@@ -693,7 +693,7 @@ def test_merge_preview_states_follow_the_gesture_without_editing():
     state = timeline._merge_preview_state()
     assert (state.kind, state.other.id, state.direction) == ("drag", "c", 1)
     assert state.span == (1500, 4600)
-    from twobyteasr import timeline_merge
+    from twobyteasr.studio import timeline_merge
     line, left, right = timeline_merge.status_lines(state)
     assert (left, right) == ("德基麦当劳", "再来一句")
     _mouse(timeline, QMouseEvent.Type.MouseButtonRelease, xb + 120, yb)
@@ -734,7 +734,7 @@ def test_merge_neighbour_skips_another_speakers_simultaneous_caption():
 def test_split_text_layout_keeps_the_boundary_characters_centred():
     _app()
     from PySide6.QtGui import QFont, QFontMetrics
-    from twobyteasr.timeline_razor import split_text_layout, MARKER_GAP
+    from twobyteasr.studio.timeline_razor import split_text_layout, MARKER_GAP
     metrics = QFontMetrics(QFont())
     left, right, total = split_text_layout(metrics, "主播投的是对面的", "没挡眼睛的哥哥", 2000)
     assert (left, right) == ("主播投的是对面的", "没挡眼睛的哥哥")

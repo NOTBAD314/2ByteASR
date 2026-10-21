@@ -5,8 +5,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QWidget
 import subtitle_core as legacy
-from twobyteasr.main_ui_glossary import TermLibraryDialog
-from twobyteasr.terminology import snapshot_glossaries
+from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
+from twobyteasr.glossary.terminology import snapshot_glossaries
 
 APP = QApplication.instance() or QApplication([])
 

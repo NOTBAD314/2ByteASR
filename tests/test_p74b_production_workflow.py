@@ -15,11 +15,11 @@ from PySide6.QtTest import QTest
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from twobyteasr.single_instance import SingleInstanceGuard
-from twobyteasr.processes import main_python_executable
-from twobyteasr.studio_export_ui import StudioExportWorkspace
-from twobyteasr.studio_media_commands import AudioMasterCommand, media_graph_command
-from twobyteasr.studio_media_pool import (
+from twobyteasr.app.single_instance import SingleInstanceGuard
+from twobyteasr.system.processes import main_python_executable
+from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+from twobyteasr.timeline.studio_media_commands import AudioMasterCommand, media_graph_command
+from twobyteasr.timeline.studio_media_pool import (
     add_media_asset,
     add_video_clip,
     audio_master_track_id,
@@ -27,7 +27,7 @@ from twobyteasr.studio_media_pool import (
     set_audio_master_track,
     update_video_clip_transform,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -36,11 +36,11 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage, WaveformTimeline
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_resolution import resolve_cue_visual
-from twobyteasr.video_compositor import VideoCompositionScene
-from twobyteasr.visual_runtime import VisualOwner
+from twobyteasr.studio.studio_ui import SubtitleStudioPage, WaveformTimeline
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
+from twobyteasr.playback.video_compositor import VideoCompositionScene
+from twobyteasr.rendering.visual_runtime import VisualOwner
 
 
 APP = QApplication.instance() or QApplication([])
@@ -57,7 +57,7 @@ def test_frozen_helpers_never_relaunch_the_gui_executable(tmp_path, monkeypatch)
     # checkout's own .venv-main on a dev machine) out of the test: it
     # verifies the last-resort exe-directory fallback below them.
     monkeypatch.setattr(
-        "twobyteasr.runtime_registry.resolve_runtime_python", lambda _role: ""
+        "twobyteasr.system.runtime_registry.resolve_runtime_python", lambda _role: ""
     )
 
     assert main_python_executable() == ""
@@ -97,7 +97,7 @@ def _project(tmp_path: Path) -> SubtitleProject:
 def _start_instance_owner(name: str) -> subprocess.Popen[str]:
     code = (
         "from PySide6.QtCore import QCoreApplication,QTimer\n"
-        "from twobyteasr.single_instance import SingleInstanceGuard\n"
+        "from twobyteasr.app.single_instance import SingleInstanceGuard\n"
         "import sys\n"
         "app=QCoreApplication([])\n"
         "guard=SingleInstanceGuard(sys.argv[1])\n"

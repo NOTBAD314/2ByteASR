@@ -12,8 +12,8 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QToolButton
 
-from twobyteasr.studio_ui import FillEditorDialog, SubtitleStudioPage
-from twobyteasr.style_recipe import FillSpec
+from twobyteasr.studio.studio_ui import FillEditorDialog, SubtitleStudioPage
+from twobyteasr.caption_style.style_recipe import FillSpec
 import os
 
 

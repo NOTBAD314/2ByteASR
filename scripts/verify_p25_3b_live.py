@@ -15,8 +15,8 @@ from PySide6.QtGui import QInputMethodEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMainWindow
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.ui import APP_QSS
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.app.ui import APP_QSS
 
 
 SHOT_DIR = ROOT / "screenshots" / "p25.3b" / "live"

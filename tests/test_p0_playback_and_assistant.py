@@ -36,7 +36,7 @@ def _holed_mkv(path: Path) -> None:
 
 
 def test_continuous_proxy_is_packet_identical_and_gapless(tmp_path):
-    from twobyteasr.avsync import build_continuous_proxy, scan_timestamp_gaps
+    from twobyteasr.playback.avsync import build_continuous_proxy, scan_timestamp_gaps
 
     src = tmp_path / "holed.mkv"
     _holed_mkv(src)
@@ -70,7 +70,7 @@ def test_continuous_proxy_is_packet_identical_and_gapless(tmp_path):
 
 
 def test_playback_source_prefers_continuous_proxy(tmp_path):
-    from twobyteasr.indexed_media import IndexedMediaCache
+    from twobyteasr.media.indexed_media import IndexedMediaCache
 
     # 带联合洞的 FLV：没有洞就不会触发 continuous proxy 构建。
     flv = tmp_path / "gappy.flv"
@@ -107,8 +107,8 @@ def test_playback_source_prefers_continuous_proxy(tmp_path):
 def test_av_sync_map_folds_to_identity_when_proxy_bound(monkeypatch, tmp_path):
     from PySide6.QtWidgets import QApplication
     from tests.test_round42_studio_recognition import _page
-    from twobyteasr.avsync import AVSyncMap, TimestampGap, load_sync_map
-    from twobyteasr import indexed_media as indexed_media_module
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap, load_sync_map
+    from twobyteasr.media import indexed_media as indexed_media_module
 
     app = QApplication.instance() or QApplication([])
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -148,7 +148,7 @@ def test_smooth_card_list_wheel_notch_is_bounded(tmp_path):
     from PySide6.QtCore import QPointF, QPoint, Qt
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication, QLabel
-    from twobyteasr.studio_highlight_ui import SmoothCardList
+    from twobyteasr.studio.studio_highlight_ui import SmoothCardList
 
     app = QApplication.instance() or QApplication([])
     lst = SmoothCardList()
@@ -187,7 +187,7 @@ def test_smooth_card_list_wheel_notch_is_bounded(tmp_path):
 
 
 def test_parse_highlight_payload_maps_five_fields():
-    from twobyteasr.studio_highlight_analyzer import parse_highlight_payload
+    from twobyteasr.studio.studio_highlight_analyzer import parse_highlight_payload
 
     payload = json.dumps({
         "candidates": [

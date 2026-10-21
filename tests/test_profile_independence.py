@@ -16,7 +16,7 @@ import pytest
 qapp = pytest.importorskip("PySide6.QtWidgets")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.project_profiles import (  # noqa: E402
+from twobyteasr.recognition.recognition_profiles import (  # noqa: E402
     ProjectProfileStore,
     normalize_asr_config,
 )
@@ -159,7 +159,7 @@ def _session_settings_isolation(tmp_path_factory):
     teardown 撤销，收尾写入会落到真实 2byteasr_settings.json（HEAD 里的
     历史测试值即此机制所留）。因此整个测试进程生命周期内把根钉在 tmp。
     """
-    import twobyteasr.settings as settings_module
+    import twobyteasr.storage.settings as settings_module
 
     redirected_root = tmp_path_factory.mktemp("settings-root")
     settings_module.stable_settings_root = lambda: redirected_root
@@ -172,7 +172,7 @@ def isolated_main_window(monkeypatch, tmp_path):
     _ensure_app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     original_settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
     original_globals = {

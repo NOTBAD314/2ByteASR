@@ -7,7 +7,7 @@ import sys
 import zipfile
 
 import pytest
-from twobyteasr.runtime_download_cache import prune_runtime_download_cache
+from twobyteasr.system.runtime_download_cache import prune_runtime_download_cache
 
 
 def test_official_uv_prune_preserves_installed_package_offline(tmp_path):

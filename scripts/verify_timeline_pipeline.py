@@ -27,7 +27,8 @@ def main():
         raise ValueError("Output must stay in workspace tmp")
     out.mkdir(parents=True,exist_ok=True)
     source = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / "2ByteASR"
-    from twobyteasr import settings, llm_config
+    from twobyteasr.storage import settings
+    from twobyteasr.providers import llm_config
     raw = json.loads((source/settings.SETTINGS_FILENAME).read_text(encoding="utf-8"))
     config,_ = settings._merge_known_settings(settings.DEFAULT_SETTINGS,raw)
     if not args.current_api:
@@ -45,12 +46,12 @@ def main():
     os.environ["2BYTEASR_USER_DATA_ROOT"] = str(out/"data")
     settings.stable_settings_root = lambda: out/"config"
     settings.load_runtime_settings = lambda *a,**k: (copy.deepcopy(config),str(source/settings.SETTINGS_FILENAME),[])
-    from twobyteasr.studio_project import load_project,save_project
-    from twobyteasr.recognition_input import capture_recognition_snapshot
+    from twobyteasr.projects.studio_project import load_project,save_project
+    from twobyteasr.recognition.recognition_input import capture_recognition_snapshot
     project = load_project(args.project)
     fixture = save_project(project,out/"fixture.2byteproj")
     snapshot = capture_recognition_snapshot(project,fixture)
-    from twobyteasr.service import run_media_queue,RunOptions,CancellationToken
+    from twobyteasr.recognition.service import run_media_queue,RunOptions,CancellationToken
     token = CancellationToken()
     timeout = threading.Timer(480,token.cancel)
     timeout.daemon = True

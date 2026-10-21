@@ -219,7 +219,7 @@ def definitions():
 
 
 def build_theme(definition):
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     ident,name,html,css,tracks,color,size,build,resolve=definition
     css=re.sub(r'(-?\d+(?:\.\d+)?)px',lambda m:f'{float(m[1])/10.8:.6f}vh',COMMON+css)
     return WebThemeDocument.from_dict(dict(name='Balatro · '+name+' II',
@@ -230,7 +230,7 @@ def build_theme(definition):
 
 
 def main():
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,default=OUT);a=p.parse_args()
     for ident,name,html,css,tracks,color,size,build,resolve in definitions():
         theme=build_theme((ident,name,html,css,tracks,color,size,build,resolve))

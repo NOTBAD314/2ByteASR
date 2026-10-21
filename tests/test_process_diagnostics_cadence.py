@@ -1,5 +1,5 @@
 """The child-window observer must not poll long-lived children at 2 Hz."""
-from twobyteasr import process_diagnostics as diagnostics
+from twobyteasr.diagnostics import process_diagnostics as diagnostics
 
 
 def test_new_children_are_watched_closely_then_backed_off():

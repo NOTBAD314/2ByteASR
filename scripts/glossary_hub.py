@@ -34,9 +34,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from twobyteasr import glossary_hub as hub  # noqa: E402
-from twobyteasr import glossary_hub_repo as repo_tools  # noqa: E402
-from twobyteasr.glossary_lint import BLOCK, WARN  # noqa: E402
+from twobyteasr.glossary import glossary_hub as hub  # noqa: E402
+from twobyteasr.glossary import glossary_hub_repo as repo_tools  # noqa: E402
+from twobyteasr.glossary.glossary_lint import BLOCK, WARN  # noqa: E402
 
 DEFAULT_KEY = Path(os.environ.get("TWOBYTEASR_HUB_SIGNING_KEY")
                    or Path.home() / ".2byteasr-release" / "glossary-hub-signing-key.dpapi")
@@ -157,7 +157,7 @@ def cmd_init_repo(args) -> None:
             shutil.copyfile(source, target)
     tools = args.repo / "tools"
     tools.mkdir(exist_ok=True)
-    from twobyteasr import glossary_lint
+    from twobyteasr.glossary import glossary_lint
     for module in (glossary_lint, repo_tools):   # wherever the package layout puts them
         shutil.copyfile(module.__file__, tools / Path(module.__file__).name)
     print(f"已写入仓库骨架：{args.repo}")

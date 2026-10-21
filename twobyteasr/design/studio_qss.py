@@ -5,8 +5,8 @@ dataclass. Legacy retheme mappings never see these generated declarations.
 """
 from dataclasses import dataclass
 from .tokens import TYPE_SCALE, RADIUS_SCALE
-from ..typography import MONO_FONT_STACK, UI_FONT_STACK
-from ..ui_theme import blend_hex
+from .typography import MONO_FONT_STACK, UI_FONT_STACK
+from .ui_theme import blend_hex
 
 
 @dataclass(frozen=True)
@@ -78,7 +78,9 @@ QFrame#reviewCard QLabel#reviewSourceBadge[current="true"] {{ background: {theme
 QLineEdit#timelineTimecodeInput {{
     background: {theme.input_surface}; color: {theme.text}; border: 1px solid {theme.border_strong};
     border-radius: {t.control_radius}px; min-height: {t.field_height}px;
-    min-width: 118px; max-width: 132px; padding: 0 {t.input_padding}px;
+    /* The workspace owns the 128 px outer width. A CSS content minimum plus
+       padding can exceed it after polish and overlap the duration label. */
+    padding: 0 {t.input_padding}px;
     font-family: {MONO_FONT_STACK}; font-size: {t.timecode_size}px; font-weight: 700;
     letter-spacing: 0.3px; selection-background-color: {theme.accent}; selection-color: {theme.text_on_accent};
 }}
@@ -195,6 +197,14 @@ QWidget#studioTimelineCommandBar QCheckBox#timelineToggleChip:checked, QWidget#p
 QWidget#studioTimelineCommandBar QCheckBox#timelineToggleChip:focus, QWidget#projectRangeBar QCheckBox#timelineToggleChip:focus {{
     border-color: {theme.focus}; }}
 QWidget#studioTimelineCommandBar QCheckBox#timelineToggleChip {{ padding: 0 10px 0 8px; }}
+/* 2026-10-21: icon-only display switches; the "+" above the track names. */
+QWidget#studioTimelineCommandBar QCheckBox#timelineToggleChip[iconOnly="true"] {{
+    padding: 0 8px; min-width: 16px; }}
+QToolButton#timelineAddTrackButton {{ background: transparent; border: 1px solid {theme.border};
+    border-radius: 6px; padding: 0; }}
+QToolButton#timelineAddTrackButton:hover {{ background: {theme.selected}; border-color: {theme.border_strong}; }}
+QToolButton#timelineAddTrackButton:pressed {{ background: {theme.surface_elevated}; }}
+QToolButton#timelineAddTrackButton::menu-indicator {{ image: none; width: 0; }}
 /* 2026-10-09 (M16): save frame / cover / options as icon buttons in the bar. */
 QWidget#studioTimelineCommandBar QToolButton#rangeAction {{ background: transparent; color: {theme.text_secondary};
     border: 1px solid {theme.border}; border-radius: 8px; min-height: 34px; max-height: 34px; min-width: 34px;

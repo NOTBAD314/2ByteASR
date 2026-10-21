@@ -10,7 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
-    "optional_model_details_under_test", ROOT / "twobyteasr/optional_model_details.py"
+    "optional_model_details_under_test", ROOT / "twobyteasr/recognition/optional_model_details.py"
 )
 details = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(details)

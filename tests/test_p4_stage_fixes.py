@@ -11,22 +11,22 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     load_project,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.studio_find_replace import (
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_find_replace import (
     FindReplaceDialog,
     replace_all,
     replace_next,
 )
-from twobyteasr.studio_commands import BatchReplaceTextCommand
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_recipe import FillSpec
+from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_recipe import FillSpec
 
 
 def _app():
@@ -122,8 +122,8 @@ def test_p4_fill_editor_reopens_with_saved_color(tmp_path):
 
 def test_p5_alpha_slider_left_is_opaque():
     from PySide6.QtCore import QPointF
-    from twobyteasr.color_picker import AlphaSlider
-    from twobyteasr.studio_ui import FillEditorDialog
+    from twobyteasr.design.color_picker import AlphaSlider
+    from twobyteasr.studio.studio_ui import FillEditorDialog
 
     app = _app()
     slider = AlphaSlider()
@@ -153,8 +153,8 @@ def test_p5_alpha_slider_left_is_opaque():
 
 def test_p51_fill_editor_professional_picker_layout():
     from PySide6.QtWidgets import QRadioButton
-    from twobyteasr.color_picker import rgb_to_yuv, yuv_to_rgb
-    from twobyteasr.studio_ui import FillEditorDialog
+    from twobyteasr.design.color_picker import rgb_to_yuv, yuv_to_rgb
+    from twobyteasr.studio.studio_ui import FillEditorDialog
 
     app = _app()
     dialog = FillEditorDialog("#80FF4DA3")
@@ -190,11 +190,11 @@ def test_p51_fill_editor_professional_picker_layout():
 
 
 def test_p51_ai_design_uses_user_endpoint(monkeypatch, tmp_path):
-    from twobyteasr.studio_ai import request_style_design
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-    from twobyteasr.style_presets import StylePresetStore
-    from twobyteasr.motion_library import MotionPresetStore
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.caption_design.studio_ai import request_style_design
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.caption_style.style_presets import StylePresetStore
+    from twobyteasr.caption_style.motion_library import MotionPresetStore
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     captured = {}
 
@@ -221,7 +221,7 @@ def test_p51_ai_design_uses_user_endpoint(monkeypatch, tmp_path):
         captured["provider_stage"] = stage
         return _FakeProvider()
 
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", fake_provider_for_stage)
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", fake_provider_for_stage)
     project = SubtitleProject(
         media=StudioMedia(path=str(tmp_path / "a.mp4"), duration_ms=4000),
         cues=[StudioCue("c0", 0, 1000, "去哪里玩好玩的呢")],
@@ -368,7 +368,7 @@ def test_p4_ass_export_uses_widest_stroke_layer(tmp_path):
     page._apply_style()
     app.processEvents()
 
-    from twobyteasr.ass_compiler import compile_ass
+    from twobyteasr.rendering.ass_compiler import compile_ass
 
     line = next(
         item for item in compile_ass(page.session.project).splitlines()
@@ -384,7 +384,7 @@ def test_p4_ass_export_uses_widest_stroke_layer(tmp_path):
 
 
 def test_p4_output_switches_default_off_in_settings():
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
 
     switches = DEFAULT_SETTINGS["switches"]
     assert switches["output_jianying_txt"] is False

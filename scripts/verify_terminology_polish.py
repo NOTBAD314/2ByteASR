@@ -44,10 +44,10 @@ def main():
         TWOBYTEASR_STARTUP_TRACE=str(out/'startup.jsonl'))
     for name in ('local','roaming','temp','config'):(out/name).mkdir(exist_ok=True)
     os.environ.update({k:env[k] for k in ('LOCALAPPDATA','APPDATA','TEMP','TMP')})
-    from twobyteasr import settings as settings_module
-    from twobyteasr.llm_config import activate_ai_service,update_active_profile
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.models import SpeechSegment
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.recognition.transcript_data import SpeechSegment
     if not args.run_prepared:
         settings,_=settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS,json.loads(original))
         settings=copy.deepcopy(settings)
@@ -96,8 +96,8 @@ def main():
         run_hidden_subprocess([root/'tools/ffmpeg/bin/ffmpeg.exe','-v','error','-f','lavfi','-i',
             'color=c=0x18212a:s=320x180:r=1','-t','2880','-c:v','libx264','-preset','ultrafast',
             '-pix_fmt','yuv420p','-an',media],check=True,timeout=90,capture_output=True,purpose='one small synthetic ASR audit media')
-        from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioSpeaker,save_project,hydrate_media_contract
-        from twobyteasr.studio_helpers import probe_media_identity
+        from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioSpeaker,save_project,hydrate_media_contract
+        from twobyteasr.studio.studio_helpers import probe_media_identity
         project=SubtitleProject(media=StudioMedia(str(media),duration_ms=2880000,width=320,height=180),
             speakers=[StudioSpeaker('S01'),StudioSpeaker('S02')],cues=[])
         hydrate_media_contract(project,probe_media_identity(str(media)))

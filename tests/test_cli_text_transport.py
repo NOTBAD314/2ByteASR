@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.ai_providers import AIProviderError, CLIProvider, GrokCLIProvider, AntigravityCLIProvider
-from twobyteasr.provider_input_budget import windows_argv_units
+from twobyteasr.providers.ai_providers import AIProviderError, CLIProvider, GrokCLIProvider, AntigravityCLIProvider
+from twobyteasr.providers.provider_input_budget import windows_argv_units
 
 
 @pytest.mark.parametrize('length', [29999, 30000, 30001, 30509, 33636])
@@ -60,7 +60,7 @@ def test_agy_uses_official_single_ndjson_user_event(monkeypatch, tmp_path):
 
 def test_short_source_with_escaped_argv_overflow_is_stopped_before_spawn(monkeypatch):
     provider = CLIProvider(executable=sys.executable)
-    monkeypatch.setattr('twobyteasr.ai_providers.popen_hidden_subprocess',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.popen_hidden_subprocess',
                         lambda *a, **k: pytest.fail('unsafe CreateProcess attempted'))
     with pytest.raises(AIProviderError) as caught:
         provider._run_cli_command([sys.executable, '"' * 18000], purpose='test request', timeout=1)
@@ -75,7 +75,7 @@ def test_agy_thinking_delta_is_never_final_body():
 
 
 def test_headless_tool_denial_is_terminal_without_relaxing_permissions(monkeypatch,tmp_path):
-    monkeypatch.setattr('twobyteasr.studio_project.studio_data_root',lambda:tmp_path)
+    monkeypatch.setattr('twobyteasr.projects.studio_project.studio_data_root',lambda:tmp_path)
     provider=AntigravityCLIProvider(executable='agy.exe')
     def run(command,**kwargs):
         kwargs['on_line']('stderr','jetski: no output produced — command permission was auto-denied.\n')
@@ -102,7 +102,7 @@ def test_winerror206_from_createprocess_is_deterministic(monkeypatch):
         exc = OSError('synthetic CreateProcess length failure')
         exc.winerror = 206
         raise exc
-    monkeypatch.setattr('twobyteasr.ai_providers.popen_hidden_subprocess', fail)
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.popen_hidden_subprocess', fail)
     with pytest.raises(AIProviderError) as caught:
         provider._run_cli_command([sys.executable, '-V'], purpose='test request', timeout=1)
     assert caught.value.category == 'transport_length'

@@ -42,7 +42,8 @@ def main():
     def write(name, value):
         path = out/name; path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value, ensure_ascii=False, indent=2)+'\n', 'utf8')
-    from twobyteasr import llm_config, settings as settings_module
+    from twobyteasr.providers import llm_config
+    from twobyteasr.storage import settings as settings_module
     decoder = llm_config._read_secrets
     llm_config._read_secrets = lambda **_: decoder(read_only_path=secrets)
     settings, warnings = settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS,
@@ -50,10 +51,10 @@ def main():
     settings['models']['primary_asr_backend'] = 'api'
     settings['models']['speaker_source'] = 'filetrans'
     endpoint = llm_config.qwen_asr_endpoint_from_settings(settings)
-    from twobyteasr.qwen31_asr import FILETRANS
+    from twobyteasr.providers.qwen31_asr import FILETRANS
     if endpoint['model'] != FILETRANS or not endpoint.get('api_key'):
         raise ValueError('Saved workspace is missing the migrated Filetrans credential')
-    from twobyteasr.terminology import GlossarySnapshot, TermEntry
+    from twobyteasr.glossary.terminology import GlossarySnapshot, TermEntry
     original_snapshot = GlossarySnapshot.from_dict(project['generation_metadata']['terminology_snapshot'])
     forms = {'berlin': 'BerLIN', 's0pp': 'S0pp', 'zhe': 'Zhe'}
     baseline_text = '\n'.join(c['text'] for c in project['cues'])
@@ -100,8 +101,8 @@ def main():
         'audio_sha256': hashlib.sha256(decode.stdout).hexdigest(),
         'tail_rms': float(np.sqrt(np.mean(audio[int(55.64*16000):]**2))),
         'time_stretch': False})
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.service import CancellationToken
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.service import CancellationToken
     token = CancellationToken()
     context = RuntimeContext(speaker_source='filetrans', enable_domain_terms=True,
         glossary_snapshot=snapshot, enabled_glossary_ids=[x.id for x in snapshot.libraries],
@@ -114,7 +115,7 @@ def main():
         if not args.run:
             result['prepared'] = True; return
         timer.start()
-        from twobyteasr.asr_api_process import transcribe
+        from twobyteasr.providers.asr_api_process import transcribe
         with activate_runtime_context(context, legacy=legacy):
             rows = transcribe(source, [dict(audio=(audio,16000), start=0., end=seconds)], publish_primary=True)
         write('new-native-asr.json', rows)
@@ -126,7 +127,7 @@ def main():
                 'end':min(a['end'], b['end'])} for i,a in enumerate(rows) for j,b in enumerate(rows)
                 if i<j and a.get('speaker')!=b.get('speaker') and min(a['end'],b['end'])>max(a['start'],b['start'])])
     except Exception as exc:
-        from twobyteasr.provider_diagnostics import redact_diagnostics
+        from twobyteasr.providers.provider_diagnostics import redact_diagnostics
         result.update(error=redact_diagnostics(str(exc)), exception_type=type(exc).__name__)
     finally:
         timer.cancel()

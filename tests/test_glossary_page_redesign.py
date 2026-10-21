@@ -14,8 +14,8 @@ from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QWidget
 
 import subtitle_core as legacy
-from twobyteasr import glossary_hub as hub
-from twobyteasr.main_ui_glossary import TermLibraryDialog
+from twobyteasr.glossary import glossary_hub as hub
+from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
 
 APP = QApplication.instance() or QApplication([])
 

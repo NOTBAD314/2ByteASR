@@ -2,7 +2,7 @@ import copy
 
 from PySide6.QtGui import QUndoStack
 
-from twobyteasr.studio_commands import (
+from twobyteasr.timeline.studio_commands import (
     AssignSpeakerCommand,
     MergeSpeakerCommand,
     SetSpeakerCommand,
@@ -14,7 +14,7 @@ from twobyteasr.studio_commands import (
     merge_cues_command,
     split_cue_command,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 
 def _project():
@@ -131,7 +131,7 @@ def test_speaker_rename_merge_and_undo_restore_exact_references_and_styles():
     project.cues[1].style_id = "guest"
     # Keep style IDs valid for project output even though speaker validation is independent.
     project.styles[0].id = "host"
-    from twobyteasr.studio_project import SubtitleStyle
+    from twobyteasr.projects.studio_project import SubtitleStyle
     project.styles.append(SubtitleStyle(id="guest", name="Guest"))
     project.styles.append(SubtitleStyle(id="default", name="Default"))
     stack = QUndoStack()

@@ -31,11 +31,11 @@ from PySide6.QtWidgets import QApplication
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-from twobyteasr.runtime_trace import GLOBAL_STUDIO_TRACE
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.visual_runtime import VisualOwner
+from twobyteasr.app import ui
+from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+from twobyteasr.diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.rendering.visual_runtime import VisualOwner
 
 import verify_p73c_seek_matrix as seek_support
 

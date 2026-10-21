@@ -4,10 +4,10 @@ from dataclasses import replace
 from pathlib import Path
 import time
 
-from twobyteasr.caption_noita import compose, DIRECTIONS
-from twobyteasr.web_theme import WebThemeDocument, theme_archive_html, export_theme_archive, import_theme_archive
-from twobyteasr.live_web_preview import prepare_web_configuration
-from twobyteasr.caption_proxy import CaptionProxyStore, proxy_key, with_quality
+from twobyteasr.caption_design.caption_noita import compose, DIRECTIONS
+from twobyteasr.caption_design.web_theme import WebThemeDocument, theme_archive_html, export_theme_archive, import_theme_archive
+from twobyteasr.rendering.live_web_preview import prepare_web_configuration
+from twobyteasr.rendering.caption_proxy import CaptionProxyStore, proxy_key, with_quality
 
 
 def theme(direction='reaction'):
@@ -15,7 +15,7 @@ def theme(direction='reaction'):
 
 
 def test_all_directions_portable_and_semantic(tmp_path):
-    from twobyteasr.authored_html import html_problems
+    from twobyteasr.caption_design.authored_html import html_problems
     for direction in DIRECTIONS:
         assert html_problems(compose(dict(version=8,direction=direction))['cueHtml'])==[]
         t=theme(direction)
@@ -28,10 +28,10 @@ def test_all_directions_portable_and_semantic(tmp_path):
 
 
 def test_noita_wins_over_negative_ice_reference_and_is_in_prompt():
-    from twobyteasr.caption_reference_catalog import component_style
-    from twobyteasr.caption_reference_search import queries_for
-    from twobyteasr.design_guidance import load_design_guidance
-    from twobyteasr.caption_components import capability_text
+    from twobyteasr.caption_design.caption_reference_catalog import component_style
+    from twobyteasr.caption_design.caption_reference_search import queries_for
+    from twobyteasr.caption_design.design_guidance import load_design_guidance
+    from twobyteasr.caption_design.caption_components import capability_text
     prompt='Noita 炼金字幕，避免之前冰主题错误'
     assert component_style(prompt)=='noita'
     assert queries_for(prompt)[0].startswith('Noita')
@@ -53,13 +53,13 @@ def test_quality_and_every_edit_invalidate_without_mutating_source():
     assert source==before
     assert 'visibility:hidden!important' in with_quality(prepared,'draft').html
     assert with_quality(prepared,'full') is prepared
-    from twobyteasr.caption_proxy import eligible
+    from twobyteasr.rendering.caption_proxy import eligible
     assert not eligible(replace(prepared,proxy_safe=False))
 
 
 def test_source_artifact_accepts_noita_definition_and_retains_editable_source():
     import json
-    from twobyteasr.source_artifact import frame,to_theme
+    from twobyteasr.caption_design.source_artifact import frame,to_theme
     definition=dict(version=8,direction='reaction',fontSize=66,emphasis=['法杖'])
     raw=frame(dict(HTML='',CSS='',STAGE_CSS='',PARAMETERS=json.dumps({'components':definition})), 'noita-source')
     t,receipt=to_theme(raw,'noita-source',{'name':'炼金反应铭牌'})

@@ -6,11 +6,11 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from twobyteasr.authored_generation import generate_staged
-from twobyteasr.caption_components import compose
-from twobyteasr.caption_creative_pipeline import ThemeLedger
-from twobyteasr.source_artifact import frame,token,to_theme
-from twobyteasr.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.authored_generation import generate_staged
+from twobyteasr.caption_design.caption_components import compose
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+from twobyteasr.caption_design.source_artifact import frame,token,to_theme
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
 
 
 class FixtureClient:
@@ -28,7 +28,7 @@ class FixtureClient:
                     **({'components':dict(version=1,layout=('compact','editorial','centered')[i],lettering=('press','register','gradient')[i],rhythm=('settle','slide','align')[i])} if draft else {})) for i in range(count)]})
             for _ in range(5):
                 if kw['cancel_check']():
-                    from twobyteasr.ai_providers import AIProviderError
+                    from twobyteasr.providers.ai_providers import AIProviderError
                     raise AIProviderError('此候选已取消',category='cancelled')
                 time.sleep(.01)
             marker=re.findall(r'2BYTE-ARTWORK/1 ([a-f0-9]{24})',content)[-1]
@@ -86,7 +86,7 @@ def test_explicit_three_candidates_bound_parallelism_and_cancel_one(tmp_path):
 
 
 def test_render_failure_does_not_buy_an_automatic_repair(tmp_path):
-    from twobyteasr.theme_draft import DraftValidationError
+    from twobyteasr.caption_design.theme_draft import DraftValidationError
     def bad(*args,**kwargs):raise DraftValidationError('正文溢出')
     _,result,shared=run(tmp_path,render_candidate=bad)
     assert len(shared['calls'])==2 and result.concepts[0]['technical_status']=='failed'
@@ -105,7 +105,7 @@ def test_component_transport_uses_empty_source_sections_and_host_expansion():
     raw=frame(dict(HTML='',CSS='',STAGE_CSS='',PARAMETERS=json.dumps({'components':{'version':1}})),'id')
     theme,receipt=to_theme(raw,'id',{'name':'抽象'})
     assert receipt['component_version']=='caption-components-1'
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     assert WebThemeDocument.from_dict(theme).motion_spec['version']==2
     with pytest.raises(ValueError,match='不可混用'):to_theme(raw.replace('===HTML===\n','===HTML===\n<div>bad</div>'),'id',{'name':'bad'})
 
@@ -121,12 +121,12 @@ def test_motion_v2_limits_and_no_silent_capability_loss():
 
 
 def test_empty_direction_response_is_not_a_success():
-    from twobyteasr.authored_generation import normalize_directions
+    from twobyteasr.caption_design.authored_generation import normalize_directions
     with pytest.raises(ValueError,match='完整候选'):normalize_directions({'candidates':[]})
 
 
 def test_default_prompt_allows_theme_led_art_and_text_capabilities(tmp_path):
-    from twobyteasr.authored_prompt import assemble
+    from twobyteasr.caption_design.authored_prompt import assemble
     ledger=ThemeLedger(tmp_path,'chess.com风格')
     message,_=assemble(ledger,direction={'name':'对弈','design':'抽象文字'})
     assert '主题名称允许采用' in message
@@ -146,7 +146,7 @@ def test_draft_cancel_preserves_completed_candidates(tmp_path):
 
 def test_candidate_can_be_adopted_while_peer_waits_and_advice_does_not_block():
     from PySide6.QtWidgets import QApplication,QPushButton
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
     app=QApplication.instance() or QApplication([])
     dialog=ThemeConceptDialog([
         dict(id='A',name='可用作品',composition='薄底板',creative_version='fixture',
@@ -163,7 +163,7 @@ def test_candidate_can_be_adopted_while_peer_waits_and_advice_does_not_block():
 
 
 def test_font_cache_invalidates_after_bundled_file_changes(tmp_path,monkeypatch):
-    from twobyteasr import web_theme_fonts as fonts
+    from twobyteasr.caption_design import web_theme_fonts as fonts
     path=tmp_path/'assets/fonts/Cubic11.ttf';path.parent.mkdir(parents=True)
     monkeypatch.setattr(fonts,'detect_install_root',lambda:tmp_path)
     path.write_bytes(b'first-font');first=fonts.offline_font_css('Cubic 11')
@@ -172,7 +172,7 @@ def test_font_cache_invalidates_after_bundled_file_changes(tmp_path,monkeypatch)
 
 
 def test_missing_font_is_explicit_in_actual_browser_receipt():
-    from twobyteasr.web_theme_fonts import font_use_receipt
+    from twobyteasr.caption_design.web_theme_fonts import font_use_receipt
     diag={'rendered_fonts':[{'fonts':[{'familyName':'Source Han Sans SC Heavy','glyphCount':4}]}]}
     assert not font_use_receipt('Source Han Sans SC Heavy',diag)['warning']
     assert '实际替代' in font_use_receipt('Missing, Source Han Sans SC Heavy',diag)['warning']

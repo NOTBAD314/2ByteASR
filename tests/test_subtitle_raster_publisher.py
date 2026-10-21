@@ -2,7 +2,7 @@ import time
 from pathlib import Path
 from PySide6.QtCore import QRect,Qt
 from PySide6.QtGui import QImage,QColor
-from twobyteasr.subtitle_raster_publisher import SubtitleRasterPublisher
+from twobyteasr.rendering.subtitle_raster_publisher import SubtitleRasterPublisher
 
 
 def until(predicate):

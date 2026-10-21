@@ -17,7 +17,7 @@ def main():
     if args.project:shutil.copyfile(args.project,project)
     elif args.mode=='theme':shutil.copyfile(media_root/'v1-only.2byteproj',project)
     else:
-        from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
+        from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
         save_project(SubtitleProject(media=StudioMedia(path='',display_name='诊断工程')),project)
     shutil.copyfile(root/'tests/fixtures/polar_bear_f38c393_concepts.json',out/'concepts.json')
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='windows',QT_SCALE_FACTOR='1',
@@ -26,7 +26,7 @@ def main():
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',TWOBYTEASR_RECOVERY_MODE=args.mode,
         TWOBYTEASR_RECOVERY_MEDIA_ROOT=str(media_root),TWOBYTEASR_RECOVERY_UNMUTE='1' if args.unmute_owned_session else '0',
         TWOBYTEASR_RECOVERY_ABLATION=args.ablation)
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command=[str(args.exe.resolve())] if args.exe else [sys.executable,'-B',str(root/'quick_start.py')]
     print('EVIDENCE',out,flush=True)
     with (out/'application.log').open('wb') as log:

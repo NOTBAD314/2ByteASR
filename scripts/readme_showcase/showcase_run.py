@@ -41,7 +41,7 @@ def outer(args):
     registry['runtimes'] = {k: v for k, v in registry['runtimes'].items() if k in ('main', 'moss', 'firered_llm')}
     (data / 'runtimes' / 'registry.json').write_text(json.dumps(registry, ensure_ascii=False, indent=1), 'utf8')
     sys.path.insert(0, str(REPO))
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     settings['models'].update(primary_asr_backend='moss', speaker_source='moss', qwen_asr_backend='local',
                               firered_asr_backend='local')
@@ -94,15 +94,15 @@ def inner(out: Path):
     os.environ.pop('TWOBYTEASR_TEST_ROOT', None)
     os.environ['2BYTEASR_MODEL_ROOT'] = str(REPO / 'models')
     os.environ['USERPROFILE'] = str(out / 'profile' / 'home')
-    from twobyteasr.blank_project_audit import install_offline_guards, _capture
+    from twobyteasr.acceptance.blank_project_audit import install_offline_guards, _capture
     install_offline_guards()
     from PySide6.QtCore import QObject, QTimer, Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     import moss_firered_pipeline
     import subtitle_core
-    from twobyteasr import ui
-    from twobyteasr.theme_manager import apply_application_theme
+    from twobyteasr.app import ui
+    from twobyteasr.design.theme_manager import apply_application_theme
     from twobyteasr.i18n import save_language
 
     ui._configure_windows_app_identity()

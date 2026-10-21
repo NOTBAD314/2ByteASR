@@ -17,8 +17,8 @@ def _app():
 def test_endpoint_failure_fails_the_gate_only_after_the_recovery_grace(tmp_path, monkeypatch):
     _app()
     os.environ["LOCALAPPDATA"] = str(tmp_path / "local")
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_readiness import StudioReadiness
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_readiness import StudioReadiness
     page = SubtitleStudioPage()
     try:
         gate = StudioReadiness(page)

@@ -9,9 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.settings import load_runtime_settings
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_text_tools import request_text_cleanup
+from twobyteasr.storage.settings import load_runtime_settings
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_text_tools import request_text_cleanup
 
 SHOTS = ROOT / "tmp" / "p53-accept"
 SHOTS.mkdir(parents=True, exist_ok=True)

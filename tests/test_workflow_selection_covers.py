@@ -3,10 +3,10 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QPlainTextEdit
 from PySide6.QtGui import QImage
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_edit_sequence import sequence_of, projected_cues
-from twobyteasr.studio_ai_flow import StudioAIFlowMixin
-from twobyteasr.studio_hub import StudioHubMixin
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, projected_cues
+from twobyteasr.studio.studio_ai_flow import StudioAIFlowMixin
+from twobyteasr.studio.studio_hub import StudioHubMixin
 
 @pytest.fixture(scope='module')
 def app():

@@ -15,8 +15,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 import subtitle_core as legacy
-from twobyteasr import glossary_hub as hub
-from twobyteasr import glossary_lint as lint
+from twobyteasr.glossary import glossary_hub as hub
+from twobyteasr.glossary import glossary_lint as lint
 
 PRIVATE = bytes(range(32))
 OTHER_PRIVATE = bytes(range(1, 33))
@@ -300,7 +300,7 @@ def test_parse_library_never_trusts_provenance_from_the_file():
 
 
 def test_repository_versions_bump_only_when_content_changes(tmp_path):
-    from twobyteasr import glossary_hub_repo as repo_tools
+    from twobyteasr.glossary import glossary_hub_repo as repo_tools
     submission = _library_doc([{"from": "福宁娜", "to": "芙宁娜", "category": "角色", "reason": "private"},
                                {"from": "芙宁娜", "to": "芙宁娜", "category": "角色"}])
     first, findings = repo_tools.normalize_library(submission, library_id="genshin-impact", today="2026-10-17")
@@ -317,7 +317,7 @@ def test_repository_versions_bump_only_when_content_changes(tmp_path):
 
 
 def test_repository_index_matches_files_and_the_app_accepts_it(tmp_path):
-    from twobyteasr import glossary_hub_repo as repo_tools
+    from twobyteasr.glossary import glossary_hub_repo as repo_tools
     library, _ = repo_tools.normalize_library(_library_doc([{"from": "芙宁娜", "to": "芙宁娜"}]),
                                               library_id="genshin-impact")
     repo_tools.write_library(tmp_path, library)

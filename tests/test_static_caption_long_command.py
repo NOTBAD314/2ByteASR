@@ -5,8 +5,8 @@ import subprocess
 import av
 import pytest
 
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.static_caption_export import _run_static_command
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.exports.static_caption_export import _run_static_command
 
 
 def test_file_graph_keeps_external_relative_inputs_and_callbacks(tmp_path):
@@ -28,11 +28,11 @@ def test_file_graph_keeps_external_relative_inputs_and_callbacks(tmp_path):
 def test_179_static_captions_encode_beyond_old_windows_limit(tmp_path, monkeypatch, direct, preview):
     import numpy as np
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-    from twobyteasr.studio_render import RenderJob, RenderSettings
-    from twobyteasr.advanced_renderer import AdvancedRendererBackend
-    import twobyteasr.advanced_renderer as renderer
-    from twobyteasr.video_export import capture_video_graph
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+    from twobyteasr.exports.studio_render import RenderJob, RenderSettings
+    from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend
+    import twobyteasr.rendering.advanced_renderer as renderer
+    from twobyteasr.exports.video_export import capture_video_graph
     app = QApplication.instance() or QApplication([])
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path/'local'))
     ffmpeg = Path(__file__).resolve().parents[1]/'tools/ffmpeg/bin/ffmpeg.exe'

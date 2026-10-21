@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabe
                                QWidget)
 from PySide6.QtCore import Qt
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -47,7 +47,7 @@ def _overlapping_project():
 
 
 def test_rearrange_now_is_one_undo_step_and_keeps_manual_positions():
-    from twobyteasr.subtitle_layout_ui import rearrange_now
+    from twobyteasr.studio.subtitle_layout_ui import rearrange_now
     page = Page(_overlapping_project())
     before = {cue.id: dict(cue.transform) for cue in page.project.cues}
     moved = rearrange_now(page, ["a", "b", "manual"])
@@ -60,7 +60,7 @@ def test_rearrange_now_is_one_undo_step_and_keeps_manual_positions():
 
 
 def test_rearrange_now_without_a_selection_says_so():
-    from twobyteasr.subtitle_layout_ui import rearrange_now
+    from twobyteasr.studio.subtitle_layout_ui import rearrange_now
     page = Page(_overlapping_project())
     assert rearrange_now(page, []) == 0 and page.undo_stack.count() == 0
     assert page.hints == ["先选中要重新排版的字幕"]
@@ -71,7 +71,7 @@ def test_rearrange_now_without_a_selection_says_so():
 
 
 class JumpPage:
-    from twobyteasr.studio_review_ui import StudioReviewMixin as _Mixin
+    from twobyteasr.studio.studio_review_ui import StudioReviewMixin as _Mixin
     _sync_jump_position = _Mixin._sync_jump_position
     _jump_to_row = _Mixin._jump_to_row
 
@@ -113,13 +113,13 @@ def test_jump_box_shows_the_selected_caption_and_jumps_only_when_changed():
 
 
 class FitPage(QWidget):
-    from twobyteasr.studio_project_flow import StudioProjectFlowMixin as _Mixin
+    from twobyteasr.studio.studio_project_flow import StudioProjectFlowMixin as _Mixin
     _fit_studio_toolbar = _Mixin._fit_studio_toolbar
 
 
 def _toolbar_page(width):
-    from twobyteasr.elided_label import ElidedLabel
-    from twobyteasr.studio_widgets import StudioStatusLabel
+    from twobyteasr.design.elided_label import ElidedLabel
+    from twobyteasr.studio.studio_widgets import StudioStatusLabel
     page = FitPage()
     page.studio_toolbar = bar = QFrame(page)
     row = QHBoxLayout(bar)
@@ -171,8 +171,46 @@ def test_toolbar_moves_commands_out_until_it_fits_and_restores_them():
     page.close()
 
 
+def test_hub_command_collapses_in_order_but_stays_in_the_hub():
+    """回报问题 (2026-10-21): leaves a narrow bar before 字幕列表, yet the Hub still offers it."""
+    page, commands = _toolbar_page(900)
+    page._studio_hub_commands = (commands[3],)
+    page.show()
+    page._fit_studio_toolbar(True, False)
+    collapsed = page._studio_toolbar_collapsed
+    assert collapsed == commands[:len(collapsed)] and commands[3] in collapsed
+    page._fit_studio_toolbar(False, True)  # the Hub: only the hub command
+    assert [button.isVisible() for button in commands] == [False, False, False, True, False, False]
+    page.close()
+
+
+def test_small_command_returns_when_later_commands_made_room():
+    """The flag leaves first, then comes back into the room the wide commands left (2026-10-21)."""
+    page, commands = _toolbar_page(900)
+    flag = commands[0]
+    flag.setText("")
+    flag.setMinimumWidth(36)
+    flag.setMaximumWidth(36)
+    page._studio_toolbar_return_commands = (flag,)
+    layout = page.studio_toolbar.layout()
+    page.show()
+    page._fit_studio_toolbar(True, False)
+    collapsed = page._studio_toolbar_collapsed
+    assert collapsed and flag not in collapsed and flag.isVisible()  # a 160 px command made room
+    assert collapsed == commands[1:1 + len(collapsed)]
+    layout.invalidate()
+    assert layout.minimumSize().width() + 8 <= 900
+    again = list(collapsed)
+    page._fit_studio_toolbar(True, False)  # same width, same answer: no flicker
+    assert page._studio_toolbar_collapsed == again and flag.isVisible()
+    page.resize(260, 60)  # nothing left makes room: the flag stays in ⋯
+    page._fit_studio_toolbar(True, False)
+    assert flag in page._studio_toolbar_collapsed and not flag.isVisible()
+    page.close()
+
+
 def test_status_label_asks_for_its_whole_message():
-    from twobyteasr.studio_widgets import StudioStatusLabel
+    from twobyteasr.studio.studio_widgets import StudioStatusLabel
     label = StudioStatusLabel("已自动保存 · 00:12")
     label.resize(40, 18)  # elided now
     assert label.sizeHint().width() >= label.fontMetrics().horizontalAdvance("已自动保存 · 00:12")
@@ -182,7 +220,7 @@ def test_status_label_asks_for_its_whole_message():
 
 
 def test_drawer_shortcut_panel_has_a_close_button_and_settings_page_does_not():
-    from twobyteasr.studio_shortcuts import ShortcutSettingsPanel
+    from twobyteasr.studio.studio_shortcuts import ShortcutSettingsPanel
     panel = ShortcutSettingsPanel({}, None)
     asked = []
     panel.close_requested.connect(lambda: asked.append(True))
@@ -211,7 +249,7 @@ def test_save_frame_split_button_draws_no_divider():
 
 
 def test_window_showing_the_workbench_never_zooms_the_interface():
-    from twobyteasr.ui_zoom import _zoomable
+    from twobyteasr.app.ui_zoom import _zoomable
     window = QWidget()
     studio = QWidget(window)
     studio.setObjectName("subtitleStudio")
@@ -230,3 +268,21 @@ def test_window_showing_the_workbench_never_zooms_the_interface():
     finally:
         window.close()
         window.deleteLater()
+
+
+def test_tool_panel_holds_save_undo_redo_and_usage_lives_in_overflow(app):
+    """2026-10-21 (user): 保存/撤销/重做 sit in the Tool Panel header; API 用量与费用 only in ⋯."""
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    page = SubtitleStudioPage()
+    app.processEvents()
+    bar = page.studio_toolbar
+    header = (page.save_button, page.studio_undo_button, page.studio_redo_button)
+    for button in header:
+        assert not bar.isAncestorOf(button) and page.context_panel.isAncestorOf(button)
+    assert len({button.parentWidget() for button in header}) == 1  # one row
+    assert not page.studio_undo_button.isEnabled() and not page.studio_redo_button.isEnabled()
+    assert not bar.isAncestorOf(page.studio_usage_button) and page.studio_usage_button.isHidden()
+    assert page.studio_usage_button in page._studio_toolbar_overflow_widgets
+    page.close_page()
+    page.deleteLater()
+    app.processEvents()

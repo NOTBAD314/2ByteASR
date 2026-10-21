@@ -22,7 +22,7 @@ def main():
     output.mkdir(parents=True)
     (output/'temp').mkdir()
     os.environ.update(LOCALAPPDATA=str(output/'local'),APPDATA=str(output/'roaming'),TEMP=str(output/'temp'),TMP=str(output/'temp'))
-    from twobyteasr.studio_project import load_project, save_project, SubtitleProject, StudioMedia
+    from twobyteasr.projects.studio_project import load_project, save_project, SubtitleProject, StudioMedia
     project = load_project(args.project)
     shutil.copyfile(project.media.path, output/'ingest-source.mp4')
     (output/'ingest-source.xml').write_text('<i><d p="1.0,1,25,16777215,0,0,audit,1">本地合成弹幕配对回归</d></i>', encoding='utf8')
@@ -33,7 +33,7 @@ def main():
         TWOBYTEASR_ACCEPTANCE_DIR=str(output), TWOBYTEASR_ACCEPTANCE_SCENARIO='p62-regression',
         TWOBYTEASR_STARTUP_PROJECT=str(output/'fixture.2byteproj'), TWOBYTEASR_STARTUP_OPEN_STUDIO='1',
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', TWOBYTEASR_STARTUP_TRACE=str(output/'startup.jsonl'))
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(root/'quick_start.py')]
     with (output/'process.log').open('w', encoding='utf8') as log:
         process = run_hidden_subprocess(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT,

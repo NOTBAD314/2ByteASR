@@ -1,9 +1,9 @@
 import copy,json
 from PySide6.QtCore import QObject,Signal
 from PySide6.QtWidgets import QApplication
-from twobyteasr.ui import EndpointEditor
-from twobyteasr.llm_config import activate_ai_service,update_active_profile,endpoint_from_settings
-from twobyteasr.settings import DEFAULT_SETTINGS,save_runtime_settings,_merge_known_settings
+from twobyteasr.app.ui import EndpointEditor
+from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile,endpoint_from_settings
+from twobyteasr.storage.settings import DEFAULT_SETTINGS,save_runtime_settings,_merge_known_settings
 
 
 def test_finished_edit_not_key_characters_and_late_reply_is_discarded(monkeypatch):
@@ -17,8 +17,8 @@ def test_finished_edit_not_key_characters_and_late_reply_is_discarded(monkeypatc
         def requestInterruption(self):self.cancelled=True
         def start(self):self.running=True
         def finish(self):self.running=False;self.finished.emit()
-    monkeypatch.setattr('twobyteasr.ui.ProviderModelDiscoveryWorker',Worker)
-    monkeypatch.setattr('twobyteasr.ui.read_api_key',lambda *a:('','missing'))
+    monkeypatch.setattr('twobyteasr.providers.endpoint_editor_ui.ProviderModelDiscoveryWorker',Worker)
+    monkeypatch.setattr('twobyteasr.providers.endpoint_editor_ui.read_api_key',lambda *a:('','missing'))
     settings=copy.deepcopy(DEFAULT_SETTINGS);activate_ai_service(settings,'custom')
     editor=EndpointEditor('AI','#123456','polish',settings)
     editor.base_url.setText('https://first.example/root');editor.key.setText('first-key')
@@ -40,9 +40,9 @@ def test_finished_edit_not_key_characters_and_late_reply_is_discarded(monkeypatc
 
 
 def test_selected_discovered_id_survives_settings_reload_registry_and_wire(tmp_path,monkeypatch):
-    from twobyteasr.provider_registry import ProviderRegistry
-    from twobyteasr.ai_providers import OpenAICompatibleProvider,CLIProvider
-    from twobyteasr import llm_config
+    from twobyteasr.providers.provider_registry import ProviderRegistry
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider,CLIProvider
+    from twobyteasr.providers import llm_config
     settings=copy.deepcopy(DEFAULT_SETTINGS);activate_ai_service(settings,'custom')
     model='namespace/new-model:latest'
     update_active_profile(settings,model=model,base_url='https://relay.example/api/v1')

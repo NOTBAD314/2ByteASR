@@ -1,6 +1,6 @@
 from tests.test_studio_style_controller import _page,_finish
 from tests.test_theme_usability import valid_artwork
-from twobyteasr.theme_application_ui import refresh_application_ui
+from twobyteasr.caption_design.theme_application_ui import refresh_application_ui
 
 
 def test_auto_application_state_undo_and_other_cue(tmp_path,monkeypatch):

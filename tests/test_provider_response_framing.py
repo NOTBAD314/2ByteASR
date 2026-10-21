@@ -8,8 +8,8 @@ import pytest
 
 
 def test_wire_ascii_escaping_rechecked_before_network(monkeypatch):
-    from twobyteasr.provider_stream import request_chat,StreamProtocolError
-    from twobyteasr.provider_input_budget import prepare_input
+    from twobyteasr.providers.provider_stream import request_chat,StreamProtocolError
+    from twobyteasr.providers.provider_input_budget import prepare_input
     import requests
     messages=[{'role':'user','content':'字幕'*80}]
     _,budget=prepare_input(messages,operation='generate',max_tokens=32000)
@@ -23,11 +23,11 @@ def test_wire_ascii_escaping_rechecked_before_network(monkeypatch):
     assert caught.value.category=='request_too_large'
     assert budget['wire_payload_bytes']>800 and budget['dispatched'] is False
 
-from twobyteasr.provider_stream import chat_body, StreamProtocolError
-from twobyteasr.structured_output import response_object, StructuredResponseError
+from twobyteasr.providers.provider_stream import chat_body, StreamProtocolError
+from twobyteasr.providers.structured_output import response_object, StructuredResponseError
 
 def test_http_request_rejection_keeps_bounded_redacted_reason(monkeypatch):
-    from twobyteasr.provider_stream import request_chat
+    from twobyteasr.providers.provider_stream import request_chat
     class Response:
         status_code=400
         headers={'Content-Type':'application/json'}
@@ -100,7 +100,7 @@ def test_pretty_truncated_body_does_not_become_jsonl_and_strings_are_not_redecod
 
 
 def test_agy_nested_structured_result_is_authoritative():
-    from twobyteasr.ai_providers import CLIProvider
+    from twobyteasr.providers.ai_providers import CLIProvider
     state={};events=[]
     CLIProvider._consume_cli_stream_line(json.dumps({'event':'result','result':{
         'status':'SUCCESS','response':'{"candidates":[]}\n{"candidates":[],"toolAction":"submit"}',
@@ -110,15 +110,15 @@ def test_agy_nested_structured_result_is_authoritative():
 
 
 def test_provider_keeps_finish_metadata_and_does_not_retry(monkeypatch):
-    from twobyteasr.ai_providers import OpenAICompatibleProvider, AIProviderError
-    from twobyteasr.llm_adapter import LLMRequestError
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider, AIProviderError
+    from twobyteasr.providers.llm_adapter import LLMRequestError
     # Test the production HTTP provider, with one local transport invocation.
     provider = OpenAICompatibleProvider(endpoint=dict(provider='deepseek', model='fixture', api_key='fixture', url='https://api.deepseek.com/chat/completions', base_url='https://api.deepseek.com'))
     calls = []
     def failed(*args, **kwargs):
         calls.append(kwargs)
         raise LLMRequestError('truncated', category='structured_output_truncated')
-    monkeypatch.setattr('twobyteasr.llm_adapter.post_chat_completion_stream', failed)
+    monkeypatch.setattr('twobyteasr.providers.llm_adapter.post_chat_completion_stream', failed)
     monkeypatch.setattr(provider, '_sender', lambda *a, **kw: pytest.fail('must not retry non-streaming'))
     with pytest.raises(AIProviderError) as exc:
         provider.complete([{'role':'user','content':'JSON'}], on_stream_event=lambda *_:None)
@@ -130,15 +130,15 @@ def test_provider_keeps_finish_metadata_and_does_not_retry(monkeypatch):
     ('generate','design_directions',True),('generate','one_candidate',False),('generate','render_repair',False),
     ('local_patch','single_candidate',False),('polish','transcript',False)])
 def test_only_full_design_requests_enable_selected_deepseek_planning(monkeypatch,operation,scope,thinking):
-    from twobyteasr.ai_providers import OpenAICompatibleProvider
-    from twobyteasr.llm_adapter import get_last_llm_response_diagnostics
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider
+    from twobyteasr.providers.llm_adapter import get_last_llm_response_diagnostics
     provider=OpenAICompatibleProvider(endpoint=dict(provider='deepseek',model='fixture',api_key='fixture',
         url='https://api.deepseek.com/chat/completions',base_url='https://api.deepseek.com'))
     # Input budgets are tested separately; here exercise the real HTTP body boundary.
-    monkeypatch.setattr('twobyteasr.provider_input_budget.prepare_input',lambda messages,**k:(messages,{}))
+    monkeypatch.setattr('twobyteasr.providers.provider_input_budget.prepare_input',lambda messages,**k:(messages,{}))
     calls=[]
     def send(url,headers,body,*args,**kwargs):calls.append(body);return '{"ok":true}'
-    monkeypatch.setattr('twobyteasr.provider_stream.request_chat',send)
+    monkeypatch.setattr('twobyteasr.providers.provider_stream.request_chat',send)
     provider.complete([{'role':'user','content':'JSON'}],json_schema={'type':'object'},
         on_stream_event=lambda *_:None,operation_kind=operation,input_scope={'kind':scope})
     assert calls[0]['thinking']=={'type':'enabled' if thinking else 'disabled'}
@@ -146,7 +146,7 @@ def test_only_full_design_requests_enable_selected_deepseek_planning(monkeypatch
 
 
 def test_real_cli_conflicting_finals_and_nonzero_exit(monkeypatch, tmp_path):
-    from twobyteasr.ai_providers import CLIProvider, AIProviderError
+    from twobyteasr.providers.ai_providers import CLIProvider, AIProviderError
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path/'local'))
     for content, category in [
         ([{'type':'result','result':'{"a":1}'}, {'type':'result','result':'{"a":2}'}], 'conflicting_final'),
@@ -162,7 +162,7 @@ def test_real_cli_conflicting_finals_and_nonzero_exit(monkeypatch, tmp_path):
 
 
 def test_cli_assistant_and_structured_final_compare_json_contents():
-    from twobyteasr.ai_providers import CLIProvider
+    from twobyteasr.providers.ai_providers import CLIProvider
     state={'text':'','thinking':'','final':None,'finished':False}
     packets=[{'type':'assistant','message':{'content':[{'type':'text','text':'{"candidates":[{"id":"one"}]}'}]}},
              {'type':'result','is_error':False,'structured_output':{'candidates':[{'id':'one'}]}}]
@@ -172,7 +172,7 @@ def test_cli_assistant_and_structured_final_compare_json_contents():
 
 
 def test_cli_schema_error_preserves_failure_and_summarizes_field_lengths():
-    from twobyteasr.ai_providers import CLIProvider
+    from twobyteasr.providers.ai_providers import CLIProvider
     state = {'text': json.dumps({'cueHtml': 'X' * 9095}),
              'final': '{"cueHtml":"old"}',
              'response_schema': {'properties': {'cueHtml': {'maxLength': 8192}}}}
@@ -190,7 +190,7 @@ def test_cli_schema_error_preserves_failure_and_summarizes_field_lengths():
 
 @pytest.mark.parametrize('terminal', ['error', 'success', 'missing'])
 def test_schema_cli_waits_for_delayed_result_receipt(monkeypatch, tmp_path, terminal):
-    from twobyteasr.ai_providers import CLIProvider, AIProviderError
+    from twobyteasr.providers.ai_providers import CLIProvider, AIProviderError
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path/'local'))
     packets = [{'type': 'assistant', 'message': {'stop_reason': 'end_turn',
                 'content': [{'type': 'text', 'text': '{"ok":true}'}]}}]
@@ -218,8 +218,8 @@ def test_schema_cli_waits_for_delayed_result_receipt(monkeypatch, tmp_path, term
 
 def test_cancelled_client_does_not_reuse_previous_billing_receipt(monkeypatch):
     from types import SimpleNamespace
-    from twobyteasr.provider_service import AIClient, ProviderRequestHandle
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.provider_service import AIClient, ProviderRequestHandle
+    from twobyteasr.providers.ai_providers import AIProviderError
     client = object.__new__(AIClient)
     client._last_request_trace = {'request_id': 'previous', 'actual_cost_usd': 8.5}
     handle = ProviderRequestHandle('current', 'fixture', time.monotonic()+3)
@@ -232,8 +232,8 @@ def test_cancelled_client_does_not_reuse_previous_billing_receipt(monkeypatch):
 
 def test_structured_submit_preflight_failure_drops_previous_receipt():
     from types import SimpleNamespace
-    from twobyteasr.provider_service import AIClient
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.provider_service import AIClient
+    from twobyteasr.providers.ai_providers import AIProviderError
     client=object.__new__(AIClient)
     client._settings={};client._stage='polish';client._sender=None
     client._last_request_trace={'request_id':'previous','actual_cost_usd':8.5}

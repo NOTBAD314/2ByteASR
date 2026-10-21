@@ -11,9 +11,9 @@ def main():
     from PySide6.QtCore import Qt,QPoint
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_project import load_project,save_project
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.projects.studio_project import load_project,save_project
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
     original=load_project(args.project)
     original_hash=hashlib.sha256(args.project.read_bytes()).hexdigest()
     before_content={c.id:(c.text,c.style_id,c.speaker_id,c.evidence_refs) for c in original.cues}

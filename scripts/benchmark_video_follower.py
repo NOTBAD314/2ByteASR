@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from twobyteasr.video_decode_pipe import VideoDecodePipe
+from twobyteasr.playback.video_decode_pipe import VideoDecodePipe
 
 
 def main():

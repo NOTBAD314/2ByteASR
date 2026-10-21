@@ -23,11 +23,11 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import moss_firered_pipeline  # noqa: E402
 import subtitle_core  # noqa: E402
-import twobyteasr.ui as ui  # noqa: E402
-from twobyteasr.glossary_learning import GlossaryLearningStore  # noqa: E402
-from twobyteasr.project_profiles import ProjectProfileStore  # noqa: E402
-from twobyteasr.studio_commands import MergeSpeakerCommand, SetSpeakerCommand  # noqa: E402
-from twobyteasr.studio_project import (  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
+from twobyteasr.glossary.glossary_learning import GlossaryLearningStore  # noqa: E402
+from twobyteasr.recognition.recognition_profiles import ProjectProfileStore  # noqa: E402
+from twobyteasr.timeline.studio_commands import MergeSpeakerCommand, SetSpeakerCommand  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -35,8 +35,8 @@ from twobyteasr.studio_project import (  # noqa: E402
     load_project,
     save_project,
 )
-from twobyteasr.studio_ui import SpeakerManagerDialog  # noqa: E402
-from twobyteasr.teach_hints import TeachHintStore  # noqa: E402
+from twobyteasr.studio.studio_ui import SpeakerManagerDialog  # noqa: E402
+from twobyteasr.app.teach_hints import TeachHintStore  # noqa: E402
 
 
 def pump(app, rounds=3):

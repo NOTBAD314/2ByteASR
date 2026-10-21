@@ -2,7 +2,7 @@
 
 Copies a project into a fresh owned tmp directory, isolates all app data there
 and runs the in-process `speaker-roles` scenario
-(twobyteasr/speaker_roles_audit.py) on a private Windows desktop. The
+(twobyteasr/acceptance/speaker_roles_audit.py) on a private Windows desktop. The
 project's media is only read. Use --exe for a frozen candidate or the root
 launcher. Writes result.json, operations.jsonl and window/timeline captures.
 """

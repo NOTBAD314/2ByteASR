@@ -3,15 +3,15 @@ import copy
 import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, load_project
-from twobyteasr.studio_media_pool import create_video_track, add_video_clip
-from twobyteasr.studio_edit_sequence import sequence_of, projected_cues, VideoSegment, store_sequence
-from twobyteasr.studio_clip_edit import playhead_edit_command, ripple_ranges_command, clip_edit_command
-from twobyteasr.studio_caption_timeline import ensure_independent_captions, KEY, set_caption_ripple_command
-from twobyteasr.cue_word_alignment import cue_words
-from twobyteasr.studio_commands import SetCueFieldsCommand, EditCueIntervalsCommand
-from twobyteasr.timeline_cue_gesture import CueInterval
-from twobyteasr.studio_track_delete import DeleteTrackCommand
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, load_project
+from twobyteasr.timeline.studio_media_pool import create_video_track, add_video_clip
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, projected_cues, VideoSegment, store_sequence
+from twobyteasr.timeline.studio_clip_edit import playhead_edit_command, ripple_ranges_command, clip_edit_command
+from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions, KEY, set_caption_ripple_command
+from twobyteasr.recognition.cue_word_alignment import cue_words
+from twobyteasr.timeline.studio_commands import SetCueFieldsCommand, EditCueIntervalsCommand
+from twobyteasr.timeline.timeline_cue_gesture import CueInterval
+from twobyteasr.timeline.studio_track_delete import DeleteTrackCommand
 
 APP = QApplication.instance() or QApplication([])
 
@@ -127,7 +127,7 @@ def test_missing_words_keeps_text_once_and_visible_review_receipt():
     assert len(cross)==1 and (cross[0].start_ms,cross[0].end_ms)==(9000,11000)
     assert p.studio_state[KEY]['instances']['cross']['needs_review']
     assert p.studio_state['cue_statuses']['cross']=='issue'
-    from twobyteasr.studio_review import cached_review_risks
+    from twobyteasr.subtitle_rules.studio_review import cached_review_risks
     assert cached_review_risks(p)['cross']['level']=='high'
 
 
@@ -187,7 +187,7 @@ def test_no_eligible_clip_never_falls_back_to_locked_v1_or_zero():
 def test_independent_render_cues_are_project_time_and_source_ass_is_empty():
     p=fixture();ripple_ranges_command(p,[(10000,12000)]).redo()
     assert projected_cues(p,domain='source')==[]
-    from twobyteasr.studio_revisions import StudioRevisionStore
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
     store=StudioRevisionStore(p)
     assert store.render.cues==()
     assert [(c.id,c.start_ms,c.end_ms) for c in store.render.timeline_cues]==[(c.id,c.start_ms,c.end_ms) for c in p.cues]
@@ -196,8 +196,8 @@ def test_independent_render_cues_are_project_time_and_source_ass_is_empty():
 def test_fresh_single_caption_scene_uses_project_clock_without_priming():
     from types import SimpleNamespace
     from PySide6.QtCore import QRectF
-    from twobyteasr.caption_scene import CaptionScene
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
+    from twobyteasr.rendering.caption_scene import CaptionScene
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
     project=SubtitleProject(media=StudioMedia('fixture.mp4', duration_ms=1000),
         cues=[StudioCue('single#stable',0,1000,'one')],render_settings={'_cue_domain':'timeline'})
     calls=[]
@@ -211,14 +211,14 @@ def test_fresh_single_caption_scene_uses_project_clock_without_priming():
 
 def test_design_target_preserves_independent_instance_id():
     from types import SimpleNamespace
-    from twobyteasr.studio_design_target import DesignTarget
+    from twobyteasr.timeline.studio_design_target import DesignTarget
     project=SimpleNamespace(render_settings={'_cue_domain':'timeline'})
     cue=SimpleNamespace(id='same-source#second-instance')
     assert DesignTarget(project,1,cue,project).canonical_id==cue.id
 
 
 def test_structural_split_merge_preserves_exact_words_and_undo_source_receipts():
-    from twobyteasr.studio_commands import split_cue_command,merge_cues_command
+    from twobyteasr.timeline.studio_commands import split_cue_command,merge_cues_command
     p=fixture(words=True);ensure_independent_captions(p);before=p.to_dict()
     command=split_cue_command(p,'cross',11000,'1122','3344');command.redo()
     parts=[c for c in p.cues if c.speaker_id=='S2' and c.text in {'1122','3344'}]

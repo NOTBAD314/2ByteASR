@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     args = parser.parse_args()
     output = args.output.absolute(); fixture = args.fixture.absolute()
-    from twobyteasr.storage_service import safe_path
+    from twobyteasr.storage.storage_service import safe_path
     if output.exists() or not safe_path(output, (ROOT / 'tmp',)):
         raise ValueError('Fresh owned tmp output required')
     if not safe_path(fixture, (ROOT / 'tmp',)) or fixture.stat().st_nlink != 1 or not 0 < fixture.stat().st_size <= 1024 * 1024:
@@ -32,8 +32,8 @@ def main():
     from twobyteasr.test_isolation import install
     install()
     from twobyteasr.runtime_paths import get_runtime_paths
-    from twobyteasr.storage_service import StorageService
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project
+    from twobyteasr.storage.storage_service import StorageService
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project
     paths = get_runtime_paths()
     cache = paths.cache_root / 'media' / 'sole-proxy.mp4'; cache.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(fixture, cache)
@@ -49,7 +49,7 @@ def main():
     clip = project.video_tracks[0].clips[0]
     clip.source_in_ms=200; clip.source_out_ms=1800; clip.timeline_in_ms=350; clip.timeline_out_ms=1150; clip.playback_rate=2.0
     # Construct the real persisted edited segment, preserving its stable clip id.
-    from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment
     project.edit_sequence = EditSequence(source_path=str(missing), source_duration_ms=2000,
         segments=[VideoSegment(clip.id, str(missing), 200, 1800, 350, 1150)]).to_dict()
     path = paths.project_root / 'sole-edited' / 'sole-edited.2byteproj'; save_project(project, path)

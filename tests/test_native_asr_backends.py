@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit,parse_qs
 import numpy as np
 import pytest
-from twobyteasr.qwen31_asr import SentenceRevisions,ASRProtocolError,FLASH,FILETRANS
-from twobyteasr.spark_asr import DynamicTranscript,MODEL,URL,signed_url
+from twobyteasr.providers.qwen31_asr import SentenceRevisions,ASRProtocolError,FLASH,FILETRANS
+from twobyteasr.providers.spark_asr import DynamicTranscript,MODEL,URL,signed_url
 
 
 def sentence(text='你好。',sid=1,**extra):
@@ -39,8 +39,8 @@ def test_flash_nested_envelope_keeps_outer_cumulative_text():
 
 
 def test_protocol_deadline_and_non_diarizing_primary_remains_valid(tmp_path):
-    from twobyteasr.cloud_asr_jobs import transcribe_chunks,worker_timeout
-    from twobyteasr.cloud_asr_jobs import validate_speaker_strategy
+    from twobyteasr.providers.cloud_asr_jobs import transcribe_chunks,worker_timeout
+    from twobyteasr.providers.cloud_asr_jobs import validate_speaker_strategy
     # Choosing a non-diarizing primary remains valid; no independent model is
     # selected and genuine native labels returned by any provider are retained.
     endpoint=dict(model=MODEL,speaker_source='native')
@@ -77,7 +77,7 @@ def test_spark_signature_exact_endpoint_credentials_and_tls(monkeypatch):
     signed=signed_url(endpoint,now=0);query=parse_qs(urlsplit(signed).query)
     auth=base64.b64decode(query['authorization'][0]).decode()
     assert 'hmac-sha256' in auth and query['host']==['iat.cn-huabei-1.xf-yun.com']
-    from twobyteasr.spark_asr import transcribe
+    from twobyteasr.providers.spark_asr import transcribe
     import ssl
     packets=[]
     class Socket:
@@ -98,7 +98,7 @@ def test_spark_signature_exact_endpoint_credentials_and_tls(monkeypatch):
 
 
 def test_spark_early_server_close_rejects_missing_tail():
-    from twobyteasr.spark_asr import transcribe
+    from twobyteasr.providers.spark_asr import transcribe
     class Early:
         def send(self,*a):pass
         def recv(self,**kw):return json.dumps(spark_packet(1,'仅开头',status=2))
@@ -108,7 +108,7 @@ def test_spark_early_server_close_rejects_missing_tail():
 
 
 def test_chunks_cover_all_samples_retry_only_unfinished_and_offset_once(tmp_path):
-    from twobyteasr.cloud_asr_jobs import transcribe_chunks,chunk_ranges
+    from twobyteasr.providers.cloud_asr_jobs import transcribe_chunks,chunk_ranges
     wave=np.ones(121*16000,dtype=np.float32)*.1
     ranges=list(chunk_ranges(wave))
     assert ranges[0][0]==0 and ranges[-1][1]==len(wave)
@@ -141,7 +141,7 @@ class Storage:
 
 
 def test_filetrans_resume_same_remote_task_and_word_speaker_precedence(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     storage=Storage();calls=[];fail=[True]
     payload={'transcripts':[{'text':'你好。','sentences':[sentence(speaker_id=1,words=[dict(text='你好',punctuation='。',begin_time=0,end_time=900,speaker_id=2)])]}]}
     class Client:
@@ -169,7 +169,7 @@ def test_filetrans_resume_same_remote_task_and_word_speaker_precedence(tmp_path)
 
 
 def test_filetrans_uncertain_submission_not_automatically_resubmitted(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     storage=Storage();calls=[]
     class Client:
         @staticmethod
@@ -181,7 +181,7 @@ def test_filetrans_uncertain_submission_not_automatically_resubmitted(tmp_path):
 
 
 def test_explicit_retry_archives_failed_filetrans_task_without_reupload(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans,job_root,save
+    from twobyteasr.providers.cloud_asr_jobs import filetrans,job_root,save
     endpoint=dict(model=FILETRANS,provider='qwen31_filetrans',protocol='dashscope_filetrans',
         url='https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription',api_key='key')
     audio=np.zeros(16000);root=job_root(audio,endpoint,tmp_path)
@@ -200,16 +200,17 @@ def test_explicit_retry_archives_failed_filetrans_task_without_reupload(tmp_path
 
 
 def test_owned_worker_uses_frozen_settings_and_endpoint(monkeypatch,tmp_path):
-    from twobyteasr import asr_api_process,asr
-    from twobyteasr.runtime import RuntimeContext,activate_runtime_context
+    from twobyteasr.providers import asr_api_process
+    from twobyteasr.recognition import asr
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
     captured=[]
     endpoint=dict(model=FILETRANS,provider='qwen31_filetrans',protocol='dashscope_filetrans',url='https://example.com',api_key='private')
     context=RuntimeContext(asr_endpoint_snapshot=endpoint,asr_settings_snapshot={'models':{'oss_bucket':'frozen-bucket'}},speaker_source='native')
     monkeypatch.setattr(asr,'_legacy_runtime_value',lambda *a:{'models':{'oss_bucket':'changed-bucket'}})
     monkeypatch.setattr(asr,'build_qwen_asr_context',lambda *a:'')
-    monkeypatch.setattr('twobyteasr.terminology.runtime_snapshot',lambda:SimpleNamespace(canonical_terms=['S0pp']))
-    monkeypatch.setattr('twobyteasr.llm_config.read_oss_credentials',lambda:('frozen-id','frozen-secret'))
-    monkeypatch.setattr('twobyteasr.runtime_registry.resolve_runtime_python',lambda *a:'python')
+    monkeypatch.setattr('twobyteasr.glossary.terminology.runtime_snapshot',lambda:SimpleNamespace(canonical_terms=['S0pp']))
+    monkeypatch.setattr('twobyteasr.providers.llm_config.read_oss_credentials',lambda:('frozen-id','frozen-secret'))
+    monkeypatch.setattr('twobyteasr.system.runtime_registry.resolve_runtime_python',lambda *a:'python')
     def run(*a,**kw):captured.append(json.loads(kw['input_text']));return {'results':[]}
     monkeypatch.setattr(asr,'_run_isolated_asr_worker',run)
     with activate_runtime_context(context):
@@ -221,7 +222,7 @@ def test_owned_worker_uses_frozen_settings_and_endpoint(monkeypatch,tmp_path):
 
 
 def test_filetrans_hints_preserve_canonical_spelling_and_pack_without_silent_tail_cut():
-    from twobyteasr.qwen31_asr import filetrans_hints
+    from twobyteasr.providers.qwen31_asr import filetrans_hints
     terms=['S0pp','BerLIN','Zhe']+[f'Player{i:04d}' for i in range(100)]
     hints=filetrans_hints(terms)
     assert [hints['vocabulary'][x] for x in terms]==[2]*len(terms)
@@ -238,7 +239,7 @@ def test_filetrans_hints_preserve_canonical_spelling_and_pack_without_silent_tai
 
 
 def test_filetrans_hints_skip_over_limit_terms_and_keep_the_ranked_rest():
-    from twobyteasr.qwen31_asr import filetrans_hints
+    from twobyteasr.providers.qwen31_asr import filetrans_hints
     long_row='这是用户个人词库里写成一整句的说明行'
     terms=['S0pp',long_row,'中'*15,'one two three four five six seven','one two three four five six seven eight',
            '换\n行','BerLIN']
@@ -255,7 +256,7 @@ def test_filetrans_hints_skip_over_limit_terms_and_keep_the_ranked_rest():
 
 
 def test_filetrans_hints_send_the_first_2000_ranked_terms():
-    from twobyteasr.qwen31_asr import filetrans_hints
+    from twobyteasr.providers.qwen31_asr import filetrans_hints
     terms=[f'T{i:04d}' for i in range(2300)]
     hints=filetrans_hints(['中文'*8]+terms)
     assert list(hints['vocabulary'])==terms[:2000]
@@ -266,7 +267,7 @@ def test_filetrans_hints_send_the_first_2000_ranked_terms():
 
 
 def test_filetrans_hints_still_reject_a_wrong_compiled_vocabulary_binding():
-    from twobyteasr.qwen31_asr import filetrans_hints
+    from twobyteasr.providers.qwen31_asr import filetrans_hints
     with pytest.raises(ASRProtocolError) as error:
         filetrans_hints(['S0pp','中文'*8],vocabulary_id='library',vocabulary_model='qwen-audio-3.0-asr-flash-filetrans')
     assert error.value.category=='vocabulary_model_mismatch'
@@ -275,17 +276,17 @@ def test_filetrans_hints_still_reject_a_wrong_compiled_vocabulary_binding():
 
 
 def test_owned_worker_gets_filetrans_hints_without_the_long_term(monkeypatch):
-    from twobyteasr import asr_api_process
-    from twobyteasr import asr
-    from twobyteasr.runtime import RuntimeContext,activate_runtime_context
+    from twobyteasr.providers import asr_api_process
+    from twobyteasr.recognition import asr
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
     captured=[];events=[]
     endpoint=dict(model=FILETRANS,provider='qwen31_filetrans',protocol='dashscope_filetrans',url='https://example.com',api_key='private')
     context=RuntimeContext(asr_endpoint_snapshot=endpoint,asr_settings_snapshot={'models':{}},speaker_source='native')
     monkeypatch.setattr(asr,'build_qwen_asr_context',lambda *a:'')
-    monkeypatch.setattr('twobyteasr.terminology.runtime_snapshot',lambda:SimpleNamespace(canonical_terms=['S0pp','中文'*8]))
-    monkeypatch.setattr('twobyteasr.llm_config.read_oss_credentials',lambda:('id','secret'))
-    monkeypatch.setattr('twobyteasr.runtime_registry.resolve_runtime_python',lambda *a:'python')
-    monkeypatch.setattr('twobyteasr.cache.record_run_event',lambda kind,**kw:events.append((kind,kw)))
+    monkeypatch.setattr('twobyteasr.glossary.terminology.runtime_snapshot',lambda:SimpleNamespace(canonical_terms=['S0pp','中文'*8]))
+    monkeypatch.setattr('twobyteasr.providers.llm_config.read_oss_credentials',lambda:('id','secret'))
+    monkeypatch.setattr('twobyteasr.system.runtime_registry.resolve_runtime_python',lambda *a:'python')
+    monkeypatch.setattr('twobyteasr.recognition.cache.record_run_event',lambda kind,**kw:events.append((kind,kw)))
     def run(*a,**kw):captured.append(json.loads(kw['input_text']));return {'results':[]}
     monkeypatch.setattr(asr,'_run_isolated_asr_worker',run)
     with activate_runtime_context(context):
@@ -298,7 +299,7 @@ def test_owned_worker_gets_filetrans_hints_without_the_long_term(monkeypatch):
 
 
 def test_compiled_vocabulary_real_binding_is_checked_before_audio_upload(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     storage=Storage();calls=[]
     endpoint=dict(model=FILETRANS,provider='qwen31_filetrans',protocol='dashscope_filetrans',
         url='https://my-workspace.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/asr/transcription',
@@ -316,7 +317,7 @@ def test_compiled_vocabulary_real_binding_is_checked_before_audio_upload(tmp_pat
 
 
 def test_filetrans_rejects_succeeded_failed_subtask_without_result_fetch_or_reupload(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     storage=Storage();posts=[];gets=[]
     class Client:
         @staticmethod
@@ -335,7 +336,7 @@ def test_filetrans_rejects_succeeded_failed_subtask_without_result_fetch_or_reup
 
 @pytest.mark.parametrize('remote_status',['PENDING','RUNNING'])
 def test_local_cancel_preserves_remote_task_and_does_not_claim_cancellation(tmp_path,remote_status):
-    from twobyteasr.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
     storage=Storage();posts=[];cancelled=[False]
     class Client:
         @staticmethod
@@ -359,7 +360,7 @@ def test_local_cancel_preserves_remote_task_and_does_not_claim_cancellation(tmp_
 
 
 def test_filetrans_native_bad_word_timing_is_rejected_before_clamping():
-    from twobyteasr.cloud_asr_jobs import validate_filetrans_result
+    from twobyteasr.providers.cloud_asr_jobs import validate_filetrans_result
     payload={'transcripts':[{'sentences':[sentence(words=[{'begin_time':500,'end_time':400}])]}]}
     with pytest.raises(ASRProtocolError,match='词时间非法'):
         validate_filetrans_result(payload,1)

@@ -9,27 +9,27 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.runtime import RuntimeContext
-from twobyteasr.service import RunOptions
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_edit_sequence import (
+from twobyteasr.recognition.run_context import RuntimeContext
+from twobyteasr.recognition.service import RunOptions
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.timeline.studio_edit_sequence import (
     delete_timeline_range,
     ensure_edit_sequence,
     sequence_of,
     split_at_playhead,
     store_sequence,
 )
-from twobyteasr.studio_highlight_analyzer import LocalCandidate, candidates_from_local
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-from twobyteasr.studio_sequence_mapper import map_playhead_between_sequences, timeline_to_source
-from twobyteasr.studio_ui import (
+from twobyteasr.studio.studio_highlight_analyzer import LocalCandidate, candidates_from_local
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.timeline.studio_sequence_mapper import map_playhead_between_sequences, timeline_to_source
+from twobyteasr.studio.studio_ui import (
     FillEditorDialog,
     SubtitleStudioPage,
     adaptive_timeline_ticks,
 )
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_recipe import VisualStyleRecipe, route_recipe
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_recipe import VisualStyleRecipe, route_recipe
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app() -> QApplication:
@@ -45,7 +45,7 @@ def _page(monkeypatch, tmp_path, *, duration_ms: int = 60_000) -> SubtitleStudio
     page.project.edit_sequence = {}
     page.project.validate()
     sequence = ensure_edit_sequence(page.project)
-    from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
+    from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
     sync_primary_video_track_from_sequence(page.project, sequence)
     page.timeline.set_project(page.project)
     _app().processEvents()  # settle blank-project startup before measuring edits
@@ -60,7 +60,7 @@ def _editable_three_segment_sequence(page: SubtitleStudioPage):
     store_sequence(page.project, sequence)
     # Match the production edit command's projection; a raw sequence write
     # alone leaves the video/audio graph and lock state stale.
-    from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
+    from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
     sync_primary_video_track_from_sequence(page.project, sequence)
     page.timeline.reindex_project()
     return sequence
@@ -320,7 +320,7 @@ def test_structural_actions_spawn_no_visible_console(monkeypatch, tmp_path):
     sequence.video_track_locked = False
     store_sequence(page.project, sequence)
     calls = []
-    monkeypatch.setattr("twobyteasr.studio_video_track.run_hidden_subprocess", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr("twobyteasr.studio.studio_video_track.run_hidden_subprocess", lambda *a, **k: calls.append((a, k)))
     monkeypatch.setattr(page, "_seek", lambda _seconds: None)
     page._razor_video_at(12_000)
     _app().processEvents()

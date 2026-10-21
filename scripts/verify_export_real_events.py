@@ -21,11 +21,11 @@ def main():
     os.environ['QT_QPA_PLATFORM']='offscreen'
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.export_timeline import export_project_snapshot
-    from twobyteasr.ass_compiler import compile_ass
-    from twobyteasr.studio_render import _filter_path
-    from twobyteasr.processes import run_hidden_subprocess as run
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.exports.export_timeline import export_project_snapshot
+    from twobyteasr.rendering.ass_compiler import compile_ass
+    from twobyteasr.exports.studio_render import _filter_path
+    from twobyteasr.system.processes import run_hidden_subprocess as run
     project=export_project_snapshot(load_project(args.project))
     ffmpeg=str(ROOT/'tools/ffmpeg/bin/ffmpeg.exe')
     records=[]

@@ -13,14 +13,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr.art_direction import (
+from twobyteasr.caption_design.art_direction import (
     ART_DIRECTION_TEMPLATES,
     fallback_art_directions,
     validate_graph_for_direction,
     validate_graph_matches_instruction,
     validate_variants_match_instruction,
 )
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.visual_design_graph import (
     clean_subtitle_graph,
     comic_burst_graph,
     glitch_graph,
@@ -53,7 +53,7 @@ def test_steampunk_instruction_routes_to_steampunk_family_triple():
 
 def test_fake_design_rejected_white_text_single_stroke():
     """The exact human symptom: prose says steampunk, graphs stay default."""
-    from twobyteasr.art_direction import fallback_art_directions as fallback
+    from twobyteasr.caption_design.art_direction import fallback_art_directions as fallback
 
     default_directions = fallback("随便")
     default_graphs = [

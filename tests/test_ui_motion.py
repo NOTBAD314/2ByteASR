@@ -7,8 +7,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from twobyteasr.service import MediaResult, QueueResult
-from twobyteasr.ui import (
+from twobyteasr.recognition.service import MediaResult, QueueResult
+from twobyteasr.app.ui import (
     AMBER,
     CORAL,
     GREEN,
@@ -47,7 +47,7 @@ def test_elapsed_timer_uses_precise_short_heartbeat(monkeypatch):
     # source-level here so the test does not require loading models or settings UI.
     from pathlib import Path
 
-    source = (Path(__file__).parents[1] / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
+    source = (Path(__file__).parents[1] / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
     assert "setTimerType(Qt.TimerType.PreciseTimer)" in source
     assert "self._progress_timer.setInterval(200)" in source
 
@@ -60,13 +60,13 @@ def test_ai_form_can_be_saved_without_starting_a_subtitle_run(monkeypatch):
         def configure_runtime_llms(self, models, **kwargs):
             calls.append((models, kwargs))
 
-    monkeypatch.setattr("twobyteasr.ui.resolve_api_key", lambda stage: ("", "未配置"))
+    monkeypatch.setattr("twobyteasr.app.ui.resolve_api_key", lambda stage: ("", "未配置"))
     monkeypatch.setattr(
-        "twobyteasr.ui.read_api_key",
+        "twobyteasr.app.ui.read_api_key",
         lambda _provider, _base_url="": ("", "未配置"),
     )
     monkeypatch.setattr(
-        "twobyteasr.ui.save_api_key_for",
+        "twobyteasr.app.ui.save_api_key_for",
         lambda provider, base_url, key: saved_keys.append((provider, base_url, key)),
     )
     polish = {
@@ -113,11 +113,11 @@ def test_ai_grouping_can_be_disabled_without_group_key(monkeypatch):
             calls.append((models, kwargs))
 
     monkeypatch.setattr(
-        "twobyteasr.ui.resolve_api_key",
+        "twobyteasr.app.ui.resolve_api_key",
         lambda stage: ("polish-key", "env:test") if stage == "polish" else ("", "missing"),
     )
     monkeypatch.setattr(
-        "twobyteasr.ui.read_api_key",
+        "twobyteasr.app.ui.read_api_key",
         lambda _provider, _base_url="": ("", "未配置"),
     )
     polish = {
@@ -152,7 +152,7 @@ def test_ai_grouping_can_be_disabled_without_group_key(monkeypatch):
 def test_ui_has_explicit_ai_save_action_independent_of_start():
     from pathlib import Path
 
-    source = (Path(__file__).parents[1] / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
+    source = (Path(__file__).parents[1] / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
     assert 'AnimatedButton("保存 AI 配置")' in source
     assert "self.save_ai_button.clicked.connect" in source
     assert "require_ready=True" in source
@@ -161,7 +161,9 @@ def test_ui_has_explicit_ai_save_action_independent_of_start():
 def test_ui_has_nonblocking_verified_update_flow():
     from pathlib import Path
 
-    source = (Path(__file__).parents[1] / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
+    app_dir = Path(__file__).parents[1] / "twobyteasr" / "app"
+    # The update threads moved to update_dialog.py on 2026-10-15.
+    source = "".join((app_dir / name).read_text(encoding="utf-8") for name in ("ui.py", "update_dialog.py"))
     assert 'AnimatedButton("检查更新")' in source
     assert "class UpdateCheckWorker(QThread)" in source
     assert "class UpdateDownloadWorker(QThread)" in source
@@ -169,7 +171,7 @@ def test_ui_has_nonblocking_verified_update_flow():
 
 
 def test_model_workshop_has_obvious_header_return_action():
-    source = (Path(__file__).parents[1] / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
+    source = (Path(__file__).parents[1] / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
     assert 'AnimatedButton("返回字幕识别")' in source
     assert 'self.return_recognition_button.setObjectName("outline")' in source
     assert "self.return_recognition_button.setVisible(" in source
@@ -177,8 +179,8 @@ def test_model_workshop_has_obvious_header_return_action():
 
 
 def test_term_library_indexes_games_without_requiring_main_page_selection():
-    import twobyteasr.ui as ui_module
-    from twobyteasr.main_ui_glossary import (
+    import twobyteasr.app.ui as ui_module
+    from twobyteasr.glossary.main_ui_glossary import (
         term_library_game_names as canonical_term_library_game_names,
     )
 
@@ -319,7 +321,7 @@ def test_term_library_current_game_marker_is_based_on_selected_game():
     import importlib
     import inspect
 
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     term_library_dialog = ui_module.TermLibraryDialog
     implementation = importlib.import_module(term_library_dialog.__module__)
@@ -370,17 +372,17 @@ def test_completion_notification_distinguishes_success_and_failure():
 def test_start_button_avoids_blocking_cuda_preflight_and_keeps_vmware_guidance():
     from pathlib import Path
 
-    source = (Path(__file__).parents[1] / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
-    hardware_source = (Path(__file__).parents[1] / "twobyteasr" / "hardware.py").read_text(encoding="utf-8")
+    source = (Path(__file__).parents[1] / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
+    hardware_source = (Path(__file__).parents[1] / "twobyteasr" / "system" / "hardware.py").read_text(encoding="utf-8")
     assert "We intentionally skip _ensure_runtime_environment() and _ensure_cuda_runtime()" in source
-    assert "from twobyteasr.environment import fast_preflight" in source
+    assert "from twobyteasr.system.environment import fast_preflight" in source
     assert "普通 VMware 虚拟机" in hardware_source
     assert "通常不需要另外安装完整 CUDA Toolkit" in hardware_source
 
 
 def test_qwen_backend_explains_tradeoffs_and_links_official_api_key_tutorial():
     root = Path(__file__).parents[1]
-    source = (root / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
+    source = (root / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
     launcher = (root / "launcher" / "2ByteASRConfigure.cs").read_text(encoding="utf-8")
     bootstrap = (root / "scripts" / "bootstrap_install.ps1").read_text(encoding="utf-8")
     downloader = (root / "scripts" / "download_models.ps1").read_text(encoding="utf-8")
@@ -400,7 +402,7 @@ def test_combo_popup_uses_stable_opaque_geometry_with_lightweight_motion():
     import inspect
     from pathlib import Path
 
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     implementation = importlib.import_module(FramelessPopupCombo.__module__)
     assert ui_module.FramelessPopupCombo is implementation.FramelessPopupCombo
@@ -411,7 +413,7 @@ def test_combo_popup_uses_stable_opaque_geometry_with_lightweight_motion():
     assert "self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)" in source
     assert "self.clearMask()" in source
     assert "Qt.WindowType.NoDropShadowWindowHint" in source
-    facade_source = (Path(__file__).parents[1] / "twobyteasr" / "main_ui_branding.py").read_text(encoding="utf-8")
+    facade_source = (Path(__file__).parents[1] / "twobyteasr" / "app" / "main_ui_branding.py").read_text(encoding="utf-8")
     assert facade_source.index("if APP_ICON_SOURCE_PATH.is_file()") < facade_source.index("if APP_ICON_PATH.is_file()")
 
     app = QApplication.instance() or QApplication([])
@@ -475,7 +477,7 @@ def test_term_manager_is_searchable_complete_and_supports_batch_import():
     import importlib
     import inspect
 
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     term_library_dialog = ui_module.TermLibraryDialog
     implementation = importlib.import_module(term_library_dialog.__module__)
@@ -490,7 +492,9 @@ def test_term_manager_is_searchable_complete_and_supports_batch_import():
 def test_completion_dialog_requests_attention_when_window_is_in_background():
     from pathlib import Path
 
-    source = (Path(__file__).parents[1] / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
+    app_dir = Path(__file__).parents[1] / "twobyteasr" / "app"
+    # CompletionDialog moved to completion_dialog.py on 2026-10-15.
+    source = "".join((app_dir / name).read_text(encoding="utf-8") for name in ("ui.py", "completion_dialog.py"))
     assert "QApplication.beep()" in source
     assert "QApplication.alert(self, 0)" in source
     assert "WindowStaysOnTopHint" in source
@@ -522,8 +526,8 @@ def test_completion_dialog_has_theme_stable_light_surface_and_status_colors():
     assert success.card.footer is not None
     # The completion surface must carry the active theme's tokens; a saved
     # non-warm user theme must not leak a hard-coded cream card either.
-    from twobyteasr.theme_manager import theme_key
-    from twobyteasr.ui_theme import theme_definition
+    from twobyteasr.design.theme_manager import theme_key
+    from twobyteasr.design.ui_theme import theme_definition
 
     active = theme_definition(theme_key())
     assert active.surface in success.card.styleSheet()

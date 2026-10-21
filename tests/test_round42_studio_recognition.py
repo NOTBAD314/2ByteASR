@@ -24,9 +24,9 @@ from PySide6.QtWidgets import QApplication, QLabel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from twobyteasr.llm_config import models_url
-from twobyteasr.studio_project import StudioCue, StudioMedia
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.providers.llm_config import models_url
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def _app() -> QApplication:
@@ -238,7 +238,7 @@ def test_studio_recognition_start_failure_lands_on_chip(monkeypatch, tmp_path):
     留下一张计时器还在走的死弹窗（用户实录"在线API识别一直卡住"）。"""
     _app()
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     media = tmp_path / "m.flv"
@@ -349,7 +349,7 @@ def test_recognition_sheet_shows_full_api_model_name(monkeypatch, tmp_path):
 
 def test_transform_handle_box_caps_composition_overflow(monkeypatch, tmp_path):
     """visualGraph 装置外扩不再把拖拽框撑到 2.5×（四十三轮帽 0.22）。"""
-    from twobyteasr.visual_design_graph import DecorationLayer, VisualDesignGraph
+    from twobyteasr.caption_design.visual_design_graph import DecorationLayer, VisualDesignGraph
 
     page = _page(monkeypatch, tmp_path)
     project = page.project

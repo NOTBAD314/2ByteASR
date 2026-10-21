@@ -15,16 +15,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_edit_sequence import (
+from twobyteasr.timeline.studio_edit_sequence import (
     delete_timeline_range,
     ensure_edit_sequence,
     replace_runtime_sequence,
     sequence_of,
 )
-from twobyteasr.studio_media_pool import sync_primary_video_track_from_sequence
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_sequence_mapper import restore_source_seconds
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.timeline.studio_media_pool import sync_primary_video_track_from_sequence
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.timeline.studio_sequence_mapper import restore_source_seconds
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def _app() -> QApplication:

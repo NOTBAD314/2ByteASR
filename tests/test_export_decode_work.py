@@ -7,8 +7,8 @@ import os
 import av
 import pytest
 
-from twobyteasr import export_media
-from twobyteasr.processes import run_hidden_subprocess
+from twobyteasr.exports import export_media
+from twobyteasr.system.processes import run_hidden_subprocess
 
 FFMPEG = Path(__file__).resolve().parents[1] / 'tools/ffmpeg/bin/ffmpeg.exe'
 
@@ -67,7 +67,7 @@ def test_changed_media_identity_rebuilds_index(monkeypatch, long_gop):
 
 
 def _count_decoder(monkeypatch, *, wrong_seek=False, cancel_after=None):
-    from twobyteasr import video_decode_worker
+    from twobyteasr.playback import video_decode_worker
     original = video_decode_worker.open_decoder
     counts = {'frames': 0, 'seeks': []}
 
@@ -105,7 +105,7 @@ def test_late_first_frame_uses_keyframe_and_keeps_exact_pixels(monkeypatch, long
     index = export_media.probe_media(FFMPEG, long_gop)
     target = Fraction(27123, 1000)
     expected_pts = max(pts for pts in index.pts if pts * index.time_base - index.origin <= target)
-    from twobyteasr.video_decode_worker import display_bgra
+    from twobyteasr.playback.video_decode_worker import display_bgra
     with av.open(str(long_gop)) as reference:
         frame = next(frame for frame in reference.decode(video=0) if frame.pts == expected_pts)
         expected = display_bgra(frame, 1., (2560, 2560))
@@ -167,7 +167,7 @@ def test_index_checked_seek_keeps_container_pixels(monkeypatch, tmp_path, long_g
     chosen = [len(index.pts)-5, len(index.pts)//2, 0]
     expected_pts = [index.pts[i] for i in chosen]
     targets = [(index.pts[i]+index.pts[i+1])*index.time_base/2-index.origin for i in chosen]
-    from twobyteasr.video_decode_worker import display_bgra
+    from twobyteasr.playback.video_decode_worker import display_bgra
     with av.open(str(source)) as reference:
         expected = {frame.pts: display_bgra(frame, 1., (2560, 2560))
                     for frame in reference.decode(video=0) if frame.pts in expected_pts}
@@ -227,8 +227,8 @@ def test_probe_cache_retains_only_24_successful_identities(monkeypatch, tmp_path
 
 
 def test_compose_propagates_cancellation_during_first_prefix(monkeypatch, tmp_path, long_gop):
-    from twobyteasr import video_export
-    from twobyteasr.studio_render import RenderJob, RenderSettings
+    from twobyteasr.exports import video_export
+    from twobyteasr.exports.studio_render import RenderJob, RenderSettings
 
     index = export_media.probe_media(FFMPEG, long_gop)
     cancelled = threading.Event()

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
-from twobyteasr.request_operations import RequestOperations
-from twobyteasr.studio_ai_flow import StudioAIFlowMixin
+from twobyteasr.providers.request_operations import RequestOperations
+from twobyteasr.studio.studio_ai_flow import StudioAIFlowMixin
 
 
 def test_wrong_request_id_and_late_generation_cannot_replace_current_ui():

@@ -6,8 +6,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import onboarding
-from twobyteasr.recognition_choices import HostProfile, PlanOption
+from twobyteasr.app import onboarding
+from twobyteasr.recognition.recognition_choices import HostProfile, PlanOption
 
 
 def host(nvidia=False, system="win32", machine="amd64", main=True):
@@ -96,8 +96,8 @@ def test_guide_state_is_stamped_once_and_existing_users_are_not_taught(monkeypat
 
 
 def test_example_project_needs_no_model_and_explains_itself(tmp_path, monkeypatch):
-    from twobyteasr import sample_project
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.app import sample_project
+    from twobyteasr.projects.studio_project import load_project
     monkeypatch.setattr(sample_project, "sample_root", lambda: tmp_path / "example")
     path = sample_project.ensure_sample_project()
     project = load_project(path)
@@ -109,7 +109,7 @@ def test_example_project_needs_no_model_and_explains_itself(tmp_path, monkeypatc
 
 
 def test_feature_search_finds_the_places_people_ask_for():
-    from twobyteasr.feature_search import entries, search
+    from twobyteasr.app.feature_search import entries, search
     window = SimpleNamespace(**{name: (lambda *a, **k: None) for name in (
         "_open_application_settings", "_open_api_setup_guide", "_open_ai_settings_dialog", "_next_step_action",
         "_open_model_workshop", "_open_sample_project", "_open_diagnostics_dialog", "_check_updates", "_manage_terms",
@@ -124,7 +124,7 @@ def test_feature_search_finds_the_places_people_ask_for():
 
 def test_diagnostics_never_contain_keys_signed_urls_or_home_folder():
     from pathlib import Path
-    from twobyteasr.diagnostics_report import scrub
+    from twobyteasr.diagnostics.diagnostics_report import scrub
     home = str(Path.home())
     text = scrub(f"sk-ws-abcdefghijklmnopq Bearer abc.def https://x.oss.com/a?OSSAccessKeyId=LTAIabcdefghijklmn&Signature=zz "
                  f"{home}\\Videos\\clip.mp4 someone@example.com")
@@ -134,8 +134,8 @@ def test_diagnostics_never_contain_keys_signed_urls_or_home_folder():
 
 
 def test_home_role_cards_recognize_every_host_limit():
-    from twobyteasr.recognition_choices import HostProfile, unavailable_on_host
-    from twobyteasr.ui import _HOST_LIMIT_STATUSES
+    from twobyteasr.recognition.recognition_choices import HostProfile, unavailable_on_host
+    from twobyteasr.app.ui import _HOST_LIMIT_STATUSES
     no_gpu = HostProfile("win32", "amd64", False, True, False)
     assert unavailable_on_host("primary", "moss", no_gpu) in _HOST_LIMIT_STATUSES
     assert unavailable_on_host("review", "local", no_gpu) in _HOST_LIMIT_STATUSES
@@ -148,8 +148,8 @@ def test_quick_chooser_gpu_check_never_keeps_the_dialog_alive_on_its_thread(monk
     import threading
     import time
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import hardware
-    from twobyteasr.quick_setup import QuickSetupDialog
+    from twobyteasr.system import hardware
+    from twobyteasr.app.quick_setup import QuickSetupDialog
 
     app = QApplication.instance() or QApplication([])
     release = threading.Event()
@@ -182,9 +182,23 @@ def test_quick_chooser_gpu_check_never_keeps_the_dialog_alive_on_its_thread(monk
     dialog.close()
 
 
+def _until(app, condition, seconds=4.0):
+    """The tutorial waits for its target to hold still, glides there, then fades the bubble in (2026-10-14)."""
+    import time
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert condition()
+
+
+def _shown(tour):
+    return tour.mode == 'shown' and tour.reveal >= 1.0
+
+
 def test_tutorial_bubble_is_measured_with_its_new_buttons():
     from PySide6.QtWidgets import QApplication, QWidget
-    from twobyteasr.home_tour import GuidedTour, TourAction, TourStep
+    from twobyteasr.app.home_tour import GuidedTour, TourAction, TourStep
 
     app = QApplication.instance() or QApplication([])
     window = QWidget()
@@ -198,6 +212,7 @@ def test_tutorial_bubble_is_measured_with_its_new_buttons():
     tour.start()
     app.processEvents()
     tour.go(1)                      # the action button is created while the bubble is visible
+    _until(app, lambda: tour.index == 1 and _shown(tour))
     button = tour.action_buttons[0]
     assert button.isVisible()
     assert tour.bubble.height() >= tour.bubble.sizeHint().height()
@@ -208,11 +223,11 @@ def test_tutorial_bubble_is_measured_with_its_new_buttons():
 
 def test_tutorial_project_has_something_to_teach_on_every_step():
     import subtitle_core
-    from twobyteasr.sample_project import ensure_tutorial_project, tutorial_ai_preview, TUTORIAL_LIBRARY
-    from twobyteasr.studio_glossary_service import preview_glossary_correction
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.studio_qc import review_candidates
-    from twobyteasr.terminology import snapshot_glossaries
+    from twobyteasr.app.sample_project import ensure_tutorial_project, tutorial_ai_preview, TUTORIAL_LIBRARY
+    from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.subtitle_rules.studio_qc import review_candidates
+    from twobyteasr.glossary.terminology import snapshot_glossaries
 
     project = load_project(ensure_tutorial_project())
     # Review mode: the three recognizers disagree on the first line → three choices (keys 1/2/3).
@@ -240,7 +255,7 @@ def test_tutorial_steps_let_clicks_through_the_outline_and_move_on_when_done():
     import time
     from PySide6.QtCore import QPoint, QRectF
     from PySide6.QtWidgets import QApplication, QPushButton, QWidget
-    from twobyteasr.home_tour import GuidedTour, TourAction, TourStep
+    from twobyteasr.app.home_tour import GuidedTour, TourAction, TourStep
 
     app = QApplication.instance() or QApplication([])
     window = QWidget()
@@ -258,13 +273,15 @@ def test_tutorial_steps_let_clicks_through_the_outline_and_move_on_when_done():
         TourStep('完成'),
     ], avoid=lambda: [QRectF(video.geometry())])
     tour.start()
-    app.processEvents()
+    _until(app, lambda: _shown(tour))
     hole_center = tour.hole.center().toPoint()
     assert not tour.mask().contains(hole_center)                 # clicks there reach the page
     assert tour.mask().contains(QPoint(1300, 50))                # elsewhere the page waits
     assert tour.mask().contains(tour.bubble.geometry().center())
     bubble = QRectF(tour.bubble.geometry())
-    assert not bubble.intersects(tour.hole) and not bubble.intersects(QRectF(video.geometry()))
+    assert not bubble.intersects(tour.hole)
+    # A child overlay keeps off the native video; the Windows tool-window overlay is drawn above it.
+    assert tour.floating or not bubble.intersects(QRectF(video.geometry()))
     assert tour.pointer is not None
     button.click()                                               # as if the user clicked through the hole
     deadline = time.monotonic() + 3

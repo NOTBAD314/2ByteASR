@@ -9,9 +9,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_find_replace import replace_all, replace_next
-from twobyteasr.studio_commands import MutationOrigin
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_find_replace import replace_all, replace_next
+from twobyteasr.timeline.studio_commands import MutationOrigin
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 from tests.test_studio_cue_controller import _finish, _page
 
 

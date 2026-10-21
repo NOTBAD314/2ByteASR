@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QLabel, QPushButton
 
-import twobyteasr.model_workshop as workshop
+import twobyteasr.local_models.model_workshop as workshop
 from twobyteasr.runtime_paths import reset_runtime_paths
 
 ROOT = Path(os.environ.get("WORKSHOP_SOURCE_ROOT", str(Path(__file__).resolve().parents[1])))
@@ -30,7 +30,7 @@ def page(tmp_path, monkeypatch):
     monkeypatch.setattr(workshop, "QSettings", QtCore.QSettings)
     reset_runtime_paths()
     states = {"vibevoice_1_5b": "installed", "vibevoice_7b": "missing", "diarizen": "installed"}
-    monkeypatch.setattr("twobyteasr.optional_models.readiness", lambda key: states[key])
+    monkeypatch.setattr("twobyteasr.recognition.optional_models.readiness", lambda key: states[key])
     monkeypatch.setattr(workshop, "_optional_weights_complete", lambda key, root: states[key] not in {"missing", "partial"})
     model_settings = {"primary_asr_backend": "moss", "firered_asr_backend": "local",
                       "qwen_asr_backend": "local", "speaker_source": "native"}
@@ -75,7 +75,7 @@ def test_optional_cards_share_action_column_without_persistent_controls(page, ke
 def test_browsing_optional_card_does_not_select_verify_or_grant_consent(page, monkeypatch, key):
     requested = []
     page.backend_requested.connect(lambda *values: requested.append(values))
-    monkeypatch.setattr("twobyteasr.optional_models.confirm_license", lambda *args: pytest.fail("browse requested consent"))
+    monkeypatch.setattr("twobyteasr.recognition.optional_models.confirm_license", lambda *args: pytest.fail("browse requested consent"))
     monkeypatch.setattr(page, "_verify_optional_model", lambda *args: pytest.fail("browse requested verification"))
     before = copy.deepcopy(page.runtime_settings)
     page._select_model(key)
@@ -179,7 +179,7 @@ def test_variants_are_independent_for_uninstall_and_picker_current_display(page)
 def test_diarizen_explicit_use_preserves_first_consent_path(page, monkeypatch):
     consents = []
     requested = []
-    monkeypatch.setattr("twobyteasr.optional_models.confirm_license", lambda *args: consents.append(args) or True)
+    monkeypatch.setattr("twobyteasr.recognition.optional_models.confirm_license", lambda *args: consents.append(args) or True)
     page.backend_requested.connect(lambda *values: requested.append(values))
     page._perform_action("diarizen")
     assert len(consents) == 1

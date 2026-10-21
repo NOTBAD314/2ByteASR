@@ -84,8 +84,8 @@ def grid_hash(image, step: int = 16) -> str:
 
 
 def record_strip(span_ms: float, rate: float = 1.0) -> list[tuple[float, bytes]]:
-    from twobyteasr.renderer_service import GLOBAL_RENDERER_SERVICE
-    from twobyteasr.web_theme import builtin_web_themes, theme_archive_html
+    from twobyteasr.rendering.renderer_service import GLOBAL_RENDERER_SERVICE
+    from twobyteasr.caption_design.web_theme import builtin_web_themes, theme_archive_html
 
     theme = builtin_web_themes()["balatro-joker"].to_dict()
     html = theme_archive_html(theme, sample_text="小丑筹码灯珠全屏", duration_seconds=span_ms / 1000.0, auto_replay=False)
@@ -161,8 +161,8 @@ def main() -> int:
 
     frames = part0_service_strip()
 
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.web_theme import builtin_web_themes
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
 
     page = SubtitleStudioPage()
     page.resize(1700, 940)
@@ -186,7 +186,7 @@ def main() -> int:
     check("web_live_takes_over_paused", ok, f"kind={getattr(page, '_advanced_canvas_source_kind', '')}")
     pixmap = getattr(page, "_advanced_cue_pixmap", None)
     # 等条带录完（暂停时录制静默进行），随后验证"暂停=冻结"。
-    from twobyteasr.live_web_preview import GLOBAL_WEB_STRIP_STORE as _STORE
+    from twobyteasr.rendering.live_web_preview import GLOBAL_WEB_STRIP_STORE as _STORE
 
     def _strip_done() -> bool:
         worker = getattr(page, "_web_live_worker", None)
@@ -245,7 +245,7 @@ def main() -> int:
         return worker is not None and worker.running
 
     wait_until(app, _worker_alive, timeout=25.0)
-    from twobyteasr.live_web_preview import GLOBAL_WEB_STRIP_STORE
+    from twobyteasr.rendering.live_web_preview import GLOBAL_WEB_STRIP_STORE
 
     deadline = time.monotonic() + 30.0
     prev_count = -1
@@ -270,7 +270,7 @@ def main() -> int:
     strip_done = page._web_live_worker is not None and GLOBAL_WEB_STRIP_STORE.is_complete(page._web_live_worker.strip_key)
     check("strip_recorded_in_studio", strip_done, f"frames={strip_frames}")
 
-    from twobyteasr.renderer_service import GLOBAL_RENDERER_SERVICE
+    from twobyteasr.rendering.renderer_service import GLOBAL_RENDERER_SERVICE
 
     page.video.set_paused(True)
     page._seek((target.start_ms + 200) / 1000.0)

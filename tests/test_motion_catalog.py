@@ -7,14 +7,14 @@ import re
 import pytest
 
 from tests.test_word_motion_workflow import app  # noqa: F401  (QApplication fixture)
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, SubtitleStyle
-from twobyteasr.effect_dsl import validate_effect, builtin_effects, preset_effect, EffectValidationError
-from twobyteasr.letter_motion import sample
-from twobyteasr.motion_application import motion_command
-from twobyteasr.motion_catalog import (ENTRY, EXIT, LOOP, CATEGORIES, RICH_ENTRY, RICH_EXIT,
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, SubtitleStyle
+from twobyteasr.caption_style.effect_dsl import validate_effect, builtin_effects, preset_effect, EffectValidationError
+from twobyteasr.caption_style.letter_motion import sample
+from twobyteasr.caption_style.motion_application import motion_command
+from twobyteasr.caption_style.motion_catalog import (ENTRY, EXIT, LOOP, CATEGORIES, RICH_ENTRY, RICH_EXIT,
                                                      RICH_LOOP, entry_pose, exit_pose, Ctx, wipe_bands, signature_progress)
-from twobyteasr.word_animation import build_word_animation, needs_word_plan
-from twobyteasr.ass_compiler import compile_ass
+from twobyteasr.caption_style.word_animation import build_word_animation, needs_word_plan
+from twobyteasr.rendering.ass_compiler import compile_ass
 
 TEXT = '这波操作 Nice'
 DURATION = 4000
@@ -117,8 +117,8 @@ def test_per_glyph_entries_stagger_without_inventing_speech():
 
 
 def test_seek_is_deterministic_and_excerpts_keep_the_clock():
-    from twobyteasr.advanced_renderer import _native_segment_project
-    from twobyteasr.word_animation import remap_word_animation
+    from twobyteasr.rendering.advanced_renderer import _native_segment_project
+    from twobyteasr.caption_style.word_animation import remap_word_animation
     p = project({**one('entry', 'glitch_in'), 'exit': {'type': 'char_drop_out'}, 'loop': {'type': 'loop_shake'}})
     plan = build_word_animation(p, p.cues[0])
     unit = plan['units'][0]

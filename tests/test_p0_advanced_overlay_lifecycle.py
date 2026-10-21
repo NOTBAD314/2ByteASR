@@ -13,9 +13,9 @@ from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtGui import QHideEvent, QPixmap, QShowEvent
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.studio_project as studio_project
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+import twobyteasr.projects.studio_project as studio_project
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
 
 
 def _project_page(tmp_path, monkeypatch):
@@ -74,7 +74,7 @@ def test_publish_ready_never_shows_overlay_while_page_hidden(tmp_path, monkeypat
     try:
         page.hideEvent(QHideEvent())
         QApplication.processEvents()
-        from twobyteasr.advanced_preview import AdvancedPreviewIdentity
+        from twobyteasr.rendering.advanced_preview import AdvancedPreviewIdentity
 
         identity = AdvancedPreviewIdentity(
             cue_id="1", snapshot_hash="x", glyph_key="g", motion_key="m",

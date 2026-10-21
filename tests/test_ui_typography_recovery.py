@@ -12,13 +12,13 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     monkeypatch.setattr(theme_manager, "_settings", lambda: QSettings(str(tmp_path / "theme.ini"), QSettings.Format.IniFormat))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     path = Path(__file__).resolve().parents[1] / "assets/fonts/SourceHanSansSC-Heavy.otf"
     font_ids = [QFontDatabase.addApplicationFont(str(p)) for p in (path, path.with_name('SourceHanSansSC-Medium.otf'))]
     assert all(i >= 0 for i in font_ids)
-    from twobyteasr.typography import application_font
+    from twobyteasr.design.typography import application_font
     app.setFont(application_font())
     yield app
     for font_id in font_ids: QFontDatabase.removeApplicationFont(font_id)
@@ -41,7 +41,7 @@ def test_registered_heavy_does_not_become_application_body(app):
 
 
 def test_title_and_body_resolve_different_faces_across_theme_switches(app):
-    from twobyteasr.theme_manager import apply_theme
+    from twobyteasr.design.theme_manager import apply_theme
     root = QWidget()
     layout = QVBoxLayout(root)
     title = QLabel("应用设置")
@@ -66,8 +66,8 @@ def test_title_and_body_resolve_different_faces_across_theme_switches(app):
 
 
 def test_studio_small_section_title_does_not_inherit_page_heavy(app):
-    from twobyteasr.studio_theme import build_studio_qss
-    from twobyteasr.ui_theme import theme_definition
+    from twobyteasr.design.studio_theme import build_studio_qss
+    from twobyteasr.design.ui_theme import theme_definition
     root = QWidget()
     root.setObjectName("subtitleStudio")
     root.setStyleSheet(build_studio_qss(theme_definition("slate")))
@@ -84,8 +84,8 @@ def test_studio_small_section_title_does_not_inherit_page_heavy(app):
 
 
 def test_chinese_and_sc_heavy_aliases_are_shared():
-    from twobyteasr.font_system import SystemFontEntry, resolve_source_han_heavy
-    from twobyteasr.typography import TITLE_FONT_FAMILIES
+    from twobyteasr.caption_style.font_system import SystemFontEntry, resolve_source_han_heavy
+    from twobyteasr.design.typography import TITLE_FONT_FAMILIES
     for family in ("Source Han Sans SC Heavy", "思源黑体 Heavy"):
         face = resolve_source_han_heavy((SystemFontEntry(family, ("Regular",)),))
         assert family in TITLE_FONT_FAMILIES

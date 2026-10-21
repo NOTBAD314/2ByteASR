@@ -9,8 +9,8 @@ from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractItemView, QApplication
 
-from twobyteasr.studio_cue_controller import StudioCueController
-from twobyteasr.studio_project import (
+from twobyteasr.studio.studio_cue_controller import StudioCueController
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -18,7 +18,7 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 CUE_WRAPPERS = {
@@ -96,7 +96,7 @@ def test_cue_controller_is_plain_session_first_collaborator():
     )
     source = inspect.getsource(inspect.getmodule(StudioCueController))
     assert "from .studio_ui" not in source
-    assert "import twobyteasr.studio_ui" not in source
+    assert "import twobyteasr.studio.studio_ui" not in source
     assert "QObject" not in source
     assert "QTimer" not in source
     assert "QThread" not in source

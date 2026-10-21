@@ -12,18 +12,19 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
-from twobyteasr import studio_ai, studio_ui, studio_ai_flow  # noqa: E402
-from twobyteasr.main_ui_dialogs import SpringDialog  # noqa: E402
-from twobyteasr.art_direction import (  # noqa: E402
+from twobyteasr.caption_design import studio_ai
+from twobyteasr.studio import studio_ui, studio_ai_flow  # noqa: E402
+from twobyteasr.design.main_ui_dialogs import SpringDialog  # noqa: E402
+from twobyteasr.caption_design.art_direction import (  # noqa: E402
     fallback_art_directions,
     score_visual_graph,
     validate_and_repair_graph,
 )
-from twobyteasr.llm_config import AI_SERVICE_SPECS, endpoint_from_settings  # noqa: E402
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject  # noqa: E402
-from twobyteasr.studio_theme import StudioComboBox  # noqa: E402
-from twobyteasr.style_recipe import StyleRecipe  # noqa: E402
-from twobyteasr.visual_design_graph import VisualDesignGraph  # noqa: E402
+from twobyteasr.providers.llm_config import AI_SERVICE_SPECS, endpoint_from_settings  # noqa: E402
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject  # noqa: E402
+from twobyteasr.design.studio_theme import StudioComboBox  # noqa: E402
+from twobyteasr.caption_style.style_recipe import StyleRecipe  # noqa: E402
+from twobyteasr.caption_design.visual_design_graph import VisualDesignGraph  # noqa: E402
 
 
 def _app() -> QApplication:

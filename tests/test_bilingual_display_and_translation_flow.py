@@ -5,9 +5,9 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import subtitle_core  # noqa: F401  (legacy core first)
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.bilingual_layout import BilingualSettings, companion_id, project_display_cues, settings_from_state
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.caption_style.bilingual_layout import BilingualSettings, companion_id, project_display_cues, settings_from_state
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -66,8 +66,8 @@ def test_old_boolean_switch_still_shows_both_with_old_proportions():
 
 
 def test_live_preview_materializes_the_same_display_cues():
-    from twobyteasr.caption_playback_cache import materialize_caption_project
-    from twobyteasr.studio_revisions import StudioRevisionStore
+    from twobyteasr.rendering.caption_playback_cache import materialize_caption_project
+    from twobyteasr.projects.studio_revisions import StudioRevisionStore
     project = _project({"bilingual": {"mode": "bilingual"}})
     store = StudioRevisionStore(project)
     live = materialize_caption_project(store.render)
@@ -77,8 +77,8 @@ def test_live_preview_materializes_the_same_display_cues():
 
 def test_translation_snapshot_command_is_one_undo_step():
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_bilingual import ApplyTranslationSnapshotCommand
-    from twobyteasr.subtitle_translation import migrate, set_manual, snapshot
+    from twobyteasr.studio.studio_bilingual import ApplyTranslationSnapshotCommand
+    from twobyteasr.subtitle_rules.subtitle_translation import migrate, set_manual, snapshot
     project = _project(translations={})
     migrate(project)
     before = snapshot(project)
@@ -109,7 +109,7 @@ class _FakeProvider:
 
 
 def test_recognition_translation_writes_records_for_the_project_ids(monkeypatch, tmp_path):
-    from twobyteasr import recognition_translation as rt
+    from twobyteasr.subtitle_rules import recognition_translation as rt
     monkeypatch.setattr(rt, "cache_path", lambda: tmp_path / "cache.json")
     cues = [SimpleNamespace(cue_id=1, start=0.0, end=1.0, text="怖いわ", speaker="S01"),
             SimpleNamespace(cue_id=1, start=1.0, end=2.0, text="反省", speaker="S01")]
@@ -127,22 +127,22 @@ def test_recognition_translation_writes_records_for_the_project_ids(monkeypatch,
 
 def test_translation_dialog_opens_with_counts_and_without_a_configured_service(monkeypatch):
     from PySide6.QtGui import QUndoStack
-    from twobyteasr import studio_ai
-    from twobyteasr.studio_translation_dialog import SubtitleTranslationDialog
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.studio.studio_translation_dialog import SubtitleTranslationDialog
     monkeypatch.setattr(studio_ai.GLOBAL_PROVIDER_REGISTRY, "settings", lambda: (_ for _ in ()).throw(RuntimeError("none")))
     page = SimpleNamespace(project=_project(), selected_cue_ids=lambda: ["2"], undo_stack=QUndoStack())
     dialog = SubtitleTranslationDialog(page)
     try:
         assert "未翻译" in dialog.counts.text() or "Untranslated" in dialog.counts.text()
         assert not dialog.start_button.isEnabled()            # no service: nothing is sent
-        assert dialog.scope_buttons["selected"].isEnabled() and dialog.scope_buttons["pending"].isChecked()
+        assert dialog.scope_buttons["selected"].isEnabled() and dialog.scope_buttons["selected"].isChecked()
     finally:
         dialog.deleteLater()
 
 
 def test_compact_layout_keeps_the_visible_gap_from_ink_outline_and_shadow():
-    from twobyteasr.bilingual_layout import ink_block
-    from twobyteasr.resolved_caption_style import resolve_caption_style
+    from twobyteasr.caption_style.bilingual_layout import ink_block
+    from twobyteasr.caption_style.resolved_caption_style import resolve_caption_style
     project = _project({"bilingual": {"mode": "bilingual", "layout": "ink_v1", "gap_ratio": 0.13}})
     cues = {c.id: c for c in project_display_cues(project)}
     original, companion = cues["1"], cues[companion_id("1")]
@@ -160,7 +160,7 @@ def test_compact_layout_keeps_the_visible_gap_from_ink_outline_and_shadow():
 
 def test_first_bilingual_choice_is_compact_and_the_compact_command_is_one_undo_step():
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.studio_bilingual import apply_compact_layout, apply_display
+    from twobyteasr.studio.studio_bilingual import apply_compact_layout, apply_display
     page = SimpleNamespace(project=_project(), undo_stack=QUndoStack())
     assert apply_display(page, mode="bilingual")
     assert page.project.studio_state["bilingual"]["layout"] == "ink_v1"
@@ -173,8 +173,8 @@ def test_first_bilingual_choice_is_compact_and_the_compact_command_is_one_undo_s
 
 
 def test_overlapping_speakers_reserve_the_whole_bilingual_group():
-    from twobyteasr.bilingual_layout import group_extra_for
-    from twobyteasr.subtitle_stacking import initialize_project_layout
+    from twobyteasr.caption_style.bilingual_layout import group_extra_for
+    from twobyteasr.caption_style.subtitle_stacking import initialize_project_layout
     project = SubtitleProject(media=StudioMedia(path="x.mp4", duration_ms=5000),
                               cues=[StudioCue("a", 0, 3000, "一人目の台詞", speaker_id="S01"),
                                     StudioCue("b", 500, 2500, "二人目の台詞", speaker_id="S02")],

@@ -6,8 +6,8 @@ from PySide6.QtCore import QSignalBlocker, Qt, QPoint
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
-from twobyteasr.ui_widgets import SwitchControl
-from twobyteasr.ui import MainWindow
+from twobyteasr.design.ui_widgets import SwitchControl
+from twobyteasr.app.ui import MainWindow
 
 
 APP = QApplication.instance() or QApplication([])
@@ -76,7 +76,7 @@ class Owner(QWidget):
 @pytest.mark.parametrize('checked', [False, True])
 def test_save_empty_selection_preserves_intent_and_restores_without_signals(monkeypatch, checked):
     saved = []
-    monkeypatch.setattr('twobyteasr.ui.save_runtime_settings', lambda payload: saved.append(payload['glossary'].copy()))
+    monkeypatch.setattr('twobyteasr.app.ui.save_runtime_settings', lambda payload: saved.append(payload['glossary'].copy()))
     owner = Owner({'glossary': {'enable_domain_terms': checked, 'enabled_glossary_ids': []}})
     owner._restore_glossary_switch()
     assert owner.terms.isChecked() == checked and owner.terms._progress == float(checked)
@@ -90,7 +90,7 @@ def test_save_empty_selection_preserves_intent_and_restores_without_signals(monk
 
 
 def test_off_snapshot_never_carries_previous_batch_and_online_is_independent(monkeypatch):
-    monkeypatch.setattr('twobyteasr.ui.save_runtime_settings', lambda _: None)
+    monkeypatch.setattr('twobyteasr.app.ui.save_runtime_settings', lambda _: None)
     owner = Owner({'glossary': {'enable_domain_terms': False, 'enabled_glossary_ids': ['previous']}})
     owner._restore_glossary_switch(); owner.term_search.setChecked(True)
     assert owner._task_glossary_selection() == ((), False)

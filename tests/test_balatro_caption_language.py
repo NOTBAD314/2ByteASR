@@ -6,16 +6,16 @@ from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
 
-from twobyteasr.caption_card_ui import examples
-from twobyteasr.caption_components import compose
-from twobyteasr.caption_style_reference import (is_balatro, load_reference,
+from twobyteasr.caption_design.caption_card_ui import examples
+from twobyteasr.caption_design.caption_components import compose
+from twobyteasr.caption_design.caption_style_reference import (is_balatro, load_reference,
     attach_reference, prompt_reference, validate_draft_diversity)
 
 
 @pytest.mark.parametrize('prompt', ['Balatro','BALATRO','小丑牌风','赌场纸牌风','传奇卡牌风','传奇封牌'])
 def test_style_aliases_share_reference_and_guidance(prompt):
-    from twobyteasr.design_guidance import load_design_guidance
-    from twobyteasr.caption_creative_pipeline import main_theme
+    from twobyteasr.caption_design.design_guidance import load_design_guidance
+    from twobyteasr.caption_design.caption_creative_pipeline import main_theme
     guidance, receipt = load_design_guidance(prompt)
     assert is_balatro(prompt) and main_theme(prompt)=='Balatro'
     assert receipt['theme']=='Balatro' and '倍率封签' in guidance and '筹码压印' in guidance
@@ -24,7 +24,7 @@ def test_style_aliases_share_reference_and_guidance(prompt):
 
 
 def test_unrelated_theme_does_not_receive_card_directive():
-    from twobyteasr.design_guidance import load_design_guidance
+    from twobyteasr.caption_design.design_guidance import load_design_guidance
     _,receipt=load_design_guidance('冰雪主题')
     assert not is_balatro('冰雪主题') and load_reference('冰雪主题') is None
     assert all('balatro-caption' not in r['path'] for r in receipt['files'])
@@ -32,8 +32,8 @@ def test_unrelated_theme_does_not_receive_card_directive():
 
 @pytest.mark.parametrize('index',[0,1,2])
 def test_v3_roundtrip_has_semantic_text_and_full_motion(index):
-    from twobyteasr.web_theme import WebThemeDocument, theme_archive_html
-    from twobyteasr.source_artifact import frame, to_theme
+    from twobyteasr.caption_design.web_theme import WebThemeDocument, theme_archive_html
+    from twobyteasr.caption_design.source_artifact import frame, to_theme
     parts=dict(HTML='',CSS='',STAGE_CSS='',PARAMETERS=json.dumps({'components':dict(examples()[index],emphasis=['自动战斗'])}))
     theme, receipt=to_theme(frame(parts,'test'),'test',{'name':'纸牌字幕'})
     theme=WebThemeDocument.from_dict(theme).to_dict()
@@ -66,7 +66,7 @@ def test_reference_tampering_stops_before_generation(tmp_path):
 
 
 def test_snapshot_and_retry_preserve_image_order_and_identity(tmp_path):
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,saved_reference_images
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,saved_reference_images
     from PIL import Image
     media=tmp_path/'media.png';Image.new('RGB',(16,16),'white').save(media)
     ledger=ThemeLedger(tmp_path/'task','小丑牌',references=[(media,'current-media')])
@@ -85,8 +85,8 @@ def test_snapshot_and_retry_preserve_image_order_and_identity(tmp_path):
 
 
 def test_guidance_budget_keeps_three_directions_and_reference(tmp_path):
-    from twobyteasr.authored_prompt import assemble
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.authored_prompt import assemble
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
     ledger=ThemeLedger(tmp_path/'task','Balatro小丑牌风格，没有角色，设计背景框字面关键词和完整进出场')
     ledger.value.update(requested_candidates=3,component_drafts=True,creative_context={'subtitle_text':'这种就属于是点了自动战斗'})
     attach_reference(ledger)
@@ -106,9 +106,9 @@ def test_legacy_component_source_still_supported():
 
 def test_saved_three_directions_survive_current_single_default(tmp_path):
     from types import SimpleNamespace
-    from twobyteasr.authored_generation import generate_staged,normalize_directions
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.authored_generation import generate_staged,normalize_directions
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     directions={'candidates':[]};saved={}
     for ident,definition in zip('ABC',examples()):
         directions['candidates'].append(dict(name=ident,design='完整卡牌字幕与边框字面进出场设计',components=definition))

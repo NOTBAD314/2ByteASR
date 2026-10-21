@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from twobyteasr.waveform_cache import (
+from twobyteasr.playback.waveform_cache import (
     LOD_FACTOR,
     WaveformCache,
     build_lod_pyramid,

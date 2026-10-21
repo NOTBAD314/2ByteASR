@@ -1,12 +1,22 @@
 ﻿# End-user bootstrap: only private, pinned tools/interpreters; no system installs.
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string[]]$ModelKey)
+param([Parameter(Mandatory=$true)][string[]]$ModelKey, [string]$RepairRoles = '')
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $root = Split-Path -Parent $PSScriptRoot
+$ModelKey=@($ModelKey | ForEach-Object { $_ -split ',' } | Where-Object { $_ } | Select-Object -Unique)
+if (-not $env:TWOBYTEASR_DEPLOY_JOB_ID) { $env:TWOBYTEASR_DEPLOY_JOB_ID=[guid]::NewGuid().ToString('N') }
+foreach ($entry in @(Get-ChildItem Env:)) {
+    if ($entry.Name -match '^(PYTHON|PIP_|UV_|CONDA_|_PYI)' -or $entry.Name -in @('VIRTUAL_ENV','__PYVENV_LAUNCHER__') -or $entry.Name -match '^TWOBYTEASR_.*_PYTHON$') {
+        Remove-Item -LiteralPath ('Env:'+ $entry.Name) -ErrorAction SilentlyContinue
+    }
+}
+$env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'; $env:PYTHONNOUSERSITE='1'
+$env:PIP_CONFIG_FILE='NUL'; $env:UV_NO_CONFIG='1'; $env:UV_HTTP_TIMEOUT='30'; $env:UV_HTTP_RETRIES='1'
+$env:TWOBYTEASR_MANAGED_RUNTIME_ONLY='1'
 # Reject retired keys before creating a runtime, lock or download cache.
 if ($ModelKey | Where-Object { $_ -in @('diarizen','diarizen_embedding','vibevoice_1_5b','vibevoice_7b') }) {
     throw 'DiariZen / VibeVoice models have been removed; no installation or download was started.'
@@ -33,7 +43,72 @@ $phase = 'tools_preparing'
 $category = $null
 function Stage([string]$name) {
     $script:phase=$name
-    Write-Host ('[2BYTEASR_PHASE] '+(@{phase=$name;models=$ModelKey} | ConvertTo-Json -Compress))
+    Write-Host ('[2BYTEASR_PHASE] '+(@{phase=$name;models=$ModelKey;job_id=$env:TWOBYTEASR_DEPLOY_JOB_ID;pid=$PID} | ConvertTo-Json -Compress))
+}
+function Run-Bounded([string]$program,[string[]]$arguments,[int]$seconds=900,
+                     [string]$progressFile='',[int]$idleSeconds=45,[string]$component='') {
+    $info=New-Object Diagnostics.ProcessStartInfo
+    $info.FileName=$program; $info.WorkingDirectory=$managed
+    $quoted=@($arguments | ForEach-Object { '"'+($_ -replace '(\\*)"','$1$1\"' -replace '(\\+)$','$1$1')+'"' })
+    $info.Arguments=$quoted -join ' '
+    $info.UseShellExecute=$false; $info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true; $info.RedirectStandardInput=$true
+    $info.StandardOutputEncoding=[Text.UTF8Encoding]::new($false);$info.StandardErrorEncoding=[Text.UTF8Encoding]::new($false)
+    $process=[Diagnostics.Process]::Start($info)
+    $process.StandardInput.Close()
+    $started=[DateTime]::UtcNow; $last=$started; $lastProgress=$started; $checkedProgress=$started
+    [long]$transferred=0
+    Write-Host ('[2BYTEASR_DEPLOY] '+(@{job_id=$env:TWOBYTEASR_DEPLOY_JOB_ID;phase=$script:phase;state='start';component=$component;executable=$program;arguments=$arguments;child_pid=$process.Id;deadline_s=$seconds} | ConvertTo-Json -Compress))
+    $output=$process.StandardOutput.ReadLineAsync(); $errorOutput=$process.StandardError.ReadLineAsync()
+    try {
+        while (-not $process.HasExited -or $output -or $errorOutput) {
+            foreach ($which in @('output','errorOutput')) {
+                $task=Get-Variable -Name $which -ValueOnly
+                if ($task -and $task.IsCompleted) {
+                    $line=$task.GetAwaiter().GetResult()
+                    if ($null -ne $line) {
+                        Write-Host $line
+                        if ($line -match '\(os error 32\)') { $script:inUseSeen=$true }
+                        if ($line.StartsWith('[2BYTEASR_DEPLOY] ')) {
+                            try {
+                                $childEvent=$line.Substring(18) | ConvertFrom-Json
+                                if ($childEvent.component -and $childEvent.phase -and $childEvent.state -in @('start','failed')) {
+                                    $script:phase=[string]$childEvent.phase
+                                }
+                            } catch { }
+                        }
+                        $stream=if ($which -eq 'output') {$process.StandardOutput} else {$process.StandardError}
+                        Set-Variable -Name $which -Value $stream.ReadLineAsync()
+                    } else { Set-Variable -Name $which -Value $null }
+                }
+            }
+            $now=[DateTime]::UtcNow
+            if ($progressFile -and ($now-$checkedProgress).TotalSeconds -ge 1) {
+                $checkedProgress=$now
+                [long]$length=if (Test-Path -LiteralPath $progressFile) { (Get-Item -LiteralPath $progressFile).Length } else { 0 }
+                if ($length -gt $transferred) { $transferred=$length; $lastProgress=$now }
+            }
+            $noProgress=$progressFile -and ($now-$lastProgress).TotalSeconds -gt $idleSeconds
+            if (($now-$started).TotalSeconds -gt $seconds -or $noProgress) {
+                $reason=if ($noProgress) { "$component 下载 $idleSeconds 秒没有新增数据，停止本次来源。" } else { "$script:phase 超过 $seconds 秒，停止本次程序。" }
+                & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /PID $process.Id /T /F 2>&1 | Out-Null
+                $global:LASTEXITCODE=28
+                Write-Host ('[2BYTEASR_DEPLOY] '+(@{job_id=$env:TWOBYTEASR_DEPLOY_JOB_ID;phase=$script:phase;state='failed';component=$component;child_pid=$process.Id;reason=$reason;downloaded=$transferred;next=$(if($progressFile){'next_tool_source'}else{'retry_or_repair'})} | ConvertTo-Json -Compress))
+                throw $reason
+            }
+            if (([DateTime]::UtcNow-$last).TotalSeconds -ge 15) {
+                Write-Host ('[2BYTEASR_DEPLOY] '+(@{job_id=$env:TWOBYTEASR_DEPLOY_JOB_ID;phase=$script:phase;state='waiting';component=$component;child_pid=$process.Id;elapsed_s=[int]([DateTime]::UtcNow-$started).TotalSeconds;waiting='subprocess';downloaded=$(if($progressFile){$transferred}else{$null});progress_age_s=$(if($progressFile){[int]($now-$lastProgress).TotalSeconds}else{$null})} | ConvertTo-Json -Compress))
+                $last=[DateTime]::UtcNow
+            }
+            Start-Sleep -Milliseconds 50
+        }
+        $process.WaitForExit()
+        $code=$process.ExitCode
+        $global:LASTEXITCODE=$code
+        Write-Host ('[2BYTEASR_DEPLOY] '+(@{job_id=$env:TWOBYTEASR_DEPLOY_JOB_ID;phase=$script:phase;state= $(if($code -eq 0){'done'}else{'failed'});child_pid=$process.Id;exit_code=$code} | ConvertTo-Json -Compress))
+        if ($code -eq 75) { $script:category='runtime_network' }
+        if ($code -ne 0) { throw "子程序退出码 $code，阶段 $script:phase" }
+    } finally { $process.Dispose() }
 }
 function Sha([string]$file) {
     $stream=[IO.File]::OpenRead($file); $hasher=[Security.Cryptography.SHA256]::Create()
@@ -52,8 +127,8 @@ function RunUv([string[]]$arguments) {
         Remove-Item -LiteralPath ('Env:'+ $name) -ErrorAction SilentlyContinue
     }
     try {
-        & $script:uv @arguments
-        if ($LASTEXITCODE -ne 0) { throw "uv exit $LASTEXITCODE during $script:phase" }
+        if ($RepairRoles) { $arguments=@('--no-cache')+$arguments }
+        Run-Bounded $script:uv $arguments
     } finally {
         foreach ($name in $savedEnvironment.Keys) {
             $saved=$savedEnvironment[$name]
@@ -101,8 +176,18 @@ function Get-VerifiedFile([string]$url,[string]$sha,[string]$destination) {
     # Returns '' on success, otherwise a short reason. Nothing unverified stays.
     $pending=$destination+'.partial'
     Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue
-    & (Join-Path $env:SystemRoot 'System32\curl.exe') --fail --location --retry 1 --connect-timeout 10 --speed-limit 20480 --speed-time 30 --max-time 900 --output $pending $url
-    $code=$LASTEXITCODE
+    $curl=Join-Path $env:SystemRoot 'System32\curl.exe'
+    $http='[2BYTEASR_TOOL_HTTP] {"http_status":"%{response_code}","downloaded":%{size_download},"redirects":%{num_redirects},"elapsed_s":%{time_total},"effective_url":"%{url_effective}"}\n'
+    # Independent progress supervision also covers native TLS/file waits where
+    # curl's own timer may not return. No-progress applies only to this download,
+    # never dependency extraction/import checks. Ignore external curlrc files.
+    $global:LASTEXITCODE=1
+    try {
+        Run-Bounded $curl @('--disable','--silent','--show-error','--fail','--location','--retry','0',
+            '--connect-timeout','10','--speed-limit','20480','--speed-time','30','--max-time','900',
+            '--write-out',$http,'--output',$pending,$url) 915 $pending 45 'uv'
+        $code=0
+    } catch { $code=[int]$LASTEXITCODE }
     if ($code -ne 0) {
         Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue
         $reason=@{6='域名无法解析';7='无法连接';22='来源返回错误状态';28='连接或传输超时';35='TLS 握手失败';56='连接中断'}[$code]
@@ -127,13 +212,64 @@ function Get-UvArchive($sources,[string]$archive) {
     $script:category=if (@($failures | Where-Object { $_ -notlike '*SHA-256*' }).Count) { 'runtime_network' } else { 'checksum' }
     throw ('uv 下载失败，GitHub 与备用来源都没有成功：'+($failures -join '；'))
 }
+function Get-PreferredOrder($official,$fallbacks) {
+    # download_models.ps1 sets 2BYTEASR_RUNTIME_SOURCE=mirror when the workshop's
+    # download source is ModelScope / HF 镜像: the official host is tried last.
+    if ($env:2BYTEASR_RUNTIME_SOURCE -eq 'mirror') { return @(@($fallbacks)+@($official)) }
+    return @(@($official)+@($fallbacks))
+}
+function Get-UvSources($official,$fallbacks) {
+    $domestic=@($fallbacks | Where-Object { $_.domestic })
+    $others=@($fallbacks | Where-Object { -not $_.domestic })
+    return @($domestic)+@(Get-PreferredOrder $official $others)
+}
+# 2026-10-21: on one PC Windows reported folders under the data folder as in use (os error 32) whenever uv deleted
+# them. Every `uv python install` re-creates the minor-version links, so remove them first (only the link itself,
+# never its target; also an empty folder left by an earlier failed re-creation) and let uv just create them.
+function Remove-MinorVersionLinks([string]$folder) {
+    $removed=@{}
+    if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { return $removed }
+    foreach ($entry in @(Get-ChildItem -LiteralPath $folder -Directory -Force | Where-Object { $_.Name -match '^cpython-\d+\.\d+-windows-x86_64-none$' })) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            $removed[$entry.FullName]=[string]@($entry.Target)[0]
+            [IO.Directory]::Delete($entry.FullName)
+        } elseif (-not @(Get-ChildItem -LiteralPath $entry.FullName -Force).Count) {
+            [IO.Directory]::Delete($entry.FullName)
+        }
+    }
+    return $removed
+}
+function Restore-MinorVersionLinks($removed) {
+    # A uv call that failed before re-creating a link: point it where it pointed before.
+    foreach ($link in @($removed.Keys)) {
+        if (Test-Path -LiteralPath $link) { continue }
+        New-Item -ItemType Junction -Path $link -Value $removed[$link] | Out-Null
+        Write-Host ('[运行库] 已恢复 Python 版本连接 '+(Split-Path $link -Leaf))
+    }
+}
+function Invoke-PythonInstall([string[]]$arguments) {
+    # Waits and runs again after an "in use" (os error 32) failure; other failures go to the next source as before.
+    foreach ($wait in @(2,5,10,$null)) {
+        $links=Remove-MinorVersionLinks $env:UV_PYTHON_INSTALL_DIR
+        $script:inUseSeen=$false
+        try { RunUv $arguments; return }
+        catch {
+            if ($null -eq $wait -or -not $script:inUseSeen) { throw }
+            Write-Host ('[运行库] Windows 报告文件或文件夹正在被使用，'+$wait+' 秒后重试')
+            Start-Sleep -Seconds $wait
+        } finally { Restore-MinorVersionLinks $links }
+    }
+}
 function Install-ManagedPython([string]$version) {
     $arguments=@('--no-config','--system-certs','python','install',$version,'--install-dir',$env:UV_PYTHON_INSTALL_DIR,'--no-bin','--no-registry')
-    try { RunUv $arguments; return } catch { Write-Host ('[运行库] 默认来源未能取得 Python '+$version+'：'+$_.Exception.Message) }
-    foreach ($mirror in @($script:pythonMirrors)) {
-        # uv checks every Python archive against the SHA-256 built into uv.
-        Write-Host ('[运行库] 改用 '+$mirror.label+' 取得 Python '+$version+'，由 uv 按内置 SHA-256 校验')
-        try { RunUv ($arguments+@('--mirror',$mirror.url)); return } catch { Write-Host ('[运行库] '+$mirror.label+' 未成功：'+$_.Exception.Message) }
+    foreach ($attempt in (Get-PreferredOrder ([pscustomobject]@{label='默认来源';url=''}) @($script:pythonMirrors))) {
+        $extra=@()
+        if ($attempt.url) {
+            # uv checks every Python archive against the SHA-256 built into uv.
+            $extra=@('--mirror',$attempt.url)
+            Write-Host ('[运行库] 从 '+$attempt.label+' 取得 Python '+$version+'，由 uv 按内置 SHA-256 校验')
+        }
+        try { Invoke-PythonInstall ($arguments+$extra); return } catch { Write-Host ('[运行库] '+$attempt.label+' 未能取得 Python '+$version+'：'+$_.Exception.Message) }
     }
     $script:category='runtime_network'
     throw ('Python '+$version+' 下载失败：默认来源与国内备用来源都没有成功，请查看上方 uv 输出')
@@ -142,11 +278,12 @@ $guard=$null
 try {
     New-Item -ItemType Directory -Path $managed -Force | Out-Null
     # OS handle ownership releases on cancellation/crash; stale filenames do not lock.
-    $lockDeadline=[DateTime]::UtcNow.AddMinutes(30)
+    Stage 'waiting_for_lock'
+    $lockDeadline=[DateTime]::UtcNow.AddSeconds(60)
     while (-not $guard) {
         try { $guard=[IO.File]::Open((Join-Path $managed 'bootstrap.lock'),'OpenOrCreate','ReadWrite','None') }
         catch [IO.IOException] {
-            if ([DateTime]::UtcNow -gt $lockDeadline) { throw '等待其他模型运行库准备超时，请稍后重试。' }
+            if ([DateTime]::UtcNow -gt $lockDeadline) { $script:category='runtime_busy'; throw '另一项环境准备仍在运行，已停止本次等待。请回到正在进行的下载窗口；不会并行重建。' }
             Write-Host '[运行库] 另一项准备正在使用环境，等待安全完成。'
             Start-Sleep -Seconds 2
         }
@@ -157,20 +294,25 @@ try {
     Use-SystemProxy
     # Official first; fallbacks are only for the same pinned uv version and are
     # accepted solely by SHA-256, so a mirror cannot substitute other bytes.
-    $uvSources=@([pscustomobject]@{label='GitHub 官方';url=$boot.uv_url;sha256=$boot.uv_sha256})
+    $officialUv=[pscustomobject]@{label='GitHub 官方';url=$boot.uv_url;sha256=$boot.uv_sha256}
+    $uvFallbacks=@()
     $uvBinaries=$null
     $script:pythonMirrors=@()
     $sourcesFile=Join-Path $PSScriptRoot 'runtime_sources.json'
     if (Test-Path -LiteralPath $sourcesFile) {
         $fallback=Get-Content -LiteralPath $sourcesFile -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($fallback.uv.version -eq $boot.uv_version) {
-            $uvSources+=@($fallback.uv.fallbacks)
+            $uvFallbacks=@($fallback.uv.fallbacks)
             $uvBinaries=$fallback.uv.binaries
         } else {
             Write-Host ('[工具] 备用来源清单对应 uv '+$fallback.uv.version+'，与锁定的 '+$boot.uv_version+' 不同，只使用官方来源')
         }
         $script:pythonMirrors=@($fallback.python_mirrors)
     }
+    # Bootstrap is common to every model source. Measured mainland DIRECT
+    # requests can spend minutes on GitHub before the first usable tool byte.
+    # Prefer the pinned domestic wheels; official hosts remain fallbacks.
+    $uvSources=@(Get-UvSources $officialUv $uvFallbacks)
     $archiveHashes=@($uvSources | ForEach-Object { $_.sha256 })
     $tools=Join-Path $managed ('tools\uv-'+$boot.uv_version)
     New-Item -ItemType Directory -Path $tools -Force | Out-Null
@@ -217,6 +359,8 @@ try {
     }
     $script:uv=Join-Path $tools 'uv.exe'
     $env:UV_PYTHON_INSTALL_DIR=Join-Path $managed 'python'
+    if ($RepairRoles) { $env:UV_PYTHON_INSTALL_DIR=Join-Path $managed ('python\generation-'+$env:TWOBYTEASR_DEPLOY_JOB_ID) }
+    $env:TWOBYTEASR_PRIVATE_PYTHON_DIR=$env:UV_PYTHON_INSTALL_DIR
     $env:UV_PYTHON_BIN_DIR=Join-Path $managed 'unused-bin'
     $env:UV_CACHE_DIR=Join-Path $managed 'download-cache'
     $env:UV_LINK_MODE='hardlink'
@@ -228,7 +372,10 @@ try {
     $python=Join-Path $env:UV_PYTHON_INSTALL_DIR ('cpython-'+$version+'-windows-x86_64-none\python.exe')
     if (-not (Test-Path -LiteralPath $python)) { throw 'Managed Python missing after installation' }
     Stage 'dependencies_installing'
-    & $python -I (Join-Path $PSScriptRoot 'install_managed_backend.py') --root $root --uv $script:uv --models ($ModelKey -join ',')
+    $installerArguments=@('-I','-X','utf8','-B',(Join-Path $PSScriptRoot 'install_managed_backend.py'),'--root',$root,'--uv',$script:uv,'--models',($ModelKey -join ','))
+    if ($RepairRoles) { $installerArguments+=@('--repair-roles',$RepairRoles) }
+    Run-Bounded $python $installerArguments 3600
+    $global:LASTEXITCODE=0
     # 75 = install_managed_backend.SOURCES_EXHAUSTED: official and mirror sources all failed.
     if ($LASTEXITCODE -eq 75) { $script:category='runtime_network'; throw '运行库下载失败：官方来源与国内镜像都没有成功（详见上方日志）' }
     if ($LASTEXITCODE -ne 0) { throw "Managed runtime installation exit $LASTEXITCODE" }

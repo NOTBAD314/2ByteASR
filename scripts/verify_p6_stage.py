@@ -17,22 +17,22 @@ os.environ.setdefault("QT_QPA_PLATFORM", os.environ.get("QT_QPA_PLATFORM", "offs
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
 
-from twobyteasr.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
-from twobyteasr.studio_edit_commands import (
+from twobyteasr.studio.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
+from twobyteasr.timeline.studio_edit_commands import (
     generate_edit_command,
     razor_video_command,
     restore_full_sequence_command,
     ripple_trim_command,
     set_video_lock_command,
 )
-from twobyteasr.studio_edit_sequence import (
+from twobyteasr.timeline.studio_edit_sequence import (
     HighlightCandidate,
     ensure_edit_sequence,
     sequence_of,
     store_sequence,
 )
-from twobyteasr.studio_highlight_analyzer import analyze_highlights
-from twobyteasr.studio_project import (
+from twobyteasr.studio.studio_highlight_analyzer import analyze_highlights
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -40,11 +40,11 @@ from twobyteasr.studio_project import (
     load_project,
     save_project,
 )
-from twobyteasr.studio_render import RenderJob, RenderSettings, run_render_job
-from twobyteasr.studio_sequence_mapper import export_source_slices, write_mpv_edl
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.settings import load_runtime_settings
-from twobyteasr.ass_compiler import compile_ass
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, run_render_job
+from twobyteasr.timeline.studio_sequence_mapper import export_source_slices, write_mpv_edl
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.storage.settings import load_runtime_settings
+from twobyteasr.rendering.ass_compiler import compile_ass
 
 SHOTS = ROOT / "tmp" / "p6-accept"
 SHOTS.mkdir(parents=True, exist_ok=True)

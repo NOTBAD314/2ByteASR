@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = ROOT / "2byteasr_settings.json"
 OUT_DIR = ROOT / "dist" / "ui-shots"
 PYTHON = ROOT / ".venv-main" / "Scripts" / "python.exe"
-UI_ENTRY = ROOT / "twobyteasr" / "ui.py"
+UI_ENTRY = ROOT / "twobyteasr" / "app" / "ui.py"
 
 
 def main() -> int:
@@ -32,7 +32,7 @@ def main() -> int:
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         target = OUT_DIR / f"{language}.png"
         subprocess.run(
-            [str(PYTHON), "-m", "twobyteasr.ui", "--screenshot", str(target), "settings"],
+            [str(PYTHON), "-m", "twobyteasr.app.ui", "--screenshot", str(target), "settings"],
             cwd=str(ROOT), env=env, check=False,
         )
         print(f"rendered {target.name}")

@@ -4,13 +4,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from twobyteasr.theme_revision_constraints import capture_constraints,enforce_constraints
+from twobyteasr.caption_design.theme_revision_constraints import capture_constraints,enforce_constraints
 
 
 def test_svg_material_bindings_can_name_geometry_without_relaxing_motion_selectors():
     import pytest
-    from twobyteasr.material_contract import validate_material_bindings
-    from twobyteasr.theme_dom import ThemeDOM
+    from twobyteasr.caption_design.material_contract import validate_material_bindings
+    from twobyteasr.caption_design.theme_dom import ThemeDOM
     html='<svg class="bear"><g><rect fill="#bee"/><circle fill="#123"/></g></svg>'
     validate_material_bindings({'selectors':['.bear rect']},{'cueHtml':html,'cueCss':''})
     assert ThemeDOM(html).targets('.bear rect') is None
@@ -20,8 +20,8 @@ def test_svg_material_bindings_can_name_geometry_without_relaxing_motion_selecto
 
 def test_material_may_bind_conditional_focus_but_motion_cannot_depend_on_it():
     import pytest
-    from twobyteasr.material_contract import validate_material_bindings
-    from twobyteasr.theme_dom import ThemeDOM
+    from twobyteasr.caption_design.material_contract import validate_material_bindings
+    from twobyteasr.caption_design.theme_dom import ThemeDOM
     source=dict(cueHtml='<div class="copy" data-emphasis="滑雪">{{text}}</div>',
                 cueCss='.copy .wt-focus{color:#effaff;text-shadow:0 1px #14334a}')
     validate_material_bindings({'selectors':['.copy .wt-focus']},source)
@@ -76,7 +76,7 @@ def test_art_adoption_preserves_manual_overrides_and_text_time_placement(tmp_pat
         before=(cue.text,cue.start_ms,cue.end_ms,copy.deepcopy(cue.appearance_override),copy.deepcopy(cue.transform))
         assert page._apply_web_theme(cue.id,candidates()[0]['generated_source'],preserve_overrides=True)
         assert (cue.text,cue.start_ms,cue.end_ms,cue.appearance_override,cue.transform)==before
-        from twobyteasr.theme_draft import ThemeDraft
+        from twobyteasr.caption_design.theme_draft import ThemeDraft
         theme=candidates()[0]['generated_source']
         controller=page._theme_drafts();controller.project=page.project
         controller.current=ThemeDraft('revision',1,cue.id,cue.text,'','subtitle','test','test').with_theme(theme)

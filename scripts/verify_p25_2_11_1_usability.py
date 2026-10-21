@@ -21,10 +21,10 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_project import load_project, save_project
-from twobyteasr.studio_qc import SubtitleQCEngine, terminology_from_project
-from twobyteasr.studio_review import review_risks_from_qc
-from twobyteasr.studio_ui import SubtitlePositionOverlay, SubtitleStudioPage
+from twobyteasr.projects.studio_project import load_project, save_project
+from twobyteasr.subtitle_rules.studio_qc import SubtitleQCEngine, terminology_from_project
+from twobyteasr.subtitle_rules.studio_review import review_risks_from_qc
+from twobyteasr.studio.studio_ui import SubtitlePositionOverlay, SubtitleStudioPage
 
 
 PROJECT_17 = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "2ByteASR" / r"Projects\[NOTBAD]星铁4.5前瞻2\[NOTBAD]星铁4.5前瞻2.2byteproj"

@@ -24,7 +24,7 @@ from PySide6.QtGui import QImage, qAlpha
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_media_pool import (
+from twobyteasr.timeline.studio_media_pool import (
     add_media_asset,
     add_video_clip,
     create_video_track,
@@ -32,8 +32,8 @@ from twobyteasr.studio_media_pool import (
     set_video_clip_effects,
     validate_media_graph,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 RESULTS: list[tuple[str, bool, str]] = []
 

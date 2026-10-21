@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from twobyteasr import runtime_registry as registry
-from twobyteasr.processes import external_python_environment, popen_hidden_subprocess, python_utf8_command
+from twobyteasr.system import runtime_registry as registry
+from twobyteasr.system.processes import external_python_environment, popen_hidden_subprocess, python_utf8_command
 from twobyteasr.python_runtime_identity import python_entry_path
 
 class RuntimeEntryTests(unittest.TestCase):
@@ -29,12 +29,13 @@ class RuntimeEntryTests(unittest.TestCase):
             if key.startswith("TWOBYTEASR_") or key in {"2BYTEASR_USER_DATA_ROOT","2BYTEASR_MODEL_ROOT"}:
                 env.pop(key)
         env.update(LOCALAPPDATA=str(self.root/"local"),APPDATA=str(self.root/"roaming"),
-                   TWOBYTEASR_CHILD_PROCESS_LOG=str(self.root/"children.jsonl"))
+                   TWOBYTEASR_CHILD_PROCESS_LOG=str(self.root/"children.jsonl"),
+                   TWOBYTEASR_DEVELOPER_RUNTIMES="1")
         self.environment=patch.dict(os.environ,env,clear=True);self.environment.start()
         registry.reset_runtime_registry_cache()
         # Disable only asynchronous window observation; the real canonical
         # subprocess launcher and actual child remain exercised.
-        self.observer=patch("twobyteasr.process_diagnostics.record_process",lambda payload:None)
+        self.observer=patch("twobyteasr.diagnostics.process_diagnostics.record_process",lambda payload:None)
         self.observer.start()
         self.entries=[]
         for number in (1,2):
@@ -96,7 +97,7 @@ class RuntimeEntryTests(unittest.TestCase):
         self.assertEqual(registry.resolve_runtime_python("main"),str(entry))
         self.assertEqual(self.marker(registry.resolve_runtime_python("main"))[0],0)
         # Another process loads the same registry without an environment override.
-        code="import sys;sys.path.insert(0,"+repr(str(ROOT))+");from twobyteasr.runtime_registry import resolve_runtime_python;print(resolve_runtime_python('main'))"
+        code="import sys;sys.path.insert(0,"+repr(str(ROOT))+");from twobyteasr.system.runtime_registry import resolve_runtime_python;print(resolve_runtime_python('main'))"
         status,stdout,stderr=self.run_child([str(entry),"-I","-c",code])
         self.assertEqual(status,0,stderr);self.assertEqual(stdout.strip(),str(entry))
     def test_readiness_child_cannot_replace_previous_registration(self):
@@ -114,6 +115,7 @@ class RuntimeEntryTests(unittest.TestCase):
         self.assertEqual(registry.registry_path().read_bytes(),original)
 
     def test_missing_runtime_and_boundary_are_not_silently_repaired_to_base(self):
+        os.environ.pop("TWOBYTEASR_DEVELOPER_RUNTIMES",None)
         os.environ["TWOBYTEASR_TEST_ROOT"]=str(self.root)
         os.environ["TWOBYTEASR_MAIN_PYTHON"]=str(self.root/"missing/bin/python")
         registry.reset_runtime_registry_cache()

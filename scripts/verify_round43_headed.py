@@ -25,9 +25,9 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel
 
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 RESULTS: list[tuple[str, bool, str]] = []
 
@@ -99,7 +99,7 @@ def phase_a(app: QApplication, project_dir: Path) -> SubtitleStudioPage:
 
 def phase_b(app: QApplication, project_dir: Path):
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
 
     media = project_dir / "recognition.flv"
     win = MainWindow([], legacy, object(), None)
@@ -173,7 +173,7 @@ def phase_b(app: QApplication, project_dir: Path):
 
 
 def phase_c(app: QApplication, page: SubtitleStudioPage):
-    from twobyteasr.visual_design_graph import DecorationLayer, VisualDesignGraph
+    from twobyteasr.caption_design.visual_design_graph import DecorationLayer, VisualDesignGraph
 
     project = page.project
     style = next(s for s in project.styles if s.id == project.cues[0].style_id)

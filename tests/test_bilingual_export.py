@@ -4,10 +4,10 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from twobyteasr import studio_subtitle_export as export
-from twobyteasr import subtitle_translation as st
-from twobyteasr.cue_forced_alignment import evidence_row
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.exports import studio_subtitle_export as export
+from twobyteasr.subtitle_rules import subtitle_translation as st
+from twobyteasr.recognition.cue_forced_alignment import evidence_row
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 JA = ["行くぞ！", "ちょっと待って", "やばい", "マジで"]
 ZH = {"行くぞ！": "走了！", "ちょっと待って": "等一下", "やばい": "糟了", "マジで": "真的假的"}

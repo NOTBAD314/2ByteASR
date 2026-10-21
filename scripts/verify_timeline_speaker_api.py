@@ -22,7 +22,7 @@ def main():
     if not out.is_relative_to(ROOT / "tmp"):
         raise ValueError("Audit output must stay in workspace tmp")
     out.mkdir(parents=True, exist_ok=True)
-    from twobyteasr.llm_config import read_asr_api_key
+    from twobyteasr.providers.llm_config import read_asr_api_key
     flash = args.mode == "flash"
     provider = "dashscope_qwen_audio" if flash else "openrouter"
     url = ("https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation" if flash
@@ -34,8 +34,8 @@ def main():
         "style":"verbatim", "audit_root":str(out)}
     storage=None
     if args.mode == 'filetrans':
-        from twobyteasr import settings
-        from twobyteasr.temp_audio_storage import oss_storage_from_settings
+        from twobyteasr.storage import settings
+        from twobyteasr.providers.temp_audio_storage import oss_storage_from_settings
         user_root=Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData/Local'))/'2ByteASR'
         raw=json.loads((user_root/'2byteasr_settings.json').read_text(encoding='utf-8'))
         config,_=settings._merge_known_settings(settings.DEFAULT_SETTINGS,raw)
@@ -52,11 +52,11 @@ def main():
         return
     os.environ.update(LOCALAPPDATA=str(out/"local"),APPDATA=str(out/"roaming"))
     os.environ["2BYTEASR_USER_DATA_ROOT"] = str(out/"data")
-    from twobyteasr import settings
+    from twobyteasr.storage import settings
     settings.stable_settings_root = lambda: out/"config"
     import numpy as np
-    from twobyteasr.asr import call_qwen_asr_api, _api_transcription_rows
-    from twobyteasr.speaker_evidence import scope_request_speakers
+    from twobyteasr.recognition.asr import call_qwen_asr_api, _api_transcription_rows
+    from twobyteasr.recognition.speaker_evidence import scope_request_speakers
     with wave.open(str(args.audio), "rb") as wav:
         assert wav.getframerate() == 16000 and wav.getnchannels() == 1
         pcm = np.frombuffer(wav.readframes(wav.getnframes()),dtype="<i2").astype(np.float32)/32768
@@ -67,7 +67,7 @@ def main():
     if args.mode == 'filetrans':
         import subtitle_core
         subtitle_core.RUNTIME_SETTINGS=config
-        from twobyteasr.asr import _transcribe_qwen_filetrans
+        from twobyteasr.recognition.asr import _transcribe_qwen_filetrans
         all_rows=_transcribe_qwen_filetrans(str(args.audio.resolve()),pcm,endpoint=endpoint,storage=storage)
         metadata.update(elapsed_seconds=time.perf_counter()-started,request_count=1,audio_seconds=len(pcm)/16000,
             rows=all_rows,labels=sorted({r.get('speaker','') for r in all_rows}),human_reference_available=False)

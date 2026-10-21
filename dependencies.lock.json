@@ -16,9 +16,17 @@
   "tools": {
     "mpv": {
       "version": "20260814-git-7b8915bc1d",
-      "source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260814/mpv-x86_64-20260814-git-7b8915bc1d.7z",
+      "source": "https://github.com/NOTBAD314/2ByteASR/releases/download/v0.6.5/mpv-x86_64-20260814-git-7b8915bc1d.7z",
+      "mirrors": [
+        "https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.6.5/mpv-x86_64-20260814-git-7b8915bc1d.7z"
+      ],
       "sha256": "1bf3b029da2c98e605e00e85f21ee3142f22a1dcc4ceb5c827b5c51e36e390f9",
+      "size": 33583248,
+      "upstream_source": "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260814/mpv-x86_64-20260814-git-7b8915bc1d.7z",
+      "upstream_source_status": "deleted upstream (only the latest 30 releases are kept); unmodified original recovered 2026-10-17 from Actions artifact 9203486021 and archived on the project's v0.6.5 release",
       "binary_source": "https://github.com/shinchiro/mpv-winbuild-cmake",
+      "build_recipe_commit": "cd1edc11dc6887a50f705717619d879f5a93a488",
+      "build_run": "https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/31755832255",
       "upstream": "https://github.com/mpv-player/mpv",
       "mpv_revision": "7b8915bc1d",
       "license": "GPL-2.0-or-later (build); bundled libraries retain their own licenses",
@@ -1322,6 +1330,185 @@
         },
         "modelscope_checked": "2026-10-13: every required file SHA-256 equals the locked Hugging Face hash (ModelScope repo/files API)"
       }
+    },
+    "mfa_aligner": {
+      "repository": "MontrealCorpusTools/mandarin_mfa",
+      "revision": "cfbee14002d514fcf411c16676877a96b7afe6ff",
+      "path": "models/MFA-mandarin",
+      "required_files": [
+        "acoustic/final.alimdl",
+        "acoustic/final.mdl",
+        "acoustic/lda.mat",
+        "acoustic/meta.json",
+        "acoustic/phones.txt",
+        "acoustic/tree",
+        "dictionary/mandarin_china_mfa.dict",
+        "dictionary/rules.yaml",
+        "g2p/mandarin_china_mfa/graphemes.sym",
+        "g2p/mandarin_china_mfa/meta.json",
+        "g2p/mandarin_china_mfa/model.fst",
+        "g2p/mandarin_china_mfa/phones.sym"
+      ],
+      "sha256": {
+        "acoustic/final.alimdl": "d99010c7785a0aff457ac842c905a0a779ab12d62b5cc168080e337f6d192337",
+        "acoustic/final.mdl": "121c1256afc4c81cf927f4b789358849cfa23e8ee6518876844e5ce75fba53c9",
+        "acoustic/lda.mat": "c40ecf7cdb20e9b028171fe3c500a3519c3d1e125b402b5cccfbabf48edca787",
+        "acoustic/meta.json": "b6e09213828cd5a0f43fb0fce1dfc637a4cf7161ef3186475c46565ad4d007d6",
+        "acoustic/phones.txt": "532c7b754bf95e6a1d793b1c3d499fb7e1075416d7c404339d2ce397f5b8a329",
+        "acoustic/tree": "830540952d184bdb56fbc0afd42406765d39519c808a9c584d03ef2cc4d47d12",
+        "dictionary/mandarin_china_mfa.dict": "721ec6be83342194c4e4b6783860828f621839aeabea767dfe766c69203ee5fa",
+        "dictionary/rules.yaml": "66b9796e3d6a713e6dc2b0d5abaa6435d57e220ce8b3f9e587b96c02a93d6def",
+        "g2p/mandarin_china_mfa/graphemes.sym": "3e126f7181eed93954436c064f67882746a93c9edf1616b52193456b62ea70f4",
+        "g2p/mandarin_china_mfa/meta.json": "e934d6e99c1ef60a94435a7f437e01b829e38039c926e3715276b57d5e5fcb2d",
+        "g2p/mandarin_china_mfa/model.fst": "9d25686b7deb7e127585283f30f66fd240461338f4c79911cf0e583a892e1b63",
+        "g2p/mandarin_china_mfa/phones.sym": "8aa4509e58ec36366fc119d4508d6583bec122d5d07bd1889ab9a8ec4591ea6a"
+      },
+      "license": "CC-BY-4.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/MontrealCorpusTools/mandarin_mfa/tree/cfbee14002d514fcf411c16676877a96b7afe6ff?recursive=true",
+        "files": {
+          "acoustic/final.alimdl": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "d99010c7785a0aff457ac842c905a0a779ab12d62b5cc168080e337f6d192337"
+          },
+          "acoustic/final.mdl": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "121c1256afc4c81cf927f4b789358849cfa23e8ee6518876844e5ce75fba53c9"
+          },
+          "acoustic/lda.mat": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "80efa5d39f07148a9c55d48c8e10059ea090ebdf"
+          },
+          "acoustic/meta.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "8d5a6ad7df5c06d2fb15884b79994f929f7ef21c"
+          },
+          "acoustic/phones.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "a65b97df4d096b38319e076f5a06c40439f4845b"
+          },
+          "acoustic/tree": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "830540952d184bdb56fbc0afd42406765d39519c808a9c584d03ef2cc4d47d12"
+          },
+          "dictionary/mandarin_china_mfa.dict": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "86c8fe248f5adfebc434ef8008a7af2fca223030"
+          },
+          "dictionary/rules.yaml": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "4d14154d3a097aba6c228180715ff9358de48c49"
+          },
+          "g2p/mandarin_china_mfa/graphemes.sym": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "04144065d17c2213f3679f73e439a080babaedc1"
+          },
+          "g2p/mandarin_china_mfa/meta.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "ce3d2742c634891009075f8185f58acf031fc2fd"
+          },
+          "g2p/mandarin_china_mfa/model.fst": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "9d25686b7deb7e127585283f30f66fd240461338f4c79911cf0e583a892e1b63"
+          },
+          "g2p/mandarin_china_mfa/phones.sym": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "b2558cf8bbe2a62975531123242cc40e60b3ffab"
+          }
+        }
+      },
+      "download_bytes": 144863556,
+      "purpose": "Montreal Forced Aligner Mandarin models (acoustic, dictionary, G2P; experimental 字幕时间轴, 2026-10-19)"
+    },
+    "mfa_aligner_ja": {
+      "repository": "MontrealCorpusTools/japanese_mfa",
+      "revision": "bfe85af7e4ec69e266cbf303e613da44e9d95fb4",
+      "path": "models/MFA-japanese",
+      "required_files": [
+        "acoustic/final.alimdl",
+        "acoustic/final.mdl",
+        "acoustic/lda.mat",
+        "acoustic/meta.json",
+        "acoustic/phones.txt",
+        "acoustic/tree",
+        "dictionary/japanese_mfa.dict",
+        "dictionary/rules.yaml",
+        "g2p/japanese_mfa/graphemes.sym",
+        "g2p/japanese_mfa/meta.json",
+        "g2p/japanese_mfa/model.fst",
+        "g2p/japanese_mfa/phones.sym"
+      ],
+      "sha256": {
+        "acoustic/final.alimdl": "2618fa1ff80a5a3816a1fece7b4d2f03d92fa0a1b965b11ef9e40f40e8574604",
+        "acoustic/final.mdl": "1f0a1ae8d8df8cd4adb68f14c86ed1f3718bae3e7057363751470ad0572c664f",
+        "acoustic/lda.mat": "25143d7d25956a6e421451fbe8241617bb46d78fcca5d96a99d76092583af5ee",
+        "acoustic/meta.json": "d3756fa39b14f9b80c851a567628ca7268d703a7e7839d6465958d56f13d8237",
+        "acoustic/phones.txt": "467fd665b475ff4ce43d5ae6ef3c2d6e14b449d7a826f289a595e87c1ba54a69",
+        "acoustic/tree": "808bfba1fbf4284d748fb62a118d05c5ef7324e30f08d7c3c13efa8d0991059f",
+        "dictionary/japanese_mfa.dict": "b0690731ac1575a348af393f1c03b789ac7991e019258006aac154a243790f5d",
+        "dictionary/rules.yaml": "7e898701c8251360c5866860c9cf2b8b76f34f3323fc5dfa049b573fc5cc6c28",
+        "g2p/japanese_mfa/graphemes.sym": "0651f4bfca3ebe20001a872545ac7c7a6b1f42a74af0d668a74bd4dc921251f4",
+        "g2p/japanese_mfa/meta.json": "eee4aefde41e310887622c3bc14833c4a3fa802d9a0938e3da421d57aa2e659b",
+        "g2p/japanese_mfa/model.fst": "df5b453dcfdbde6ba3821827ca69011145e954c11e648a9ad2e0b0adf85a3c7e",
+        "g2p/japanese_mfa/phones.sym": "f3922be45209265b1cbdef7273ed9d755496635ced145a8266bbcf2beee86e66"
+      },
+      "license": "CC-BY-4.0",
+      "integrity_provenance": {
+        "metadata_url": "https://huggingface.co/api/models/MontrealCorpusTools/japanese_mfa/tree/bfe85af7e4ec69e266cbf303e613da44e9d95fb4?recursive=true",
+        "files": {
+          "acoustic/final.alimdl": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "2618fa1ff80a5a3816a1fece7b4d2f03d92fa0a1b965b11ef9e40f40e8574604"
+          },
+          "acoustic/final.mdl": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "1f0a1ae8d8df8cd4adb68f14c86ed1f3718bae3e7057363751470ad0572c664f"
+          },
+          "acoustic/lda.mat": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "0723108cd5e92ece54552bd47824722f9680b616"
+          },
+          "acoustic/meta.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "0d79c3b53152526a03c9d7b0e600948d02a608cc"
+          },
+          "acoustic/phones.txt": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "ec26dea9bf21962c56e4d9bb817ad2dbb43ed745"
+          },
+          "acoustic/tree": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "808bfba1fbf4284d748fb62a118d05c5ef7324e30f08d7c3c13efa8d0991059f"
+          },
+          "dictionary/japanese_mfa.dict": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "584fe71008fed4e7b5e2dcf6440c361df6f67b3e"
+          },
+          "dictionary/rules.yaml": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "e3de09d37caa89f0e58df8ac8397a569ea906fc5"
+          },
+          "g2p/japanese_mfa/graphemes.sym": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "9c4e2897b564b1f263f1a872fb36e5b4c9eabf02"
+          },
+          "g2p/japanese_mfa/meta.json": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "65e2ef537ef401854bed447dee9041a5ba9ef278"
+          },
+          "g2p/japanese_mfa/model.fst": {
+            "method": "upstream LFS SHA256",
+            "upstream_oid": "df5b453dcfdbde6ba3821827ca69011145e954c11e648a9ad2e0b0adf85a3c7e"
+          },
+          "g2p/japanese_mfa/phones.sym": {
+            "method": "computed after verifying upstream Git blob SHA1; not a published upstream SHA256",
+            "upstream_oid": "e1f09e469f44bef4737b9c7ccb8c00048de3d771"
+          }
+        }
+      },
+      "download_bytes": 138656473,
+      "purpose": "Montreal Forced Aligner Japanese models (downloaded with mfa_aligner; 2026-10-19)",
+      "resource_only": true
     }
   },
   "environments": {
@@ -1419,6 +1606,66 @@
         "zstandard": "0.25.0"
       },
       "note": "Apple Silicon MLX speech runtime (2026-10-13). No PyTorch. Community MLX implementation (mlx-audio, MIT); not yet verified on a real Mac by 2ByteASR."
+    },
+    "mfa": {
+      "kind": "conda",
+      "platform": "win-64",
+      "purpose": "Montreal Forced Aligner (experimental 字幕时间轴, Chinese and Japanese; 2026-10-19)",
+      "explicit": "scripts/mfa_runtime_win64.txt",
+      "packages": {
+        "montreal-forced-aligner": "3.4.3",
+        "python": "3.11.17",
+        "kaldi": "5.5.1172 (cpu build)"
+      },
+      "micromamba": {
+        "version": "2.9.0",
+        "file": "win-64/micromamba-2.9.0-0.tar.bz2",
+        "md5": "1b4bb80be5ec27f951af469b875435b8",
+        "sha256": "97a336f4ab794bd96a6a4da5e6ed63e75a1d31830414a182419b23d3b36f3fe0",
+        "license": "BSD-3-Clause"
+      },
+      "pip": {
+        "dragonmapper": {
+          "version": "0.3.0",
+          "sha256": [
+            "7b9f4503963e5e016bfcdfc4d58d73fc029214f54d643880fab834e51ec55f6a",
+            "17b6a33ad98ed3d6cd2392bd41613bd57279e84ffb96fb4a5bda336f9fe0572e"
+          ]
+        },
+        "hanziconv": {
+          "version": "0.3.2",
+          "sha256": [
+            "208866da6ae305bca19eb98702b65c93bb3a803b496e4287ca740d68892fc4c4"
+          ]
+        },
+        "hanzidentifier": {
+          "version": "1.3.0",
+          "sha256": [
+            "8e36204a96072c328c8bc6ae9342fc6f9faea10bc519ff51da3ef6e6e0cee5a6",
+            "7acd99ef00c69ab57f3441e2b3568348b58ef115500e5a01f66cedea603b3101"
+          ]
+        },
+        "zhon": {
+          "version": "2.1.1",
+          "sha256": [
+            "9ec0d42229ae60708a045270f755ccefb48f2689f2a6ce0bc6597abf6c4a9871",
+            "c8da424fad4aa698ddd3e1735515b49ff522c84dd1091e8fafd986ac7c6898f0"
+          ]
+        }
+      },
+      "download_bytes": 358612992,
+      "pkuseg": {
+        "spacy_ontonotes": {
+          "url": "https://github.com/explosion/spacy-pkuseg/releases/download/v0.0.26/spacy_ontonotes.zip",
+          "sha256": "b216e7f92de7ae285aeab8feba2faa8ea8216e5995ff6fb3d391cc8356db1bfe",
+          "bytes": 34567143
+        },
+        "postag": {
+          "url": "https://github.com/lancopku/pkuseg-python/releases/download/v0.0.16/postag.zip",
+          "sha256": "afdf15f4e39bc47a39be4c37e3761b0c8f6ad1783f3cd3aff52984aebc0a1da9",
+          "bytes": 41424981
+        }
+      }
     }
   },
   "managed_bootstrap": {

@@ -1,15 +1,15 @@
 import pytest
 
-from twobyteasr.advanced_renderer import (
+from twobyteasr.rendering.advanced_renderer import (
     TRUSTED_COMPONENTS,
     compile_composition_data,
     project_requires_advanced,
     recipe_payload_for_cue,
 )
-from twobyteasr.style_recipe import recipe_payload_for_style
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_style.style_recipe import recipe_payload_for_style
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.caption_design.visual_design_graph import (
     comic_burst_graph,
     style_recipe_from_graph,
 )
@@ -76,9 +76,9 @@ def test_first_advanced_visual_batch_routes_to_remotion():
 
 
 def test_glyph_motion_uses_bundled_render_browser_on_a_cold_export(monkeypatch,tmp_path):
-    from twobyteasr.letter_motion_audit import make_project
-    from twobyteasr import platform_browser
-    from twobyteasr.advanced_renderer import _composition_browser
+    from twobyteasr.acceptance.letter_motion_audit import make_project
+    from twobyteasr.rendering import platform_browser
+    from twobyteasr.rendering.advanced_renderer import _composition_browser
     bundled=tmp_path/'headless.exe';bundled.touch()
     system=tmp_path/'chrome.exe';system.touch()
     monkeypatch.setattr(platform_browser,'bundled_browser',lambda root:bundled)
@@ -89,7 +89,7 @@ def test_glyph_motion_uses_bundled_render_browser_on_a_cold_export(monkeypatch,t
     assert _composition_browser(tmp_path,props)==bundled
     for cue in project.cues:cue.effect_id='none'
     static=compile_composition_data(project,width=960,height=540,fps=30,start_seconds=0,duration_seconds=36)
-    assert _composition_browser(tmp_path,static)==system
+    assert _composition_browser(tmp_path,static)==bundled
     bundled.unlink()
     assert _composition_browser(tmp_path,props)==system
 
@@ -112,7 +112,7 @@ def test_derived_fill_style_id_still_routes_advanced():
 
 
 def test_generated_no_motion_id_uses_shared_static_pixels():
-    from twobyteasr.static_caption_export import static_graph_project
+    from twobyteasr.exports.static_caption_export import static_graph_project
     p=SubtitleProject(media=StudioMedia('sample.mp4',duration_ms=2000),
         cues=[StudioCue('a',0,2000,'STATIC',style_id='cyber-scope-example',effect_id='generated-motion')])
     recipe=_cyberpunk_recipe();recipe['motion']={};recipe['background']={'enabled':False};recipe['effects']={}

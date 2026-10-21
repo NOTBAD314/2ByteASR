@@ -6,10 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr import domain_terms, grouping
-from twobyteasr.ai_providers import AIProviderError
-from twobyteasr.models import SpeechSegment
-from twobyteasr.provider_input_budget import RetryBudget
+from twobyteasr.glossary import domain_terms
+from twobyteasr.subtitle_rules import grouping
+from twobyteasr.providers.ai_providers import AIProviderError
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.providers.provider_input_budget import RetryBudget
 
 
 def cue(i, text, speaker='S01'):
@@ -92,7 +93,7 @@ def test_total_timeout_never_renews_another_complete_budget(context, monkeypatch
     def complete(messages, **kwargs):
         calls.append(kwargs['_timeout_policy'])
         raise AIProviderError('partial response has no valid terminal',category='total_timeout')
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:SimpleNamespace(complete=complete))
     result = domain_terms.discover_global_domain_term_mappings([cue(1,'待核验实体')],'测试',[],[],[],persist=False)
     assert len(calls) == 1 and calls[0].total <= 42
     assert not result.checked_ids and result.failures == {1:'total_timeout'}
@@ -145,8 +146,8 @@ def test_mixed_short_turn_refiners_cannot_merge_dangling_speaker_handoff(context
 
 def test_optional_absolute_budget_includes_provider_queue_and_cleanup(context):
     import threading
-    from twobyteasr.provider_service import ProviderService
-    from twobyteasr.asr_provider_snapshot import TimeoutPolicy
+    from twobyteasr.providers.provider_service import ProviderService
+    from twobyteasr.providers.asr_provider_snapshot import TimeoutPolicy
     _, owner, _ = context
     service = ProviderService(workers=1)
     entered = threading.Event()
@@ -167,7 +168,7 @@ def test_optional_absolute_budget_includes_provider_queue_and_cleanup(context):
 
 def test_expired_cleanup_does_not_start_another_taskkill_or_wait(monkeypatch):
     import subprocess
-    from twobyteasr import processes
+    from twobyteasr.system import processes
     waits = []
     class OwnedProcess:
         pid = 123456
@@ -182,7 +183,7 @@ def test_expired_cleanup_does_not_start_another_taskkill_or_wait(monkeypatch):
 
 
 def test_optional_cli_search_requires_actual_terminal_receipt(monkeypatch):
-    from twobyteasr.ai_providers import GrokCLIProvider
+    from twobyteasr.providers.ai_providers import GrokCLIProvider
     provider = GrokCLIProvider(executable='fixture.exe', model='fixture')
     monkeypatch.setattr(provider, '_record_installed_version', lambda *a:None)
     seen = []
@@ -198,7 +199,7 @@ def test_optional_cli_search_requires_actual_terminal_receipt(monkeypatch):
 
 def test_broker_completion_cannot_erase_adapter_pending_cleanup(monkeypatch):
     import threading
-    from twobyteasr.provider_service import AIClient, ProviderRequestHandle
+    from twobyteasr.providers.provider_service import AIClient, ProviderRequestHandle
     client = object.__new__(AIClient)
     handle = ProviderRequestHandle('owned-fixture', 'fixture', time.monotonic()-.01)
     handle.timeout_category = 'total_timeout'

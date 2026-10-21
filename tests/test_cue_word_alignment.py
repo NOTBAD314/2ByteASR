@@ -2,11 +2,11 @@ import copy
 import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
-from twobyteasr.cue_word_alignment import cue_words
-from twobyteasr.studio_timing import resolve_split
-from twobyteasr.sentence_refine import allocate_split_times, build_replacement_cues, CueRefineAction
-from twobyteasr.studio_commands import split_cue_command
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
+from twobyteasr.recognition.cue_word_alignment import cue_words
+from twobyteasr.timeline.studio_timing import resolve_split
+from twobyteasr.subtitle_rules.sentence_refine import allocate_split_times, build_replacement_cues, CueRefineAction
+from twobyteasr.timeline.studio_commands import split_cue_command
 
 
 def project(text='啊，这个 FPS60 好好', words=None):
@@ -86,7 +86,7 @@ def test_undo_reopen_repeat_split_preserves_evidence_and_text(tmp_path):
 
 
 def test_reorder_repeated_speed_clip_maps_tokens_once():
-    from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment, store_sequence, projected_cues
+    from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence, projected_cues
     p=project('甲乙',[('甲',100,300),('乙',900,1100)])
     p.cues[0].end_ms=1200
     store_sequence(p,EditSequence(source_path='missing.mp4',source_duration_ms=3000,segments=[
@@ -98,7 +98,7 @@ def test_reorder_repeated_speed_clip_maps_tokens_once():
 
 
 def test_pause_hint_uses_original_punctuation_index_and_casefold_width():
-    from twobyteasr.sentence_refine import pause_hints_for_cue
+    from twobyteasr.subtitle_rules.sentence_refine import pause_hints_for_cue
     p=project('啊， 这个 FPS60 好好')
     words,_=cue_words(p,p.cues[0])
     assert pause_hints_for_cue(p.cues[0],[(w.text,w.start_ms,w.end_ms) for w in words])==[{'after_chars':0,'gap_ms':400}]

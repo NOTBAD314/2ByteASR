@@ -2,11 +2,11 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
-from twobyteasr.models import SpeechSegment, WordUnit
-from twobyteasr.terminology import (GlossaryLibrary, GlossarySnapshot, TermEntry,
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+from twobyteasr.glossary.terminology import (GlossaryLibrary, GlossarySnapshot, TermEntry,
     TermResolver, apply_to_segments, snapshot_from_pairs)
-from twobyteasr.terminology_retrieval import retrieve_candidates
-from twobyteasr.terminology_support import recall_gaps
+from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+from twobyteasr.glossary.terminology_support import recall_gaps
 from tests.test_stage9_cache_and_budget import context
 
 
@@ -105,10 +105,10 @@ def test_exact_alias_is_recalled_with_original_variant_and_frozen_library_identi
 
 
 def test_derived_source_spans_survive_project_save_reopen_and_srt_export(tmp_path):
-    from twobyteasr.models import SubtitleCue
-    from twobyteasr.studio_project import create_studio_outputs, load_project
-    from twobyteasr.cue_word_alignment import cue_words
-    from twobyteasr.output import render_srt
+    from twobyteasr.recognition.transcript_data import SubtitleCue
+    from twobyteasr.projects.studio_project import create_studio_outputs, load_project
+    from twobyteasr.recognition.cue_word_alignment import cue_words
+    from twobyteasr.subtitle_rules.output import render_srt
     segment = SpeechSegment(1, 0., 2., '小猫准备进攻', .8,
         [WordUnit(0., .4, '小猫', .8), WordUnit(.4, 2., '准备进攻', .9)],
         speaker='S01', final_timing_owner='FireRed')
@@ -126,7 +126,7 @@ def test_derived_source_spans_survive_project_save_reopen_and_srt_export(tmp_pat
 
 def test_wire_projection_keeps_all_heard_forms_cue_ids_independent_asr_text_and_full_audit():
     import subtitle_core  # initialize the production facade before stage module
-    from twobyteasr.polishing import _wire_correction_body
+    from twobyteasr.subtitle_rules.polishing import _wire_correction_body
     body={'cues':[{'id':1,'primary_text':'小猫来了','moss_asr':'小猫来了','firered_aed_asr':'小苗来了'},
                   {'id':2,'primary_text':'小猫走了','qwen3_asr':'小猫走了'}],
           'terminology_candidates':[{'canonical':'MyCAT','aliases':['小猫'],'status':'confirmed',
@@ -145,7 +145,7 @@ def test_wire_projection_keeps_all_heard_forms_cue_ids_independent_asr_text_and_
 
 def test_wire_defaults_preserve_primary_family_and_remove_derived_scalar_scores_only():
     import subtitle_core
-    from twobyteasr.polishing import _wire_correction_body
+    from twobyteasr.subtitle_rules.polishing import _wire_correction_body
     body={'cues':[{'id':1,'primary_text':'原文','primary_source':'moss-host','speaker':'S01',
                    'start':1.,'end':2.,'confidence':.78,'reference_consensus':.9,'firered_aed_asr':'参考稿'},
                   {'id':2,'primary_text':'第二句','primary_source':'moss-host','speaker':'S02',
@@ -160,7 +160,7 @@ def test_wire_defaults_preserve_primary_family_and_remove_derived_scalar_scores_
 def test_final_polish_cannot_revert_saved_alias_or_discard_its_original_span(context, monkeypatch):
     """A later checked text artifact can still repeat a source nickname."""
     import subtitle_core
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = snapshot_from_pairs([('小猫', 'MyCAT'), ('sop', 'S0pp')])
@@ -188,7 +188,7 @@ def test_final_polish_cannot_revert_saved_alias_or_discard_its_original_span(con
 
 def test_checked_no_edit_response_still_reports_missing_name_recall_for_review(context, monkeypatch):
     import json
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.enable_term_search = False
@@ -197,7 +197,7 @@ def test_checked_no_edit_response_still_reports_missing_name_recall_for_review(c
     source = '还在等奥特曼出结果'
     def complete(*args, **kwargs):
         return json.dumps({'checked_ids': [1], 'cues': []})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *args, **kwargs: SimpleNamespace(complete=complete))
     row = polishing.polish_subtitles([SpeechSegment(1, 0., 2., source, .8, [])], '隔离召回审计')[0]
     receipt = row.caption_arbitration['terminology_polish']

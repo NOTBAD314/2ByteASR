@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import studio_timing_preview as module
+from twobyteasr.studio import studio_timing_preview as module
 
 
 class _Snapshot:

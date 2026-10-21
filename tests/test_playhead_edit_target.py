@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 import pytest
-from twobyteasr.studio_canvas_edit import StudioCanvasEditMixin
-from twobyteasr.studio_cue_controller import StudioCueController
-from twobyteasr.studio_session import StudioSession
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.studio_runtime_state import state_for
+from twobyteasr.studio.studio_canvas_edit import StudioCanvasEditMixin
+from twobyteasr.studio.studio_cue_controller import StudioCueController
+from twobyteasr.projects.studio_session import StudioSession
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.projects.studio_runtime_state import state_for
 
 
 def page_at(position=10500):
@@ -107,7 +107,7 @@ def test_open_editor_keeps_original_identity_even_when_clock_changes():
 
 
 def test_cut_sequence_resolves_project_time_to_stable_source_id():
-    from twobyteasr.studio_edit_sequence import delete_timeline_range, ensure_edit_sequence, replace_runtime_sequence, source_cue_id_of
+    from twobyteasr.timeline.studio_edit_sequence import delete_timeline_range, ensure_edit_sequence, replace_runtime_sequence, source_cue_id_of
     page,calls=page_at(500); sequence=ensure_edit_sequence(page.project)
     replace_runtime_sequence(page.project,delete_timeline_range(sequence,0,10000))
     state_for(page.project).reindex_cues(page.project)
@@ -119,7 +119,7 @@ def test_cut_sequence_resolves_project_time_to_stable_source_id():
     (10500, 641657, 'a'), (15100, 646257, 'b'),
 ])
 def test_e_maps_deep_source_clock_into_cut_timeline(timeline_ms, source_ms, expected):
-    from twobyteasr.studio_edit_sequence import ensure_edit_sequence, replace_runtime_sequence
+    from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence, replace_runtime_sequence
     page, calls = page_at(timeline_ms)
     for cue in page.project.cues:
         cue.start_ms += 631157
@@ -135,12 +135,12 @@ def test_e_maps_deep_source_clock_into_cut_timeline(timeline_ms, source_ms, expe
     page._mapped_sequence_segment = lambda: sequence.segments[0]
     page.video.playback_position_snapshot = lambda: SimpleNamespace(presentation_media_ms=source_ms)
     StudioCanvasEditMixin._edit_subtitle_at_playhead(page)
-    from twobyteasr.studio_edit_sequence import source_cue_id_of
+    from twobyteasr.timeline.studio_edit_sequence import source_cue_id_of
     assert source_cue_id_of(calls[-1][1]) == expected
 
 
 def test_e_maps_rate_and_repeated_source_using_active_segment():
-    from twobyteasr.studio_edit_sequence import ensure_edit_sequence, replace_runtime_sequence, VideoSegment
+    from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence, replace_runtime_sequence, VideoSegment
     page, calls = page_at(15500)
     sequence = ensure_edit_sequence(page.project)
     sequence.segments = [VideoSegment('first', sequence.source_path, 10000, 12000, 0, 1000),
@@ -156,7 +156,7 @@ def test_e_maps_rate_and_repeated_source_using_active_segment():
 
 def test_e_outside_mapped_segment_does_not_edit_unrelated_tail():
     page, calls = page_at(15100)
-    from twobyteasr.studio_edit_sequence import ensure_edit_sequence
+    from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence
     sequence = ensure_edit_sequence(page.project)
     page._playback_mode = 'mapped'
     page._mapped_sequence_segment = lambda: sequence.segments[0]

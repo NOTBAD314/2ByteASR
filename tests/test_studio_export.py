@@ -5,9 +5,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_export_ui import ExportTarget, StudioExportWorkspace
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.exports.studio_export_ui import ExportTarget, StudioExportWorkspace
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def test_export_target_is_single_source_of_truth(tmp_path):
@@ -19,7 +19,7 @@ def test_export_target_is_single_source_of_truth(tmp_path):
 
 def test_affixes_confirm_on_close_without_changing_video_preferences(tmp_path, monkeypatch):
     from PySide6 import QtCore
-    from twobyteasr import studio_export_ui
+    from twobyteasr.exports import studio_export_ui
     import json
     app=QApplication.instance() or QApplication([])
     settings=QtCore.QSettings(str(tmp_path/'preferences.ini'),QtCore.QSettings.IniFormat)
@@ -180,7 +180,7 @@ def test_export_workspace_can_export_only_srt_with_combined_and_per_speaker_file
 
 
 def test_p74c_subtitle_export_destination_modes(tmp_path, monkeypatch):
-    from twobyteasr.studio_export_ui import resolve_subtitle_export_destination
+    from twobyteasr.exports.studio_export_ui import resolve_subtitle_export_destination
 
     media_dir = tmp_path / "source"
     media_dir.mkdir()
@@ -207,7 +207,7 @@ def test_p74c_subtitle_export_destination_modes(tmp_path, monkeypatch):
     assert "自定义" in reason
 
     monkeypatch.setattr(
-        "twobyteasr.studio_export_ui._directory_is_writable",
+        "twobyteasr.exports.studio_export_ui._directory_is_writable",
         lambda path: Path(path) != media_dir,
     )
     dest, reason = resolve_subtitle_export_destination(project, project_path, "source")

@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.sentence_refine import (
+from twobyteasr.subtitle_rules.sentence_refine import (
     build_replacement_cues,
     refine_cues_with_llm,
     validate_action,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
 
 
 @pytest.fixture(scope="module")
@@ -120,8 +120,8 @@ def _patch_provider(monkeypatch, responses):
     def fake_for_stage(settings, stage, sender=None):
         return holder["provider"]
 
-    import twobyteasr.sentence_refine as module
-    import twobyteasr.ai_providers as providers
+    import twobyteasr.subtitle_rules.sentence_refine as module
+    import twobyteasr.providers.ai_providers as providers
     monkeypatch.setattr(providers, "provider_for_stage", fake_for_stage)
     # refine 模块从 ai_providers 延迟 import，patch 源模块即可
     return holder
@@ -161,13 +161,13 @@ def test_refine_end_to_end_applies_split_and_space(qapp, tmp_path, monkeypatch):
     # 保存重开：空格守恒
     path = tmp_path / "refined.2byteproj"
     save_project(project, path)
-    reloaded = __import__("twobyteasr.studio_project", fromlist=["load_project"]).load_project(path)
+    reloaded = __import__("twobyteasr.projects.studio_project", fromlist=["load_project"]).load_project(path)
     reloaded_texts = [cue.text for cue in reloaded.cues]
     assert "啊 我很喜欢这个角色" in reloaded_texts
 
 
 def test_srt_export_keeps_intra_sentence_space(qapp, tmp_path):
-    from twobyteasr.studio_subtitle_export import compile_srt
+    from twobyteasr.exports.studio_subtitle_export import compile_srt
 
     cues = [
         _cue("c919", 3416483, 3418233, "啊 我很喜欢这个角色"),
@@ -181,7 +181,7 @@ def test_srt_export_keeps_intra_sentence_space(qapp, tmp_path):
 
 
 def test_page_apply_undo_and_idempotency(qapp, tmp_path, monkeypatch):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     cues = [
         _cue("c917", 3408783, 3412383, "这个直言不讳的说啊其实我想要的是"),
@@ -200,8 +200,8 @@ def test_page_apply_undo_and_idempotency(qapp, tmp_path, monkeypatch):
         ]}, ensure_ascii=False)
         _patch_provider(monkeypatch, [response])
 
-        from twobyteasr.studio_sentence_refine_ui import refine_cues_with_llm as _unused  # noqa: F401
-        from twobyteasr import sentence_refine as engine
+        from twobyteasr.studio.studio_sentence_refine_ui import refine_cues_with_llm as _unused  # noqa: F401
+        from twobyteasr.subtitle_rules import sentence_refine as engine
         # 直接走页面应用路径（绕过 QThread，结果等价）
         outcome = engine.refine_cues_with_llm(
             list(page.project.cues), project=page.project,
@@ -256,7 +256,7 @@ def test_space_guard_keeps_existing_space_and_rejects_trailing():
 
 def test_pause_hints_from_word_evidence():
     """词级证据的词间停顿 → after_chars 提示；无证据为空不臆造。"""
-    from twobyteasr.sentence_refine import pause_hints_for_cue
+    from twobyteasr.subtitle_rules.sentence_refine import pause_hints_for_cue
 
     cue = _cue("p1", 0, 6000, "对对很不错啊嗯")
     words = [
@@ -273,7 +273,7 @@ def test_pause_hints_from_word_evidence():
 
 
 def test_refine_payload_carries_pause_evidence_and_cue_gap():
-    from twobyteasr.sentence_refine import refine_payload
+    from twobyteasr.subtitle_rules.sentence_refine import refine_payload
 
     project = SubtitleProject(
         media=StudioMedia(path="x.flv", duration_ms=10_000),
@@ -308,8 +308,8 @@ def test_create_studio_outputs_persists_word_evidence_in_ms(tmp_path):
 
     WordUnit 秒 → evidence words 毫秒（start_ms/end_ms 显式键）。
     """
-    from twobyteasr.models import SpeechSegment, WordUnit
-    from twobyteasr.studio_project import create_studio_outputs
+    from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+    from twobyteasr.projects.studio_project import create_studio_outputs
 
     segment = SpeechSegment(
         segment_id=1, start=0.0, end=5.0, text="对对很不错啊嗯", confidence=0.9,
@@ -324,7 +324,7 @@ def test_create_studio_outputs_persists_word_evidence_in_ms(tmp_path):
         target_project_path=str(project_path),
     )
     project = SubtitleProject(media=StudioMedia(path="media.flv", duration_ms=6000))
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     loaded = load_project(project_path)
     row = loaded.asr_evidence.get("segment:1") or {}
     words = row.get("words") or []
@@ -335,6 +335,6 @@ def test_create_studio_outputs_persists_word_evidence_in_ms(tmp_path):
     # 读取端（停顿证据/词级时间分配）吃到同一口径。
     cue = _cue("w1", 0, 6000, "对对很不错啊嗯")
     evidence_words = __import__(
-        "twobyteasr.sentence_refine", fromlist=["_word_evidence_for_cue"]
+        "twobyteasr.subtitle_rules.sentence_refine", fromlist=["_word_evidence_for_cue"]
     )._word_evidence_for_cue(loaded, cue)
     assert len(evidence_words) == 4

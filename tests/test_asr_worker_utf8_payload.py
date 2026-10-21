@@ -30,7 +30,7 @@ Path(a.output).write_text(json.dumps({'results':rows,'child_probe':probe},ensure
 
 @pytest.mark.parametrize('stage',['firered','qwen'])
 def test_actual_production_launcher_keeps_child_streams_and_json_utf8(tmp_path,monkeypatch,stage):
-    from twobyteasr import asr,cache
+    from twobyteasr.recognition import asr, cache
     # These substitute only model content/runtime location. The actual
     # launchers, Popen, pipe readers and JSON loader execute unchanged.
     worker_name='firered_aed_worker.py' if stage=='firered' else 'qwen_asr_worker.py'

@@ -9,14 +9,14 @@ def main():
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen')
     from PySide6.QtWidgets import QApplication
     app=QApplication([])
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.advanced_renderer import AdvancedRendererBackend,compile_composition_data,_overlay_cache_path
-    from twobyteasr.studio_render import RenderJob,RenderSettings
-    from twobyteasr.video_export import capture_video_graph
-    from twobyteasr.web_placement import cue_placement
-    from twobyteasr.web_theme import theme_archive_html
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend,compile_composition_data,_overlay_cache_path
+    from twobyteasr.exports.studio_render import RenderJob,RenderSettings
+    from twobyteasr.exports.video_export import capture_video_graph
+    from twobyteasr.caption_style.web_placement import cue_placement
+    from twobyteasr.caption_design.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.system.processes import run_hidden_subprocess
     from PIL import Image
     import numpy as np
     project=load_project(project_path);cue=project.cues[0];placement=cue_placement(project,cue)

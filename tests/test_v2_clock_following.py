@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject
 from PySide6.QtGui import QImage
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import QApplication
-from twobyteasr.secondary_video_legacy import _DecoderWorker, SecondaryVideoSource
+from twobyteasr.playback.secondary_video_legacy import _DecoderWorker, SecondaryVideoSource
 
 @pytest.fixture
 def app(): return QApplication.instance() or QApplication([])
@@ -71,7 +71,7 @@ def test_pause_keeps_nearest_frame_despite_backend_preroll_queue(app):
     assert worker.player.seeks==[20000,20000]
 
 def test_late_frame_cannot_rewind_requested_time_and_age_grows(app,monkeypatch):
-    from twobyteasr import secondary_video_legacy as secondary_video
+    from twobyteasr.playback import secondary_video_legacy as secondary_video
     now=[10.]
     monkeypatch.setattr(secondary_video,'perf_counter',lambda:now[0])
     source=SecondaryVideoSource();source.generation=2;source.requested_ms=2000
@@ -85,7 +85,7 @@ def test_late_frame_cannot_rewind_requested_time_and_age_grows(app,monkeypatch):
 
 def test_audio_backward_seek_restarts_once_per_clock_generation(app,monkeypatch):
     from pathlib import Path
-    from twobyteasr.audio_engine import _AudioEngineWorker
+    from twobyteasr.playback.audio_engine import _AudioEngineWorker
     worker=_AudioEngineWorker(Path('ffmpeg.exe'));worker.process=SimpleNamespace(poll=lambda:None)
     worker._source_path='fixture.mp4';worker._source_start_ms=30000
     monkeypatch.setattr(worker,'_emit',lambda *a:None)

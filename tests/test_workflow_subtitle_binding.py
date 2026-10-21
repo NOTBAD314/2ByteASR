@@ -1,5 +1,5 @@
 from pathlib import Path
-from twobyteasr.studio_mpv import MpvController, _MpvCommandActor
+from twobyteasr.playback.studio_mpv import MpvController, _MpvCommandActor
 
 def controller(tmp_path):
     exe = tmp_path/'mpv.exe'
@@ -67,7 +67,7 @@ def test_same_project_proxy_rebind_keeps_latest_queued_subtitle(tmp_path):
     assert [Path(cmd[1]).name for cmd in c.sent if cmd[0]=='sub-add']==['latest.ass']
 
 def test_same_media_reload_does_not_remove_unloaded_cached_sid(tmp_path):
-    from twobyteasr.studio_mpv import MpvCommandError
+    from twobyteasr.playback.studio_mpv import MpvCommandError
     c=controller(tmp_path);c._subtitle_media_ready=True
     c._studio_subtitle_sid=1  # A prior file-loaded callback completed during reload.
     def send(command):

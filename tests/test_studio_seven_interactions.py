@@ -4,12 +4,12 @@ from PySide6.QtCore import Qt, QPoint, QEvent, QPointF
 from PySide6.QtGui import QMouseEvent, QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue
-from twobyteasr.studio_timeline import WaveformTimeline
-from twobyteasr.studio_commands import EditCueIntervalsCommand
-from twobyteasr.studio_caption_timeline import ensure_independent_captions, sync_caption_interval_words
-from twobyteasr.studio_selection import forward_selection
-from twobyteasr.studio_group_snap import snap_group_delta
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue
+from twobyteasr.studio.studio_timeline import WaveformTimeline
+from twobyteasr.timeline.studio_commands import EditCueIntervalsCommand
+from twobyteasr.timeline.studio_caption_timeline import ensure_independent_captions, sync_caption_interval_words
+from twobyteasr.timeline.studio_selection import forward_selection
+from twobyteasr.timeline.studio_group_snap import snap_group_delta
 
 
 @pytest.fixture
@@ -20,7 +20,7 @@ def timeline():
         StudioCue('b',3000,5000,'乙完整句',speaker_id='S00'),
         StudioCue('c',6000,7000,'第三条',speaker_id='S00')])
     p.validate();ensure_independent_captions(p)
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     p.video_tracks[0].locked=False;sequence_of(p).video_track_locked=False
     t=WaveformTimeline();t.resize(1200,650);t.set_project(p);t.set_visible_window(0,10000)
     t.show();app.processEvents()
@@ -115,7 +115,7 @@ def test_trim_preserves_original_words_and_move_translates_without_stretch(timel
 
 
 def test_tiny_gap_remains_selected_after_mouse_release(timeline):
-    from twobyteasr.studio_clip_edit import clip_edit_command
+    from twobyteasr.timeline.studio_clip_edit import clip_edit_command
     t=timeline;p=t.project;first=p.video_tracks[0].clips[0]
     clip_edit_command(p,'V1','split',clip_id=first.id,time_ms=3389).redo()
     right=p.video_tracks[0].clips[1]
@@ -130,7 +130,7 @@ def test_tiny_gap_remains_selected_after_mouse_release(timeline):
 @pytest.mark.parametrize('mode',[Qt.WindowNoState,Qt.WindowMaximized,Qt.WindowFullScreen])
 def test_bounds_does_not_resize_special_state_or_lose_it_on_restore(mode):
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.window_constraints import install_window_bounds,constrain
+    from twobyteasr.app.window_constraints import install_window_bounds,constrain
     w=QWidget();w.resize(600,400);bounds=install_window_bounds(w)
     w.setWindowState(mode);w.show();app.processEvents();before=w.geometry()
     constrain(w);assert w.windowState()==mode

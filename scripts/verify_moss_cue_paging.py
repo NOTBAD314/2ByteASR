@@ -12,7 +12,7 @@ def main():
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     import copy
     settings=copy.deepcopy(DEFAULT_SETTINGS)
     settings['switches'].update(use_ai_grouping=False,unified_glm_processing=False,
@@ -20,7 +20,7 @@ def main():
     settings['models'].update(primary_asr_backend='moss',firered_asr_backend='off',
         qwen_asr_backend='off',speaker_source='single')
     (out/'config/2byteasr_settings.json').write_text(json.dumps(settings,ensure_ascii=False),'utf8')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     assets=root/'tmp/moss-cue-paging-20260928/assets';assets.mkdir(parents=True,exist_ok=True)
     media=assets/'playback.mp4'
     if not media.exists():
@@ -28,13 +28,13 @@ def main():
             'color=c=navy:s=640x360:r=30:d=34','-f','lavfi','-i',
             'sine=frequency=440:sample_rate=48000:duration=34','-c:v','libx264','-preset','ultrafast',
             '-g','30','-c:a','aac','-shortest',media],check=True,timeout=60,purpose='paging playback fixture')
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     p=SubtitleProject(media=StudioMedia(str(media),duration_ms=34000,width=640,height=360),cues=[
         StudioCue('target',10000,12000,'原文 20','S01'),StudioCue('next',14000,16000,'下一条 30','S02')])
     p.validate();p.video_tracks[0].locked=sequence_of(p).video_track_locked=False
     save_project(p,out/'fixture.2byteproj')
-    from twobyteasr.studio_media_pool import create_video_track,add_video_clip
+    from twobyteasr.timeline.studio_media_pool import create_video_track,add_video_clip
     multi=copy.deepcopy(p);create_video_track(multi,'V2')
     add_video_clip(multi,'V2',multi.video_tracks[0].clips[0].asset_id,timeline_in_ms=0)
     save_project(multi,out/'video-context.2byteproj')
@@ -52,8 +52,8 @@ def main():
         shutil.copy2(root/'tmp/moss-cue-paging-20260928/model/input.wav',out/'speech.wav')
         p=SubtitleProject(media=StudioMedia(str(out/'speech.wav'),duration_ms=48000),
             cues=[StudioCue('prior',0,1000,'原工程副本')])
-        from twobyteasr.studio_helpers import probe_media_identity
-        from twobyteasr.studio_project import hydrate_media_contract
+        from twobyteasr.studio.studio_helpers import probe_media_identity
+        from twobyteasr.projects.studio_project import hydrate_media_contract
         hydrate_media_contract(p,probe_media_identity(str(out/'speech.wav')),source_path=str(out/'speech.wav'))
         p.validate();save_project(p,out/'speech.2byteproj')
     (out/'config.json').write_text(json.dumps({'recognize':args.recognize}),'utf8')

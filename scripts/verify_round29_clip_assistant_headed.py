@@ -22,21 +22,21 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication, QLabel
 
-from twobyteasr.studio_danmaku import parse_danmaku_xml
-from twobyteasr.studio_edit_sequence import sequence_of
-from twobyteasr.studio_highlight_analyzer import (
+from twobyteasr.studio.studio_danmaku import parse_danmaku_xml
+from twobyteasr.timeline.studio_edit_sequence import sequence_of
+from twobyteasr.studio.studio_highlight_analyzer import (
     candidates_from_local,
     discover_local_candidates,
     highlight_transcript_project,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 OUT = ROOT / "tmp" / "verify-round29-clip"
 OUT.mkdir(parents=True, exist_ok=True)

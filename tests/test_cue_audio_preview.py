@@ -16,10 +16,10 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from twobyteasr.cue_audio_preview import (PreviewUnavailable, caption_timeline_range, plan_cue_preview,  # noqa: E402
+from twobyteasr.playback.cue_audio_preview import (PreviewUnavailable, caption_timeline_range, plan_cue_preview,  # noqa: E402
                                           preview_command)
-from twobyteasr.studio_project import SubtitleProject  # noqa: E402
-from twobyteasr.studio_video_track import ffmpeg_executable  # noqa: E402
+from twobyteasr.projects.studio_project import SubtitleProject  # noqa: E402
+from twobyteasr.studio.studio_video_track import ffmpeg_executable  # noqa: E402
 
 FFMPEG = ffmpeg_executable()
 pytestmark = pytest.mark.skipif(not FFMPEG.is_file(), reason="bundled ffmpeg missing")
@@ -39,7 +39,7 @@ def _tone(path, pieces):
 def _project(tmp_path, cues, domain="timeline"):
     """Two sources on V1/A1: timeline 0-3 s = first.wav 10-13 s (600 Hz),
     timeline 3-6 s = second.wav 1-4 s (900 Hz). first.wav 0-10 s is 300 Hz."""
-    from twobyteasr.studio_project import StudioMedia
+    from twobyteasr.projects.studio_project import StudioMedia
     first = _tone(tmp_path / "first.wav", [(10, 300), (10, 600)])
     second = _tone(tmp_path / "second.wav", [(5, 900), (5, 1200)])
     base = SubtitleProject(media=StudioMedia(path=first, duration_ms=20000))
@@ -132,7 +132,7 @@ def test_legacy_source_domain_caption_outside_the_edit_uses_its_own_source_clock
 
 def test_newest_preview_request_wins(tmp_path):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.glossary_proofread import CuePlayer
+    from twobyteasr.glossary.glossary_proofread import CuePlayer
     QApplication.instance() or QApplication([])
     player = CuePlayer()
     states = []
@@ -148,7 +148,7 @@ def test_preview_stops_by_itself_when_the_device_finished(tmp_path):
     """stateChanged never reached Python; the end comes from decoded length and device progress."""
     from types import SimpleNamespace
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.glossary_proofread import CuePlayer
+    from twobyteasr.glossary.glossary_proofread import CuePlayer
     QApplication.instance() or QApplication([])
     player = CuePlayer()
     states = []

@@ -26,9 +26,9 @@ REPAIR_PS1 = PROJECT_ROOT / "scripts" / "repair_environment.ps1"
 BOOTSTRAP = PROJECT_ROOT / "scripts" / "bootstrap_install.ps1"
 POWERSHELL = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass"]
 
-import twobyteasr.environment as env_module
+import twobyteasr.system.environment as env_module
 import twobyteasr.environment_repair as repair_module
-import twobyteasr.runtime_registry as registry_module
+import twobyteasr.system.runtime_registry as registry_module
 
 
 @pytest.fixture(autouse=True)
@@ -469,7 +469,7 @@ def test_staging_paths_are_role_specific_and_inside_root(tmp_path, monkeypatch):
 def test_staging_paths_fall_back_to_registry_root_when_no_live_dir(
     tmp_path, monkeypatch
 ):
-    from twobyteasr.runtime_registry import intended_runtime_root
+    from twobyteasr.system.runtime_registry import intended_runtime_root
 
     monkeypatch.setattr(repair_module, "project_root", lambda: str(tmp_path))
     live = repair_module.role_paths("moss")
@@ -648,7 +648,7 @@ def test_invoke_environment_repair_returns_scalar_numeric_exit_code(tmp_path):
     fake_python = project / ".venv-main" / "Scripts" / "python.exe"
     fake_python.parent.mkdir(parents=True)
     shutil.copy2(sys.executable, fake_python)
-    shutil.copy2(PROJECT_ROOT / ".venv-main" / "pyvenv.cfg", project / ".venv-main" / "pyvenv.cfg")
+    shutil.copy2(Path(sys.prefix) / "pyvenv.cfg", project / ".venv-main" / "pyvenv.cfg")
     package = project / "twobyteasr"
     package.mkdir()
     (package / "__init__.py").write_text("", encoding="ascii")
@@ -745,7 +745,7 @@ def test_configure_recheck_uses_repair_mode():
 
 
 def test_main_window_offers_in_app_repair_entry():
-    source = (PROJECT_ROOT / "twobyteasr" / "ui.py").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "twobyteasr" / "app" / "ui.py").read_text(encoding="utf-8")
     assert "def _ensure_runtime_environment(" in source
     assert "diagnose_repair" in source
     assert "repair_roles" in source

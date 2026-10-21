@@ -6,9 +6,9 @@ import pytest
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QApplication
 import subtitle_core as legacy
-from twobyteasr.ui import MainWindow
-from twobyteasr.theme_manager import apply_theme
-from twobyteasr.completion_real_audit import secondary_control_measurement
+from twobyteasr.app.ui import MainWindow
+from twobyteasr.design.theme_manager import apply_theme
+from twobyteasr.acceptance.completion_real_audit import secondary_control_measurement
 
 
 @pytest.mark.parametrize('language', ['zh', 'en', 'ja'])
@@ -29,7 +29,7 @@ def test_actual_mainwindow_translation_then_short_resize_keeps_supporting_height
     app.processEvents()
     scroll = window.pages.widget(2)
     buttons = window.result_action_grid.secondary_actions
-    from twobyteasr.completion_widgets import COMPLETION_SECONDARY_HEIGHT as height
+    from twobyteasr.app.completion_widgets import COMPLETION_SECONDARY_HEIGHT as height
     assert [button.height() for button in buttons] == [height] * 3
     # Reproduce all three native translation/resize cycles from the headed run.
     for _ in range(3):

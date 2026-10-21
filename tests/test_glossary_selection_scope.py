@@ -6,8 +6,8 @@ from PySide6.QtCore import Qt, QItemSelectionModel
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.glossary_skill import SearchedTerm, TermDiff
-from twobyteasr.glossary_skill_ui import DiffTableModel, GlossaryUpdateReviewDialog
+from twobyteasr.glossary.glossary_skill import SearchedTerm, TermDiff
+from twobyteasr.glossary.glossary_skill_ui import DiffTableModel, GlossaryUpdateReviewDialog
 
 
 def diffs(count=1200):

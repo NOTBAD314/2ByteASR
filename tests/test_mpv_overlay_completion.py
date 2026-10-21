@@ -1,7 +1,7 @@
 """Every accepted bitmap receives completion, including queue replacement."""
 from collections import deque
 import threading
-from twobyteasr.studio_mpv import _MpvCommandActor
+from twobyteasr.playback.studio_mpv import _MpvCommandActor
 
 def test_replaced_stopped_and_rejected_overlay_requests_complete_once():
     actor=object.__new__(_MpvCommandActor)

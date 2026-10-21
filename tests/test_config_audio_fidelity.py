@@ -1,9 +1,9 @@
 """Role routing, view restoration and audio-only V1 regression gates."""
 import copy
 from types import SimpleNamespace
-from twobyteasr.settings import DEFAULT_SETTINGS
-from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot, task_provider_snapshot
-from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+from twobyteasr.storage.settings import DEFAULT_SETTINGS
+from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot, task_provider_snapshot
+from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
 
 
 def role_settings():
@@ -17,7 +17,7 @@ def role_settings():
 
 
 def test_group_role_wins_over_global_service_and_snapshot_is_frozen(monkeypatch):
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     monkeypatch.setattr(llm_config, 'read_scoped_api_key', lambda *a: ('fixture', 'fixture'))
     settings = role_settings()
     group = resolve_provider_snapshot(settings, stage='group')
@@ -34,7 +34,7 @@ def test_group_role_wins_over_global_service_and_snapshot_is_frozen(monkeypatch)
 
 
 def test_unified_uses_group_and_empty_choice_is_not_replaced(monkeypatch):
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     monkeypatch.setattr(llm_config, 'read_scoped_api_key', lambda *a: ('fixture', 'fixture'))
     settings = role_settings()
     settings['switches']['unified_glm_processing'] = True
@@ -44,7 +44,7 @@ def test_unified_uses_group_and_empty_choice_is_not_replaced(monkeypatch):
 
 
 def test_speaker_change_invalidates_group_cache(monkeypatch):
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     monkeypatch.setattr(llm_config, 'read_scoped_api_key', lambda *a: ('fixture', 'fixture'))
     settings = role_settings()
     before = resolve_provider_snapshot(settings)
@@ -53,7 +53,7 @@ def test_speaker_change_invalidates_group_cache(monkeypatch):
 
 
 def test_legacy_task_entry_also_captures_current_speaker_and_settings():
-    from twobyteasr.service import RunOptions
+    from twobyteasr.recognition.service import RunOptions
     settings=role_settings();settings['models']['speaker_source']='nemotron'
     options=RunOptions.from_legacy(SimpleNamespace(RUNTIME_SETTINGS=settings))
     settings['models']['speaker_source']='single'
@@ -64,8 +64,8 @@ def test_legacy_task_entry_also_captures_current_speaker_and_settings():
 
 def test_legacy_profile_migration_survives_real_settings_load_and_save(tmp_path, monkeypatch):
     import json
-    from twobyteasr import llm_config
-    from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+    from twobyteasr.providers import llm_config
+    from twobyteasr.storage.settings import load_runtime_settings, save_runtime_settings
     monkeypatch.setattr(llm_config, 'read_scoped_api_key', lambda *a: ('fixture', 'fixture'))
     old = {'models': {'ai_service': 'deepseek', 'speaker_source': 'single',
         'provider_profiles': {'deepseek': {'model': 'deepseek-v4-pro',
@@ -83,8 +83,8 @@ def test_legacy_profile_migration_survives_real_settings_load_and_save(tmp_path,
 
 
 def test_complete_roles_and_explicit_empty_cli_are_not_migrated(tmp_path, monkeypatch):
-    from twobyteasr import llm_config
-    from twobyteasr.settings import save_runtime_settings, load_runtime_settings
+    from twobyteasr.providers import llm_config
+    from twobyteasr.storage.settings import save_runtime_settings, load_runtime_settings
     monkeypatch.setattr(llm_config, 'read_scoped_api_key', lambda *a: ('fixture', 'fixture'))
     settings = role_settings()
     settings['models'].update(polish_model='', polish_base_url='')
@@ -96,7 +96,7 @@ def test_complete_roles_and_explicit_empty_cli_are_not_migrated(tmp_path, monkey
 
 
 def test_preflight_checks_each_role_snapshot(monkeypatch):
-    from twobyteasr import llm_config,ai_providers
+    from twobyteasr.providers import llm_config, ai_providers
     import subtitle_core as core
     import moss_firered_pipeline as pipeline
     monkeypatch.setattr(llm_config,'read_scoped_api_key',lambda *a:('fixture','fixture'))
@@ -112,9 +112,9 @@ def test_preflight_checks_each_role_snapshot(monkeypatch):
 
 
 def test_mp3_enabled_v1_is_audio_only_clock_source(tmp_path):
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia
-    from twobyteasr.audio_graph import capture_audio_graph, preview_audio_layers
-    from twobyteasr.studio_video_flow import StudioVideoFlowMixin
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia
+    from twobyteasr.playback.audio_graph import capture_audio_graph, preview_audio_layers
+    from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
     media = tmp_path/'voice.mp3'; media.touch()
     project = SubtitleProject(media=StudioMedia(path=str(media), duration_ms=10000))
     project.validate()

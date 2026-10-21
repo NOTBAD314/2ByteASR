@@ -4,7 +4,7 @@ import gc
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.playback_gc_budget import (
+from twobyteasr.playback.playback_gc_budget import (
     PlaybackGcBudget, ProjectHeapPolicy, hold_full_collections, release_full_collections,
 )
 

@@ -12,9 +12,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.studio_edit_sequence as edit_sequence_module
-from twobyteasr.studio_edit_commands import razor_video_command, replace_candidates_command
-from twobyteasr.studio_edit_sequence import (
+import twobyteasr.timeline.studio_edit_sequence as edit_sequence_module
+from twobyteasr.timeline.studio_edit_commands import razor_video_command, replace_candidates_command
+from twobyteasr.timeline.studio_edit_sequence import (
     EditSequence,
     HighlightCandidate,
     ensure_edit_sequence,
@@ -22,7 +22,7 @@ from twobyteasr.studio_edit_sequence import (
     sequence_of,
     timeline_duration_ms,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
@@ -30,8 +30,8 @@ from twobyteasr.studio_project import (
     save_autosave,
     save_project,
 )
-from twobyteasr.studio_runtime_state import DirtyDomain, state_for
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_runtime_state import DirtyDomain, state_for
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def _project(duration_ms: int = 60_000) -> SubtitleProject:
@@ -55,7 +55,7 @@ def _app() -> QApplication:
     ('text', '人工修改保留', DirtyDomain.CUE_CONTENT),
 ])
 def test_projected_playback_cue_refreshes_after_content_or_style_edit(field, value, dirty):
-    from twobyteasr.studio_edit_sequence import VideoSegment, store_sequence
+    from twobyteasr.timeline.studio_edit_sequence import VideoSegment, store_sequence
     project = _project()
     store_sequence(project, EditSequence(source_path=project.media.path, source_duration_ms=60_000,
         segments=[VideoSegment('cut', project.media.path, 0, 10_000, 1_000, 11_000)]))

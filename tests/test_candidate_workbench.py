@@ -4,8 +4,8 @@ import pytest
 from PySide6.QtWidgets import QApplication,QWidget,QPushButton,QLabel
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from twobyteasr.theme_concept_dialog import ThemeConceptDialog,FittedPicture
-from twobyteasr.studio_theme_draft import StudioThemeDraftController
+from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog,FittedPicture
+from twobyteasr.caption_design.studio_theme_draft import StudioThemeDraftController
 
 @pytest.fixture(scope='module')
 def app():
@@ -53,13 +53,13 @@ def test_primary_adopt_needs_verified_exact_version(app):
     dialog.choose('A');assert not dialog.selected_id
     c.update(authored_theme={'cueHtml':'exact'},technical_status='passed',motion_preview={'status':'motion_ready'},preview_integrity_verified=True)
     dialog.update_concepts([c],{});dialog.choose('A')
-    from twobyteasr.candidate_attempt import revision
+    from twobyteasr.caption_design.candidate_attempt import revision
     assert dialog.selected_id=='A' and dialog.selected_revision==revision(c)
 
 
 def test_exit_segment_uses_coalesced_gif_timestamps(app,tmp_path):
     from PIL import Image
-    from twobyteasr.theme_concept_dialog import movie_frame_times
+    from twobyteasr.caption_design.theme_concept_dialog import movie_frame_times
     path=tmp_path/'variable.gif'
     frames=[Image.new('RGB',(30,20),color) for color in ('red','green','blue')]
     frames[0].save(path,save_all=True,append_images=frames[1:],duration=[100,5000,100],loop=0)

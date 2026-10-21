@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.ai_providers import (
+from twobyteasr.providers.ai_providers import (
     AITransport,
     AntigravityCLIProvider,
     GrokCLIProvider,
@@ -15,15 +15,15 @@ from twobyteasr.ai_providers import (
     adapter_for_stage,
     provider_for_stage,
 )
-from twobyteasr.provider_service import AIClient
-from twobyteasr.model_workshop import build_workshop_qss
-from twobyteasr.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
-from twobyteasr.studio_edit_sequence import HighlightCandidate
-from twobyteasr.studio_highlight_analyzer import candidates_from_local, discover_local_candidates, merge_overlapping_candidates
-from twobyteasr.studio_highlight_ui import HighlightAssistantPanel
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.ui import build_term_library_page_qss
-from twobyteasr.ui_theme import THEMES, theme_definition
+from twobyteasr.providers.provider_service import AIClient
+from twobyteasr.local_models.model_workshop import build_workshop_qss
+from twobyteasr.studio.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate
+from twobyteasr.studio.studio_highlight_analyzer import candidates_from_local, discover_local_candidates, merge_overlapping_candidates
+from twobyteasr.studio.studio_highlight_ui import HighlightAssistantPanel
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.app.ui import build_term_library_page_qss
+from twobyteasr.design.ui_theme import THEMES, theme_definition
 
 
 def _app() -> QApplication:
@@ -153,7 +153,7 @@ def test_candidate_actions_fit_narrow_clip_assistant():
 
 
 def test_studio_global_clip_assistant_belongs_to_editor_or_overflow(monkeypatch, tmp_path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     _app()
@@ -174,7 +174,7 @@ def test_provider_factory_keeps_transports_distinct(monkeypatch):
         "polish_model": "fixture",
         "polish_base_url": "https://example.test/v1",
     }}
-    monkeypatch.setattr("twobyteasr.ai_providers.endpoint_from_settings", lambda *_a: {
+    monkeypatch.setattr("twobyteasr.providers.ai_providers.endpoint_from_settings", lambda *_a: {
         "provider": "custom", "model": "fixture", "base_url": "https://example.test/v1",
         "url": "https://example.test/v1/chat/completions", "api_key": "fixture",
     })

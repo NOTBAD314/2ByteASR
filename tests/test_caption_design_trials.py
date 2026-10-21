@@ -2,8 +2,8 @@ import copy,json,os,subprocess,sys
 from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import pytest
-from twobyteasr.caption_design_trials import CaptionPreferences,local_specs,validate_spec,compile_web_theme,request_static_options,design_style_checks
-from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
+from twobyteasr.caption_design.caption_design_trials import CaptionPreferences,local_specs,validate_spec,compile_web_theme,request_static_options,design_style_checks
+from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
 
 
 def test_local_specs_have_distinct_structures_and_fonts_and_dark_first_stroke():
@@ -34,7 +34,7 @@ def test_preferences_persist_and_rejected_design_never_becomes_positive(tmp_path
             spec=local_specs()[0],screenshots=['fixture.png'],notes='automated fixture; not an actual user rating',verification={'fixture':True})
     assert [r['candidate_id'] for r in store.positive_references()]==['positive-fixture']
     # A genuinely new interpreter reads only the serialized file.
-    code='import json,sys; from twobyteasr.caption_design_trials import CaptionPreferences; print(json.dumps(CaptionPreferences(sys.argv[1]).positive_references()))'
+    code='import json,sys; from twobyteasr.caption_design.caption_design_trials import CaptionPreferences; print(json.dumps(CaptionPreferences(sys.argv[1]).positive_references()))'
     result=subprocess.run([sys.executable,'-c',code,str(path)],capture_output=True,text=True,timeout=15)
     assert result.returncode==0
     assert json.loads(result.stdout)[0]['candidate_id']=='positive-fixture'
@@ -43,7 +43,7 @@ def test_preferences_persist_and_rejected_design_never_becomes_positive(tmp_path
 
 def test_normal_studio_generation_uses_spec_not_provider_html(monkeypatch):
     from types import SimpleNamespace
-    from twobyteasr import provider_service,provider_registry
+    from twobyteasr.providers import provider_service, provider_registry
     spec=local_specs()[0];spec['backplate']['structure']='pressed_ticket'
     calls=[]
     class Client:

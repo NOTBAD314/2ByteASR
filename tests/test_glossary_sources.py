@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from twobyteasr import glossary_sources as gs
+from twobyteasr.glossary import glossary_sources as gs
 
 
 # ---------------------------------------------------------------- 状态机

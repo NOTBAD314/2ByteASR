@@ -10,27 +10,27 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtMultimedia import QAudioFormat
 from PySide6.QtWidgets import QApplication
 
-import twobyteasr.audio_engine as audio_engine
-from twobyteasr.advanced_preview import (
+import twobyteasr.playback.audio_engine as audio_engine
+from twobyteasr.rendering.advanced_preview import (
     AdvancedPreviewIdentity,
     AdvancedPreviewStateMachine,
 )
-from twobyteasr.color_picker import (
+from twobyteasr.design.color_picker import (
     ColorPickerWidget,
     alpha_to_percent,
     percent_to_alpha,
 )
-from twobyteasr.studio_commands import SetCuePresentationCommand, cue_by_id
-from twobyteasr.studio_project import (
+from twobyteasr.timeline.studio_commands import SetCuePresentationCommand, cue_by_id
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     SubtitleStyle,
 )
-from twobyteasr.themed_icons import cached_icon_pixmap, paint_cached_icon
-from twobyteasr.style_recipe import compile_native_recipe
-from twobyteasr.visual_design_graph import clean_subtitle_graph, style_recipe_from_graph
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.design.themed_icons import cached_icon_pixmap, paint_cached_icon
+from twobyteasr.caption_style.style_recipe import compile_native_recipe
+from twobyteasr.caption_design.visual_design_graph import clean_subtitle_graph, style_recipe_from_graph
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app() -> QApplication:
@@ -106,7 +106,7 @@ def test_snapshot_materializes_preset_plus_override_over_stale_visual_graph():
 def test_advanced_apply_keeps_gradient_graph_when_native_mirror_is_materialized(
     tmp_path, monkeypatch,
 ):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -219,7 +219,7 @@ def test_appearance_generation_is_monotonic_and_drops_old_fidelity():
 
 
 def test_native_route_revoke_clears_advanced_identity_and_pending_work(monkeypatch):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage.__new__(SubtitleStudioPage)
     page._advanced_preview_state = AdvancedPreviewStateMachine()
@@ -253,7 +253,7 @@ def test_native_route_revoke_clears_advanced_identity_and_pending_work(monkeypat
 
 
 def test_preset_activation_cancels_stale_style_debounce(tmp_path, monkeypatch):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))

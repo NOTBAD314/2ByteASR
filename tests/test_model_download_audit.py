@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 from twobyteasr import repository_download as repo
-from twobyteasr.download_diagnostics import redact
-from twobyteasr.model_download_diagnostic import bounded_probe
+from twobyteasr.local_models.download_diagnostics import redact
+from twobyteasr.local_models.model_download_diagnostic import bounded_probe
 
 
 @pytest.fixture
@@ -122,7 +122,7 @@ def test_shard_index_cannot_install_undeclared_weight(tmp_path):
 
 
 def test_crashed_publication_remains_partial_and_retry_finishes(tmp_path,monkeypatch):
-    from twobyteasr.model_registry import _health_for,ModelHealth
+    from twobyteasr.local_models.model_registry import _health_for,ModelHealth
     payload=b'valid';target=tmp_path/'model';target.mkdir()
     (target/'weight.bin').write_bytes(payload)
     (target/'.2byteasr-install-pending.json').write_text('{}')
@@ -209,7 +209,7 @@ def test_416_is_not_complete_and_keeps_partial(client,routed_server,tmp_path):
 
 
 def test_header_timeout_is_bounded_and_classified(client,routed_server):
-    from twobyteasr.download_diagnostics import category
+    from twobyteasr.local_models.download_diagnostics import category
     handler,host=routed_server
     with pytest.raises(Exception) as error:client.fetch_size(host+'/slow',timeout=(.05,.05))
     assert category(error.value)=='network_timeout'

@@ -12,15 +12,15 @@ def main():
     out.mkdir(parents=True,exist_ok=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     import subtitle_core as legacy
     from moss_firered_pipeline import _merge_moss_chunks,build_moss_host_primary_segments
-    from twobyteasr.speaker_recovery import candidate_snapshot
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,save_project,load_project
-    from twobyteasr.speaker_organization import apply_new_project_policy
-    from twobyteasr.speaker_evidence import label_summary
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
+    from twobyteasr.recognition.speaker_recovery import candidate_snapshot
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,save_project,load_project
+    from twobyteasr.projects.speaker_organization import apply_new_project_policy
+    from twobyteasr.recognition.speaker_evidence import label_summary
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
     raw=json.loads(args.worker.read_text('utf8'));events=[]
     legacy.record_run_event=lambda kind,**fields:events.append(dict(kind=kind,**fields))
     canonical=_merge_moss_chunks(copy.deepcopy(raw),48.,legacy)
-    from twobyteasr.runtime import RuntimeContext
+    from twobyteasr.recognition.run_context import RuntimeContext
     ctx=RuntimeContext(speaker_source='moss',expected_speakers=0,dialogue_coverage_mode='all_dialogue')
     # Use raw speech spans here, without claiming a VAD inference. The normal
     # task audit separately executes the real production VAD and finalizer.
@@ -34,7 +34,7 @@ def main():
     baseline=copy.deepcopy(p)
     with zipfile.ZipFile(root/'tmp/moss-cue-paging-20260928/entry-worktree.zip') as z:
         module=types.ModuleType('twobyteasr.speaker_organization_before');module.__package__='twobyteasr'
-        exec(compile(z.read('twobyteasr/speaker_organization.py'),'<entry-baseline>','exec'),module.__dict__)
+        exec(compile(z.read('twobyteasr/projects/speaker_organization.py'),'<entry-baseline>','exec'),module.__dict__)
     module.apply_new_project_policy(baseline)
     apply_new_project_policy(p);save_project(p,out/'fixed.2byteproj');save_project(baseline,out/'before.2byteproj')
     loaded=load_project(out/'fixed.2byteproj')

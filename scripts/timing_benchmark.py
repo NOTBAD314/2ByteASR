@@ -148,7 +148,7 @@ def build_synthetic(out_dir: Path) -> Path:
 
 def _content(text: str) -> str:
     sys.path.insert(0, str(ROOT))
-    from twobyteasr.text_rules import content_only
+    from twobyteasr.subtitle_rules.text_rules import content_only
     return content_only(text)
 
 
@@ -161,7 +161,7 @@ def align(reference_path: Path, out: Path, *, device: str, language: str = "Chin
              "window_end_ms": int(u["end_s"] * 1000) + 300, "text": u["text"], "language": language}
             for u in reference["utterances"]]
     os.environ["TWOBYTEASR_ALIGNER_DEVICE"] = device
-    from twobyteasr.asr import run_qwen_aligner_worker
+    from twobyteasr.recognition.asr import run_qwen_aligner_worker
     peak = _PeakChildMemory()
     started = time.perf_counter()
     with peak:
@@ -269,9 +269,9 @@ def score_project(reference_path: Path, project_path: Path) -> dict:
     whose text was rewritten later (e.g. numbers) stay unmatched.
     """
     sys.path.insert(0, str(ROOT))
-    from twobyteasr.text_rules import content_only
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.subtitle_rules.text_rules import content_only
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     reference = json.loads(reference_path.read_text(encoding='utf-8'))
     project = load_project(project_path)
     cues = sorted(project.cues, key=lambda cue: cue.start_ms)

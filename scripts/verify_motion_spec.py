@@ -5,8 +5,8 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 
 
 def main():
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
-    from twobyteasr.renderer_service import RendererService,RendererJob
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService,RendererJob
     from PIL import Image
     import numpy as np
     p=argparse.ArgumentParser();p.add_argument('--theme',type=Path);p.add_argument('--output',type=Path);p.add_argument('--text',default='啊感觉他就是你看');a=p.parse_args()
@@ -79,7 +79,7 @@ def main():
         boxes=[w['rect'] for w in text_nodes]
         checks['long_text_in_frame']=bool(boxes) and all(x>=0 and y>=0 and x+w<=1921 and y+h<=1081 for x,y,w,h in boxes)
         results['long_text']=dict(text=long_text,words=long_diag['words'])
-        from twobyteasr.style_recipe import StyleRecipe
+        from twobyteasr.caption_style.style_recipe import StyleRecipe
         recipe=StyleRecipe(name=theme['name'],engine='remotion',web_theme=theme).to_dict()
         props=dict(schemaVersion=1,width=1920,height=1080,fps=30,durationInFrames=90,
             cues=[dict(id='test',text=text,startMs=0,endMs=3000,styleId='theme',visual=recipe)],recipes=dict(theme=recipe))

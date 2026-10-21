@@ -1,6 +1,6 @@
 """Repeated inspector changes reuse scope identities and preserve geometry."""
 from tests.test_studio_style_controller import _page, _finish
-from twobyteasr.style_resolution import resolve_cue_visual
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
 
 
 def test_repeated_all_scope_style_edits_do_not_accumulate_derived_recipes(tmp_path, monkeypatch):

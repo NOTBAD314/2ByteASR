@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import shortcut_registry as reg
+from twobyteasr.studio import shortcut_registry as reg
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def test_display_ignores_the_apps_qt_translation(qapp):
 
 
 def _studio(qapp):
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
     page = SubtitleStudioPage()
     qapp.processEvents()
     return page
@@ -195,7 +195,7 @@ def test_timeline_select_all_follows_the_registry(qapp, store):
 
 def test_start_button_tooltip_keeps_the_rebound_key(qapp, store):
     from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
-    from twobyteasr import ui as app_ui
+    from twobyteasr.app import ui as app_ui
     window = QWidget()
     window.start_button = QPushButton(window)
     window.start_hint = QLabel(window)
@@ -225,8 +225,8 @@ def test_start_button_tooltip_keeps_the_rebound_key(qapp, store):
 
 
 def test_export_page_in_out_keys_follow_mark_in_and_mark_out(qapp, store, tmp_path, monkeypatch):
-    from twobyteasr.studio_export_ui import StudioExportWorkspace
-    from twobyteasr.studio_project import StudioMedia, SubtitleProject
+    from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+    from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     calls = []
     monkeypatch.setattr(StudioExportWorkspace, "_set_in", lambda self: calls.append("in"))
@@ -252,21 +252,21 @@ def test_export_page_in_out_keys_follow_mark_in_and_mark_out(qapp, store, tmp_pa
 def _review_page(tmp_path, monkeypatch, cues):
     from tests.test_review_click_fix import _fake_candidates
     from tests.test_review_replay_and_window_bounds import _page
-    from twobyteasr import studio_review_ui
+    from twobyteasr.studio import studio_review_ui
     app, page = _page(tmp_path, monkeypatch, cues)
     monkeypatch.setattr(studio_review_ui, "review_candidates", _fake_candidates({}))
     return app, page
 
 
 def _card_one(page):
-    from twobyteasr.studio_cards import ReviewCandidateCard
+    from twobyteasr.studio.studio_cards import ReviewCandidateCard
     layout = page.review_dock_candidate_layout
     return next(widget for widget in (layout.itemAt(index).widget() for index in range(layout.count()))
                 if isinstance(widget, ReviewCandidateCard) and widget._suggestions)
 
 
 def test_review_toasts_and_pronoun_tip_name_the_current_keys(qapp, store, tmp_path, monkeypatch):
-    from twobyteasr.studio_project import StudioCue
+    from twobyteasr.projects.studio_project import StudioCue
     app, page = _review_page(tmp_path, monkeypatch, [StudioCue("a", 0, 2000, "他说他们马上到"),
                                                      StudioCue("b", 3000, 5000, "下一句")])
     try:
@@ -299,9 +299,9 @@ def test_review_toasts_and_pronoun_tip_name_the_current_keys(qapp, store, tmp_pa
 
 
 def test_pronoun_tip_of_a_card_on_its_own_reads_the_store(qapp, store):
-    from twobyteasr.studio_cards import ReviewCandidateCard
-    from twobyteasr.review_suggestions import review_suggestions
-    from twobyteasr.studio_qc import QCCandidate
+    from twobyteasr.studio.studio_cards import ReviewCandidateCard
+    from twobyteasr.subtitle_rules.review_suggestions import review_suggestions
+    from twobyteasr.subtitle_rules.studio_qc import QCCandidate
     text = "他说他们马上到"
     card = ReviewCandidateCard(0, QCCandidate(text, ("Current",)), is_current=True, current_text=text,
                                suggestions=review_suggestions(text, ()))
@@ -314,8 +314,8 @@ def test_pronoun_tip_of_a_card_on_its_own_reads_the_store(qapp, store):
 
 
 def test_empty_timeline_note_names_the_undo_key_and_follows_a_rebind(qapp, store, tmp_path, monkeypatch):
-    from twobyteasr.studio_project import StudioCue
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.projects.studio_project import StudioCue
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     app, page = _review_page(tmp_path, monkeypatch, [StudioCue("a", 0, 2000, "一句")])
     try:
         sequence = sequence_of(page.project)
@@ -333,8 +333,8 @@ def test_empty_timeline_note_names_the_undo_key_and_follows_a_rebind(qapp, store
 
 
 def test_selected_gap_hints_name_the_delete_key(qapp, store, tmp_path, monkeypatch):
-    from twobyteasr.studio_project import StudioCue
-    from twobyteasr import studio_timeline
+    from twobyteasr.projects.studio_project import StudioCue
+    from twobyteasr.studio import studio_timeline
     app, page = _review_page(tmp_path, monkeypatch, [StudioCue("a", 0, 2000, "一句")])
     painted = []
     real_tr = studio_timeline.tr
@@ -365,7 +365,7 @@ def test_selected_gap_hints_name_the_delete_key(qapp, store, tmp_path, monkeypat
 
 
 def test_standalone_timeline_gap_hint_keeps_delete(qapp):
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
     timeline = WaveformTimeline()
     try:
         assert str(timeline._delete_key_text()) == "Delete"
@@ -376,9 +376,9 @@ def test_standalone_timeline_gap_hint_keeps_delete(qapp):
 def test_audio_track_menu_names_the_gain_and_delete_keys(qapp, store, tmp_path, monkeypatch):
     from PySide6.QtCore import QPoint
     from PySide6.QtWidgets import QMenu
-    from twobyteasr import studio_theme
-    from twobyteasr.studio_project import AudioTrack, StudioCue
-    from twobyteasr.studio_track_delete import track_menu
+    from twobyteasr.design import studio_theme
+    from twobyteasr.projects.studio_project import AudioTrack, StudioCue
+    from twobyteasr.timeline.studio_track_delete import track_menu
     menus = []
 
     def menu_without_exec(parent=None):
@@ -409,7 +409,7 @@ def test_audio_track_menu_names_the_gain_and_delete_keys(qapp, store, tmp_path, 
 
 def test_zoom_toast_names_the_current_reset_key(qapp, store):
     from PySide6.QtWidgets import QWidget
-    from twobyteasr.ui_zoom import ZoomController
+    from twobyteasr.app.ui_zoom import ZoomController
     window = QWidget()
     controller = ZoomController(qapp, window)
     try:

@@ -152,19 +152,19 @@ from PySide6.QtWidgets import QAbstractItemView, QApplication
 import moss_firered_pipeline
 import psutil
 import subtitle_core
-from twobyteasr import ui
-from twobyteasr.processes import child_process_start_count
-from twobyteasr.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
-from twobyteasr.studio_cue_controller import StudioCueController
-from twobyteasr.studio_edit_commands import EditSequenceCommand
-from twobyteasr.studio_edit_sequence import runtime_of as sequence_runtime_of, sequence_of
-from twobyteasr.studio_mpv import MpvController
-from twobyteasr.studio_project import save_autosave
-from twobyteasr.studio_runtime_state import StateTransaction, state_for
-from twobyteasr.studio_ui import MpvCanvas, SubtitleStudioPage, WaveformTimeline
-from twobyteasr.style_recipe import FillSpec
-from twobyteasr.teach_hints import TeachHintStore
-from twobyteasr.window_audit import qt_top_level_widgets, win32_top_level_windows
+from twobyteasr.app import ui
+from twobyteasr.system.processes import child_process_start_count
+from twobyteasr.projects.project_dirty_guard import DirtyGuardChoice, ProjectDirtyGuard
+from twobyteasr.studio.studio_cue_controller import StudioCueController
+from twobyteasr.timeline.studio_edit_commands import EditSequenceCommand
+from twobyteasr.timeline.studio_edit_sequence import runtime_of as sequence_runtime_of, sequence_of
+from twobyteasr.playback.studio_mpv import MpvController
+from twobyteasr.projects.studio_project import save_autosave
+from twobyteasr.projects.studio_runtime_state import StateTransaction, state_for
+from twobyteasr.studio.studio_ui import MpvCanvas, SubtitleStudioPage, WaveformTimeline
+from twobyteasr.caption_style.style_recipe import FillSpec
+from twobyteasr.app.teach_hints import TeachHintStore
+from twobyteasr.acceptance.window_audit import qt_top_level_widgets, win32_top_level_windows
 
 
 MEDIA = Path(json.loads(SOURCE_PROJECT.read_text(encoding="utf-8"))["media"]["path"])

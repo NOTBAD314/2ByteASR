@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import QSettings
 
-from twobyteasr.ui import (
+from twobyteasr.app.ui import (
     LAST_MEDIA_DIRECTORY_KEY,
     _media_dialog_initial_directory,
     _remember_media_directory,

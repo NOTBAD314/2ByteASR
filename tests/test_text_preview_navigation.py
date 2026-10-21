@@ -7,11 +7,11 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_cue_controller import StudioCueController
-from twobyteasr.studio_find_replace import FindReplaceDialog
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_runtime_state import DirtyDomain, state_for
-from twobyteasr.studio_session import StudioSession
+from twobyteasr.studio.studio_cue_controller import StudioCueController
+from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_runtime_state import DirtyDomain, state_for
+from twobyteasr.projects.studio_session import StudioSession
 
 APP = QApplication.instance() or QApplication([])
 
@@ -170,7 +170,7 @@ def test_actual_edit_data_during_selection_cannot_be_blessed(mutation):
 @pytest.mark.parametrize('operation', ['manual_position', 'ai_timing'])
 def test_production_edit_command_before_navigation_remains_protected(operation):
     import copy
-    from twobyteasr.studio_commands import BatchTimingCommand, SetCueFieldsCommand
+    from twobyteasr.timeline.studio_commands import BatchTimingCommand, SetCueFieldsCommand
     page = Page()
     dialog = preview(page)
     project = page.session.project

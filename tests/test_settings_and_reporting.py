@@ -1,10 +1,10 @@
 import json
 from types import SimpleNamespace
 
-from twobyteasr import reporting
-from twobyteasr import cache as cache_module
-from twobyteasr.settings import DEFAULT_SETTINGS, load_runtime_settings, save_runtime_settings
-from twobyteasr.llm_config import (
+from twobyteasr.recognition import reporting
+from twobyteasr.recognition import cache as cache_module
+from twobyteasr.storage.settings import DEFAULT_SETTINGS, load_runtime_settings, save_runtime_settings
+from twobyteasr.providers.llm_config import (
     endpoint_from_settings, resolve_api_key, save_api_keys, update_active_profile,
 )
 
@@ -160,7 +160,7 @@ def test_fully_local_asr_configuration_never_requires_a_cloud_key(
 ):
     # KI-5 P1-05（2026-08-13 审查遗留）回归锁定：完全本地后端组合下，
     # 保存/开始任务不得强制要求任何云密钥——密钥要求只条件化于显式选择 API 后端。
-    from twobyteasr.ui import persist_asr_configuration
+    from twobyteasr.app.ui import persist_asr_configuration
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     for name in ("DASHSCOPE_API_KEY", "QWEN_ASR_API_KEY"):
@@ -318,7 +318,7 @@ def test_degraded_media_report_is_persisted_and_explained(tmp_path, monkeypatch)
 
 
 def test_degraded_success_is_still_a_successful_queue_result():
-    from twobyteasr.service import MediaResult, QueueResult
+    from twobyteasr.recognition.service import MediaResult, QueueResult
 
     degraded = MediaResult("degraded.mp4", "degraded_success")
     result = QueueResult((degraded,), 1.0)

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 def test_complete_short_material_keeps_every_id_and_speaker_in_one_request(monkeypatch):
     import subtitle_core as core
-    from twobyteasr import grouping
-    from twobyteasr.asr_provider_snapshot import GroupedBatchResult
+    from twobyteasr.subtitle_rules import grouping
+    from twobyteasr.providers.asr_provider_snapshot import GroupedBatchResult
     rows = [core.SpeechSegment(i + 1, i, i + .8, "保持ID7与重复二十一二十一", .8, [],
         speaker="S01" if i % 2 else "S02") for i in range(50)]
     requests = []
@@ -23,9 +23,9 @@ def test_complete_short_material_keeps_every_id_and_speaker_in_one_request(monke
 
 def test_group_request_receives_shared_scene_and_protected_handoff():
     import subtitle_core as core
-    from twobyteasr.grouping import call_grouping_api
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.terminology import GlossarySnapshot, GlossaryLibrary
+    from twobyteasr.subtitle_rules.grouping import call_grouping_api
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary
     library = GlossaryLibrary("game", "用户保存游戏", "8", profile_json='{"game":"瓦罗兰特"}')
     # Constructor contracts are checked explicitly; content_scene receives the same frozen snapshot.
     snapshot = GlossarySnapshot((library,))
@@ -42,8 +42,8 @@ def test_group_request_receives_shared_scene_and_protected_handoff():
 
 
 def test_local_capacity_is_explicit_without_claiming_server_capacity():
-    from twobyteasr.provider_service import ProviderService
-    from twobyteasr.resource_governor import ResourceGovernor
+    from twobyteasr.providers.provider_service import ProviderService
+    from twobyteasr.system.resource_governor import ResourceGovernor
     governor = ResourceGovernor(background_limit=2)
     service = ProviderService(workers=4, governor=governor)
     assert service.scheduling_capacity()["effective_workers"] == 2

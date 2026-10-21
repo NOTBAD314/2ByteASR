@@ -4,11 +4,11 @@ from pathlib import Path
 import re
 import pytest
 from PIL import Image, ImageFont
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.ass_font_units import ass_font_style
-from twobyteasr.font_metadata import resolve_local_face
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.studio_project import SubtitleProject, SubtitleStyle, StudioMedia, StudioCue
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.rendering.ass_font_units import ass_font_style
+from twobyteasr.caption_style.font_metadata import resolve_local_face
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.projects.studio_project import SubtitleProject, SubtitleStyle, StudioMedia, StudioCue
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXTS = ['一二三四五六七', '一二三四五六七八九十甲乙丙丁戊',

@@ -20,17 +20,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import subtitle_core  # noqa: E402
-from twobyteasr.runtime import (  # noqa: E402
+from twobyteasr.recognition.run_context import (  # noqa: E402
     RuntimeContext,
     activate_runtime_context,
     runtime_context_from_legacy,
 )
-from twobyteasr.settings import (  # noqa: E402
+from twobyteasr.storage.settings import (  # noqa: E402
     DEFAULT_SETTINGS,
     load_runtime_settings,
     save_runtime_settings,
 )
-from twobyteasr.service import RunOptions  # noqa: E402
+from twobyteasr.recognition.service import RunOptions  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 

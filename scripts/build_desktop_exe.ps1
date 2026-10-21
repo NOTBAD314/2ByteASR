@@ -11,7 +11,7 @@ $DistRoot = Join-Path $ProjectRoot "dist"
 $Output = Join-Path $DistRoot "2ByteASR"
 $WorkRoot = Join-Path $ProjectRoot "build\pyinstaller-main"
 $BuildMetadata = Join-Path $ProjectRoot "build\2byteasr_build.json"
-$BuildIdentityScript = Join-Path $ProjectRoot "twobyteasr\build_identity.py"
+$BuildIdentityScript = Join-Path $ProjectRoot "twobyteasr\diagnostics\build_identity.py"
 $ProjectPrefix = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\') + '\'
 
 foreach ($path in @($Output, $WorkRoot)) {

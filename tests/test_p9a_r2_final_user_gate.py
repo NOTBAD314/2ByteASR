@@ -13,15 +13,15 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from tests.test_p8b_stroke_contract import _snapshot
-from twobyteasr import llm_config
-from twobyteasr.advanced_live_renderer import render_live_snapshot
-from twobyteasr.audio_engine import StudioAudioEngine
-from twobyteasr.provider_registry import ProviderRegistry
-from twobyteasr.studio_session import StudioSession
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_recipe import normalize_shadow_contract
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.providers import llm_config
+from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot
+from twobyteasr.playback.audio_engine import StudioAudioEngine
+from twobyteasr.providers.provider_registry import ProviderRegistry
+from twobyteasr.projects.studio_session import StudioSession
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_recipe import normalize_shadow_contract
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 @pytest.fixture(scope="module")

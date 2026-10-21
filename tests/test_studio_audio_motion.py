@@ -9,12 +9,12 @@ from PySide6.QtGui import QImage
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.audio_engine import build_audio_mix_command
-from twobyteasr.audio_playback_graph import AudioPlaybackGraph
-from twobyteasr.home_studio_entry import StudioEntryCard, studio_paper_colors
-from twobyteasr.secondary_video import SecondaryVideoSource
-from twobyteasr.ui_theme import theme_definition
-from twobyteasr.video_compositor import VideoCompositionScene
+from twobyteasr.playback.audio_engine import build_audio_mix_command
+from twobyteasr.playback.audio_playback_graph import AudioPlaybackGraph
+from twobyteasr.app.home_studio_entry import StudioEntryCard, studio_paper_colors
+from twobyteasr.playback.secondary_video import SecondaryVideoSource
+from twobyteasr.design.ui_theme import theme_definition
+from twobyteasr.playback.video_compositor import VideoCompositionScene
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +51,7 @@ def test_pending_seek_uses_one_decoder_generation_as_clock_advances(app):
 
 
 def test_timeline_cursor_reuses_static_pixels_but_edits_invalidate(app):
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
     timeline = WaveformTimeline(); timeline.resize(1200, 350); timeline.show()
     app.processEvents(); timeline.grab()
     original = timeline._static_timeline_cache[1].cacheKey()

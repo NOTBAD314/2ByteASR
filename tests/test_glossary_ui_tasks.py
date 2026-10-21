@@ -11,9 +11,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QWidget
 
 import subtitle_core as legacy
-from twobyteasr import glossary_build as gbuild
-from twobyteasr import glossary_task_manager as gtm
-from twobyteasr.glossary_skill import SearchedTerm, TermDiff
+from twobyteasr.glossary import glossary_build as gbuild
+from twobyteasr.glossary import glossary_task_manager as gtm
+from twobyteasr.glossary.glossary_skill import SearchedTerm, TermDiff
 
 
 def _app():
@@ -44,7 +44,7 @@ def dialog(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(legacy, "LEARNED_TERMS_PATH", str(tmp_path / "learned.json"))
     gtm.GlossaryUpdateManager.reset()
-    from twobyteasr.main_ui_glossary import TermLibraryDialog
+    from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
 
     owner = _FakeOwner()
     dlg = TermLibraryDialog(owner, page_mode=True)
@@ -145,7 +145,7 @@ def test_direct_complete_button_without_native_search_freezes_full_mode_and_targ
     import threading
     gate = threading.Event()
     _stub_engine(monkeypatch, gate=gate)
-    monkeypatch.setattr('twobyteasr.glossary_skill.detect_search_capability', lambda _: dict(
+    monkeypatch.setattr('twobyteasr.glossary.glossary_skill.detect_search_capability', lambda _: dict(
         provider_search=False, service='deepseek', model='deepseek-v4-pro', reason='无原生搜索'))
     dialog._ai_update_needs_key = lambda settings: False   # a configured service (no-key note, 2026-10-15)
     dialog.state['game'] = '瓦罗兰特'
@@ -167,7 +167,7 @@ def test_direct_complete_button_without_native_search_freezes_full_mode_and_targ
 
 
 def test_review_zero_selection_disables_apply_even_with_unverified_candidates(dialog):
-    from twobyteasr.glossary_skill_ui import GlossaryUpdateReviewDialog
+    from twobyteasr.glossary.glossary_skill_ui import GlossaryUpdateReviewDialog
     result = dict(mode='full', outcome=dict(status='partial', message='未核实建议需逐条确认'),
         diffs=[TermDiff(change_type='unverifiable', term=SearchedTerm(term='未核实名称'), checked_by_default=False)])
     review = GlossaryUpdateReviewDialog(dialog.owner, '瓦罗兰特', result)
@@ -180,7 +180,7 @@ def test_review_zero_selection_disables_apply_even_with_unverified_candidates(di
 
 
 def test_review_existing_names_are_not_presented_as_applicable_candidates(dialog):
-    from twobyteasr.glossary_skill_ui import GlossaryUpdateReviewDialog
+    from twobyteasr.glossary.glossary_skill_ui import GlossaryUpdateReviewDialog
     result = dict(mode='full', candidate_count=0, collected_count=38, diffs=[],
         outcome=dict(status='partial', message='已整理的名称均已存在；来源不足，未确认覆盖。'),
         build_stats=dict(unique_candidates=38, duplicate_candidates=38))
@@ -232,7 +232,7 @@ def _diff(term, change="new", priority="core", verification="page_verified", cat
 
 def test_diff_table_model_filters_and_core_selection():
     _app()
-    from twobyteasr.glossary_skill_ui import DiffTableModel
+    from twobyteasr.glossary.glossary_skill_ui import DiffTableModel
 
     diffs = [
         _diff("青衣"),
@@ -264,7 +264,7 @@ def test_diff_table_model_filters_and_core_selection():
 
 def test_review_dialog_large_table_and_detail_pane(dialog):
     _app()
-    from twobyteasr.glossary_skill_ui import GlossaryUpdateReviewDialog
+    from twobyteasr.glossary.glossary_skill_ui import GlossaryUpdateReviewDialog
 
     diffs = [_diff(f"角色{index:03d}") for index in range(200)]
     result = {"diffs": diffs, "candidate_count": 200, "mode": "full",

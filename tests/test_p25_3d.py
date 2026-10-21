@@ -8,16 +8,16 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_preview import (
+from twobyteasr.rendering.advanced_preview import (
     AdvancedPreviewCache,
     AdvancedPreviewIdentity,
     AdvancedPreviewStateMachine,
 )
-from twobyteasr.font_system import resolve_font_weight, resolve_style_font, system_font_inventory
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, SubtitleStyle, save_project
-from twobyteasr.studio_ui import AdvancedLiveCanvas, FillEditorDialog, SubtitleStudioPage
-from twobyteasr.visual_snapshot import VisualCueSnapshot, build_visual_cue_snapshot
+from twobyteasr.caption_style.font_system import resolve_font_weight, resolve_style_font, system_font_inventory
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, SubtitleStyle, save_project
+from twobyteasr.studio.studio_ui import AdvancedLiveCanvas, FillEditorDialog, SubtitleStudioPage
+from twobyteasr.caption_style.visual_snapshot import VisualCueSnapshot, build_visual_cue_snapshot
 
 
 def _app():

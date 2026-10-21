@@ -42,8 +42,8 @@ def main(argv=None):
              "exit_code":completed.returncode,"real_model_inference_passed":valid,
              "studio_full_flow_verified":False,"chinese_quality_verified":False,"mps_model_verified":False}
     if valid:
-        from twobyteasr.models import SubtitleCue
-        from twobyteasr.output import render_srt
+        from twobyteasr.recognition.transcript_data import SubtitleCue
+        from twobyteasr.subtitle_rules.output import render_srt
         cues=[SubtitleCue(cue_id=index+1,start=float(row["start"]),end=float(row["end"]),text=str(row["text"])) for index,row in enumerate(recognized["results"]) if str(row.get("text") or "").strip()]
         # A minimal recognition smoke is separately labeled; it does not
         # stand in for UI editing, cue alignment quality or Chinese QA.

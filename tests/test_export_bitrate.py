@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.export_bitrate import PacketMeasurement, measure_packets, target_comparison
-from twobyteasr.studio_render import RenderJob, RenderSettings
+from twobyteasr.exports.export_bitrate import PacketMeasurement, measure_packets, target_comparison
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings
 
 
 def test_packet_duration_uses_whole_presentation_extent_despite_b_frame_order_and_nonzero_origin():
@@ -43,7 +43,7 @@ def test_unknown_or_disagreeing_timestamps_never_use_requested_rate():
 
 
 def test_streaming_probe_parses_named_fields_without_packet_json_buffer(tmp_path, monkeypatch):
-    from twobyteasr import processes
+    from twobyteasr.system import processes
     commands = []
     child = SimpleNamespace(stdout=io.StringIO('size=100|dts_time=0|pts_time=2|duration_time=1\n'
         'duration_time=1|size=100|pts_time=1|dts_time=1\n'), stderr=io.StringIO(''),

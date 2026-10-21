@@ -128,16 +128,16 @@ def seed(out):
     (runtime / "Scripts").mkdir(parents=True)
     (runtime / "Scripts" / "python.exe").write_bytes(b"inert isolated interpreter reference; never execute")
     (runtime / "pyvenv.cfg").write_text("home = isolated fixture\n", "utf8")
-    from twobyteasr.runtime_registry import register_runtime
+    from twobyteasr.system.runtime_registry import register_runtime
     register_runtime("moss", str(runtime / "Scripts" / "python.exe"), source="isolated_upgrade_fixture")
-    from twobyteasr.settings import DEFAULT_SETTINGS, save_runtime_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, save_runtime_settings
     import copy
     settings = copy.deepcopy(DEFAULT_SETTINGS)
     settings["models"]["polish_model"] = "BerLIN"
     settings["glossary"]["enable_domain_terms"] = True
     settings["ui"]["language"] = "ja"
     save_runtime_settings(settings)
-    from twobyteasr.studio_project import (SubtitleProject, StudioMedia, StudioCue, StudioSpeaker,
+    from twobyteasr.projects.studio_project import (SubtitleProject, StudioMedia, StudioCue, StudioSpeaker,
         SubtitleStyle, save_project, studio_settings_path)
     media = profile / "fixture.wav"
     with wave.open(str(media), "wb") as stream:
@@ -161,7 +161,7 @@ def seed(out):
     write(report, {"schema_version": 1, "started_at": "2026-10-06T00:00:00Z", "status": "success",
         "media": {"name": "isolated-upgrade-fixture", "duration_seconds": 1},
         "result": {"status": "success"}, "segments": [{"text": texts[0], "start": 0, "end": 1}]})
-    from twobyteasr.llm_config import save_api_keys
+    from twobyteasr.providers.llm_config import save_api_keys
     credential = "synthetic-credential-upgrade-fixture-no-real-account"
     save_api_keys(polish_key=credential)
     (profile / "profile" / ".codex").mkdir(parents=True)

@@ -45,8 +45,8 @@ def main():
         os.environ[key]=str(out/part)
     require_isolated_paths('full-model-download')
     from twobyteasr.repository_download import download_model,effective_spec,planned_sources,validate_files
-    from twobyteasr.model_download_diagnostic import network_facts
-    from twobyteasr.download_diagnostics import redact
+    from twobyteasr.local_models.model_download_diagnostic import network_facts
+    from twobyteasr.local_models.download_diagnostics import redact
     lock=json.loads((root/'dependencies.lock.json').read_text('utf-8-sig'))
     keys=args.models.split(',') if args.models else list(lock['models'])
     if any(k not in lock['models'] for k in keys):p.error('未知模型')

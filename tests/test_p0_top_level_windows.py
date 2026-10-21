@@ -20,13 +20,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QToolButton
 from PySide6.QtTest import QTest
 
-import twobyteasr.studio_media_flow as studio_media_flow
-import twobyteasr.studio_project as studio_project
-import twobyteasr.studio_project_flow as studio_project_flow
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.window_audit import TopLevelWindowAudit
+import twobyteasr.studio.studio_media_flow as studio_media_flow
+import twobyteasr.projects.studio_project as studio_project
+import twobyteasr.studio.studio_project_flow as studio_project_flow
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.acceptance.window_audit import TopLevelWindowAudit
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def hub_project_dir(tmp_path,monkeypatch):
     root = (base / "projects").resolve()
     assert root.parent == base
     root.mkdir(parents=True)
-    monkeypatch.setattr("twobyteasr.studio_hub.project_library_root",lambda:root)
+    monkeypatch.setattr("twobyteasr.studio.studio_hub.project_library_root",lambda:root)
     try:
         yield root
     finally:

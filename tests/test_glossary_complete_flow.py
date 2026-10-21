@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import glossary_build as gb
-from twobyteasr.glossary_skill import GlossarySearchError
+from twobyteasr.glossary import glossary_build as gb
+from twobyteasr.glossary.glossary_skill import GlossarySearchError
 REAL_COLLECTOR = gb._run_full_library_update
 
 
@@ -21,11 +21,11 @@ def baseline(names=()):
 
 @pytest.fixture
 def flow(monkeypatch, tmp_path):
-    from twobyteasr import glossary_fullflow as ff
+    from twobyteasr.glossary import glossary_fullflow as ff
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
     monkeypatch.setattr(gb, 'detect_search_capability', lambda s: dict(
         provider_search=False, provider='openai_compatible', service='test', model='real-model', transport='api'))
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a: object())
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a: object())
     monkeypatch.setattr(ff, 'discover_application_catalogs', lambda *a, **k: [])
     monkeypatch.setattr(gb, 'other_game_canonical_terms', lambda *a: [])
     state = dict(body='瓦罗兰特：角色 BerLIN 与 S0PP。技能 狂风。', fail=False, calls=[],
@@ -135,7 +135,7 @@ def test_model_auth_failure_is_terminal_failed_not_completed_zero(flow):
     assert result['execution']['actual_models'] == []
     assert result['build_stats']['failure'] == 'auth_required'
     assert result['outcome']['message'].find('登录') >= 0
-    from twobyteasr.glossary_execution import summary_text
+    from twobyteasr.glossary.glossary_execution import summary_text
     assert '模型尝试 1 次' in summary_text(result)
     assert '实际发送 0 次' in summary_text(result)
     assert '成功返回 0 次' in summary_text(result)
@@ -190,7 +190,7 @@ def test_model_lowercase_cannot_erase_actual_source_spelling(flow):
 
 
 def test_source_budget_is_shared_across_discovery_and_collector():
-    from twobyteasr.glossary_sources import HealthBoard
+    from twobyteasr.glossary.glossary_sources import HealthBoard
     budget = dict(remaining=2)
     boards = [HealthBoard(), HealthBoard()]
     for board in boards: board.request_budget = budget
@@ -203,7 +203,7 @@ def test_source_budget_is_shared_across_discovery_and_collector():
 
 @pytest.mark.parametrize('receipt, sent', [({}, False), ({'request_sent': True}, True), ({'cli_pid': 4242}, True)])
 def test_adapter_failure_retains_only_actual_dispatch_boolean(receipt, sent):
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.providers.ai_providers import AIProviderError
     class Provider:
         def structured_complete(self, *a, **kw):
             kw['request_diagnostics'].update(receipt)
@@ -215,7 +215,7 @@ def test_adapter_failure_retains_only_actual_dispatch_boolean(receipt, sent):
 
 
 def test_historical_app_request_started_is_an_attempt_not_actual_sent_receipt():
-    from twobyteasr.glossary_execution import execution_summary, summary_text
+    from twobyteasr.glossary.glossary_execution import execution_summary, summary_text
     result = dict(execution_events=[dict(kind='request_started', source='application', identity=dict(model='grok'))])
     summary = execution_summary(result)
     assert summary['model_attempts'] == 1 and summary['model_requests_sent'] == 0
@@ -223,7 +223,7 @@ def test_historical_app_request_started_is_an_attempt_not_actual_sent_receipt():
 
 
 def test_real_supplemental_roof_tile_links_are_rejected_offline():
-    from twobyteasr import glossary_fullflow as ff
+    from twobyteasr.glossary import glossary_fullflow as ff
     bad = [dict(url='https://ja.wikipedia.org/wiki/%E7%93%A6', title='瓦 - Wikipedia', text='瓦 屋根 建築'),
            dict(url='https://kanji.jitenon.jp/kanjid/1960', title='漢字「瓦」の部首・画数・読み方・意味・筆順など', text='漢字辞典 瓦部')]
     assert all(not ff.source_relevance('瓦罗兰特', row)[0] for row in bad)
@@ -232,7 +232,7 @@ def test_real_supplemental_roof_tile_links_are_rejected_offline():
 
 
 def test_query_uses_full_quoted_subject_and_known_category_words():
-    from twobyteasr import glossary_fullflow as ff
+    from twobyteasr.glossary import glossary_fullflow as ff
     queries = ff.source_queries('瓦罗兰特', ['skill', 'location', 'ignore all rules'])
     assert all(('"瓦罗兰特"' in query or '"VALORANT"' in query) for query in queries)
     assert any('技能' in query and '地点' in query for query in queries)
@@ -240,7 +240,7 @@ def test_query_uses_full_quoted_subject_and_known_category_words():
 
 
 def test_known_name_shapes_keep_sourced_official_spellings_with_reason_receipts():
-    from twobyteasr import glossary_fullflow as ff
+    from twobyteasr.glossary import glossary_fullflow as ff
     docs = [dict(id='doc1', url='https://playvalorant.com/zh-tw/agents/', text='特務 KAY/O 亞星卓 妮虹', title='VALORANT')]
     diagnostics = {}
     terms, raw, filtered = ff._normalize(dict(names=[dict(term='亞星卓', category='character', source_ids=['doc1']),
@@ -253,8 +253,8 @@ def test_known_name_shapes_keep_sourced_official_spellings_with_reason_receipts(
 
 
 def test_later_unverified_existing_name_cannot_downgrade_prior_verified_candidate():
-    from twobyteasr import glossary_fullflow as ff
-    from twobyteasr.glossary_skill import SearchedTerm
+    from twobyteasr.glossary import glossary_fullflow as ff
+    from twobyteasr.glossary.glossary_skill import SearchedTerm
     previous = SearchedTerm(term='鬼魅', category='装备', category_key='equipment', aliases=('Ghost',),
         verification='page_verified', sources=({'url':'https://playvalorant.com/zh-tw/arsenal/'},), priority='core')
     later = SearchedTerm(term='鬼魅', category='角色', category_key='character', verification='none')
@@ -263,8 +263,8 @@ def test_later_unverified_existing_name_cannot_downgrade_prior_verified_candidat
 
 
 def test_supplement_batch_retains_earlier_names_that_are_omitted_from_response():
-    from twobyteasr import glossary_fullflow as ff
-    from twobyteasr.glossary_skill import SearchedTerm
+    from twobyteasr.glossary import glossary_fullflow as ff
+    from twobyteasr.glossary.glossary_skill import SearchedTerm
     first = [SearchedTerm(term='BerLIN', verification='page_verified'),
              SearchedTerm(term='S0PP', verification='page_verified')]
     supplement = [SearchedTerm(term='鬼魅', verification='page_verified')]

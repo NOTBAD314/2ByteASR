@@ -31,18 +31,18 @@ from difflib import SequenceMatcher
 from statistics import median
 
 
-from twobyteasr import reporting as task_reporting
-from twobyteasr.llm_config import (
+from twobyteasr.recognition import reporting as task_reporting
+from twobyteasr.providers.llm_config import (
     endpoint_from_settings,
     read_secret_value,
     save_api_keys,
     secrets_path,
     validate_endpoint,
 )
-from twobyteasr.models import SpeechSegment, SubtitleCue, WordUnit
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.runtime import get_runtime_context
-from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+from twobyteasr.recognition.transcript_data import SpeechSegment, SubtitleCue, WordUnit
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.recognition.run_context import get_runtime_context
+from twobyteasr.storage.settings import load_runtime_settings, save_runtime_settings
 
 
 warnings.filterwarnings(
@@ -131,7 +131,7 @@ GLOSSARY_PATH = os.path.join(SCRIPT_DIR, "glossary.txt")
 GAME_PROFILES_PATH = os.path.join(SCRIPT_DIR, "game_profiles.json")
 
 
-from twobyteasr.term_constants import GAME_LEXICON_MAX_PROMPT_TERMS
+from twobyteasr.glossary.term_constants import GAME_LEXICON_MAX_PROMPT_TERMS
 
 
 PROFILE_HISTORY_PATH = os.path.join(
@@ -585,7 +585,7 @@ def configure_runtime_asr(
 
 
 
-from twobyteasr.llm_adapter import (
+from twobyteasr.providers.llm_adapter import (
     LLMRequestError,
     classify_structured_output_failure,
     extract_chat_message_text,
@@ -620,9 +620,10 @@ def validate_grouping_boundaries_with_llm(
     firered_tokens=(),
     provider_snapshot=None,
     batch_diagnostics=None,
+    retry_budget=None,
 ):
     """第二轮云端校验：只允许移动竖线，禁止增删改任何原字。"""
-    source_text = "".join(clean_subtitle_text(segment.text) for segment in segment_batch)
+    source_text = "".join(segment.text for segment in segment_batch)
     total_length = display_length(source_text)
     if total_length <= 1 or len(boundary_offsets) <= 1:
         return list(boundary_offsets)
@@ -632,8 +633,12 @@ def validate_grouping_boundaries_with_llm(
     except Exception:
         return list(boundary_offsets)
 
-    from twobyteasr.asr_provider_snapshot import task_provider_snapshot, request_record, classify_request_error
+    from twobyteasr.providers.asr_provider_snapshot import task_provider_snapshot, request_record, classify_request_error
     snapshot = provider_snapshot or task_provider_snapshot("group")
+    if retry_budget is not None and not retry_budget.take():
+        record_run_event("grouping_validate_skip", error="shared_retry_budget_exhausted",
+                         provider_snapshot_fingerprint=snapshot.fingerprint)
+        return list(boundary_offsets)
     settings = snapshot.endpoint()
     diag = request_record(snapshot, stage="grouped_validate",
         batch_id=(batch_diagnostics or {}).get("batch_id"), speaker=segment_batch[0].speaker,
@@ -662,7 +667,7 @@ def validate_grouping_boundaries_with_llm(
         {"role": "user", "content": json.dumps(request_body, ensure_ascii=False)},
     ]
     try:
-        from twobyteasr.ai_providers import provider_for_stage
+        from twobyteasr.providers.ai_providers import provider_for_stage
         content = provider_for_stage(snapshot.execution_settings(), "group", sender=post_chat_completion).complete(
             messages, stage="grouped_validate", operation_kind='group', max_tokens=min(4096, max(512, total_length * 2)),
             temperature=0.0, timeout=snapshot.timeout_policy.total, _timeout_policy=snapshot.timeout_policy,
@@ -670,46 +675,17 @@ def validate_grouping_boundaries_with_llm(
             cancel_check=lambda: bool(getattr(get_runtime_context().cancellation_token, "is_cancelled", False)),
         )
         diag["raw_response_length"] = len(content)
-        returned = parse_qwen_object(content)
-        new_segmented = returned.get("segmented_text")
-        if isinstance(new_segmented, str) and new_segmented.strip():
-            parts = [clean_subtitle_text(part) for part in new_segmented.split("|")]
-            if (
-                parts
-                and all(parts)
-                and content_exact("".join(parts)) == content_exact(source_text)
-            ):
-                rebuilt = []
-                running = 0
-                for part in parts:
-                    running += display_length(part)
-                    rebuilt.append(running)
-                if rebuilt and rebuilt[-1] == total_length:
-                    if rebuilt != list(boundary_offsets):
-                        print(
-                            f"   [断句校验/{settings['model']}] 仅移动竖线，"
-                            f"边界 {len(boundary_offsets)} -> {len(rebuilt)}。"
-                        )
-                    return rebuilt
-        new_boundaries = returned.get("boundaries")
-        if isinstance(new_boundaries, list) and new_boundaries:
-            normalized = [int(value) for value in new_boundaries]
-            if normalized[-1] == total_length:
-                # verify via local slice conservation
-                try:
-                    texts_from_boundary_offsets(
-                        segment_batch, normalized, firered_tokens
-                    )
-                    return normalized
-                except Exception:
-                    pass
+        from twobyteasr.subtitle_rules.grouping_contract import parse_grouping_response
+        new_boundaries, _returned = parse_grouping_response(content, source_text)
+        texts_from_boundary_offsets(segment_batch, new_boundaries, firered_tokens)
+        return new_boundaries
     except Exception as exc:
         print(f"   [警告] 断句校验未采纳，沿用首轮边界：{exc}")
         diag["fallback_reason"] = classify_request_error(exc)
         record_run_event("grouping_validate_skip", error=classify_request_error(exc),
                          provider_snapshot_fingerprint=snapshot.fingerprint)
         if classify_request_error(exc) == "cancelled":
-            from twobyteasr.service import CancelledError
+            from twobyteasr.recognition.service import CancelledError
             raise CancelledError("断句任务已取消。") from exc
     finally:
         diag["total_duration_ms"] = round((time.perf_counter()-started)*1000, 3)
@@ -1123,7 +1099,7 @@ def learned_content_note(library_id):
 def set_learned_content_note(game_name, library_id, note):
     """Save (or clear) the note sent to AI with this library; a built-in library
     without a personal entry gets one holding only its name and the note."""
-    from twobyteasr.terminology import AI_NOTE_LIMIT
+    from twobyteasr.glossary.terminology import AI_NOTE_LIMIT
     note = str(note or "").replace("\r\n", "\n").strip()[:AI_NOTE_LIMIT]
     payload = load_learned_term_payload(strict=True)
     games = payload.setdefault("games", {})
@@ -1362,7 +1338,7 @@ def runtime_enabled_glossary_ids():
     空时回退到当前内容（旧单库行为）。从 active RuntimeContext 读取，
     不在 stage 模块（polishing 等）里直接写 RUNTIME_GAME_NAME。
     """
-    from twobyteasr.runtime import get_runtime_context
+    from twobyteasr.recognition.run_context import get_runtime_context
 
     context = get_runtime_context()
     if not bool(getattr(context, "enable_domain_terms", False)):
@@ -1410,7 +1386,7 @@ def learned_mappings_for_game(game_name=None):
 
 
 def user_confirmed_mappings_for_game(game_name=None):
-    from twobyteasr.terminology import mapping_is_confirmed
+    from twobyteasr.glossary.terminology import mapping_is_confirmed
     return [
         item for item in learned_mappings_for_game(game_name)
         if learned_mapping_provenance(item) == TERM_PROVENANCE_USER_CONFIRMED
@@ -1514,7 +1490,7 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
     Return whether storage changed. Imports and accepted AI evidence preserve an
     existing user spelling; direct manual canonical input is explicit intent.
     """
-    from twobyteasr.terminology import mapping_is_confirmed
+    from twobyteasr.glossary.terminology import mapping_is_confirmed
     def confirmed(item):
         return mapping_is_confirmed(item,
             inferred_manual=learned_mapping_provenance(item) == TERM_PROVENANCE_USER_CONFIRMED)
@@ -1636,7 +1612,7 @@ def edit_learned_mapping(game_name, old_key, source, target, *, category="其他
 
 
 def persist_learned_mappings(game_name, mappings):
-    from twobyteasr.terminology import mapping_is_confirmed
+    from twobyteasr.glossary.terminology import mapping_is_confirmed
     if not game_name or not mappings:
         return
     payload = load_learned_term_payload(strict=True)
@@ -1840,7 +1816,7 @@ def apply_active_canonical_replacements(text):
 
 
 def runtime_content_profile_signature():
-    from twobyteasr.number_fidelity import RULE_VERSION, preference
+    from twobyteasr.subtitle_rules.number_fidelity import RULE_VERSION, preference
     signature = {
         "game": clean_subtitle_text(RUNTIME_GAME_NAME),
         "domain_terms": bool(RUNTIME_ENABLE_DOMAIN_TERMS),
@@ -1852,14 +1828,14 @@ def runtime_content_profile_signature():
     snapshot = getattr(get_runtime_context(), "glossary_snapshot", None)
     if snapshot is not None:
         signature["terminology_snapshot"] = snapshot.summary()
-    from twobyteasr.content_scene import runtime_content_scene
+    from twobyteasr.recognition.content_scene import runtime_content_scene
     signature["resolved_context"] = runtime_content_scene().to_dict()
     return signature
 
 
 def runtime_settings_snapshot():
     """Non-secret effective settings, suitable for a per-media task report."""
-    from twobyteasr.recognition_plan import text_ai_plan
+    from twobyteasr.recognition.text_ai_plan import text_ai_plan
     context = get_runtime_context()
     plan = text_ai_plan(context.asr_settings_snapshot or RUNTIME_SETTINGS, purpose=context.recognition_purpose)
     disabled = dict(provider="disabled", model="", base_url="")
@@ -2371,7 +2347,7 @@ def deserialize_cues(items):
     ]
 
 
-from twobyteasr.cache import *  # noqa: F401,F403
+from twobyteasr.recognition.cache import *  # noqa: F401,F403
 
 def pause_exit(code=0):
     raise SystemExit(code)
@@ -2604,8 +2580,8 @@ def check_runtime():
 
 # 兼容门面：subtitle_core 与 twobyteasr 互为循环导入，本处导入必须位于配置区之后，
 # 请勿上移或把函数定义插到这些 import 语句中间。
-from twobyteasr.text_rules import *  # noqa: F401,F403
-from twobyteasr.asr import *  # noqa: F401,F403
+from twobyteasr.subtitle_rules.text_rules import *  # noqa: F401,F403
+from twobyteasr.recognition.asr import *  # noqa: F401,F403
 
 
 def best_alternate_window(primary, raw_alternate):
@@ -2681,7 +2657,7 @@ def load_glossary():
 
 def load_content_context(media_title=""):
     """One task-owned, locally resolved scene; no implicit web permission."""
-    from twobyteasr.content_scene import runtime_content_scene
+    from twobyteasr.recognition.content_scene import runtime_content_scene
     scene = runtime_content_scene()
     context = f"{scene.summary()}; 素材标题：{media_title}。已确认且语境适用的别名按词库规范名称；其他纠错需输入证据，未知或混合领域不擅自选游戏。"
     print(f"   [项目背景] {context}")
@@ -2833,16 +2809,16 @@ def repair_with_verified_game_terms(segments, verified_terms):
 
 
 # 兼容门面：同上，保持在配置区之后导入，请勿上移或改顺序。
-from twobyteasr.correction import *  # noqa: F401,F403
-from twobyteasr.segmentation import *  # noqa: F401,F403
-from twobyteasr.timing import *  # noqa: F401,F403
-from twobyteasr.output import *  # noqa: F401,F403
-from twobyteasr.speakers import (
+from twobyteasr.subtitle_rules.correction import *  # noqa: F401,F403
+from twobyteasr.subtitle_rules.segmentation import *  # noqa: F401,F403
+from twobyteasr.subtitle_rules.timing import *  # noqa: F401,F403
+from twobyteasr.subtitle_rules.output import *  # noqa: F401,F403
+from twobyteasr.recognition.speakers import (
     host_voiceprint_status_summary,
     load_host_voiceprint_registry,
 )
 
 def run_startup_self_test():
     """Run the startup guards against this facade's current settings/state."""
-    from twobyteasr.startup_selftest import run_startup_self_test as run_checks
+    from twobyteasr.recognition.startup_selftest import run_startup_self_test as run_checks
     return run_checks(sys.modules[__name__])

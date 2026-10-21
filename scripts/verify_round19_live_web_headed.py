@@ -24,8 +24,8 @@ SHOTS = ROOT / "tmp" / "r19-verify"
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.web_theme import builtin_web_themes
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_design.web_theme import builtin_web_themes
 
 RESULTS: list[tuple[str, bool, str]] = []
 

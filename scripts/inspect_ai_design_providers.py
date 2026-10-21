@@ -8,10 +8,10 @@ import sys
 
 def main():
     root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root))
-    from twobyteasr import settings as settings_module
-    from twobyteasr.llm_config import AI_SERVICE_SPECS,activate_ai_service,get_active_service,service_model_catalog
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.providers.llm_config import AI_SERVICE_SPECS,activate_ai_service,get_active_service,service_model_catalog
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     source=Path(os.environ['LOCALAPPDATA'])/'2ByteASR'/settings_module.SETTINGS_FILENAME
     raw=source.read_bytes()
     settings,_=settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS,json.loads(raw))

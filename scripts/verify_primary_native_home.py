@@ -20,9 +20,9 @@ def main():
         "' -Target '"+str(ROOT/'models').replace("'","''")+"' | Out-Null"],
         check=True,creationflags=subprocess.CREATE_NO_WINDOW)
     os.environ['2BYTEASR_MODEL_ROOT']=str(ROOT/'models')
-    from twobyteasr.studio_project import project_from_runtime_cues,load_project,save_project
+    from twobyteasr.projects.studio_project import project_from_runtime_cues,load_project,save_project
     from types import SimpleNamespace
-    from twobyteasr.speaker_organization import organize
+    from twobyteasr.projects.speaker_organization import organize
     real=ROOT/'tmp/studio-workflow-20261004/moss-real-r1'
     infer=json.loads((real/'inference-receipt.json').read_text('utf8'))
     chain=json.loads((real/'pipeline-receipt.json').read_text('utf8'))
@@ -39,10 +39,10 @@ def main():
     old=organize(old,[labels[1]],'merge',target=labels[0]);old.speakers[0].name='人工合轨名';old.cues[0].text='人工修改必须保持 22'
     save_project(old,out/'edited.2byteproj');plan.update(old_edited=str(out/'edited.2byteproj'),old_edited_cues=[(c.id,c.text,c.speaker_id) for c in old.cues])
     (out/'native-plan.json').write_text(json.dumps(plan,ensure_ascii=False,indent=2),'utf8')
-    from twobyteasr.settings import DEFAULT_SETTINGS,save_runtime_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS,save_runtime_settings
     settings=copy.deepcopy(DEFAULT_SETTINGS);settings['models'].update(primary_asr_backend='moss',qwen_asr_backend='local',firered_asr_backend='local',speaker_source='single');settings['switches'].update(enable_ai_polish=False,use_ai_grouping=False)
     save_runtime_settings(settings,out/'config')
-    from twobyteasr.project_profiles import ProjectProfileStore
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
     store=ProjectProfileStore();profile=store.create('Qwen api',recognition_plan='api',primary_asr='api',asr_config={k:settings['models'][k] for k in ('primary_asr_backend','qwen_asr_backend','firered_asr_backend')})
     store.set_last_selected(profile.id)
     env=os.environ.copy();env.update(TWOBYTEASR_ACCEPTANCE_DIR=str(out),TWOBYTEASR_ACCEPTANCE_SCENARIO='primary-native-home',TWOBYTEASR_STARTUP_PROJECT=plan['dialogue'],TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',TWOBYTEASR_INVOKER_CWD=str(ROOT),QT_QPA_PLATFORM='windows',PYTHONUTF8='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1')

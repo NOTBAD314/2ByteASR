@@ -36,7 +36,7 @@ def main():
     result={'files':[],'checks':[],'counts':dict(passed=0,failed=0,errors=0,skipped=0),'out':str(out)}
     files=args.files or sorted(p.relative_to(ROOT).as_posix() for p in (ROOT/'tests').glob('test_*.py'))
     sys.path.insert(0,str(ROOT))
-    from twobyteasr.build_identity import source_snapshot_sha256
+    from twobyteasr.diagnostics.build_identity import source_snapshot_sha256
     def identity():
         source_sha,source_count=source_snapshot_sha256(ROOT)
         digest=hashlib.sha256()

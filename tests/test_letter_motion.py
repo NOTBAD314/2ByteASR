@@ -4,13 +4,13 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.letter_motion_audit import make_project
-from twobyteasr.letter_motion import PRESETS,sample
-from twobyteasr.word_animation import build_word_animation,remap_word_animation
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.caption_scene import SceneRasterizer,animated_caption
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.advanced_renderer import _native_segment_project
+from twobyteasr.acceptance.letter_motion_audit import make_project
+from twobyteasr.caption_style.letter_motion import PRESETS,sample
+from twobyteasr.caption_style.word_animation import build_word_animation,remap_word_animation
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering.caption_scene import SceneRasterizer,animated_caption
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.rendering.advanced_renderer import _native_segment_project
 
 
 @pytest.fixture(scope='module')
@@ -125,9 +125,9 @@ def test_multiline_remap_keeps_words_and_punctuation(app):
 
 
 def test_featured_library_is_real_six_motion_preview_and_saved_roundtrip(app,tmp_path):
-    from twobyteasr.studio_motion_browser import MotionBrowserDialog,MotionCard
-    from twobyteasr.motion_library import MotionPresetStore,MotionPreset
-    from twobyteasr.effect_dsl import builtin_effects
+    from twobyteasr.caption_style.studio_motion_browser import MotionBrowserDialog,MotionCard
+    from twobyteasr.caption_style.motion_library import MotionPresetStore,MotionPreset
+    from twobyteasr.caption_style.effect_dsl import builtin_effects
     p=make_project('none.mp4');dialog=MotionBrowserDialog(p.styles[0])
     try:
         cards=dialog.host.findChildren(MotionCard)

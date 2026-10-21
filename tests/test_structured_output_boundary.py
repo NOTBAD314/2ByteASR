@@ -4,8 +4,8 @@ import threading
 
 import pytest
 
-from twobyteasr.structured_output import object_value, response_object
-from twobyteasr.web_theme import WebThemeDocument, WebThemeValidationError
+from twobyteasr.providers.structured_output import object_value, response_object
+from twobyteasr.caption_design.web_theme import WebThemeDocument, WebThemeValidationError
 
 
 @pytest.mark.parametrize('value', [UserDict(answer=1), '{"answer":1}', '```json\n{"answer":1}\n```'])
@@ -49,7 +49,7 @@ def test_multiple_terminal_results_are_not_silently_merged():
 
 def test_cancelled_probe_does_not_cancel_next_real_process(monkeypatch, tmp_path):
     import sys
-    from twobyteasr.ai_providers import CLIProvider, AIProviderError
+    from twobyteasr.providers.ai_providers import CLIProvider, AIProviderError
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path/'local'))
     monkeypatch.setenv('APPDATA', str(tmp_path/'roaming'))
     provider = CLIProvider(executable=sys.executable)
@@ -63,7 +63,7 @@ def test_cancelled_probe_does_not_cancel_next_real_process(monkeypatch, tmp_path
 
 
 def test_independent_operations_and_late_completion():
-    from twobyteasr.request_operations import RequestOperations
+    from twobyteasr.providers.request_operations import RequestOperations
     registry = RequestOperations()
     old = registry.begin('detect', 1)
     generation = registry.begin('generate', 2)
@@ -78,7 +78,7 @@ def test_independent_operations_and_late_completion():
 
 def test_real_cli_timeout_is_not_user_cancellation(monkeypatch,tmp_path):
     import sys,subprocess
-    from twobyteasr.ai_providers import CLIProvider,AIProviderError
+    from twobyteasr.providers.ai_providers import CLIProvider,AIProviderError
     monkeypatch.setenv('LOCALAPPDATA',str(tmp_path/'local'))
     token=threading.Event();provider=CLIProvider(executable=sys.executable)
     with pytest.raises((subprocess.TimeoutExpired,AIProviderError)) as error:

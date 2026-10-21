@@ -1,10 +1,10 @@
 import copy,json
 from types import SimpleNamespace
 import pytest
-from twobyteasr.caption_components import compose
-from twobyteasr.theme_motion import validate_motion_spec
-from twobyteasr.design_progress import PublicProgress,update_phase,status_text
-from twobyteasr.candidate_attempt import CandidateAttempt,primary_action,revision
+from twobyteasr.caption_design.caption_components import compose
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.design_progress import PublicProgress,update_phase,status_text
+from twobyteasr.caption_design.candidate_attempt import CandidateAttempt,primary_action,revision
 
 
 def test_static_noita_source_is_byte_identical_across_six_effect_choices():
@@ -72,8 +72,8 @@ def test_action_uses_artifact_state_and_revision_receipts(tmp_path):
 
 def test_track_origin_normalizes_locally_and_preserves_original(tmp_path):
     from scripts.author_balatro_candidates import candidates
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set
-    from twobyteasr.authored_repair import collect_issues
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set
+    from twobyteasr.caption_design.authored_repair import collect_issues
     data={'candidates':candidates()};track=data['candidates'][0]['generated_source']['motionSpec']['tracks'][0]
     track.pop('transformOrigin',None)
     track['from'].pop('transformOrigin',None);track['to'].pop('transformOrigin',None)
@@ -90,7 +90,7 @@ def test_track_origin_normalizes_locally_and_preserves_original(tmp_path):
 
 
 def test_late_cancelled_or_replaced_result_never_reaches_receive():
-    from twobyteasr.studio_theme_draft import StudioThemeDraftController
+    from twobyteasr.caption_design.studio_theme_draft import StudioThemeDraftController
     import threading
     calls=[];cancel=threading.Event()
     controller=SimpleNamespace(operation='current',cancel_event=cancel,current=SimpleNamespace(generation=1,cue_id='A'),receive=lambda *args:calls.append(args))

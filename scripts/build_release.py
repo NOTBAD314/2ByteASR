@@ -44,13 +44,20 @@ def main():
     out = args.output.resolve()
     if not out.is_relative_to(ROOT / 'tmp') or out.exists():
         raise ValueError('Choose a NEW directory under repository tmp; existing outputs are never overwritten')
+    # This is production input for the workshop's service test, not a private
+    # recording. A source snapshot with the sample missing must not silently
+    # build a package whose diagnostic entry can no longer run.
+    sample = ROOT / 'assets/diagnostics/speech_en.wav'
+    if not sample.is_file():
+        raise FileNotFoundError('Required workshop sample: assets/diagnostics/speech_en.wav')
     stage = out / 'source'; stage.mkdir(parents=True)
     evidence = out / 'evidence'; evidence.mkdir()
     sys.path.insert(0, str(ROOT))
-    from twobyteasr.build_identity import create_build_metadata, source_snapshot_files, source_snapshot_sha256, is_current_delivery_file
+    from twobyteasr.diagnostics.build_identity import create_build_metadata, source_snapshot_files, source_snapshot_sha256, is_current_delivery_file
     identity = create_build_metadata(ROOT, channel=args.channel)
     source_files = source_snapshot_files(ROOT)
     selected = {p.relative_to(ROOT) for p in source_files}
+    selected.add(sample.relative_to(ROOT))
     for name in ROOT_FILES: selected.add(Path(name))
     selected.update(p.relative_to(ROOT) for p in ROOT.glob('requirements-*.in'))
     selected.update(p.relative_to(ROOT) for p in ROOT.glob('requirements-*.lock'))
@@ -89,7 +96,7 @@ def main():
     paths.write_bytes(b'\0'.join(p.relative_to(ROOT).as_posix().encode('utf8') for p in source_files)+b'\0')
     subprocess.run(['git','-c','core.autocrlf=false','add','-f','--pathspec-from-file='+str(paths),'--pathspec-file-nul'], **flags)
     # Licenses from the exact build environment, without its config or cache.
-    licenses = stage/'licenses/python'; licenses.mkdir(parents=True)
+    licenses = stage/'licenses/python'; licenses.mkdir(parents=True, exist_ok=True)
     distributions=[]
     for dist in importlib.metadata.distributions():
         name=dist.metadata.get('Name','unknown'); version=dist.version

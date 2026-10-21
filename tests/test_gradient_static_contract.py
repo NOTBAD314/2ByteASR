@@ -4,9 +4,9 @@ from PySide6.QtCore import Qt, QPoint
 from PySide6.QtTest import QTest
 from PySide6.QtGui import QImage
 from tests.test_studio_style_controller import _page, _finish
-from twobyteasr.style_recipe import FillSpec
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.advanced_live_renderer import render_live_snapshot
+from twobyteasr.caption_style.style_recipe import FillSpec
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot
 
 
 def test_gradient_angle_stops_alpha_change_glyph_pixels_and_cache(tmp_path,monkeypatch):
@@ -35,7 +35,7 @@ def test_gradient_angle_stops_alpha_change_glyph_pixels_and_cache(tmp_path,monke
 
 
 def test_authored_motion_and_unsupported_features_keep_production_backend():
-    from twobyteasr.static_caption_contract import shared_static_recipe
+    from twobyteasr.exports.static_caption_contract import shared_static_recipe
     assert shared_static_recipe({'motion':{'mode':'none'}})
     for recipe in ({'motion':{'mode':'explicit','preset':'quick_pop'}},{'webTheme':{'html':'<div>'}},
                    {'typography':{'underline':True}}, {'visualGraph':{'motionGraph':{'tracks':[{}]}}}):
@@ -45,12 +45,12 @@ def test_authored_motion_and_unsupported_features_keep_production_backend():
 def test_static_gradient_real_frames_repeat_raster_and_nonzero_range(tmp_path,monkeypatch):
     import av
     from pathlib import Path
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.studio_project import StudioCue,StudioMedia,SubtitleProject,SubtitleStyle
-    from twobyteasr.video_export import capture_video_graph
-    from twobyteasr.export_timeline import write_export_ass
-    from twobyteasr.studio_render import RenderJob,RenderSettings
-    from twobyteasr.advanced_renderer import AdvancedRendererBackend
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import StudioCue,StudioMedia,SubtitleProject,SubtitleStyle
+    from twobyteasr.exports.video_export import capture_video_graph
+    from twobyteasr.exports.export_timeline import write_export_ass
+    from twobyteasr.exports.studio_render import RenderJob,RenderSettings
+    from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend
     app=__import__('PySide6.QtWidgets',fromlist=['QApplication']).QApplication.instance()
     if app is None:app=__import__('PySide6.QtWidgets',fromlist=['QApplication']).QApplication([])
     monkeypatch.setenv('LOCALAPPDATA',str(tmp_path/'local'))
@@ -99,7 +99,7 @@ def test_gradient_survives_scalar_override_edits_undo_save_and_pixels(tmp_path,m
         # Old saved documents keep their redundant scalar: rich fill wins too.
         page.project.cues[0].appearance_override['primary_color']='#FFFF0000'
         assert build_visual_cue_snapshot(page.project,'a').fill==snap.fill
-        from twobyteasr.studio_project import save_project,load_project
+        from twobyteasr.projects.studio_project import save_project,load_project
         reopened=load_project(save_project(page.project,tmp_path/'p.2byteproj'))
         assert build_visual_cue_snapshot(reopened,'a').fill==snap.fill
         page.style_controller._apply_fill_spec(FillSpec.solid('#FF00FF00'))

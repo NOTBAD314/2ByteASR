@@ -10,7 +10,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.glossary_proofread import CaptionReviewList, TermIndex, line_units, wrap_units
+from twobyteasr.glossary.glossary_proofread import CaptionReviewList, TermIndex, line_units, wrap_units
 
 APP = QApplication.instance() or QApplication([])
 
@@ -144,9 +144,9 @@ def test_save_worker_keeps_one_revision_during_edit_undo_and_resave(tmp_path, mo
     import json
     import threading
     from PySide6.QtGui import QUndoStack
-    from twobyteasr.glossary_proofread import _SaveThread
-    from twobyteasr.studio_commands import BatchReplaceTextCommand
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle, project_backup_path
+    from twobyteasr.glossary.glossary_proofread import _SaveThread
+    from twobyteasr.timeline.studio_commands import BatchReplaceTextCommand
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle, project_backup_path
 
     project = SubtitleProject(media=StudioMedia(path='', duration_ms=6000),
                               styles=[SubtitleStyle('default', 'fixture')],
@@ -203,7 +203,7 @@ def test_save_worker_keeps_one_revision_during_edit_undo_and_resave(tmp_path, mo
 def test_failed_snapshot_keeps_page_edits_for_retry(tmp_path, monkeypatch):
     """Snapshot errors follow the same keep-edits/retry path as disk errors."""
     from PySide6.QtWidgets import QWidget
-    from twobyteasr import glossary_proofread as module
+    from twobyteasr.glossary import glossary_proofread as module
     page = module.GlossaryProofreadPage.__new__(module.GlossaryProofreadPage)
     QWidget.__init__(page)
     project = object()
@@ -231,8 +231,8 @@ def test_failed_snapshot_keeps_page_edits_for_retry(tmp_path, monkeypatch):
 @pytest.mark.parametrize('unsupported', [False, True])
 def test_save_snapshot_copies_json_values_and_falls_back_for_unknown_types(tmp_path, unsupported):
     from collections import OrderedDict
-    from twobyteasr.glossary_proofread import _SaveThread
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+    from twobyteasr.glossary.glossary_proofread import _SaveThread
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
 
     shared = {'words': [{'text': '古龙', 'start_ms': 0, 'end_ms': 1000}], 'bounds': (0, 1000)}
     project = SubtitleProject(media=StudioMedia(path='', duration_ms=2000),

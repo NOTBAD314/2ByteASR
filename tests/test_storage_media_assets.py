@@ -6,8 +6,8 @@ from threading import Event
 
 import pytest
 from tests.test_storage_maintenance_ui import service, qapp
-from twobyteasr.storage_media_assets import save_cached_media_asset
-from twobyteasr.storage_ui import StoragePanel
+from twobyteasr.storage.storage_media_assets import save_cached_media_asset
+from twobyteasr.storage.storage_ui import StoragePanel
 
 
 def cached(service, *, registered=True):
@@ -92,7 +92,7 @@ def test_source_has_live_lease_during_actual_read(service,monkeypatch):
 
 def test_asset_appearing_during_copy_is_not_overwritten(service,monkeypatch):
     source,item,target=cached(service)
-    from twobyteasr import storage_media_assets as module
+    from twobyteasr.storage import storage_media_assets as module
     original=module._destination;calls=[0]
     def destination(path,svc):
         calls[0]+=1
@@ -114,7 +114,7 @@ def test_normal_storage_asset_button_opens_explicit_save_and_uses_background_wor
     assert panel.save_media.isEnabled() and panel.relink_media.isEnabled()
     selections=[]
     def choose(*args,**kwargs):selections.append(args);return str(target),'Media'
-    monkeypatch.setattr('twobyteasr.storage_ui.QFileDialog.getSaveFileName',choose)
+    monkeypatch.setattr('twobyteasr.storage.storage_ui.QFileDialog.getSaveFileName',choose)
     panel.save_media.click()
     import time
     for _ in range(160):

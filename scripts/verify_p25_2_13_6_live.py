@@ -14,8 +14,8 @@ os.environ.pop("QT_QPA_PLATFORM", None)
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.ui import APP_QSS
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.app.ui import APP_QSS
 
 
 def main() -> int:

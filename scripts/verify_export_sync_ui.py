@@ -33,7 +33,7 @@ def main():
         TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',PYTHONIOENCODING='utf-8',
         TWOBYTEASR_EXPORT_DURATION=str(args.duration),TWOBYTEASR_EXPORT_RESTART='1' if args.restart else '0')
     if args.caption_checks: env['TWOBYTEASR_CAPTION_REPAIR_AUDIT']='1'
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command=[str(args.exe.resolve())] if args.exe else [sys.executable,'-B',str(root/'quick_start.py')]
     stop=threading.Event()
     def monitor():

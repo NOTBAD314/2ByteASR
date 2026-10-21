@@ -1,8 +1,8 @@
 import copy
 import pytest
-from twobyteasr.authored_prompt import assemble, compact_context
-from twobyteasr.caption_creative_pipeline import ThemeLedger
-from twobyteasr.provider_input_budget import prepare_input, InputBudgetError
+from twobyteasr.caption_design.authored_prompt import assemble, compact_context
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+from twobyteasr.providers.provider_input_budget import prepare_input, InputBudgetError
 
 
 def test_compaction_removes_local_inventory_and_peers_without_truncating_intent(tmp_path):
@@ -39,8 +39,8 @@ def test_sample_selection_uses_whole_records_and_preserves_explicit_newlines():
     dict(version=2),dict(version=2,geometry='chamfer',surface='glass',border='rails',motion='stamp',lettering='offset'),
     dict(version=2,geometry='capsule',surface='print',border='prism',motion='relay',lettering='spectral')])
 def test_independent_surface_axes_are_safe_portable_source(definition):
-    from twobyteasr.caption_components import compose
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.caption_design.caption_components import compose
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     value=WebThemeDocument.from_dict(dict(name='本地能力验证',**compose(definition))).to_dict()
     assert '{{words}}' in value['cueHtml'] and value['motionSpec']['version']==2
     assert 'cap-registration' in value['cueHtml'] and 'cap-light' in value['cueHtml']
@@ -49,7 +49,7 @@ def test_independent_surface_axes_are_safe_portable_source(definition):
 
 def test_motion_ready_label_without_source_or_verified_preview_is_not_adoptable():
     from PySide6.QtWidgets import QApplication,QPushButton
-    from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+    from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
     app=QApplication.instance() or QApplication([])
     dialog=ThemeConceptDialog([dict(id='A',name='未完成',creative_version='test',motion_preview={'status':'motion_ready'})],{})
     assert not next(b for b in dialog.findChildren(QPushButton) if b.text()=='采用这个方向').isEnabled()
@@ -66,7 +66,7 @@ def test_compact_source_contract_keeps_phase_and_layout_semantics(tmp_path):
 
 
 def test_resolve_phase_example_matches_actual_clock():
-    from twobyteasr.motion_ownership import motion_schedule
+    from twobyteasr.caption_design.motion_ownership import motion_schedule
     spec = dict(version=2, buildMs=600, resolveMs=400, tracks=[dict(
         selector='.text', phase='resolve', start=0, end=.8,
         **{'from': {'opacity': 1}, 'to': {'opacity': 0}})])

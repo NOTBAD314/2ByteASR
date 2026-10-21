@@ -20,11 +20,11 @@ def main():
         TWOBYTEASR_ACCEPTANCE_SCENARIO='selection-geometry',TWOBYTEASR_STARTUP_PROJECT=str(out/'fixture.2byteproj'),
         TWOBYTEASR_STARTUP_OPEN_STUDIO='1',TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1')
     os.environ.update({k:env[k] for k in ('LOCALAPPDATA','APPDATA','TEMP','TMP')})
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,SubtitleStyle,save_project,hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
-    from twobyteasr.style_recipe import StyleRecipe
-    from twobyteasr.visual_design_graph import glitch_graph,MotionGraph
-    from twobyteasr.web_theme import WebThemeDocument
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,StudioSpeaker,SubtitleStyle,save_project,hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.caption_design.visual_design_graph import glitch_graph,MotionGraph
+    from twobyteasr.caption_design.web_theme import WebThemeDocument
     texts=['哎这张我要收藏一下啊','好','哎这张我要收藏一下啊回头再给大家分享这份收藏','哎这张我要收藏一下啊\n回头再分享']
     if args.long:texts=['只要打PVP顺手就给他做完了','第一行字幕\n第二行字幕\n第三行字幕']
     font_size=180 if args.long else 94
@@ -59,7 +59,7 @@ def main():
                 save_project(project,out/(ident+'.2byteproj'));config['cases'].append(dict(id=ident,route=route,font=family,text=text))
     shutil.copyfile(out/(config['cases'][0]['id']+'.2byteproj'),out/'fixture.2byteproj')
     (out/'matrix.json').write_text(json.dumps(config,ensure_ascii=False,indent=2),encoding='utf8')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command=[str(args.exe.resolve())] if args.exe else [sys.executable,str(root/'quick_start.py')]
     with (out/'process.log').open('w',encoding='utf8') as log:
         child=run_hidden_subprocess(command,cwd=root,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=1200,purpose='headed selection geometry matrix')

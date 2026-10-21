@@ -3,18 +3,19 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.studio_render import (
+from twobyteasr.exports.studio_render import (
     CONTAINER_CODECS,
     RenderJob,
     RenderSettings,
     build_render_command,
     encoder_choices,
+    encoder_preset,
     preview_job,
     run_render_job,
     probe_encoder,
     render_fallback_job,
 )
-from twobyteasr.ass_compiler import _ass_color
+from twobyteasr.rendering.ass_compiler import _ass_color
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +97,70 @@ def test_known_hardware_and_audio_copy_failures_have_safe_fallbacks():
     )
     assert retried.settings.audio_codec == "aac"
     assert "AAC" in notice
+
+
+@pytest.mark.parametrize(
+    ("preset", "expected"),
+    [
+        ("ultrafast", "12"), ("fast", "10"), ("medium", "8"), ("slow", "6"), ("slower", "4"),
+        ("MEDIUM", "8"), ("balanced", "8"), ("speed", "10"), ("quality", "6"),
+        ("p4", "8"), ("8", "8"), ("-1", "-1"), ("13", "13"), ("", ""),
+    ],
+)
+def test_svt_av1_presets_are_integers(preset, expected):
+    assert encoder_preset("libsvtav1", preset) == expected
+
+
+@pytest.mark.parametrize("encoder", ["libx264", "libx265", "h264_nvenc", "av1_amf", "av1_qsv"])
+def test_non_svt_presets_pass_through(encoder):
+    assert encoder_preset(encoder, "medium") == "medium"
+    assert encoder_preset(encoder, "p4") == "p4"
+
+
+@pytest.mark.parametrize("requested", ["libsvtav1", "auto"])
+def test_svt_av1_command_never_receives_an_x264_preset_name(tmp_path, monkeypatch, requested):
+    from twobyteasr.exports import studio_render
+
+    media, ass = _fixture(tmp_path)
+    # "auto" on a machine without AV1 hardware resolves to libsvtav1 while
+    # RenderSettings.preset keeps its x264-style default.
+    monkeypatch.setattr(studio_render, "select_encoder", lambda _ffmpeg, _settings: "libsvtav1")
+    settings = RenderSettings(container="mkv", codec="av1", encoder=requested, quality=32)
+    assert settings.preset == "medium"
+    command = build_render_command(FFMPEG, RenderJob(str(media), str(ass), str(tmp_path / "out.mkv"), settings))
+    assert command[command.index("-c:v") + 1] == "libsvtav1"
+    assert command[command.index("-preset") + 1] == "8"
+
+
+@pytest.mark.parametrize(
+    ("hardware", "preset", "expected"),
+    [("av1_nvenc", "p4", "10"), ("av1_qsv", "medium", "8"), ("av1_amf", "quality", "6"), ("av1_nvenc", "", "")],
+)
+def test_av1_hardware_fallback_uses_numeric_svt_preset(hardware, preset, expected):
+    job = RenderJob(
+        "source.mp4", "subtitle.ass", "output.mkv",
+        RenderSettings(container="mkv", codec="av1", encoder=hardware, preset=preset),
+    )
+    retried, notice = render_fallback_job(job, RuntimeError(f"{hardware}: no capable devices found"))
+    assert retried.settings.encoder == "libsvtav1"
+    assert retried.settings.preset == expected
+    assert "libsvtav1" in notice
+
+
+def test_svt_av1_export_with_x264_preset_name_encodes(tmp_path):
+    if "libsvtav1" not in encoder_choices(FFMPEG, "av1"):
+        pytest.skip("bundled FFmpeg has no libsvtav1")
+    media, ass = _fixture(tmp_path)
+    output = tmp_path / "svt.mkv"
+    settings = RenderSettings(container="mkv", codec="av1", encoder="libsvtav1", preset="medium",
+                              quality=40, audio_codec="none")
+    run_render_job(FFMPEG, RenderJob(str(media), str(ass), str(output), settings))
+    probe = subprocess.run(
+        [str(FFPROBE), "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name",
+         "-of", "csv=p=0", str(output)],
+        check=True, capture_output=True, text=True,
+    )
+    assert probe.stdout.strip() == "av1"
 
 
 def test_preview_is_centered_and_uses_same_command_builder(tmp_path):

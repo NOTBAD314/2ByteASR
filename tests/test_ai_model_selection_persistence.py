@@ -30,7 +30,7 @@ MODEL_B = "deepseek-v4-flash"
 @pytest.fixture(scope="session", autouse=True)
 def _session_settings_isolation(tmp_path_factory):
     """会话级 settings 根重定向（不恢复），同 test_profile_independence。"""
-    import twobyteasr.settings as settings_module
+    import twobyteasr.storage.settings as settings_module
 
     redirected_root = tmp_path_factory.mktemp("ai-persist-settings-root")
     settings_module.stable_settings_root = lambda: redirected_root
@@ -39,16 +39,18 @@ def _session_settings_isolation(tmp_path_factory):
 
 @pytest.fixture()
 def _no_secret_writes(monkeypatch):
-    monkeypatch.setattr("twobyteasr.ui.resolve_api_key", lambda stage: ("", "未配置"))
+    # The editor lives in providers.endpoint_editor_ui; saving stays in app.ui.
+    for module in ("twobyteasr.app.ui", "twobyteasr.providers.endpoint_editor_ui"):
+        monkeypatch.setattr(f"{module}.resolve_api_key", lambda stage: ("", "未配置"))
+        monkeypatch.setattr(
+            f"{module}.read_api_key", lambda _provider, _base_url="": ("", "未配置")
+        )
     monkeypatch.setattr(
-        "twobyteasr.ui.read_api_key", lambda _provider, _base_url="": ("", "未配置")
-    )
-    monkeypatch.setattr(
-        "twobyteasr.ui.save_api_key_for",
+        "twobyteasr.app.ui.save_api_key_for",
         lambda provider, base_url, key: None,
     )
     monkeypatch.setattr(
-        "twobyteasr.ui.delete_api_key_for",
+        "twobyteasr.app.ui.delete_api_key_for",
         lambda provider, base_url: None,
     )
 
@@ -67,7 +69,7 @@ def _editor_values(model: str) -> dict:
 
 
 def _persist(legacy, model: str, *, unified: bool = True, use_ai_grouping: bool = True):
-    from twobyteasr.ui import persist_ai_configuration
+    from twobyteasr.app.ui import persist_ai_configuration
 
     group = _editor_values(model)
     polish = dict(group) if unified else _editor_values(model)
@@ -93,7 +95,7 @@ def _runtime_models(legacy) -> dict:
 def test_save_then_reload_keeps_deepseek_model(tmp_path, monkeypatch, _no_secret_writes):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    from twobyteasr.settings import load_runtime_settings
+    from twobyteasr.storage.settings import load_runtime_settings
 
     _persist(legacy, MODEL_A)
 
@@ -111,7 +113,7 @@ def test_save_then_reload_keeps_deepseek_model(tmp_path, monkeypatch, _no_secret
 # ---------------------------------------------------------------------------
 
 def _make_editor(settings: dict):
-    from twobyteasr.ui import EndpointEditor
+    from twobyteasr.app.ui import EndpointEditor
 
     return EndpointEditor("全文断句模型", "#2f8fef", "group", settings)
 
@@ -201,7 +203,7 @@ def test_retired_saved_model_shows_warning_and_never_selected(tmp_path, monkeypa
 def test_group_request_resolves_saved_model(tmp_path, monkeypatch, _no_secret_writes):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    from twobyteasr.llm_config import endpoint_from_settings
+    from twobyteasr.providers.llm_config import endpoint_from_settings
 
     _persist(legacy, MODEL_B)
 
@@ -212,7 +214,7 @@ def test_group_request_resolves_saved_model(tmp_path, monkeypatch, _no_secret_wr
 def test_runtime_never_resolves_retired_model(tmp_path, monkeypatch, _no_secret_writes):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    from twobyteasr.llm_config import (
+    from twobyteasr.providers.llm_config import (
         endpoint_from_settings,
         resolved_service_values,
         service_model_catalog,
@@ -273,8 +275,8 @@ def test_flat_retired_model_resolves_to_service_model(
     """
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
-    from twobyteasr.llm_config import effective_ai_identity, endpoint_from_settings
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.providers.llm_config import effective_ai_identity, endpoint_from_settings
 
     settings = _flat_retired_settings(legacy, profile_model, unified=unified)
     for stage in ("polish", "group"):
@@ -289,7 +291,7 @@ def test_flat_retired_model_without_service_default_keeps_explicit_error(
     """自定义端点没有默认模型：保留原值，请求前由 validate_endpoint 报“已不可用”。"""
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    from twobyteasr.llm_config import endpoint_from_settings, validate_endpoint
+    from twobyteasr.providers.llm_config import endpoint_from_settings, validate_endpoint
 
     settings = _flat_retired_settings(legacy, RETIRED, unified=False)
     models = settings["models"]
@@ -341,8 +343,8 @@ def test_repo_runtime_has_no_vision_exp_default():
     root = Path(__file__).resolve().parents[1]
     # 墓碑定义/自检允许引用该 id；生产默认逻辑不得引用
     allowed_files = {
-        root / "twobyteasr" / "llm_config.py",
-        root / "twobyteasr" / "runtime_fixes_audit.py",
+        root / "twobyteasr" / "providers" / "llm_config.py",
+        root / "twobyteasr" / "acceptance" / "runtime_fixes_audit.py",
     }
     offenders = []
     for path in list((root / "twobyteasr").rglob("*.py")) + [root / "moss_firered_pipeline.py"]:
@@ -367,7 +369,7 @@ def isolated_main_window(monkeypatch, tmp_path, _no_secret_writes):
     _app = QApplication.instance() or QApplication([])
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     original_settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
     window = ui_module.MainWindow([], legacy, object(), None)
@@ -382,7 +384,7 @@ def isolated_main_window(monkeypatch, tmp_path, _no_secret_writes):
 def test_profile_apply_with_retired_ref_keeps_global_model(isolated_main_window):
     """启动/切方案回灌环节：墓碑 ref 不再覆盖全局保存值。"""
     window, legacy = isolated_main_window
-    from twobyteasr.project_profiles import ProjectProfileStore
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
     store = ProjectProfileStore(Path(window.profile_store.path))
     profile = store.create("Qwen api", llm_enabled=True, llm_config_ref=RETIRED)
@@ -435,7 +437,7 @@ def test_main_window_starts_with_flat_retired_models_not_unified(monkeypatch, tm
     _app = QApplication.instance() or QApplication([])
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     import subtitle_core as legacy
-    import twobyteasr.ui as ui_module
+    import twobyteasr.app.ui as ui_module
 
     original_settings = copy.deepcopy(legacy.RUNTIME_SETTINGS)
     legacy.RUNTIME_SETTINGS = _flat_retired_settings(legacy, RETIRED, unified=False)
@@ -463,7 +465,7 @@ def test_main_window_starts_with_flat_retired_models_not_unified(monkeypatch, tm
 def test_save_ai_configuration_updates_profile_bookmark(isolated_main_window, capsys):
     """保存 AI 配置 = 唯一权威写入时刻：方案书签必须跟随，杜绝下次启动复活。"""
     window, legacy = isolated_main_window
-    from twobyteasr.project_profiles import ProjectProfileStore
+    from twobyteasr.recognition.recognition_profiles import ProjectProfileStore
 
     store = ProjectProfileStore(Path(window.profile_store.path))
     profile = store.create("Qwen api", llm_enabled=True, llm_config_ref=RETIRED)

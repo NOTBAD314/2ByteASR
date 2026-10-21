@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.owned_audio_tail import AudioTailWait, OwnedAudioTail, audio_pcm_drained, owned_audio_sample, held_video_frame_ready
-from twobyteasr.studio_playback_flow import StudioPlaybackFlowMixin
+from twobyteasr.playback.owned_audio_tail import AudioTailWait, OwnedAudioTail, audio_pcm_drained, owned_audio_sample, held_video_frame_ready
+from twobyteasr.studio.studio_playback_flow import StudioPlaybackFlowMixin
 
 
 def sample():
@@ -139,7 +139,7 @@ def test_close_or_session_unload_invalidates_audio_tail():
 
 
 def test_video_boundary_is_runtime_only_and_keeps_metadata_contract():
-    from twobyteasr.media_service import MediaMetadataSnapshot
+    from twobyteasr.media.media_service import MediaMetadataSnapshot
     snapshot=MediaMetadataSnapshot('source',1,2,60160,True,True,video_stream_end_ms=55066.624)
     assert snapshot.video_stream_end_ms==55066.624
     assert 'video_stream_end_ms' not in snapshot.to_dict()
@@ -213,7 +213,7 @@ def test_new_tail_seek_without_prior_pcm_cannot_promote_a_single_caption():
 
 
 def test_resume_wait_holds_single_clock_without_changing_play_intent():
-    from twobyteasr.playback_clock import PlaybackClock
+    from twobyteasr.playback.playback_clock import PlaybackClock
     clock=PlaybackClock(now=0.)
     clock.force_position(55950,paused=True,now=0.)
     clock.set_presentation_hold(True)
@@ -240,7 +240,7 @@ def test_pause_gap_can_keep_last_verified_tail_image_until_real_paused_pcm():
 
 
 def test_pending_tail_does_not_reaccept_previous_paused_audio_observation():
-    from twobyteasr.studio_video_canvas import MpvCanvas
+    from twobyteasr.studio.studio_video_canvas import MpvCanvas
     canvas=SimpleNamespace(_studio_page=lambda:SimpleNamespace(_audio_tail_waiting=lambda:True))
     # The provider and Clock are deliberately absent: pending must stop before
     # adopting the old PCM pause bit or sequence into the user's play intent.
@@ -248,7 +248,7 @@ def test_pending_tail_does_not_reaccept_previous_paused_audio_observation():
 
 
 def test_tail_startup_requires_current_applied_bitmap_not_only_a_queued_scene():
-    from twobyteasr.owned_audio_tail import tail_caption_publication_ready
+    from twobyteasr.playback.owned_audio_tail import tail_caption_publication_ready
     project=object();token=(id(project),1,1,3,('36',))
     scene=SimpleNamespace(project=project,active=True,closed=False,published=object(),token=token,
         trace=lambda:dict(visible=True,rendered_cue_ids=['36']))

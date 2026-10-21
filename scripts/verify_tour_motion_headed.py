@@ -2,7 +2,7 @@
 
 A first launch in a fresh isolated profile on a private Windows desktop: the
 quick chooser is answered "稍后再说", the tutorial starts, and
-twobyteasr/tour_motion_audit.py walks it the way a person does (real clicks on
+twobyteasr/acceptance/tour_motion_audit.py walks it the way a person does (real clicks on
 the outlined controls) while it logs every paint of the overlay and films the
 changes of step. Theme and interface zoom default to the user's (slate, 110%).
 
@@ -10,7 +10,7 @@ No real user data is read or written, no network is used. Use --exe for a
 frozen candidate.
 
 usage: python scripts/verify_tour_motion_headed.py --output tmp/tour-motion/run1 [--theme slate] [--zoom 110]
-       [--exe dist/2ByteASR/2ByteASR.exe] [--click real|helper] [--language ja]
+       [--exe dist/2ByteASR/2ByteASR.exe] [--click real|helper] [--language ja] [--choose cloud] [--tooltips]
 """
 import argparse
 import json
@@ -24,8 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MAKE_INPUT = r'''
 import json, sys
 from pathlib import Path
-from twobyteasr import sample_project
-from twobyteasr.studio_project import load_project, save_project
+from twobyteasr.app import sample_project
+from twobyteasr.projects.studio_project import load_project, save_project
 target = Path(sys.argv[1])
 sample_project.sample_root = lambda: target / "media"
 path = sample_project.ensure_sample_project()
@@ -45,6 +45,10 @@ def main():
     parser.add_argument('--click', default='real', choices=('real', 'helper'))
     parser.add_argument('--language', default='', choices=('', 'zh', 'ja', 'en'),
                         help='subtitle language picked at the language step')
+    parser.add_argument('--choose', default='', choices=('', 'cloud'),
+                        help='answer the first-run chooser with this card instead of 稍后再说 (2026-10-21)')
+    parser.add_argument('--tooltips', action='store_true',
+                        help='also show and picture one chooser and one tutorial tooltip at --zoom (2026-10-21)')
     parser.add_argument('--models', type=Path, help='a models folder linked read-only into the isolated model root '
                         '(the home cards then show installed models, e.g. the Japanese CTC aligner)')
     parser.add_argument('--timeout', type=int, default=900)
@@ -73,8 +77,8 @@ def main():
     sys.path.insert(0, str(ROOT))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr import ui_zoom
-    from twobyteasr.theme_manager import save_theme_key
+    from twobyteasr.app import ui_zoom
+    from twobyteasr.design.theme_manager import save_theme_key
     ui_zoom.set_zoom_percent(args.zoom)
     save_theme_key(args.theme)
     sys.path.insert(0, str(ROOT / 'scripts'))
@@ -85,7 +89,9 @@ def main():
     env.update(TWOBYTEASR_ACCEPTANCE_DIR=str(out), TWOBYTEASR_ACCEPTANCE_SCENARIO='tour-motion',
                TWOBYTEASR_STARTUP_PROJECT=spec['project'], TWOBYTEASR_INVOKER_CWD=str(ROOT),
                TWOBYTEASR_RUNTIME_REGISTRY_READ_ONLY='1', TWOBYTEASR_SEEK_CACHE_ROOT=str(out / 'seek-cache'),
-               TWOBYTEASR_TOUR_CLICK=args.click, TWOBYTEASR_TOUR_LANGUAGE=args.language, QT_QPA_PLATFORM='windows')
+               TWOBYTEASR_TOUR_CLICK=args.click, TWOBYTEASR_TOUR_LANGUAGE=args.language,
+               TWOBYTEASR_TOUR_CHOOSE=args.choose, TWOBYTEASR_TOUR_TOOLTIPS='1' if args.tooltips else '0',
+               QT_QPA_PLATFORM='windows')
     from isolated_windows_desktop import run_on_desktop
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT / 'quick_start.py')]
     try:

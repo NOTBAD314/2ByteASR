@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_render import (
+from twobyteasr.exports.studio_render import (
     STAGE_ENCODE,
     STAGE_MUX,
     STAGE_PREPARE_PROJECT,

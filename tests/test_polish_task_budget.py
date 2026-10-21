@@ -15,10 +15,11 @@ import pytest
 
 import subtitle_core  # noqa: F401  initialize the legacy facade before polishing
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr import llm_adapter, polishing
-from twobyteasr.asr_provider_snapshot import TimeoutPolicy
-from twobyteasr.models import SpeechSegment
-from twobyteasr.provider_input_budget import InputBudgetError, pack_items, prepare_input
+from twobyteasr.providers import llm_adapter
+from twobyteasr.subtitle_rules import polishing
+from twobyteasr.providers.asr_provider_snapshot import TimeoutPolicy
+from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.providers.provider_input_budget import InputBudgetError, pack_items, prepare_input
 
 
 def ascii_messages(sizes):
@@ -103,7 +104,7 @@ def checked(messages, **kwargs):
 
 
 def counted_retrieval(monkeypatch):
-    import twobyteasr.terminology_retrieval as retrieval
+    import twobyteasr.glossary.terminology_retrieval as retrieval
     original = retrieval.retrieve_candidates
     builds = []
     def counted(term_snapshot, segments, *args, **kwargs):
@@ -115,7 +116,7 @@ def counted_retrieval(monkeypatch):
 
 def test_one_batch_request_is_built_once_not_once_per_cue(context, monkeypatch):
     builds = counted_retrieval(monkeypatch)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *a, **k: SimpleNamespace(complete=checked))
     rows = [SpeechSegment(i, i*2., i*2.+1, f'第{i}句普通解说', .85, [], speaker='S01')
             for i in range(1, 34)]
@@ -132,7 +133,7 @@ def test_prepared_request_is_reused_and_rebuilt_when_a_cue_changes(context, monk
     def complete(messages, **kwargs):
         sent.append(json.loads(messages[1]['content'])['cues'][0]['primary_text'])
         return checked(messages)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *a, **k: SimpleNamespace(complete=complete))
     rows = [SpeechSegment(1, 0., 1., '原来的文字', .85, [], speaker='S01')]
     polishing.prepare_correction_request(rows, [], '', '', '夹具', '', [], [], [])
@@ -146,7 +147,7 @@ def test_prepared_request_is_reused_and_rebuilt_when_a_cue_changes(context, monk
 def test_studio_review_prepares_the_next_batch_while_one_is_answered(context, monkeypatch):
     """Each batch's request is ready when the previous answer arrives."""
     import threading as _threading
-    from twobyteasr import studio_glossary_service as service
+    from twobyteasr.glossary import studio_glossary_service as service
     builds = counted_retrieval(monkeypatch)
     order = []
     real_prepare = polishing.prepare_correction_request
@@ -163,10 +164,10 @@ def test_studio_review_prepares_the_next_batch_while_one_is_answered(context, mo
     monkeypatch.setattr(polishing, 'prepare_correction_request', prepare)
     monkeypatch.setattr(polishing, 'call_correction_api', call)
     monkeypatch.setattr(polishing, 'correction_batches', lambda rows: [[row] for row in rows])
-    import twobyteasr.asr_provider_snapshot as snapshots
+    import twobyteasr.providers.asr_provider_snapshot as snapshots
     monkeypatch.setattr(snapshots, 'resolve_provider_snapshot', lambda *a, **k: context[1].provider_snapshot)
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-    from twobyteasr.terminology import GlossarySnapshot
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.glossary.terminology import GlossarySnapshot
     project = SubtitleProject(media=StudioMedia(path='', duration_ms=9000),
         cues=[StudioCue(f'c{i}', i*2000, i*2000+1500, f'第{i}句') for i in range(1, 4)])
     service.preview_glossary_correction(project, ['c1', 'c2', 'c3'], GlossarySnapshot(), {})
@@ -180,7 +181,7 @@ def test_studio_review_prepares_the_next_batch_while_one_is_answered(context, mo
 
 
 def test_event_redaction_resolves_secrets_once_per_event(context, monkeypatch):
-    from twobyteasr import cache
+    from twobyteasr.recognition import cache
     calls = []
     def secrets():
         calls.append(1)
@@ -197,8 +198,8 @@ def test_event_redaction_resolves_secrets_once_per_event(context, monkeypatch):
 
 
 def test_glossary_snapshot_digest_is_computed_once(monkeypatch):
-    from twobyteasr import terminology
-    from twobyteasr.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
+    from twobyteasr.glossary import terminology
+    from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
     snapshot = GlossarySnapshot((GlossaryLibrary('lib', '词库', 'r1', (TermEntry('骨龙'),)),))
     calls = []
     original = terminology._digest
@@ -224,12 +225,12 @@ def test_later_parallel_batches_still_get_sent_within_the_task_deadline(context,
     """
     _, owner, _ = context
     window = .58
-    monkeypatch.setattr('twobyteasr.asr_provider_snapshot.task_provider_snapshot',
+    monkeypatch.setattr('twobyteasr.providers.asr_provider_snapshot.task_provider_snapshot',
         lambda *_: replace(owner.provider_snapshot,
                            timeout_policy=TimeoutPolicy(connect=window, read_idle=window, total=window, queue=window)))
     # Warm one-time tokenizer loading so the margin measures scheduling only.
     polishing.call_correction_api([cue(99, '预热')], [], '', '', '夹具', '', [], [], [], _messages_only=True)
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     monkeypatch.setattr(GLOBAL_PROVIDER_SERVICE, 'scheduling_capacity',
                         lambda: {'effective_workers': 2, 'source': 'fixture'})
     monkeypatch.setattr(polishing, 'PARALLEL_CLOUD_BATCHES', True)
@@ -246,7 +247,7 @@ def test_later_parallel_batches_still_get_sent_within_the_task_deadline(context,
         finally:
             with lock:
                 active[0] -= 1
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
                         lambda *a, **k: SimpleNamespace(complete=complete))
     rows = [cue(i, f'第{i}段普通解说') for i in range(1, 8)]
     assert len(polishing.correction_batches(rows)) == 7
@@ -263,12 +264,12 @@ def test_later_parallel_batches_still_get_sent_within_the_task_deadline(context,
 
 
 def test_expired_task_marks_request_as_not_handed_to_provider(context, monkeypatch):
-    from twobyteasr.provider_input_budget import RetryBudget
+    from twobyteasr.providers.provider_input_budget import RetryBudget
     _, owner, _ = context
-    monkeypatch.setattr('twobyteasr.asr_provider_snapshot.task_provider_snapshot',
+    monkeypatch.setattr('twobyteasr.providers.asr_provider_snapshot.task_provider_snapshot',
                         lambda *_: owner.provider_snapshot)
     calls = []
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage',
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage',
         lambda *a, **k: SimpleNamespace(complete=lambda *x, **y: calls.append(1)))
     budget = RetryBudget(1, total_seconds=0, cleanup_reserve_seconds=0)
     # Expired before the call: refused before any request is built.
@@ -276,7 +277,7 @@ def test_expired_task_marks_request_as_not_handed_to_provider(context, monkeypat
                                   _retry_budget=budget)
     clock = [100.]
     later = RetryBudget(1, total_seconds=1, clock=lambda: clock[0])
-    import twobyteasr.terminology_retrieval as retrieval
+    import twobyteasr.glossary.terminology_retrieval as retrieval
     original = retrieval.retrieve_candidates
     def slow_local_preparation(*args, **kwargs):
         clock[0] += 5  # the deadline passes while the request is being built
@@ -300,22 +301,22 @@ def null_candidate_answer(messages, start=0):
 @pytest.mark.parametrize('path', ['structured_complete', 'complete'])
 def test_null_for_an_optional_candidate_id_does_not_discard_the_batch(context, monkeypatch, path):
     """Live run 2026-10-10 14:02: 3 of 7 DeepSeek answers had candidate_id null."""
-    from twobyteasr.provider_input_budget import RetryBudget
+    from twobyteasr.providers.provider_input_budget import RetryBudget
     if path == 'structured_complete':
         provider = SimpleNamespace(structured_complete=lambda messages, schema, **k: null_candidate_answer(messages))
     else:
         provider = SimpleNamespace(complete=lambda messages, **k: json.dumps(null_candidate_answer(messages)))
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: provider)
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: provider)
     result = polishing.call_correction_api([cue(1, '上风好爽')], [], '', '', '夹具', '', [], [], [],
                                            _retry_budget=RetryBudget(0, total_seconds=30))
     assert result.succeeded == {1} and not result.failures
 
 
 def test_null_position_is_still_rejected(context, monkeypatch):
-    from twobyteasr.provider_input_budget import RetryBudget
+    from twobyteasr.providers.provider_input_budget import RetryBudget
     provider = SimpleNamespace(structured_complete=lambda messages, schema, **k:
                                null_candidate_answer(messages, start=None))
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: provider)
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: provider)
     result = polishing.call_correction_api([cue(1, '上风好爽')], [], '', '', '夹具', '', [], [], [],
                                            _retry_budget=RetryBudget(0, total_seconds=30))
     assert not result.succeeded and result.failures == {1: 'request_error'}
@@ -331,7 +332,7 @@ def invocation_rows(tmp_path):
 
 
 def test_stream_cut_after_http_200_is_not_audited_as_success(monkeypatch, tmp_path):
-    from twobyteasr import provider_stream
+    from twobyteasr.providers import provider_stream
     monkeypatch.setattr('twobyteasr.runtime_paths.user_data_root', lambda: tmp_path)
     def deadline_after_headers(url, headers, body, timeout, diagnostics, emit, *args, **kwargs):
         diagnostics['http_status'] = 200
@@ -352,7 +353,7 @@ def test_stream_cut_after_http_200_is_not_audited_as_success(monkeypatch, tmp_pa
 
 
 def test_bounded_http_transport_requests_are_audited(monkeypatch, tmp_path):
-    from twobyteasr import asr_http_transport
+    from twobyteasr.providers import asr_http_transport
     monkeypatch.setattr('twobyteasr.runtime_paths.user_data_root', lambda: tmp_path)
     def answered(messages, **kwargs):
         kwargs['request_diagnostics']['http_status'] = 200

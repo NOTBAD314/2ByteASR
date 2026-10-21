@@ -24,9 +24,9 @@ class LanguageResolved(BaseException):
 def test_cloud_primary_chinese_timeline_follows_requested_language(monkeypatch, tmp_path, requested, spoken, early,
                                                                    discarded):
     import moss_firered_pipeline as pipeline
-    from twobyteasr import asr_progress
-    from twobyteasr.runtime import RuntimeContext
-    from twobyteasr import speaker_strategy
+    from twobyteasr.recognition import asr_progress
+    from twobyteasr.recognition.run_context import RuntimeContext
+    from twobyteasr.recognition import speaker_strategy
     context = RuntimeContext(requested_language=requested)
     (tmp_path / "source.mp4").write_bytes(b"test transport fixture")
     events, calls = [], []

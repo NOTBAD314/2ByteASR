@@ -1,7 +1,7 @@
 import time
 
-from twobyteasr.studio_render import RenderJob, RenderSettings
-from twobyteasr.studio_render_queue import (
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings
+from twobyteasr.exports.studio_render_queue import (
     QueuedRenderJob,
     RenderQueueStore,
     StudioRenderQueue,

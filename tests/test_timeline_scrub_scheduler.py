@@ -3,7 +3,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from types import SimpleNamespace
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
-from twobyteasr.timeline_scrub import TimelineScrub
+from twobyteasr.studio.timeline_scrub import TimelineScrub
 
 
 def test_drag_has_one_inflight_and_release_replaces_latest_intent():

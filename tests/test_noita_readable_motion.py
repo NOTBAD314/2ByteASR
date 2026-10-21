@@ -1,9 +1,9 @@
 import json,subprocess
 from pathlib import Path
 import pytest
-from twobyteasr.caption_components import compose
-from twobyteasr.theme_motion import validate_motion_spec
-from twobyteasr.motion_ownership import motion_schedule
+from twobyteasr.caption_design.caption_components import compose
+from twobyteasr.caption_design.theme_motion import validate_motion_spec
+from twobyteasr.caption_design.motion_ownership import motion_schedule
 
 def test_v10_retains_v8_static_source_and_early_text_window():
     base=compose(dict(version=8));source=compose(dict(version=10))

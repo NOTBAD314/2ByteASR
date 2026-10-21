@@ -2,7 +2,7 @@
 
 Copies a project into a fresh owned tmp directory, isolates all app data
 there, and runs the in-process `razor-word-split` scenario
-(twobyteasr/razor_split_audit.py) on a private Windows desktop. Use --exe for
+(twobyteasr/acceptance/razor_split_audit.py) on a private Windows desktop. Use --exe for
 a frozen candidate or the root launcher (bridged to the real GUI process).
 """
 import argparse

@@ -1,7 +1,7 @@
 import threading
 import pytest
 
-from twobyteasr.studio_acceptance_audit import _audit_provider_scope, _audit_submit_gate
+from twobyteasr.acceptance.studio_acceptance_audit import _audit_provider_scope, _audit_submit_gate
 
 
 def test_only_scoped_glossary_call_can_reach_provider_queue():

@@ -1,4 +1,4 @@
-"""UI language overlay (zh / zh-Hant / en / ja / ko).
+"""UI language overlay (zh / zh-Hant / en / ja / ko / es / de / fr / pt / it / ru).
 
 The application's built-in strings are Chinese. This module overlays English
 or Japanese translations at runtime by walking the widget tree, so the UI
@@ -21,17 +21,26 @@ import json
 from pathlib import Path
 import sys
 
-from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+from twobyteasr.storage.settings import load_runtime_settings, save_runtime_settings
 
 
 LOCALE_DIR = Path(__file__).resolve().parent / "locales"
 # 2026-10-14: 繁體中文 (zh-Hant) is generated from the Simplified sources by
 # scripts/make_zh_hant.py; "zh" stays the Simplified source text.
 # 2026-10-14: 한국어 (ko) has its own ko.json with the same keys as en/ja.
-TRANSLATED_LANGUAGES = ("en", "ja", "zh-Hant", "ko")
-SUPPORTED_LANGUAGES = ("zh", "zh-Hant", "en", "ja", "ko")
+# 2026-10-19: Español, Deutsch, Français, Português (Brazilian wording), Italiano
+# and Русский, each with its own <code>.json like ko.
+TRANSLATED_LANGUAGES = ("en", "ja", "zh-Hant", "ko", "es", "de", "fr", "pt", "it", "ru")
+SUPPORTED_LANGUAGES = ("zh", "zh-Hant", "en", "ja", "ko", "es", "de", "fr", "pt", "it", "ru")
+# Native names for the language menus, in menu order.
+LANGUAGE_NATIVE_NAMES = {"zh": "简体中文", "zh-Hant": "繁體中文", "en": "English", "ja": "日本語", "ko": "한국어",
+                         "es": "Español", "de": "Deutsch", "fr": "Français", "pt": "Português",
+                         "it": "Italiano", "ru": "Русский"}
 # Loaded on first use, so other starts do not parse them.
-_LAZY_LANGUAGES = frozenset({"zh-Hant", "ko"})
+_LAZY_LANGUAGES = frozenset({"zh-Hant", "ko", "es", "de", "fr", "pt", "it", "ru"})
+# A UI string added without a translation in these yet shows the English:
+# it reads better than the Chinese source for their users.
+_ENGLISH_FALLBACK = frozenset({"ko", "es", "de", "fr", "pt", "it", "ru"})
 # language -> reason, for a locale file that could not be read. The UI then
 # keeps the Chinese source text for that language instead of failing to start.
 LOCALE_LOAD_ERRORS: dict[str, str] = {}
@@ -52,8 +61,9 @@ def _load_locale(language: str) -> dict[str, str]:
     return table
 
 
-# en / ja load at import; zh-Hant (about 1 MB with the code literals) and ko
-# only when first used, so Simplified, English and Japanese starts pay nothing.
+# en / ja load at import; zh-Hant (about 1 MB with the code literals), ko and
+# the 2026-10-19 languages only when first used, so Simplified, English and
+# Japanese starts pay nothing.
 _TRANSLATIONS: dict[str, dict[str, str]] = {
     language: _load_locale(language) for language in TRANSLATED_LANGUAGES if language not in _LAZY_LANGUAGES
 }
@@ -84,7 +94,7 @@ def _load_hant() -> dict[str, str]:
 
 
 def language_table(language: str) -> dict[str, str]:
-    """The translation table of ``language`` (loads zh-Hant / ko on first use)."""
+    """The translation table of ``language`` (lazy languages load on first use)."""
     global _KNOWN_KEYS
     table = _TRANSLATIONS.get(language)
     if table is None:
@@ -145,8 +155,8 @@ def translate(text: str, language: str | None = None) -> str:
     if language == "zh-Hant" and text not in table and text in _KNOWN_KEYS:
         # Only known UI source strings are converted; user content never is.
         return _hant_fallback(text)
-    if language == "ko" and text not in table:
-        # A UI string added without Korean yet: English reads better than Chinese.
+    if language in _ENGLISH_FALLBACK and text not in table:
+        # A UI string added without this language yet: English reads better than Chinese.
         return _TRANSLATIONS["en"].get(text, text)
     return table.get(text, text)
 
@@ -163,7 +173,7 @@ def ui_literal(text: str, language: str | None = None) -> str:
     table = language_table(language)
     if text in table:
         return table[text]
-    if language == "ko":
+    if language in _ENGLISH_FALLBACK:
         return _TRANSLATIONS["en"].get(text, text)
     return _hant_fallback(text) if language == "zh-Hant" else text
 

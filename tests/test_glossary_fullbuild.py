@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from twobyteasr import glossary_build as gb
-from twobyteasr.glossary_skill import (
+from twobyteasr.glossary import glossary_build as gb
+from twobyteasr.glossary.glossary_skill import (
     SearchedTerm,
     diff_term_updates,
     quote_normalize_term,

@@ -11,8 +11,8 @@ pytestqt = pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.web_theme import builtin_web_themes
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_design.web_theme import builtin_web_themes
 
 
 def _app() -> QApplication:
@@ -21,7 +21,7 @@ def _app() -> QApplication:
 
 
 def _web_recipe_payload() -> dict:
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
 
     recipe = StyleRecipe(
         name="R23",
@@ -57,7 +57,7 @@ class _Playback:
 
 def test_provider_rebinds_across_web_cues():
     """跨 web cue：provider 换绑不自毁；到非 web cue/出界才退出。"""
-    from twobyteasr import studio_advanced_flow
+    from twobyteasr.studio import studio_advanced_flow
 
     project = _project_two_web_cues()
     lookup = {cue.id: cue for cue in project.cues}
@@ -97,7 +97,7 @@ def test_provider_rebinds_across_web_cues():
 
 
 def test_contract_has_motion_linkage_and_scope_words():
-    from twobyteasr.studio_ai import _WEB_THEME_CONTRACT_SYSTEM
+    from twobyteasr.caption_design.studio_ai import _WEB_THEME_CONTRACT_SYSTEM
 
     assert "入场/出场必须与装置物理联动" in _WEB_THEME_CONTRACT_SYSTEM
     assert "禁止" in _WEB_THEME_CONTRACT_SYSTEM and "底板上移弹入" in _WEB_THEME_CONTRACT_SYSTEM
@@ -107,7 +107,7 @@ def test_contract_has_motion_linkage_and_scope_words():
 def test_effect_scope_combo_exists(tmp_path, monkeypatch):
     _app()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     page = SubtitleStudioPage()
     try:

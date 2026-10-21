@@ -8,15 +8,15 @@ from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication, QSplitter
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_session import StudioSession
-from twobyteasr.studio_ui import (
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_session import StudioSession
+from twobyteasr.studio.studio_ui import (
     MpvCanvas,
     SubtitlePositionOverlay,
     SubtitleStudioPage,
     WaveformTimeline,
 )
-from twobyteasr.studio_workspace import StudioWorkspaceBuilder
+from twobyteasr.studio.studio_workspace import StudioWorkspaceBuilder
 
 
 def _app():
@@ -36,7 +36,7 @@ def test_workspace_builder_is_a_transient_plain_python_collaborator():
     }
     source = inspect.getsource(inspect.getmodule(StudioWorkspaceBuilder))
     assert "from .studio_ui" not in source
-    assert "import twobyteasr.studio_ui" not in source
+    assert "import twobyteasr.studio.studio_ui" not in source
     assert "_build" not in SubtitleStudioPage.__dict__
 
 

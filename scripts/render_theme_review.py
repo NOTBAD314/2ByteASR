@@ -7,8 +7,8 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('theme',type=Path);parser.add_argument('output',type=Path);parser.add_argument('--background',type=Path)
     args=parser.parse_args();out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'))
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     from PIL import Image,ImageDraw
     theme=json.loads(args.theme.read_text('utf8'));theme=theme.get('theme',theme)
     html=theme_archive_html(theme,sample_text='啊感觉他就是你看',duration_seconds=3,auto_replay=False)

@@ -24,7 +24,7 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
     video=root/'tmp/studio-multisource-20260928/assets/first.mp4'
     if not video.exists(): raise FileNotFoundError(video)
     p=SubtitleProject(media=StudioMedia(path=str(video),duration_ms=10000,width=1280,height=720));p.validate()

@@ -8,19 +8,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
     SubtitleProject,
     SubtitleStyle,
 )
-from twobyteasr.studio_style_controller import StudioStyleController
-from twobyteasr.studio_style_panel import StudioStylePanelMixin
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_recipe import FillSpec
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.studio_style_controller import StudioStyleController
+from twobyteasr.caption_style.studio_style_panel import StudioStylePanelMixin
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_recipe import FillSpec
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app():
@@ -99,7 +99,7 @@ def test_style_controller_is_plain_session_first_collaborator():
 
     source = inspect.getsource(inspect.getmodule(StudioStyleController))
     assert "from .studio_ui" not in source
-    assert "import twobyteasr.studio_ui" not in source
+    assert "import twobyteasr.studio.studio_ui" not in source
     for forbidden in (
         "QThread",
         "threading",
@@ -288,19 +288,13 @@ def test_gradient_and_motion_each_keep_one_undo_step(tmp_path, monkeypatch):
     page.motion_preset.setCurrentIndex(index)
     page.motion_preset.blockSignals(False)
     page._motion_preset_changed(index)
-    # 0.8.0 motion page: a preset is a draft until 应用到 N 条字幕.
-    assert page.undo_stack.count() == 0
-    assert page.motion_scope.currentData() == "current"
-    page.motion_apply.click()
     assert page.undo_stack.count() == 1
-    applied = page.session._cue_lookup["a"].effect_id
-    assert page.project.effects[applied]["entry"]["type"] == "soft_pop"
-    assert page.project.effects[applied]["entry"]["duration"] == page.effect_duration.value()
-    assert page.session._cue_lookup["b"].effect_id == "none"
+    assert page.session._cue_lookup["a"].effect_id == "soft_pop"
+    assert page.project.effects["soft_pop"]["entry"]["duration"] == page.effect_duration.value()
     page.undo_stack.undo()
     assert page.session._cue_lookup["a"].effect_id == "none"
     page.undo_stack.redo()
-    assert page.session._cue_lookup["a"].effect_id == applied
+    assert page.session._cue_lookup["a"].effect_id == "soft_pop"
     _finish(page)
 
 
@@ -388,7 +382,7 @@ def test_multi_scope_and_copy_paste_preserve_non_style_fields(tmp_path, monkeypa
 
 
 def test_missing_font_warning_is_visible_without_persisting_fallback(tmp_path, monkeypatch):
-    from twobyteasr.preset_application import preset_command
+    from twobyteasr.exports.preset_application import preset_command
     app, page = _page(tmp_path, monkeypatch)
     command = preset_command(page.project, ['a'], {'id':'missing', 'name':'Missing',
         'font_family':'Missing test face', 'font_weight':900, 'font_style_name':'Heavy'})
@@ -424,3 +418,79 @@ def test_scope_switch_to_speaker_reapplies_current_preset(tmp_path, monkeypatch)
         assert str(page.session._cue_lookup["a"].style_id).startswith("game")
     finally:
         _finish(page)
+
+
+def _derived_ids(project):
+    from twobyteasr.caption_style.style_cleanup import is_derived_style_id
+    return ({style.id for style in project.styles if is_derived_style_id(style.id)}
+            | {key for key in project.style_recipes if is_derived_style_id(key)})
+
+
+def _select(page, cue_ids):
+    selection = page.cue_table.selectionModel()
+    selection.clearSelection()
+    for cue_id in cue_ids:
+        row = page.cue_model.row_for_cue_id(cue_id)
+        selection.select(page.cue_model.index(row, 0),
+                         selection.SelectionFlag.Select | selection.SelectionFlag.Rows)
+
+
+def test_selected_scope_batch_keeps_one_copy_per_previous_style_and_no_orphans(tmp_path, monkeypatch):
+    """2026-10-21 user report: 1,000+ cues + 「已选」 left one dead style per cue;
+    every later Enter froze for seconds and memory grew with each edit."""
+    app, page = _page(tmp_path, monkeypatch)
+    try:
+        project = page.project
+        extra = [StudioCue(f"x{i}", 4_200 + i * 100, 4_280 + i * 100, f"Extra {i}",
+                           speaker_id="S02", style_id="alternate") for i in range(40)]
+        project.cues.extend(extra)
+        page._cue_lookup = {cue.id: cue for cue in project.cues}
+        page._manual_text_baselines = {cue.id: cue.text for cue in project.cues}
+        page.cue_model.set_project(project)
+        page.timeline.set_project(project)
+        ids = [cue.id for cue in project.cues]
+        styles_before = [style.id for style in project.styles]
+        _select(page, ids)
+        page.style_scope.setCurrentIndex(page.style_scope.findData("selected"))
+        app.processEvents()
+        assert set(page._style_target_ids()) == set(ids)
+        referenced = {cue.style_id for cue in project.cues} | {s.style_id for s in project.speakers}
+        copies = {style.id for style in project.styles if "-cue-" in style.id}
+        # 41 cues on 'alternate' and 2 on 'default': at most one copy per previous style.
+        assert len(copies) <= 2
+        assert _derived_ids(project) <= referenced
+        page.style_position_y.setValue(page.style_position_y.value() - 40)
+        page.style_position_y.editingFinished.emit()
+        app.processEvents()
+        referenced = {cue.style_id for cue in project.cues} | {s.style_id for s in project.speakers}
+        assert _derived_ids(project) <= referenced, "a later apply must not keep dead copies"
+        while page.undo_stack.canUndo():
+            page.undo_stack.undo()
+        assert [style.id for style in project.styles] == styles_before
+        while page.undo_stack.canRedo():
+            page.undo_stack.redo()
+        referenced = {cue.style_id for cue in project.cues} | {s.style_id for s in project.speakers}
+        assert _derived_ids(project) <= referenced
+    finally:
+        _finish(page)
+
+
+def test_loading_a_project_drops_unused_derived_styles_only(tmp_path):
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
+    from twobyteasr.projects.studio_project import load_project, save_project
+    project = SubtitleProject(
+        media=StudioMedia(path=str(tmp_path / "missing.mp4"), duration_ms=5_000, width=1920, height=1080),
+        speakers=[StudioSpeaker("S01", "One", style_id="game-cue-speaker1")],
+        styles=[SubtitleStyle("default", "Default"), SubtitleStyle("game", "Game"),
+                SubtitleStyle("game-cue-used00001", "Used"), SubtitleStyle("game-cue-speaker1", "Speaker"),
+                *[SubtitleStyle(f"game-cue-dead{i:04d}", "Dead") for i in range(300)]],
+        style_recipes={"game": StyleRecipe(name="Game").to_dict(),
+                       "game-cue-used00001": StyleRecipe(name="Used").to_dict(),
+                       **{f"game-cue-dead{i:04d}": StyleRecipe(name="Dead").to_dict() for i in range(300)}},
+        cues=[StudioCue("a", 0, 1_000, "One", speaker_id="S01", style_id="game-cue-used00001"),
+              StudioCue("b", 1_200, 2_000, "Two", speaker_id="S01", style_id="game")],
+    )
+    path = save_project(project, tmp_path / "dead-styles.2byteproj")
+    loaded = load_project(path)
+    assert [style.id for style in loaded.styles] == ["default", "game", "game-cue-used00001", "game-cue-speaker1"]
+    assert set(loaded.style_recipes) == {"game", "game-cue-used00001"}

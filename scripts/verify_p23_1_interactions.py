@@ -19,10 +19,10 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_commands import AssignSpeakerCommand, set_cues_timing_offset_command
-from twobyteasr.studio_project import load_project
-from twobyteasr.studio_timing import recommend_many
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.timeline.studio_commands import AssignSpeakerCommand, set_cues_timing_offset_command
+from twobyteasr.projects.studio_project import load_project
+from twobyteasr.timeline.studio_timing import recommend_many
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 def pump(app, ms=0):

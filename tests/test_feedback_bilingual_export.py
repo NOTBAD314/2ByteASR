@@ -2,11 +2,11 @@
 import copy
 import pytest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker
-from twobyteasr.export_timeline import export_project_snapshot
-from twobyteasr.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
+from twobyteasr.projects.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker
+from twobyteasr.exports.export_timeline import export_project_snapshot
+from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.timeline.studio_edit_sequence import EditSequence, VideoSegment, store_sequence
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -60,8 +60,8 @@ def test_default_files_follow_display_mode_for_both_speakers(tmp_path, mode):
 
 
 def test_mixed_native_advanced_keeps_translation_companions():
-    from twobyteasr.advanced_renderer import compile_composition_data, _native_segment_project
-    from twobyteasr.style_recipe import StyleRecipe
+    from twobyteasr.rendering.advanced_renderer import compile_composition_data, _native_segment_project
+    from twobyteasr.caption_style.style_recipe import StyleRecipe
     project = bilingual_project()
     recipe = StyleRecipe.from_dict({"engine": "remotion", "name": "gradient",
         "colors": {"fill": {"type": "linear", "stops": [
@@ -80,7 +80,7 @@ def test_mixed_native_advanced_keeps_translation_companions():
 
 
 def test_display_freeze_is_idempotent_and_owns_untranslated_cues():
-    from twobyteasr.bilingual_layout import materialize_display_project
+    from twobyteasr.caption_style.bilingual_layout import materialize_display_project
     project = bilingual_project()
     project.generation_metadata["translations"].pop("two")
     before = copy.deepcopy(project.to_dict())

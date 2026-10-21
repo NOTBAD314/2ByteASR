@@ -11,11 +11,11 @@ from pathlib import Path
 WORKSPACE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WORKSPACE))
 
-from twobyteasr.advanced_renderer import AdvancedRendererBackend, compile_composition_data, split_renderer_cues
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_project import StudioCue, load_project, save_project
-from twobyteasr.studio_render import RenderJob, RenderSettings, windows_subprocess_kwargs
+from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend, compile_composition_data, split_renderer_cues
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.projects.studio_project import StudioCue, load_project, save_project
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings, windows_subprocess_kwargs
 import os
 
 

@@ -12,7 +12,7 @@ import time
 import numpy as np
 import pytest
 
-from twobyteasr.qwen31_asr import ASRProtocolError, FILETRANS
+from twobyteasr.providers.qwen31_asr import ASRProtocolError, FILETRANS
 
 
 class Response:
@@ -97,7 +97,7 @@ class CloudClient:
 
 
 def test_policy_and_form_upload_match_the_official_cli():
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
     client = CloudClient()
     progress = []
     storage = DashScopeTemporaryStorage(api_url=cloud_endpoint()['url'], api_key='sk-ws-testkey000000000000',
@@ -118,7 +118,7 @@ def test_policy_and_form_upload_match_the_official_cli():
 
 
 def test_token_plan_key_and_oversized_audio_are_refused_before_upload():
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage, TemporaryUploadError
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage, TemporaryUploadError
     with pytest.raises(TemporaryUploadError) as error:
         DashScopeTemporaryStorage(api_url=cloud_endpoint()['url'], api_key='sk-sp-plan', model=FILETRANS)
     assert error.value.category == 'token_plan_key'
@@ -131,8 +131,8 @@ def test_token_plan_key_and_oversized_audio_are_refused_before_upload():
 
 
 def test_filetrans_submits_oss_url_with_resolve_header_and_parses_words(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
     client = CloudClient()
     endpoint = cloud_endpoint()
     storage = DashScopeTemporaryStorage(api_url=endpoint['url'], api_key=endpoint['api_key'], model=FILETRANS, client=client)
@@ -150,8 +150,8 @@ def test_filetrans_submits_oss_url_with_resolve_header_and_parses_words(tmp_path
 
 
 def test_disconnect_after_submit_resumes_the_same_task(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
     endpoint = cloud_endpoint()
     first = CloudClient(query_code=503)
     storage = DashScopeTemporaryStorage(api_url=endpoint['url'], api_key=endpoint['api_key'], model=FILETRANS, client=first)
@@ -165,8 +165,8 @@ def test_disconnect_after_submit_resumes_the_same_task(tmp_path):
 
 
 def test_unsubmitted_upload_close_to_expiry_is_uploaded_again(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
     endpoint = cloud_endpoint()
     refused = CloudClient(submit=Response({'code': 'Arrearage', 'message': 'Access denied, make sure your account is in good standing.'}, 400))
     storage = DashScopeTemporaryStorage(api_url=endpoint['url'], api_key=endpoint['api_key'], model=FILETRANS, client=refused)
@@ -185,8 +185,8 @@ def test_unsubmitted_upload_close_to_expiry_is_uploaded_again(tmp_path):
 
 
 def test_remote_failure_is_explained_and_local_cancel_does_not_claim_remote_cancel(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
     endpoint = cloud_endpoint()
     client = CloudClient(statuses=('FAILED',))
     storage = DashScopeTemporaryStorage(api_url=endpoint['url'], api_key=endpoint['api_key'], model=FILETRANS, client=client)
@@ -222,7 +222,7 @@ def test_remote_failure_is_explained_and_local_cancel_does_not_claim_remote_canc
     (502, {}, 'server'),
 ])
 def test_each_documented_error_gets_its_own_explanation(status, body, category):
-    from twobyteasr.dashscope_service import explain
+    from twobyteasr.providers.dashscope_service import explain
     problem = explain(status, body, model=FILETRANS, host='maas.qwencloudapi.com')
     assert problem.category == category and problem.message and problem.action
     # Only a refused key is described as a key problem.
@@ -231,7 +231,7 @@ def test_each_documented_error_gets_its_own_explanation(status, body, category):
 
 def test_network_errors_are_not_called_key_errors():
     import requests
-    from twobyteasr.dashscope_service import explain
+    from twobyteasr.providers.dashscope_service import explain
     problem = explain(None, host='maas.qwencloudapi.com', exception=requests.exceptions.ConnectTimeout('timed out'))
     assert problem.category == 'network' and '等待超时' in problem.message
 
@@ -239,7 +239,7 @@ def test_network_errors_are_not_called_key_errors():
 def test_upload_mode_keeps_an_existing_oss_setup():
     # ADR 0112 (2026-10-14): own OSS is the regular route; the temporary upload
     # (officially not for production) is used only when explicitly chosen.
-    from twobyteasr.api_setup_catalog import resolve_upload_mode
+    from twobyteasr.providers.api_setup_catalog import resolve_upload_mode
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': 'mine'}, 'qwen31_filetrans',
                                has_oss_credentials=True) == 'own_oss'
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': ''}, 'qwen31_filetrans',
@@ -252,9 +252,9 @@ def test_upload_mode_keeps_an_existing_oss_setup():
 
 
 def test_worker_picks_storage_by_upload_mode():
-    from twobyteasr.cloud_api_worker import filetrans_storage
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage
-    from twobyteasr.temp_audio_storage import OssTemporaryStorage
+    from twobyteasr.providers.cloud_api_worker import filetrans_storage
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.providers.temp_audio_storage import OssTemporaryStorage
     endpoint = cloud_endpoint()
     request = {'settings': {'models': {'filetrans_upload': 'auto', 'oss_bucket': ''}}}
     with pytest.raises(Exception, match='MOSS Pro'):
@@ -273,7 +273,7 @@ def test_worker_picks_storage_by_upload_mode():
 
 
 def test_qwen_cloud_address_is_recognised_and_kept_apart_from_bailian():
-    from twobyteasr.api_endpoints import describe_dashscope, parse_dashscope_address
+    from twobyteasr.providers.api_endpoints import describe_dashscope, parse_dashscope_address
     address = parse_dashscope_address('https://maas.qwencloudapi.com')
     assert address.qwen_cloud and address.region == 'ap-southeast-1' and not address.legacy
     assert address.filetrans_url == 'https://maas.qwencloudapi.com/api/v1/services/audio/asr/transcription'
@@ -284,7 +284,7 @@ def test_qwen_cloud_address_is_recognised_and_kept_apart_from_bailian():
 
 
 def test_format_check_runs_locally_and_catches_common_paste_mistakes():
-    from twobyteasr.cloud_api_test import FAIL, PASS, format_check
+    from twobyteasr.providers.cloud_api_test import FAIL, PASS, format_check
     assert format_check(cloud_endpoint()).status('format') == PASS
     assert format_check(cloud_endpoint(api_key='')).status('format') == FAIL
     spaced = format_check(cloud_endpoint(api_key='sk-ws-abc def'))
@@ -296,7 +296,7 @@ def test_format_check_runs_locally_and_catches_common_paste_mistakes():
 
 
 def test_qwen_cloud_free_checks_use_compatible_model_list_and_never_claim_more():
-    from twobyteasr.cloud_api_test import PASS, UNKNOWN, FAIL, free_checks, temporary_upload_check
+    from twobyteasr.providers.cloud_api_test import PASS, UNKNOWN, FAIL, free_checks, temporary_upload_check
 
     class Client:
         @staticmethod
@@ -331,8 +331,8 @@ def test_qwen_cloud_free_checks_use_compatible_model_list_and_never_claim_more()
 
 
 def test_failed_worker_reports_the_explained_cause_first():
-    from twobyteasr.cloud_api_test import failure_detail
-    from twobyteasr.cloud_api_worker import ERROR_MARKER, failure_from_text
+    from twobyteasr.providers.cloud_api_test import failure_detail
+    from twobyteasr.providers.cloud_api_worker import ERROR_MARKER, failure_from_text
     stderr = ERROR_MARKER + json.dumps({'category': 'balance', 'message': '账户欠费或余额不足，服务商拒绝了请求。',
                                         'action': '请到控制台的账单页面充值。', 'link': '', 'code': 'Arrearage'},
                                        ensure_ascii=False) + '\nTraceback ...'
@@ -350,8 +350,8 @@ def test_retry_page_finds_the_resubmit_request_in_a_one_line_failure():
     """2026-10-15: a failed media result stores its error with whitespace
     collapsed (service._exception_message); the completion page then never
     asked to resubmit and every "retry failed items" was refused again."""
-    from twobyteasr.cloud_api_worker import ERROR_MARKER, failure_from_text
-    from twobyteasr.service import _exception_message
+    from twobyteasr.providers.cloud_api_worker import ERROR_MARKER, failure_from_text
+    from twobyteasr.recognition.service import _exception_message
     marker = ERROR_MARKER + json.dumps({'category': 'resubmit_needed', 'message': '上次提交时连线中断。',
                                         'action': '确认后重新提交。', 'link': '', 'code': 'submission_uncertain',
                                         'resubmit': True}, ensure_ascii=False)
@@ -366,14 +366,14 @@ def test_retry_page_finds_the_resubmit_request_in_a_one_line_failure():
 
 
 def test_redaction_covers_groq_and_alibaba_access_keys():
-    from twobyteasr.provider_diagnostics import redact_diagnostics
+    from twobyteasr.providers.provider_diagnostics import redact_diagnostics
     text = redact_diagnostics('gsk_abcdefghijklmnopqrstuv LTAI5tABCDEFGHIJKLMN https://b.oss.aliyuncs.com/a?OSSAccessKeyId=LTAIx&Signature=abc')
     assert 'gsk_abcdefghijklmnopqrstuv' not in text and 'LTAI5tABCDEFGHIJKLMN' not in text and 'Signature=abc' not in text
 
 
 def test_catalog_lists_one_key_route_first_and_qwen_cloud_with_official_links():
-    from twobyteasr.api_setup_catalog import ASR_GUIDES, guide_for
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.providers.api_setup_catalog import ASR_GUIDES, guide_for
+    from twobyteasr.app.ui import ASR_API_PRESETS
     guide = guide_for('qwen_cloud_filetrans')
     # ADR 0112: MOSS Pro (one key, local file upload) first, then Qwen Cloud.
     assert ASR_GUIDES[0] is guide_for('mosi_moss_pro') and ASR_GUIDES[1] is guide
@@ -396,8 +396,8 @@ def test_catalog_lists_one_key_route_first_and_qwen_cloud_with_official_links():
 
 
 def test_vanished_or_uncertain_tasks_are_resubmitted_only_after_confirmation(tmp_path):
-    from twobyteasr.cloud_asr_jobs import filetrans
-    from twobyteasr.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.providers.cloud_asr_jobs import filetrans
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
     endpoint = cloud_endpoint()
     gone = CloudClient(statuses=['UNKNOWN'])
     storage = DashScopeTemporaryStorage(api_url=endpoint['url'], api_key=endpoint['api_key'], model=FILETRANS, client=gone)
@@ -419,7 +419,7 @@ def test_vanished_or_uncertain_tasks_are_resubmitted_only_after_confirmation(tmp
 
 def test_worker_marks_saved_remote_states_as_needing_confirmation(monkeypatch, capsys):
     import io
-    from twobyteasr import cloud_api_worker
+    from twobyteasr.providers import cloud_api_worker
     monkeypatch.setattr(cloud_api_worker, '_ensure_stdio', lambda: None)
     monkeypatch.setattr(cloud_api_worker.sys, 'stdin', io.StringIO('{}'))
 
@@ -438,7 +438,7 @@ def test_temporary_upload_body_is_sent_with_a_length_not_chunked():
     Content-Length; Alibaba OSS answered 400 BadRequest. The body must report
     its position so requests uses Content-Length only."""
     import requests
-    from twobyteasr.dashscope_service import _MultipartBody
+    from twobyteasr.providers.dashscope_service import _MultipartBody
     body = _MultipartBody([('key', 'dir/a.wav'), ('OSSAccessKeyId', 'id')], 'a.wav', b'RIFF' + b'\0' * 64)
     prepared = requests.Request('POST', 'https://example.oss-cn-beijing.aliyuncs.com', data=body,
                                 headers={'Content-Type': body.content_type}).prepare()

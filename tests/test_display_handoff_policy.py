@@ -6,9 +6,9 @@ from types import SimpleNamespace
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.display_timing import project_display_tail_plan, protect_project_display_tails
-from twobyteasr.studio_commands import RepairDisplayHandoffsCommand
-from twobyteasr.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker, load_project,save_project,save_autosave
+from twobyteasr.subtitle_rules.display_timing import project_display_tail_plan, protect_project_display_tails
+from twobyteasr.timeline.studio_commands import RepairDisplayHandoffsCommand
+from twobyteasr.projects.studio_project import SubtitleProject, StudioCue, StudioMedia, StudioSpeaker, load_project,save_project,save_autosave
 
 
 def pair():
@@ -68,14 +68,14 @@ def test_repair_undo_redo_save_and_autosave_keep_content_and_raw_evidence(tmp_pa
     assert load_project(path).cues[0].end_ms==34033
     auto=save_autosave(project,project_path=path,base=tmp_path/'autosave')
     assert load_project(auto).cues[0].end_ms==34033
-    from twobyteasr.studio_subtitle_export import compile_srt
-    from twobyteasr.ass_compiler import compile_ass
+    from twobyteasr.exports.studio_subtitle_export import compile_srt
+    from twobyteasr.rendering.ass_compiler import compile_ass
     assert '00:00:34,033' in compile_srt(project.cues)
     assert ',0:00:34.03,' in compile_ass(project)
 
 
 def test_web_provider_hard_exits_at_end_without_400ms_tail():
-    from twobyteasr.studio_advanced_flow import StudioAdvancedFlowMixin
+    from twobyteasr.studio.studio_advanced_flow import StudioAdvancedFlowMixin
     project=pair();cue=project.cues[0]
     clock=SimpleNamespace(position=cue.end_ms-1)
     clock.presentation_position_ms=lambda:clock.position

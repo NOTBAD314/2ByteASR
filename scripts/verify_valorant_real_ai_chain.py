@@ -46,11 +46,12 @@ def main():
 
     # A concrete project_root disables settings migration; the merge itself
     # is pure. The encrypted source decoder is readonly on every invocation.
-    from twobyteasr import settings as settings_module, llm_config
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.providers import llm_config
     read_original = llm_config._read_secrets
     llm_config._read_secrets = lambda **ignored: read_original(read_only_path=credentials_path)
     settings, warnings = settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS, settings_payload)
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
     provider = resolve_provider_snapshot(settings, stage='polish')
     if provider.kind not in ('http', 'cli'):
         raise ValueError('Unsupported saved provider; no replacement is selected')
@@ -67,10 +68,11 @@ def main():
     settings_module.save_runtime_settings(settings, out/'profile'/'config')
     import subtitle_core as core
     core.adopt_profile_runtime_settings(settings, warnings)
-    from twobyteasr import polishing, provider_service
-    from twobyteasr.models import SpeechSegment, WordUnit
-    from twobyteasr.terminology import GlossarySnapshot, TermEntry
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.subtitle_rules import polishing
+    from twobyteasr.providers import provider_service
+    from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+    from twobyteasr.glossary.terminology import GlossarySnapshot, TermEntry
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     old = GlossarySnapshot.from_dict(project['generation_metadata']['terminology_snapshot'])
     spelling = {value.casefold():value for value in args.forms}
     catalog = GlossarySnapshot(tuple(replace(lib,
@@ -117,7 +119,7 @@ def main():
     counter_lock=threading.Lock()
     original_submit=provider_service.ProviderService.submit
     def limited_submit(service, settings, stage, messages, **kwargs):
-        from twobyteasr.ai_providers import AIProviderError
+        from twobyteasr.providers.ai_providers import AIProviderError
         with counter_lock:
             if kwargs.get('operation_kind')!='polish' or len(requests)>=2:
                 raise AIProviderError('Finite real validation request limit or stage scope reached',category='permission_denied')
@@ -129,7 +131,7 @@ def main():
     # The production SSE branch intentionally bypasses the legacy sender.
     # Capture at the provider's complete boundary, where both HTTP modes
     # return their exact final public answer, instead of that legacy seam.
-    from twobyteasr.ai_providers import CLIProvider, OpenAICompatibleProvider
+    from twobyteasr.providers.ai_providers import CLIProvider, OpenAICompatibleProvider
     adapter_class = CLIProvider if provider.kind == 'cli' else OpenAICompatibleProvider
     original_complete=adapter_class.complete
     transport_lock=threading.Lock()
@@ -161,8 +163,8 @@ def main():
             result.update(prepared=True,passed=True)
             return
         if args.studio_preview:
-            from twobyteasr.studio_project import load_project
-            from twobyteasr.studio_glossary_service import preview_glossary_correction
+            from twobyteasr.projects.studio_project import load_project
+            from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
             actual_project = load_project(project_path)
             original_project_data = copy.deepcopy(actual_project.to_dict())
             preview = preview_glossary_correction(actual_project,

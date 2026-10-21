@@ -1,6 +1,6 @@
 """Token-authored application surfaces. No warm-literal substitution."""
 from .tokens import RADIUS_SCALE, TYPE_SCALE, WEIGHT_SCALE
-from ..typography import TITLE_FONT_STACK, UI_FONT_STACK
+from .typography import TITLE_FONT_STACK, UI_FONT_STACK
 
 
 def build_surface_qss(t):
@@ -10,7 +10,7 @@ def build_surface_qss(t):
 
 
 def _build_surface_qss(t):
-    from ..home_studio_entry import studio_paper_colors
+    from ..app.home_studio_entry import studio_paper_colors
     paper, paper_hover, paper_edge, paper_ink, paper_muted = studio_paper_colors(t)
     r=RADIUS_SCALE
     return f"""

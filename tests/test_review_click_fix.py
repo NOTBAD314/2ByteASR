@@ -13,11 +13,11 @@ from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import StudioCue
-from twobyteasr import studio_review_ui
-from twobyteasr.studio_cards import ReviewCandidateCard
-from twobyteasr.review_suggestions import review_suggestions
-from twobyteasr.studio_qc import QCCandidate
+from twobyteasr.projects.studio_project import StudioCue
+from twobyteasr.studio import studio_review_ui
+from twobyteasr.studio.studio_cards import ReviewCandidateCard
+from twobyteasr.subtitle_rules.review_suggestions import review_suggestions
+from twobyteasr.subtitle_rules.studio_qc import QCCandidate
 from tests.test_review_replay_and_window_bounds import _page
 
 
@@ -39,8 +39,8 @@ def _card(text, others=()):
 
 def _accent_points(card):
     """Card points where the label painted the accent colour (the marks)."""
-    from twobyteasr.theme_manager import theme_key
-    from twobyteasr.ui_theme import theme_definition
+    from twobyteasr.design.theme_manager import theme_key
+    from twobyteasr.design.ui_theme import theme_definition
     accent = QColor(theme_definition(theme_key()).accent)
     image = card.text_label.grab().toImage()
     ratio = image.devicePixelRatio() or 1
@@ -151,7 +151,7 @@ def _centre(card, rect):
 
 
 def test_each_chip_writes_its_own_alternative_and_the_sentence_stays_whole():
-    from twobyteasr.review_marked_text import BASE, MORE
+    from twobyteasr.studio.review_marked_text import BASE, MORE
     card, rows = _card("须弥的风景真好看", [("虚迷的风景真好看", ("MOSS",)), ("须迷的风景真好看", ("Qwen3-ASR",)),
                                     ("需米的风景真好看", ("FireRed",))])
     activated, menus, adopted = [], [], []
@@ -178,7 +178,7 @@ def test_each_chip_writes_its_own_alternative_and_the_sentence_stays_whole():
 
 
 def test_chips_stay_apart_and_inside_on_a_narrow_card():
-    from twobyteasr.review_marked_text import BASE
+    from twobyteasr.studio.review_marked_text import BASE
     for width in (520, 300, 240):
         for text, others in (
                 ("园神那维来特这波开大", [("原神那维莱特这波开打", ("MOSS",)), ("原神那维莱特这波开塔", ("Qwen3-ASR",))]),

@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.ai_providers import AIProviderError, GrokCLIProvider, ProviderStatus
-from twobyteasr.provider_service import ProviderService, ProviderHealthState
+from twobyteasr.providers.ai_providers import AIProviderError, GrokCLIProvider, ProviderStatus
+from twobyteasr.providers.provider_service import ProviderService, ProviderHealthState
 
 
 def upgrade_envelope(received="1.0.5", minimum="1.0.13"):
@@ -15,7 +15,7 @@ def upgrade_envelope(received="1.0.5", minimum="1.0.13"):
 
 
 def test_nested_upgrade_error_has_dynamic_versions_and_redacted_details():
-    from twobyteasr.provider_diagnostics import cli_failure
+    from twobyteasr.providers.provider_diagnostics import cli_failure
     failure = cli_failure(upgrade_envelope("2.4.1", "2.5.8"))
     assert failure["category"] == "upgrade_required"
     assert failure["received_version"] == "2.4.1"
@@ -88,7 +88,7 @@ def test_update_preview_target_is_same_cli_used_for_login_and_requests(tmp_path,
 
 def test_failed_connection_clears_previous_ready_and_shows_version_path(monkeypatch):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.ui import EndpointEditor
+    from twobyteasr.app.ui import EndpointEditor
     app = QApplication.instance() or QApplication([])
     editor = EndpointEditor("fixture", "#996699", "polish", {"models": {"ai_service": "grok_account", "polish_model": "grok-fixture"}})
     editor.account_status.setText("Grok Account：已登录/连接正常")
@@ -103,9 +103,11 @@ def test_failed_connection_clears_previous_ready_and_shows_version_path(monkeypa
 
 def test_unified_summary_uses_authoritative_group_editor_and_saved_switches(monkeypatch):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import ui
-    from twobyteasr.ui import EndpointEditor, MainWindow
+    from twobyteasr.app import ui
+    from twobyteasr.app.ui import EndpointEditor, MainWindow
+    from twobyteasr.providers import endpoint_editor_ui
     monkeypatch.setattr(ui, 'read_api_key', lambda *a, **k: ('', 'fixture'))
+    monkeypatch.setattr(endpoint_editor_ui, 'read_api_key', lambda *a, **k: ('', 'fixture'))
     app = QApplication.instance() or QApplication([])
     saved = {"models": {"ai_service": "grok_account", "polish_model": "grok-fixture", "group_model": "deepseek-fixture"},
              "switches": {"unified_glm_processing": True}}
@@ -133,8 +135,8 @@ def test_unified_summary_uses_authoritative_group_editor_and_saved_switches(monk
 
 @pytest.mark.parametrize('stage,unified', [('polish', False), ('group', False), ('polish', True)])
 def test_effective_summary_identity_reuses_role_snapshot_over_active_service(monkeypatch, stage, unified):
-    from twobyteasr import llm_config
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.providers import llm_config
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
     monkeypatch.setattr(llm_config, 'read_scoped_api_key', lambda *a, **k: ('', 'fixture'))
     settings = {'models': {'ai_service': 'grok_account',
         'polish_provider': 'grok_oauth', 'polish_transport': 'grok_cli',
@@ -154,8 +156,9 @@ def test_effective_summary_identity_reuses_role_snapshot_over_active_service(mon
 @pytest.mark.parametrize('unified', [False, True])
 def test_draft_summary_is_exact_dry_run_persist_identity_before_and_after_save(monkeypatch, unified):
     import copy
-    from twobyteasr import ui, llm_config
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.app import ui
+    from twobyteasr.providers import llm_config
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
     monkeypatch.setattr(ui, 'read_api_key', lambda *a, **k: ('', 'fixture'))
     monkeypatch.setattr(llm_config, 'read_scoped_api_key', lambda *a, **k: ('', 'fixture'))
     monkeypatch.setattr(ui, 'GLOBAL_PROVIDER_REGISTRY', SimpleNamespace(bind=lambda *a: None))
@@ -197,8 +200,8 @@ def test_draft_summary_is_exact_dry_run_persist_identity_before_and_after_save(m
 
 
 def test_broker_upgrade_is_terminal_not_retry_or_auth_failure(monkeypatch):
-    from twobyteasr import provider_service
-    from twobyteasr.provider_diagnostics import cli_failure
+    from twobyteasr.providers import provider_service
+    from twobyteasr.providers.provider_diagnostics import cli_failure
     provider = GrokCLIProvider(executable='fixture-grok.exe', model='grok-fixture')
     calls = []
     def complete(*args, **kwargs):
@@ -253,7 +256,7 @@ def test_update_rechecks_version_and_minimal_request_without_changing_credential
 
 
 def test_broker_update_keeps_fresh_test_but_expires_other_models_old_status(monkeypatch):
-    from twobyteasr import provider_service
+    from twobyteasr.providers import provider_service
     monkeypatch.setattr(provider_service, 'adapter_for_stage', lambda settings, stage, **kw:
                         GrokCLIProvider(executable='fixture-grok.exe', model=settings['models']['polish_model']))
     service = ProviderService(workers=1)
@@ -275,8 +278,8 @@ def test_broker_update_keeps_fresh_test_but_expires_other_models_old_status(monk
 
 def test_cli_update_refuses_running_request_by_actual_provider_id(monkeypatch):
     import time
-    from twobyteasr import provider_service
-    from twobyteasr.provider_service import ProviderRequestHandle
+    from twobyteasr.providers import provider_service
+    from twobyteasr.providers.provider_service import ProviderRequestHandle
     provider = GrokCLIProvider(executable='fixture-grok.exe', model='grok-fixture')
     monkeypatch.setattr(provider_service, 'adapter_for_stage', lambda *a, **k: provider)
     service = ProviderService(workers=1)
@@ -293,7 +296,7 @@ def test_cli_update_refuses_running_request_by_actual_provider_id(monkeypatch):
 @pytest.mark.parametrize('update_fails', [False, True])
 def test_update_reservation_blocks_new_request_and_login_until_finally(monkeypatch, update_fails):
     import threading
-    from twobyteasr import provider_service
+    from twobyteasr.providers import provider_service
     provider = GrokCLIProvider(executable='fixture-grok.exe', model='grok-fixture')
     monkeypatch.setattr(provider_service, 'adapter_for_stage', lambda *a, **k: provider)
     service = ProviderService(workers=1)
@@ -340,7 +343,7 @@ def test_update_reservation_blocks_new_request_and_login_until_finally(monkeypat
 @pytest.mark.parametrize('operation', ['health', 'discover', 'preview'])
 def test_active_cli_probe_or_preview_blocks_update_and_releases_on_completion(monkeypatch, operation):
     import threading
-    from twobyteasr import provider_service
+    from twobyteasr.providers import provider_service
     provider = GrokCLIProvider(executable='fixture-grok.exe', model='grok-fixture')
     monkeypatch.setattr(provider_service, 'adapter_for_stage', lambda *a, **k: provider)
     service = ProviderService(workers=1)

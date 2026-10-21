@@ -11,14 +11,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_media_pool import (
+from twobyteasr.timeline.studio_media_pool import (
     add_media_asset,
     add_video_clip,
     create_video_track,
     set_audio_master_track,
     update_video_clip_transform,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     StudioSpeaker,
@@ -26,7 +26,7 @@ from twobyteasr.studio_project import (
     SubtitleStyle,
     save_project,
 )
-from twobyteasr.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_presets import StylePresetStore
 
 
 V1 = ROOT / "tmp" / "p74b" / "headed-fixture-media" / "v1-blue-grid.mp4"

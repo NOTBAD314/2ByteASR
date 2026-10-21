@@ -12,8 +12,8 @@ def main():
     out.mkdir(parents=True);os.environ['LOCALAPPDATA']=str(out/'local');os.environ['APPDATA']=str(out/'roaming')
     from PIL import Image,ImageDraw
     import numpy as np
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     raw=args.source.read_bytes();data=json.loads(raw);result=dict(source=str(args.source),sha256=hashlib.sha256(raw).hexdigest(),cases=[])
     service=RendererService(root/'renderer');thumbs=[]
     try:

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_video_canvas import MpvCanvas
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
 
 
 def test_deep_source_timestamp_is_mapped_before_project_eof_and_seek_settlement():

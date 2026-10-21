@@ -6,13 +6,13 @@ import pytest
 @pytest.mark.parametrize('origin', ['ai','mixed','local_fast'])
 def test_validated_group_cache_preserves_actual_producer(tmp_path, origin):
     import subtitle_core as core
-    from twobyteasr.cache import run_cached_stage
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.asr_provider_snapshot import GroupedBatchResult
+    from twobyteasr.recognition.cache import run_cached_stage
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.providers.asr_provider_snapshot import GroupedBatchResult
     root = tmp_path/'cache'
     root.mkdir()
     cache = {'identity':{'sha256':'input'}, 'cache_dir':str(root)}
-    dependency = {'segments':[{'id':1,'speaker':'S01','text':'你好世界'}]}
+    dependency = {'segments':[{'id':1,'speaker':'S01','text':'你好世界','start':0,'end':1}]}
     called = []
     def produce():
         called.append(1)
@@ -34,15 +34,21 @@ def test_validated_group_cache_preserves_actual_producer(tmp_path, origin):
 @pytest.mark.parametrize('origin,validated,text', [('fallback',True,'你好世界'),('mixed',False,'你好世界'),('mixed',True,'擅自改字')])
 def test_fallback_unvalidated_or_changed_group_result_is_not_cached(tmp_path,origin,validated,text):
     import subtitle_core as core
-    from twobyteasr.cache import run_cached_stage
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.asr_provider_snapshot import GroupedBatchResult
+    from twobyteasr.recognition.cache import run_cached_stage
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.providers.asr_provider_snapshot import GroupedBatchResult
     root = tmp_path/'cache'
     root.mkdir()
     cache = {'identity':{'sha256':'input'}, 'cache_dir':str(root)}
     with activate_runtime_context(RuntimeContext(), legacy=core):
-        run_cached_stage('grouped',cache,
-            lambda:GroupedBatchResult([core.SubtitleCue(1,0,1,text,speaker='S01')],origin=origin,validated=validated),
-            encoder=core.serialize_cues,decoder=core.deserialize_cues,
-            extra_signature={'segments':[{'id':1,'speaker':'S01','text':'你好世界'}]})
+        def execute():
+            return run_cached_stage('grouped',cache,
+                lambda:GroupedBatchResult([core.SubtitleCue(1,0,1,text,speaker='S01')],origin=origin,validated=validated),
+                encoder=core.serialize_cues,decoder=core.deserialize_cues,
+                extra_signature={'segments':[{'id':1,'speaker':'S01','text':'你好世界','start':0,'end':1}]})
+        if text != "你好世界":
+            with pytest.raises(ValueError, match="未通过来源正文"):
+                execute()
+        else:
+            execute()
     assert not list(root.glob('*.json'))

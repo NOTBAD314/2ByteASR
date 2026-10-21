@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
-from twobyteasr.ui import (  # noqa: E402
+from twobyteasr.app.ui import (  # noqa: E402
     APP_QSS,
     MainWindow,
     ModalHost,
@@ -27,7 +27,7 @@ from twobyteasr.ui import (  # noqa: E402
     TermLibraryDialog,
     _CategoryPillDelegate,
 )
-from twobyteasr.main_ui_glossary import _TermMappingsModel  # noqa: E402
+from twobyteasr.glossary.main_ui_glossary import _TermMappingsModel  # noqa: E402
 
 
 def _app():
@@ -124,8 +124,9 @@ def test_home_keeps_only_ai_smart_segmentation_tile(monkeypatch):
     assert list(win.setting_tiles) == ["ai"]
     assert win.setting_tiles["ai"].title_label.text() == "AI 智能断句"
     # Isolate from this machine's real key stores (provider-scoped and stage).
-    monkeypatch.setattr("twobyteasr.ui.resolve_api_key", lambda _stage: ("", "missing"))
-    monkeypatch.setattr("twobyteasr.ui.read_api_key", lambda *_args, **_kwargs: ("", "missing"))
+    for module in ("twobyteasr.app.ui", "twobyteasr.providers.endpoint_editor_ui"):
+        monkeypatch.setattr(f"{module}.resolve_api_key", lambda _stage: ("", "missing"))
+        monkeypatch.setattr(f"{module}.read_api_key", lambda *_args, **_kwargs: ("", "missing"))
     win._refresh_ai_summary()
     assert win.setting_tiles["ai"].summary_label.text() == "选择 API 厂商、模型并填写 API Key"
     win.close()
@@ -259,7 +260,7 @@ def test_term_library_uses_structured_table_and_adaptive_category_badges():
         "操作",
     ]
     # 2026-10-17 redesign v2: categories are plain text; status is a dot and text.
-    from twobyteasr.glossary_page_parts import StatusDotDelegate
+    from twobyteasr.glossary.glossary_page_parts import StatusDotDelegate
     assert not isinstance(dialog.listing.itemDelegateForColumn(1), _CategoryPillDelegate)
     assert isinstance(dialog.listing.itemDelegateForColumn(3), StatusDotDelegate)
     assert dialog.listing.columnWidth(1) >= 72

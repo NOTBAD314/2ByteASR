@@ -23,7 +23,7 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.settings import DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
     (out/'config/2byteasr_settings.json').write_text(json.dumps(DEFAULT_SETTINGS,ensure_ascii=False),'utf8')
     from PySide6.QtCore import QSettings
     settings=QSettings('2ByteASR','2ByteASR'); settings.setValue('appearance/theme','grape'); settings.sync()

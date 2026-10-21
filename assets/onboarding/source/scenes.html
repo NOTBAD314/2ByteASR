@@ -113,7 +113,7 @@
   @keyframes fill { 0%,68% {width: 0} 92% {width: 232px} 100% {width: 232px} }
   @keyframes head { 0%,68% {left: 14px} 92% {left: 246px} 100% {left: 246px} }
 
-  /* ---------- cloud: 1.6 s, quick ---------- */
+  /* ---------- cloud: 2.4 s, quick (2026-10-21: MOSS Pro in the cloud, then FireRedASR2 sets the times here) ---------- */
   .cloudscene { --c: var(--yellow); }
   .bars { position: absolute; display: flex; align-items: center; gap: 4px; }
   .bars span { width: 4.5px; border-radius: 3px; background: var(--c); }
@@ -123,26 +123,33 @@
   .bars span:nth-child(2) { animation-delay: -.1s } .bars span:nth-child(3) { animation-delay: -.25s }
   .bars span:nth-child(4) { animation-delay: -.05s } .bars span:nth-child(5) { animation-delay: -.3s }
   .bars span:nth-child(6) { animation-delay: -.15s }
-  .cloud { position: absolute; left: 102px; top: 36px; width: 56px; height: 36px; animation: puff 1.6s ease-in-out infinite; }
+  .cloud { position: absolute; left: 102px; top: 36px; width: 56px; height: 36px; animation: puff 2.4s ease-in-out infinite; }
   .cloud svg { width: 100%; height: 100%; overflow: visible; }
   @keyframes puff { 0%,100% {transform: scale(1)} 45% {transform: scale(1.07)} }
   .streak { position: absolute; height: 3px; border-radius: 2px; transform-origin: 0 50%;
             background: linear-gradient(90deg, transparent, var(--c)); }
-  .up { left: 58px; top: 80px; width: 48px; transform: rotate(-24deg); animation: zip 1.6s cubic-bezier(.5,0,.2,1) infinite; }
+  .up { left: 58px; top: 80px; width: 48px; transform: rotate(-24deg); animation: zip 2.4s cubic-bezier(.5,0,.2,1) infinite; }
   .up.u2 { animation-delay: -.12s; top: 86px; }
-  .down { left: 154px; top: 60px; width: 42px; transform: rotate(34deg); animation: zip2 1.6s cubic-bezier(.5,0,.2,1) infinite; }
+  .down { left: 154px; top: 60px; width: 42px; transform: rotate(34deg); animation: zip2 2.4s cubic-bezier(.5,0,.2,1) infinite; }
   .down.d2 { animation-delay: -.12s; left: 150px; top: 66px; }
-  @keyframes zip { 0% {clip-path: inset(0 100% 0 0); opacity: 0} 8% {opacity: 1} 30% {clip-path: inset(0 0 0 0)} 42% {clip-path: inset(0 0 0 100%); opacity: 1} 43%,100% {opacity: 0} }
-  @keyframes zip2 { 0%,40% {clip-path: inset(0 100% 0 0); opacity: 0} 45% {opacity: 1} 62% {clip-path: inset(0 0 0 0)} 74% {clip-path: inset(0 0 0 100%); opacity: 1} 75%,100% {opacity: 0} }
+  @keyframes zip { 0% {clip-path: inset(0 100% 0 0); opacity: 0} 5% {opacity: 1} 20% {clip-path: inset(0 0 0 0)} 28% {clip-path: inset(0 0 0 100%); opacity: 1} 29%,100% {opacity: 0} }
+  @keyframes zip2 { 0%,27% {clip-path: inset(0 100% 0 0); opacity: 0} 30% {opacity: 1} 41% {clip-path: inset(0 0 0 0)} 49% {clip-path: inset(0 0 0 100%); opacity: 1} 50%,100% {opacity: 0} }
   .subs { position: absolute; left: 192px; right: 14px; top: 76px; }
   .subs i { display: block; height: 7px; border-radius: 4px; background: var(--c); margin-bottom: 7px; transform-origin: 0 50%;
-            animation: snap 1.6s cubic-bezier(.2,1.3,.4,1) infinite; }
+            animation: snap 2.4s cubic-bezier(.2,1.3,.4,1) infinite both; }
   .subs i:nth-child(2) { width: 78%; animation-delay: .03s; } .subs i:nth-child(3) { width: 56%; animation-delay: .06s; }
-  @keyframes snap { 0%,58% {transform: scaleX(0); opacity: 0} 66% {transform: scaleX(1); opacity: 1} 94% {opacity: 1} 100% {opacity: 0} }
+  @keyframes snap { 0%,39% {transform: scaleX(0); opacity: 0} 44% {transform: scaleX(1); opacity: 1} 95% {opacity: 1} 100% {opacity: 0} }
+  /* then the times are set on this computer: one tick per line lands on its start */
+  .cticks { position: absolute; left: 192px; right: 14px; top: 72px; height: 44px; }
+  .cticks b { position: absolute; left: -9px; width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+              box-shadow: 0 0 8px var(--green); animation: tick 2.4s cubic-bezier(.2,1.4,.4,1) infinite both; }
+  .cticks b:nth-child(1) { top: 2px; } .cticks b:nth-child(2) { top: 16px; animation-delay: .08s; }
+  .cticks b:nth-child(3) { top: 30px; animation-delay: .16s; }
+  @keyframes tick { 0%,56% {opacity: 0; transform: translateX(-14px) scale(.4)} 64% {opacity: 1; transform: none} 95% {opacity: 1} 100% {opacity: 0} }
   .flash { position: absolute; left: 182px; top: 66px; width: 60px; height: 40px; border-radius: 12px;
            background: radial-gradient(closest-side, color-mix(in srgb, var(--c) 45%, transparent), transparent);
-           animation: flash 1.6s ease-out infinite; }
-  @keyframes flash { 0%,58% {opacity: 0} 64% {opacity: 1} 85%,100% {opacity: 0} }
+           animation: flash 2.4s ease-out infinite; }
+  @keyframes flash { 0%,39% {opacity: 0} 43% {opacity: 1} 57%,100% {opacity: 0} }
 
   /* ---------- light: 5.6 s, calm ---------- */
   .lightscene { --c: var(--blue); }
@@ -212,7 +219,7 @@
       <div class="cloud"><svg viewBox="0 0 56 36"><path d="M14 33h30a10 10 0 0 0 1-20 14 14 0 0 0-26-3A10 10 0 0 0 14 33z"
         fill="color-mix(in srgb, #F2B33D 30%, transparent)" stroke="#F2B33D" stroke-width="2.4" stroke-linejoin="round"/></svg></div>
       <div class="streak down"></div><div class="streak down d2"></div>
-      <div class="flash"></div><div class="subs"><i></i><i></i><i></i></div></div>`,
+      <div class="flash"></div><div class="subs"><i></i><i></i><i></i></div><div class="cticks"><b></b><b></b><b></b></div></div>`,
     light: `<div class="stage lightscene"><div class="glow" style="left:-30px;top:-70px"></div>
       <div class="bars"><span></span><span></span><span></span><span></span><span></span></div>
       <div class="chip"></div>
@@ -242,7 +249,7 @@
     });
   }
   // Loop length per scene, for the renderer and for a quick look in a browser.
-  window.SCENE_MS = {local: 9600, cloud: 1600, light: 5600, apple: 3400}[scene];
+  window.SCENE_MS = {local: 9600, cloud: 2400, light: 5600, apple: 3400}[scene];
   window.seek = (ms) => { for (const a of document.getAnimations()) { a.pause(); a.currentTime = ms; } };
 </script>
 </body>

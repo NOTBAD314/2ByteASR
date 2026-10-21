@@ -22,12 +22,12 @@ SWITCHED = ("claude", "xai", "deepseek", "gemini", "openai", "antigravity", "gro
 def editor_factory(monkeypatch):
     """Editors without stored keys, model discovery or connection workers."""
     app = QApplication.instance() or QApplication([])
-    from twobyteasr import ui as endpoint_editor_ui  # flat daily: EndpointEditor still lives in ui.py
+    from twobyteasr.providers import endpoint_editor_ui
 
-    for module in ("twobyteasr.ui",):
+    for module in ("twobyteasr.app.ui", "twobyteasr.providers.endpoint_editor_ui"):
         monkeypatch.setattr(f"{module}.resolve_api_key", lambda stage: ("", "未配置"))
         monkeypatch.setattr(f"{module}.read_api_key", lambda _provider, _base_url="": ("", "未配置"))
-    monkeypatch.setattr("twobyteasr.llm_config.read_api_key",
+    monkeypatch.setattr("twobyteasr.providers.llm_config.read_api_key",
                         lambda _provider, _base_url="": ("", "未配置"))
 
     def no_network(*_args, **_kwargs):
@@ -78,7 +78,7 @@ def _choose(editor, service_id):
 
 
 def test_switching_service_lists_only_the_new_service_catalog(editor_factory):
-    from twobyteasr.llm_config import resolved_service_values, service_model_catalog
+    from twobyteasr.providers.llm_config import resolved_service_values, service_model_catalog
 
     settings = _settings("bailian")
     editor = editor_factory(settings)
@@ -145,7 +145,7 @@ def test_switching_does_not_offer_a_retired_model(editor_factory):
 
 
 def test_profile_restore_replaces_the_list_without_signals(editor_factory):
-    from twobyteasr.llm_config import service_model_catalog
+    from twobyteasr.providers.llm_config import service_model_catalog
 
     settings = _settings("bailian")
     editor = editor_factory(settings)
@@ -160,3 +160,23 @@ def test_profile_restore_replaces_the_list_without_signals(editor_factory):
     # The signal block ends with the restore: later picks reach the editor again.
     editor.model.setCurrentText("claude-haiku-5-5")
     assert changes == ["claude-haiku-5-5"]
+
+def test_grouping_recommendation_preserves_existing_bailian_choice(editor_factory):
+    settings = _settings("bailian")
+    before = copy.deepcopy(settings)
+    editor = editor_factory(settings)
+    assert editor.service.currentData() == "bailian"
+    assert editor.model.currentText() == "qwen3.7-flash-2026-07-15"
+    assert "DeepSeek" in editor.grouping_recommendation.text()
+    assert "相同检查" in editor.grouping_recommendation.text()
+    assert "不代表断句结果合格" in editor.test_button.toolTip()
+    assert "推荐" in editor.service.itemText(editor.service.findData("deepseek"))
+    assert settings == before
+
+
+def test_empty_custom_grouping_does_not_offer_another_services_model(editor_factory):
+    editor = editor_factory(_settings("custom", {"custom": {
+        "base_url":"http://127.0.0.1:9999/v1","model":"","protocol":"auto"}}))
+    assert editor.service.currentData() == "custom"
+    assert editor.model.currentText() == ""
+    assert _items(editor.model) == []

@@ -24,9 +24,9 @@ def main():
     args=p.parse_args();out=args.output.resolve()
     if not out.is_relative_to(ROOT/'tmp') or out.exists():raise ValueError('Use a fresh repository tmp directory')
     out.mkdir(parents=True)
-    from twobyteasr.settings import DEFAULT_SETTINGS,_merge_known_settings
-    from twobyteasr.llm_config import activate_ai_service,endpoint_from_settings
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS,_merge_known_settings
+    from twobyteasr.providers.llm_config import activate_ai_service,endpoint_from_settings
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
     raw=args.settings.read_bytes();settings,_=_merge_known_settings(DEFAULT_SETTINGS,json.loads(raw))
     activate_ai_service(settings,args.service)
     selection=GLOBAL_PROVIDER_REGISTRY.selection(settings,stage='polish')
@@ -37,9 +37,9 @@ def main():
         (out/value).mkdir(exist_ok=True);os.environ[key]=str(out/value)
     settings['models']['ai_design_wait_mode']='configured'
     settings['models']['ai_design_cli_timeout_seconds']=args.seconds
-    from twobyteasr.caption_creative_pipeline import request_creative_options
+    from twobyteasr.caption_design.caption_creative_pipeline import request_creative_options
     if args.prepare_only:
-        from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+        from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
         class PreparedOnly(Exception):pass
         class PreviewClient:
             def capabilities(self):return SimpleNamespace(vision=False)
@@ -66,7 +66,7 @@ def main():
             print(json.dumps({'stage':e['name'],'candidate':e['candidate_id'],'elapsed':round(time.monotonic()-started,2)},ensure_ascii=False),flush=True)
     save()
     if not args.prepare_only:
-        from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+        from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
         factory=GLOBAL_PROVIDER_SERVICE.client_for_stage
         record.update(call_budget=args.call_budget,external_calls=0)
         def bounded_client(*a,**kw):

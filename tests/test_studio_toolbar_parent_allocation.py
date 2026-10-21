@@ -6,11 +6,11 @@ from PySide6.QtWidgets import QApplication,QLabel,QSplitter,QVBoxLayout,QWidget
 
 
 def test_wrapped_actual_toolbar_parent_minimum_and_splitter_resize_roundtrip(tmp_path):
-    from twobyteasr import theme_manager
-    from twobyteasr.studio_theme import build_studio_qss
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.typography import application_font
-    from twobyteasr.ui_theme import theme_definition
+    from twobyteasr.design import theme_manager
+    from twobyteasr.design.studio_theme import build_studio_qss
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.design.typography import application_font
+    from twobyteasr.design.ui_theme import theme_definition
     app=QApplication.instance() or QApplication([])
     theme_manager.apply_application_theme(app,'grape');app.setFont(application_font())
     page=SubtitleStudioPage()

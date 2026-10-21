@@ -15,10 +15,10 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT']=str(output);os.environ['TWOBYTEASR_STARTUP_TRACE']=str(output/'startup-trace.jsonl')
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
     seed=output/'seed.2byteproj';save_project(SubtitleProject(media=StudioMedia(path='')),seed)
-    from twobyteasr.audio_engine import studio_ffmpeg_path
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.playback.audio_engine import studio_ffmpeg_path
+    from twobyteasr.system.processes import run_hidden_subprocess
     generated=run_hidden_subprocess([str(studio_ffmpeg_path()),'-hide_banner','-loglevel','error','-nostdin',
         '-f','lavfi','-i','testsrc2=duration=2:size=160x90:rate=15','-c:v','libx264','-preset','ultrafast',
         str(output/'sole-proxy-fixture.mp4')],capture_output=True,purpose='two second isolated asset preservation fixture',timeout=30)

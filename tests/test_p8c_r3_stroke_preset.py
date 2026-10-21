@@ -20,15 +20,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_resolution import resolve_cue_visual
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_resolution import resolve_cue_visual
 
 
 _APP = None

@@ -18,13 +18,13 @@ def main():
     original_local=Path(os.environ['LOCALAPPDATA'])
     source=original_local/'2ByteASR/SubtitleStudioPreview/logs/theme-drafts'/args.request_id
     original=(source/'creative/provider-original.txt').read_bytes();original_hash=hashlib.sha256(original).hexdigest()
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set
-    from twobyteasr.web_theme_compiler import parse_object
-    from twobyteasr.authored_repair import collect_issues,provider_callbacks
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set
+    from twobyteasr.caption_design.web_theme_compiler import parse_object
+    from twobyteasr.caption_design.authored_repair import collect_issues,provider_callbacks
     metadata=json.loads((source/'request.json').read_text('utf8'))
     old_ledger=json.loads((source/'creative/ledger.json').read_text('utf8'))
     payload=parse_object(original.decode('utf-8-sig'))
-    from twobyteasr.theme_metadata import normalize_theme_input
+    from twobyteasr.caption_design.theme_metadata import normalize_theme_input
     for index,row in enumerate(payload['candidates']):
         row['generated_source']=normalize_theme_input(row['generated_source'],path=f'candidates[{index}].generated_source')
     safe_prompt=old_ledger.get('theme','Balatro')+' 游戏字幕；保持指定历史候选的设计意图，仅修复技术错误。'
@@ -38,9 +38,9 @@ def main():
         model_calls=0,passed=False)
     if args.execute:
         assert metadata['provider']=='deepseek'
-        from twobyteasr import settings as settings_module
-        from twobyteasr.llm_config import activate_ai_service,update_active_profile,endpoint_from_settings
-        from twobyteasr.ai_providers import OpenAICompatibleProvider
+        from twobyteasr.storage import settings as settings_module
+        from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile,endpoint_from_settings
+        from twobyteasr.providers.ai_providers import OpenAICompatibleProvider
         settings_path=original_local/'2ByteASR'/settings_module.SETTINGS_FILENAME
         settings_bytes=settings_path.read_bytes()
         settings,_=settings_module._merge_known_settings(settings_module.DEFAULT_SETTINGS,json.loads(settings_bytes))

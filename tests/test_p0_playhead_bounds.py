@@ -19,7 +19,7 @@ PROJECT_END_MS = 5_386_572  # 截图工程（1:29:46 的 0 字幕工程）实测
 # --------------------------------------------------------------- helpers
 
 def _timeline_project(clip_out_ms: int = PROJECT_END_MS):
-    from twobyteasr.studio_project import (
+    from twobyteasr.projects.studio_project import (
         StudioMedia, SubtitleProject, VideoClip, VideoTrack,
     )
 
@@ -43,7 +43,7 @@ def _make_timeline(clip_out_ms: int = PROJECT_END_MS):
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.studio_ui import WaveformTimeline
+    from twobyteasr.studio.studio_ui import WaveformTimeline
 
     app = QApplication.instance() or QApplication([])
     timeline = WaveformTimeline()
@@ -135,8 +135,9 @@ def test_later_clip_extends_bounds():
 # ------------------------------- P0 residual: proxy rebuild after rejection
 
 def _proxy_cache_env(monkeypatch, tmp_path: Path):
-    from twobyteasr import avsync, indexed_media
-    from twobyteasr.avsync import AVSyncMap, TimestampGap, save_sync_map
+    from twobyteasr.playback import avsync
+    from twobyteasr.media import indexed_media
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap, save_sync_map
 
     cache = indexed_media.IndexedMediaCache(root=tmp_path / "seek")
     src = tmp_path / "a.flv"

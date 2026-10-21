@@ -10,9 +10,9 @@ def main():
     out.mkdir(parents=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen')
     from scripts.verify_ai_render_chain import reference_theme
-    from twobyteasr.web_theme import theme_archive_html
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.composed_text_probe import composed_text_probe
+    from twobyteasr.caption_design.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.composed_text_probe import composed_text_probe
     service=RendererService();results=[]
     try:
         for name,css,timepoint,expected in [('reveal-start','',0,False),('readable-hold','',1500,True),

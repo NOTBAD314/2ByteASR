@@ -52,8 +52,8 @@ def main() -> int:
     retired = ''
     if args.retired_saved_model:
         # Saved settings as an old install left them: DeepSeek chosen, its retired model saved.
-        from twobyteasr.llm_config import RETIRED_MODEL_IDS
-        from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+        from twobyteasr.providers.llm_config import RETIRED_MODEL_IDS
+        from twobyteasr.storage.settings import load_runtime_settings, save_runtime_settings
         retired = sorted(RETIRED_MODEL_IDS)[0]
         settings, _path, _warnings = load_runtime_settings()
         models = settings.setdefault('models', {})
@@ -67,7 +67,7 @@ def main() -> int:
             settings.setdefault('switches', {}).update(
                 unified_glm_processing=False, use_ai_grouping=True, enable_ai_polish=True)
         save_runtime_settings(settings)
-    from twobyteasr.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
+    from twobyteasr.projects.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
                                                     default_style, save_project)
 
     fixture = output / 'projects' / LONG_NAME / f'{LONG_NAME}.2byteproj'

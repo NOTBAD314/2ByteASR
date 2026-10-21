@@ -8,8 +8,8 @@ from PySide6.QtGui import QInputMethodEvent, QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project, load_project
-from twobyteasr.studio_speaker_manager import SpeakerManagerDialog
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject, save_project, load_project
+from twobyteasr.studio.studio_speaker_manager import SpeakerManagerDialog
 
 APP = QApplication.instance() or QApplication([])
 

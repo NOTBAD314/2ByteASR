@@ -1,9 +1,9 @@
 import json
 from pathlib import Path
 
-from twobyteasr.design_guidance import load_design_guidance
-from twobyteasr.design_progress import complete_candidate_prefix, update_phase, status_text
-from twobyteasr.theme_generation_policy import authored_request_budget
+from twobyteasr.caption_design.design_guidance import load_design_guidance
+from twobyteasr.caption_design.design_progress import complete_candidate_prefix, update_phase, status_text
+from twobyteasr.caption_design.theme_generation_policy import authored_request_budget
 
 
 def test_short_theme_loads_distinct_packaged_reference_and_hashes():

@@ -22,15 +22,15 @@ def main():
         DASHSCOPE_API_KEY='sk-local-test-dummy')
     from PySide6.QtWidgets import QApplication
     app=QApplication([])
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
-    from twobyteasr.studio_ai import request_web_theme_design
-    from twobyteasr.theme_draft import ThemeDraft,validate_draft_frames
-    from twobyteasr.web_theme import export_theme_archive
-    from twobyteasr.renderer_service import GLOBAL_RENDERER_SERVICE
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
+    from twobyteasr.caption_design.studio_ai import request_web_theme_design
+    from twobyteasr.caption_design.theme_draft import ThemeDraft,validate_draft_frames
+    from twobyteasr.caption_design.web_theme import export_theme_archive
+    from twobyteasr.rendering.renderer_service import GLOBAL_RENDERER_SERVICE
     project=SubtitleProject(media=StudioMedia(path='read-only-design-context',width=1280,height=720),
         cues=[StudioCue('current-model',0,3000,'我送的不是货，是整个人类的希望')])
     request_id=uuid.uuid4().hex
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
     selection=GLOBAL_PROVIDER_REGISTRY.selection(settings,stage='polish')
     draft=ThemeDraft(request_id,1,'current-model',project.cues[0].text,scope='fullscreen',
         provider=selection.provider,model=selection.model)
@@ -49,7 +49,7 @@ def main():
     try:
         if args.replay_trace:
             from types import SimpleNamespace
-            from twobyteasr.web_theme_compiler import code_gate
+            from twobyteasr.caption_design.web_theme_compiler import code_gate
             saved=json.loads(args.replay_trace.read_text(encoding='utf8'))
             assert saved['provider']=={'provider':selection.provider,'model':selection.model}
             raw=saved['raw_provider_responses'][-1]['response_text']
@@ -57,7 +57,7 @@ def main():
             result['revalidated_saved_request_id']=saved['request_id']
             result['network_requests_this_run']=0
             if args.repair_saved:
-                from twobyteasr.studio_ai import refine_web_theme_design
+                from twobyteasr.caption_design.studio_ai import refine_web_theme_design
                 progress('修复实测长中文裁切与过大金色脉冲')
                 correction=refine_web_theme_design(theme,
                     '实际六帧检查发现：1) .cargo-line white-space:nowrap使40字中文越出82%容器，改为可换行，'

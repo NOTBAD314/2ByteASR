@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.model_benchmarks import (  # noqa: E402
+from twobyteasr.local_models.model_benchmarks import (  # noqa: E402
     API_MODEL_ALIASES,
     REFERENCE_INDEX_VERSION,
     _REFERENCE_INDEX,
@@ -26,7 +26,7 @@ from twobyteasr.model_benchmarks import (  # noqa: E402
     reference_entry,
     reference_gap,
 )
-from twobyteasr.model_workshop import MODELS, _metric_evidence  # noqa: E402
+from twobyteasr.local_models.model_workshop import MODELS, _metric_evidence  # noqa: E402
 
 
 REGISTERED = {model.key for model in MODELS}

@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""Developer / source-mode 2ByteASR launcher.
+"""Developer / source-mode 2ByteASR launcher, also the code inside the packaged EXE.
 
-This is not the official user-facing desktop entry. The release process is
-``dist\\2ByteASR\\2ByteASR.exe`` (or the tiny ``2ByteASR.exe`` bootstrapper that
-hands off to that packaged build). Keep this file for source hot-reload and
-headed automation.
+Users start ``dist\\2ByteASR\\2ByteASR.exe`` (or the tiny ``2ByteASR.exe``
+bootstrapper that hands off to it); running this file directly is the
+developer/source mode.  The EXE itself is PyInstaller-built from this file
+(packaging/2byteasr_main.spec), so ``main()`` below is the start of every
+launch: windowless modes (--mcp-stdio, worker roles, acceptance flags) first,
+then the single-instance guard and twobyteasr.app.ui.run_desktop_app.
+See ARCHITECTURE.md.
 
 Never bypass the real GUI via direct MainWindow construction in acceptance.
 """
@@ -25,7 +28,7 @@ if len(sys.argv) >= 2 and sys.argv[1] == '--mcp-stdio':
     def _startup_mark(*_args, **_details):
         return None
 else:
-    from twobyteasr.startup_trace import mark as _startup_mark
+    from twobyteasr.diagnostics.startup_trace import mark as _startup_mark
 
 
 
@@ -90,7 +93,8 @@ def _append_startup_log(message: str) -> None:
         path = _log_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8", errors="replace") as f:
-            f.write(message.rstrip() + "\n")
+            from twobyteasr.diagnostics.event_log import Sanitizer
+            f.write(Sanitizer().string(message).rstrip() + "\n")
     except Exception:
         pass
 
@@ -127,7 +131,10 @@ def _show_error(title: str, message: str) -> None:
 
 def _write_full_traceback(exc: BaseException) -> None:
     try:
-        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        from twobyteasr.diagnostics.event_log import emit, exception_info
+        info = exception_info(exc)
+        emit("startup.exception", level="ERROR", result="failed", exception=info)
+        tb = json.dumps(info, ensure_ascii=False)
         _append_startup_log("=== STARTUP CRASH ===\n" + tb + "=== END CRASH ===")
     except Exception:
         pass
@@ -163,68 +170,74 @@ def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == '--mcp-stdio':
         # Local MCP server for desktop AI clients: protocol on stdout only, no
         # GUI, no logs or data writes; it forwards to the running window.
-        from twobyteasr.mcp_stdio import main as mcp_stdio_main
+        from twobyteasr.local_mcp.mcp_stdio import main as mcp_stdio_main
         return mcp_stdio_main(sys.argv[2:])
     if len(sys.argv) == 3 and sys.argv[1] == '--data-roots-inspect':
-        from twobyteasr.data_roots_inspect import main as inspect_data_roots
+        from twobyteasr.diagnostics.data_roots_inspect import main as inspect_data_roots
         return inspect_data_roots(sys.argv[2])
-    from twobyteasr.offline_audit_io import install as install_offline_audit_io
+    from twobyteasr.acceptance.offline_audit_io import install as install_offline_audit_io
     install_offline_audit_io()
     if len(sys.argv) == 3 and sys.argv[1] == '--cover-font-self-test':
-        from twobyteasr.cover_font_selftest import main as cover_font_self_test
+        from twobyteasr.acceptance.cover_font_selftest import main as cover_font_self_test
         return cover_font_self_test(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == '--caption-cli-audit':
-        from twobyteasr.caption_cli_audit import main as caption_cli_audit
+        from twobyteasr.acceptance.caption_cli_audit import main as caption_cli_audit
         return caption_cli_audit(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == '--caption-provider-self-test':
-        from twobyteasr.caption_provider_selftest import main as caption_self_test
+        from twobyteasr.acceptance.caption_provider_selftest import main as caption_self_test
         return caption_self_test(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == '--asr-provider-self-test':
-        from twobyteasr.stage9_acceptance_audit import main as asr_self_test_main
+        from twobyteasr.acceptance.stage9_acceptance_audit import main as asr_self_test_main
         return asr_self_test_main(sys.argv[2])
     if len(sys.argv) == 3 and sys.argv[1] == '--moss-full-context-audit':
-        from twobyteasr.moss_full_context_audit import main as moss_audit
+        from twobyteasr.acceptance.moss_full_context_audit import main as moss_audit
         return moss_audit(sys.argv[2])
     if len(sys.argv) > 2 and sys.argv[1] == '--glossary-update-self-test':
         # 真实联网词库更新自检（源码与冻结 EXE 同入口；不写词库，只落结果 JSON）
-        from twobyteasr.glossary_update_selftest import main as glossary_self_test
+        from twobyteasr.acceptance.glossary_update_selftest import main as glossary_self_test
         return glossary_self_test(sys.argv[2:])
     if len(sys.argv) > 2 and sys.argv[1] == '--glossary-update-ui-loop':
         # 有界面的真实联网闭环（真实 UI+真实引擎；默认不写词库，截图+结果 JSON 留证）
-        from twobyteasr.glossary_ui_loop import main as glossary_ui_loop
+        from twobyteasr.acceptance.glossary_ui_loop import main as glossary_ui_loop
         return glossary_ui_loop(sys.argv[2:])
     if len(sys.argv) > 2 and sys.argv[1] == '--playback-audit':
         # 真实工程播放验收自检（源码与冻结 EXE 同链路；不写用户工程/素材）
-        from twobyteasr.playback_audit_selftest import main as playback_audit
+        from twobyteasr.acceptance.playback_audit_selftest import main as playback_audit
         return playback_audit(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == '--runtime-fixes-audit':
         # 2026-09-20 三修自检（日志横滚/子进程UTF-8/失效模型；不写用户数据）
-        from twobyteasr.runtime_fixes_audit import main as runtime_fixes_audit
+        from twobyteasr.acceptance.runtime_fixes_audit import main as runtime_fixes_audit
         return runtime_fixes_audit(sys.argv[2:])
     if len(sys.argv) > 2 and sys.argv[1] == '--studio-screen-probe':
-        from twobyteasr.visible_pixel_probe import main as screen_probe_main
+        from twobyteasr.acceptance.visible_pixel_probe import main as screen_probe_main
         screen_probe_main(sys.argv[2])
         return 0
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-video-worker':
-        from twobyteasr.video_decode_worker import main as video_worker_main
+        from twobyteasr.playback.video_decode_worker import main as video_worker_main
         return video_worker_main()
+    if len(sys.argv) > 1 and sys.argv[1] == '--check-model-download':
+        from twobyteasr.local_models.model_download_diagnostic import main as download_check_main
+        return download_check_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-audio-worker':
-        from twobyteasr.audio_process import main as audio_main
+        from twobyteasr.playback.audio_process import main as audio_main
         return audio_main(sys.argv[2:])
     if len(sys.argv) == 2 and sys.argv[1] == '--asr-api-worker':
         # Cloud recognition request process (2026-10-13): runs with the app's
         # own executable so cloud-only users need no local model runtime.
-        from twobyteasr.cloud_api_worker import main as cloud_api_worker_main
+        from twobyteasr.providers.cloud_api_worker import main as cloud_api_worker_main
         return cloud_api_worker_main()
     import multiprocessing
 
     multiprocessing.freeze_support()
     os.environ["TWOBYTEASR_PROCESS_ROLE"] = "main-gui"
-    from twobyteasr.media_intake import parse_media_arguments
+    from twobyteasr.media.media_intake import parse_media_arguments
     media_arguments = parse_media_arguments(sys.argv[1:])
     _startup_mark("PYTHON_ENTRY")
+    from twobyteasr.diagnostics.editor_diagnostics import install_early
+    diagnostic_session = install_early()
+    _startup_mark("DIAGNOSTICS_READY")
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.single_instance import SingleInstanceGuard
+    from twobyteasr.app.single_instance import SingleInstanceGuard
     app = QApplication.instance() or QApplication([sys.argv[0]])
     _startup_mark("EARLY_QT_READY")
     instance_guard = SingleInstanceGuard(SingleInstanceGuard.application_name(application_root()))
@@ -240,6 +253,8 @@ def main() -> int:
     _startup_mark("EARLY_INSTANCE_OWNER")
     app._instance_guard = instance_guard
     app.aboutToQuit.connect(instance_guard.release)
+    from twobyteasr.diagnostics.editor_diagnostics import install_early
+    diagnostic_session = install_early()
     # Ensure we have a record even for very early interpreter crashes.
     packaged = bool(getattr(sys, "frozen", False))
     if packaged:
@@ -262,7 +277,7 @@ def main() -> int:
         # We intentionally keep them here so the real launch path exercises the
         # same contract/repair surface as a packaged user run.  Failures are
         # logged + shown and do not mutate live environments.
-        from twobyteasr.build_identity import (
+        from twobyteasr.diagnostics.build_identity import (
             load_build_identity,
             runtime_fingerprint_lines,
             startup_identity_lines,
@@ -271,7 +286,7 @@ def main() -> int:
         from twobyteasr.runtime_paths import bootstrap_runtime_paths
 
         if os.environ.get('TWOBYTEASR_ACCEPTANCE_DIR'):
-            from twobyteasr.studio_acceptance_audit import isolate_acceptance_settings
+            from twobyteasr.acceptance.studio_acceptance_audit import isolate_acceptance_settings
             isolate_acceptance_settings()
 
         runtime_paths = bootstrap_runtime_paths(install_root=application_root(), persist=True)
@@ -287,7 +302,7 @@ def main() -> int:
         import moss_firered_pipeline  # type: ignore
         import subtitle_core  # type: ignore
         subtitle_core.FIRERED_MODEL_DIR = subtitle_core._resolve_firered_model_dir()
-        from twobyteasr.ui import after_startup_idle, run_desktop_app  # type: ignore
+        from twobyteasr.app.ui import after_startup_idle, run_desktop_app  # type: ignore
 
         def write_runtime_fingerprint():
             for line in runtime_fingerprint_lines(build_identity):
@@ -316,6 +331,8 @@ def main() -> int:
             instance_guard=instance_guard,
         )
         _append_startup_log(f"run_desktop_app returned {rc}")
+        if diagnostic_session is not None:
+            diagnostic_session.finish(clean=(rc == 0))
     except SystemExit as exit_request:
         # Allow intentional exits from inside the app, but still hard-terminate:
         # 2026-09-07（打包关停滞留）——run_desktop_app 以 SystemExit 结束时若直接

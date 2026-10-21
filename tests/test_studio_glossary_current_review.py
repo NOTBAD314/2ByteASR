@@ -8,12 +8,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
-from twobyteasr.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry
-from twobyteasr.studio_glossary_service import preview_glossary_correction
-from twobyteasr.studio_glossary_review import recover_review_edits, diff_occurrences
-from twobyteasr.studio_text_tools import TextOccurrence, values_from_occurrences
-from twobyteasr.studio_find_replace import FindReplaceDialog, TermAssociationDialog, PreviewBinding, apply_occurrences
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project, load_project
+from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry
+from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
+from twobyteasr.glossary.studio_glossary_review import recover_review_edits, diff_occurrences
+from twobyteasr.studio.studio_text_tools import TextOccurrence, values_from_occurrences
+from twobyteasr.studio.studio_find_replace import FindReplaceDialog, TermAssociationDialog, PreviewBinding, apply_occurrences
 
 
 def library(*terms):
@@ -30,8 +30,8 @@ def project(*texts):
 
 def fake_model(monkeypatch,callback):
     import subtitle_core
-    import twobyteasr.asr_provider_snapshot as provider
-    import twobyteasr.polishing as polish
+    import twobyteasr.providers.asr_provider_snapshot as provider
+    import twobyteasr.subtitle_rules.polishing as polish
     monkeypatch.setattr(provider,'resolve_provider_snapshot',lambda *_a,**_kw:
         SimpleNamespace(public_identity=lambda:{'provider':'offline-test','model':'offline-test'},
             timeout_policy=SimpleNamespace(total=10)))
@@ -41,7 +41,7 @@ def fake_model(monkeypatch,callback):
 
 def test_no_cloud_preview_retains_current_text_and_reports_missing(monkeypatch):
     def forbidden(*_a,**_kw):raise AssertionError('local preview must not request provider')
-    import twobyteasr.asr_provider_snapshot as provider
+    import twobyteasr.providers.asr_provider_snapshot as provider
     monkeypatch.setattr(provider,'resolve_provider_snapshot',forbidden)
     p=project('还是在等奥特曼出结果','而且球球能奶自己')
     before=copy.deepcopy(p)
@@ -187,7 +187,7 @@ def test_empty_ui_missing_row_prefills_newcanonical_and_disables_apply(actual_st
 
 
 def test_association_preserves_distinct_ids_and_revision(actual_store):
-    from twobyteasr.terminology import snapshot_glossaries
+    from twobyteasr.glossary.terminology import snapshot_glossaries
     app=QApplication.instance() or QApplication([]);parent=QWidget()
     before=snapshot_glossaries(actual_store,['v'])
     form=TermAssociationDialog({'surface':'球球'},before,parent)

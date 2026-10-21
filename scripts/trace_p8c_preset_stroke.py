@@ -25,15 +25,15 @@ if str(ROOT) not in sys.path:
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_live_renderer import render_live_snapshot
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleStyle
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.style_recipe import route_recipe
-from twobyteasr.visual_design_graph import VisualDesignGraph, clean_subtitle_graph, compile_live_scene
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.runtime_trace import GLOBAL_STUDIO_TRACE
+from twobyteasr.rendering.advanced_live_renderer import render_live_snapshot
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleStyle
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.caption_style.style_recipe import route_recipe
+from twobyteasr.caption_design.visual_design_graph import VisualDesignGraph, clean_subtitle_graph, compile_live_scene
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 
 
 def _hash(value: object) -> str:

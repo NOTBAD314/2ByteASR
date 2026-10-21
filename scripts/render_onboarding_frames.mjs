@@ -51,8 +51,9 @@ try {
       for (let i = 0; i < 200; i += 1) {
         await new Promise((r) => setTimeout(r, 50));
         try {
-          const ready = await page.evaluate(() => document.readyState === 'complete' && typeof window.seek === 'function'
-            && location.search.includes('scene=') && document.fonts.status === 'loaded');
+          // tutorial.html takes ?op= (waiting for "scene=" there only ran into the 10 s limit).
+          const ready = await page.evaluate((p) => document.readyState === 'complete' && typeof window.seek === 'function'
+            && location.search.includes(p + '=') && document.fonts.status === 'loaded', param);
           if (ready) break;
         } catch {
           // still navigating

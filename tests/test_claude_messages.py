@@ -9,8 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import anthropic_messages as am
-from twobyteasr.provider_stream import StreamProtocolError
+from twobyteasr.providers import anthropic_messages as am
+from twobyteasr.providers.provider_stream import StreamProtocolError
 
 
 def sse(*events):
@@ -59,7 +59,7 @@ def posted(monkeypatch):
         def post(url, headers=None, json=None, stream=False, timeout=None):
             calls.append({"url": url, "headers": dict(headers or {}), "body": json})
             return response
-        from twobyteasr import network_policy
+        from twobyteasr.providers import network_policy
         monkeypatch.setattr(network_policy, "post", post)
         return calls
     return install
@@ -69,7 +69,7 @@ def posted(monkeypatch):
 
 
 def test_claude_is_an_api_key_service_with_the_messages_endpoint(monkeypatch):
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     spec = llm_config.AI_SERVICE_SPECS["claude"]
     assert spec["label"] == "Claude API" and spec["provider"] == "anthropic"
     assert spec["models"] == ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
@@ -89,7 +89,7 @@ def test_claude_is_an_api_key_service_with_the_messages_endpoint(monkeypatch):
 
 
 def test_settings_editor_maps_the_anthropic_host_to_claude():
-    from twobyteasr.ui import EndpointEditor
+    from twobyteasr.providers.endpoint_editor_ui import EndpointEditor
     assert EndpointEditor._service_for_settings("openai_compatible", "", "https://api.anthropic.com/v1") == "claude"
 
 
@@ -161,7 +161,7 @@ def test_stream_error_event_and_cut_stream():
                                                     (404, "not_found_error", "model_not_supported"),
                                                     (529, "overloaded_error", "server_error")])
 def test_http_errors_use_the_anthropic_error_type(posted, status, kind, category):
-    from twobyteasr.llm_adapter import LLMRequestError
+    from twobyteasr.providers.llm_adapter import LLMRequestError
     body = json.dumps({"type": "error", "error": {"type": kind, "message": "nope"}}).encode()
     posted(FakeResponse(status, body, "application/json", {"Retry-After": "7"}))
     endpoint = {"model": "claude-haiku-5-5", "api_key": "sk-ant-x", "url": "https://api.anthropic.com/v1/messages",
@@ -173,7 +173,7 @@ def test_http_errors_use_the_anthropic_error_type(posted, status, kind, category
 
 
 def test_provider_sends_a_messages_request_and_parses_json(posted):
-    from twobyteasr.ai_providers import OpenAICompatibleProvider
+    from twobyteasr.providers.ai_providers import OpenAICompatibleProvider
     calls = posted(FakeResponse(200, sse(*stream_events('{"ok": true, "text": "兔白字幕"}'))))
     endpoint = {"provider": "anthropic", "model": "claude-sonnet-5-5", "protocol": "anthropic_messages",
                 "api_key": "sk-ant-x", "url": "https://api.anthropic.com/v1/messages",
@@ -195,7 +195,7 @@ def test_provider_sends_a_messages_request_and_parses_json(posted):
 
 
 def test_missing_key_is_said_plainly(posted):
-    from twobyteasr.ai_providers import AIProviderError, OpenAICompatibleProvider
+    from twobyteasr.providers.ai_providers import AIProviderError, OpenAICompatibleProvider
     posted(FakeResponse(200, b""))
     provider = OpenAICompatibleProvider({"provider": "anthropic", "model": "claude-opus-5-5",
                                          "protocol": "anthropic_messages", "api_key": "",
@@ -206,7 +206,7 @@ def test_missing_key_is_said_plainly(posted):
 
 
 def test_model_list_uses_anthropic_headers_and_after_id(monkeypatch):
-    from twobyteasr import model_discovery, network_policy
+    from twobyteasr.providers import model_discovery, network_policy
     pages = [{"data": [{"id": "claude-opus-5-5", "max_input_tokens": 1_000_000, "max_tokens": 128_000,
                         "capabilities": {"image_input": {"supported": True}}}],
               "has_more": True, "last_id": "claude-opus-5-5"},

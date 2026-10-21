@@ -19,8 +19,8 @@ from PySide6.QtWidgets import QApplication
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.studio_project import load_project, save_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.projects.studio_project import load_project, save_project
 
 
 def main() -> int:

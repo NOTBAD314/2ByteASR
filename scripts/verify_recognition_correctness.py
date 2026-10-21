@@ -76,7 +76,7 @@ def main():
     os.environ['TWOBYTEASR_STARTUP_TRACE'] = str(output/'startup.jsonl')
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import load_project, save_project
+    from twobyteasr.projects.studio_project import load_project, save_project
     retained = load_project(original_files['source-project.2byteproj'])
     media_source = Path(retained.media.path)
     media_before = sha(media_source)

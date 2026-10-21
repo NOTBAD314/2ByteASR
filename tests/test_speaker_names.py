@@ -1,6 +1,6 @@
 import copy
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioSpeaker, StudioCue, save_project, load_project
-from twobyteasr.speaker_names import default_names
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioSpeaker, StudioCue, save_project, load_project
+from twobyteasr.projects.speaker_names import default_names
 
 
 def test_legacy_collision_does_not_merge_and_survives_reorder_reopen(tmp_path):
@@ -35,7 +35,7 @@ def test_legacy_recovery_alias_conflict_allocates_without_merging():
 
 
 def test_new_export_uses_persistent_names(tmp_path):
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
     p=SubtitleProject(media=StudioMedia(path=''), speakers=[StudioSpeaker('NEMO_01')],cues=[StudioCue('a',0,1000,'20 20',speaker_id='NEMO_01')])
     p.validate()
     artifacts=export_subtitle_artifacts(p,tmp_path,'test',SubtitleExportOptions(speaker_mode='per_speaker'))
@@ -50,7 +50,7 @@ def test_raw_backend_labels_never_identified_by_suffix():
 
 def test_new_tasks_start_at_zero_and_unknown_is_not_a_person():
     from types import SimpleNamespace
-    from twobyteasr.studio_project import project_from_runtime_cues
+    from twobyteasr.projects.studio_project import project_from_runtime_cues
     cues=[SimpleNamespace(start=i,end=i+1,text='20 20',speaker=raw) for i,raw in enumerate(['S01','S02','UNASSIGNED'])]
     p=project_from_runtime_cues('missing.wav',cues,generation_metadata={'speaker_recovery':{'processing':{'mode':'nemotron'}}})
     assert {s.id:s.name for s in p.speakers}=={'S01':'S00','S02':'S01','UNASSIGNED':'待确认'}

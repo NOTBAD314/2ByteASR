@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMovie, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.theme_concept_dialog import ThemeConceptDialog
+from twobyteasr.caption_design.theme_concept_dialog import ThemeConceptDialog
 
 
 @pytest.fixture(scope='module')
@@ -53,8 +53,8 @@ def test_autoplay_loop_click_seek_drag_and_keyboard(app,tmp_path,png):
 
 
 def test_live_theme_and_pending_to_ready(app,tmp_path,monkeypatch):
-    from twobyteasr.ui_theme import THEMES
-    import twobyteasr.theme_manager as tm
+    from twobyteasr.design.ui_theme import THEMES
+    import twobyteasr.design.theme_manager as tm
     d=ThemeConceptDialog([dict(id='A',name='处理中',pending=True)],{});d.show()
     assert not d.play_button.isEnabled()
     for key,t in THEMES.items():

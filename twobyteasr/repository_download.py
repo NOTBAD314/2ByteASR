@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote
 
-from twobyteasr.processes import main_python_executable, run_hidden_subprocess
-from twobyteasr.download_diagnostics import redact, category, require_isolated_download_path
+from twobyteasr.system.processes import main_python_executable, run_hidden_subprocess
+from twobyteasr.local_models.download_diagnostics import redact, category, require_isolated_download_path
 
 
 # AUTO: verified ModelScope copy, then the official host, then the third-party
@@ -134,6 +134,13 @@ def preparation_lock(path: Path, *, timeout: float = 1800):
 
 
 def _emit(prefix: str, payload: dict) -> None:
+    from twobyteasr.diagnostics.editor_diagnostics import install_worker
+    install_worker()
+    try:
+        from twobyteasr.diagnostics.event_bridge import legacy_event
+        legacy_event("download."+prefix.strip("[]").lower(), payload, module="download")
+    except ImportError:
+        pass
     print(f"{prefix} {json.dumps(redact(payload), ensure_ascii=False)}", flush=True)
 
 
@@ -486,7 +493,7 @@ def reuse_verified_from_other_sources(staging_root: Path, model_key: str, stagin
 
 
 def _download_model_locked(*, model_key, spec, destination, mode, staging_root, only_files=None):
-    from .model_download_cache import write_transaction, discard_published_staging
+    from .local_models.model_download_cache import write_transaction, discard_published_staging
     declared = spec.get('source_manifests') or {}
     for source in (SOURCE_ORDER if str(mode).upper() == 'AUTO' else (str(mode).upper(),)):
         payload = declared.get('modelscope' if source == 'MODELSCOPE' else 'hf') or {}

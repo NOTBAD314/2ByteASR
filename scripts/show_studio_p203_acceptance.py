@@ -15,14 +15,14 @@ sys.path.insert(0, str(ROOT))
 
 import moss_firered_pipeline  # noqa: E402
 import subtitle_core  # noqa: E402
-import twobyteasr.ui as ui  # noqa: E402
-from twobyteasr.service import MediaResult, QueueResult  # noqa: E402
-from twobyteasr.studio_project import (  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
+from twobyteasr.recognition.service import MediaResult, QueueResult  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     load_project,
     project_archive_path,
     save_project,
 )
-from twobyteasr.studio_ui import ShortcutSettingsDialog  # noqa: E402
+from twobyteasr.studio.studio_ui import ShortcutSettingsDialog  # noqa: E402
 
 
 def main() -> int:

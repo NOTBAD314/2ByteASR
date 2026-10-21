@@ -17,13 +17,13 @@ def main():
         QT_SCALE_FACTOR='1',DASHSCOPE_API_KEY='sk-local-test-dummy',
         TWOBYTEASR_SEEK_CACHE_ROOT=str(args.seek_cache.resolve()))
     os.environ['TWOBYTEASR_SHORT_SMOKE']='1' if args.smoke else '0'
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     probe=run_hidden_subprocess([str(root/'tools/ffmpeg/bin/ffprobe.exe'),'-v','error','-show_streams','-show_format','-of','json',str(args.media.resolve())],
         purpose='short audit read-only metadata',timeout=10,capture_output=True,check=True)
     meta=json.loads(probe.stdout);video=next(s for s in meta['streams'] if s['codec_type']=='video')
     duration=round(float(meta['format']['duration'])*1000)
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue,VideoTransform,save_project
-    from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip,set_audio_master_mode,set_video_track_state
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,VideoTransform,save_project
+    from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip,set_audio_master_mode,set_video_track_state
     project=SubtitleProject(media=StudioMedia(path=str(args.media.resolve()),duration_ms=duration,width=video['width'],height=video['height']),
         cues=[StudioCue('p0-cue' if i==0 else f'p0-cue-{i}',i*30000,(i+1)*30000,'碰撞必须得做的特别好') for i in range(20)]);project.validate()
     asset=add_media_asset(project,args.media.resolve(),duration_ms=duration,
@@ -41,13 +41,13 @@ def main():
     if args.exe:
         run_hidden_subprocess([str(args.exe.resolve())],cwd=root,purpose='frozen short closeout',timeout=285,check=True)
     else:
-        from twobyteasr.studio_acceptance_audit import isolate_acceptance_settings,start_acceptance
+        from twobyteasr.acceptance.studio_acceptance_audit import isolate_acceptance_settings,start_acceptance
         isolate_acceptance_settings()
         from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import QTimer
         import subtitle_core
-        from twobyteasr.ui import MainWindow,_register_bundled_fonts,_app_font
-        from twobyteasr.theme_manager import apply_theme
+        from twobyteasr.app.ui import MainWindow,_register_bundled_fonts,_app_font
+        from twobyteasr.design.theme_manager import apply_theme
         app=QApplication([]);_register_bundled_fonts();app.setFont(_app_font());apply_theme('warm',app)
         window=MainWindow([],subtitle_core,object(),None);window.show()
         def enter():

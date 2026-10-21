@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr import llm_config
-from twobyteasr.llm_config import (
+from twobyteasr.providers import llm_config
+from twobyteasr.providers.llm_config import (
     ACTIVE_SERVICE_KEY,
     AI_SERVICE_SPECS,
     PROFILES_KEY,
@@ -22,7 +22,7 @@ from twobyteasr.llm_config import (
     resolved_service_values,
     update_active_profile,
 )
-from twobyteasr.settings import load_runtime_settings, save_runtime_settings
+from twobyteasr.storage.settings import load_runtime_settings, save_runtime_settings
 
 
 def _settings(models=None, **switches) -> dict:
@@ -190,7 +190,7 @@ def test_models_url_handles_gemini_openai_mount():
 
 
 def test_record_llm_invocation_writes_row_without_key(tmp_path, monkeypatch):
-    from twobyteasr import llm_adapter
+    from twobyteasr.providers import llm_adapter
 
     logs = tmp_path / "logs"
     monkeypatch.setattr(

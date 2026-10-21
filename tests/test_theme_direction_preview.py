@@ -4,7 +4,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from twobyteasr.theme_direction_preview import render_motion_preview
+from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
 
 
 def test_fully_transparent_movie_is_rejected_before_encoding(tmp_path):

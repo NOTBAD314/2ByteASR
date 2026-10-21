@@ -10,7 +10,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from twobyteasr import progress_model as model  # noqa: E402
+from twobyteasr.app import progress_model as model  # noqa: E402
 
 
 def test_phase_ranges_follow_the_real_step_count():
@@ -93,13 +93,13 @@ def test_proofread_results_replace_the_raw_preview_with_their_state():
 def _window():
     from PySide6.QtWidgets import QApplication
     import subtitle_core as legacy
-    from twobyteasr.ui import MainWindow
+    from twobyteasr.app.ui import MainWindow
     QApplication.instance() or QApplication([])
     return MainWindow([], legacy, object(), None)
 
 
 def _event(kind, **values):
-    from twobyteasr.service import PipelineEvent
+    from twobyteasr.recognition.service import PipelineEvent
     return PipelineEvent(kind=kind, timestamp="", job_id="", **values)
 
 
@@ -115,7 +115,7 @@ def _moss(phase, tokens, elapsed, last):
 
 def test_moss_run_stays_determinate_and_names_the_action():
     import time
-    from twobyteasr.progress_widgets import StageProgressBar
+    from twobyteasr.app.progress_widgets import StageProgressBar
     win = _window()
     try:
         win._active_job_id = ""
@@ -160,7 +160,7 @@ def test_moss_run_stays_determinate_and_names_the_action():
 
 def test_cancel_feedback_persists_and_the_end_closes_every_row():
     import time
-    from twobyteasr.service import CancellationToken
+    from twobyteasr.recognition.service import CancellationToken
     win = _window()
     try:
         win._active_job_id = ""

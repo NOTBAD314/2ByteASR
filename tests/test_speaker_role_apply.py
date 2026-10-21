@@ -6,9 +6,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr.speaker_organization import apply_new_project_policy
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
-from twobyteasr.speaker_recovery import (
+from twobyteasr.projects.speaker_organization import apply_new_project_policy
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.recognition.speaker_recovery import (
     apply_candidate_role,
     candidate_destination,
     candidate_snapshot,

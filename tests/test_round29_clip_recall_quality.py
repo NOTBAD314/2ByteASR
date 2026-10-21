@@ -21,9 +21,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 
-from twobyteasr.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
-from twobyteasr.studio_edit_sequence import HighlightCandidate
-from twobyteasr.studio_highlight_analyzer import (
+from twobyteasr.studio.studio_danmaku import aggregate_danmaku, parse_danmaku_xml
+from twobyteasr.timeline.studio_edit_sequence import HighlightCandidate
+from twobyteasr.studio.studio_highlight_analyzer import (
     _apply_ai_override,
     candidates_from_local,
     cluster_windows,
@@ -31,8 +31,8 @@ from twobyteasr.studio_highlight_analyzer import (
     merge_overlapping_candidates,
     transcript_window,
 )
-from twobyteasr.studio_highlight_ui import HighlightAssistantPanel
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_highlight_ui import HighlightAssistantPanel
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 
 def _app() -> QApplication:
@@ -90,7 +90,7 @@ def test_quiet_quality_window_admitted(tmp_path):
     rows += [(61 + i, "普通") for i in range(6)]            # w2: 6 条无反应
     document = parse_danmaku_xml(_xml(tmp_path / "quality.xml", rows))
     windows = aggregate_danmaku(document, window_ms=30_000, context=1)
-    from twobyteasr.studio_danmaku import local_spike_windows
+    from twobyteasr.studio.studio_danmaku import local_spike_windows
 
     picked = local_spike_windows(windows, min_spike=1.25, top_k=10)
     assert [item.start_ms for item in picked] == [0], "只有高质量窗口应被召回"
@@ -114,7 +114,7 @@ def test_gap_merge_nms_merges_fragments_not_events():
 
 
 def test_cluster_windows_groups_by_time_gap():
-    from twobyteasr.studio_danmaku import DanmakuWindow
+    from twobyteasr.studio.studio_danmaku import DanmakuWindow
 
     def window(start: int, end: int) -> DanmakuWindow:
         return DanmakuWindow(start, end, 1, 1, 1.0, 1.0, [], {}, 0.0)
@@ -229,7 +229,7 @@ def test_panel_ai_selection_persisted_and_emitted(tmp_path, monkeypatch):
     panel = HighlightAssistantPanel()
     store = QSettings(str(tmp_path / "clip.ini"), QSettings.Format.IniFormat)
     monkeypatch.setattr(panel, "_clip_settings", lambda: store)
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
 
     monkeypatch.setattr(
         GLOBAL_PROVIDER_REGISTRY, "models",
@@ -274,14 +274,14 @@ def test_analysis_note_surfaced_on_llm_fallback(tmp_path):
 # —— 2026-09-19 P1：簇级统计统一 + 本地回退诚实化 + 解释上下文存档 ——
 
 def test_cluster_stats_is_single_source_for_card_and_reason(tmp_path):
-    from twobyteasr.studio_danmaku import aggregate_danmaku
-    from twobyteasr.studio_highlight_analyzer import cluster_stats, discover_local_candidates, candidates_from_local
+    from twobyteasr.studio.studio_danmaku import aggregate_danmaku
+    from twobyteasr.studio.studio_highlight_analyzer import cluster_stats, discover_local_candidates, candidates_from_local
 
     rows = [(5 + i * 0.5, "哈哈哈哈" if i % 3 == 0 else "这是什么？") for i in range(40)]
     document = parse_danmaku_xml(_xml(tmp_path / "stats.xml", rows))
     windows = aggregate_danmaku(document, window_ms=10_000, context=1)
-    from twobyteasr.studio_danmaku import local_spike_windows
-    from twobyteasr.studio_highlight_analyzer import cluster_windows
+    from twobyteasr.studio.studio_danmaku import local_spike_windows
+    from twobyteasr.studio.studio_highlight_analyzer import cluster_windows
     spikes = local_spike_windows(windows, min_spike=1.25, top_k=10)
     stats = cluster_stats(cluster_windows(spikes)[0]) if spikes else {}
     assert stats
@@ -293,7 +293,7 @@ def test_cluster_stats_is_single_source_for_card_and_reason(tmp_path):
 
 
 def test_local_fallback_is_honest_not_fabricated(tmp_path):
-    from twobyteasr.studio_project import StudioSpeaker
+    from twobyteasr.projects.studio_project import StudioSpeaker
 
     project = SubtitleProject(media=StudioMedia(path="rec.flv", duration_ms=120_000))
     project.speakers.append(StudioSpeaker(id="S01", name="主播"))
@@ -324,8 +324,8 @@ def test_local_fallback_is_honest_not_fabricated(tmp_path):
 
 
 def test_replace_candidates_preserves_user_status():
-    from twobyteasr.studio_edit_commands import replace_candidates_command
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.timeline.studio_edit_commands import replace_candidates_command
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
 
     project = SubtitleProject(media=StudioMedia(path="r.flv", duration_ms=600_000))
     old = HighlightCandidate("old-1", "旧", 100_000, 160_000, 0.8, status="accepted")

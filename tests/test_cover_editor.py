@@ -10,8 +10,8 @@ from PySide6.QtGui import QFontDatabase, QImage, QInputMethodEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.cover_document import CoverDocument
-from twobyteasr.cover_render import CoverRenderer, export_image, read_image_bytes, text_font
+from twobyteasr.cover.cover_document import CoverDocument
+from twobyteasr.cover.cover_render import CoverRenderer, export_image, read_image_bytes, text_font
 
 
 @pytest.fixture(scope='module')
@@ -46,7 +46,7 @@ def test_portable_save_originals_restore_and_atomic_failure(tmp_path, app, monke
     assert loaded.layer(title.id).text == title.text
     assert loaded.source == doc.source
     assert loaded.signature() == doc.signature()
-    import twobyteasr.cover_document as module
+    import twobyteasr.cover.cover_document as module
     monkeypatch.setattr(module.os, 'replace', lambda *args: (_ for _ in ()).throw(PermissionError('readonly')))
     loaded.layer(title.id).text = '不能覆盖原件'
     with pytest.raises(PermissionError):
@@ -121,7 +121,7 @@ def test_missing_font_preserves_original_choice(app):
 
 
 def test_outline_does_not_eat_heavy_fill(app):
-    from twobyteasr.cover_render import render_text
+    from twobyteasr.cover.cover_render import render_text
     doc = CoverDocument(width=1200, height=600)
     layer = doc.add_text('重字重保持完整')
     layer.style.update(size=96, stroke=0, shadow=False)
@@ -137,7 +137,7 @@ def test_outline_does_not_eat_heavy_fill(app):
 
 
 def test_real_drag_resize_zoom_and_independent_undo(app):
-    from twobyteasr.cover_canvas import CoverSession, CoverView
+    from twobyteasr.cover.cover_canvas import CoverSession, CoverView
     doc = CoverDocument(width=640, height=360)
     layer = doc.add_image(png(), '贴图.png', (180, 100))
     session = CoverSession(doc)
@@ -170,7 +170,7 @@ def test_real_drag_resize_zoom_and_independent_undo(app):
 
 
 def test_ime_delete_select_all_and_text_undo_stay_in_cover(app):
-    from twobyteasr.cover_editor import CoverEditor
+    from twobyteasr.cover.cover_editor import CoverEditor
     editor = CoverEditor(CoverDocument(width=640, height=360))
     editor.show();app.processEvents();editor.add_text();app.processEvents()
     title_id = next(iter(editor.session.selected))
@@ -194,7 +194,7 @@ def test_ime_delete_select_all_and_text_undo_stay_in_cover(app):
 def test_close_cancel_and_failed_save_preserve_document(app, tmp_path):
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QMessageBox
-    from twobyteasr.cover_editor import CoverEditor
+    from twobyteasr.cover.cover_editor import CoverEditor
     editor = CoverEditor(CoverDocument(width=640, height=360))
     editor.show();editor.add_text();app.processEvents()
     signature = editor.session.document.signature()

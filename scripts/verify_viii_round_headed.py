@@ -49,9 +49,9 @@ def main() -> int:
     project_copy.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(PROJECT_SRC, project_copy)
 
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.studio_timeline import WaveformTimeline
-    from twobyteasr.waveform_cache import WaveformCache
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
+    from twobyteasr.playback.waveform_cache import WaveformCache
 
     project = load_project(project_copy)
     timeline = WaveformTimeline()
@@ -126,7 +126,7 @@ def main() -> int:
         # 绘制端口径：paint 用 canonical（原始 FLV）路径 + 像素密度 LOD 查询；
         # 修复前 collect/解码走 optimized 身份、paint 查 canonical 身份，
         # 送达计数再高也画不上——这里必须查得到才算真显示。
-        from twobyteasr.video_filmstrip import filmstrip_lod_ms
+        from twobyteasr.studio.video_filmstrip import filmstrip_lod_ms
         original_source = str(project.media.path)
         content_px = max(1, timeline._content_right() - timeline.TRACK_HEADER_WIDTH)
         pps = content_px * 1000 / max(1, duration)
@@ -170,7 +170,7 @@ def main() -> int:
     check("C2 字幕轨独立调高", timeline._speaker_track_height() == 110, f"subtitle={timeline._speaker_track_height()}")
     rail = timeline._height_rail
     rail_grab = rail.grab(); rail_grab.save(str(OUT / "C3_rail_warm.png"))
-    from twobyteasr import theme_manager
+    from twobyteasr.design import theme_manager
     theme_manager.apply_application_theme(app=app, key="grape")
     app.processEvents()
     snapshot("C4_theme_grape")

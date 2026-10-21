@@ -1,6 +1,6 @@
 import gc
 from PySide6.QtWidgets import QApplication
-from twobyteasr.playback_gc_budget import PlaybackGcBudget
+from twobyteasr.playback.playback_gc_budget import PlaybackGcBudget
 
 APP = QApplication.instance() or QApplication([])
 
@@ -58,3 +58,40 @@ def test_unmeasurable_memory_and_pre_disabled_gc_are_not_overridden():
         assert not budget.held and not gc.isenabled()
         budget.close()
     finally: gc.enable()
+
+
+def test_pause_does_not_repeat_a_full_collection_that_already_ran(monkeypatch):
+    collections = [12]
+    forced = []
+    monkeypatch.setattr(gc, 'get_stats', lambda: [{}, {}, {'collections': collections[0]}])
+    monkeypatch.setattr(gc, 'collect', lambda generation=2: forced.append(generation))
+    before = gc.get_threshold()
+    budget = PlaybackGcBudget(memory_reader=lambda: 1000)
+    try:
+        budget.set_playing(True)
+        budget.set_playing(False)
+        collections[0] += 1  # Normal automatic GC ran after its policy was restored.
+        budget.idle_collect.stop()
+        budget._collect_paused()
+        assert forced == []
+        assert gc.get_threshold() == before and gc.isenabled()
+    finally:
+        budget.close()
+
+
+def test_open_editor_is_not_idle_for_an_extra_forced_collection(monkeypatch):
+    forced = []
+    monkeypatch.setattr(gc, 'collect', lambda generation=2: forced.append(generation))
+    before = gc.get_threshold()
+    budget = PlaybackGcBudget(memory_reader=lambda: 1000)
+    budget.busy = lambda: True
+    try:
+        budget.set_playing(True)
+        budget.set_playing(False)
+        budget.idle_collect.stop()
+        budget._collect_paused()
+        assert forced == []
+        # The fix must not suspend automatic collection while editing.
+        assert gc.get_threshold() == before and gc.isenabled()
+    finally:
+        budget.close()

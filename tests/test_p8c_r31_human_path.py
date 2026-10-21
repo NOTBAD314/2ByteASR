@@ -10,8 +10,8 @@ import pytest
 from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import llm_config
-from twobyteasr.llm_config import (
+from twobyteasr.providers import llm_config
+from twobyteasr.providers.llm_config import (
     delete_api_key_for,
     read_api_key,
 )
@@ -94,7 +94,7 @@ def test_clear_falls_back_to_environment_key(monkeypatch):
 
 
 def test_endpoint_editor_key_states(tmp_path):
-    from twobyteasr.ui import EndpointEditor
+    from twobyteasr.app.ui import EndpointEditor
 
     _app()
     settings = {"models": {
@@ -124,7 +124,7 @@ def test_endpoint_editor_key_states(tmp_path):
 
 
 def test_runtime_probe_path_resolves_source_layout():
-    from twobyteasr.runtime_registry import runtime_probe_path
+    from twobyteasr.system.runtime_registry import runtime_probe_path
 
     resolved = runtime_probe_path()
     assert resolved, "probe locator must find environment_probe.py"
@@ -132,7 +132,7 @@ def test_runtime_probe_path_resolves_source_layout():
 
 
 def test_environment_probe_missing_returns_structured_failure(monkeypatch, tmp_path):
-    from twobyteasr import environment as env
+    from twobyteasr.system import environment as env
 
     monkeypatch.setattr(env, "probe_script_path", lambda: "")
     result = env._run_probe_process("main", {"python": "3.10", "packages": {}})
@@ -155,7 +155,7 @@ def _pixmap_with(color: str | None, size: int = 120) -> QPixmap:
 
 
 def test_count_stroke_pixels_counts_canonical_black():
-    from twobyteasr.studio_ui import _count_stroke_pixels
+    from twobyteasr.studio.studio_ui import _count_stroke_pixels
 
     pixmap = _pixmap_with("#ff000000")
     assert _count_stroke_pixels(pixmap, ["#ff000000"]) > 60
@@ -171,7 +171,7 @@ class _SnapshotStub:
 def test_parity_gate_blocks_transparent_fidelity_stroke():
     from types import SimpleNamespace
 
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     snapshot = _SnapshotStub([{"color": "#ff000000", "width": 20.0}])
     live = _pixmap_with("#ff000000")
@@ -191,7 +191,7 @@ def test_parity_gate_blocks_transparent_fidelity_stroke():
 def test_parity_gate_skips_when_no_stroke_requested():
     from types import SimpleNamespace
 
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     snapshot = _SnapshotStub([{"color": "#ff000000", "width": 0.0}])
     gate = SimpleNamespace(

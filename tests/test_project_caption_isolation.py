@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from PySide6.QtWidgets import QApplication
-from twobyteasr.studio_video_canvas import MpvCanvas
-from twobyteasr.studio_mpv import ADVANCED_OVERLAY_ID
-from twobyteasr.studio_live_canvas import AdvancedLiveCanvas
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
+from twobyteasr.playback.studio_mpv import ADVANCED_OVERLAY_ID
+from twobyteasr.rendering.studio_live_canvas import AdvancedLiveCanvas
 from PySide6.QtGui import QPixmap, QImage
 
 

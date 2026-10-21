@@ -16,7 +16,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 # The idle picture of each card: a moment that already tells the story.
-STILL_AT = {'local': 0.25, 'cloud': 0.66, 'light': 0.8, 'apple': 0.9}
+STILL_AT = {'local': 0.25, 'cloud': 0.8, 'light': 0.8, 'apple': 0.9}
 
 
 def pack(frames_dir: Path, fps: int = 24, subdir: str = '') -> None:

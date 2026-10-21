@@ -4,11 +4,11 @@ import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
 
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, load_project
-from twobyteasr.studio_media_pool import add_media_asset, create_video_track, add_video_clip
-from twobyteasr.studio_edit_sequence import sequence_of, projected_cues, timeline_duration_ms
-from twobyteasr.studio_clip_edit import clip_edit_command, lane_gap
-from twobyteasr.clip_time_mapper import project_to_source
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, save_project, load_project
+from twobyteasr.timeline.studio_media_pool import add_media_asset, create_video_track, add_video_clip
+from twobyteasr.timeline.studio_edit_sequence import sequence_of, projected_cues, timeline_duration_ms
+from twobyteasr.timeline.studio_clip_edit import clip_edit_command, lane_gap
+from twobyteasr.timeline.clip_time_mapper import project_to_source
 
 
 @pytest.fixture(scope='module', autouse=True)
@@ -93,7 +93,7 @@ def test_move_split_trim_undo_reopen(tmp_path, lane):
 
 def test_q_30min_w_50min_and_io(tmp_path):
     p = project()
-    from twobyteasr.studio_runtime_state import state_for
+    from twobyteasr.projects.studio_runtime_state import state_for
     runtime = state_for(p)
     original = copy.deepcopy(p.cues)
     seq = sequence_of(p)
@@ -124,7 +124,7 @@ def test_gap_local_scope_and_nonripple_delete(tmp_path):
     with pytest.raises(ValueError, match='在所选空隙内有素材'):
         edit(p,'V1','gap',start=0,end=1800000)
     assert p.to_dict() == before
-    from twobyteasr.studio_selection import ClipSelection, delete_selection_command
+    from twobyteasr.timeline.studio_selection import ClipSelection, delete_selection_command
     delete_selection_command(p, ClipSelection(video_ids={clip(p,lane).id})).redo()
     command = edit(p,'V1','gap',start=0,end=1800000)
     assert (clip(p).timeline_in_ms,clip(p).source_in_ms) == (0,1800000)
@@ -212,7 +212,7 @@ def test_fractional_rate_repeated_edits_keep_endpoints(tmp_path,action):
 
 def test_delete_locked_caption_io_and_source_ownership():
     from types import SimpleNamespace
-    from twobyteasr.studio_track_delete import DeleteTrackCommand
+    from twobyteasr.timeline.studio_track_delete import DeleteTrackCommand
     p=project();edit(p,'V1','trim',start=0,end=10000)
     p.cues=[StudioCue('bound',1000,2000,'A ONLY',speaker_id='S1')]
     edit(p,'V1','split',time_ms=5000)
@@ -229,7 +229,7 @@ def test_delete_locked_caption_io_and_source_ownership():
 
 
 def test_mapper_split_undo_returns_same_source_instance():
-    from twobyteasr.studio_sequence_mapper import map_playhead_between_sequences
+    from twobyteasr.timeline.studio_sequence_mapper import map_playhead_between_sequences
     p=project();before=copy.deepcopy(sequence_of(p))
     edit(p,'V1','split',time_ms=5000)
     mapped=map_playhead_between_sequences(sequence_of(p),before,7000)
@@ -237,7 +237,7 @@ def test_mapper_split_undo_returns_same_source_instance():
 
 
 def test_gap_preserves_unlinked_music_and_independent_caption():
-    from twobyteasr.studio_project import AudioTrack,AudioClip
+    from twobyteasr.projects.studio_project import AudioTrack,AudioClip
     p=project();add_v2(p)
     edit(p,'V1','trim',start=0,end=5000)
     p.generation_metadata['timeline_recognition']={'sequence':copy.deepcopy(sequence_of(p).to_dict())}

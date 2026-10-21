@@ -1,8 +1,8 @@
 import copy
 import jsonschema
-from twobyteasr.cli_schema import re2_schema
-from twobyteasr.theme_metadata import NAME_SCHEMA
-from twobyteasr.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA,ThemeLedger
+from twobyteasr.providers.cli_schema import re2_schema
+from twobyteasr.caption_design.theme_metadata import NAME_SCHEMA
+from twobyteasr.caption_design.caption_creative_pipeline import AUTHORED_OUTPUT_SCHEMA,ThemeLedger
 
 def test_name_projection_retains_empty_space_and_control_rejection():
     original=copy.deepcopy(NAME_SCHEMA);projected=re2_schema(original)
@@ -16,14 +16,14 @@ def test_full_authored_schema_no_native_lookahead_and_local_url_policy_kept():
     original=copy.deepcopy(AUTHORED_OUTPUT_SCHEMA)
     assert '(?!' not in json.dumps(re2_schema(original))
     assert original==AUTHORED_OUTPUT_SCHEMA
-    from twobyteasr.web_theme import sanitize_css
+    from twobyteasr.caption_design.web_theme import sanitize_css
     import pytest
     with pytest.raises(ValueError):sanitize_css('.x{background:url(https://example.com/a.png)}',section='cue')
 
 
 def test_projection_delegates_negation_without_rejecting_valid_svg_texture():
-    from twobyteasr.cli_schema import request_schema
-    from twobyteasr.authored_theme_contract import CSS_SCHEMA
+    from twobyteasr.providers.cli_schema import request_schema
+    from twobyteasr.caption_design.authored_theme_contract import CSS_SCHEMA
     projected, receipt = request_schema(CSS_SCHEMA)
     assert receipt['local_only_constraints'] == []
     assert jsonschema.Draft202012Validator(projected).is_valid('.x{color:#fff}')
@@ -34,7 +34,7 @@ def test_projection_delegates_negation_without_rejecting_valid_svg_texture():
 
 def test_invalid_schema_is_rejected_before_provider_process():
     import pytest
-    from twobyteasr.cli_schema import request_schema, preflight_request_schema
+    from twobyteasr.providers.cli_schema import request_schema, preflight_request_schema
     with pytest.raises(ValueError):preflight_request_schema({'pattern':'(?!unsafe)'})
     with pytest.raises(Exception):request_schema({'type':'string','pattern':'['})
     for pattern in (r'(?<=x)y', r'(x)\1', r'(?P<name>x)'):

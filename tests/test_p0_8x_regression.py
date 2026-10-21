@@ -33,7 +33,7 @@ def duration_of(path: Path) -> float:
 
 def test_proxy_rescale_survives_time_base_mismatch(tmp_path):
     """输入/输出 time_base 不同（制造 1/1000 与 1/90000 档）折叠后时长不变。"""
-    from twobyteasr.avsync import AVSyncMap, TimestampGap, build_continuous_proxy
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap, build_continuous_proxy
 
     src = tmp_path / "holed.mkv"
     run_ffmpeg(
@@ -72,7 +72,7 @@ def test_proxy_rescale_survives_time_base_mismatch(tmp_path):
 
 def test_duration_ratio_gate_rejects_collapsed_proxy(tmp_path):
     """时长塌缩（8x=0.125 比例）的代理必须被采用门拒绝。"""
-    from twobyteasr.avsync import validate_continuous_proxy
+    from twobyteasr.playback.avsync import validate_continuous_proxy
 
     collapsed = tmp_path / "continuous.mkv"
     run_ffmpeg(
@@ -91,8 +91,8 @@ def test_content_domain_media_bypasses_gap_map(tmp_path):
     """§6：PROJECT 域媒体（proxy）绝不再过 source↔content 转换。"""
     from PySide6.QtWidgets import QApplication
     from tests.test_round42_studio_recognition import _page
-    from twobyteasr.avsync import AVSyncMap, TimestampGap
-    from twobyteasr import indexed_media as indexed_media_module
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap
+    from twobyteasr.media import indexed_media as indexed_media_module
 
     app = QApplication.instance() or QApplication([])
     monkeypatch = _Monkey()
@@ -143,7 +143,7 @@ class _Monkey:
 def test_seek_invalid_mapping_never_falls_back_to_zero(tmp_path):
     from PySide6.QtWidgets import QApplication
     from tests.test_round42_studio_recognition import _page
-    from twobyteasr.avsync import AVSyncMap, TimestampGap
+    from twobyteasr.playback.avsync import AVSyncMap, TimestampGap
 
     app = QApplication.instance() or QApplication([])
     page = _page(_Monkey(), tmp_path)

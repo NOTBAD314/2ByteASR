@@ -10,19 +10,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_live_renderer import (
+from twobyteasr.rendering.advanced_live_renderer import (
     composite_live_scene_layers,
     composition_pivot_for_snapshot,
     render_live_layers,
     render_live_snapshot,
 )
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.style_recipe import (
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_style.style_recipe import (
     MOTION_SOURCE_VISUAL_GRAPH,
     motion_mode,
     motion_source,
 )
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.visual_design_graph import (
     COORDINATE_SPACE_SUBTITLE_LOCAL,
     COORDINATE_SPACE_TEXT,
     CompiledLiveScene,
@@ -37,7 +37,7 @@ from twobyteasr.visual_design_graph import (
     style_recipe_from_graph,
     visual_composition_bounds,
 )
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app():
@@ -75,13 +75,13 @@ def test_p74d_apply_recipe_keeps_visual_graph_and_motion_hash(tmp_path):
     assert payload["motion"]["origin"] == "visual_graph"
     assert payload["motion"]["graph"]["tracks"]
     restored = style_recipe_from_graph(
-        __import__("twobyteasr.visual_design_graph", fromlist=["VisualDesignGraph"]).VisualDesignGraph.from_dict(
+        __import__("twobyteasr.caption_design.visual_design_graph", fromlist=["VisualDesignGraph"]).VisualDesignGraph.from_dict(
             payload["visualGraph"]
         )
     )
     assert restored.visual_graph["motionGraph"]["tracks"]
     assert graph.stable_hash() == __import__(
-        "twobyteasr.visual_design_graph", fromlist=["VisualDesignGraph"]
+        "twobyteasr.caption_design.visual_design_graph", fromlist=["VisualDesignGraph"]
     ).VisualDesignGraph.from_dict(payload["visualGraph"]).stable_hash()
 
 
@@ -94,7 +94,7 @@ def test_p74d_snapshot_keeps_graph_motion_source(tmp_path):
     assert snapshot.style_recipe["visualGraph"]["motionGraph"]["tracks"]
     assert (
         graph.stable_hash()
-        == __import__("twobyteasr.visual_design_graph", fromlist=["VisualDesignGraph"]).VisualDesignGraph.from_dict(
+        == __import__("twobyteasr.caption_design.visual_design_graph", fromlist=["VisualDesignGraph"]).VisualDesignGraph.from_dict(
             snapshot.style_recipe["visualGraph"]
         ).stable_hash()
     )
@@ -113,7 +113,7 @@ def test_p74d_card_and_applied_share_compile_live_scene(tmp_path):
 
 def test_p74d_graph_motion_keeps_live_owner_while_paused(tmp_path):
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     project, _graph, _recipe = _project_with_graph(tmp_path)
     page = SubtitleStudioPage()
@@ -127,8 +127,8 @@ def test_p74d_graph_motion_keeps_live_owner_while_paused(tmp_path):
 
 
 def test_p74d_halftone_stays_near_text_bounds(tmp_path):
-    from twobyteasr.visual_design_graph import comic_burst_graph
-    from twobyteasr.visual_snapshot import build_visual_cue_snapshot as build
+    from twobyteasr.caption_design.visual_design_graph import comic_burst_graph
+    from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot as build
 
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"x")
@@ -155,7 +155,7 @@ def test_p74d_halftone_stays_near_text_bounds(tmp_path):
 
 
 def test_p74d_weak_motion_detector_repairs_named_glitch():
-    from twobyteasr.visual_design_graph import VisualDesignGraph, TextLayer, PanelLayer, MotionGraph, MotionTrack, MotionKeyframe
+    from twobyteasr.caption_design.visual_design_graph import VisualDesignGraph, TextLayer, PanelLayer, MotionGraph, MotionTrack, MotionKeyframe
 
     weak = VisualDesignGraph(
         name="Glitch 方案",
@@ -178,7 +178,7 @@ def test_p74d_weak_motion_detector_repairs_named_glitch():
 
 
 def test_p74d_effect_signatures_differ_across_golden_families():
-    from twobyteasr.visual_design_graph import comic_burst_graph, streamer_gaming_graph
+    from twobyteasr.caption_design.visual_design_graph import comic_burst_graph, streamer_gaming_graph
 
     signatures = {
         effect_signature(glitch_graph()),
@@ -190,8 +190,8 @@ def test_p74d_effect_signatures_differ_across_golden_families():
 
 def test_p74d_add_track_button_creates_visible_v2_a2(tmp_path, monkeypatch):
     _app()
-    from twobyteasr.studio_project import save_project
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.projects.studio_project import save_project
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     media = tmp_path / "one.mp4"
     media.write_bytes(b"mp4")
@@ -227,7 +227,7 @@ def test_p74d_add_track_button_creates_visible_v2_a2(tmp_path, monkeypatch):
 
 def test_p74d_non_primary_ingest_does_not_hide_video(tmp_path, monkeypatch):
     _app()
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     media = tmp_path / "one.mp4"
     media.write_bytes(b"mp4")
@@ -298,8 +298,8 @@ def test_p74d_applied_compositor_pivots_on_subtitle_not_frame_center(tmp_path):
 
 def test_p74d_motion_inspector_shows_graph_motion_not_none(tmp_path, monkeypatch):
     _app()
-    from twobyteasr.studio_project import save_project
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.projects.studio_project import save_project
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     media = tmp_path / "clip.mp4"
     media.write_bytes(b"mp4")
@@ -321,44 +321,10 @@ def test_p74d_motion_inspector_shows_graph_motion_not_none(tmp_path, monkeypatch
     page.deleteLater()
 
 
-def test_p74d_applied_graph_motion_plays_until_the_motion_page_overrides_it(tmp_path, monkeypatch):
-    # 0.8.0: the compat pop stored beside an AI graph recipe replaced the
-    # authored tracks in preview and export (snapshot) and in the 动效 page.
-    _app()
-    from twobyteasr.motion_application import motion_command
-    from twobyteasr.studio_project import save_project
-    from twobyteasr.studio_ui import SubtitleStudioPage
-
-    project, _graph, recipe = _project_with_graph(tmp_path)
-    path = save_project(project, tmp_path / "demo.2byteproj")
-    page = SubtitleStudioPage()
-    monkeypatch.setattr(page.video, "load", lambda *_a, **_k: None)
-    monkeypatch.setattr(page, "_generate_waveform", lambda *_a, **_k: None)
-    monkeypatch.setattr(page, "_generate_project_waveforms", lambda *_a, **_k: None)
-    page.open_project(path)
-    page.selected_cue_id = "cue-1"
-    assert page._apply_style_recipe("cue-1", recipe)
-    cue = page.project.cues[0]
-    assert page.project.effects[cue.effect_id]["entry"]["type"] == "pop"
-    authored = page.project.style_recipes[cue.style_id]["visualGraph"]["motionGraph"]["tracks"]
-    snapshot = build_visual_cue_snapshot(page.project, "cue-1", width=640, height=360)
-    assert snapshot.motion_recipe["graph"]["tracks"] == authored
-
-    command = motion_command(page.project, ["cue-1"], motion={"entry": {"type": "fade", "duration": 240}, "exit": {"type": "none"}})
-    page.undo_stack.push(command)
-    page._load_style_inspector()
-    assert page.effect_preset.currentData() == "fade"
-    assert page.graph_motion_summary.isHidden()
-    snapshot = build_visual_cue_snapshot(page.project, "cue-1", width=640, height=360)
-    assert [track["property"] for track in snapshot.motion_recipe["graph"]["tracks"]] == ["opacity"]
-    page.close_page()
-    page.deleteLater()
-
-
 def test_p74d_short_timeline_does_not_stack_v2_on_v1(tmp_path, monkeypatch):
     _app()
-    from twobyteasr.studio_project import save_project
-    from twobyteasr.studio_ui import SubtitleStudioPage
+    from twobyteasr.projects.studio_project import save_project
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
     media = tmp_path / "one.mp4"
     media.write_bytes(b"mp4")
@@ -390,7 +356,7 @@ def test_p74d_short_timeline_does_not_stack_v2_on_v1(tmp_path, monkeypatch):
 
 
 def test_p74d_effect_families_and_readability_on_golden_graphs():
-    from twobyteasr.visual_design_graph import comic_burst_graph, streamer_gaming_graph
+    from twobyteasr.caption_design.visual_design_graph import comic_burst_graph, streamer_gaming_graph
 
     assert effect_family(glitch_graph()) == "GLITCH_DIGITAL"
     assert effect_family(comic_burst_graph()) == "COMIC_BURST"

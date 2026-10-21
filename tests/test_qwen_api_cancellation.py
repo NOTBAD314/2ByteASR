@@ -15,9 +15,9 @@ import time
 import pytest
 
 import subtitle_core  # noqa: F401
-from twobyteasr import asr as asr_mod
-from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-from twobyteasr.service import CancelledError, CancellationToken
+from twobyteasr.recognition import asr as asr_mod
+from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+from twobyteasr.recognition.service import CancelledError, CancellationToken
 
 
 class _FakeResponse:
@@ -92,7 +92,7 @@ def api_env(monkeypatch):
     monkeypatch.setattr(subtitle_core,'RUNTIME_SETTINGS',{'models':{
         'qwen_asr_api_provider':'custom','qwen_asr_api_protocol':'dashscope_multimodal',
         'qwen_asr_api_model':'fixture-unrelated-deployment','qwen_asr_api_url':'https://example.test/asr'}})
-    monkeypatch.setattr('twobyteasr.llm_config.read_asr_api_key',lambda *_:('fixture','test fixture'))
+    monkeypatch.setattr('twobyteasr.providers.llm_config.read_asr_api_key',lambda *_:('fixture','test fixture'))
 
 
 # ---------------------------------------------------------------- Case A：正常完成

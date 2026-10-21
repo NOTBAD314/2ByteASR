@@ -12,8 +12,8 @@ from PySide6.QtGui import QPalette, QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_media_commands import media_graph_command
-from twobyteasr.studio_media_pool import (
+from twobyteasr.timeline.studio_media_commands import media_graph_command
+from twobyteasr.timeline.studio_media_pool import (
     audio_master_track_id,
     add_media_asset,
     add_video_clip,
@@ -22,24 +22,24 @@ from twobyteasr.studio_media_pool import (
     set_audio_master_track,
     set_video_track_state,
 )
-from twobyteasr.studio_edit_commands import (
+from twobyteasr.timeline.studio_edit_commands import (
     razor_video_command,
     set_video_lock_command,
 )
-from twobyteasr.studio_edit_sequence import timeline_duration_ms
-from twobyteasr.studio_project import (
+from twobyteasr.timeline.studio_edit_sequence import timeline_duration_ms
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_runtime_state import DirtyDomain, state_for
-from twobyteasr.font_system import SystemFontEntry
-from twobyteasr.studio_theme import build_secondary_surface_qss
-from twobyteasr.studio_ui import LazyFontComboBox, SubtitleStudioPage
-from twobyteasr.style_presets import StylePresetStore
-from twobyteasr.studio_project import SubtitleStyle
-from twobyteasr.ui_theme import theme_definition
+from twobyteasr.projects.studio_runtime_state import DirtyDomain, state_for
+from twobyteasr.caption_style.font_system import SystemFontEntry
+from twobyteasr.design.studio_theme import build_secondary_surface_qss
+from twobyteasr.studio.studio_ui import LazyFontComboBox, SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import StylePresetStore
+from twobyteasr.projects.studio_project import SubtitleStyle
+from twobyteasr.design.ui_theme import theme_definition
 
 
 def _app() -> QApplication:
@@ -127,7 +127,7 @@ def test_font_popup_palette_tracks_theme_without_reenumerating_fonts(monkeypatch
         SystemFontEntry("Microsoft YaHei UI", ("Regular",)),
     )
     monkeypatch.setattr(
-        "twobyteasr.studio_font_combo.system_font_inventory",
+        "twobyteasr.caption_style.studio_font_combo.system_font_inventory",
         lambda: calls.append("inventory") or entries,
     )
     combo = LazyFontComboBox()
@@ -137,7 +137,7 @@ def test_font_popup_palette_tracks_theme_without_reenumerating_fonts(monkeypatch
     assert calls == ["inventory"]
 
     for key in ("warm", "plum", "lavender", "slate"):
-        monkeypatch.setattr("twobyteasr.theme_manager.theme_key", lambda value=key: value)
+        monkeypatch.setattr("twobyteasr.design.theme_manager.theme_key", lambda value=key: value)
         combo.refresh_theme_palette()
         theme = theme_definition(key)
         palette = combo.view().palette()
@@ -406,7 +406,7 @@ def test_source_transitions_use_one_actor_load_and_restore_muted_volume(tmp_path
     page.video._media_attached = True
     page.volume_slider.setValue(73)
     set_audio_master_track(project, track.id)
-    from twobyteasr.studio_media_pool import set_audio_master_mode
+    from twobyteasr.timeline.studio_media_pool import set_audio_master_mode
     set_audio_master_mode(project,'manual')
 
     page._sync_multitrack_preview_at(1_500)

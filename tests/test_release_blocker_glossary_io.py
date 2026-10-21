@@ -4,8 +4,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget
 import subtitle_core as legacy
-from twobyteasr import glossary_skill as gs
-from twobyteasr import glossary_skill_ui as ui
+from twobyteasr.glossary import glossary_skill as gs
+from twobyteasr.glossary import glossary_skill_ui as ui
 
 APP = QApplication.instance() or QApplication([])
 
@@ -43,7 +43,7 @@ def test_alias_failure_preserves_success_and_retries_only_missing(monkeypatch):
     assert legacy.add_learned_mapping("测试", "别称", "好词") is False
 
 def test_history_failure_preserves_old_bytes_and_reports_separately(tmp_path, monkeypatch):
-    import twobyteasr.cache as cache
+    import twobyteasr.recognition.cache as cache
     path = tmp_path / "history.json"
     path.write_text('{"sessions": []}', encoding="utf8")
     before = path.read_bytes()

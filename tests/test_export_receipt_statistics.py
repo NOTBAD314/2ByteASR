@@ -3,11 +3,11 @@ from dataclasses import replace
 
 import pytest
 
-from twobyteasr.studio_render import RenderJob
+from twobyteasr.exports.studio_render import RenderJob
 
 
 def test_container_metadata_is_cross_checked_against_real_bytes(tmp_path):
-    from twobyteasr.export_validation import completion_statistics
+    from twobyteasr.exports.export_validation import completion_statistics
     output = tmp_path / 'final.mp4'
     output.write_bytes(b'x' * 1000)
     metadata = {'format': {'duration': '2', 'bit_rate': '4000'},
@@ -27,7 +27,7 @@ def test_container_metadata_is_cross_checked_against_real_bytes(tmp_path):
 
 @pytest.mark.parametrize('duration', ['N/A', None, '0', '-1', 'nan', 'inf'])
 def test_unknown_duration_does_not_fabricate_bitrate(tmp_path, duration):
-    from twobyteasr.export_validation import completion_statistics
+    from twobyteasr.exports.export_validation import completion_statistics
     output = tmp_path / 'final.mp4'; output.write_bytes(b'x')
     result = completion_statistics(output, {'format': {'duration': duration, 'bit_rate': '6000000'}})
     assert result['average_bitrate_bps'] is None
@@ -35,7 +35,7 @@ def test_unknown_duration_does_not_fabricate_bitrate(tmp_path, duration):
 
 
 def test_receipt_is_shared_through_preparation_and_restarts_on_next_job(tmp_path, monkeypatch):
-    from twobyteasr import export_validation as receipts
+    from twobyteasr.exports import export_validation as receipts
     tick = iter([10.0, 12.4, 20.0, 23.0])
     monkeypatch.setattr(receipts.time, 'monotonic', lambda: next(tick))
     job = RenderJob('', '', str(tmp_path / 'final.mp4'), overwrite_existing=True)
@@ -58,7 +58,7 @@ def test_receipt_is_shared_through_preparation_and_restarts_on_next_job(tmp_path
 
 
 def test_failed_receipt_never_reuses_success_fields(tmp_path):
-    from twobyteasr.export_validation import record_completion
+    from twobyteasr.exports.export_validation import record_completion
     job = RenderJob('', '', '', completion_metadata={'elapsed_seconds': 50, 'streams': [{}]})
     @record_completion
     def render(job):
@@ -68,7 +68,7 @@ def test_failed_receipt_never_reuses_success_fields(tmp_path):
 
 
 def test_elapsed_rounding_preserves_tenths_and_carries_minutes():
-    from twobyteasr.export_success import elapsed_text
+    from twobyteasr.exports.export_success import elapsed_text
     assert elapsed_text(32.4) == '32.4 秒'
     assert elapsed_text(110.6) == '1 分 50.6 秒'
     assert elapsed_text(59.96) == '1 分 0.0 秒'
@@ -76,7 +76,7 @@ def test_elapsed_rounding_preserves_tenths_and_carries_minutes():
 
 
 def test_cancel_after_validation_preserves_existing_output(tmp_path):
-    from twobyteasr.export_validation import record_completion, publish_output
+    from twobyteasr.exports.export_validation import record_completion, publish_output
     final = tmp_path/'final.mp4'; final.write_bytes(b'previous verified output')
     staged = tmp_path/'staged.mp4'; staged.write_bytes(b'new validated output')
     job = RenderJob('', '', str(final))

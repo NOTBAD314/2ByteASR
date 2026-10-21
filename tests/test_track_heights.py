@@ -23,7 +23,7 @@ def app():
 
 @pytest.fixture
 def timeline(app):
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
 
     widget = WaveformTimeline()
     widget.resize(1600, 520)
@@ -43,7 +43,7 @@ def test_spare_height_grows_waveform_then_subtitles_and_stays_below(app):
     """2026-10-09 (M16): lanes start right under the ruler; spare height
     first makes the waveform easier to read (36 → 72), then steps the
     subtitle lanes up; what is left stays below the last lane."""
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
 
     widget = WaveformTimeline()
     try:

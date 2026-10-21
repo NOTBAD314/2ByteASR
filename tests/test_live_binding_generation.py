@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QPixmap, QColor
 from PySide6.QtWidgets import QApplication, QWidget
-from twobyteasr.studio_live_canvas import AdvancedLiveCanvas
-from twobyteasr.studio_advanced_flow import StudioAdvancedFlowMixin
+from twobyteasr.rendering.studio_live_canvas import AdvancedLiveCanvas
+from twobyteasr.studio.studio_advanced_flow import StudioAdvancedFlowMixin
 
 
 def test_repeated_binding_does_not_restore_initial_frame_after_animation():

@@ -9,10 +9,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twobyteasr import studio_ai
-from twobyteasr.art_direction import fallback_art_directions
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.visual_design_graph import victorian_mechanical_graph
+from twobyteasr.caption_design import studio_ai
+from twobyteasr.caption_design.art_direction import fallback_art_directions
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.caption_design.visual_design_graph import victorian_mechanical_graph
 
 
 def _project():

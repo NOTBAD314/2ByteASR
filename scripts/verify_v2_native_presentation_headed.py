@@ -15,7 +15,8 @@ def main():
         def __init__(self, *a, **kw):
             super().__init__(str(RUN/'qt.ini'), QSettings.Format.IniFormat)
     QtCore.QSettings = IsolatedSettings
-    from twobyteasr import settings, studio_project
+    from twobyteasr.storage import settings
+    from twobyteasr.projects import studio_project
     settings.stable_settings_root = lambda: RUN/'config'
     fixture_settings = RUN/'studio-settings.json'
     fixture_settings.write_text(json.dumps({'recent_projects': [], 'project_root': str(RUN/'projects'),
@@ -46,13 +47,13 @@ def main():
     from PySide6.QtGui import QImage
     import numpy as np
     import subtitle_core
-    from twobyteasr.ui import MainWindow, _register_bundled_fonts, _app_font
-    from twobyteasr.theme_manager import apply_theme
+    from twobyteasr.app.ui import MainWindow, _register_bundled_fonts, _app_font
+    from twobyteasr.design.theme_manager import apply_theme
     app = QApplication([])
     _register_bundled_fonts()
     app.setFont(_app_font())
     apply_theme('slate', app)
-    from twobyteasr.studio_ai import style_recipe_for_prompt
+    from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
     recipe = style_recipe_for_prompt('黄色到青色渐变字幕')
     recipe.engine = 'remotion'
     advanced_start = probe_ms + 12000
@@ -119,7 +120,7 @@ def main():
     page._toggle_playback()
     settle(2)
     record('paused-after')
-    from twobyteasr.studio_media_pool import update_video_clip_transform
+    from twobyteasr.timeline.studio_media_pool import update_video_clip_transform
     update_video_clip_transform(page.project, overlay_track['id'], clip['id'], {'opacity': .45})
     page._sync_video_compositor(page.timeline.playhead_ms)
     settle(1)

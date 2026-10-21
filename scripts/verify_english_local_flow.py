@@ -99,15 +99,15 @@ def build_speech(directory: Path) -> dict:
 
 
 def words(text: str) -> list[str]:
-    from twobyteasr.english_text import word_core
+    from twobyteasr.subtitle_rules.english_text import word_core
     return [core for core in (word_core(token) for token in str(text).split()) if core]
 
 
 def check_project(project_path: Path, reference: dict) -> dict:
-    from twobyteasr import english_segmentation as seg
-    from twobyteasr.english_text import RULES, display_length, word_core
-    from twobyteasr.language_rules import project_language
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.subtitle_rules import english_segmentation as seg
+    from twobyteasr.subtitle_rules.english_text import RULES, display_length, word_core
+    from twobyteasr.subtitle_rules.language_rules import project_language
+    from twobyteasr.projects.studio_project import load_project
     project = load_project(project_path)
     cues = sorted(project.cues, key=lambda cue: (cue.start_ms, cue.end_ms))
     texts = [cue.text for cue in cues]
@@ -174,8 +174,8 @@ def main() -> int:
     legacy.RUNTIME_SETTINGS.setdefault("subtitle_language", {}).update(recognition_language=args.language,
                                                                         output="original")
     legacy.configure_runtime_asr(models)
-    from twobyteasr.service import RunOptions, run_media_queue
-    from twobyteasr.speaker_strategy import resolve
+    from twobyteasr.recognition.service import RunOptions, run_media_queue
+    from twobyteasr.recognition.speaker_strategy import resolve
     options = RunOptions(settings_snapshot_json=json.dumps(legacy.RUNTIME_SETTINGS, ensure_ascii=False),
                          speaker_source=resolve(legacy.RUNTIME_SETTINGS), recognition_language=args.language,
                          subtitle_output="original")

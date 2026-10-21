@@ -20,7 +20,8 @@ def main():
     class IsolatedSettings(QSettings):
         def __init__(self, *a, **kw): super().__init__(str(run/'qt.ini'), QSettings.Format.IniFormat)
     QtCore.QSettings = IsolatedSettings
-    from twobyteasr import settings, studio_project
+    from twobyteasr.storage import settings
+    from twobyteasr.projects import studio_project
     settings.stable_settings_root = lambda: run/'config'
     pref = run/'studio-settings.json'
     pref.write_text(json.dumps({'recent_projects': [], 'project_root': str(run/'projects'),
@@ -38,8 +39,8 @@ def main():
     fixture = run/'fixture.2byteproj'; fixture.write_text(json.dumps(data, ensure_ascii=False), encoding='utf8')
     from PySide6.QtWidgets import QApplication
     import subtitle_core
-    from twobyteasr.ui import MainWindow, _register_bundled_fonts, _app_font
-    from twobyteasr.theme_manager import apply_theme
+    from twobyteasr.app.ui import MainWindow, _register_bundled_fonts, _app_font
+    from twobyteasr.design.theme_manager import apply_theme
     app = QApplication([]); _register_bundled_fonts(); app.setFont(_app_font()); apply_theme('slate', app)
     win = MainWindow([], subtitle_core, object(), None); win.resize(1600, 960); win.show()
     def settle(sec):

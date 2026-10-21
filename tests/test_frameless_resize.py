@@ -12,7 +12,7 @@ from PySide6.QtCore import QPoint  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import subtitle_core as legacy  # noqa: E402
-from twobyteasr.ui import MainWindow  # noqa: E402
+from twobyteasr.app.ui import MainWindow  # noqa: E402
 
 
 def test_frameless_resize_uses_strict_logical_edge_bands():

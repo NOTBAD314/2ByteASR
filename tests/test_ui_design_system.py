@@ -9,13 +9,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QScrollArea, QWidget  # noqa: E402
 
-from twobyteasr import ui_theme  # noqa: E402
-from twobyteasr.model_workshop import (  # noqa: E402
+from twobyteasr.design import ui_theme  # noqa: E402
+from twobyteasr.local_models.model_workshop import (  # noqa: E402
     ModelPickerPanel,
     ModelWorkshopPage,
     WORKSHOP_TOKENS,
 )
-from twobyteasr.ui import APP_QSS, MainWindow  # noqa: E402
+from twobyteasr.app.ui import APP_QSS, MainWindow  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,8 +59,8 @@ def test_workshop_wide_density_uses_reference_proportions():
     assert all(card.minimumHeight() == 176 for card in page._cards.values())
     # 2026-10-12: the sidebar is the column shared with Recognition History and
     # Term Library (one fixed width, zoom-scaled); the list and detail flex.
-    from twobyteasr.ui_navigation import SIDEBAR_WIDTH
-    from twobyteasr.ui_zoom import px
+    from twobyteasr.design.ui_navigation import SIDEBAR_WIDTH
+    from twobyteasr.app.ui_zoom import px
     assert page.sidebar.minimumWidth() == page.sidebar.maximumWidth() == px(SIDEBAR_WIDTH)
     assert page.detail.minimumWidth() < page.detail.maximumWidth()
     page.deleteLater()

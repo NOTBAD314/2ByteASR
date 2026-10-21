@@ -9,9 +9,9 @@ def main():
     root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root))
     source=Path(sys.argv[1]);out=source.parent/'previews';out.mkdir(exist_ok=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'))
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.theme_art_direction_v2 import preview_theme
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.theme_art_direction_v2 import preview_theme
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     from html import escape
     data=json.loads(source.read_text('utf8'));service=RendererService();cards=[]
     try:

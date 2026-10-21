@@ -4,7 +4,7 @@
 The Ed25519 private key is stored outside the repository, encrypted with
 Windows DPAPI for the current user (default:
 ``%USERPROFILE%\\.2byteasr-release\\update-signing-key.dpapi``).  Only the
-public key is embedded in ``twobyteasr/update_manifest.py``.
+public key is embedded in ``twobyteasr/app/update_manifest.py``.
 
     python scripts/release_signing.py generate
     python scripts/release_signing.py public
@@ -24,8 +24,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from twobyteasr.llm_config import _dpapi  # noqa: E402  (Windows DPAPI helper)
-from twobyteasr.update_manifest import (  # noqa: E402
+from twobyteasr.providers.llm_config import _dpapi  # noqa: E402  (Windows DPAPI helper)
+from twobyteasr.app.update_manifest import (  # noqa: E402
     TRUSTED_UPDATE_KEYS, key_id_for, sign_manifest, verify_manifest_signature,
 )
 

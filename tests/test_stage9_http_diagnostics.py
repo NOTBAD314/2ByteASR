@@ -5,8 +5,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from twobyteasr.asr_http_transport import complete
-from twobyteasr.llm_adapter import LLMRequestError
+from twobyteasr.providers.asr_http_transport import complete
+from twobyteasr.providers.llm_adapter import LLMRequestError
 
 
 @pytest.fixture
@@ -124,8 +124,8 @@ def test_truncation_keeps_batch_split_category_without_transport_retry(monkeypat
 def test_cli_exit_diagnostic_uses_owned_process_without_launch(monkeypatch):
     import io
     from types import SimpleNamespace
-    from twobyteasr import ai_providers
-    from twobyteasr.asr_provider_snapshot import classify_request_error
+    from twobyteasr.providers import ai_providers
+    from twobyteasr.providers.asr_provider_snapshot import classify_request_error
     process=SimpleNamespace(pid=1234,returncode=3,stdout=io.StringIO(''),stderr=io.StringIO('fixture exit'),poll=lambda:3)
     monkeypatch.setattr(ai_providers,'popen_hidden_subprocess',lambda *a,**k:process)
     provider=ai_providers.CLIProvider(model='fixture',executable='never-launched')

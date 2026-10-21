@@ -2,9 +2,9 @@
 from pathlib import Path
 import pytest
 
-from twobyteasr.platform_media import ffmpeg_tool
-from twobyteasr.processes import run_hidden_subprocess
-from twobyteasr.export_validation import validate_output
+from twobyteasr.system.platform_media import ffmpeg_tool
+from twobyteasr.system.processes import run_hidden_subprocess
+from twobyteasr.exports.export_validation import validate_output
 
 
 def encode(path, *, video_speed=1, audio_speed=1, vfr=False):
@@ -51,7 +51,7 @@ def test_short_audio_is_not_mistaken_for_fast_video(tmp_path):
 
 
 def test_render_job_never_publishes_accelerated_staged_video(tmp_path, monkeypatch):
-    from twobyteasr import studio_render
+    from twobyteasr.exports import studio_render
     broken = tmp_path / 'encoded-too-fast.mkv'
     ffmpeg = encode(broken, video_speed=2)
     output = tmp_path / 'delivered.mkv'

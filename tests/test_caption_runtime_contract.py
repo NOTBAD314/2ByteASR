@@ -5,13 +5,13 @@ import json
 import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QUndoStack
-from twobyteasr.studio_project import SubtitleProject,SubtitleStyle,StudioCue,StudioMedia,save_project,load_project
-from twobyteasr.studio_revisions import StudioRevisionStore
-from twobyteasr.ass_compiler import compile_ass,compile_ass_revision
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.resolved_caption_style import resolve_caption_style
-from twobyteasr.caption_arbitration import arbitrate,project_arbitration
-from twobyteasr.studio_commands import SetCueFieldsCommand,AdoptReviewCandidateCommand,MutationOrigin
+from twobyteasr.projects.studio_project import SubtitleProject,SubtitleStyle,StudioCue,StudioMedia,save_project,load_project
+from twobyteasr.projects.studio_revisions import StudioRevisionStore
+from twobyteasr.rendering.ass_compiler import compile_ass,compile_ass_revision
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.resolved_caption_style import resolve_caption_style
+from twobyteasr.recognition.caption_arbitration import arbitrate,project_arbitration
+from twobyteasr.timeline.studio_commands import SetCueFieldsCommand,AdoptReviewCandidateCommand,MutationOrigin
 
 MOSS='哦他有送球的他有送球的'
 FIRE='这还有送球的还有送球的'
@@ -72,7 +72,7 @@ def test_unsupported_rewrite_and_numbers_never_become_facts():
 
 
 def test_minimum_font_overflow_splits_data_into_consecutive_cues():
-    from twobyteasr.resolved_caption_style import split_overlong_caption_commands
+    from twobyteasr.caption_style.resolved_caption_style import split_overlong_caption_commands
     app=QApplication.instance() or QApplication([])
     p=project();text='这是一段非常长的字幕内容'*20;p.cues[0].text=text
     stack=QUndoStack();split_overlong_caption_commands(p,['c'],stack)

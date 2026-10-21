@@ -11,8 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import hardware, recognition_choices as choices
-from twobyteasr import macos_model_prepare as prepare
+from twobyteasr.system import hardware
+from twobyteasr.recognition import recognition_choices as choices
+from twobyteasr.local_models import macos_model_prepare as prepare
 
 APPLE = choices.HostProfile('darwin', 'arm64', False, True, False, True)
 INTEL_MAC = choices.HostProfile('darwin', 'x86_64', False, True, False, False)
@@ -95,7 +96,7 @@ def _darwin(monkeypatch, workshop, machine):
 
 @pytest.mark.parametrize('key', ['moss', 'firered'])
 def test_workshop_cards_are_downloadable_on_apple_silicon_and_named_for_the_gpu(monkeypatch, key):
-    from twobyteasr import model_workshop as workshop
+    from twobyteasr.local_models import model_workshop as workshop
     model = next(item for item in workshop.MODELS if item.key == key)
     page = SimpleNamespace(browser_role=model.role, runtime_settings={'models': {}}, _registry=None, _installed=set(),
                            _active_download_dialog=lambda download_key: None, _state_memo=None)
@@ -104,7 +105,7 @@ def test_workshop_cards_are_downloadable_on_apple_silicon_and_named_for_the_gpu(
     assert workshop.model_mode_text(model) == workshop.MAC_GPU_MODE
     # Files present but no prepared runtime: the card offers the repair, not "installed".
     page._installed = set(model.install_keys)
-    monkeypatch.setattr('twobyteasr.runtime_registry.resolve_runtime_python', lambda role, register=True: '')
+    monkeypatch.setattr('twobyteasr.system.runtime_registry.resolve_runtime_python', lambda role, register=True: '')
     assert workshop.ModelWorkshopPage._compute_model_state(page, model, model.role) == 'runtime_missing'
     _darwin(monkeypatch, workshop, 'x86_64')
     page._installed = set()
@@ -118,7 +119,7 @@ def test_workshop_cards_are_downloadable_on_apple_silicon_and_named_for_the_gpu(
 def test_moss_card_prepares_through_the_dedicated_app_child(monkeypatch, tmp_path):
     from PySide6.QtCore import QProcess
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import model_workshop as workshop
+    from twobyteasr.local_models import model_workshop as workshop
     app = QApplication.instance() or QApplication([])
     model = next(item for item in workshop.MODELS if item.key == 'moss')
     _darwin(monkeypatch, workshop, 'arm64')
@@ -144,7 +145,7 @@ def test_moss_card_prepares_through_the_dedicated_app_child(monkeypatch, tmp_pat
 
 def test_intel_mac_never_starts_a_moss_download(monkeypatch, tmp_path):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import model_workshop as workshop
+    from twobyteasr.local_models import model_workshop as workshop
     app = QApplication.instance() or QApplication([])
     model = next(item for item in workshop.MODELS if item.key == 'firered')
     _darwin(monkeypatch, workshop, 'x86_64')
@@ -194,7 +195,7 @@ def test_moss_source_is_copied_whole_without_bytecode_and_reused_when_unchanged(
 
 
 def test_moss_runtime_never_reuses_or_writes_into_a_foreign_environment(tmp_path, monkeypatch):
-    from twobyteasr import runtime_registry
+    from twobyteasr.system import runtime_registry
     root = _fake_root(tmp_path)
     managed = tmp_path / 'profile/runtimes'
     foreign = tmp_path / 'developer-venv/bin/python'
@@ -216,7 +217,8 @@ def test_moss_runtime_never_reuses_or_writes_into_a_foreign_environment(tmp_path
 
 @pytest.fixture
 def mac_prepare(tmp_path, monkeypatch):
-    from twobyteasr import runtime_paths, runtime_registry, repository_download, model_integrity
+    from twobyteasr import runtime_paths, repository_download, model_integrity
+    from twobyteasr.system import runtime_registry
     root = _fake_root(tmp_path)
     monkeypatch.setattr(prepare, 'sys', SimpleNamespace(platform='darwin'))
     monkeypatch.setattr(prepare.platform, 'machine', lambda: 'arm64')
@@ -428,7 +430,7 @@ def test_moss_role_uses_the_apple_gpu_probe_on_apple_silicon(monkeypatch):
                                                           ('firered', 'win32', False)])
 def test_firered_stage_probe_is_ready_on_a_mac_without_cuda(monkeypatch, model_id, platform_name, ready):
     # The first in-app Mac run skipped FireRed: "environment_not_ready:probe_failed" (no CUDA).
-    from twobyteasr import asr
+    from twobyteasr.recognition import asr
     payload = {'imports': ['torch', 'fireredasr2s.fireredasr2'], 'cuda_available': False, 'error': '',
                'platform': platform_name, 'mps_available': platform_name == 'darwin'}
     monkeypatch.setattr(asr.subprocess, 'run', lambda *a, **k: SimpleNamespace(

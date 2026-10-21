@@ -1,7 +1,7 @@
 from pathlib import Path
-from twobyteasr.advanced_renderer import _cache_overlay,_copy_verified_overlay
-from twobyteasr.studio_render import RenderJob
-from twobyteasr.studio_render_queue import QueuedRenderJob
+from twobyteasr.rendering.advanced_renderer import _cache_overlay,_copy_verified_overlay
+from twobyteasr.exports.studio_render import RenderJob
+from twobyteasr.exports.studio_render_queue import QueuedRenderJob
 
 
 def test_corrupted_overlay_is_a_cache_miss(tmp_path):

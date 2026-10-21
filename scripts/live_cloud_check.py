@@ -57,12 +57,12 @@ def main() -> int:
     sys.path.insert(0, str(ROOT))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     original = llm_config._read_secrets
     llm_config._read_secrets = lambda **_kw: original(read_only_path=real_secrets)
-    from twobyteasr import cloud_api_test as checks
-    from twobyteasr.api_setup_catalog import guide_for, upload_mode_label, resolve_upload_mode
-    from twobyteasr.ui import ASR_API_PRESETS
+    from twobyteasr.providers import cloud_api_test as checks
+    from twobyteasr.providers.api_setup_catalog import guide_for, upload_mode_label, resolve_upload_mode
+    from twobyteasr.app.ui import ASR_API_PRESETS
     preset = ASR_API_PRESETS.get(args.provider)
     if preset is None:
         raise SystemExit(f'Unknown provider {args.provider}')

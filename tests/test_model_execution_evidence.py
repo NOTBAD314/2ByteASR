@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from twobyteasr.model_execution import canonical_model_id, summarize_model_events
+from twobyteasr.recognition.model_execution import canonical_model_id, summarize_model_events
 
 
 def test_model_aliases_combine_real_start_and_completion():

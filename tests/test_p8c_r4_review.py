@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from twobyteasr.studio_review import (
+from twobyteasr.subtitle_rules.studio_review import (
     ReviewEvidenceAggregator,
     ReviewRiskType,
     ReviewTriageAI,
     ReviewTriageDecision,
 )
-from twobyteasr.renderer_service import RendererJob
+from twobyteasr.rendering.renderer_service import RendererJob
 
 
 def _cue(text="你瞅他还能换衣服的", speaker="S02"):

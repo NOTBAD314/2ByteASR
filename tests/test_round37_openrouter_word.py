@@ -13,8 +13,8 @@ import types
 import numpy as np
 import pytest
 
-from twobyteasr import asr
-from twobyteasr.asr import _api_transcription_rows, call_qwen_asr_api
+from twobyteasr.recognition import asr
+from twobyteasr.recognition.asr import _api_transcription_rows, call_qwen_asr_api
 
 WORD_ENDPOINT = {
     "provider": "openrouter_word",
@@ -119,7 +119,7 @@ def test_word_rows_carry_absolute_token_times():
 
 
 def test_endpoint_validation_accepts_openrouter_verbose_protocol():
-    from twobyteasr.llm_config import validate_qwen_asr_endpoint
+    from twobyteasr.providers.llm_config import validate_qwen_asr_endpoint
 
     validate_qwen_asr_endpoint(dict(WORD_ENDPOINT))  # 不抛即通过
     with pytest.raises(RuntimeError):
@@ -133,7 +133,7 @@ def test_endpoint_validation_accepts_openrouter_verbose_protocol():
 
 
 def test_persist_accepts_openrouter_word_provider():
-    from twobyteasr.ui import ASR_API_PRESETS, persist_asr_configuration
+    from twobyteasr.app.ui import ASR_API_PRESETS, persist_asr_configuration
 
     assert "openrouter_word" in ASR_API_PRESETS
     assert (
@@ -164,7 +164,7 @@ def test_persist_accepts_openrouter_word_provider():
 
 
 def test_settings_loader_keeps_openrouter_verbose_protocol():
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
 
     normalized, _warnings = _merge_known_settings(
         DEFAULT_SETTINGS,
@@ -182,8 +182,8 @@ def test_settings_loader_keeps_openrouter_verbose_protocol():
 
 
 def test_workshop_card_registered():
-    from twobyteasr.model_benchmarks import best_score
-    from twobyteasr.model_workshop import MODELS
+    from twobyteasr.local_models.model_benchmarks import best_score
+    from twobyteasr.local_models.model_workshop import MODELS
 
     card = next(
         (m for m in MODELS if m.key == "mai_transcribe_2_word"), None

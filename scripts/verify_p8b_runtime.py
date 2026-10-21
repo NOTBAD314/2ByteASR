@@ -50,8 +50,8 @@ def _sha256(path: Path) -> str:
 
 
 def _prepare_project(media: Path, output: Path) -> Path:
-    from twobyteasr.models import SubtitleCue
-    from twobyteasr.studio_project import create_studio_outputs
+    from twobyteasr.recognition.transcript_data import SubtitleCue
+    from twobyteasr.projects.studio_project import create_studio_outputs
 
     output.mkdir(parents=True, exist_ok=True)
     transcript = output / f"{media.stem}.txt"

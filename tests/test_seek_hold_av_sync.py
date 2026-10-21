@@ -15,7 +15,7 @@ import time
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_video_canvas import MpvCanvas
+from twobyteasr.studio.studio_video_canvas import MpvCanvas
 
 
 def _app():

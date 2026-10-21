@@ -16,9 +16,9 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QWidget
 
 import subtitle_core as legacy
-from twobyteasr import glossary_hub as hub
-from twobyteasr import glossary_hub_ui as hub_ui
-from twobyteasr.main_ui_glossary import TermLibraryDialog
+from twobyteasr.glossary import glossary_hub as hub
+from twobyteasr.glossary import glossary_hub_ui as hub_ui
+from twobyteasr.glossary.main_ui_glossary import TermLibraryDialog
 
 APP = QApplication.instance() or QApplication([])
 

@@ -21,8 +21,8 @@ def main():
     os.environ.update(TWOBYTEASR_TEST_ROOT=str(output),TWOBYTEASR_STARTUP_TRACE=str(output/'startup-trace.jsonl'))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.audio_engine import studio_ffmpeg_path
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.playback.audio_engine import studio_ffmpeg_path
     command=[str(studio_ffmpeg_path()),'-hide_banner','-loglevel','error','-nostdin','-y',
         '-f','lavfi','-i','testsrc2=duration=6:size=320x180:rate=30',
         '-f','lavfi','-i','sine=frequency=600:duration=6:sample_rate=48000',
@@ -32,7 +32,7 @@ def main():
     if generated.returncode:raise RuntimeError(str(generated.stderr))
     (output/'fixture-command.json').write_text(json.dumps(command,ensure_ascii=False,indent=2),'utf8')
     (output/'short-source.srt').write_text('1\n00:00:00,000 --> 00:00:02,000\n短素材原路径预览\n\n2\n00:00:02,000 --> 00:00:04,000\n重复寻址与缓存槽\n\n3\n00:00:04,000 --> 00:00:06,000\n关闭工程回收临时像素\n','utf8')
-    from twobyteasr.studio_project import StudioMedia,SubtitleProject,save_project
+    from twobyteasr.projects.studio_project import StudioMedia,SubtitleProject,save_project
     fixture=output/'projects'/'seed'/'seed.2byteproj';fixture.parent.mkdir(parents=True)
     save_project(SubtitleProject(media=StudioMedia(path='',duration_ms=0)),fixture)
     env=os.environ.copy()

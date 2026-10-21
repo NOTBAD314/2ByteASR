@@ -14,18 +14,18 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage, QColor
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.ai_providers import ProviderStatus
-from twobyteasr.build_identity import runtime_fingerprint_payload
-from twobyteasr.playback_clock import PlaybackPositionSnapshot
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_ui import AdvancedLiveCanvas, MpvCanvas, SubtitleStudioPage
-from twobyteasr.visual_design_graph import (
+from twobyteasr.providers.ai_providers import ProviderStatus
+from twobyteasr.diagnostics.build_identity import runtime_fingerprint_payload
+from twobyteasr.playback.playback_clock import PlaybackPositionSnapshot
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.studio.studio_ui import AdvancedLiveCanvas, MpvCanvas, SubtitleStudioPage
+from twobyteasr.caption_design.visual_design_graph import (
     comic_burst_graph,
     compile_live_scene,
     glitch_graph,
     streamer_gaming_graph,
 )
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app():
@@ -149,7 +149,7 @@ def test_legacy_project_probe_runs_after_open_on_worker_thread(tmp_path, monkeyp
             "audio_stream_index": 1, "fingerprint": "legacy-r4",
         }
 
-    monkeypatch.setattr("twobyteasr.studio_media_flow.probe_media_identity", fake_probe)
+    monkeypatch.setattr("twobyteasr.studio.studio_media_flow.probe_media_identity", fake_probe)
     page._schedule_project_media_probe(project, str(project_path))
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline and (not project.media_pool or not project.media_pool[0].audio_metadata.get("sample_rate")):
@@ -163,8 +163,8 @@ def test_legacy_project_probe_runs_after_open_on_worker_thread(tmp_path, monkeyp
 
 
 def test_antigravity_readiness_timeout_still_invokes_real_generation(tmp_path, monkeypatch):
-    from twobyteasr import studio_ai
-    from twobyteasr.art_direction import fallback_art_directions
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_design.art_direction import fallback_art_directions
 
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     directions = (

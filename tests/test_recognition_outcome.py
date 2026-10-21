@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from twobyteasr.recognition_outcome import normalize_recognition_outcome
+from twobyteasr.recognition.recognition_outcome import normalize_recognition_outcome
 
 
 def current_report():
@@ -126,7 +126,7 @@ def test_search_success_requires_a_real_execution_receipt():
 
 
 def test_history_refresh_normalizes_unchanged_raw_report_and_version_invalidates_cache(tmp_path, monkeypatch):
-    from twobyteasr import recognition_history as history
+    from twobyteasr.recognition import recognition_history as history
     report = current_report()
     path = tmp_path / "本轮_字幕任务报告.json"
     path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
@@ -144,8 +144,8 @@ def test_history_refresh_normalizes_unchanged_raw_report_and_version_invalidates
 
 
 def test_new_report_text_and_history_use_the_same_shared_outcome(tmp_path, monkeypatch):
-    from twobyteasr import reporting
-    from twobyteasr.recognition_history import parse_recognition_report
+    from twobyteasr.recognition import reporting
+    from twobyteasr.recognition.recognition_history import parse_recognition_report
     report = current_report()
     media = tmp_path / "本轮.mp4"
     media.write_bytes(b"fixture")
@@ -173,7 +173,7 @@ def test_explicit_locale_presentation_does_not_read_preferences(monkeypatch):
 
 
 def test_queue_aggregation_uses_independent_core_states():
-    from twobyteasr.recognition_outcome import normalize_recognition_queue
+    from twobyteasr.recognition.recognition_outcome import normalize_recognition_queue
     completed = current_report()
     partial = copy.deepcopy(completed)
     partial["polishing_summary"].update(success_cues=20, fallback_cues=11)
@@ -191,7 +191,7 @@ def test_queue_aggregation_uses_independent_core_states():
 
 
 def test_verified_recovery_is_a_separate_delivery_and_does_not_rewrite_failure():
-    from twobyteasr.recognition_outcome import RecognitionDeliveryWitness
+    from twobyteasr.recognition.recognition_outcome import RecognitionDeliveryWitness
     report = current_report()
     report['status'] = 'failed'
     report['result']['error'] = 'original save failed'

@@ -9,8 +9,8 @@ def main():
     args=parser.parse_args();directory=args.directory.resolve()
     if not directory.is_relative_to(root/'tmp') and not directory.is_relative_to(root/'examples'):raise ValueError('workspace artifact directory required')
     os.environ.update(LOCALAPPDATA=str(root/'tmp/caption-runtime-trials/static-render/local'),APPDATA=str(root/'tmp/caption-runtime-trials/static-render/roaming'))
-    from twobyteasr.caption_design_trials import compile_static_candidate,design_style_checks
-    from twobyteasr.renderer_service import RendererService
+    from twobyteasr.caption_design.caption_design_trials import compile_static_candidate,design_style_checks
+    from twobyteasr.rendering.renderer_service import RendererService
     from PIL import Image
     service=RendererService();rows=[]
     try:

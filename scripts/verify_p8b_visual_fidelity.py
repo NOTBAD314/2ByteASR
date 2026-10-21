@@ -39,20 +39,20 @@ from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_live_renderer import (
+from twobyteasr.rendering.advanced_live_renderer import (
     composite_live_scene_layers,
     render_live_layers,
     render_live_snapshot,
 )
-from twobyteasr.advanced_renderer import compile_composition_data
-from twobyteasr.renderer_service import RendererJob, RendererService
-from twobyteasr.studio_project import (
+from twobyteasr.rendering.advanced_renderer import compile_composition_data
+from twobyteasr.rendering.renderer_service import RendererJob, RendererService
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     SubtitleStyle,
 )
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.visual_design_graph import (
     GOLDEN_VISUAL_GRAPHS,
     CompiledLiveScene,
     VisualDesignGraph,
@@ -60,7 +60,7 @@ from twobyteasr.visual_design_graph import (
     motion_phases,
     style_recipe_from_graph,
 )
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 APP = QApplication.instance() or QApplication([])

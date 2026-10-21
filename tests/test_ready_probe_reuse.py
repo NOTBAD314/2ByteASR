@@ -9,7 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import asr, environment, hardware
+from twobyteasr.recognition import asr
+from twobyteasr.system import environment, hardware
 
 
 @pytest.fixture(autouse=True)

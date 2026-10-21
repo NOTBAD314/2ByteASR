@@ -155,7 +155,7 @@ def _loopback_mosi(reference: dict):
 def _configure(cloud: str, url: str, key: str, *, align: bool, real_secrets: Path | None,
                align_backend: str = 'qwen_aligner'):
     import subtitle_core as legacy
-    from twobyteasr import llm_config
+    from twobyteasr.providers import llm_config
     models = legacy.RUNTIME_SETTINGS.setdefault('models', {})
     switches = legacy.RUNTIME_SETTINGS.setdefault('switches', {})
     if cloud in {'loopback', 'mosi'}:
@@ -209,13 +209,13 @@ def main() -> int:
     if args.ffmpeg:
         # 2026-10-14: a CI checkout has no tools/ffmpeg; the queue (project save
         # probes the media) must use the given ffmpeg/ffprobe (the installed app's).
-        from twobyteasr import platform_media
+        from twobyteasr.system import platform_media
         given = Path(args.ffmpeg).resolve()
         platform_media.ffmpeg_tool = lambda name='ffmpeg', *, root=None: given.with_name(
             platform_media.executable_name(name))
     video, reference = _make_media(out, speech=args.speech, ffmpeg=args.ffmpeg)
     if args.worker_exe:
-        from twobyteasr import cloud_api_worker
+        from twobyteasr.providers import cloud_api_worker
         executable = str(Path(args.worker_exe).resolve())
         cloud_api_worker.cloud_worker_command = lambda install_root=None: [executable, '--asr-api-worker']
     server = state = None
@@ -226,13 +226,13 @@ def main() -> int:
         url, key = 'https://api.mosi.cn/v1', ''
     else:
         settings = json.loads((Path(args.real_secrets).parent / '2byteasr_settings.json').read_text(encoding='utf-8'))
-        from twobyteasr.api_endpoints import filetrans_endpoint
+        from twobyteasr.providers.api_endpoints import filetrans_endpoint
         url, key = filetrans_endpoint(settings['models']['qwen_asr_api_url']), ''
     legacy = _configure(args.cloud, url, key, align=args.align,
                         real_secrets=Path(args.real_secrets) if args.real_secrets else None,
                         align_backend=args.align_backend)
-    from twobyteasr.service import RunOptions, run_media_queue
-    from twobyteasr.speaker_strategy import resolve
+    from twobyteasr.recognition.service import RunOptions, run_media_queue
+    from twobyteasr.recognition.speaker_strategy import resolve
     events = []
     options = RunOptions(settings_snapshot_json=json.dumps(legacy.RUNTIME_SETTINGS, ensure_ascii=False),
                          speaker_source=resolve(legacy.RUNTIME_SETTINGS), recognition_language='zh')
@@ -313,11 +313,11 @@ def _project_check(media) -> dict:
             path = ''
     if not path or not Path(path).is_file():
         return {'found': False}
-    from twobyteasr.studio_project import load_project
+    from twobyteasr.projects.studio_project import load_project
     project = load_project(path)
     cues = list(project.cues)
     speakers = sorted({cue.speaker_id for cue in cues})
-    from twobyteasr.cue_word_alignment import cue_words
+    from twobyteasr.recognition.cue_word_alignment import cue_words
     measured = 0
     for cue in cues:
         try:

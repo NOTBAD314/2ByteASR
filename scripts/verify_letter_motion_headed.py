@@ -25,7 +25,7 @@ def main():
     if args.child or args.render:
         from twobyteasr.test_isolation import install
         install()
-        from twobyteasr.letter_motion_audit import run_window,render_outputs
+        from twobyteasr.acceptance.letter_motion_audit import run_window,render_outputs
         return render_outputs(output) if args.render else run_window(output,args.theme)
     media=output/'source.mp4'
     if not media.exists():

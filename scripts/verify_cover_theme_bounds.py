@@ -20,14 +20,14 @@ def main():
     out.mkdir(parents=True)
     os.environ.update(TWOBYTEASR_TEST_ROOT=str(out), QT_QPA_PLATFORM='offscreen')
     sys.path.insert(0,str(root))
-    from twobyteasr.studio_project import SubtitleProject
-    from twobyteasr.export_timeline import export_project_snapshot
-    from twobyteasr.theme_visual_bounds import calibrate_theme_bounds
-    from twobyteasr.subtitle_stacking import project_stack_layout
-    from twobyteasr.frame_export import save_project_frame
-    from twobyteasr.video_export import capture_video_graph
-    from twobyteasr.renderer_service import GLOBAL_RENDERER_SERVICE, RendererJob
-    from twobyteasr.advanced_renderer import compile_composition_data
+    from twobyteasr.projects.studio_project import SubtitleProject
+    from twobyteasr.exports.export_timeline import export_project_snapshot
+    from twobyteasr.caption_design.theme_visual_bounds import calibrate_theme_bounds
+    from twobyteasr.caption_style.subtitle_stacking import project_stack_layout
+    from twobyteasr.exports.frame_export import save_project_frame
+    from twobyteasr.exports.video_export import capture_video_graph
+    from twobyteasr.rendering.renderer_service import GLOBAL_RENDERER_SERVICE, RendererJob
+    from twobyteasr.rendering.advanced_renderer import compile_composition_data
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QFontDatabase, QImage
     app=QApplication([])

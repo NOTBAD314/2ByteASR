@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.models import SpeechSegment, WordUnit
-from twobyteasr.terminology import TermResolver, apply_to_segments, snapshot_glossaries
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+from twobyteasr.glossary.terminology import TermResolver, apply_to_segments, snapshot_glossaries
 
 
 def facade(mappings, other=()):
@@ -114,8 +114,8 @@ def test_segment_case_only_keeps_word_times_and_length_change_remaps_whole_span(
 
 
 def test_run_options_pin_actual_content_before_later_edits_and_apply():
-    from twobyteasr.service import RunOptions
-    from twobyteasr.runtime import activate_runtime_context
+    from twobyteasr.recognition.service import RunOptions
+    from twobyteasr.recognition.run_context import activate_runtime_context
     legacy = facade([confirmed("Borlin", "BerLIN")])
     options = RunOptions(enable_domain_terms=True, enabled_glossary_ids=("valorant-id",))
     context = options.create_runtime_context(legacy)
@@ -131,9 +131,9 @@ def test_run_options_pin_actual_content_before_later_edits_and_apply():
 
 def test_production_local_grouping_timing_and_outputs_share_final_spelling(tmp_path):
     import subtitle_core as legacy
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.pipeline_runtime import finalize_cues
-    from twobyteasr.output import render_srt, render_txt
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.pipeline_runtime import finalize_cues
+    from twobyteasr.subtitle_rules.output import render_srt, render_txt
     snapshot = snapshot_glossaries(facade([confirmed("Borlin", "BerLIN"),
         confirmed("S0PP", "S0PP")]), ["valorant-id"])
     segments = [SpeechSegment(1, 0., 3., "Borlin也没有接住", .9,
@@ -155,8 +155,8 @@ def test_production_local_grouping_timing_and_outputs_share_final_spelling(tmp_p
 
 
 def test_supported_qwen_context_uses_pinned_spelling_and_frozen_worker_manifest(tmp_path, monkeypatch):
-    from twobyteasr import asr
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition import asr
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     import json
     import sys
     snapshot = snapshot_glossaries(facade([confirmed("Borlin", "BerLIN"),
@@ -185,7 +185,7 @@ def test_actual_queue_logs_loaded_snapshot_and_uses_it_after_library_edit(tmp_pa
     import json
     from pathlib import Path
     from tests.test_service_layer import FakeLegacy, FakePipeline
-    from twobyteasr.service import RunOptions, run_media_queue
+    from twobyteasr.recognition.service import RunOptions, run_media_queue
     legacy = FakeLegacy(tmp_path)
     storage = facade([confirmed("Borlin", "BerLIN")])
     legacy.load_learned_term_payload = storage.load_learned_term_payload
@@ -210,7 +210,7 @@ def test_actual_queue_logs_loaded_snapshot_and_uses_it_after_library_edit(tmp_pa
 
 def test_disabled_task_cannot_consume_stale_selected_snapshot():
     import json
-    from twobyteasr.service import RunOptions
+    from twobyteasr.recognition.service import RunOptions
     storage = facade([confirmed("Borlin", "BerLIN")])
     options = RunOptions(enable_domain_terms=False, enabled_glossary_ids=("valorant-id",),
         glossary_snapshot_json=json.dumps(snapshot_glossaries(storage, ["valorant-id"]).to_dict()))
@@ -222,7 +222,7 @@ def test_disabled_task_cannot_consume_stale_selected_snapshot():
 
 def test_fuzzy_dictionary_match_is_review_candidate_without_confirmed_alias():
     import subtitle_core as legacy
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
     snapshot = snapshot_glossaries(facade([confirmed("BerLIN", "BerLIN")]), ["valorant-id"])
     segment = SpeechSegment(1, 0., 2., "阿辉也没接住", .9, [], firered_text="阿晖也没接住")
     context = RuntimeContext(enable_domain_terms=True, enabled_glossary_ids=["valorant-id"],

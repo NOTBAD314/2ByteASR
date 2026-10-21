@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from twobyteasr.glossary_live_recheck_audit import RequestBudget, review_coverage, wire_contexts
+from twobyteasr.acceptance.glossary_live_recheck_audit import RequestBudget, review_coverage, wire_contexts
 
 
 def test_concurrent_reservations_cannot_exceed_explicit_global_allowance():
@@ -115,11 +115,12 @@ def actual_submission_guard(tmp_path, monkeypatch):
     import threading
     from types import SimpleNamespace
     import subtitle_core  # noqa: F401 - initialize the existing facade first
-    from twobyteasr import cache, glossary_live_resources
-    from twobyteasr.ai_providers import CLIProvider
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot, snapshot_in_settings
-    from twobyteasr.glossary_live_recheck_audit import LiveGuard
-    from twobyteasr.provider_service import ProviderService
+    from twobyteasr.recognition import cache
+    from twobyteasr.acceptance import glossary_live_resources
+    from twobyteasr.providers.ai_providers import CLIProvider
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot, snapshot_in_settings
+    from twobyteasr.acceptance.glossary_live_recheck_audit import LiveGuard
+    from twobyteasr.providers.provider_service import ProviderService
 
     settings = {'models': {'ai_service': 'grok_account'},
         'switches': {'unified_glm_processing': True}}
@@ -160,8 +161,8 @@ def actual_submission_guard(tmp_path, monkeypatch):
 
 
 def test_actual_guard_honors_frozen_cli_marker_and_original_submit_exact_identity(actual_submission_guard):
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
-    from twobyteasr.provider_service import ProviderService
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.providers.provider_service import ProviderService
     guard, snapshot, captures = actual_submission_guard
     selected = snapshot.execution_settings()
     assert 'ai_service' not in selected['models'] and 'polish_base_url' not in selected['models']
@@ -189,7 +190,7 @@ def test_actual_guard_honors_frozen_cli_marker_and_original_submit_exact_identit
 ])
 def test_actual_guard_rejects_changed_typed_identity_before_any_dispatch(actual_submission_guard, changed):
     from dataclasses import replace
-    from twobyteasr.provider_service import ProviderService
+    from twobyteasr.providers.provider_service import ProviderService
     guard, snapshot, captures = actual_submission_guard
     with pytest.raises(RuntimeError, match='unchanged configured'):
         ProviderService.submit(object(), replace(snapshot, **changed).execution_settings(), 'polish', [],
@@ -200,7 +201,7 @@ def test_actual_guard_rejects_changed_typed_identity_before_any_dispatch(actual_
 
 
 def test_actual_guard_rejects_serialized_marker_without_silent_cli_default(actual_submission_guard):
-    from twobyteasr.provider_service import ProviderService
+    from twobyteasr.providers.provider_service import ProviderService
     guard, snapshot, captures = actual_submission_guard
     selected = snapshot.execution_settings()
     selected['_asr_provider_snapshot'] = snapshot.public_identity()

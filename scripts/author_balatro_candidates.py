@@ -107,8 +107,8 @@ def main():
     parser.add_argument('--prompt',type=Path,default=OUT/'raw-user-prompt.txt')
     parser.add_argument('--negative-image',type=Path,action='append',default=[])
     args=parser.parse_args()
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set,digest
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set,digest
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     raw_path=args.prompt
     raw=raw_path.read_text('utf8');write(OUT/'raw-user-prompt.txt',raw)
     refs=[(ROOT/'assets/theme-references/balatro-crt-mult.html','accepted-history-source'),(ROOT/'assets/theme-references/balatro-crt-mult.png','accepted-history-pixels'),(ROOT/'tmp/caption-audit-20260910/visual/game.png','current-media')]

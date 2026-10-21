@@ -22,13 +22,13 @@ def main():
     args=parser.parse_args();out=args.output.resolve()
     if not out.is_relative_to(ROOT/'tmp') or out.exists():raise ValueError('Use a fresh repository tmp directory')
     out.mkdir(parents=True)
-    from twobyteasr.settings import DEFAULT_SETTINGS,_merge_known_settings
-    from twobyteasr.llm_config import endpoint_from_settings
-    from twobyteasr.provider_registry import GLOBAL_PROVIDER_REGISTRY
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
-    from twobyteasr.authored_visual_revision import redesign_candidate
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    from twobyteasr.authored_preview import render_candidate_preview
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS,_merge_known_settings
+    from twobyteasr.providers.llm_config import endpoint_from_settings
+    from twobyteasr.providers.provider_registry import GLOBAL_PROVIDER_REGISTRY
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design.authored_visual_revision import redesign_candidate
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.authored_preview import render_candidate_preview
     raw=args.settings.read_bytes();settings,_=_merge_known_settings(DEFAULT_SETTINGS,json.loads(raw))
     selection=GLOBAL_PROVIDER_REGISTRY.selection(settings,stage='polish')
     endpoint=endpoint_from_settings(settings,'polish')

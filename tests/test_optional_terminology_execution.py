@@ -10,9 +10,11 @@ import pytest
 from tests.test_stage9_cache_and_budget import context
 from tests.test_terminology_polish_budget import cue
 from tests.test_terminology_resolution import facade, confirmed
-from twobyteasr import cache as cache_module, domain_terms, polishing
-from twobyteasr.terminology import apply_to_segments, snapshot_glossaries
-from twobyteasr.service import RunOptions
+from twobyteasr.recognition import cache as cache_module
+from twobyteasr.glossary import domain_terms
+from twobyteasr.subtitle_rules import polishing
+from twobyteasr.glossary.terminology import apply_to_segments, snapshot_glossaries
+from twobyteasr.recognition.service import RunOptions
 
 
 def search_provider(context, monkeypatch, responder):
@@ -27,7 +29,7 @@ def search_provider(context, monkeypatch, responder):
             kwargs['request_diagnostics']['search_evidence'] = [
                 {'tool': 'web_search', 'tool_use_id': 'test-receipt', 'urls': ['https://example.org/term']}]
         return json.dumps(response)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     monkeypatch.setattr(domain_terms, 'persist_learned_mappings', lambda *a: pytest.fail('empty evidence must not alter a glossary'))
     return owner, calls
 
@@ -37,7 +39,7 @@ def test_unsupported_search_is_one_capability_fact_with_complete_unexecuted_scop
     owner.enable_domain_terms = True
     events = []
     monkeypatch.setattr(domain_terms, 'record_run_event', lambda event, **kw: events.append((event, kw)))
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: pytest.fail('unavailable search must not construct an executor'))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: pytest.fail('unavailable search must not construct an executor'))
     rows = [cue(i, '未核验术语') for i in range(1, 32)]
     result = domain_terms.discover_global_domain_term_mappings(rows, '测试', [], [], [], cache_context=cache)
     assert result.status == 'unsupported' and not result.failures and not result.checked_ids
@@ -166,7 +168,7 @@ def test_supported_http_search_without_credentials_is_not_configured(context):
 
 
 def test_cancelled_search_never_writes_late_success(context, monkeypatch):
-    from twobyteasr.service import CancellationToken, CancelledError
+    from twobyteasr.recognition.service import CancellationToken, CancelledError
     _, owner, cache = context
     owner.cancellation_token = CancellationToken()
     def responder(ids):
@@ -193,7 +195,7 @@ def test_legacy_polish_cache_cannot_restore_a_search_success_claim(context):
 
 def test_failed_text_retry_has_no_queue_or_local_asr_callback_and_preserves_successes(context, monkeypatch):
     import moss_firered_pipeline as pipeline
-    from twobyteasr import service
+    from twobyteasr.recognition import service
     _, owner, cache = context
     owner.glossary_snapshot = snapshot_glossaries(facade([]), [])
     monkeypatch.setattr(service, 'run_media_queue', lambda *a, **k: pytest.fail('retry started the recognition queue'))
@@ -209,7 +211,7 @@ def test_failed_text_retry_has_no_queue_or_local_asr_callback_and_preserves_succ
         assert ids == [2]
         assert '已成功甲' in body['context_before'] and '已成功乙' in body['context_after']
         return json.dumps({'checked_ids': ids, 'cues': []})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     rows = [cue(1, '已成功甲'), cue(2, '待重试原文'), cue(3, '已成功乙')]
     original = copy.deepcopy(rows)
     summary = {'success_cues': 2, 'success_ids': [1, 3], 'fallback_cues': 1, 'fallback_ids': [2]}
@@ -222,7 +224,7 @@ def test_failed_text_retry_has_no_queue_or_local_asr_callback_and_preserves_succ
 
 
 def test_legacy_text_failure_without_proven_scope_does_not_request_all_records(context, monkeypatch):
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: pytest.fail('unknown failures must not request all'))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: pytest.fail('unknown failures must not request all'))
     with pytest.raises(ValueError, match='失败处理记录范围'):
         polishing.retry_failed_polish([cue(1, '未证实失败')], '测试', {'fallback_cues': 1})
     assert polishing.retry_failed_polish([cue(1, '已完成')], '测试', {'fallback_cues': 0}) == {}
@@ -236,7 +238,7 @@ def test_completed_search_step_without_results_is_insufficient_evidence(context,
         calls.append(1)
         kwargs['request_diagnostics']['search_evidence'] = [{'tool': 'search_web', 'step_index': 0, 'urls': []}]
         return json.dumps({'checked_ids': [1], 'unchecked_ids': [], 'mappings': []})
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     result = domain_terms.discover_global_domain_term_mappings([cue(1, '候选')], '测试', [], [], [], cache_context=cache)
     assert not result.checked_ids and result.status == 'failed' and calls == [1]
     assert owner.terminology_status['failure_categories'] == {'insufficient_evidence': 1}

@@ -29,9 +29,10 @@ def main():
     from twobyteasr.test_isolation import install
     install()
     import subtitle_core
-    from twobyteasr import cache, ai_providers
-    from twobyteasr.runtime import RuntimeContext, activate_runtime_context
-    from twobyteasr.asr_provider_snapshot import ProviderSnapshot, TimeoutPolicy
+    from twobyteasr.recognition import cache
+    from twobyteasr.providers import ai_providers
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.providers.asr_provider_snapshot import ProviderSnapshot, TimeoutPolicy
 
     original_path = Path(args.report).resolve()
     original_bytes = original_path.read_bytes()

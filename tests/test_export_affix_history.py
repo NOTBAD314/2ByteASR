@@ -3,9 +3,9 @@ import pytest
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-from twobyteasr.export_affix import ExportAffixCombo, recent_affixes, HISTORY_LIMIT
-from twobyteasr.studio_export_ui import StudioExportWorkspace
-from twobyteasr.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker
+from twobyteasr.exports.export_affix import ExportAffixCombo, recent_affixes, HISTORY_LIMIT
+from twobyteasr.exports.studio_export_ui import StudioExportWorkspace
+from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia, StudioCue, StudioSpeaker
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def workspace(tmp_path, monkeypatch):
     app=QApplication.instance() or QApplication([])
     settings=QSettings(str(tmp_path/'settings.ini'),QSettings.IniFormat)
     settings.setValue('render/preferences_v1',json.dumps({'prefix':'[NOTBAD]','suffix':''}))
-    monkeypatch.setattr('twobyteasr.studio_export_ui.QSettings',lambda *_:settings)
+    monkeypatch.setattr('twobyteasr.exports.studio_export_ui.QSettings',lambda *_:settings)
     project=SubtitleProject(media=StudioMedia(str(tmp_path/'原视频.mp4'),duration_ms=18000),
         speakers=[StudioSpeaker('S1','同名'),StudioSpeaker('S2','同名')],cues=[
         StudioCue('a',10000,12000,'20 20','S1'),StudioCue('b',15000,17000,'二十','S2')])
@@ -64,7 +64,7 @@ def test_subtitle_only_shared_name_unique_speakers_and_no_video_start(workspace,
     ui.subtitle_custom_directory.setText(str(tmp/'exports'))
     ui._subtitle_destination_changed('custom')
     ui.subtitle_speaker_modes['per_speaker'].setChecked(True)
-    monkeypatch.setattr('twobyteasr.studio_export_ui.run_render_job',lambda *_:pytest.fail('subtitle export started video'))
+    monkeypatch.setattr('twobyteasr.exports.studio_export_ui.run_render_job',lambda *_:pytest.fail('subtitle export started video'))
     QTest.mouseClick(ui.subtitle_export_button,Qt.LeftButton)
     paths=[item.path for item in ui._last_subtitle_artifacts]
     assert len(paths)==len(set(paths))==2

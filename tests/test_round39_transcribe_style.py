@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from subtitle_core import SubtitleCue, resolve_isolated_single_character_cues
 
-from twobyteasr.asr import call_qwen_asr_api
+from twobyteasr.recognition.asr import call_qwen_asr_api
 
 WORD_ENDPOINT = {
     "provider": "openrouter_word",
@@ -132,7 +132,7 @@ def test_dashscope_body_has_no_undocumented_enable_lid():
 
 
 def test_endpoint_from_settings_carries_style():
-    from twobyteasr.llm_config import qwen_asr_endpoint_from_settings
+    from twobyteasr.providers.llm_config import qwen_asr_endpoint_from_settings
 
     endpoint = qwen_asr_endpoint_from_settings(
         {"models": {"qwen_asr_api_provider": "openrouter_word",
@@ -144,7 +144,7 @@ def test_endpoint_from_settings_carries_style():
 
 
 def test_settings_style_validation():
-    from twobyteasr.settings import DEFAULT_SETTINGS, _merge_known_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, _merge_known_settings
 
     merged, _warnings = _merge_known_settings(
         DEFAULT_SETTINGS, {"models": {"api_transcribe_style": "verbatim"}}
@@ -158,7 +158,7 @@ def test_settings_style_validation():
 
 
 def test_persist_accepts_style():
-    from twobyteasr.ui import persist_asr_configuration
+    from twobyteasr.app.ui import persist_asr_configuration
 
     class _Legacy:
         RUNTIME_SETTINGS = {"models": {}}

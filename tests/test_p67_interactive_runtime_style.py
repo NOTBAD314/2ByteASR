@@ -5,9 +5,9 @@ import json
 import os
 import time
 
-import twobyteasr.studio_ai_flow as studio_ai_flow
-import twobyteasr.studio_live_canvas as studio_live_canvas
-import twobyteasr.studio_ui as studio_ui_module
+import twobyteasr.studio.studio_ai_flow as studio_ai_flow
+import twobyteasr.rendering.studio_live_canvas as studio_live_canvas
+import twobyteasr.studio.studio_ui as studio_ui_module
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -15,28 +15,28 @@ from PySide6.QtGui import QColor, QFontDatabase, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.advanced_preview import AdvancedPreviewIdentity, AdvancedPreviewPhase, AdvancedPreviewStateMachine
-from twobyteasr.advanced_renderer import (
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewIdentity, AdvancedPreviewPhase, AdvancedPreviewStateMachine
+from twobyteasr.rendering.advanced_renderer import (
     css_color_to_project,
     normalized_visual_snapshot,
     project_color_to_css,
 )
-from twobyteasr.ass_compiler import compile_ass
-from twobyteasr.font_system import SystemFontEntry
-from twobyteasr.processes import child_process_start_count
-from twobyteasr.studio_ai import (
+from twobyteasr.rendering.ass_compiler import compile_ass
+from twobyteasr.caption_style.font_system import SystemFontEntry
+from twobyteasr.system.processes import child_process_start_count
+from twobyteasr.caption_design.studio_ai import (
     AIDesignSuggestion,
     request_style_design,
     style_recipe_for_prompt,
     visual_design_variants,
 )
-from twobyteasr.studio_edit_sequence import ensure_edit_sequence, sequence_of, store_sequence
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleStyle
-from twobyteasr.studio_ui import LazyFontComboBox, SubtitleStudioPage
-from twobyteasr.style_presets import BUILTIN_PRESETS
-from twobyteasr.style_recipe import FillSpec, VisualStyleRecipe, route_recipe
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-from twobyteasr.visual_design_graph import comic_burst_graph, compile_live_scene, style_recipe_from_graph
+from twobyteasr.timeline.studio_edit_sequence import ensure_edit_sequence, sequence_of, store_sequence
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleStyle
+from twobyteasr.studio.studio_ui import LazyFontComboBox, SubtitleStudioPage
+from twobyteasr.caption_style.style_presets import BUILTIN_PRESETS
+from twobyteasr.caption_style.style_recipe import FillSpec, VisualStyleRecipe, route_recipe
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_design.visual_design_graph import comic_burst_graph, compile_live_scene, style_recipe_from_graph
 
 
 def _app() -> QApplication:
@@ -255,8 +255,8 @@ def test_sparse_preset_overwrites_authored_color_and_keeps_unspecified_recipe(mo
     _apply_game_preset(page)
     cue = page._cue_lookup["cue"]
     assert cue.base_preset_id == "game"
-    from twobyteasr.visual_snapshot import build_visual_cue_snapshot
-    from twobyteasr.advanced_renderer import normalized_visual_snapshot
+    from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
+    from twobyteasr.rendering.advanced_renderer import normalized_visual_snapshot
     resolved = normalized_visual_snapshot(build_visual_cue_snapshot(page.project, cue.id))
     assert resolved['fill'] == {'type':'solid','color':'#FFFFFF'}
     page.close_page()
@@ -267,7 +267,7 @@ def test_font_combo_lists_installed_fonts(monkeypatch):
     entries = tuple(SystemFontEntry(name, ("Regular",)) for name in (
         "Microsoft YaHei UI", "SimSun", "KaiTi", "Arial", "Consolas",
     ))
-    monkeypatch.setattr("twobyteasr.studio_font_combo.system_font_inventory", lambda: entries)
+    monkeypatch.setattr("twobyteasr.caption_style.studio_font_combo.system_font_inventory", lambda: entries)
     combo = LazyFontComboBox()
     combo.setEditable(True)
     combo._load_full_font_list()
@@ -300,7 +300,7 @@ def _gradient_project():
 
 
 def _page_project():
-    from twobyteasr.studio_project import SubtitleProject
+    from twobyteasr.projects.studio_project import SubtitleProject
     return SubtitleProject(
         media=StudioMedia(path="fixture.mp4", duration_ms=10_000, width=1280, height=720),
         cues=[StudioCue("cue", 0, 2_000, "黄色到青色", style_id="default")],
@@ -395,8 +395,8 @@ def test_ai_generic_result_retries(monkeypatch):
             return copy.deepcopy(responses.pop(0))
 
     provider = Provider()
-    monkeypatch.setattr("twobyteasr.studio_ai.provider_for_stage", lambda *_a, **_k: provider)
-    monkeypatch.setattr("twobyteasr.studio_ai.available_font_shortlist", lambda **_k: {
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.provider_for_stage", lambda *_a, **_k: provider)
+    monkeypatch.setattr("twobyteasr.caption_design.studio_ai.available_font_shortlist", lambda **_k: {
         "chinese_display": ["KaiTi"], "chinese_sans": ["Microsoft YaHei UI"],
         "serif": ["SimSun"], "handwriting": ["KaiTi"],
         "pixel_game": ["Consolas"], "cartoon": ["KaiTi"],

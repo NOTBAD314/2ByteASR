@@ -26,11 +26,11 @@ def main():
     from PySide6.QtWidgets import QApplication
     from PIL import Image
     import numpy as np
-    from twobyteasr.caption_noita import compose
-    from twobyteasr.web_theme import WebThemeDocument,theme_archive_html
-    from twobyteasr.live_web_preview import prepare_web_configuration,LiveWebPreviewWorker
-    from twobyteasr.caption_proxy import proxy_store,with_quality,CaptionProxyStore
-    from twobyteasr.renderer_service import RendererService,GLOBAL_RENDERER_SERVICE
+    from twobyteasr.caption_design.caption_noita import compose
+    from twobyteasr.caption_design.web_theme import WebThemeDocument,theme_archive_html
+    from twobyteasr.rendering.live_web_preview import prepare_web_configuration,LiveWebPreviewWorker
+    from twobyteasr.rendering.caption_proxy import proxy_store,with_quality,CaptionProxyStore
+    from twobyteasr.rendering.renderer_service import RendererService,GLOBAL_RENDERER_SERVICE
     app=QApplication.instance() or QApplication([])
     theme=WebThemeDocument.from_dict(dict(name='Noita代理验证',id='noita-proxy-audit',**compose(dict(version=8)))).to_dict()
     prepared=prepare_web_configuration(theme,'这瓶药剂，真的能喝吗？',duration_seconds=6)
@@ -91,7 +91,7 @@ def main():
             result['checks']['text_in_stage_'+str(index)]=bool(box and box[0]>0 and box[1]>0 and box[2]<1920 and box[3]<1080)
             Image.alpha_composite(Image.new('RGBA',image.size,'#24272B'),image).convert('RGB').save(out/f'text-{index}.jpg')
         # Same machine / viewport / warm sequential requests: old failed ice vs Noita.
-        from twobyteasr.caption_components import compose as any_compose
+        from twobyteasr.caption_design.caption_components import compose as any_compose
         result['comparison']={}
         for name,definition in [('ice-v7',dict(version=7)),('noita',dict(version=8))]:
             t=WebThemeDocument.from_dict(dict(name=name,id=name,**any_compose(definition))).to_dict()

@@ -23,8 +23,8 @@ def test_brief_retry_and_concept_preview_cancel_are_actionable(tmp_path,monkeypa
 
 
 def test_three_actual_component_previews_require_selection(tmp_path,monkeypatch):
-    from twobyteasr import studio_ai
-    from twobyteasr.ai_providers import AIProviderError
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.providers.ai_providers import AIProviderError
     app,page=_page(tmp_path,monkeypatch)
     try:
         controller=page._theme_drafts();page._ai_request_generation+=1
@@ -55,7 +55,7 @@ def test_three_actual_component_previews_require_selection(tmp_path,monkeypatch)
 
 
 def test_actual_archive_export_accepts_user_middle_placement(tmp_path,monkeypatch):
-    from twobyteasr.web_placement import normalize_placement
+    from twobyteasr.caption_style.web_placement import normalize_placement
     app,page=_page(tmp_path,monkeypatch)
     try:
         theme=json.loads((Path(__file__).parent/'fixtures/snow_fleece_v2_final.json').read_text('utf8'))

@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 PROJECT = WORKSPACE / "tmp" / "p25.3c" / "mixed-authoritative-visuals.2byteproj"

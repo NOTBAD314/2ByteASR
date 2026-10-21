@@ -2,14 +2,14 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 
 
 def test_cli_transport_gets_compact_context_and_trace_records_prompt_size(monkeypatch):
     """CLI transports must not carry the full manifests/schema that timed out."""
-    from twobyteasr import studio_ai
-    from twobyteasr.art_direction import fallback_art_directions
-    from twobyteasr.visual_design_graph import (
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_design.art_direction import fallback_art_directions
+    from twobyteasr.caption_design.visual_design_graph import (
         comic_burst_graph,
         glitch_graph,
         streamer_gaming_graph,
@@ -86,9 +86,9 @@ def test_cli_transport_gets_compact_context_and_trace_records_prompt_size(monkey
 
 
 def test_http_transport_keeps_the_full_request_context(monkeypatch):
-    from twobyteasr import studio_ai
-    from twobyteasr.art_direction import fallback_art_directions
-    from twobyteasr.visual_design_graph import (
+    from twobyteasr.caption_design import studio_ai
+    from twobyteasr.caption_design.art_direction import fallback_art_directions
+    from twobyteasr.caption_design.visual_design_graph import (
         comic_burst_graph,
         glitch_graph,
         streamer_gaming_graph,

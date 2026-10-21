@@ -6,10 +6,10 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QPaintDevice
 from PySide6.QtWidgets import QApplication, QWidget
 
-import twobyteasr.studio_ui as studio_ui
-from twobyteasr.studio_hub import StudioHubMixin
-from twobyteasr.studio_review_ui import StudioReviewMixin
-from twobyteasr.studio_ui import SubtitleStudioPage
+import twobyteasr.studio.studio_ui as studio_ui
+from twobyteasr.studio.studio_hub import StudioHubMixin
+from twobyteasr.studio.studio_review_ui import StudioReviewMixin
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 
 
 REVIEW_METHODS = (

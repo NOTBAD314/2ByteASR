@@ -110,7 +110,7 @@ def main():
     args = parser.parse_args()
     inputs = prepare_inputs(args)
     output = args.output.resolve()
-    from twobyteasr.glossary_live_resources import validate_manifest, MANIFEST_ENV
+    from twobyteasr.acceptance.glossary_live_resources import validate_manifest, MANIFEST_ENV
     validated = validate_manifest(args.borrowed_resources, output)
     protected = {**inputs['protected_before'], **validated['protected']}
     if args.prepare_only:
@@ -131,7 +131,7 @@ def main():
         TWOBYTEASR_STARTUP_TRACE=str(output/'recheck-evidence/driver-startup.jsonl'))
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.recognition_result import verify_result_reference
+    from twobyteasr.recognition.recognition_result import verify_result_reference
     verify_result_reference(json.dumps(inputs['exact_original_result_reference']), project_path=inputs['project_source'])
     environment = os.environ.copy()
     for key in ('TWOBYTEASR_STARTUP_RAISE', 'TWOBYTEASR_STARTUP_LEAVE_STUDIO',

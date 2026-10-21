@@ -95,7 +95,7 @@ def main() -> int:
                 setattr(sys,name,(output/(name+'.log')).open('a',encoding='utf8',buffering=1))
         # The caller supplies an isolated native runtime for this profile.
         sys.argv = [sys.argv[0]]
-    from twobyteasr.platform_macos import configure_macos_paths, cpu_factory_settings
+    from twobyteasr.system.platform_macos import configure_macos_paths, cpu_factory_settings
     configure_macos_paths(ROOT)
     # Finder supplies neither a terminal cwd nor the developer's shell PATH.
     # Use the stable writable application root; resources remain at ROOT.
@@ -107,10 +107,10 @@ def main() -> int:
     # Dispatch them before creating QApplication, first-run dialogs or settings;
     # they own their native decoder/audio event loop and never enter GUI audit.
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-audio-worker':
-        from twobyteasr.audio_process import main as audio_main
+        from twobyteasr.playback.audio_process import main as audio_main
         return audio_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-video-worker':
-        from twobyteasr.video_decode_worker import main as video_main
+        from twobyteasr.playback.video_decode_worker import main as video_main
         return video_main()
     if len(sys.argv) == 2 and sys.argv[1] == '--asr-api-worker':
         # Cloud recognition child (2026-10-13): needs no local model runtime.
@@ -121,7 +121,7 @@ def main() -> int:
             sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
         if sys.stdin is None:
             sys.stdin = os.fdopen(os.dup(0), 'r', encoding='utf8')
-        from twobyteasr.cloud_api_worker import main as cloud_api_worker_main
+        from twobyteasr.providers.cloud_api_worker import main as cloud_api_worker_main
         return cloud_api_worker_main()
     if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-mlx':
         # Apple Silicon MLX runtime + models (2026-10-13); never opens a GUI.
@@ -129,7 +129,7 @@ def main() -> int:
             sys.stdout = os.fdopen(os.dup(1), 'w', encoding='utf8', buffering=1)
         if sys.stderr is None:
             sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
-        from twobyteasr.macos_model_prepare import main_mlx as prepare_mlx
+        from twobyteasr.local_models.macos_model_prepare import main_mlx as prepare_mlx
         return prepare_mlx(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-local':
         # MOSS / FireRed runtimes + models for the Apple GPU (2026-10-14); never opens a GUI.
@@ -137,7 +137,7 @@ def main() -> int:
             sys.stdout = os.fdopen(os.dup(1), 'w', encoding='utf8', buffering=1)
         if sys.stderr is None:
             sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
-        from twobyteasr.macos_model_prepare import main_local as prepare_local
+        from twobyteasr.local_models.macos_model_prepare import main_local as prepare_local
         return prepare_local(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == '--macos-prepare-cpu':
         # A windowed .app may replace Python streams with None even though
@@ -146,16 +146,16 @@ def main() -> int:
             sys.stdout = os.fdopen(os.dup(1), 'w', encoding='utf8', buffering=1)
         if sys.stderr is None:
             sys.stderr = os.fdopen(os.dup(2), 'w', encoding='utf8', buffering=1)
-        from twobyteasr.macos_model_prepare import main as prepare_cpu
+        from twobyteasr.local_models.macos_model_prepare import main as prepare_cpu
         return prepare_cpu(sys.argv[2:])
     if len(sys.argv) == 3 and sys.argv[1] == "--macos-media-smoke":
-        from twobyteasr.macos_media_smoke import main as media_smoke
+        from twobyteasr.acceptance.macos_media_smoke import main as media_smoke
         return media_smoke(sys.argv[2])
     if smoke_output is not None:
         output = smoke_output
         from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import QTimer
-        from twobyteasr.build_identity import load_build_identity
+        from twobyteasr.diagnostics.build_identity import load_build_identity
         app = QApplication(sys.argv)
         def finish():
             windows = [w for w in app.topLevelWidgets() if w.isVisible()]
@@ -174,7 +174,7 @@ def main() -> int:
             finish_startup_event_loops(app, windows, 0 if receipt["passed"] else 1)
         QTimer.singleShot(10000, finish)
     elif os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO')=='macos-desktop':
-        from twobyteasr.studio_acceptance_audit import audit_directory
+        from twobyteasr.acceptance.studio_acceptance_audit import audit_directory
         # Validate the existing owned tmp/profile/project guard before any
         # opt-in UI action. Ordinary user launches never enter this route.
         audit_output=audit_directory()
@@ -185,7 +185,7 @@ def main() -> int:
         dismiss_first_wizard_for_desktop_audit(app,audit_output)
     # Install only fresh defaults; existing projects/configuration are never
     # rewritten or copied from a Windows user's AppData.
-    from twobyteasr.settings import DEFAULT_SETTINGS, project_settings_path
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, project_settings_path
     settings = project_settings_path()
     if not settings.exists():
         settings.parent.mkdir(parents=True, exist_ok=True)

@@ -7,9 +7,9 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.completion_summary import completion_summary
-from twobyteasr.recognition_outcome import normalize_recognition_outcome
-from twobyteasr.ui import MainWindow
+from twobyteasr.app.completion_summary import completion_summary
+from twobyteasr.recognition.recognition_outcome import normalize_recognition_outcome
+from twobyteasr.app.ui import MainWindow
 
 APP = QApplication.instance() or QApplication([])
 

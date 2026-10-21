@@ -21,9 +21,9 @@ def main():
         raise ValueError('Use a new output directory under repository tmp')
     out.mkdir(parents=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'), APPDATA=str(out/'roaming'), QT_QPA_PLATFORM='offscreen')
-    from twobyteasr.caption_creative_pipeline import ThemeLedger
-    from twobyteasr.authored_repair import collect_issues
-    from twobyteasr.structured_output import response_object
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger
+    from twobyteasr.caption_design.authored_repair import collect_issues
+    from twobyteasr.providers.structured_output import response_object
     original = out/'original'
     original.mkdir()
     hashes = {}

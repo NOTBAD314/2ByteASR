@@ -10,7 +10,7 @@ def main():
  if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('fresh repository tmp directory required')
  out.mkdir(parents=True)
  for name in ('sources','local','roaming','temp'): (out/name).mkdir()
- from twobyteasr.processes import run_hidden_subprocess
+ from twobyteasr.system.processes import run_hidden_subprocess
  sources=[]
  for i,(freq,color) in enumerate(((440,'0x183347'),(660,'0x303438'),(880,'0x243e52')),1):
   path=out/'sources'/f'中文 素材 {i} 新名称.mp4'
@@ -18,10 +18,10 @@ def main():
    '-f','lavfi','-i',f'sine=frequency={freq}:sample_rate=48000','-t','12','-c:v','libx264','-preset','ultrafast','-pix_fmt','yuv420p','-c:a','aac',path],
    timeout=30,check=True,capture_output=True,purpose='isolated r3 media')
   sources.append(path)
- from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioSpeaker,StudioCue,SubtitleStyle,save_project,hydrate_media_contract
- from twobyteasr.studio_helpers import probe_media_identity
- from twobyteasr.studio_media_pool import add_media_asset,create_video_track,add_video_clip,set_video_track_state
- from twobyteasr.studio_edit_sequence import sequence_of
+ from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioSpeaker,StudioCue,SubtitleStyle,save_project,hydrate_media_contract
+ from twobyteasr.studio.studio_helpers import probe_media_identity
+ from twobyteasr.timeline.studio_media_pool import add_media_asset,create_video_track,add_video_clip,set_video_track_state
+ from twobyteasr.timeline.studio_edit_sequence import sequence_of
  p=SubtitleProject(media=StudioMedia(str(sources[0]),duration_ms=12000,width=640,height=360));p.validate()
  hydrate_media_contract(p,probe_media_identity(str(sources[0])))
  set_video_track_state(p,'V1',locked=False);sequence_of(p).video_track_locked=False

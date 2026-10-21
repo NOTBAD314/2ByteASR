@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.glossary_live_resources import validate_manifest, sha_file, install, BorrowedResources
+from twobyteasr.acceptance.glossary_live_resources import validate_manifest, sha_file, install, BorrowedResources
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def test_hook_refuses_normal_app_and_foreign_profile(declared, monkeypatch):
 
 def test_borrowed_root_survives_ordinary_launcher_bootstrap(declared, monkeypatch):
     profile, manifest, value = declared
-    from twobyteasr import runtime_registry
+    from twobyteasr.system import runtime_registry
     from twobyteasr.runtime_paths import bootstrap_runtime_paths, get_runtime_paths, MODEL_ROOT_ENV
     monkeypatch.setenv('2BYTEASR_USER_DATA_ROOT', str(profile/'local'))
     original = runtime_registry.resolve_runtime_python

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from twobyteasr.style_recipe import (
+from twobyteasr.caption_style.style_recipe import (
     MotionRecipe,
     NativeRecipeUnsupportedError,
     StyleRecipe,
@@ -13,14 +13,14 @@ from twobyteasr.style_recipe import (
     route_recipe,
     save_recipe,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     ProjectValidationError,
     StudioMedia,
     SubtitleProject,
     load_project,
     save_project,
 )
-from twobyteasr.visual_runtime import (
+from twobyteasr.rendering.visual_runtime import (
     CapabilitySupport,
     VisualCapability,
     VisualOwner,

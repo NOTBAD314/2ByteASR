@@ -8,8 +8,8 @@ from PySide6.QtCore import QPoint
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr import speaker_roles as roles
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.recognition import speaker_roles as roles
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 MIN = 60_000
 
@@ -86,7 +86,7 @@ def application():
 
 @pytest.fixture
 def timeline(application):
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
     widget = WaveformTimeline()
     widget.resize(1200, 520)
     yield widget
@@ -130,7 +130,7 @@ def test_dragging_on_the_group_row_never_hands_a_line_to_another_member(timeline
 
 
 def test_expand_old_project_and_undoable_organize(timeline):
-    from twobyteasr import studio_speaker_roles as studio_roles
+    from twobyteasr.studio import studio_speaker_roles as studio_roles
     project = project_with_roles(grouped=False)
     timeline.set_project(project)
     assert all(kind == "speaker" for kind, _key, _h in timeline._display_rows())   # old project untouched
@@ -155,8 +155,8 @@ def test_expand_old_project_and_undoable_organize(timeline):
 
 
 def test_roles_survive_save_and_never_touch_exports(tmp_path):
-    from twobyteasr.ass_compiler import compile_ass
-    from twobyteasr.studio_project import load_project, save_project
+    from twobyteasr.rendering.ass_compiler import compile_ass
+    from twobyteasr.projects.studio_project import load_project, save_project
     plain = project_with_roles(grouped=False)
     before = compile_ass(plain)
     grouped = project_with_roles()
@@ -185,8 +185,8 @@ def test_main_tracks_are_capped_by_activity_and_cap_is_undoable(application):
     project = SubtitleProject(media=StudioMedia("", duration_ms=24 * MIN),
                               speakers=[StudioSpeaker(f"S{i + 1}") for i in range(8)], cues=lines)
     project.validate()
-    from twobyteasr import studio_speaker_roles as studio_roles
-    from twobyteasr.studio_timeline import WaveformTimeline
+    from twobyteasr.studio import studio_speaker_roles as studio_roles
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
     timeline = WaveformTimeline()
     timeline.set_project(project)
     page = SimpleNamespace(project=project, undo_stack=QUndoStack(), timeline=timeline, save_state=None)

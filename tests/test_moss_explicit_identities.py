@@ -1,15 +1,15 @@
 import copy
 from types import SimpleNamespace
 import pytest
-from twobyteasr.studio_project import project_from_runtime_cues, load_project, save_project
-from twobyteasr.speaker_recovery import candidate_snapshot
-from twobyteasr.speaker_organization import UNIFIED
-from twobyteasr.speaker_evidence import label_summary
+from twobyteasr.projects.studio_project import project_from_runtime_cues, load_project, save_project
+from twobyteasr.recognition.speaker_recovery import candidate_snapshot
+from twobyteasr.projects.speaker_organization import UNIFIED
+from twobyteasr.recognition.speaker_evidence import label_summary
 
 
 @pytest.mark.parametrize('mode', ['moss', 'single'])
 def test_short_explicit_moss_keeps_low_frequency_identities_through_project_export(tmp_path, mode):
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions
     rows = [dict(start=i*2, end=i*2+1, text=f'人工文字{i} 20', speaker=f'S0{i%2+1}') for i in range(7)]
     evidence = candidate_snapshot(rows, source=mode)
     evidence['processing'] = {'mode': mode}
@@ -48,9 +48,9 @@ def test_parser_preserves_valid_zero_and_distinct_labels():
 
 def test_moss_task_snapshot_retired_closed_setting_cannot_erase_native():
     import json
-    from twobyteasr.settings import DEFAULT_SETTINGS
-    from twobyteasr.service import RunOptions
-    from twobyteasr.speaker_strategy import resolve
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS
+    from twobyteasr.recognition.service import RunOptions
+    from twobyteasr.recognition.speaker_strategy import resolve
     settings=copy.deepcopy(DEFAULT_SETTINGS)
     settings['models']['speaker_source']='single'
     options=RunOptions(speaker_source='moss', settings_snapshot_json=json.dumps(settings))

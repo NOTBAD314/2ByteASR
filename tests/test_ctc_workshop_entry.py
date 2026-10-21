@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from twobyteasr import ctc_alignment, repository_download
-from twobyteasr.model_workshop import CANONICAL_MODEL_ORDER, MODELS, ModelWorkshopPage, _browser_groups
+from twobyteasr.recognition import ctc_alignment
+from twobyteasr import repository_download
+from twobyteasr.local_models.model_workshop import CANONICAL_MODEL_ORDER, MODELS, ModelWorkshopPage, _browser_groups
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = json.loads((ROOT / "dependencies.lock.json").read_text(encoding="utf-8"))
@@ -37,7 +38,7 @@ def test_installed_ctc_can_be_turned_off_and_on_by_the_user():
 
 
 def test_ctc_switch_is_saved_and_recognition_skips_it_when_off():
-    from twobyteasr.settings import DEFAULT_SETTINGS, load_runtime_settings
+    from twobyteasr.storage.settings import DEFAULT_SETTINGS, load_runtime_settings
     assert DEFAULT_SETTINGS["switches"]["use_ja_ctc_aligner"] is True
     memory = {"switches": {}}
     ctc_alignment.set_enabled(False, memory)
@@ -85,7 +86,7 @@ def test_model_folder_waiting_for_install_completion_is_not_used(tmp_path, monke
     monkeypatch.setattr("twobyteasr.runtime_paths.iter_model_dir_candidates", lambda name: [])
     monkeypatch.setenv("2BYTEASR_JA_CTC_ALIGNER_DIR", str(folder))
     # Keep the repository's own models folder out of the candidates.
-    monkeypatch.setattr(ctc_alignment, "__file__", str(tmp_path / "app" / "twobyteasr" / "ctc_alignment.py"))
+    monkeypatch.setattr(ctc_alignment, "__file__", str(tmp_path / "app" / "twobyteasr" / "recognition" / "ctc_alignment.py"))
     assert ctc_alignment.model_dir() == str(folder)
     (folder / ".2byteasr-install-pending.json").write_text("{}", encoding="utf-8")
     assert ctc_alignment.model_dir() is None

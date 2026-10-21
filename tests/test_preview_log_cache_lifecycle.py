@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr.advanced_preview import AdvancedPreviewCache
-from twobyteasr.storage_service import StorageService
+from twobyteasr.rendering.advanced_preview import AdvancedPreviewCache
+from twobyteasr.storage.storage_service import StorageService
 
 
 def _set_used(service, path, used):
@@ -78,9 +78,9 @@ def test_preview_link_and_shared_hardlink_survive_budget(tmp_path):
 
 @pytest.mark.parametrize('mode',['legacy','snapshot','batch'])
 def test_every_preview_render_contract_leases_target_until_budget_finishes(tmp_path,monkeypatch,mode):
-    from twobyteasr import advanced_preview as module
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioCue
-    from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+    from twobyteasr.rendering import advanced_preview as module
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue
+    from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
     project=SubtitleProject(media=StudioMedia(path='fixture.mp4',duration_ms=1000),
         cues=[StudioCue('cue',0,1000,'isolated')])
     snapshot=build_visual_cue_snapshot(project,'cue',width=64,height=36)
@@ -111,8 +111,8 @@ def test_every_preview_render_contract_leases_target_until_budget_finishes(tmp_p
 
 @pytest.fixture
 def log_cache(tmp_path,monkeypatch):
-    from twobyteasr import cache as module
-    from twobyteasr import storage_service
+    from twobyteasr.recognition import cache as module
+    from twobyteasr.storage import storage_service
     root=tmp_path/'logs';root.mkdir()
     service=StorageService(roots=(root,),state_root=tmp_path/'state')
     context=SimpleNamespace(event_log_path='',identity_task_active=False)
@@ -175,7 +175,8 @@ def test_next_begin_releases_previous_log_session(log_cache):
 def test_audio_npy_and_only_its_sidecar_are_owned_and_leased_through_views(tmp_path,monkeypatch):
     import gc
     import numpy as np
-    from twobyteasr import cache as module,storage_service
+    from twobyteasr.recognition import cache as module
+    from twobyteasr.storage import storage_service
     source=tmp_path/'short.wav';source.write_bytes(b'isolated-source')
     folder=tmp_path/'cache';folder.mkdir()
     service=StorageService(roots=(folder,),state_root=tmp_path/'state')

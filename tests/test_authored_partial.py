@@ -2,8 +2,8 @@ import copy,json
 from pathlib import Path
 import pytest
 from scripts.author_balatro_candidates import candidates
-from twobyteasr.authored_partial import retained_candidate_prefix,retained_response_record
-from twobyteasr.caption_creative_pipeline import ThemeLedger,digest
+from twobyteasr.caption_design.authored_partial import retained_candidate_prefix,retained_response_record
+from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,digest
 
 
 def partial_body():
@@ -53,7 +53,7 @@ def test_recovery_receipt_keeps_failed_original_and_checks_hash(tmp_path):
 
 
 def test_explicit_retry_preserves_incomplete_identity_and_windows_newline_receipt(tmp_path):
-    from twobyteasr.authored_visual_revision import saved_payload
+    from twobyteasr.caption_design.authored_visual_revision import saved_payload
     raw,rows=partial_body();raw=raw.replace(',"cueHtml"','\n,"cueHtml"')
     ledger=ThemeLedger(tmp_path,'Balatro')
     ledger.raw_response(raw,'fixture','same-model',completed=False)

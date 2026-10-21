@@ -1,6 +1,6 @@
 import pytest
-from twobyteasr.theme_generation_policy import authored_request_budget
-from twobyteasr.provider_input_budget import prepare_input,InputBudgetError
+from twobyteasr.caption_design.theme_generation_policy import authored_request_budget
+from twobyteasr.providers.provider_input_budget import prepare_input,InputBudgetError
 
 
 def test_reasoning_and_artwork_fit_without_mutating_settings():

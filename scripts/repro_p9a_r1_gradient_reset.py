@@ -14,9 +14,9 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_project import load_project
-from twobyteasr.studio_ui import SubtitleStudioPage
-from twobyteasr.style_recipe import FillSpec
+from twobyteasr.projects.studio_project import load_project
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
+from twobyteasr.caption_style.style_recipe import FillSpec
 
 
 def main() -> int:

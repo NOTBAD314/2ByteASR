@@ -14,8 +14,8 @@ def main():
     out=args.output.resolve()
     if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('fresh tmp required')
     out.mkdir(parents=True)
-    from twobyteasr import settings as sm
-    from twobyteasr.llm_config import activate_ai_service,update_active_profile
+    from twobyteasr.storage import settings as sm
+    from twobyteasr.providers.llm_config import activate_ai_service,update_active_profile
     local=Path(os.environ['LOCALAPPDATA'])/'2ByteASR'
     settings,_=sm._merge_known_settings(sm.DEFAULT_SETTINGS,json.loads((local/sm.SETTINGS_FILENAME).read_text('utf8')))
     activate_ai_service(settings,'deepseek');update_active_profile(settings,model='deepseek-v4-pro')
@@ -23,15 +23,15 @@ def main():
     if (local/'secrets.dat').is_file():shutil.copyfile(local/'secrets.dat',secret)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'))
     from scripts.author_balatro_candidates import candidates
-    from twobyteasr.caption_creative_pipeline import ThemeLedger,accept_authored_set,canonical
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.caption_design.caption_creative_pipeline import ThemeLedger,accept_authored_set,canonical
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     rows=candidates();rows[0]['generated_source']['motionSpec']['tracks'][0]['from']['rotationY']=121
     rows[0]['generated_source']['motionSpec']['tracks'][0]['to']['rotationY']=0
     before=copy.deepcopy(rows);ledger=ThemeLedger(out/'ledger','Balatro synthetic repair integration')
     client=GLOBAL_PROVIDER_SERVICE.client_for_stage(settings,'polish');calls=[];parent=uuid.uuid4().hex
     def repair(issues,repair_id,schema):
         calls.append(repair_id)
-        from twobyteasr.motion_spec_repair import request_motion_patch
+        from twobyteasr.caption_design.motion_spec_repair import request_motion_patch
         return request_motion_patch(client,issues,repair_id,schema,parent_request_id=parent)
     result=accept_authored_set({'candidates':rows},ledger,'deepseek','deepseek-v4-pro',motion_repair=repair,request_id=parent)
     record=dict(passed=len(calls)==1 and rows==before and len(result.concepts)==3,

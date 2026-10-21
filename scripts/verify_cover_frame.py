@@ -8,9 +8,9 @@ def main():
     root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root));out=args.output.resolve()
     if not out.is_relative_to(root/'tmp') or out.exists():raise ValueError('Use new workspace/tmp output')
     out.mkdir(parents=True);os.environ['TWOBYTEASR_TEST_ROOT']=str(out)
-    from twobyteasr.processes import run_hidden_subprocess
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project,hydrate_media_contract
-    from twobyteasr.studio_helpers import probe_media_identity
+    from twobyteasr.system.processes import run_hidden_subprocess
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project,hydrate_media_contract
+    from twobyteasr.studio.studio_helpers import probe_media_identity
     source=Path(os.environ['USERPROFILE'])/'AppData/Local/2ByteASR/cover-workspace/templates'
     key='bdda449597484a968cc6c3f800ce1bfd';entry=json.loads((source/(key+'.json')).read_text('utf8'))
     target=out/'config/cover-workspace/templates';target.mkdir(parents=True)

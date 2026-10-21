@@ -6,8 +6,8 @@ import pytest
 from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
-from twobyteasr.subtitle_layout_ui import SubtitleLayoutPreview, open_layout_preview
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, SubtitleStyle
+from twobyteasr.studio.subtitle_layout_ui import SubtitleLayoutPreview, open_layout_preview
 
 
 @pytest.fixture(scope='module', autouse=True)

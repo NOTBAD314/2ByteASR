@@ -6,11 +6,11 @@ from PySide6.QtGui import QMouseEvent, QUndoStack
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_commands import BatchTimingCommand, set_cues_timing_offset_command
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.studio_timing import CueSelectionModel, loop_region, recommend_many, snap_candidates
-from twobyteasr.studio_ui import WaveformTimeline
-from twobyteasr.studio_helpers import format_timeline_timecode, parse_timeline_timecode
+from twobyteasr.timeline.studio_commands import BatchTimingCommand, set_cues_timing_offset_command
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.timeline.studio_timing import CueSelectionModel, loop_region, recommend_many, snap_candidates
+from twobyteasr.studio.studio_ui import WaveformTimeline
+from twobyteasr.studio.studio_helpers import format_timeline_timecode, parse_timeline_timecode
 
 
 def _project():

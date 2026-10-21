@@ -33,7 +33,7 @@ def main():
         os.environ['2BYTEASR_MODEL_ROOT']=str(selected)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,save_project
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,save_project
     project=out/'empty.2byteproj'
     if not project.is_file():save_project(SubtitleProject(media=StudioMedia(path='')),project)
     (out/'installer-qa.json').write_text(json.dumps(dict(models=args.models.split(','),source='AUTO',timeout_s=7200,ui_only=args.ui,native_ui=args.native_ui,project_only=args.project,cancel_retry=args.cancel_retry,diagnostic_only=args.diagnostic_only)),'utf8')

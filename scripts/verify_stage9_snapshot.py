@@ -28,8 +28,8 @@ def main():
         raise SystemExit('Replay output must be under workspace tmp')
     output.mkdir(parents=True,exist_ok=True)
 
-    from twobyteasr import settings as settings_module
-    from twobyteasr.asr_provider_snapshot import resolve_provider_snapshot
+    from twobyteasr.storage import settings as settings_module
+    from twobyteasr.providers.asr_provider_snapshot import resolve_provider_snapshot
     settings_path=(args.settings or settings_module.project_settings_path()).resolve()
     settings_bytes=settings_path.read_bytes()
     raw_settings=json.loads(settings_bytes)
@@ -64,10 +64,11 @@ def main():
     os.environ['QT_QPA_PLATFORM']='offscreen'
     settings_module.load_runtime_settings=lambda *a,**k:(copy.deepcopy(settings),str(output/'memory-only-settings.json'),[])
     import subtitle_core as core
-    from twobyteasr import grouping, ai_providers
-    from twobyteasr.service import CancellationToken
-    from twobyteasr.runtime import RuntimeContext,activate_runtime_context
-    from twobyteasr.provider_service import GLOBAL_PROVIDER_SERVICE
+    from twobyteasr.subtitle_rules import grouping
+    from twobyteasr.providers import ai_providers
+    from twobyteasr.recognition.service import CancellationToken
+    from twobyteasr.recognition.run_context import RuntimeContext,activate_runtime_context
+    from twobyteasr.providers.provider_service import GLOBAL_PROVIDER_SERVICE
     import requests
 
     def forbidden_cli(**kwargs):
@@ -121,7 +122,7 @@ def main():
             summary['validated']=getattr(cues,'validated',False)
             (output/(args.mode+'-cues.json')).write_text(json.dumps(core.serialize_cues(cues),ensure_ascii=False,indent=2),encoding='utf-8')
     except Exception as exc:
-        from twobyteasr.asr_provider_snapshot import classify_request_error
+        from twobyteasr.providers.asr_provider_snapshot import classify_request_error
         summary['error_category']=classify_request_error(exc)
         summary['error_type']=type(exc).__name__
     finally:

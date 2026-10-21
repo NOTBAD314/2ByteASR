@@ -6,14 +6,14 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from twobyteasr.studio_edit_sequence import (
+from twobyteasr.timeline.studio_edit_sequence import (
     EditSequence,
     VideoSegment,
     caption_continuous_segments,
     projected_cues,
     sequence_of,
 )
-from twobyteasr.studio_project import (
+from twobyteasr.projects.studio_project import (
     StudioMedia,
     SubtitleProject,
     load_project,

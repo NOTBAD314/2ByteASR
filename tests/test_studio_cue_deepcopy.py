@@ -7,7 +7,7 @@ edit. The field-aware copy must give the same values and types as the generic
 import copy
 import enum
 
-from twobyteasr.studio_project import StudioCue
+from twobyteasr.projects.studio_project import StudioCue
 
 
 class _Level(enum.IntEnum):

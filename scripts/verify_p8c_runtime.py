@@ -61,8 +61,8 @@ def _sha256(path: Path) -> str:
 
 
 def _prepare_project(media: Path, output: Path) -> Path:
-    from twobyteasr.models import SubtitleCue
-    from twobyteasr.studio_project import create_studio_outputs
+    from twobyteasr.recognition.transcript_data import SubtitleCue
+    from twobyteasr.projects.studio_project import create_studio_outputs
 
     output.mkdir(parents=True, exist_ok=True)
     transcript = output / f"{media.stem}.txt"
@@ -84,7 +84,7 @@ def _prepare_project(media: Path, output: Path) -> Path:
 def _studio_settings_path_for_profile(profile: Path) -> Path:
     """Return the settings path used by the application for an isolated profile."""
 
-    from twobyteasr.studio_project import studio_settings_path
+    from twobyteasr.projects.studio_project import studio_settings_path
 
     return studio_settings_path(profile)
 

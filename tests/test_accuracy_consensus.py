@@ -1,13 +1,13 @@
 ﻿import threading
 
 import subtitle_core
-from twobyteasr.correction_safety import apply_reference_consensus_corrections
-from twobyteasr.domain_terms import (
+from twobyteasr.subtitle_rules.correction_safety import apply_reference_consensus_corrections
+from twobyteasr.glossary.domain_terms import (
     apply_title_profile_aliases,
     repair_with_user_glossary_terms,
 )
-from twobyteasr.grouping import call_grouping_api, fallback_group
-from twobyteasr.polishing import call_correction_api
+from twobyteasr.subtitle_rules.grouping import call_grouping_api, fallback_group
+from twobyteasr.subtitle_rules.polishing import call_correction_api
 
 
 def _segment(segment_id, text, *, firered="", qwen="", start=0.0, end=2.0):

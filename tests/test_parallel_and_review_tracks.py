@@ -6,9 +6,9 @@ import time
 
 import moss_firered_pipeline
 import subtitle_core
-from twobyteasr import output as output_module
-from twobyteasr import correction as correction_module
-from twobyteasr import segmentation as segmentation_module
+from twobyteasr.subtitle_rules import output as output_module
+from twobyteasr.subtitle_rules import correction as correction_module
+from twobyteasr.subtitle_rules import segmentation as segmentation_module
 
 
 class _MossPerformanceSettings:

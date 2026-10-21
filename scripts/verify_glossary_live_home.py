@@ -105,7 +105,7 @@ def main():
     if not media.exists():
         shutil.copy2(media_source, media)
     before = {str(path): sha(path) for path in (store, settings, startup_project, media_source, media)}
-    from twobyteasr.glossary_live_resources import validate_manifest, MANIFEST_ENV
+    from twobyteasr.acceptance.glossary_live_resources import validate_manifest, MANIFEST_ENV
     validated = validate_manifest(args.borrowed_resources, profile)
     before.update(validated['protected'])
     evidence = profile/'live-home-evidence'

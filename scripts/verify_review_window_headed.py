@@ -2,7 +2,7 @@
 
 Usage: python scripts/verify_review_window_headed.py --output tmp/<fresh dir> [--exe path\\to\\2ByteASR.exe]
 Runs on a private Windows desktop with isolated user data and every monitor
-of this PC; see twobyteasr/review_window_audit.py for the checks.
+of this PC; see twobyteasr/acceptance/review_window_audit.py for the checks.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def main() -> int:
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(output)
     from twobyteasr.test_isolation import install
     install()
-    from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
     fixture = output / 'projects' / 'review-window' / 'review-window.2byteproj'
     fixture.parent.mkdir(parents=True)
     media = fixture.parent / 'review-window.mp4'

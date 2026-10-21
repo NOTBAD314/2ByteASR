@@ -25,7 +25,7 @@ from twobyteasr.runtime_paths import (
     managed_runtime_root,
     reset_runtime_paths,
 )
-from twobyteasr import storage_relocation as relocation
+from twobyteasr.storage import storage_relocation as relocation
 
 windows_only = pytest.mark.skipif(os.name != "nt", reason="runtime folders beside the program and the move are Windows only")
 
@@ -76,8 +76,8 @@ def test_new_packaged_install_keeps_runtimes_beside_the_program(tmp_path, monkey
     assert _saved(tmp_path)["runtime_root"] == str(program / "runtimes")
     assert not (_local(tmp_path) / "runtimes").exists()
     # Every runtime consumer reads the same folder.
-    from twobyteasr.runtime_registry import registry_path, stable_runtime_root
-    from twobyteasr.runtime_download_cache import runtime_cache_path
+    from twobyteasr.system.runtime_registry import registry_path, stable_runtime_root
+    from twobyteasr.system.runtime_download_cache import runtime_cache_path
     assert registry_path() == program / "runtimes" / "registry.json"
     assert stable_runtime_root("main") == program / "runtimes" / "main"
     assert runtime_cache_path() == program / "runtimes" / "download-cache"
@@ -320,7 +320,7 @@ def test_move_rewrites_every_recorded_path_and_removes_the_old_copy(tmp_path, mo
     assert Path(saved["model_root"]) == new_models.resolve()
     reset_runtime_paths()
     assert managed_runtime_root() == new_runtimes
-    from twobyteasr.runtime_registry import resolve_runtime_python
+    from twobyteasr.system.runtime_registry import resolve_runtime_python
     assert resolve_runtime_python("main", register=False) == str(new_venv / "Scripts" / "python.exe")
     receipt = json.loads((_local(tmp_path) / "model-readiness" / "moss.json").read_text("utf-8"))
     assert receipt["python"] == str(new_venv / "Scripts" / "python.exe") and receipt["model"] == str(new_models / MODEL)
@@ -422,12 +422,12 @@ def test_nothing_downloaded_yet_only_registers_the_new_place(tmp_path, monkeypat
 
 
 def test_storage_maintenance_waits_while_a_move_runs(monkeypatch):
-    from twobyteasr.storage_ui import app_busy
+    from twobyteasr.storage.storage_ui import app_busy
 
     class Owner:
         _run_in_progress = False
 
-    monkeypatch.setattr("twobyteasr.storage_ui.existing_page", lambda *_a, **_k: None)
+    monkeypatch.setattr("twobyteasr.storage.storage_ui.existing_page", lambda *_a, **_k: None)
     assert app_busy(Owner()) is False
     relocation._RUNNING.set()
     try:
@@ -456,8 +456,8 @@ def _wait(qapp, condition, seconds=20):
 @windows_only
 def test_storage_panel_moves_both_and_updates_the_settings_field(tmp_path, monkeypatch, qapp):
     from PySide6.QtWidgets import QDialog, QLineEdit, QVBoxLayout
-    from twobyteasr.storage_relocation_ui import RelocationDialog
-    from twobyteasr.storage_ui import StoragePanel
+    from twobyteasr.storage.storage_relocation_ui import RelocationDialog
+    from twobyteasr.storage.storage_ui import StoragePanel
     f = _fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(relocation, "_probe_interpreter", _probe())
     settings = QDialog()
@@ -483,7 +483,7 @@ def test_storage_panel_moves_both_and_updates_the_settings_field(tmp_path, monke
 
 @windows_only
 def test_dialog_refuses_to_start_and_says_why(tmp_path, monkeypatch, qapp):
-    from twobyteasr.storage_relocation_ui import RelocationDialog
+    from twobyteasr.storage.storage_relocation_ui import RelocationDialog
     f = _fixture(tmp_path, monkeypatch)
     dialog = RelocationDialog(f["destination"], busy=lambda: True)
     _wait(qapp, lambda: dialog.plan is not None)
@@ -574,7 +574,7 @@ def test_a_launcher_still_starting_the_old_python_is_caught_and_rolled_back(tmp_
 
 @windows_only
 def test_closing_settings_after_a_move_does_not_ask_to_save(tmp_path, monkeypatch, qapp):
-    from twobyteasr.application_settings_ui import ApplicationSettingsDialog
+    from twobyteasr.app.application_settings_ui import ApplicationSettingsDialog
     f = _fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(relocation, "_probe_interpreter", _probe())
     settings = ApplicationSettingsDialog(None, {}, tmp_path / "projects", browse=lambda *a: None,

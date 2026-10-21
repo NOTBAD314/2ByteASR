@@ -4,7 +4,7 @@ import json
 import pytest
 
 import subtitle_core as legacy
-from twobyteasr.terminology import snapshot_glossaries
+from twobyteasr.glossary.terminology import snapshot_glossaries
 
 
 @pytest.fixture(autouse=True)

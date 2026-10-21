@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from .tokens import BUTTON_SIZES, CONTROL_HEIGHTS, RADIUS_SCALE, WEIGHT_SCALE
 from .presentation import BUTTON_ALIASES
-from ..typography import UI_FONT_STACK
+from .typography import UI_FONT_STACK
 
 if TYPE_CHECKING:
-    from ..ui_theme import ThemeDefinition
+    from .ui_theme import ThemeDefinition
 
 _CHECK_ICON = (Path(__file__).resolve().parents[2] / "assets" / "check-dark.png").as_posix()
 _DOT_ICON = (Path(__file__).resolve().parents[2] / "assets" / "dot-dark.png").as_posix()
@@ -345,7 +345,7 @@ def build_button_qss(t) -> str:
     UI face is Medium; 600 is the single synthetic emphasis and Heavy is
     reserved for display titles, so buttons never mix three "bold" looks.
     """
-    from ..ui_theme import blend_hex
+    from .ui_theme import blend_hex
     sheet = []
     # Danger stays findable but quiet at rest: half-strength outline, full
     # colour and a soft wash only on hover/press.

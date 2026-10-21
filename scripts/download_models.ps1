@@ -4,6 +4,7 @@ param(
     [switch]$VerifyOnly,
     [switch]$IncludeQwen,
     [switch]$Minimal,
+    [switch]$RepairRuntime,
     # Windows PowerShell 5.1 的 powershell.exe -File 无法可靠绑定数组参数。
     # GUI 因此使用逗号分隔的一项传入，脚本内部再拆分和逐项校验。
     [string]$Only = "",
@@ -19,10 +20,23 @@ $env:PYTHONIOENCODING = "utf-8"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $LockPath = Join-Path $ProjectRoot "dependencies.lock.json"
+
+# New-Item -Path 拒绝磁盘根目录（E:\ 报“路径的形式不合法”，2026-10-15 用户反馈：
+# 存储管理把模型位置选成整个磁盘后无法下载）。.NET 的 CreateDirectory 接受磁盘根、
+# 空格、中文与 [ ]，目录已存在时什么也不做。
+function New-ModelDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    [void][System.IO.Directory]::CreateDirectory($Path)
+}
+
 if ($env:2BYTEASR_MODEL_ROOT) {
     $ModelsRoot = $env:2BYTEASR_MODEL_ROOT
 } else {
     $ModelsRoot = Join-Path $ProjectRoot "models"
+}
+if (-not [System.IO.Path]::IsPathRooted($ModelsRoot)) {
+    # .NET 按进程当前目录解析相对路径，与 PowerShell 的当前位置不一定相同。
+    $ModelsRoot = Join-Path $ProjectRoot $ModelsRoot
 }
 $ManifestPath = Join-Path $ModelsRoot ".twobyteasr-models.json"
 if ($env:TWOBYTEASR_TEST_ROOT) {
@@ -30,7 +44,13 @@ if ($env:TWOBYTEASR_TEST_ROOT) {
     if (-not [IO.Path]::GetFullPath($ModelsRoot).StartsWith($isolatedPrefix,[StringComparison]::OrdinalIgnoreCase)) { throw '隔离模型目录越界，未开始下载。' }
     Write-Host ('[2BYTEASR_ISOLATION] '+(@{pid=$PID;models=$ModelsRoot;root=$env:TWOBYTEASR_TEST_ROOT} | ConvertTo-Json -Compress))
 }
-New-Item -ItemType Directory -Path $ModelsRoot -Force | Out-Null
+try {
+    New-ModelDirectory $ModelsRoot
+} catch {
+    # 模型工坊按这一行说明是存储位置的问题，而不是“运行环境准备失败”。
+    Write-Host ('[2BYTEASR_MODEL_ROOT_ERROR] ' + (@{path = $ModelsRoot; detail = $_.Exception.Message} | ConvertTo-Json -Compress))
+    throw "无法使用模型存储位置：$ModelsRoot（$($_.Exception.Message)）。请在模型工坊 → 存储管理里换一个可写的文件夹后重试；已下载的模型不受影响。"
+}
 
 # ModelScope（魔搭）镜像（可选）：设置 2BYTEASR_MODELSCOPE_ORG=你的组织名后，
 # 直链兜底会优先从魔搭拉取（国内带宽通常优于 hf-mirror→AWS 链）。
@@ -54,6 +74,9 @@ if ($Source -eq "HF_MIRROR") {
     $env:HF_ENDPOINT = "https://huggingface.co"
 }
 Write-Host "[网络] 下载源：$Source" -ForegroundColor Cyan
+# 选 ModelScope / HF 镜像（国内来源）时，运行环境（uv、Python、PyTorch、PyPI 包）
+# 也先用国内镜像；自动 / HF 官方仍官方在前，慢或失败时才换。校验不变。
+$env:2BYTEASR_RUNTIME_SOURCE = if ($Source -in @("MODELSCOPE", "HF_MIRROR")) { "mirror" } else { "auto" }
 Write-Host '[2BYTEASR_PHASE] {"phase":"preparing"}'
 # 镜像下载大文件较慢，放宽读/连接超时（默认值会导致大文件中途 ReadTimeout）
 if (-not $env:HF_HUB_DOWNLOAD_TIMEOUT) { $env:HF_HUB_DOWNLOAD_TIMEOUT = "300" }
@@ -87,6 +110,7 @@ function Test-ModelFiles {
         }
     }
     if ($VerifyHashes -and $Spec.sha256) {
+        Write-Host ('[2BYTEASR_PHASE] '+(@{phase='files_verifying';model=$Spec.repository;job_id=$env:TWOBYTEASR_DEPLOY_JOB_ID;pid=$PID} | ConvertTo-Json -Compress))
         foreach ($property in $Spec.sha256.PSObject.Properties) {
             $path = Join-Path $root ($property.Name -replace '/', '\')
             if (-not (Test-Path -LiteralPath $path)) { return $false }
@@ -118,9 +142,10 @@ function Test-AllRequiredFilesHashed {
 }
 
 function Read-Manifest {
-    if (-not (Test-Path $ManifestPath)) { return @{} }
+    # -LiteralPath：文件夹名里的 [ ] 不能当通配符。
+    if (-not (Test-Path -LiteralPath $ManifestPath)) { return @{} }
     try {
-        $payload = Get-Content -Raw -Encoding UTF8 $ManifestPath | ConvertFrom-Json
+        $payload = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $result = @{}
         foreach ($property in $payload.models.PSObject.Properties) {
             $result[$property.Name] = [string]$property.Value
@@ -140,11 +165,10 @@ function Write-Manifest {
         updated_at = (Get-Date).ToString("o")
         models = $models
     }
-    $directory = Split-Path -Parent $ManifestPath
-    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    New-ModelDirectory (Split-Path -Parent $ManifestPath)
     $tempPath = "$ManifestPath.tmp"
-    $payload | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $tempPath
-    Move-Item -Force $tempPath $ManifestPath
+    $payload | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $tempPath -Encoding UTF8
+    Move-Item -LiteralPath $tempPath -Destination $ManifestPath -Force
 }
 
 function Get-ModelScopeEndpoint {
@@ -170,16 +194,13 @@ function Get-ResolvedArtifactSources {
         [Parameter(Mandatory = $true)][string]$Relative,
         [Parameter(Mandatory = $true)][string]$Mode
     )
-    $resolverPython = Join-Path $ProjectRoot ".venv-main\Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $resolverPython)) {
-        $resolverPython = Join-Path $ProjectRoot ".venv-moss\Scripts\python.exe"
-    }
-    if (-not (Test-Path -LiteralPath $resolverPython)) { $resolverPython = "python" }
+    $resolverPython = $env:TWOBYTEASR_MAIN_PYTHON
+    if (-not $resolverPython -or -not (Test-Path -LiteralPath $resolverPython)) { throw '专用 Python 尚未准备，不能解析下载源。' }
     $previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
         Push-Location $ProjectRoot
-        $json = & $resolverPython -m twobyteasr.download_sources `
+        $json = & $resolverPython -I -X utf8 (Join-Path $PSScriptRoot 'resolve_download_sources.py') `
             --model $ModelKey --file $Relative --mode $Mode --lock $LockPath 2>$null
         $code = $LASTEXITCODE
     } finally {
@@ -212,14 +233,14 @@ function Invoke-DirectModelFallback {
         [Parameter(Mandatory = $true)][string]$Mode
     )
     $repositoryPython = $env:TWOBYTEASR_MAIN_PYTHON
-    if (-not $repositoryPython) { $repositoryPython = Join-Path $ProjectRoot ".venv-main\Scripts\python.exe" }
-    if (-not (Test-Path -LiteralPath $repositoryPython)) {
+    if (-not $repositoryPython -or -not (Test-Path -LiteralPath $repositoryPython)) {
         throw "缺少主工作台 Python，无法启动官方仓库下载 Adapter。"
     }
     Push-Location $ProjectRoot
     try {
         Write-Host '[2BYTEASR_PHASE] {"phase":"weights_downloading"}'
-        & $repositoryPython -I (Join-Path $PSScriptRoot 'run_repository_download.py') `
+        & $repositoryPython -I -X utf8 -B (Join-Path $PSScriptRoot 'run_deployment_step.py') `
+            --phase weights_downloading --component $ModelKey --timeout 3600 run_repository_download.py `
             --model $ModelKey --mode $Mode --lock $LockPath --destination $Destination `
             --staging-root (Join-Path $ModelsRoot '.downloads') | ForEach-Object { Write-Host $_ }
         return $LASTEXITCODE -eq 0
@@ -243,7 +264,7 @@ foreach ($property in $Lock.models.PSObject.Properties) {
 $allowedOnlyNames = @(
     "moss", "firered_vad", "firered_aed", "qwen_asr", "speaker_embedding",
     "qwen_aligner", "whisper_turbo", "sensevoice", "paraformer", "funasr_nano",
-    "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b", "ja_ctc_aligner"
+    "firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b", "ja_ctc_aligner", "mfa_aligner"
 )
 $onlyNames = @(
     $Only -split ',' |
@@ -258,6 +279,8 @@ if ("moss" -in $onlyNames) {
     $onlyNames += @("firered_vad", "speaker_embedding")
 }
 if ('canary_qwen' -in $onlyNames) { $onlyNames += 'canary_qwen_tokenizer' }
+# 2026-10-19: MFA（实验）一次装好中文与日语两套模型。
+if ('mfa_aligner' -in $onlyNames) { $onlyNames += 'mfa_aligner_ja' }
 $onlyNames = @($onlyNames | Select-Object -Unique)
 if ("qwen_asr" -in $onlyNames) { $IncludeQwen = $true }
 
@@ -311,6 +334,30 @@ $modelSpecs = @($modelSpecs | Sort-Object { if ($_.Name -eq "moss") { 0 } else {
 if (-not $VerifyOnly) {
     $backendSetup = Join-Path $PSScriptRoot "setup_model_backend.ps1"
     $backendKeys = @($modelSpecs | Where-Object { -not $_.Spec.resource_only } | ForEach-Object { [string]$_.Name } | Select-Object -Unique)
+    # 2026-10-19: MFA 用自己的 conda 运行环境，不加入主运行环境的模型集合（集合一变，托管安装
+    # 就重建整个主环境）。模型下载与就绪检查仍要主运行环境：用已登记的；一个都没有时才让
+    # 托管安装建一个。
+    $mfaSelected = "mfa_aligner" -in $backendKeys
+    if ($mfaSelected) {
+        $backendKeys = @($backendKeys | Where-Object { $_ -ne "mfa_aligner" })
+        # An inherited interpreter override is never a production selection.
+        Remove-Item Env:TWOBYTEASR_MAIN_PYTHON -ErrorAction SilentlyContinue
+        if (-not $env:TWOBYTEASR_MAIN_PYTHON) {
+            $runtimeRoot = $env:2BYTEASR_RUNTIME_ROOT
+            if (-not $runtimeRoot) {
+                $dataBase = if ($env:2BYTEASR_USER_DATA_ROOT) { $env:2BYTEASR_USER_DATA_ROOT } else { $env:LOCALAPPDATA }
+                $runtimeRoot = Join-Path $dataBase '2ByteASR\runtimes'
+            }
+            try {
+                $registered = [string](Get-Content -LiteralPath (Join-Path $runtimeRoot 'registry.json') -Raw -Encoding UTF8 | ConvertFrom-Json).runtimes.main.python_executable
+                $boundary=[IO.Path]::GetFullPath($runtimeRoot).TrimEnd('\')+'\'
+                if ($registered -and [IO.Path]::GetFullPath($registered).StartsWith($boundary,[StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $registered)) {
+                    $env:TWOBYTEASR_MAIN_PYTHON = $registered
+                }
+            } catch { }
+        }
+        if (-not $env:TWOBYTEASR_MAIN_PYTHON -and $backendKeys.Count -eq 0) { $backendKeys = @("mfa_aligner") }
+    }
     if ($backendKeys.Count -gt 0) {
         $hasRuntimeInstall = @($backendKeys | Where-Object {
             $_ -notin @("firered_llm", "glm_asr_nano", "canary_qwen", "omni_asr_llm_7b")
@@ -319,12 +366,28 @@ if (-not $VerifyOnly) {
             Write-Host '[2BYTEASR_PHASE] {"phase":"runtime_installing"}'
         }
         Write-Host "[运行库] 正在准备所选模型环境：$($backendKeys -join '、')" -ForegroundColor Cyan
-        & $backendSetup -ModelKey $backendKeys
+        $repairRoles = ''
+        if ($RepairRuntime) {
+            $roles=@('main')
+            if ($backendKeys -contains 'moss') { $roles+= 'moss' }
+            if ($backendKeys -contains 'firered_llm') { $roles+= 'firered_llm' }
+            $repairRoles=$roles -join ','
+        }
+        & $backendSetup -ModelKey $backendKeys -RepairRoles $repairRoles
         if ($LASTEXITCODE -ne 0) {
             throw "所选模型运行库安装失败（退出码 $LASTEXITCODE）。已下载内容会保留，修复网络后可直接重试。"
         }
         if ($hasRuntimeInstall) {
             Write-Host '[2BYTEASR_PHASE] {"phase":"runtime_ready"}'
+        }
+    }
+    if ($mfaSelected) {
+        $mfaPython = $env:TWOBYTEASR_MAIN_PYTHON
+        if (-not $mfaPython) { throw "没有找到主运行环境，无法准备 MFA。请先在模型工坊安装任一本地模型后重试。" }
+        Write-Host "[运行库] 正在准备 MFA（实验）运行环境" -ForegroundColor Cyan
+        & $mfaPython -I (Join-Path $PSScriptRoot 'install_mfa_runtime.py')
+        if ($LASTEXITCODE -ne 0) {
+            throw "MFA 运行环境安装失败（退出码 $LASTEXITCODE）。已下载内容会保留，修复网络后可直接重试。"
         }
     }
 }
@@ -351,7 +414,8 @@ $missingModels = @($modelSpecs | Where-Object { -not (Test-ModelFiles $_.Spec -V
 function Confirm-PreparedModels {
     foreach ($entry in $modelSpecs) {
         if ($entry.Spec.resource_only) { continue }
-        & $env:TWOBYTEASR_MAIN_PYTHON -I (Join-Path $PSScriptRoot 'validate_prepared_model.py') --root $ProjectRoot --model $entry.Name
+        & $env:TWOBYTEASR_MAIN_PYTHON -I -X utf8 -B (Join-Path $PSScriptRoot 'run_deployment_step.py') `
+            --phase model_loading --component $entry.Name --timeout 1200 validate_prepared_model.py --root $ProjectRoot --model $entry.Name
         if ($LASTEXITCODE -ne 0) {
             throw "模型文件已校验，但实际加载或样本任务失败：$($entry.Name)。请查看 model_loading 阶段日志；文件与运行库可复用。"
         }
@@ -408,7 +472,7 @@ foreach ($entry in $modelSpecs) {
         continue
     }
     $destination = Resolve-ProjectPath $spec.path
-    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+    New-ModelDirectory $destination
     # 保留 Hugging Face 的 .cache：其中包含未完成的大文件分块；用户点击重试时
     # hf 客户端可以从断点继续。若客户端重试仍失败，下方直链下载器会绕过该缓存。
     Write-Host "[下载] $($spec.repository) @ $($spec.revision)"
@@ -453,7 +517,7 @@ MOSS 大模型在当前网络下无法从已声明来源持续传输。
     }
     if ($name -eq "speaker_embedding") {
         $customPath = Join-Path $destination "custom.py"
-        if (-not (Test-Path $customPath)) { New-Item -ItemType File -Path $customPath | Out-Null }
+        if (-not (Test-Path -LiteralPath $customPath)) { [System.IO.File]::WriteAllBytes($customPath, [byte[]]@()) }
     }
     $Installed[$name] = [string]$spec.revision
     Write-Manifest $Installed

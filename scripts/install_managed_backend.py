@@ -5,15 +5,23 @@ The GUI executable is never used as Python. All publication follows pip check.
 """
 from __future__ import annotations
 import argparse
+import collections
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
-from urllib.parse import quote
+import uuid
+import urllib.error
+import urllib.request
+from urllib.parse import quote, urlparse
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -33,12 +41,41 @@ class SourcesExhausted(RuntimeError):
 
 
 SOURCES_EXHAUSTED = 75
-# CUDA PyTorch is ~3 GB. Measured 2026-10-14 on a mainland line without proxy:
-# download.pytorch.org answered at ~1 MB/s (the GUI run spent 30+ minutes on it)
-# while the SJTU/NJU mirrors gave 17-22 MB/s for the same file. uv only falls
-# back on failure, so a slow-but-working official host is measured first.
-SPEED_PROBE_BYTES = 8 << 20
-SLOW_OFFICIAL_BYTES_PER_SECOND = 2 << 20
+# CUDA PyTorch (2.4-3 GB) is fetched here rather than by uv: uv prints nothing
+# until a file is complete, keeps nothing after a pause and changes source only
+# on failure. Measured 2026-10-14 on a mainland line without proxy:
+# download.pytorch.org gave ~1 MB/s (a 0.7.1 user's fast first 8 MB was no
+# promise either) while the SJTU/NJU mirrors gave 17-47 MB/s for the same file.
+# uv then installs the file from a local --find-links folder; every byte is
+# checked against the locked SHA-256 first.
+RUNTIME_SOURCE_ENV = '2BYTEASR_RUNTIME_SOURCE'  # 'mirror': domestic sources first
+# Beside uv's own buckets: `uv cache prune` removes folders it does not know, so
+# cache maintenance keeps and removes these files exactly like uv's downloads.
+WHEELHOUSE = Path('download-cache/2byteasr-pytorch-wheels')
+WHEEL_USER_AGENT = '2ByteASR-runtime/1.0'
+WHEEL_BLOCK = 1 << 20
+WHEEL_READ_TIMEOUT_S = 30
+# Below this the next source gets a trial. A trial keeps its bytes, so trying
+# costs little; measured 2026-10-14 a mirror sat at ~5 MB/s for 8 minutes
+# while the next one gave ~100 MB/s for the same file.
+SLOW_BYTES_PER_SECOND = 8 << 20
+SPEED_WINDOW_S = 30.0   # speed judged over this window...
+SPEED_GRACE_S = 20.0    # ...once a source has had this long...
+SPEED_CHECK_S = 30.0    # ...at most this often (doubled after a failed trial)
+TRIAL_S = 8.0           # a trial reads the next source at the current offset; its bytes are kept
+SWITCH_FACTOR = 2.0
+WORTH_SWITCHING_S = 120.0
+NO_PROGRESS_RETRIES = 3
+MAX_RESUMES = 20
+HEARTBEAT_S = 30.0
+CONTENT_RANGE = re.compile(r'bytes\s+(\d+)-(\d+)/(\d+)', re.IGNORECASE)
+UNSATISFIED_RANGE = re.compile(r'bytes\s+\*/(\d+)', re.IGNORECASE)
+# 2026-10-21: on one PC Windows reported folders under %LOCALAPPDATA%\2ByteASR as in use (os error 32) whenever uv
+# deleted them. Every `uv python install` re-creates the minor-version links (cpython-3.10-windows-x86_64-none), so it
+# failed and left an empty folder where the link was; a temporary numba-*.data folder failed the same way once.
+MINOR_VERSION_LINK = re.compile(r'^cpython-\d+\.\d+-windows-x86_64-none$')
+IN_USE = re.compile(r'\(os error 32\)')
+IN_USE_WAITS_S = (2.0, 5.0, 10.0)
 
 
 def save(path, value):
@@ -46,6 +83,74 @@ def save(path, value):
     pending = path.with_suffix(path.suffix + '.pending')
     pending.write_text(json.dumps(value, ensure_ascii=False, indent=2), 'utf8')
     os.replace(pending, path)
+
+
+def read_runtime_receipt(path, role, known_models):
+    """Read history without repairing/overwriting the original receipt.
+
+    A damaged history is distinct from an empty historical selection. Callers
+    must report the issue and use only their trusted current request.
+    """
+    try:
+        value = json.loads(Path(path).read_text('utf8'))
+        if not isinstance(value, dict) or value.get('role') != role:
+            raise ValueError('运行环境清单不是预期角色的对象')
+        models = value.get('models')
+        if not isinstance(models, list) or any(not isinstance(x, str) or x not in known_models for x in models):
+            raise ValueError('历史模型集合必须是当前支持的模型名称列表')
+    except (OSError, ValueError, TypeError) as exc:
+        return None, dict(role=role, receipt=str(path), historical_models='unavailable',
+                          reason=type(exc).__name__+': '+str(exc), original_preserved=True)
+    return value, None
+
+
+def verified_bundled_build_wheels(root):
+    """Require the exact two pure-Python build wheels, not a warm uv cache."""
+    try:
+        backend = json.loads((root/PACKAGE_HASHES).read_text('utf8'))['build_backend']
+        manifest_path=root/'wheels/model_wheels.json'
+        if not manifest_path.is_file():
+            manifest_path=root/'packaging/model_wheels.json'  # source checkout layout
+        manifest = json.loads(manifest_path.read_text('utf8'))['wheels']
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError('MOSS 离线构建缺少内置构建工具清单；请修复安装包。') from exc
+    selected=[]
+    for name in ('setuptools', 'wheel'):
+        pin = backend.get(name, {})
+        version = str(pin.get('version') or '')
+        rows = [row for row in manifest if str(row.get('file','')).startswith(name+'-'+version+'-')
+                and str(row.get('file','')).endswith('-none-any.whl')]
+        if not version or len(rows) != 1:
+            raise RuntimeError(f'MOSS 离线构建缺少已锁定的内置 {name}=={version} wheel；请修复安装包，未访问外网。')
+        row=rows[0];path=root/'wheels'/row['file']
+        if path.parent != root/'wheels' or not path.is_file():
+            raise RuntimeError(f'MOSS 离线构建缺少内置文件 {row["file"]}；请修复安装包，未访问外网。')
+        digest=hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != row.get('sha256') or digest not in pin.get('sha256',[]):
+            raise RuntimeError(f'MOSS 内置构建工具 SHA-256 校验失败：{row["file"]}；未访问外网。')
+        selected.append(path)
+    return selected
+
+
+def install_moss_source_offline(uv, root, source, python, build, managed):
+    """Build the bundled source with verified local backends, without an index."""
+    wheels=verified_bundled_build_wheels(root)
+    build.write_text(mirror_build_constraints(root), 'utf8')
+    # Expose only the verified backends to isolated PEP 517 resolution. The
+    # relative paths also avoid uv's whitespace splitting of constraints.
+    with tempfile.TemporaryDirectory(prefix='moss-build-wheels-',dir=managed) as directory:
+        folder=Path(directory)
+        if not folder.resolve().is_relative_to(managed.resolve()):
+            raise RuntimeError('MOSS 构建工具暂存目录越界')
+        for wheel in wheels:
+            target=folder/wheel.name
+            shutil.copyfile(wheel,target)
+            if hashlib.sha256(target.read_bytes()).digest()!=hashlib.sha256(wheel.read_bytes()).digest():
+                raise RuntimeError('MOSS 构建工具暂存校验失败')
+        uv('pip','install','--python',python,'--no-index','--offline',
+           '--find-links',str(folder.relative_to(managed)),
+           '--build-constraint',str(build.relative_to(managed)),
+           '--no-deps',str(source)+'[torch-runtime]')
 
 
 def role_python(role):
@@ -88,6 +193,13 @@ def normalize(name):
     return re.sub(r'[-_.]+', '-', name).lower()
 
 
+def validate_runtime(python, root, identity, managed):
+    from twobyteasr.system.deployment import run_command
+    run_command([python, '-I', '-X', 'utf8', '-B', root/'scripts/validate_managed_runtime.py',
+                 '--managed', managed, '--identity', json.dumps(identity)],
+                cwd=managed, phase='environment_checking', component=identity['role'], timeout=180)
+
+
 def hashed_environment(root, role, version, tag, pins):
     """Official-hash table for one environment, or None with the reason."""
     path = root / PACKAGE_HASHES
@@ -104,46 +216,449 @@ def hashed_environment(root, role, version, tag, pins):
     return entry, ''
 
 
-def probe_rate(url, limit_s=10.0):
-    """Bytes/s over the first SPEED_PROBE_BYTES of ``url``; 0.0 when it cannot be read."""
-    import urllib.request
-    request = urllib.request.Request(url, headers={'Range': f'bytes=0-{SPEED_PROBE_BYTES - 1}',
-                                                   'User-Agent': '2ByteASR-runtime-probe'})
-    started = time.monotonic()
-    received = 0
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            while received < SPEED_PROBE_BYTES and time.monotonic() - started < limit_s:
-                block = response.read(1 << 16)
-                if not block:
-                    break
-                received += len(block)
-    except Exception:  # noqa: BLE001 - unreachable counts as 0
-        return 0.0
-    return received / max(time.monotonic() - started, 1e-3)
+def size_text(value):
+    return f'{value / 2**30:.2f} GiB' if value >= 2**30 else f'{value / 2**20:.1f} MiB'
 
 
-def slow_official_pytorch(root, tag, version, torch_pins):
-    """Reason to skip download.pytorch.org for this environment, or None.
+def rate_text(value):
+    return f'{value / 2**20:.1f} MB/s'
 
-    Only for CUDA builds (the CPU build ships in wheels/), and only when the
-    official host is both slow in absolute terms and far slower than the first
-    domestic mirror; overseas users keep the official source.
-    """
-    mirrors = mirror_list(root, 'pytorch_mirrors')
-    if tag == 'cpu' or not torch_pins or not mirrors:
-        return None
+
+def pytorch_wheel_name(pin, version):
+    name, _, release = pin.partition('==')
     cpython = 'cp' + version.replace('.', '')[:3]
-    name = f"torch-{quote(torch_pins[0].split('==', 1)[1], safe='')}-{cpython}-{cpython}-win_amd64.whl"
-    official = probe_rate(f'https://download.pytorch.org/whl/{tag}/{name}')
-    if official >= SLOW_OFFICIAL_BYTES_PER_SECOND:
+    return f'{name}-{release}-{cpython}-{cpython}-win_amd64.whl'
+
+
+def pytorch_sources(root, tag, prefer_mirror):
+    """Folders serving the same locked files: official first unless mirrors are preferred."""
+    official = {'label': 'PyTorch 官方', 'url': f'https://download.pytorch.org/whl/{tag}', 'official': True}
+    mirrors = [{'label': item['label'], 'url': item['url'].format(tag=tag).rstrip('/'), 'official': False}
+               for item in mirror_list(root, 'pytorch_mirrors')]
+    return [*mirrors, official] if prefer_mirror else [official, *mirrors]
+
+
+class SourceFailed(Exception):
+    """One read from one source ended early; ``final`` sources are not retried."""
+
+    def __init__(self, message, *, final=False, complete=False):
+        super().__init__(message)
+        self.final = final
+        self.complete = complete  # the local partial already covers the whole file
+
+
+class WheelDownload:
+    """One locked wheel: resumable ``.partial``, progress lines and source switching.
+
+    Every source serves the identical file, so a download resumes at the same
+    offset on another source; the locked SHA-256 decides before anything is
+    published. Progress goes to stdout as ``[2BYTEASR_RUNTIME_DOWNLOAD]`` lines
+    (about once a second) plus readable ``[PyTorch]`` lines for the log.
+    """
+
+    def __init__(self, folder, name, sha256, sources, *, index=1, count=1,
+                 opener=urllib.request.urlopen, clock=time.monotonic, sleep=time.sleep):
+        self.folder = Path(folder)
+        self.name = name
+        self.hashes = {value.lower() for value in sha256}
+        self.sources = list(sources)
+        self.index, self.count = index, count
+        self.opener, self.clock, self.sleep = opener, clock, sleep
+        self.target = self.folder / name
+        self.partial = self.folder / (name + '.partial')
+        self.sidecar = self.folder / (name + '.partial.json')
+        self.package = name.split('-', 1)[0]
+        self.total = None
+        self.current = 0
+        self.reading = 0
+        self.reason = ''  # why the official source was left, if it was
+        self.event = None  # the last source change, for the workshop to word in its language
+        self.strikes = [0] * len(self.sources)
+        self.resumes = [0] * len(self.sources)
+        self.samples = collections.deque()  # (time, offset) on the current source
+        self.recent = collections.deque()   # (time, offset) for the displayed speed
+        self.check_gap = SPEED_CHECK_S
+        self.last_trial = None  # trials rotate through the other sources
+        self.since = self.next_check = 0.0
+        self.last_emit = 0.0
+        self.last_tenth = -1
+
+    def say(self, text):
+        print('[PyTorch] ' + text, flush=True)
+
+    def emit(self, phase, downloaded, speed=0.0):
+        source = self.sources[self.reading]
+        payload = dict(file=self.name, package=self.package, index=self.index, count=self.count,
+                       downloaded=int(downloaded), total=int(self.total or 0), speed=round(speed, 1),
+                       source=source['label'], host=urlparse(source['url']).hostname or '', phase=phase)
+        if self.event:
+            payload['event'] = self.event
+        print('[2BYTEASR_RUNTIME_DOWNLOAD] ' + json.dumps(payload, ensure_ascii=False), flush=True)
+
+    def fetch(self):
+        """Download (or reuse) the verified file; return why the official source was left."""
+        self.folder.mkdir(parents=True, exist_ok=True)
+        if self.target.is_file():
+            self.total = self.target.stat().st_size
+            if self._verified(self.target):
+                self.emit('done', self.total)
+                self.say(f'{self.name} 已在本机并通过 SHA-256 校验，直接使用')
+                return ''
+            self.target.unlink()
+            self.total = None
+        self._load_sidecar()
+        for attempt in (1, 2):
+            self._download()
+            if self._verified(self.partial):
+                os.replace(self.partial, self.target)
+                self.sidecar.unlink(missing_ok=True)
+                self.emit('done', self.total)
+                self.say(f'{self.name} 下载完成，SHA-256 与锁定值一致')
+                return self.reason
+            self.partial.unlink(missing_ok=True)
+            self.sidecar.unlink(missing_ok=True)
+            self.total = None
+            # Which source served the bad bytes is unknown: start again from the first.
+            self.current = 0
+            self.strikes = [0] * len(self.sources)
+            self.resumes = [0] * len(self.sources)
+            self.last_tenth = -1
+            self.say(f'{self.name} 的 SHA-256 与锁定值不符，已丢弃' + ('，重新下载' if attempt == 1 else ''))
+        message = f'{self.name} 两次下载的 SHA-256 都与锁定值不符，没有安装'
+        print('[运行库] ' + message, flush=True)
+        raise RuntimeError(message)
+
+    def _verified(self, path):
+        self.emit('verify', path.stat().st_size)
+        digest = hashlib.sha256()
+        with path.open('rb') as stream:
+            for block in iter(lambda: stream.read(WHEEL_BLOCK * 8), b''):
+                digest.update(block)
+        return digest.hexdigest() in self.hashes
+
+    def _load_sidecar(self):
+        # The total size saved with a partial lets a resumed run show progress at once.
+        try:
+            saved = json.loads(self.sidecar.read_text('utf8'))
+            if set(saved.get('sha256', [])) == self.hashes and int(saved['total']) > 0:
+                self.total = int(saved['total'])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    def _offset(self):
+        return self.partial.stat().st_size if self.partial.is_file() else 0
+
+    def _download(self):
+        self._restart_clock()
+        while True:
+            offset = self._offset()
+            if self.total is not None and offset >= self.total:
+                if offset == self.total:
+                    return
+                self.partial.unlink()  # longer than the file: never trusted
+                continue
+            try:
+                outcome = self._read(self.current, offset)
+            except SourceFailed as failure:
+                if failure.complete:
+                    continue
+                self._failed(self.current, failure, self._offset() > offset)
+                continue
+            if outcome == 'slow':
+                self._try_faster()
+
+    def _failed(self, index, failure, gained):
+        label = self.sources[index]['label']
+        if gained:
+            self.resumes[index] += 1
+            self.strikes[index] = 0
+        else:
+            self.strikes[index] += 1
+        if failure.final or self.resumes[index] > MAX_RESUMES:
+            self.strikes[index] = NO_PROGRESS_RETRIES
+        if self.strikes[index] < NO_PROGRESS_RETRIES:
+            self.say(f'{label} 连接中断（{failure}），' + ('从断点继续' if gained else '稍后重试'))
+            self.sleep(2 if gained else 5)
+            return
+        following = self._next()
+        if following is None:
+            raise SourcesExhausted(f'{self.name} 下载失败：PyTorch 官方与国内镜像都没有成功（最后：{label}，{failure}）')
+        if self.sources[index]['official'] and not self.reason:
+            self.reason = f'官方 PyTorch 来源未成功（{failure}）'
+        offset = self._offset()
+        self.event = {'kind': 'failed', 'from': label, 'to': self.sources[following]['label'], 'offset': offset}
+        self.say(f"{label} 未成功，改用 {self.sources[following]['label']}" + (f'，从 {size_text(offset)} 处继续' if offset else ''))
+        self.current = following
+        self._restart_clock()
+
+    def _next(self):
+        """The next usable source after the current one, or None."""
+        for step in range(1, len(self.sources)):
+            index = (self.current + step) % len(self.sources)
+            if self.strikes[index] < NO_PROGRESS_RETRIES:
+                return index
         return None
-    mirror = probe_rate(mirrors[0]['url'].format(tag=tag).rstrip('/') + '/' + name)
-    print(f"[运行库] PyTorch 下载测速：官方 {official / 2**20:.1f} MB/s，{mirrors[0]['label']} {mirror / 2**20:.1f} MB/s", flush=True)
-    if mirror > 3 * official:
-        state = f"只有 {official / 2**20:.1f} MB/s" if official else "连不上"
-        return f"官方 PyTorch 来源{state}，{mirrors[0]['label']} {mirror / 2**20:.1f} MB/s"
-    return None
+
+    def _trial_candidate(self):
+        """The source after the last one tried (not the current one), or None."""
+        start = self.current if self.last_trial is None else self.last_trial
+        for step in range(1, len(self.sources) + 1):
+            index = (start + step) % len(self.sources)
+            if index != self.current and self.strikes[index] < NO_PROGRESS_RETRIES:
+                return index
+        return None
+
+    def _restart_clock(self):
+        now = self.clock()
+        self.samples.clear()
+        self.since = now
+        self.next_check = now + SPEED_GRACE_S
+
+    def _try_faster(self):
+        now = self.clock()
+        rate = self._rate(self.samples, now, SPEED_WINDOW_S)
+        candidate = self._trial_candidate()
+        if candidate is None:
+            return
+        self.last_trial = candidate
+        old, new = self.sources[self.current]['label'], self.sources[candidate]['label']
+        self.say(f'{old} 最近 {int(SPEED_WINDOW_S)} 秒只有 {rate_text(rate)}，试用 {new}')
+        offset = self._offset()
+        before = self.event
+        self.event = {'kind': 'trying', 'from': old, 'to': new, 'from_rate': round(rate, 1), 'offset': offset}
+        self.reading = candidate
+        self.emit('download', offset)  # the window says why the source line changed
+        self.reading = self.current
+        try:
+            trial = self._read(candidate, offset, trial_s=TRIAL_S)
+        except SourceFailed as failure:
+            self.event = before
+            if not failure.complete:
+                self._count_trial_failure(candidate, failure, self._offset() > offset)
+                self.say(f'{new} 未成功（{failure}），继续使用 {old}')
+            self.check_gap *= 2
+            self._restart_clock()
+            return
+        self.event = before
+        if trial >= SWITCH_FACTOR * max(rate, 1.0):
+            if self.sources[self.current]['official'] and not self.reason:
+                self.reason = f'官方 PyTorch 来源只有 {rate_text(rate)}，{new} {rate_text(trial)}'
+            self.event = {'kind': 'switched', 'from': old, 'to': new, 'from_rate': round(rate, 1),
+                          'to_rate': round(trial, 1), 'offset': offset}
+            self.say(f'{old} 只有 {rate_text(rate)}，已改用 {new}（{rate_text(trial)}），从 {size_text(offset)} 处继续')
+            self.current = candidate
+            self.last_trial = None
+            self.check_gap = SPEED_CHECK_S
+        elif self.total is None or self._offset() < self.total:
+            self.say(f'{new} 试下 {rate_text(trial)}，不比 {old} 快，继续使用 {old}')
+            self.check_gap *= 2
+        self._restart_clock()
+
+    def _count_trial_failure(self, index, failure, gained):
+        if failure.final:
+            self.strikes[index] = NO_PROGRESS_RETRIES
+        elif not gained:
+            self.strikes[index] += 1
+
+    @staticmethod
+    def _rate(samples, now, window):
+        while samples and now - samples[0][0] > window:
+            samples.popleft()
+        if len(samples) < 2 or samples[-1][0] - samples[0][0] < 1.0:
+            return 0.0
+        return (samples[-1][1] - samples[0][1]) / (samples[-1][0] - samples[0][0])
+
+    def _open(self, index, offset):
+        url = self.sources[index]['url'] + '/' + quote(self.name, safe='')
+        request = urllib.request.Request(url, headers={'Range': f'bytes={offset}-', 'User-Agent': WHEEL_USER_AGENT,
+                                                       'Accept-Encoding': 'identity'})
+        try:
+            response = self.opener(request, timeout=WHEEL_READ_TIMEOUT_S)
+        except urllib.error.HTTPError as error:
+            stated = UNSATISFIED_RANGE.fullmatch(str(error.headers.get('Content-Range', '')).strip()) if error.headers else None
+            try:
+                error.close()
+            except Exception:  # noqa: BLE001 - an error without a body has nothing to close
+                pass
+            if error.code == 416 and offset and stated and offset >= int(stated.group(1)):
+                self.total = int(stated.group(1))  # the partial already holds the whole file
+                raise SourceFailed('本地文件已完整', complete=True) from error
+            raise SourceFailed(f'HTTP {error.code}', final=error.code in (401, 403, 404, 410, 416)) from error
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            raise SourceFailed(str(getattr(error, 'reason', None) or error) or type(error).__name__) from error
+        status = getattr(response, 'status', None) or response.getcode()
+        match = CONTENT_RANGE.fullmatch(str(response.headers.get('Content-Range', '')).strip())
+        length = str(response.headers.get('Content-Length', '')).strip()
+        kind = str(response.headers.get('Content-Type', '')).split(';')[0].strip().lower()
+        if status == 206 and match and int(match.group(1)) == offset:
+            total = int(match.group(3))
+        elif status == 200 and offset == 0 and length.isdigit():
+            total = int(length)
+        else:
+            response.close()
+            raise SourceFailed('来源不支持断点续传' if status == 200 else f'HTTP {status} 返回范围不符', final=True)
+        if kind in ('text/html', 'application/json') or total <= 0:
+            response.close()
+            raise SourceFailed('来源返回网页而不是安装包', final=True)
+        if self.total is None:
+            self.total = total
+            self.sidecar.write_text(json.dumps({'total': total, 'sha256': sorted(self.hashes)}), 'utf8')
+        elif total != self.total:
+            response.close()
+            raise SourceFailed(f'文件大小 {total} 与已知的 {self.total} 不一致', final=True)
+        free = shutil.disk_usage(self.folder).free
+        if free < self.total - offset + (512 << 20):
+            response.close()
+            message = (f'磁盘空间不足：下载 {self.name} 还需要约 {size_text(self.total - offset)}，'
+                       f'安装时解压还要更多空间（当前可用 {size_text(free)}）')
+            print('[运行库] ' + message, flush=True)  # the workshop reads stdout only
+            raise RuntimeError(message)
+        return response
+
+    def _read(self, index, offset, trial_s=None):
+        """Append ``sources[index]`` to the partial file from ``offset``.
+
+        Returns 'done' when the file is complete, 'slow' when the speed check
+        wants a faster source, or for a trial the measured bytes per second.
+        """
+        response = self._open(index, offset)
+        self.reading = index
+        label = self.sources[index]['label']
+        if trial_s is None:
+            self.say(f'从 {label} 下载 {self.name}（{size_text(self.total)}）' +
+                     (f'，从 {size_text(offset)} 处继续' if offset else ''))
+        position = offset
+        started = self.clock()
+        try:
+            with response, self.partial.open('ab') as handle:
+                if handle.tell() != offset:
+                    raise SourceFailed('本地续传文件在下载时被改动', final=True)
+                while True:
+                    try:
+                        block = response.read1(WHEEL_BLOCK) if hasattr(response, 'read1') else response.read(WHEEL_BLOCK)
+                    except (OSError, http.client.HTTPException, ValueError) as error:
+                        raise SourceFailed(str(error) or type(error).__name__) from error
+                    if not block:
+                        break
+                    if position + len(block) > self.total:
+                        raise SourceFailed('响应长度超过文件大小', final=True)
+                    handle.write(block)
+                    position += len(block)
+                    now = self.clock()
+                    self._progress(now, position, sample=trial_s is None)
+                    if position == self.total:
+                        break  # every byte is here; do not wait for the server to close
+                    if trial_s is not None and now - started >= trial_s:
+                        return (position - offset) / max(now - started, 1e-3)
+                    if trial_s is None and self._too_slow(now, position):
+                        return 'slow'
+        finally:
+            self.reading = self.current
+        if position < self.total:
+            raise SourceFailed('连接提前结束')
+        return 'done' if trial_s is None else (position - offset) / max(self.clock() - started, 1e-3)
+
+    def _progress(self, now, position, *, sample):
+        if sample and (not self.samples or now - self.samples[-1][0] >= .5):
+            self.samples.append((now, position))
+        if not self.recent or now - self.recent[-1][0] >= .25:
+            self.recent.append((now, position))
+        if now - self.last_emit >= 1.0:
+            self.emit('download', position, self._rate(self.recent, now, 5.0))
+            self.last_emit = now
+        tenth = position * 10 // self.total
+        if tenth != self.last_tenth:
+            if self.last_tenth >= 0 and tenth < 10:
+                self.say(f'{self.package} 已下载 {tenth * 10}%（{size_text(position)} / {size_text(self.total)}）')
+            self.last_tenth = tenth
+
+    def _too_slow(self, now, position):
+        if now < self.next_check or self._trial_candidate() is None:
+            return False
+        self.next_check = now + self.check_gap
+        rate = self._rate(self.samples, now, SPEED_WINDOW_S)
+        if rate >= SLOW_BYTES_PER_SECOND:
+            return False
+        return not rate or (self.total - position) / rate > WORTH_SWITCHING_S
+
+
+def fetch_pytorch_wheels(folder, pins, version, entry, sources):
+    """Fetch the locked PyTorch wheels into ``folder``; return why the official source was left."""
+    reasons = []
+    for index, pin in enumerate(pins, 1):
+        name = pytorch_wheel_name(pin, version)
+        hashes = entry['packages'][normalize(pin.split('==', 1)[0])]['sha256']
+        reason = WheelDownload(folder, name, hashes, sources, index=index, count=len(pins)).fetch()
+        if reason:
+            reasons.append(reason)
+            # Later files of this environment start where the bytes came from.
+            sources = [item for item in sources if not item['official']] + [item for item in sources if item['official']]
+    return reasons[0] if reasons else ''
+
+
+def uv_step(arguments):
+    """Short Chinese name of a uv command for heartbeat lines."""
+    words = [str(item) for item in arguments if not str(item).startswith('-')]
+    if words[:2] == ['python', 'install']:
+        return '下载私有 Python'
+    if words[:1] == ['venv']:
+        return '创建运行环境'
+    if words[:2] == ['pip', 'install']:
+        return '下载并安装依赖'
+    if words[:2] == ['pip', 'check']:
+        return '检查依赖'
+    return '运行 uv'
+
+
+def python_install_dir(arguments):
+    """The --install-dir of a `uv python install` command, else None."""
+    words = [str(item) for item in arguments]
+    if '--install-dir' not in words or not any(words[i:i + 2] == ['python', 'install'] for i in range(len(words))):
+        return None
+    return Path(words[words.index('--install-dir') + 1])
+
+
+def remove_minor_version_links(folder):
+    """Remove the minor-version links uv is about to re-create, so that it only has to create them.
+
+    Only the link itself goes (os.rmdir on a junction never touches its target), plus an empty folder left where a
+    link was by an earlier failed re-creation (uv cannot recover from that). Returns {link: target} for restoring.
+    """
+    removed = {}
+    folder = Path(folder)
+    if not folder.is_dir():
+        return removed
+    for entry in sorted(folder.iterdir()):
+        if not MINOR_VERSION_LINK.match(entry.name):
+            continue
+        if getattr(os.lstat(entry), 'st_file_attributes', 0) & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+            removed[entry] = os.readlink(entry)
+            os.rmdir(entry)
+        elif entry.is_dir() and not any(entry.iterdir()):
+            os.rmdir(entry)
+    return removed
+
+
+def restore_minor_version_links(removed):
+    """Re-create the links a failed uv call did not bring back, pointing where they pointed before."""
+    for link, target in removed.items():
+        if not os.path.lexists(link):
+            import _winapi  # Windows only, like the link names
+            _winapi.CreateJunction(target.removeprefix('\\\\?\\'), str(link))
+            print(f'[运行库] 已恢复 Python 版本连接 {link.name}', flush=True)
+
+
+def retry_when_in_use(call, label):
+    """Run ``call`` again after a short wait when it failed only because Windows reported a file or folder as in
+    use (os error 32); any other failure, and the last attempt, is raised as before."""
+    for wait in (*IN_USE_WAITS_S, None):
+        try:
+            return call()
+        except subprocess.CalledProcessError as error:
+            if wait is None or not IN_USE.search(str(error.output or '')):
+                raise
+            print(f'[运行库] {label}：Windows 报告文件或文件夹正在被使用，{wait:g} 秒后重试', flush=True)
+            time.sleep(wait)
 
 
 def mirror_list(root, key):
@@ -156,6 +671,7 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--uv', type=Path, required=True)
     parser.add_argument('--models', required=True)
+    parser.add_argument('--repair-roles', default='')
     args = parser.parse_args()
     requested = set(args.models.split(','))
     if requested & {'diarizen', 'diarizen_embedding', 'vibevoice_1_5b', 'vibevoice_7b'}:
@@ -163,42 +679,66 @@ def main():
     root = args.root.resolve()
     sys.path.append(str(root))
     from twobyteasr.runtime_paths import managed_runtime_root
-    from twobyteasr.runtime_registry import register_runtime, load_registry
+    from twobyteasr.system.runtime_registry import register_runtime, load_registry
+    from twobyteasr.system.deployment import event, managed_environment, run_command
     # setup_managed_backend.ps1 passes the folder it locked (2BYTEASR_RUNTIME_ROOT).
     managed = managed_runtime_root()
+    clean = managed_environment(runtime=managed)
+    private_python = Path(os.environ.get('TWOBYTEASR_PRIVATE_PYTHON_DIR') or managed/'python')
+    if not private_python.resolve().is_relative_to((managed/'python').resolve()):
+        raise RuntimeError('专用 Python 目录越界')
+    clean['UV_PYTHON_INSTALL_DIR'] = str(private_python)
+    os.environ.clear()
+    os.environ.update(clean)
     # Always use this app's cache; a caller's global UV_CACHE_DIR never leaks in.
     os.environ['UV_CACHE_DIR'] = str(managed / 'download-cache')
     # Hardlinks survive cache unlinking; symbolic links would tie installed
     # environments to a disposable package cache.
     os.environ['UV_LINK_MODE'] = 'hardlink'
-    from twobyteasr.runtime_download_cache import mark_runtime_cache_state
+    from twobyteasr.system.runtime_download_cache import mark_runtime_cache_state
     mark_runtime_cache_state('installing')
     contract = json.loads((root / 'dependencies.lock.json').read_text('utf-8-sig'))
-    def run(arguments):
+    # The workshop's "ModelScope" / "HF 镜像" choice (download_models.ps1) asks
+    # for domestic sources first; once official PyTorch proved slow or failed in
+    # this run, later environments start from the mirrors as well.
+    prefer_mirror = os.environ.get(RUNTIME_SOURCE_ENV, '').strip().lower() == 'mirror'
+    mirror_reason = '已选择国内下载源' if prefer_mirror else ''
+    if prefer_mirror:
+        print('[运行库] 已选择国内下载源：运行环境先用国内镜像，每个文件仍按锁定 SHA-256 校验', flush=True)
+    def run(arguments, step='运行 uv'):
         print('[运行库] '+subprocess.list2cmdline([str(x) for x in arguments]), flush=True)
         # The application's Windows process policy defaults unspecified stdio
         # to DEVNULL. Explicit pipes keep bootstrap diagnostics visible.
-        process=subprocess.Popen([str(x) for x in arguments],cwd=managed,
-            stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,encoding='utf8',errors='replace',
-            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        for line in process.stdout:print(line,end='',flush=True)
-        code=process.wait()
-        if code:raise subprocess.CalledProcessError(code,[str(x) for x in arguments])
-    def uv(*arguments):
-        run([args.uv, '--no-config', '--system-certs', *arguments])
-    def install_python(version):
-        install = ('python', 'install', version, '--install-dir', managed/'python', '--no-bin', '--no-registry')
-        try:
-            return uv(*install)
-        except subprocess.CalledProcessError as error:
-            failure = error
-        for mirror in mirror_list(root, 'python_mirrors'):
-            # uv checks every Python archive against the SHA-256 built into uv.
-            print(f"[运行库] 默认来源未能取得 Python {version}，改用 {mirror['label']}，由 uv 按内置 SHA-256 校验", flush=True)
+        phase = 'environment_checking' if step == '检查依赖' else 'dependencies_installing'
+        if step == '下载私有 Python': phase = 'interpreter_preparing'
+        install_dir = python_install_dir(arguments)
+        def attempt():
+            links = remove_minor_version_links(install_dir) if install_dir else {}
             try:
-                return uv(*install, '--mirror', mirror['url'])
-            except subprocess.CalledProcessError:
-                continue
+                return run_command(arguments, cwd=managed, phase=phase, component=step,
+                                   timeout=120 if phase=='environment_checking' else 900)
+            finally:
+                restore_minor_version_links(links)
+        return retry_when_in_use(attempt, step)
+    def uv(*arguments):
+        # Existing venv files can share hardlinks with uv's expanded cache.
+        # Explicit repair must not copy an in-place corruption back from it.
+        run([args.uv, '--no-config', '--system-certs',
+             *(['--no-cache'] if args.repair_roles else []), *arguments], uv_step(arguments))
+    def install_python(version):
+        install = ('python', 'install', version, '--install-dir', private_python, '--no-bin', '--no-registry')
+        # uv checks every Python archive against the SHA-256 built into uv.
+        attempts = [(None, '默认来源')] + [(item['url'], item['label']) for item in mirror_list(root, 'python_mirrors')]
+        if prefer_mirror:
+            attempts = attempts[1:] + attempts[:1]
+        failure = None
+        for number, (url, label) in enumerate(attempts):
+            if number:
+                print(f"[运行库] {attempts[number - 1][1]}未能取得 Python {version}，改用 {label}，由 uv 按内置 SHA-256 校验", flush=True)
+            try:
+                return uv(*install, *(('--mirror', url) if url else ()))
+            except (subprocess.CalledProcessError, TimeoutError) as error:
+                failure = failure or error
         raise SourcesExhausted(f'Python {version} 下载失败：默认来源与国内备用来源都没有成功') from failure
     wheel_manifest = root/'wheels/model_wheels.json'
     if wheel_manifest.is_file():
@@ -218,33 +758,73 @@ def main():
                 major = int(result.stdout.strip().split('.')[0])
                 tag = contract['runtime']['cuda_wheel_modern' if major >= 12 else 'cuda_wheel']
     registry = load_registry()
+    repair_roles = set(filter(None, args.repair_roles.split(',')))
+    receipt_issues = {}
+    def read_receipt(path, role):
+        value, issue = read_runtime_receipt(path, role, set(contract['models']))
+        if issue and str(path) not in receipt_issues:
+            receipt_issues[str(path)] = issue
+            event('environment_checking', 'warning', component=role,
+                  reason='历史模型集合无法恢复；旧清单保留，本次仅依据可信的当前请求。',
+                  receipt_issue=issue, current_request=sorted(requested),
+                  repair_roles=sorted(repair_roles))
+            print(f'[运行库] {role} 的历史模型集合无法恢复：{path}。旧清单原样保留；'
+                  f'本次仅按当前请求与明确修复范围准备，未请求修复的角色保持原登记。',flush=True)
+        return value
     # The same pinned main contract underlies standard adapters. Union only the
     # app-managed selection, and create a new environment when the set changes.
     previous_main_models = set()
     previous = registry.get('main', {}).get('python_executable', '')
     if previous and Path(previous).resolve().is_relative_to(managed.resolve()):
         receipt = Path(previous).parent.parent / 'managed-runtime.json'
-        if receipt.is_file():
-            previous_identity=json.loads(receipt.read_text('utf8'))
-            if previous_identity.get('role')!='main':
-                raise RuntimeError('主运行库注册角色不匹配，拒绝把其他模型环境当作 main 覆盖。')
-            previous_main_models.update(previous_identity.get('models', []))
+        previous_identity=read_receipt(receipt,'main')
+        if previous_identity is not None:
+            previous_main_models.update(previous_identity['models'])
     for role, models in planned_roles(requested, previous_main_models):
+        if repair_roles and role not in repair_roles: continue
         env_contract = contract['environments'][role]
         packages = role_packages(contract, role, models)
         version = role_python(role)
         identity = dict(role=role, models=sorted(models), packages=packages, python=version,
                         torch=env_contract['torch'] if models else None, tag=tag, schema=1)
-        signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
+        # Model labels describe the consumers; the runtime identity is the
+        # interpreter and dependency contract. Adding an aligner already
+        # covered by qwen-asr must not reinstall an identical multi-GB venv.
+        signature = hashlib.sha256(json.dumps(
+            {key:value for key,value in identity.items() if key!='models'},sort_keys=True).encode()).hexdigest()[:16]
         runtime = managed / role / signature
+        registered = registry.get(role, {}).get('python_executable', '')
+        if registered:
+            candidate = Path(registered).parent.parent
+            if candidate.resolve().is_relative_to((managed/role).resolve()):
+                old_identity = read_receipt(candidate/'managed-runtime.json',role)
+                if old_identity is not None and all(old_identity.get(k)==v for k,v in identity.items() if k!='models'):
+                    runtime = candidate
         python = runtime / 'Scripts/python.exe'
         receipt = runtime / 'managed-runtime.json'
-        if receipt.is_file() and python.is_file():
-            uv('pip', 'check', '--python', python)
-            register_runtime(role, str(python), source='managed-model-bootstrap')
-            print('[运行库] 复用已验证环境 '+str(runtime), flush=True)
-            continue
-        base = managed / 'python' / f'cpython-{version}-windows-x86_64-none/python.exe'
+        saved_identity=read_receipt(receipt,role) if runtime.exists() else None
+        matching_identity=(saved_identity is not None and all(saved_identity.get(k)==v for k,v in identity.items() if k!='models'))
+        if matching_identity and python.is_file() and role not in repair_roles:
+            try:
+                uv('pip', 'check', '--python', python)
+                validate_runtime(python, root, identity, managed)
+            except (subprocess.CalledProcessError, RuntimeError, TimeoutError, OSError) as exc:
+                event('environment_checking', 'failed', component=role, reason=str(exc), next='rebuild_new_directory')
+            else:
+                if saved_identity.get('models')!=identity['models']:
+                    save(receipt,dict(saved_identity,**identity))
+                register_runtime(role, str(python), source='managed-model-bootstrap')
+                print('[运行库] 复用已验证环境 '+str(runtime), flush=True)
+                continue
+        # Never install over a damaged or interrupted environment and never
+        # move a venv after creation (uv launchers contain absolute paths).
+        if runtime.exists():
+            runtime = managed/role/(signature+'-'+uuid.uuid4().hex[:8])
+            python = runtime/'Scripts/python.exe'
+            receipt = runtime/'managed-runtime.json'
+        event('environment_building', component=role, target=str(runtime), previous=registered,
+              reason='explicit_repair' if role in repair_roles else 'missing_or_invalid')
+        base = private_python / f'cpython-{version}-windows-x86_64-none/python.exe'
         install_python(version)
         if not python.is_file():
             uv('venv', '--no-project', '--python', base, '--managed-python', '--no-python-downloads', runtime)
@@ -261,6 +841,21 @@ def main():
         source = root / contract['sources']['moss']['path'] if role == 'moss' else None
         mirror = {'entry': None, 'used': False}
         build = runtime/'mirror-build-constraints.txt'
+        entry = hashed_environment(root, role, version, tag, pins)[0]
+        # The CPU build ships in wheels/; a CUDA build is fetched by this script
+        # (resumable, with progress) when its file is in the locked hash table.
+        cpython = 'cp' + version.replace('.', '')[:3]
+        local_torch = bool(links) and all(any((root/'wheels').glob(f"{pin.replace('==', '-')}-{cpython}-*.whl")) for pin in torch_pins)
+        left_official = ''
+        if torch_pins and not local_torch and entry:
+            wheelhouse = managed / WHEELHOUSE
+            left_official = fetch_pytorch_wheels(wheelhouse, torch_pins, version, entry,
+                                                 pytorch_sources(root, tag, prefer_mirror))
+            links = [*links, '--find-links', str(wheelhouse)]
+            local_torch = True
+            if left_official and not prefer_mirror:
+                prefer_mirror, mirror_reason = True, left_official
+                print('[运行库] 本次官方 PyTorch 来源不理想，之后的环境直接先用国内镜像', flush=True)
         def install_from_mirrors(failure, why='官方来源未成功'):
             # Once an official source fails, the whole environment (PyTorch,
             # packages, MOSS dependencies) is installed from mirrors in one
@@ -278,37 +873,36 @@ def main():
                 for name, item in sorted(entry['packages'].items())), 'utf8')
             build.write_text(mirror_build_constraints(root), 'utf8')
             requirements = [*torch_pins, *package_pins, *pinned_names(entry, entry.get('extra_requirements', []))]
-            # The CPU build ships in wheels/; only CUDA builds need a PyTorch mirror.
-            cpython = 'cp' + version.replace('.', '')[:3]
-            bundled = links and all(any((root/'wheels').glob(f"{pin.replace('==', '-')}-{cpython}-*.whl")) for pin in torch_pins)
-            torch_mirrors = mirror_list(root, 'pytorch_mirrors') if torch_pins and not bundled else [None]
-            for pypi in mirror_list(root, 'pypi_mirrors'):
-                for torch_mirror in torch_mirrors or [None]:
-                    torch_links = []
-                    if torch_mirror:
-                        base_url = torch_mirror['url'].format(tag=tag).rstrip('/')
-                        torch_links = ['--find-links', base_url+'/torch/', '--find-links', base_url+'/torchaudio/']
-                    label = pypi['label'] + (' + ' + torch_mirror['label'] if torch_mirror else '')
-                    print(f'[运行库] {why}，改用 {label}；每个包都按锁定 SHA-256 校验', flush=True)
-                    # USTC answers uv's default parallel downloads with HTTP 429
-                    # (measured 2026-10-14); its entry lowers the concurrency.
-                    limit = str(pypi.get('concurrent_downloads') or '')
-                    saved = os.environ.get('UV_CONCURRENT_DOWNLOADS')
-                    if limit:
-                        os.environ['UV_CONCURRENT_DOWNLOADS'] = limit
-                    try:
-                        uv('pip', 'install', '--python', python, '--index-url', pypi['url'], *torch_links, *links,
-                           '--constraint', str(hashed.relative_to(managed)),
-                           '--build-constraint', str(build.relative_to(managed)), *requirements)
-                    except subprocess.CalledProcessError:
-                        continue
-                    finally:
-                        if limit and saved is None:
-                            os.environ.pop('UV_CONCURRENT_DOWNLOADS', None)
-                        elif limit:
-                            os.environ['UV_CONCURRENT_DOWNLOADS'] = saved
-                    mirror.update(entry=entry, used=True, index=pypi['url'], constraints=str(hashed.relative_to(managed)))
-                    return
+            # PyTorch is already on disk here (bundled CPU build or a verified
+            # download in the wheelhouse), so only PyPI needs a mirror.
+            official_index = dict(label='PyPI 官方',url='https://pypi.org/simple')
+            indexes = mirror_list(root, 'pypi_mirrors')
+            indexes = indexes+[official_index] if prefer_mirror else [official_index]+indexes
+            binary_only = [arg for name in entry['packages'] if name not in entry.get('sdist_only', [])
+                           for arg in ('--only-binary', name)]
+            for attempt, pypi in enumerate(indexes, 1):
+                event('dependencies_installing', component=role, attempt=attempt, source=pypi['label'],
+                      reason=why if attempt==1 else 'previous_source_failed', allowed_source_builds=entry.get('sdist_only',[]))
+                print(f"[运行库] {pypi['label']}（{attempt}/{len(indexes)}）；固定版本与 SHA-256 校验；只允许已声明的纯 Python 源码包构建", flush=True)
+                # USTC answers uv's default parallel downloads with HTTP 429
+                # (measured 2026-10-14); its entry lowers the concurrency.
+                limit = str(pypi.get('concurrent_downloads') or '')
+                saved = os.environ.get('UV_CONCURRENT_DOWNLOADS')
+                if limit:
+                    os.environ['UV_CONCURRENT_DOWNLOADS'] = limit
+                try:
+                    uv('pip', 'install', '--python', python, '--index-url', pypi['url'], *links,
+                       '--constraint', str(hashed.relative_to(managed)),
+                       '--build-constraint', str(build.relative_to(managed)), *binary_only, *requirements)
+                except (subprocess.CalledProcessError, TimeoutError):
+                    continue
+                finally:
+                    if limit and saved is None:
+                        os.environ.pop('UV_CONCURRENT_DOWNLOADS', None)
+                    elif limit:
+                        os.environ['UV_CONCURRENT_DOWNLOADS'] = saved
+                mirror.update(entry=entry, used=True, index=pypi['url'], constraints=str(hashed.relative_to(managed)))
+                return
             raise SourcesExhausted('运行库下载失败：官方来源与国内镜像都没有成功') from failure
         def official_or_mirror(official, requirements):
             if mirror['used']:
@@ -319,36 +913,35 @@ def main():
                 install_from_mirrors(error)
         if source is not None and not (source/'pyproject.toml').is_file():
             raise RuntimeError('安装包缺少已锁定的 MOSS 源码，请修复安装包；不需要系统 Git')
-        if models and hashed_environment(root, role, version, tag, pins)[0]:
-            slow = slow_official_pytorch(root, tag, version, torch_pins)
-            if slow:
-                install_from_mirrors(RuntimeError(slow), why=slow)
+        if entry:
+            why = left_official or mirror_reason or '固定依赖清单'
+            install_from_mirrors(RuntimeError(why), why=why)
+        else:
+            raise RuntimeError(f'锁定哈希表缺少 {role} 环境的当前版本组合；未尝试未锁定依赖，请导出诊断。')
         if models:
             official_or_mirror(['--index-url', f'https://download.pytorch.org/whl/{tag}', *links], torch_pins)
         official_or_mirror(['--index-url', 'https://pypi.org/simple', *links, '--constraint', constraint_arg], package_pins)
         if source is not None:
-            moss_target = str(source)+'[torch-runtime]'
-            official_or_mirror([*links, '--constraint', constraint_arg], [moss_target])
-            if mirror['used']:
-                # Its dependencies came with the mirror resolution above; the
-                # locked source is built with the hash-pinned build backend.
-                uv('pip', 'install', '--python', python, '--index-url', mirror['index'], *links,
-                   '--constraint', mirror['constraints'], '--build-constraint', str(build.relative_to(managed)), moss_target)
+            install_moss_source_offline(uv,root,source,python,build,managed)
         if models & {'firered_vad','firered_aed','firered_llm'}:
             firered = root / contract['sources']['firered']['path']
             if not (firered/'fireredasr2s/__init__.py').is_file():
                 raise RuntimeError('安装包缺少已锁定 FireRed 源码；不需要系统 Git')
         uv('pip', 'check', '--python', python)
-        frozen = subprocess.check_output([str(args.uv),'--no-config','pip','freeze','--python',str(python)],
-                                         creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        validate_runtime(python, root, identity, managed)
+        frozen = run_command([args.uv,'--no-config','pip','freeze','--python',python],
+            cwd=managed,phase='environment_checking',component=role+' package inventory',timeout=120,capture=True).encode('utf8')
         if mirror['used']:
             verify_mirror_install(frozen.decode('utf8', 'replace'), mirror['entry'])
         (runtime/'installed.lock.txt').write_bytes(frozen)
-        save(receipt, dict(identity, prepared_at=time.time()))
-        from twobyteasr.model_runtime_cleanup import write_runtime_inventory
+        save(receipt, dict(identity, prepared_at=time.time(), previous_runtime=registered,
+                           previous_receipt_issues=list(receipt_issues.values()),
+                           historical_models_complete=not any(x['role']==role for x in receipt_issues.values())))
+        from twobyteasr.local_models.model_runtime_cleanup import write_runtime_inventory
         write_runtime_inventory(runtime)
         register_runtime(role, str(python), source='managed-model-bootstrap')
-    from twobyteasr.runtime_download_cache import mark_runtime_cache_ready
+        event('runtime_ready', 'done', component=role, interpreter=str(python), previous=registered)
+    from twobyteasr.system.runtime_download_cache import mark_runtime_cache_ready
     mark_runtime_cache_ready()
 
 
@@ -391,7 +984,7 @@ if __name__ == '__main__':
     except RemovedModelError:
         raise
     except BaseException as error:
-        from twobyteasr.runtime_download_cache import mark_runtime_cache_state
+        from twobyteasr.system.runtime_download_cache import mark_runtime_cache_state
         mark_runtime_cache_state('paused')
         if isinstance(error, SourcesExhausted):
             # setup_managed_backend.ps1 reports this exit code as a network failure.

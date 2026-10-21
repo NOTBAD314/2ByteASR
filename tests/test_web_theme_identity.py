@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 import pytest
-from twobyteasr.web_theme import WebThemeDocument,parse_web_theme_sections,export_theme_archive,import_theme_archive,theme_archive_html
-from twobyteasr.theme_draft import canonical_theme,theme_structure
+from twobyteasr.caption_design.web_theme import WebThemeDocument,parse_web_theme_sections,export_theme_archive,import_theme_archive,theme_archive_html
+from twobyteasr.caption_design.theme_draft import canonical_theme,theme_structure
 
 FIXTURE=Path(__file__).parent/'fixtures/death_stranding_original.txt'
 
@@ -35,7 +35,7 @@ def test_export_failure_and_cancel_publish_no_partial_archive(tmp_path):
 
 
 def test_telemetry_bars_are_not_text_plates_but_flat_text_plate_is_rejected():
-    from twobyteasr.web_theme import _reject_flat_plate
+    from twobyteasr.caption_design.web_theme import _reject_flat_plate
     theme=original()
     theme['cueHtml']='<div class="cargo-plate"><div class="wave-bar"></div>{{words}}</div>'
     theme['cueCss']='.cargo-plate{font-family:var(--wt-font);background:linear-gradient(#333,#111)} .wave-bar{width:2px;background:#abc}'

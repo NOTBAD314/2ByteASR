@@ -22,8 +22,8 @@ def _app() -> QApplication:
 
 
 def _api_page(monkeypatch):
-    from twobyteasr import llm_config
-    from twobyteasr.model_workshop import ModelWorkshopPage
+    from twobyteasr.providers import llm_config
+    from twobyteasr.local_models.model_workshop import ModelWorkshopPage
 
     monkeypatch.setattr(llm_config, "read_api_key", lambda p, b: ("sk", "scoped"))
     return ModelWorkshopPage(
@@ -75,7 +75,7 @@ def test_api_cards_have_configure_button(monkeypatch):
 
 
 def test_validate_final_cues_clamps_overlong_short_subtitles():
-    from twobyteasr.output import validate_final_cues
+    from twobyteasr.subtitle_rules.output import validate_final_cues
 
     def cue(text, start, end):
         return SimpleNamespace(text=text, start=start, end=end, speaker_id="S00", speaker="S00")
@@ -102,7 +102,7 @@ def test_validate_final_cues_clamps_overlong_short_subtitles():
 
 
 def test_asr_api_display_uses_provider_and_model():
-    from twobyteasr.llm_config import asr_api_display
+    from twobyteasr.providers.llm_config import asr_api_display
 
     text = asr_api_display(
         {

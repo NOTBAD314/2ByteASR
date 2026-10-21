@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 from tests.test_stage9_cache_and_budget import context
-from twobyteasr.models import SpeechSegment, WordUnit
-from twobyteasr.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry, TermResolver, remap_words
+from twobyteasr.recognition.transcript_data import SpeechSegment, WordUnit
+from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary, TermEntry, TermResolver, remap_words
 
 
 def data():
@@ -27,7 +27,7 @@ def proposals():
 
 
 def test_actual_snapshot_and_recall_preserve_missing_terms():
-    from twobyteasr.terminology_retrieval import retrieve_candidates
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
     catalog = snapshot()
     assert TermResolver(catalog).effective_term_count == 86
     assert 'Stew' in catalog.canonical_terms and 'CHICHOO' in catalog.canonical_terms
@@ -41,7 +41,7 @@ def test_actual_snapshot_and_recall_preserve_missing_terms():
 
 
 def test_actual_three_proposals_enter_production_safety(context, monkeypatch):
-    from twobyteasr import polishing
+    from twobyteasr.subtitle_rules import polishing
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = snapshot()
@@ -50,7 +50,7 @@ def test_actual_three_proposals_enter_production_safety(context, monkeypatch):
         body = json.loads(messages[1]['content'])
         assert body['terminology_retrieval']['effective_terms'] == 86
         return json.dumps({'checked_ids': [x.segment_id for x in source], 'cues': proposals()}, ensure_ascii=False)
-    monkeypatch.setattr('twobyteasr.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: SimpleNamespace(complete=complete))
     result = polishing.call_correction_api(source, [], '', '', 'GE vs EDG', '', [], [], [],
         glossary_evidence=owner.glossary_snapshot.evidence())
     assert result[37] == 'Stew点掉了一个'
@@ -71,8 +71,8 @@ def test_actual_three_proposals_enter_production_safety(context, monkeypatch):
 ])
 def test_risky_counterexamples_are_explained(mutate, rule):
     import subtitle_core
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     source = rows()
     candidates = retrieve_candidates(snapshot(), source)
     if mutate == 'unconfirmed':
@@ -95,7 +95,7 @@ def test_risky_counterexamples_are_explained(mutate, rule):
 
 def test_spelling_context_does_not_authorize_an_intentional_repeat():
     import subtitle_core
-    from twobyteasr.correction_safety import apply_correction_edits
+    from twobyteasr.subtitle_rules.correction_safety import apply_correction_edits
     text = '再往前走一步'
     decisions = []
     result, applied = apply_correction_edits(text, [], [{'from': '再往', 'to': '在往', 'basis': 'context'}],
@@ -105,8 +105,8 @@ def test_spelling_context_does_not_authorize_an_intentional_repeat():
 
 
 def test_bridge_cannot_authorize_a_changed_text_or_other_scope():
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.terminology_support import confirmed_patch_evidence
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.glossary.terminology_support import confirmed_patch_evidence
     candidates = retrieve_candidates(snapshot(), rows())
     assert confirmed_patch_evidence('stu', 'Stew', 'glossary+context', candidates,
         37, 'stu现在去另一边') is None
@@ -116,8 +116,8 @@ def test_bridge_cannot_authorize_a_changed_text_or_other_scope():
 
 @pytest.mark.parametrize('reference', ['panda也收掉了PatMen', 'panda也收掉了，PatMen', 'panda也收掉PatMen'])
 def test_batch_bridge_cannot_override_current_asr_counterevidence(reference):
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.terminology_support import confirmed_patch_evidence
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.glossary.terminology_support import confirmed_patch_evidence
     source = rows()
     source[37].moss_text = source[37].text
     source[37].qwen_asr_text = reference
@@ -128,8 +128,8 @@ def test_batch_bridge_cannot_override_current_asr_counterevidence(reference):
 
 
 def test_same_cue_bridge_cannot_override_two_explicit_asr_counterexamples():
-    from twobyteasr.terminology_retrieval import retrieve_candidates
-    from twobyteasr.terminology_support import confirmed_patch_evidence
+    from twobyteasr.glossary.terminology_retrieval import retrieve_candidates
+    from twobyteasr.glossary.terminology_support import confirmed_patch_evidence
     source = rows()
     source[36].moss_text = source[36].qwen_asr_text = 'PatMen点掉了一个'
     candidates = retrieve_candidates(snapshot(), source)
@@ -151,7 +151,7 @@ def test_word_remap_keeps_outer_edges_and_marks_derived_spans():
 
 def test_names_and_enabled_aliases_are_not_split(context):
     import subtitle_core
-    from twobyteasr.segmentation import repair_lexical_boundary_offsets, lexical_forbidden_boundary_offsets
+    from twobyteasr.subtitle_rules.segmentation import repair_lexical_boundary_offsets, lexical_forbidden_boundary_offsets
     _, owner, _ = context
     owner.enable_domain_terms = True
     owner.glossary_snapshot = GlossarySnapshot((GlossaryLibrary('v','词库','1',
@@ -168,7 +168,7 @@ def test_names_and_enabled_aliases_are_not_split(context):
 
 def test_reduplicated_entity_surface_kept_without_guessing_a_mapping(context):
     import subtitle_core
-    from twobyteasr.segmentation import repair_lexical_boundary_offsets
+    from twobyteasr.subtitle_rules.segmentation import repair_lexical_boundary_offsets
     _, owner, _ = context
     owner.enable_domain_terms = False
     owner.glossary_snapshot = GlossarySnapshot(())

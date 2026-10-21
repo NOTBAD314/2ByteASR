@@ -132,3 +132,33 @@ def test_same_speaker_overlapping_chunks_keep_source_text_order():
         previous.end <= current.start
         for previous, current in zip(normalized, normalized[1:])
     )
+
+
+def test_unit_longer_than_a_cue_never_dead_ends_local_repair():
+    """2026-10-15 user report (Japanese task, drawn-out moans): one aligned
+    unit longer than MAX_SUBTITLE_SECONDS could not form a cue, so its
+    position was unreachable. A neighbour exactly PREFERRED_MAX_SUBTITLE_CHARS
+    long still linked to it (an infinite total tied and the tie-break preferred
+    that length); the chain dead-ended and the whole task failed with
+    "Qwen 单条本地修复未覆盖完整原文。". It now takes the existing hard split,
+    which keeps every character."""
+    from types import SimpleNamespace
+
+    from subtitle_core import MAX_SUBTITLE_SECONDS, PREFERRED_MAX_SUBTITLE_CHARS
+    from twobyteasr.subtitle_rules.segmentation import locally_repair_resegmented_cue
+
+    text = "きもちいいですねほんとうにああ" + "あ" + "すごいですね"
+    long_index = 15
+    units, at = [], 0.0
+    for index, char in enumerate(text):
+        length = MAX_SUBTITLE_SECONDS + 1.0 if index == long_index else 0.25
+        units.append(SimpleNamespace(start=at, end=at + length, text=char))
+        at += length + 0.02
+    # A piece of exactly the preferred length can end at the long unit.
+    assert long_index >= PREFERRED_MAX_SUBTITLE_CHARS
+
+    cues = locally_repair_resegmented_cue(text, units)
+
+    assert "".join(cue.text for cue in cues) == text
+    assert all(cue.end > cue.start for cue in cues)
+    assert all(previous.end <= current.start for previous, current in zip(cues, cues[1:]))

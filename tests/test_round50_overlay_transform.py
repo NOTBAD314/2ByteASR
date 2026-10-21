@@ -18,8 +18,8 @@ import pytest  # noqa: E402
 from PySide6.QtCore import QPointF, QRectF  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from twobyteasr.studio_ui import SubtitleStudioPage  # noqa: E402
-from twobyteasr.video_compositor import VideoCompositionScene  # noqa: E402
+from twobyteasr.studio.studio_ui import SubtitleStudioPage  # noqa: E402
+from twobyteasr.playback.video_compositor import VideoCompositionScene  # noqa: E402
 
 
 def _app() -> QApplication:
@@ -175,7 +175,7 @@ def test_secondary_request_same_signature_allows_paused_reassert():
     """同 signature 暂停态不再盲目早退（seek 被吞后可低频重发）。"""
     _app()
     from PySide6.QtCore import QObject, Signal
-    from twobyteasr.secondary_video_legacy import _DecoderWorker, SourceState
+    from twobyteasr.playback.secondary_video_legacy import _DecoderWorker, SourceState
 
     worker = _DecoderWorker()
     worker._ensure_player()

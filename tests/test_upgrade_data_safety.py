@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr import runtime_paths, settings
+from twobyteasr import runtime_paths
+from twobyteasr.storage import settings
 
 
 @pytest.fixture

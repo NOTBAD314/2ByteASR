@@ -25,7 +25,7 @@ WORK = ROOT / "tmp" / "native_tail_probe"
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from twobyteasr.studio_ui import SubtitleStudioPage
+from twobyteasr.studio.studio_ui import SubtitleStudioPage
 import os
 
 # native default-style cues with exact project spans

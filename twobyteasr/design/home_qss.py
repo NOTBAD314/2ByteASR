@@ -7,11 +7,11 @@ a loud fill. Section titles 19px, field labels 13px, taller primary controls,
 a centred hero drop zone while no media is loaded, and a bottom bar that names
 what is missing. Appended after the surface sheet so it owns these selectors.
 """
-from ..typography import UI_FONT_STACK
+from .typography import UI_FONT_STACK
 
 
 def build_home_qss(t):
-    from ..ui_theme import blend_hex
+    from .ui_theme import blend_hex
     light = t.is_light
     # 2026-10-17 (user: on dark themes the colour "有點醜和搶目光", light is
     # fine): dark themes keep the zone and identity hues to a faint hint on the
@@ -63,6 +63,10 @@ QFrame#homeContentProfile {{ background: {band['content']}; border: 0; border-to
 QFrame#homeContentProfile QLabel#homeCardIcon {{ background: {band_chip['content']}; border-radius: 10px; }}
 QFrame#homeContentProfile QWidget#homeTermSearchPanel, QFrame#homeContentProfile QWidget#homeContentPlain {{ background: transparent; }}
 QLabel#homeLanguageTitle {{ color: {t.text}; font-size: 15px; font-weight: 600; background: transparent; }}
+QWidget#homeLanguageField {{ background: transparent; }}
+QLabel#homeLanguageCaption {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; background: transparent; }}
+QLabel#homeLanguageArrow {{ color: {t.text_muted}; font-size: 16px; font-weight: 700; background: transparent; }}
+QLabel#homeLanguageSummary {{ color: {t.text_secondary}; font-size: 13px; font-weight: 600; background: transparent; }}
 QLabel#homeSectionTitle {{ color: {t.text}; font-family: {UI_FONT_STACK}; font-size: 19px;
     font-weight: 600; background: transparent; border: 0; }}
 QLabel#homeSectionHint {{ color: {t.text_secondary}; font-size: 13px; font-weight: 500; background: transparent; }}

@@ -11,10 +11,10 @@ from PySide6.QtCore import QEventLoop, QObject, QRectF, QTimer, Signal, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QWidget
 
-from twobyteasr.studio_hub import StudioHubMixin
-from twobyteasr.studio_timeline import WaveformTimeline
-from twobyteasr.studio_video_flow import StudioVideoFlowMixin
-from twobyteasr.video_compositor import VideoCompositionScene
+from twobyteasr.studio.studio_hub import StudioHubMixin
+from twobyteasr.studio.studio_timeline import WaveformTimeline
+from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
+from twobyteasr.playback.video_compositor import VideoCompositionScene
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def test_waveform_cache_reuses_path_and_invalidates_view_or_source(app):
         def __init__(self): self.reads = 0
         def read_window(self, *args):
             self.reads += 1
-            from twobyteasr.waveform_cache import WaveformLevel
+            from twobyteasr.playback.waveform_cache import WaveformLevel
             return WaveformLevel(0,2,500.,"fixture"), np.array([[-.5, .5], [-.3, .8]], dtype="float32")
     timeline = WaveformTimeline(); cache = Cache(); rect = QRectF(0, 100, 800, 28)
     def draw(target=cache, start=0, shape=rect):

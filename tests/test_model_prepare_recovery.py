@@ -8,7 +8,7 @@ import pytest
 
 
 def test_unknown_runtime_role_cannot_replace_main(tmp_path, monkeypatch):
-    from twobyteasr import runtime_registry as registry
+    from twobyteasr.system import runtime_registry as registry
     monkeypatch.setattr(registry, 'runtimes_root', lambda: tmp_path)
     main = tmp_path/'main/Scripts/python.exe'
     main.parent.mkdir(parents=True)

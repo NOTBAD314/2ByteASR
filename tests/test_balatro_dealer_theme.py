@@ -1,4 +1,4 @@
-from twobyteasr.web_theme import builtin_web_themes,sanitize_html,theme_archive_html
+from twobyteasr.caption_design.web_theme import builtin_web_themes,sanitize_html,theme_archive_html
 
 def test_svg_viewbox_survives_safe_import():
     output=sanitize_html('<svg viewBox="0 0 64 72"><path d="M0 0L1 1"/></svg>',section='cue')

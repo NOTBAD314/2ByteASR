@@ -2,7 +2,7 @@
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QWidget,QPushButton,QVBoxLayout
 from tests.test_storage_maintenance_ui import qapp
-from twobyteasr.toolbar_scope_audit import pixmap_evidence,widget_paint_state,capture_raw_widgets,pixel_gate_results
+from twobyteasr.acceptance.toolbar_scope_audit import pixmap_evidence,widget_paint_state,capture_raw_widgets,pixel_gate_results
 
 
 def test_flat_capture_is_not_visual_evidence_but_real_controls_are(qapp,tmp_path):

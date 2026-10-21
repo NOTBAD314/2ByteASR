@@ -16,16 +16,16 @@ sys.path.insert(0, str(ROOT))
 from PySide6.QtWidgets import QApplication, QScrollArea  # noqa: E402
 from PIL import Image, ImageChops  # noqa: E402
 
-import twobyteasr.ui as ui  # noqa: E402
-from twobyteasr.effect_dsl import builtin_effects  # noqa: E402
-from twobyteasr.ass_compiler import compile_ass  # noqa: E402
-from twobyteasr.studio_project import (  # noqa: E402
+import twobyteasr.app.ui as ui  # noqa: E402
+from twobyteasr.caption_style.effect_dsl import builtin_effects  # noqa: E402
+from twobyteasr.rendering.ass_compiler import compile_ass  # noqa: E402
+from twobyteasr.projects.studio_project import (  # noqa: E402
     StudioCue,
     StudioMedia,
     SubtitleProject,
     save_project,
 )
-from twobyteasr.studio_ui import SubtitleStudioPage  # noqa: E402
+from twobyteasr.studio.studio_ui import SubtitleStudioPage  # noqa: E402
 
 
 def main() -> int:

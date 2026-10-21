@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from twobyteasr.indexed_media import IndexedMediaCache
-from twobyteasr.waveform_cache import (
+from twobyteasr.media.indexed_media import IndexedMediaCache
+from twobyteasr.playback.waveform_cache import (
     WaveformCache,
     append_outline_level,
     generate_outline_from_media,
@@ -128,7 +128,7 @@ def test_remux_codec_gate_goes_straight_to_mkv(tmp_path, flv_file, monkeypatch):
             })
         return Result()
 
-    monkeypatch.setattr("twobyteasr.indexed_media.run_hidden_subprocess", fake_probe)
+    monkeypatch.setattr("twobyteasr.media.indexed_media.run_hidden_subprocess", fake_probe)
 
     def record_only(self, ffmpeg, source, target, container, *args, **kwargs):
         containers.append(container)
@@ -354,11 +354,11 @@ def test_progressive_orchestrator_publishes_stages_and_warms(tmp_path):
 def test_studio_page_flv_waveform_end_to_end(tmp_path, monkeypatch, flv_file):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
-    from twobyteasr.studio_project import (
+    from twobyteasr.projects.studio_project import (
         MediaAsset, StudioMedia, SubtitleProject,
     )
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    import twobyteasr.indexed_media as indexed_media
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    import twobyteasr.media.indexed_media as indexed_media
 
     isolated = IndexedMediaCache(root=tmp_path / "seek")
     monkeypatch.setattr(indexed_media, "GLOBAL_INDEXED_MEDIA", isolated)

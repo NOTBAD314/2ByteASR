@@ -96,7 +96,7 @@ class Guards(unittest.TestCase):
         before=copy.deepcopy(context.speaker_recovery['coverage_filter'])
         tree=ast.parse(text);fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and any(isinstance(x,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='coverage_filter' for t in x.targets) for x in n.body))
         start=next(i for i,n in enumerate(fn.body) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='coverage_filter' for t in n.targets))
-        from twobyteasr.speaker_recovery import candidate_snapshot
+        from twobyteasr.recognition.speaker_recovery import candidate_snapshot
         scope=dict(copy=copy,runtime_context=context,segments=segments,primary_backend='vibevoice_1_5b',speaker_mode='native',speaker_processing={'status':'native','backend':'native'},legacy=f[4],candidate_snapshot=candidate_snapshot)
         exec(compile(ast.Module(body=fn.body[start:start+3],type_ignores=[]),'real-final-refresh','exec'),scope)
         self.assertEqual(context.speaker_recovery['coverage_filter'],before)

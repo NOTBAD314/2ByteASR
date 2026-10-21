@@ -48,7 +48,7 @@ def main():
         os.environ['TWOBYTEASR_TEST_ROOT'] = str(out)
         from twobyteasr.test_isolation import install
         install()
-        from twobyteasr.studio_project import StudioMedia, SubtitleProject, save_project
+        from twobyteasr.projects.studio_project import StudioMedia, SubtitleProject, save_project
         fixture = out/'entry.2byteproj'
         save_project(SubtitleProject(media=StudioMedia(path='', duration_ms=0)), fixture)
         env.update(TWOBYTEASR_ACCEPTANCE_DIR=str(out), TWOBYTEASR_ACCEPTANCE_SCENARIO='preview-clock',

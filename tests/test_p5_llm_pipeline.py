@@ -4,28 +4,28 @@ import hashlib
 import pytest
 
 import subtitle_core
-from twobyteasr.correction import parse_qwen_json, parse_qwen_object
-from twobyteasr import llm_config
+from twobyteasr.subtitle_rules.correction import parse_qwen_json, parse_qwen_object
+from twobyteasr.providers import llm_config
 
 # Indirect fixture value: keeps api_key usages free of literal
 # assignments (credential scanners pattern-match those).
 _FIXTURE_VALUE_A = "dummy-alpha"
-from twobyteasr import grouping as grouping_module
-from twobyteasr import polishing as polishing_module
-from twobyteasr.models import SpeechSegment, SubtitleCue
-from twobyteasr.llm_config import chat_completion_url, models_url, normalize_base_url
+from twobyteasr.subtitle_rules import grouping as grouping_module
+from twobyteasr.subtitle_rules import polishing as polishing_module
+from twobyteasr.recognition.transcript_data import SpeechSegment, SubtitleCue
+from twobyteasr.providers.llm_config import chat_completion_url, models_url, normalize_base_url
 
 
 def _current_snapshot_fixture(monkeypatch):
     # These tests exercise prompt/retry behavior. The queue now supplies an
     # immutable endpoint snapshot instead of rereading polish_llm_settings.
-    from twobyteasr.asr_provider_snapshot import ProviderSnapshot
+    from twobyteasr.providers.asr_provider_snapshot import ProviderSnapshot
     def snapshot(*_):
         endpoint=dict(polishing_module.polish_llm_settings(),protocol='openai_compatible_chat')
         return ProviderSnapshot(provider=endpoint['provider'],profile_id='fixture',profile_revision='fixture',
             model=endpoint['model'],kind='http',transport='openai_compatible',endpoint_identity=endpoint['base_url'],
             protocol=endpoint['protocol'],capabilities=('text','structured_output'),_endpoint=tuple(endpoint.items()))
-    monkeypatch.setattr('twobyteasr.asr_provider_snapshot.task_provider_snapshot',snapshot)
+    monkeypatch.setattr('twobyteasr.providers.asr_provider_snapshot.task_provider_snapshot',snapshot)
 
 
 class _Response:

@@ -13,10 +13,10 @@ def main():
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'),QT_QPA_PLATFORM='offscreen',TEMP=str(out/'temp'),TMP=str(out/'temp'))
     from PySide6.QtWidgets import QApplication
     app=QApplication.instance() or QApplication([])
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.ass_compiler import compile_ass
-    from twobyteasr.studio_render import RenderJob,RenderSettings,run_render_job
-    from twobyteasr.advanced_renderer import AdvancedRendererBackend,split_renderer_cues
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.rendering.ass_compiler import compile_ass
+    from twobyteasr.exports.studio_render import RenderJob,RenderSettings,run_render_job
+    from twobyteasr.rendering.advanced_renderer import AdvancedRendererBackend,split_renderer_cues
     import av,numpy as np
     from PIL import Image,ImageDraw
     config=json.loads((args.fixture/'matrix.json').read_text('utf8'));fps=Fraction(config['fps']);reports=[]

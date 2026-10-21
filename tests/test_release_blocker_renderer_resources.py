@@ -1,8 +1,8 @@
 """G01/G03: authored resource rejection and installed-only browser selection."""
 from urllib.parse import quote
 import pytest
-from twobyteasr.web_theme import sanitize_css, sanitize_html, WebThemeValidationError
-from twobyteasr import advanced_renderer
+from twobyteasr.caption_design.web_theme import sanitize_css, sanitize_html, WebThemeValidationError
+from twobyteasr.rendering import advanced_renderer
 
 @pytest.mark.parametrize('value', [
     'image-set("https://example.invalid/a" 1x)',

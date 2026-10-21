@@ -3,9 +3,9 @@ from pathlib import Path
 
 
 def test_historical_nemotron_policy_save_reopen_grouping_export(tmp_path):
-    from twobyteasr.studio_project import SubtitleProject,StudioMedia,StudioSpeaker,StudioCue
-    from twobyteasr.speaker_organization import apply_new_project_policy,organize
-    from twobyteasr.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioSpeaker,StudioCue
+    from twobyteasr.projects.speaker_organization import apply_new_project_policy,organize
+    from twobyteasr.exports.studio_subtitle_export import export_subtitle_artifacts,SubtitleExportOptions
     p=SubtitleProject(media=StudioMedia('fixture.mp4',duration_ms=3000),
         speakers=[StudioSpeaker('NEMO_01'),StudioSpeaker('NEMO_02')],
         cues=[StudioCue('a',0,1000,'主声','NEMO_01'),StudioCue('b',1000,1600,'回话','NEMO_02')])
@@ -25,9 +25,9 @@ def test_historical_nemotron_policy_save_reopen_grouping_export(tmp_path):
 
 
 def test_retired_backend_is_absent_from_current_sources_and_old_selection_disabled():
-    from twobyteasr.model_workshop import MODELS
-    from twobyteasr.ui import ASR_API_PRESETS
-    from twobyteasr.speaker_strategy import resolve
+    from twobyteasr.local_models.model_workshop import MODELS
+    from twobyteasr.app.ui import ASR_API_PRESETS
+    from twobyteasr.recognition.speaker_strategy import resolve
     root=Path(__file__).parents[1]
     lock=json.loads((root/'dependencies.lock.json').read_text('utf8'))
     assert 'nemotron' not in lock['models'] and 'nemotron' not in lock['environments']
@@ -41,7 +41,7 @@ def test_retired_backend_is_absent_from_current_sources_and_old_selection_disabl
 
 
 def test_retired_settings_migration_is_idempotent_keeps_workspace_and_main_roles():
-    from twobyteasr.settings import _merge_known_settings,DEFAULT_SETTINGS
+    from twobyteasr.storage.settings import _merge_known_settings,DEFAULT_SETTINGS
     models=dict(primary_asr_backend='moss',qwen_asr_backend='local',speaker_source='nemotron',
        qwen_asr_api_provider='qwen_filetrans',qwen_asr_api_model='qwen-audio-3.0-asr-flash-filetrans',
        qwen_asr_api_protocol='dashscope_filetrans',

@@ -52,8 +52,8 @@ def main():
         os.environ[key] = env[key]
     # Load only after isolating the launcher too; the application additionally
     # isolates QSettings/project roots and disables probes via caption-runtime.
-    from twobyteasr.studio_project import load_project, save_project
-    from twobyteasr.studio_edit_sequence import sequence_of
+    from twobyteasr.projects.studio_project import load_project, save_project
+    from twobyteasr.timeline.studio_edit_sequence import sequence_of
     project_path = args.project.resolve()
     old_path = args.old_output.resolve()
     originals = {str(project_path): sha256(project_path), str(old_path): sha256(old_path)}
@@ -91,7 +91,7 @@ def main():
     shutil.copyfile(old_path, output/'old-output-copy.mp4')
     (output/'cancel-config.json').write_text(json.dumps(dict(timeout_seconds=args.timeout,
         cancel_limit_ms=args.cancel_limit_ms, source_hashes=originals), indent=2), encoding='utf8')
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(root/'quick_start.py')]
     with (output/'process.log').open('w', encoding='utf8') as log:
         child = run_hidden_subprocess(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT,

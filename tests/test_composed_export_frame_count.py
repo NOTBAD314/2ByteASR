@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-from twobyteasr.studio_render import RenderJob,RenderSettings
-from twobyteasr import video_export
+from twobyteasr.exports.studio_render import RenderJob,RenderSettings
+from twobyteasr.exports import video_export
 
 
 class Sink:
@@ -32,7 +32,7 @@ def job_at(tmp_path,duration=2.117,fps=60,start=0,audio='none'):
 
 @pytest.mark.parametrize('duration,fps,count',[(2.117,60,128),(2.1,60,126),(.001,60,1),(2.117,59.94,127)])
 def test_actual_raster_loop_and_final_command_share_exact_finite_frames(tmp_path,monkeypatch,duration,fps,count):
-    from twobyteasr import studio_render
+    from twobyteasr.exports import studio_render
     job=job_at(tmp_path,duration,fps,start=4.25);commands=[]
     def encoder(argv,**kwargs):
         process=Encoder(argv);commands.append(process);return process
@@ -62,7 +62,7 @@ def test_actual_raster_loop_and_final_command_share_exact_finite_frames(tmp_path
 
 
 def test_noncomposed_command_keeps_original_request_and_no_frame_cap(tmp_path,monkeypatch):
-    from twobyteasr import studio_render
+    from twobyteasr.exports import studio_render
     job=replace(job_at(tmp_path),video_graph=None,export_context={'composed_video_frame_clock':{'frame_count':9}})
     monkeypatch.setattr(studio_render,'select_encoder',lambda *a:'libx264')
     with video_export.prepared_video_job(Path('ffmpeg.exe'),job) as prepared:
@@ -80,7 +80,7 @@ def test_resolved_clock_mismatch_is_rejected_not_silently_recapped(tmp_path):
 
 @pytest.mark.parametrize('slices',[(),((0.,1.),(2.,4.))])
 def test_compatibility_audio_is_trimmed_to_request_not_quantized_video_end(tmp_path,monkeypatch,slices):
-    from twobyteasr import studio_render
+    from twobyteasr.exports import studio_render
     job=replace(job_at(tmp_path,audio='aac'),edit_segments=slices)
     monkeypatch.setattr(studio_render,'media_has_audio',lambda *a:True)
     args=video_export._audio_arguments(Path('ffmpeg.exe'),job)
@@ -94,7 +94,7 @@ def test_compatibility_audio_is_trimmed_to_request_not_quantized_video_end(tmp_p
 
 
 def test_formal_audio_mix_keeps_requested_clock_before_preparing_video(tmp_path,monkeypatch):
-    from twobyteasr import studio_render,audio_export
+    from twobyteasr.exports import studio_render, audio_export
     job=job_at(tmp_path,audio='aac');job.video_graph['audio_mix']=[dict(source_path=job.media_path,timeline_in_ms=0,
         timeline_out_ms=10000,source_in_ms=0,playback_rate=1.,stream_index=0,gain_db=0.,audio_envelopes=[])]
     monkeypatch.setattr(studio_render,'media_has_audio',lambda *a:True)
@@ -104,10 +104,11 @@ def test_formal_audio_mix_keeps_requested_clock_before_preparing_video(tmp_path,
 
 
 def test_static_graph_final_route_keeps_composed_frame_cap(tmp_path,monkeypatch):
-    from twobyteasr import studio_render,advanced_renderer,static_caption_export,export_validation,export_preview
+    from twobyteasr.exports import studio_render, static_caption_export, export_validation, export_preview
+    from twobyteasr.rendering import advanced_renderer
     job=replace(job_at(tmp_path),video_graph=None,composition_resolved=True,duration_seconds=128/60,
         export_context={'composed_video_frame_clock':{'frame_count':128}})
-    from twobyteasr.studio_project import SubtitleProject, StudioMedia
+    from twobyteasr.projects.studio_project import SubtitleProject, StudioMedia
     project=SubtitleProject(media=StudioMedia(path=job.media_path,width=4,height=2,duration_ms=2117))
     monkeypatch.setattr(advanced_renderer,'compile_composition_data',lambda *a,**k:{'cues':[]})
     monkeypatch.setattr(advanced_renderer,'_native_segment_project',lambda *a:SimpleNamespace(cues=[]))

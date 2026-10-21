@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-from twobyteasr import ai_providers
-from twobyteasr.ai_providers import (
+from twobyteasr.providers import ai_providers
+from twobyteasr.providers.ai_providers import (
     AntigravityCLIProvider,
     GrokCLIProvider,
     ProviderStatus,

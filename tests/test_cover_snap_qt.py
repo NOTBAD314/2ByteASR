@@ -7,10 +7,10 @@ from PySide6.QtGui import QColor, QFocusEvent, QImage, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout, QWidget
 
-from twobyteasr.cover_canvas import CoverSession, CoverView
-from twobyteasr.cover_document import CoverDocument
-from twobyteasr.cover_render import CoverRenderer, export_image
-from twobyteasr.cover_snap.qt import install
+from twobyteasr.cover.cover_canvas import CoverSession, CoverView
+from twobyteasr.cover.cover_document import CoverDocument
+from twobyteasr.cover.cover_render import CoverRenderer, export_image
+from twobyteasr.cover.cover_snap.qt import install
 
 
 @pytest.fixture(scope='module')
@@ -204,7 +204,7 @@ def test_export_excludes_guides_and_focus_loss_clears(canvas, tmp_path):
 
 
 def test_editor_toggle_is_session_only_and_missing_module_falls_back(app, monkeypatch):
-    from twobyteasr.cover_editor import CoverEditor
+    from twobyteasr.cover.cover_editor import CoverEditor
     editor = CoverEditor(document())
     signature = editor.session.document.signature()
     editor._cover_snap.button.click()
@@ -216,7 +216,7 @@ def test_editor_toggle_is_session_only_and_missing_module_falls_back(app, monkey
 
     def without_optional_module(name, *args, **kwargs):
         if name == 'cover_snap.qt':
-            raise ModuleNotFoundError('optional package not installed', name='twobyteasr.cover_snap')
+            raise ModuleNotFoundError('optional package not installed', name='twobyteasr.cover.cover_snap')
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, '__import__', without_optional_module)

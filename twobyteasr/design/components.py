@@ -8,8 +8,8 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from ..theme_manager import theme_key
-from ..ui_theme import theme_definition
+from .theme_manager import theme_key
+from .ui_theme import theme_definition
 
 _MODEL_ALIASES = (
     ("MOSS", ("moss",)),
@@ -33,7 +33,7 @@ def _classify_model(name: str) -> str | None:
 
 def format_model_evidence_coverage(hypotheses: Iterable[Any] | None) -> dict[str, Any]:
     """Describe independent sources separately from agreement and coverage."""
-    from ..asr_source_evidence import coverage_summary, independent_model
+    from ..recognition.asr_source_evidence import coverage_summary, independent_model
     rows, unknown = [], []
     for row in hypotheses or ():
         if isinstance(row, Mapping):

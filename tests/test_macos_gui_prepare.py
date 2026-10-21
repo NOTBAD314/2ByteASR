@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from twobyteasr import llm_config
-from twobyteasr import macos_model_prepare as prepare
+from twobyteasr.providers import llm_config
+from twobyteasr.local_models import macos_model_prepare as prepare
 
 
 @pytest.fixture
@@ -76,7 +76,8 @@ def test_bootstrap_cache_is_verified_again_without_network(tmp_path, monkeypatch
 
 
 def test_failed_native_dependency_probe_never_changes_runtime_registration(tmp_path, monkeypatch):
-    from twobyteasr import runtime_paths, runtime_registry
+    from twobyteasr import runtime_paths
+    from twobyteasr.system import runtime_registry
     root = tmp_path / '资源 应用'
     (root / 'packaging/macos').mkdir(parents=True)
     lock = {'target': 'darwin-arm64', 'uv': {'version': 'fixed', 'member': 'uv/uv'}, 'pip': {'version': 'fixed'},
@@ -129,7 +130,8 @@ def test_small_cpu_probe_cannot_reuse_runtime_without_matching_wheel_report(tmp_
 
 
 def test_macos_model_state_finishes_background_runtime_check(monkeypatch):
-    from twobyteasr import model_workshop as workshop, environment
+    from twobyteasr.local_models import model_workshop as workshop
+    from twobyteasr.system import environment
     model = next(item for item in workshop.MODELS if item.download_key == 'sensevoice')
     monkeypatch.setattr(workshop, 'sys', SimpleNamespace(platform='darwin'))
     monkeypatch.setattr(environment, 'fast_preflight', lambda role: None)
@@ -150,7 +152,7 @@ def test_macos_model_state_finishes_background_runtime_check(monkeypatch):
 def test_frozen_gui_cpu_preparation_uses_dedicated_app_child_and_writable_cwd(monkeypatch, tmp_path):
     from PySide6.QtCore import QProcess
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import model_workshop as workshop
+    from twobyteasr.local_models import model_workshop as workshop
     app = QApplication.instance() or QApplication([])
     model = next(item for item in workshop.MODELS if item.download_key == 'sensevoice')
     monkeypatch.setattr(workshop, 'sys', SimpleNamespace(platform='darwin', frozen=True, executable=str(tmp_path / '移动 应用.app/Contents/MacOS/2ByteASR')))
@@ -175,7 +177,7 @@ def test_frozen_gui_cpu_preparation_uses_dedicated_app_child_and_writable_cwd(mo
 
 def test_macos_unsupported_model_detail_constructs_without_startup_keyerror(monkeypatch,tmp_path):
     from PySide6.QtWidgets import QApplication
-    from twobyteasr import model_workshop as workshop
+    from twobyteasr.local_models import model_workshop as workshop
     app=QApplication.instance() or QApplication([])
     monkeypatch.setattr(workshop,'sys',SimpleNamespace(platform='darwin'))
     page=workshop.ModelWorkshopPage(tmp_path,{'models':{'primary_asr_backend':'sensevoice','qwen_asr_backend':'off'}})
@@ -192,7 +194,7 @@ def test_macos_unsupported_model_detail_constructs_without_startup_keyerror(monk
 def test_mac_replace_without_qt_binding_avoids_command_hide(monkeypatch):
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QKeySequence
-    from twobyteasr import studio_shortcuts
+    from twobyteasr.studio import studio_shortcuts
     app=QApplication.instance() or QApplication([])
     import sys
     monkeypatch.setattr(sys,'platform','darwin')

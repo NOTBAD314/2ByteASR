@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from twobyteasr.clip_time_mapper import (
+from twobyteasr.timeline.clip_time_mapper import (
     ClipTiming,
     map_project_time,
     moved_timing,

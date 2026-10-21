@@ -16,11 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.ai_providers import provider_for_stage
-from twobyteasr.settings import load_runtime_settings
-from twobyteasr.studio_ai import request_style_design
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject
-from twobyteasr.llm_config import activate_ai_service
+from twobyteasr.providers.ai_providers import provider_for_stage
+from twobyteasr.storage.settings import load_runtime_settings
+from twobyteasr.caption_design.studio_ai import request_style_design
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+from twobyteasr.providers.llm_config import activate_ai_service
 
 
 def run(service_id: str, base: dict, project: SubtitleProject) -> dict:

@@ -27,8 +27,8 @@ def _app():
 
 
 def _page(tmp_path):
-    from twobyteasr.studio_ui import SubtitleStudioPage
-    from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+    from twobyteasr.studio.studio_ui import SubtitleStudioPage
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
     os.environ["LOCALAPPDATA"] = str(tmp_path / "local")
     page = SubtitleStudioPage()
@@ -58,7 +58,7 @@ def _page(tmp_path):
 
 
 def _theme() -> dict:
-    from twobyteasr.web_theme import builtin_web_themes
+    from twobyteasr.caption_design.web_theme import builtin_web_themes
 
     return builtin_web_themes()["balatro-joker"].to_dict()
 
@@ -83,7 +83,7 @@ def test_web_theme_live_page_retains_foreground_ownership(tmp_path):
     # never sneak back into the web branch.
     import inspect
 
-    from twobyteasr import studio_advanced_flow
+    from twobyteasr.studio import studio_advanced_flow
 
     source = inspect.getsource(studio_advanced_flow)
     marker = source.find("is_web_theme")
@@ -188,7 +188,7 @@ def test_web_adjust_ready_validates_before_applying_targets(tmp_path,monkeypatch
 
 
 def test_default_service_is_grok_account():
-    from twobyteasr.llm_config import get_active_service
+    from twobyteasr.providers.llm_config import get_active_service
 
     assert get_active_service({}) == "grok_account"
     assert get_active_service({"models": {"ai_service": "deepseek"}}) == "deepseek"
@@ -206,7 +206,7 @@ def test_prompt_box_compact_and_labeled(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_overlay_active_windows_merge_and_pad():
-    from twobyteasr.advanced_renderer import _overlay_active_windows
+    from twobyteasr.rendering.advanced_renderer import _overlay_active_windows
 
     props = {"fps": 30.0, "durationInFrames": 300, "cues": [
         {"startMs": 0, "endMs": 2000},
@@ -223,7 +223,7 @@ def test_overlay_active_windows_merge_and_pad():
 
 
 def test_segment_cache_path_is_stable_and_scoped():
-    from twobyteasr.advanced_renderer import _segment_cache_path
+    from twobyteasr.rendering.advanced_renderer import _segment_cache_path
 
     props = {"fps": 30.0, "cues": [1]}
     a = _segment_cache_path(props, 10, 99)

@@ -2,8 +2,8 @@ import json
 import struct
 from pathlib import Path
 import pytest
-from twobyteasr.cover_gimp_library import GimpCoverLibrary,check_xcf
-from twobyteasr.cover_library import CoverLibrary
+from twobyteasr.cover.cover_gimp_library import GimpCoverLibrary,check_xcf
+from twobyteasr.cover.cover_library import CoverLibrary
 
 
 def xcf(extra=b''):
@@ -27,13 +27,13 @@ def test_migration_backup_and_failed_pointer_keep_old_master(tmp_path,monkeypatc
     migrated=library.save_xcf('migrated',xcf(),png(),key=entry['id'],slots={'title':'stable-id'})
     assert migrated['favorite'] and migrated['used']==12345
     assert library.asset(migrated,'psd').read_bytes()==original
-    import twobyteasr.cover_gimp_library as module
+    import twobyteasr.cover.cover_gimp_library as module
     write=module.atomic_bytes
     def fail(path,data):
         if path.suffix=='.json':raise PermissionError('unwritable pointer')
         write(path,data)
     monkeypatch.setattr(module,'atomic_bytes',fail)
-    import twobyteasr.cover_library as base
+    import twobyteasr.cover.cover_library as base
     monkeypatch.setattr(base,'atomic_bytes',fail)
     with pytest.raises(PermissionError):library.save_xcf('bad update',xcf(b'changed'),png(),key=entry['id'])
     assert library.get(entry['id'])==migrated

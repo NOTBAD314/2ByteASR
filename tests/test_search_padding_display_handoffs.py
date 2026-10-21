@@ -2,8 +2,8 @@
 import json
 from pathlib import Path
 
-from twobyteasr.display_timing import bounded_search_window, project_display_tail_plan
-from twobyteasr.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
+from twobyteasr.subtitle_rules.display_timing import bounded_search_window, project_display_tail_plan
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, StudioSpeaker, SubtitleProject
 
 
 def recorded_project():
@@ -34,7 +34,7 @@ def test_recorded_disjoint_source_handoffs_are_shared_frame_ends():
 
 
 def test_nearby_other_speaker_refs_do_not_contaminate_a_cue_source_bounds():
-    from twobyteasr.display_timing import project_acoustics
+    from twobyteasr.subtitle_rules.display_timing import project_acoustics
     project = recorded_project()
     cue = next(c for c in project.cues if c.id == '9')
     bounds = project_acoustics(project, cue)

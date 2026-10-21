@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 
 def main():
-    from twobyteasr.processes import run_hidden_subprocess
+    from twobyteasr.system.processes import run_hidden_subprocess
     from PIL import Image
     import numpy as np
     out=Path(sys.argv[1]).resolve() if len(sys.argv)>1 else sorted((ROOT/'tmp/balatro-frames').iterdir())[-1]

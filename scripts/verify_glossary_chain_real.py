@@ -37,7 +37,7 @@ def main():
     shutil.copy2(args.glossary, store)
     if args.settings:
         shutil.copy2(args.settings, store.parent / '2byteasr_settings.json')
-        from twobyteasr.settings import project_settings_path
+        from twobyteasr.storage.settings import project_settings_path
         stable_settings = project_settings_path()
         stable_settings.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(args.settings, stable_settings)

@@ -12,9 +12,9 @@ def main():
     from PySide6.QtTest import QTest
     from PySide6.QtCore import QPoint,QPointF,Qt,QTimer
     from PySide6.QtGui import QWheelEvent
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.studio_timeline import WaveformTimeline
-    from twobyteasr.video_filmstrip import FilmstripCache
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.studio.studio_timeline import WaveformTimeline
+    from twobyteasr.studio.video_filmstrip import FilmstripCache
     app=QApplication.instance() or QApplication([])
     project=load_project(args.project)
     timeline=WaveformTimeline();timeline.resize(1400,520);timeline.move(70,70)

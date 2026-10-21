@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from twobyteasr.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
+from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject, save_project
 
 
 def _run(command: list[str]) -> None:

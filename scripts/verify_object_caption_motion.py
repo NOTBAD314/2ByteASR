@@ -10,8 +10,8 @@ def main():
     p.add_argument('--output',type=Path,default=ROOT/'tmp/balatro-object-motion/object-check');p.add_argument('--only',default='ABC')
     a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
     os.environ.update(LOCALAPPDATA=str(out/'local'),APPDATA=str(out/'roaming'))
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.web_theme import theme_archive_html
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.web_theme import theme_archive_html
     from PIL import Image
     import numpy as np
     service=RendererService();summary={};bg=Image.open(ROOT/'tmp/caption-audit-20260910/visual/game.png').convert('RGBA')

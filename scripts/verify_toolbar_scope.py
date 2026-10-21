@@ -58,8 +58,9 @@ def prepare(args):
     copied_report = output / "retained-terminal.json"
     copied_report.write_bytes(report.read_bytes())
     originals = {str(path): digest(path) for path in (project, report, source_media)}
-    source_files = ("studio_workspace.py", "studio_toolbar_layout.py", "studio_theme.py", "theme_manager.py",
-                    "design/studio_qss.py", "design/control_qss.py", "design/surface_qss.py", "main_ui_theme.py", "ui_theme.py", "typography.py")
+    source_files = ("studio/studio_workspace.py", "studio/studio_toolbar_layout.py", "design/studio_theme.py",
+                    "design/theme_manager.py", "design/studio_qss.py", "design/control_qss.py", "design/surface_qss.py",
+                    "design/main_ui_theme.py", "design/ui_theme.py", "design/typography.py")
     source_identity = {name: digest(source_root / "twobyteasr" / name) for name in source_files
                        if (source_root / "twobyteasr" / name).is_file()}
     plan = dict(project=str(copied), project_id=project_id, cue_count=48, report=str(copied_report),
@@ -120,9 +121,9 @@ def main():
             "os.chdir(" + repr(str(source_root)) + ")",
             "from twobyteasr.test_isolation import install",
             "install()",
-            "from twobyteasr import studio_acceptance_audit as qa",
-            "from twobyteasr.blank_project_audit import install_offline_guards",
-            "spec=importlib.util.spec_from_file_location('twobyteasr.toolbar_scope_audit', " + repr(str(ROOT / "twobyteasr/toolbar_scope_audit.py")) + ")",
+            "from twobyteasr.acceptance import studio_acceptance_audit as qa",
+            "from twobyteasr.acceptance.blank_project_audit import install_offline_guards",
+            "spec=importlib.util.spec_from_file_location('twobyteasr.acceptance.toolbar_scope_audit', " + repr(str(ROOT / "twobyteasr/acceptance/toolbar_scope_audit.py")) + ")",
             "audit=importlib.util.module_from_spec(spec)",
             "spec.loader.exec_module(audit)",
             "qa.isolate_acceptance_settings=install_offline_guards",

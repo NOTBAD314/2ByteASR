@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from twobyteasr.recognition_plans import (
+from twobyteasr.recognition.recognition_plans import (
     lightweight_media_profile,
     matching_plan,
     recognition_plan,

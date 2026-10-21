@@ -120,9 +120,9 @@ def test_versioned_self_update_assets_and_metadata_are_present():
     assert metadata["repository"] == "NOTBAD314/2ByteASR"
     assert '"2ByteASR-Update-$Version.zip"' in builder
     assert 'version = $Version' in builder
-    assert '"twobyteasr\\updater.py"' in builder
-    assert '"twobyteasr\\asr.py"' in builder
-    assert '"twobyteasr\\llm_config.py"' in builder
+    assert '"twobyteasr\\app\\updater.py"' in builder
+    assert '"twobyteasr\\recognition\\asr.py"' in builder
+    assert '"twobyteasr\\providers\\llm_config.py"' in builder
     assert '"auto_asr.py"' in builder
     assert '"scripts\\apply_update.ps1"' in builder
     assert '"2byteasr_version.json"' in builder
@@ -135,7 +135,7 @@ def test_versioned_self_update_assets_and_metadata_are_present():
     # Routine in-app updates stay small and reuse the installed runtime.  Large
     # PyTorch wheels belong to the full Setup, not every code/UI hotfix.
     assert '"wheels\\torch-2.11.0+cpu-cp310-cp310-win_amd64.whl"' not in builder
-    assert '"twobyteasr\\output.py"' in builder
+    assert '"twobyteasr\\subtitle_rules\\output.py"' in builder
     assert '"wheels\\torch-2.11.0+cpu-cp312-cp312-win_amd64.whl"' not in builder
     assert '"wheels\\setuptools-83.0.0-py3-none-any.whl"' in builder
     assert '"wheels\\torch-2.13.0+cpu-cp312-cp312-win_amd64.whl"' in builder

@@ -23,10 +23,10 @@ def main():
     os.environ['TWOBYTEASR_TEST_ROOT'] = str(out/'isolation')
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     from PIL import Image, ImageDraw
-    from twobyteasr.caption_noita import compose, DIRECTIONS
-    from twobyteasr.web_theme import WebThemeDocument, theme_archive_html, export_theme_archive
-    from twobyteasr.renderer_service import RendererService
-    from twobyteasr.theme_direction_preview import render_motion_preview
+    from twobyteasr.caption_design.caption_noita import compose, DIRECTIONS
+    from twobyteasr.caption_design.web_theme import WebThemeDocument, theme_archive_html, export_theme_archive
+    from twobyteasr.rendering.renderer_service import RendererService
+    from twobyteasr.caption_design.theme_direction_preview import render_motion_preview
     text = '这瓶药剂，真的能喝吗？'
     result = dict(origin='Codex original component implementation', external_model_calls=0, directions={}, checks={})
     service = RendererService()

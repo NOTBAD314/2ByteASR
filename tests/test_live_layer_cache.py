@@ -14,28 +14,28 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 import pytest
 
-from twobyteasr.advanced_live_renderer import (
+from twobyteasr.rendering.advanced_live_renderer import (
     composite_live_scene_layers,
     render_live_layers,
 )
-from twobyteasr.live_layer_cache import (
+from twobyteasr.rendering.live_layer_cache import (
     GLOBAL_LIVE_LAYER_CACHE,
     LiveLayerCache,
     live_layer_cache_key,
 )
-from twobyteasr.studio_ai import style_recipe_for_prompt
-from twobyteasr.studio_project import (
+from twobyteasr.caption_design.studio_ai import style_recipe_for_prompt
+from twobyteasr.projects.studio_project import (
     StudioCue,
     StudioMedia,
     SubtitleProject,
     SubtitleStyle,
 )
-from twobyteasr.visual_design_graph import (
+from twobyteasr.caption_design.visual_design_graph import (
     compile_live_scene,
     compile_live_scene_cached,
     glitch_graph,
 )
-from twobyteasr.visual_snapshot import build_visual_cue_snapshot
+from twobyteasr.caption_style.visual_snapshot import build_visual_cue_snapshot
 
 
 def _app():

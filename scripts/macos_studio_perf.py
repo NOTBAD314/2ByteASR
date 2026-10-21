@@ -90,7 +90,7 @@ def make_fixture(ffmpeg: Path, out: Path, *, minutes: float, cues: int) -> dict:
                        check=True, stdout=log, stderr=subprocess.STDOUT, timeout=1800)
     encode_s = time.perf_counter() - started
     from dataclasses import replace
-    from twobyteasr.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
+    from twobyteasr.projects.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
                                            default_style, save_project)
     duration_ms = seconds * 1000
     base = default_style()
@@ -185,10 +185,10 @@ def run_export(ffmpeg: Path, out: Path, *, start: float, seconds: float) -> dict
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
-    from twobyteasr.export_timeline import write_export_ass
-    from twobyteasr.studio_project import load_project
-    from twobyteasr.studio_render import RenderJob, RenderSettings, run_render_job
-    from twobyteasr.video_export import capture_video_graph
+    from twobyteasr.exports.export_timeline import write_export_ass
+    from twobyteasr.projects.studio_project import load_project
+    from twobyteasr.exports.studio_render import RenderJob, RenderSettings, run_render_job
+    from twobyteasr.exports.video_export import capture_video_graph
     export = out / "export"
     export.mkdir()
     project = load_project(out / "project.2byteproj")

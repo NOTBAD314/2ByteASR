@@ -5,8 +5,9 @@ import threading
 from pathlib import Path
 import pytest
 
-from twobyteasr import processes, export_run_log
-from twobyteasr.studio_render import RenderJob, RenderSettings
+from twobyteasr.system import processes
+from twobyteasr.exports import export_run_log
+from twobyteasr.exports.studio_render import RenderJob, RenderSettings
 
 
 class FakeProcess:
@@ -170,7 +171,7 @@ def test_binary_media_stdout_is_not_logged_but_binary_stderr_is(tmp_path, monkey
 
 
 def test_failed_record_completion_retains_log_location_in_internal_job_context(tmp_path, monkeypatch):
-    from twobyteasr.export_validation import record_completion
+    from twobyteasr.exports.export_validation import record_completion
     monkeypatch.setenv('TWOBYTEASR_EXPORT_LOG_ROOT', str(tmp_path))
     monkeypatch.setattr(export_run_log, '_version', lambda *args:'v')
     job = RenderJob('', '', str(tmp_path/'failed.mp4'))
@@ -200,7 +201,7 @@ def test_launch_log_failure_does_not_leave_unowned_child(monkeypatch):
 
 
 def test_parallel_overlay_segment_launches_inherit_distinct_contexts(tmp_path, monkeypatch):
-    from twobyteasr import advanced_renderer as renderer
+    from twobyteasr.rendering import advanced_renderer as renderer
     monkeypatch.setenv('TWOBYTEASR_EXPORT_LOG_ROOT', str(tmp_path/'logs'))
     monkeypatch.setattr(export_run_log, '_version', lambda *args:'v')
     monkeypatch.setattr(renderer, '_segment_cache_path', lambda *args:tmp_path/'missing.mov')
