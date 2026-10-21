@@ -1,5 +1,27 @@
 # 分发材料状态
 
+## 2026-10-17：随附 mpv 的上游原包改存本项目发布（已发布安装包不变）
+
+- **已发布的 0.6.5 至 0.7.5 安装包不变**，随附的 `tools/mpv/` 也不变。
+- 上游 shinchiro 删除了 `20260814` 发布（只保留最近 30 个），新构建机原来取不到 mpv。2026-10-17 从上游自动构建记录取回原包 `mpv-x86_64-20260814-git-7b8915bc1d.7z`：哈希与锁定的相同，未改动，13 个文件与随附的逐字节相同。原包已追加到本项目 v0.6.5 发布（GitHub 与 GitCode 镜像），`scripts/collect_tools.ps1` 改从这里下载。
+- 在我们自己的发布页单独放 mpv 程序，同样是分发 GPL 程序。两边的发布说明都写了对应源码在哪里：mpv 与 FFmpeg 源码在同页的 `2ByteASR-0.5.0-ThirdParty-Sources.zip`，构建配方是上游提交 `cd1edc11`。详见 [SOURCES.md](SOURCES.md) 2026-10-17 节。
+- 原有缺口不变：mpv、FFmpeg 以外静态链接库的精确源码版本仍无法确定。[组件目录](COMPONENTS.md)第 409 项的“未证明逐字节未修改”已改为“未修改”，附核对记录。
+
+## 2026-10-16：开发树主程序新增 pylatexenc（下一版起生效）
+
+- 字幕里的数学公式转成 Unicode 文字（[决定 0124](../docs/adr/0124-math-formulas-in-captions.md)）用到 **pylatexenc 2.11**（MIT，纯 Python，无依赖），已写进 `requirements-main.txt`。已发布的安装包不含它。
+- 下次打包时按惯例：比较新旧主程序的 PYZ 模块，把它的原许可文件从构建环境的发行包元数据复制到 `licenses/materials/frozen/`，并在 `THIRD_PARTY_NOTICES.md` 与组件目录补一行。
+- KaTeX（MIT）只下载到 `tmp/` 做验证，还没进 `renderer/`，不随程序分发。
+
+## 2026-10-14：开发树换了随附 FFmpeg（下一版起生效，本节优先）
+
+- **已发布的 0.7.1 及更早 Windows 安装包不变**，仍随附 gyan 9.0-essentials，下节结论对它们照旧有效。
+- **开发树 `tools/ffmpeg/bin` 已换为 BtbN/FFmpeg-Builds 月末构建** `autobuild-2026-09-30-13-08`（FFmpeg `n9.0.2-17-g2a571b6068`，win64 gpl 9.0，静态）。压缩包 SHA-256 `a0e45723…a58d278`；`ffmpeg.exe` `513368c8…583d98`，`ffprobe.exe` `0fd8f3ba…1f68f`。用户 2026-10-14 同意替换。
+- **对应源码**：构建仓库在该标签提交的快照、FFmpeg 提交、105 个依赖的固定仓库与提交（2026-10-14 逐项确认公开可取），见 [对应源码材料](source-materials/btbn-ffmpeg-builds-6c9aec5f/README.md)。依赖源码按 GPLv3 §6(d) 指向上游，不另行打包（用户决定）。gyan 那一项“没有构建脚本与补丁”的缺口，对下一版起的安装包关闭。
+- **仍待做**：各依赖库许可原文（BSD/MIT 等要求保留的版权声明）逐项收集进 `licenses/`；编译工具链没有按提交固定（影响逐字节重建，不是对应源码缺口）；该构建静态链接 libdvdcss（DVD CSS 解扰，GPL-2.0-or-later），用户已确认可随附。
+- **下一版发布要注意**：「tools」更新元件的内容会变（新的 `ffmpeg.exe`、`ffprobe.exe`），必须重新打包并上传该元件压缩包，不能再引用 0.6.5 起沿用的 `2ByteASR-0.6.5-tools-be218e599469.zip`。按发布脚本的压缩方式估算，元件约 211 MB（原 158 MB），安装后占用多 125 MB。Release 说明与第三方材料附件里的 FFmpeg 来源也要换成本节内容。
+- 没有改变：mpv、PyAV、Qt Multimedia、Remotion compositor 各自带的 FFmpeg 及其缺口；Mac 包的 FFmpeg（Homebrew）。
+
 ## 2026-10-14：0.7.1 现状（本节优先）
 
 0.7.1 是第一次同时发 Windows 安装包与 macOS DMG。结论与 0.7.0 相同，只多了 Mac 一项：
