@@ -64,6 +64,16 @@ on:
         required: false
         default: false
         type: boolean
+      candidate_run_id:
+        description: 'Optional existing DMG producer run to test through the installed frozen GPU model entry; use run_app_checks=false'
+        required: false
+        default: ''
+        type: string
+      candidate_source_sha:
+        description: 'Exact app source SHA of that existing DMG (distinct from this checker source_sha)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -364,6 +374,64 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
           path: ${{ runner.temp }}/tmp/newer-macos-candidate/artifacts/receipts/
+
+  installed-candidate-models:
+    if: ${{ inputs.candidate_run_id != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 65
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      APP_SOURCE_SHA: ${{ inputs.candidate_source_sha }}
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - name: Validate checker and app identities
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          [[ "$APP_SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: macos-arm64-setup-${{ inputs.candidate_source_sha }}
+          path: ${{ runner.temp }}/tmp/model-candidate-input
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: macos-arm64-receipts-${{ inputs.candidate_source_sha }}
+          path: ${{ runner.temp }}/tmp/model-candidate-receipts
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+      - name: Actual frozen MLX and MPS model preparation and sample inference
+        run: |
+          dmg=$(find "$RUNNER_TEMP/tmp/model-candidate-input" -name '*.dmg' -type f)
+          test -f "$dmg"
+          python scripts/macos_installed_models_smoke.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/model-candidate-receipts/dmg/dmg-result.json" --app-source-sha "$APP_SOURCE_SHA" --output "$RUNNER_TEMP/tmp/installed-model-check"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: installed-model-receipts-${{ matrix.os }}-${{ inputs.candidate_source_sha }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/tmp/installed-model-check/*.json
+            ${{ runner.temp }}/tmp/installed-model-check/*.log
 
   local-models:
     # 2026-10-14: MOSS-Transcribe-Diarize and FireRedASR2-AED with PyTorch on
