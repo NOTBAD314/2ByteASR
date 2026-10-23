@@ -8,6 +8,19 @@ from scripts.macos_dependency_contract import verify_native_wheels
 from scripts.macos_media_contract import verify_media_formula
 
 
+def test_installed_model_check_uses_the_real_download_isolation_boundary(tmp_path,monkeypatch):
+    from scripts.macos_installed_models_smoke import isolated_model_environment
+    from twobyteasr.local_models.download_diagnostics import require_isolated_download_path
+    output=tmp_path/'tmp/candidate'
+    environment,models=isolated_model_environment(output)
+    for key in ('2BYTEASR_MODEL_ROOT','LOCALAPPDATA','TEMP','HF_HOME','HF_HUB_CACHE','HF_XET_CACHE','MODELSCOPE_CACHE','TORCH_HOME'):
+        monkeypatch.delenv(key,raising=False)
+    monkeypatch.setenv('TWOBYTEASR_TEST_ROOT',environment['TWOBYTEASR_TEST_ROOT'])
+    require_isolated_download_path(models/'Qwen3-ForcedAligner-0.6B-8bit')
+    with pytest.raises(ValueError,match='隔离下载目标越界'):
+        require_isolated_download_path(output/'models/Qwen3-ForcedAligner-0.6B-8bit')
+
+
 def test_artifact_selection_does_not_expose_runtime_models_or_nested_build_source(tmp_path):
     root=tmp_path/"tmp/qa"
     for name in ("runtime/secrets.json","models/model.pt","build/source/private.json",

@@ -20,12 +20,18 @@ sys.path.insert(0,str(ROOT))
 from scripts.macos_build import sha256,finder_environment
 
 
+def isolated_model_environment(output: Path) -> tuple[dict, Path]:
+    profile=output/'profile'
+    return finder_environment(profile),profile/'models'
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dmg',type=Path,required=True)
     parser.add_argument('--receipt',type=Path,required=True)
     parser.add_argument('--app-source-sha',required=True)
     parser.add_argument('--output',type=Path,required=True)
+    parser.add_argument('--mlx-only',action='store_true',help='Only rerun MLX; preserves earlier independent MPS evidence')
     args=parser.parse_args(argv)
     if sys.platform!='darwin' or platform.machine()!='arm64' or os.environ.get('GITHUB_ACTIONS')!='true':
         raise SystemExit('Use a disposable native Mac runner')
@@ -38,8 +44,9 @@ def main(argv=None):
     out.mkdir(parents=True);mount=out/'mount';mount.mkdir();app=Path('/Applications/2ByteASR.app')
     if app.exists():raise SystemExit('Will not replace an existing app')
     result=dict(passed=False,macos=platform.mac_ver()[0],architecture=platform.machine(),app_source_sha=args.app_source_sha,
-                checker_sha=os.environ.get('GITHUB_SHA'),dmg_sha256=receipt['artifact']['sha256'],backends={})
-    env=finder_environment(out/'profile')
+                checker_sha=os.environ.get('GITHUB_SHA'),dmg_sha256=receipt['artifact']['sha256'],backends={},
+                requested_backends=['mlx'] if args.mlx_only else ['mlx','mps'])
+    env,models=isolated_model_environment(out)
     def run(command,log,timeout):
         with (out/log).open('ab') as stream:
             return subprocess.run(list(map(str,command)),env=env,stdout=stream,stderr=subprocess.STDOUT,timeout=timeout)
@@ -55,7 +62,7 @@ def main(argv=None):
             entry=dict(passed=False,keys=keys,entry='installed frozen app')
             result['backends'][label]=entry
             try:
-                completed=run([exe,flag,'--root',root,'--models',out/'models','--keys',','.join(keys),'--source','HF_OFFICIAL'],label+'-prepare.log',timeout)
+                completed=run([exe,flag,'--root',root,'--models',models,'--keys',','.join(keys),'--source','HF_OFFICIAL'],label+'-prepare.log',timeout)
                 entry['exit_code']=completed.returncode
                 receipts=out/'profile/local/2ByteASR/model-readiness'
                 wanted=keys+(['firered_vad','speaker_embedding'] if label=='mps' else [])
@@ -75,20 +82,21 @@ def main(argv=None):
             except Exception:entry['error']=traceback.format_exc()
         # MOSS / FireRed use the actual workshop and Home/Studio workflow,
         # including measured word times, bilingual editing and video export.
-        mps=dict(passed=False,entry='installed frozen GUI',keys=['moss','firered_aed'])
-        result['backends']['mps']=mps
-        try:
-            audio=out/'mps-speech.wav'
-            subprocess.run(['/usr/bin/say','-v','Tingting','--data-format=LEI16@16000','-o',str(audio),
-                '今天测试兔白字幕。我们使用本地模型识别中文。字幕可以编辑，剪切后保存工程，最后导出视频。'],check=True,timeout=60)
-            completed=run([sys.executable,ROOT/'scripts/macos_desktop_smoke.py','--app',app,'--runtime',out/'unused-build-runtime',
-                '--fresh-runtime','--audio',audio,'--output',out/'mps-desktop','--model-set','mac-gpu'],'mps-flow.log',3000)
-            mps['exit_code']=completed.returncode
-            for name in ('workshop-result','result','export-validation','restart-summary'):
-                path=out/'mps-desktop'/(name+'.json')
-                mps[name]=json.loads(path.read_text('utf8')) if path.is_file() else {}
-            mps['passed']=completed.returncode==0 and all(mps[name].get('passed') is True for name in ('workshop-result','result','export-validation','restart-summary'))
-        except Exception:mps['error']=traceback.format_exc()
+        if not args.mlx_only:
+            mps=dict(passed=False,entry='installed frozen GUI',keys=['moss','firered_aed'])
+            result['backends']['mps']=mps
+            try:
+                audio=out/'mps-speech.wav'
+                subprocess.run(['/usr/bin/say','-v','Tingting','--data-format=LEI16@16000','-o',str(audio),
+                    '今天测试兔白字幕。我们使用本地模型识别中文。字幕可以编辑，剪切后保存工程，最后导出视频。'],check=True,timeout=60)
+                completed=run([sys.executable,ROOT/'scripts/macos_desktop_smoke.py','--app',app,'--runtime',out/'unused-build-runtime',
+                    '--fresh-runtime','--audio',audio,'--output',out/'mps-desktop','--model-set','mac-gpu'],'mps-flow.log',3000)
+                mps['exit_code']=completed.returncode
+                for name in ('workshop-result','result','export-validation','restart-summary'):
+                    path=out/'mps-desktop'/(name+'.json')
+                    mps[name]=json.loads(path.read_text('utf8')) if path.is_file() else {}
+                mps['passed']=completed.returncode==0 and all(mps[name].get('passed') is True for name in ('workshop-result','result','export-validation','restart-summary'))
+            except Exception:mps['error']=traceback.format_exc()
         result['passed']=all(entry['passed'] for entry in result['backends'].values())
     except Exception:result['error']=traceback.format_exc()
     finally:

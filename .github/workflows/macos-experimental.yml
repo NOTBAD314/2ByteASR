@@ -74,6 +74,11 @@ on:
         required: false
         default: ''
         type: string
+      candidate_mlx_only:
+        description: 'Only repeat installed MLX checks; keep independent MPS results from the previous run'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -423,10 +428,14 @@ jobs:
           run-id: ${{ inputs.candidate_run_id }}
           github-token: ${{ github.token }}
       - name: Actual frozen MLX and MPS model preparation and sample inference
+          env:
+            MLX_ONLY: ${{ inputs.candidate_mlx_only }}
         run: |
           dmg=$(find "$RUNNER_TEMP/tmp/model-candidate-input" -name '*.dmg' -type f)
           test -f "$dmg"
-          python scripts/macos_installed_models_smoke.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/model-candidate-receipts/dmg/dmg-result.json" --app-source-sha "$APP_SOURCE_SHA" --output "$RUNNER_TEMP/tmp/installed-model-check"
+            extra=()
+            if [ "$MLX_ONLY" = true ]; then extra+=(--mlx-only); fi
+            python scripts/macos_installed_models_smoke.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/model-candidate-receipts/dmg/dmg-result.json" --app-source-sha "$APP_SOURCE_SHA" --output "$RUNNER_TEMP/tmp/installed-model-check" "${extra[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
