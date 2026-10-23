@@ -65,10 +65,41 @@ def image_colour_observation(image) -> dict:
             'colour_fraction': round(colour/(sample.width()*sample.height()), 6)}
 
 
+def visible_caption_pixels(canvas) -> dict:
+    """Compare actual widget pixels with/without the existing caption slot.
+
+    The owned QA is paused. No event loop is pumped between the two grabs, so
+    this changes only painting, not project data, time, or native publication.
+    A successful raster receipt alone cannot pass this visibility check.
+    """
+    import numpy as np
+    from PySide6.QtGui import QImage
+    controller=canvas.controller;surface=controller.surface
+    slot=getattr(canvas,'ADVANCED_OVERLAY_ID',1)
+    item=getattr(surface,'overlays',{}).get(slot)
+    if item is None:return dict(passed=False,changed_pixels=0,reason='caption slot missing')
+    sequence=controller.actor_status().get('frame_sequence')
+    before=canvas.grab().toImage().convertToFormat(QImage.Format_RGBA8888)
+    try:
+        surface.overlays.pop(slot,None)
+        after=canvas.grab().toImage().convertToFormat(QImage.Format_RGBA8888)
+    finally:
+        surface.overlays[slot]=item
+        surface.update()
+    if before.size()!=after.size():return dict(passed=False,changed_pixels=0,reason='canvas resized')
+    def pixels(image):
+        return np.ndarray((image.height(),image.width(),4),dtype=np.uint8,buffer=image.constBits(),strides=(image.bytesPerLine(),4,1))
+    changed=np.any(np.abs(pixels(before).astype(np.int16)-pixels(after).astype(np.int16))>3,axis=2)
+    stable=sequence==controller.actor_status().get('frame_sequence')
+    return dict(passed=stable and int(changed.sum())>10,changed_pixels=int(changed.sum()),stable_frame=stable,
+                caption_geometry=list(item[1]),caption_image_size=[item[0].width(),item[0].height()],
+                canvas_dpr=canvas.devicePixelRatioF(),surface_dpr=surface.devicePixelRatioF())
+
+
 def preserve_studio_preview(page, output: Path, label: str) -> dict:
     """Actual decoded raster AND visible composed canvas at owned QA milestones."""
     from PySide6.QtCore import Qt
-    if label not in {'ready', 'cut-before', 'cut-after', 'reopened'}:
+    if label not in {'ready', 'bilingual', 'cut-before', 'cut-after', 'reopened'}:
         raise ValueError('Unknown owned preview milestone')
     canvas = page.video
     controller = canvas.controller
@@ -85,9 +116,15 @@ def preserve_studio_preview(page, output: Path, label: str) -> dict:
                   canvas_geometry=list(canvas.rect().getRect()),
                   overlays=controller.applied_visual_state(),
                   studio=studio_snapshot(page))
+    from ..rendering.caption_scene import active_cues
+    record['caption_required']=bool(active_cues(page,page._caption_sample_ms()))
+    record['caption_visibility']=visible_caption_pixels(canvas)
     record['passed'] = bool(record['surface_visible'] and record['canvas_visible']
                             and record['decoded']['colour_fraction'] > .10
-                            and record['composed']['colour_fraction'] > .10)
+                            and record['composed']['colour_fraction'] > .10
+                            and (not record['caption_required'] or record['caption_visibility']['passed']))
+    if 1 in getattr(surface,'overlays',{}):
+        surface.overlays[1][0].save(str(output/f'preview-{label}-caption.png'))
     for kind, raster in [('decoded', decoded), ('composed', composed)]:
         filename = f'preview-{label}-{kind}.png'
         if not raster.isNull():

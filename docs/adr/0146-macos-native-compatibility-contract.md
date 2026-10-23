@@ -20,3 +20,8 @@
 維護一份跨平台程式來源，增加 Mac 原生輸入鎖與原生建置步驟，不降低 Windows 依賴。每次更新 Remotion 消費端、媒體或 Python 都必須重新經過靜態與執行守門。macOS 12 / 13、Intel、Rosetta 與精確 14.4.1 未取得對應環境前不承諾通過；Developer ID / 公證、下載隔離屬性與直接啟動是獨立的分發證據。
 
 詳見[任務與失敗保留](../exec-plans/active/2026-10-23-macos-compatibility.md)、[使用者相容性說明](../deployment/macos-compatibility.zh-TW.md)。
+
+
+## Qt 預覽的最終畫面所有權
+
+QtEmbeddedVideoSurface 按 slot 0（影片）、1（字幕）、2 / 3（變換框）繪製最終畫面。VideoCompositionScene 在這條路徑只產生／發布圖像與接收互動，不得在上方 QWidget 再繪影片。否則「圖像成功產生並發布」與「使用者看得到」會分離。Windows 外部 mpv 的原繪製分支保留；驗收同時核對 surface 與完整 canvas 的實際畫素。

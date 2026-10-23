@@ -63,8 +63,13 @@ def start(window, out):
             return
         controller = page.video.controller
         def visible_pixels():
+            from .macos_desktop_evidence import visible_caption_pixels
+            from ..rendering.caption_scene import active_cues
+            if label == 'bilingual' and not any(str(key).endswith('#tr') for key in page._caption_scene.trace().get('rendered_cue_ids',[])):
+                return False
             return (image_colour_observation(controller.surface.frame)['colour_fraction'] > .10
-                    and image_colour_observation(page.video.grab().toImage())['colour_fraction'] > .10)
+                    and image_colour_observation(page.video.grab().toImage())['colour_fraction'] > .10
+                    and (not active_cues(page,page._caption_sample_ms()) or visible_caption_pixels(page.video)['passed']))
         deadline = time.monotonic()+3
         while not visible_pixels() and time.monotonic() < deadline:
             pump()
@@ -255,7 +260,7 @@ def start(window, out):
             editor = page.subtitle_edit_input
             check('normal Chinese editor visible', editor.isVisible())
             editor.setFocus(); QTest.keyClick(editor, Qt.Key_A, Qt.ControlModifier)
-            event = QInputMethodEvent(); event.setCommitString('兔白字幕 0.5.0 实际识别后中文编辑')
+            event = QInputMethodEvent(); event.setCommitString('兔白字幕 · 实际识别后中文编辑')
             QApplication.sendEvent(editor, event); QTest.keyClick(editor, Qt.Key_Return); pump(.3)
             expected = page._cue_lookup[cue.id].text
             check('Chinese commit reaches actual cue', '实际识别后中文编辑' in expected)
@@ -267,6 +272,7 @@ def start(window, out):
                 apply_display(page, mode='bilingual', order='translation_first')
                 pump(.5)
                 check('bilingual display mode selected', settings_from_state(page.project.studio_state).mode == 'bilingual')
+                preview(page, 'bilingual')
                 window.grab().save(str(out/'01-bilingual-preview.png'))
             from ..timeline.studio_edit_sequence import projected_cues, sequence_of
             import copy

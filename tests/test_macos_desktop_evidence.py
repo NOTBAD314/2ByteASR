@@ -20,7 +20,7 @@ def test_preview_measure_rejects_black_canvas_despite_coloured_bottom_handles():
     assert image_colour_observation(raster)['colour_fraction'] == 1
 
 
-def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
+def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path,monkeypatch):
     from PySide6.QtGui import QImage, QColor
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
     from twobyteasr.studio.studio_qt_preview import QtEmbeddedVideoController
@@ -34,7 +34,8 @@ def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
     cover = QLabel(canvas); cover.setGeometry(canvas.rect())
     cover.setStyleSheet('background: black'); cover.show(); cover.raise_()
     canvas.show(); app.processEvents()
-    page = SimpleNamespace(video=canvas)
+    page = SimpleNamespace(video=canvas,_caption_sample_ms=lambda:0)
+    monkeypatch.setattr('twobyteasr.rendering.caption_scene.active_cues',lambda page,position:[])
     try:
         blocked = preserve_studio_preview(page, tmp_path, 'ready')
         assert blocked['decoded']['colour_fraction'] == 1
