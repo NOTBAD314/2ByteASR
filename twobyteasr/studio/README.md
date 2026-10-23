@@ -24,6 +24,7 @@
 | `StudioHubMixin` | `studio_hub.py` | 工程庫（專案列表）與偏好設定 |
 | `StudioProjectFlowMixin` | `studio_project_flow.py` | 開啟／切換／關閉工程、拖入檔案 |
 | `StudioMediaFlowMixin` | `studio_media_flow.py` | 匯入素材、探測、匯入字幕、波形、重新辨識 |
+| `RecognitionRoleRow`、`LanguageBadges` | `recognition_role_rows.py` | 「識別字幕」彈窗左欄的三行模型（logo、角色、模型名與支援語言、就緒狀態） |
 | `StudioVideoFlowMixin` | `studio_video_flow.py` | 影片軌、變形、多軌預覽、自動剪氣口 |
 | `StudioPlaybackFlowMixin` | `studio_playback_flow.py` | 播放、暫停、seek、音量與速度 |
 | `StudioEditAssemblyMixin` | `studio_edit_assembly.py` | 入點／出點、標記、精華候選 |

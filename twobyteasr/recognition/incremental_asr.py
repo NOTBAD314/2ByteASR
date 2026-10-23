@@ -379,7 +379,44 @@ class IncrementalASRPipeline:
             raise InterruptedError("ASR cancelled")
 
 
+def split_chunk_overlaps(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    keys: tuple[str, str] = ("start_ms", "end_ms"),
+    margin: float = 20,
+) -> tuple[list[dict[str, object]], int]:
+    """Give the audio two adjacent chunks share to one row each.
+
+    Chunks overlap by ``overlap_ms`` so a word on the seam is heard whole, but
+    their rows are still one stream in chunk order. Left overlapping, the first
+    line of chunk N+1 can start before the last line of chunk N, and every later
+    step that sorts by time puts their characters out of source order
+    (2026-10-21: a Japanese SenseVoice episode failed the Stage 9 conservation
+    check). The seam goes to the middle of the overlap; texts are untouched.
+
+    2026-10-23: the whole-file SenseVoice / Fun-ASR Nano rows (the fallback
+    when incremental recognition fails) are whole padded chunks in seconds
+    (``keys=("start", "end")``, ``margin=0.02``); two speech regions closer
+    than both pads overlap the same way (0.13 s at 46.92 s in a user log).
+    """
+    start_key, end_key = keys
+    number = int if isinstance(margin, int) else float  # manifest rows keep whole ms
+    result = [dict(row) for row in rows]
+    seams = 0
+    for previous, current in zip(result, result[1:]):
+        previous_end = number(previous[end_key])
+        current_start = number(current[start_key])
+        if current_start >= previous_end:
+            continue
+        seam = number((current_start + previous_end) / 2)
+        seam = max(number(previous[start_key]) + margin, min(number(current[end_key]) - margin, seam))
+        previous[end_key] = seam
+        current[start_key] = seam
+        seams += 1
+    return result, seams
+
+
 __all__ = [
     "ASR_MANIFEST_SCHEMA", "ASRChunkSpec", "ASRChunkRecord", "CueDelta",
-    "IncrementalASRPipeline",
+    "IncrementalASRPipeline", "split_chunk_overlaps",
 ]

@@ -3,6 +3,7 @@
 # The core owns runtime configuration; these imports preserve the existing public contract.
 from subtitle_core import *  # noqa: F401,F403
 from twobyteasr.recognition.run_context import get_runtime_context
+from twobyteasr.subtitle_rules.language_rules import finished_cue_limits
 from twobyteasr.subtitle_rules.text_similarity import phonetic_text
 
 __all__ = [
@@ -17,6 +18,11 @@ __all__ = [
     'firered_anchor_coverage',
     'collect_review_items',
 ]
+
+
+def _max_cue_seconds():
+    """Longest finished subtitle: 5 s Chinese, 7 s Japanese (two lines, 2026-10-21)."""
+    return finished_cue_limits(COMPLETE_PHRASE_SOFT_MAX_CHARS, MAX_SUBTITLE_SECONDS)[1]
 
 
 def repair_overlong_cues_from_source(cues, segments, firered_tokens=()):
@@ -37,14 +43,16 @@ def repair_overlong_cues_from_source(cues, segments, firered_tokens=()):
     repaired = []
     repaired_count = 0
     tolerance = 0.06
+    # Japanese subtitles hold two lines since 2026-10-21; Chinese keeps 16 / 5 s.
+    max_chars, max_seconds = finished_cue_limits(COMPLETE_PHRASE_SOFT_MAX_CHARS, MAX_SUBTITLE_SECONDS)
     for cue in sorted(
         cues,
         key=lambda item: (item.start, item.end, item.speaker or "S00", item.cue_id),
     ):
         duration = cue.end - cue.start
         if (
-            display_length(cue.text) <= COMPLETE_PHRASE_SOFT_MAX_CHARS
-            and duration <= MAX_SUBTITLE_SECONDS + 0.05
+            display_length(cue.text) <= max_chars
+            and duration <= max_seconds + 0.05
             and cue.end > cue.start
         ):
             repaired.append(cue)
@@ -69,8 +77,8 @@ def repair_overlong_cues_from_source(cues, segments, firered_tokens=()):
         for segment in candidates:
             segment_duration = segment.end - segment.start
             if (
-                display_length(segment.text) <= COMPLETE_PHRASE_SOFT_MAX_CHARS
-                and segment_duration <= MAX_SUBTITLE_SECONDS + 0.05
+                display_length(segment.text) <= max_chars
+                and segment_duration <= max_seconds + 0.05
             ):
                 pieces = [
                     SubtitleCue(
@@ -176,11 +184,12 @@ def build_local_source_cues(segments, firered_tokens=()):
         segments,
         key=lambda item: (item.start, item.end, item.segment_id),
     )
+    max_chars, max_seconds = finished_cue_limits(COMPLETE_PHRASE_SOFT_MAX_CHARS, MAX_SUBTITLE_SECONDS)
     for segment in ordered:
         duration = float(segment.end) - float(segment.start)
         if (
-            display_length(segment.text) <= COMPLETE_PHRASE_SOFT_MAX_CHARS
-            and duration <= MAX_SUBTITLE_SECONDS + 0.05
+            display_length(segment.text) <= max_chars
+            and duration <= max_seconds + 0.05
             and segment.end > segment.start
         ):
             pieces = [
@@ -204,7 +213,7 @@ def build_local_source_cues(segments, firered_tokens=()):
 
 def normalize_cue_times(cues, timeline_fps=TIMELINE_FPS):
     minimum_frames = max(1, int(round(MIN_SUBTITLE_SECONDS * timeline_fps)))
-    max_duration_frames = max(1, int(round(MAX_SUBTITLE_SECONDS * timeline_fps)))
+    max_duration_frames = max(1, int(round(_max_cue_seconds() * timeline_fps)))
 
     def budgeted_minimum_frames(cue):
         # 碰撞推挤/量化可能把多条字幕压成 0.35s 阶梯串（23~43 字/秒闪现）。
@@ -350,7 +359,7 @@ def extend_cue_tails_by_speaker(
         return cues
     tail_frames = max(1, int(round(ISOLATED_CUE_TAIL_SECONDS * timeline_fps)))
     audio_end_frame = max(0, int(round(float(audio_seconds) * timeline_fps)))
-    max_duration_frames = max(1, int(round(MAX_SUBTITLE_SECONDS * timeline_fps)))
+    max_duration_frames = max(1, int(round(_max_cue_seconds() * timeline_fps)))
     speaker_rows = {}
     for cue in cues:
         speaker_rows.setdefault(cue.speaker or "S00", []).append(cue)
@@ -429,7 +438,7 @@ def bridge_short_display_gaps(
         int(round(SHORT_DISPLAY_GAP_BRIDGE_SECONDS * timeline_fps)),
     )
     audio_end_frame = max(0, int(round(float(audio_seconds) * timeline_fps)))
-    max_duration_frames = max(1, int(round(MAX_SUBTITLE_SECONDS * timeline_fps)))
+    max_duration_frames = max(1, int(round(_max_cue_seconds() * timeline_fps)))
 
     coverage_owner = rows[0]
     coverage_end_frame = int(round(rows[0].end * timeline_fps))

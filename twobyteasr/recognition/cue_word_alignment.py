@@ -394,8 +394,10 @@ def _independent_words(project, cue, *, allow_realign=True):
         problem = word_receipt_problem(receipt, cue.text)
         if problem:
             return (), problem[0]
+        # 'realign:<id>' words are the Studio re-alignment's own measurement, kept in this
+        # receipt (2026-10-22: they were rejected here, so a re-aligned caption lost its words).
         if any(row['evidence_ref'] and row['evidence_ref'] not in project.asr_evidence
-               and not row['evidence_ref'].startswith('term:') for row in stored):
+               and not row['evidence_ref'].startswith(('term:', 'realign:')) for row in stored):
             return (), 'word_source_missing'
         return tuple(AlignedWord(**{k: row[k] for k in AlignedWord.__dataclass_fields__})
                      for row in stored), receipt.get('word_alignment', 'exact_token_text')

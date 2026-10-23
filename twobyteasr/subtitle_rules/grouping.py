@@ -563,7 +563,7 @@ def call_grouping_api(
             source_gap_hints.append(
                 {"offset": running_offset, "gap_ms": int(round(gap * 1000))}
             )
-    from .grouping_request import GROUPING_PROMPT_VERSION, grouping_system_prompt
+    from .grouping_request import grouping_prompt_key, grouping_system_prompt, task_prompt_language
     from ..recognition.content_scene import runtime_content_scene
     scene = runtime_content_scene()
     prompt = grouping_system_prompt(MAX_SUBTITLE_CHARS, MAX_SUBTITLE_SECONDS)
@@ -576,8 +576,11 @@ def call_grouping_api(
             'auxiliaries, not, or inside phrasal verbs unless a real long pause or speaker interruption requires it. '
             'Keep the exact supplied words (including steam), order and punctuation. '
             'The same JSON boundary-offset schema and all source/time protections remain mandatory.')
+    # Built-in prompts keep their version; the user's guidance adds its digest.
+    prompt_language = task_prompt_language()
+    prompt_key = grouping_prompt_key(prompt_language)
     request_body = {
-        "prompt_version": GROUPING_PROMPT_VERSION,
+        "prompt_version": prompt_key,
         "content_scene": scene.to_dict(),
         "total_length": total_length,
         "source_text": source_text,
@@ -666,7 +669,7 @@ def call_grouping_api(
         diag = request_record(snapshot, stage="grouped", batch_id=batch_index,
             speaker=segment_batch[0].speaker or "S00", attempt=attempt,
             cache_key=(batch_diagnostics or {}).get("cache_key", ""), input_characters=len(source_text))
-        diag.update(prompt_version=GROUPING_PROMPT_VERSION, content_scene=scene.to_dict(),
+        diag.update(prompt_version=prompt_key, content_scene=scene.to_dict(),
             prompt_characters=sum(len(item["content"]) for item in working_messages))
         if batch_diagnostics:
             diag["scheduler_queue_wait_ms"] = batch_diagnostics.get("scheduler_queue_wait_ms", 0)
@@ -697,7 +700,13 @@ def call_grouping_api(
             if not str(content).strip():
                 raise AIProviderError("断句正文为空。", category="empty_response")
             from .grouping_contract import parse_grouping_response, capture_grouping_source
-            boundary_offsets, returned = parse_grouping_response(content, source_text)
+            # 2026-10-18: the Japanese prompt says the bars of segmented_text decide;
+            # a missing closing total_length is added for every language.
+            boundary_offsets, returned = parse_grouping_response(
+                content, source_text, bars_win=prompt_language == "ja",
+                closing_added=lambda total: record_run_event(
+                    "grouping_closing_boundary_added", batch_index=batch_index,
+                    attempt=attempt, total_length=total))
             model_boundaries = list(boundary_offsets)
             source_identity = capture_grouping_source(segment_batch,
                 job_id=get_runtime_context().job_id, batch_id=batch_index).identity()
@@ -1065,7 +1074,8 @@ def group_subtitles(
                 for middle in ordered_segments[left_index + 1 : right_index]
             ):
                 interrupted_after.add(left.segment_id)
-    from .grouping_request import grouping_batch_limits, GROUPING_PROMPT_VERSION
+    from .grouping_request import grouping_batch_limits, grouping_prompt_key, task_prompt_language
+    prompt_key = grouping_prompt_key(task_prompt_language())
     max_rows, max_chars, batch_policy = grouping_batch_limits(ordered_segments,
         max_chars=GROUP_API_BATCH_MAX_CHARS, legacy_max_rows=GROUP_API_BATCH_MAX_CUES)
     batches = []
@@ -1101,7 +1111,7 @@ def group_subtitles(
         serialized_batch = _grouping_dependency_segments(batch)
         dependency = {
             "use_ai": use_ai,
-            "batch_protocol": GROUPING_PROMPT_VERSION,
+            "batch_protocol": prompt_key,
             "batch_policy": batch_policy,
             "local_fast": local_fast,
             "speaker": speaker,
@@ -1222,7 +1232,7 @@ def group_subtitles(
     workers = max(1, min(workers, capacity["effective_workers"]))
     if max_workers is not None:
         workers = max(1, min(workers, int(max_workers)))
-    record_run_event("grouping_batch_plan", prompt_version=GROUPING_PROMPT_VERSION,
+    record_run_event("grouping_batch_plan", prompt_version=prompt_key,
         batch_policy=batch_policy, max_rows=max_rows, max_characters=max_chars,
         batch_count=len(jobs), configured_workers=configured_workers,
         scheduler_workers=workers, provider_capacity=capacity)
@@ -1275,7 +1285,7 @@ def group_subtitles(
         job_id=get_runtime_context().job_id, started_monotonic=dispatched_at,
         finished_monotonic=time.perf_counter(), elapsed_seconds=round(time.perf_counter()-dispatched_at,3),
         scheduler_workers=workers, configured_workers=configured_workers,
-        provider_capacity=capacity, batch_policy=batch_policy, prompt_version=GROUPING_PROMPT_VERSION,
+        provider_capacity=capacity, batch_policy=batch_policy, prompt_version=prompt_key,
         batch_count=len(jobs), remote_batch_count=sum(not job[-1] for job in jobs) if use_ai else 0,
         local_fast_batch_count=sum(bool(job[-1]) for job in jobs), protected_turn_count=len(turns),
         result_origin=origin)

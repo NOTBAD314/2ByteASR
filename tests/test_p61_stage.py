@@ -132,11 +132,16 @@ def test_hub_clip_assistant_creates_blank_and_opens_tab(tmp_path, monkeypatch):
     page.deleteLater()
 
 
-def test_workspace_splitter_is_not_opaque():
+def test_workspace_splitter_follows_live():
+    # 2026-10-22 (user): the video follows the timeline divider while it is
+    # dragged; the 2026-08 rubber band moved it only after release. The host
+    # minimum is the toolbar plus the timeline, not a fixed 260 px floor.
     _app()
     page = SubtitleStudioPage()
-    assert page.workspace_splitter.opaqueResize() is False
-    assert page.timeline.parent().minimumHeight() >= 250
+    assert page.workspace_splitter.opaqueResize() is True
+    host = page.timeline.parent()
+    assert host.minimumSizeHint().height() >= page.timeline.minimumHeight() + 30
+    assert host.minimumHeight() != 260
     page.close_page()
     page.deleteLater()
 

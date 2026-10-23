@@ -196,9 +196,10 @@ class SplitPreview:
 
     ``split_ms`` is the media cut (where the cue interval is cut).  With
     measured words the text boundary sits between ``left_word_end_ms`` and
-    ``right_word_start_ms``; ``straddled`` names the word whose sound the cut
-    passes through, which stays on the left.  Without words the text boundary
-    is an explicit estimate (``timing_source == ESTIMATED_SPLIT``).
+    ``right_word_start_ms``; ``straddled`` names the word whose sound the
+    pointer passed through, which stays on the left while the cut moves to the
+    boundary after it.  Without words the text boundary is an explicit
+    estimate (``timing_source == ESTIMATED_SPLIT``).
     """
 
     split_ms: int
@@ -302,9 +303,8 @@ def describe_split(
         left_text, right_text = split_texts_at(cue.text, position)
         return SplitPreview(clamped, left_text, right_text, cue.start_ms, clamped,
                             clamped, cue.end_ms, ESTIMATED_SPLIT, reason)
-    # A word whose sound has started belongs to the left. The media cut stays
-    # where the user put it; the text boundary follows the measured onsets, so
-    # moving inside one pause never moves text.
+    # A word whose sound has started belongs to the left; the text boundary
+    # follows the measured onsets, so moving inside one pause never moves text.
     right = [word for word in words if word.start_ms >= clamped]
     left = [word for word in words if word.start_ms < clamped]
     if not left or right and right[0].char_start == 0:
@@ -313,17 +313,31 @@ def describe_split(
         return SplitBlocked(clamped, 'after_last_word_onset', source, reason, tuple(words))
     position = right[0].char_start
     straddled = left[-1] if left[-1].end_ms > clamped else None
+    cut, timing_reason = clamped, 'manual_time_preserved'
+    if straddled is not None:
+        # 2026-10-22 (user report): a cut through a word's sound stayed where
+        # the pointer was, so the right part started 0.4 s before its first
+        # word. Move it to the measured boundary after that word, like a cut
+        # at a text position (``text_split``): a pause's middle, otherwise
+        # the next word's onset. A cut inside a pause is the user's.
+        from .text_split import PAUSE_MIN_MS
+        end, onset = int(straddled.end_ms), int(right[0].start_ms)
+        snapped = (end + onset) // 2 if onset - end >= PAUSE_MIN_MS else onset
+        if cue.start_ms + min_duration_ms <= snapped <= cue.end_ms - min_duration_ms:
+            cut, timing_reason = snapped, 'snapped_to_word_boundary'
+        else:
+            timing_reason = 'inside_token_kept_left'
     left_text, right_text = split_texts_at(cue.text, position)
     return SplitPreview(
-        split_ms=clamped,
+        split_ms=cut,
         left_text=left_text,
         right_text=right_text,
         left_start_ms=cue.start_ms,
-        left_end_ms=clamped,
-        right_start_ms=clamped,
+        left_end_ms=cut,
+        right_start_ms=cut,
         right_end_ms=cue.end_ms,
         timing_source=source,
-        timing_reason='inside_token_kept_left' if straddled else 'manual_time_preserved',
+        timing_reason=timing_reason,
         right_word_start_ms=right[0].start_ms,
         left_word_end_ms=left[-1].end_ms,
         straddled=straddled,

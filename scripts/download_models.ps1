@@ -489,7 +489,7 @@ foreach ($entry in $modelSpecs) {
         }
     } elseif ($Source -in @("AUTO", "HF_MIRROR", "HF_OFFICIAL")) {
         if ($Source -eq "AUTO") {
-            Write-Host "[自动] 按顺序尝试已核对版本的 ModelScope → HF 官方；每个文件重试有上限。" -ForegroundColor Cyan
+            Write-Host "[自动] 按顺序尝试已核对版本的下载来源（模型在 ModelScope 上时先用它）；每个文件重试有上限。" -ForegroundColor Cyan
         } else {
             Write-Host "[指定源] 只使用 $Source，失败不会静默改走其他源。" -ForegroundColor Cyan
         }

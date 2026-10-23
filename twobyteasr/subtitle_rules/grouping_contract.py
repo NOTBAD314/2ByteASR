@@ -218,12 +218,46 @@ def validate_boundary_offsets(boundaries, total):
     return boundaries
 
 
+def _complete_closing_boundary(boundaries, total, closing_added):
+    """2026-10-18 (日常 19): with fewer cuts the model sometimes stops at its
+    last cut and leaves out the closing total_length. The end of the text is
+    always a boundary; every other check still applies."""
+    if (isinstance(boundaries, list) and boundaries and all(type(item) is int for item in boundaries)
+            and boundaries == sorted(set(boundaries)) and boundaries[0] > 0 and boundaries[-1] < total):
+        if closing_added is not None:
+            closing_added(total)
+        return [*boundaries, total]
+    return boundaries
+
+
+def _boundaries_from_bars(segmented, source_text):
+    """Cuts at the bars of a copy compared by content characters (Japanese prompt)."""
+    from .text_rules import display_length, content_exact
+    if content_exact(segmented.replace("|", "")) != content_exact(source_text):
+        raise GroupingContractError("segmented_text 改动、遗漏或混入了来源正文。",
+                                    category="text_mutation_rejected")
+    # Offsets count content characters only, so a copy that differs in
+    # spaces/punctuation, or a stray leading, trailing or doubled bar, gives
+    # the same cuts (日语模型数错 offset，照抄加竖线更可靠)。
+    boundaries, running = [], 0
+    for piece in segmented.split("|"):
+        running += display_length(piece)
+        if running and running not in boundaries:
+            boundaries.append(running)
+    return boundaries
+
+
 @validation("grouping.json_and_source_equivalence")
-def parse_grouping_response(content, source_text):
+def parse_grouping_response(content, source_text, *, bars_win=False, closing_added=None):
     """Accept complete JSON; a whole fenced object/numeric array is legacy.
 
     Never extract arbitrary objects from prose/error pages, or prefer one of
     two contradictory representations before local quality repairs.
+
+    ``bars_win`` (2026-10-18, the Japanese prompt, which tells the model that
+    the bars of segmented_text decide): the copy is compared by content
+    characters and boundaries that disagree with the bars are not used.
+    ``closing_added(total)`` is told when a missing closing boundary is added.
     """
     from .text_rules import display_length, content_exact
     if not isinstance(content, str) or not content.strip():
@@ -254,6 +288,11 @@ def parse_grouping_response(content, source_text):
     if not isinstance(returned, dict) or not returned or set(returned) - {"boundaries", "segmented_text"}:
         raise GroupingContractError("断句 JSON 字段不符合协议。", category="format_mismatch")
     boundaries = returned.get("boundaries")
+    if bars_win and isinstance(returned.get("segmented_text"), str) and returned["segmented_text"].strip():
+        boundaries = _boundaries_from_bars(returned["segmented_text"], source_text)
+        validate_boundary_offsets(boundaries, total)
+        return list(boundaries), returned
+    boundaries = _complete_closing_boundary(boundaries, total, closing_added)
     if "boundaries" in returned:
         validate_boundary_offsets(boundaries, total)
     if "segmented_text" in returned:

@@ -109,14 +109,15 @@ def start(window, out):
             check('save local-only AI configuration', window._save_ai_configuration(show_feedback=False))
             if keep_text_ai:
                 tile = getattr(window, 'setting_tiles', {}).get('ai')
+                # 2026-10-22: one AI card (state tag + plain line) replaced the three fact chips.
                 result['home_ai'] = dict(
-                    summary=(getattr(tile, 'summary_label', None) or getattr(tile, 'summary', None)).text() if tile is not None else '',
-                    chips={k: c.text() for k, c in getattr(window, '_ai_state_chips', {}).items() if c.isVisible()},
+                    summary=tile.summary_label.text() if tile is not None else '',
+                    state=tile.state_chip.text() if tile is not None else '',
                     key_help=window.ai_key_help_button.isVisible())
                 check('no key: AI proofreading and AI line breaks are still switched on (the defaults)',
                       window.ai_polish.isChecked() and window.ai_grouping.isChecked())
                 check('no key: the home AI card says subtitles work without a key and offers the explainer',
-                      result['home_ai']['key_help'] and '不填也能用' in result['home_ai']['chips'].values())
+                      result['home_ai']['key_help'] and '没连也能开始' in result['home_ai']['summary'])
             source = str(Path(config['media']).resolve())
             window.import_media([source], replace=True)
             wait(lambda: window.media_paths == [source] and window.start_button.isEnabled(), 40, 'normal Home media intake')

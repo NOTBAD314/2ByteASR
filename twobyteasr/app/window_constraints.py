@@ -39,6 +39,13 @@ def _user32():
             _fields_ = [('cbSize', wintypes.DWORD), ('rcMonitor', wintypes.RECT),
                         ('rcWork', wintypes.RECT), ('dwFlags', wintypes.DWORD)]
 
+        class GUITHREADINFO(ctypes.Structure):
+            _fields_ = [('cbSize', wintypes.DWORD), ('flags', wintypes.DWORD),
+                        ('hwndActive', wintypes.HWND), ('hwndFocus', wintypes.HWND),
+                        ('hwndCapture', wintypes.HWND), ('hwndMenuOwner', wintypes.HWND),
+                        ('hwndMoveSize', wintypes.HWND), ('hwndCaret', wintypes.HWND),
+                        ('rcCaret', wintypes.RECT)]
+
         user32 = ctypes.WinDLL('user32', use_last_error=True)
         user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         user32.GetWindowRect.restype = wintypes.BOOL
@@ -48,7 +55,12 @@ def _user32():
         user32.GetMonitorInfoW.restype = wintypes.BOOL
         user32.IsZoomed.argtypes = user32.IsIconic.argtypes = [wintypes.HWND]
         user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.POINTER(GUITHREADINFO)]
+        user32.GetGUIThreadInfo.restype = wintypes.BOOL
         user32.MONITORINFO = MONITORINFO
+        user32.GUITHREADINFO = GUITHREADINFO
         _USER32 = user32
     return _USER32
 
@@ -76,6 +88,27 @@ def native_frame(widget):
     as_tuple = lambda r: (r.left, r.top, r.right, r.bottom)
     return dict(rect=as_tuple(rect), work=as_tuple(info.rcWork), monitor=as_tuple(info.rcMonitor),
                 zoomed=bool(user32.IsZoomed(hwnd)), iconic=bool(user32.IsIconic(hwnd)))
+
+
+def in_move_size_loop(widget):
+    """True while the user moves or resizes ``widget`` (2026-10-22).
+
+    Windows' own move/size loop (``startSystemMove``/``startSystemResize``,
+    the system menu's keyboard move) or the manual title-drag fallback.
+    """
+    if getattr(widget, '_title_drag', None) is not None:
+        return True
+    if (QApplication.platformName() != 'windows'
+            or not widget.testAttribute(Qt.WidgetAttribute.WA_WState_Created)):
+        return False
+    import ctypes
+    user32 = _user32()
+    hwnd = int(widget.winId())
+    info = user32.GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(info)
+    if not user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(hwnd, None), ctypes.byref(info)):
+        return False
+    return bool(info.flags & 0x2) and int(info.hwndMoveSize or 0) == hwnd  # GUI_INMOVESIZE
 
 
 def special_geometry_broken(widget):
@@ -204,7 +237,12 @@ def available_rect(widget, *, within_parent=False):
     return rect.adjusted(8, 8, -8, -8)
 
 
-def constrain(widget, *, within_parent=False):
+def constrain(widget, *, within_parent=False, user_placed=False):
+    """Fit ``widget`` into its screen (or parent window).
+
+    ``user_placed``: the top-level window sits where the user dropped it; it
+    may hang past the screen edges as long as its title strip is reachable.
+    """
     if _special_window_state(widget):
         return
     bounds = available_rect(widget, within_parent=within_parent)
@@ -228,10 +266,34 @@ def constrain(widget, *, within_parent=False):
     if _special_window_state(widget):
         return
     frame = widget.frameGeometry()
-    x = max(bounds.left(), min(frame.left(), bounds.right()-frame.width()+1))
-    y = max(bounds.top(), min(frame.top(), bounds.bottom()-frame.height()+1))
+    if user_placed and not within_parent:
+        # 2026-10-22 user report: a main window almost as tall as a 1080p work
+        # area could not be dragged down at all. Like native windows, where
+        # the user drops it may hang past the screen edges; only the title
+        # strip must stay where the cursor can grab it.
+        if title_reachable(frame):
+            return
+        keep_w, keep_h = min(TITLE_REACH[0], frame.width()), min(TITLE_REACH[1], frame.height())
+        x = max(bounds.left()-frame.width()+keep_w, min(frame.left(), bounds.right()-keep_w+1))
+        y = max(bounds.top(), min(frame.top(), bounds.bottom()-keep_h+1))
+    else:
+        x = max(bounds.left(), min(frame.left(), bounds.right()-frame.width()+1))
+        y = max(bounds.top(), min(frame.top(), bounds.bottom()-frame.height()+1))
     if x != frame.left() or y != frame.top():
         widget.move(widget.pos()+QPoint(x-frame.left(), y-frame.top()))
+
+
+TITLE_REACH = (160, 40)  # logical px of a top-level window's top strip kept on a screen
+
+
+def title_reachable(frame):
+    keep_w, keep_h = min(TITLE_REACH[0], frame.width()), min(TITLE_REACH[1], frame.height())
+    strip = QRect(frame.left(), frame.top(), frame.width(), keep_h)
+    for screen in QApplication.screens():
+        visible = strip.intersected(screen.availableGeometry())
+        if visible.width() >= keep_w and visible.height() >= keep_h:
+            return True
+    return False
 
 
 class WindowBounds(QObject):
@@ -244,6 +306,9 @@ class WindowBounds(QObject):
         self.last_screen = None
         self.repair_pending = False
         self.repairs = []
+        self.drag_wait = False
+        self.dragged = False
+        self.user_position = None
         self.grip = None
         widget.installEventFilter(self)
         parent = widget.parentWidget()
@@ -252,7 +317,16 @@ class WindowBounds(QObject):
         self.grip = QSizeGrip(widget) if resizable else None
         for screen in QApplication.screens():
             screen.availableGeometryChanged.connect(self.schedule)
+        _watch_move_size(self)
         self.schedule()
+
+    def move_size_event(self, started):
+        """Windows began or ended moving/resizing this window. Without
+        "show window contents while dragging" (Remote Desktop's default) no
+        move event arrives until the drop, so the drag is noted here."""
+        self.dragged = True
+        if not started:
+            self.schedule()
 
     def schedule(self, *args):
         if not self.pending:
@@ -287,8 +361,24 @@ class WindowBounds(QObject):
                     ctypes.windll.user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
             if wanted and screen is not None:
                 QTimer.singleShot(200, lambda: self._return_to_screen(screen, wanted))
+        elif in_move_size_loop(self.widget):
+            # 2026-10-22 (user video): moving the window back on every move
+            # event fought Windows' move loop, which put it under the cursor
+            # again: the window snapped back and twitched. Check once it ends.
+            self.dragged = True
+            if not self.drag_wait:
+                self.drag_wait = True
+                QTimer.singleShot(50, self._after_drag)
         else:
-            constrain(self.widget, within_parent=self.within_parent)
+            position = self._position()
+            if self.dragged:
+                self.dragged, self.user_position = False, position
+            # Moves by the program or by Windows itself (monitor changes)
+            # still put the whole window inside the screen.
+            user_placed = position == self.user_position
+            constrain(self.widget, within_parent=self.within_parent, user_placed=user_placed)
+            if user_placed:  # a title dropped out of reach was pulled back
+                self.user_position = self._position()
             if not self.repair_pending and special_geometry_broken(self.widget):
                 # Monitors waking up move windows several times; repair only
                 # what is still wrong once the moves have settled.
@@ -305,6 +395,21 @@ class WindowBounds(QObject):
     def _alive(self):
         from shiboken6 import isValid
         return hasattr(self, 'widget') and isValid(self) and isValid(self.widget)
+
+    def _position(self):
+        """Top-left now. Qt applies a move made by Windows to its own
+        geometry a moment later, so the HWND rect is the reliable one."""
+        native = native_frame(self.widget)
+        if native is not None:
+            return native['rect'][:2]
+        point = self.widget.frameGeometry().topLeft()
+        return point.x(), point.y()
+
+    def _after_drag(self):
+        if not self._alive():
+            return
+        self.drag_wait = False
+        self.schedule()
 
     def _repair_if_broken(self):
         if not self._alive():
@@ -351,6 +456,49 @@ class WindowBounds(QObject):
             if edges and obj.windowHandle() and obj.windowHandle().startSystemResize(edges):
                 return True
         return False
+
+
+_MOVE_SIZE_HOOK = None
+_MOVE_SIZE_OWNERS = None
+
+
+def _watch_move_size(bounds):
+    """One process-wide EVENT_SYSTEM_MOVESIZESTART/END hook (2026-10-22).
+
+    Owners are matched lazily by HWND so that no native window is created
+    early; the callback runs on this GUI thread, only for those two events.
+    """
+    global _MOVE_SIZE_HOOK, _MOVE_SIZE_OWNERS
+    if QApplication.platformName() != 'windows':
+        return
+    import weakref
+    if _MOVE_SIZE_HOOK is None:
+        import ctypes
+        import os
+        from ctypes import wintypes
+        _MOVE_SIZE_OWNERS = weakref.WeakSet()
+        callback_type = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                                           wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
+
+        def on_event(_hook, event, hwnd, object_id, _child, _thread, _time):
+            if object_id != 0 or not hwnd:  # OBJID_WINDOW
+                return
+            for owner in list(_MOVE_SIZE_OWNERS):
+                widget = owner.widget if owner._alive() else None
+                if (widget is not None and widget.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
+                        and int(widget.winId()) == int(hwnd)):
+                    owner.move_size_event(event == 0x000A)
+                    return
+
+        callback = callback_type(on_event)
+        user32 = _user32()
+        user32.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, callback_type,
+                                           wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+        user32.SetWinEventHook.restype = wintypes.HANDLE
+        # MOVESIZESTART..MOVESIZEEND, this process only, WINEVENT_OUTOFCONTEXT.
+        handle = user32.SetWinEventHook(0x000A, 0x000B, None, callback, os.getpid(), 0, 0)
+        _MOVE_SIZE_HOOK = (handle, callback)  # the callback must stay alive
+    _MOVE_SIZE_OWNERS.add(bounds)
 
 
 def install_window_bounds(widget, **options):

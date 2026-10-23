@@ -20,6 +20,8 @@ def main():
     parser.add_argument('--label',default='')
     parser.add_argument('--interrupt-at-bytes',type=int,default=0)
     parser.add_argument('--foreign-environment',action='store_true')
+    parser.add_argument('--addons',default='qwen_aligner',
+                        help='workshop models installed after the first combination, comma separated, in order')
     args=parser.parse_args()
     root=Path(__file__).resolve().parents[1]
     workspace=(args.workspace or root).resolve()
@@ -39,7 +41,8 @@ def main():
         save_project(SubtitleProject(media=StudioMedia(path='')),project)
         shutil.copy2(root/'assets/diagnostics/speech_en.wav',out/'sample.wav')
     (out/'first-deployment.json').write_text(json.dumps(dict(source=args.source,timeout_s=args.timeout,
-        ui_only=args.ui_only,label=label,mode=args.mode,interrupt_at_bytes=args.interrupt_at_bytes)),'utf8')
+        ui_only=args.ui_only,label=label,mode=args.mode,interrupt_at_bytes=args.interrupt_at_bytes,
+        addons=[key for key in args.addons.split(',') if key])),'utf8')
     env=os.environ.copy()
     for key in tuple(env):
         if (key.upper() in {'PATH','PYTHONHOME','PYTHONPATH','HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY'}

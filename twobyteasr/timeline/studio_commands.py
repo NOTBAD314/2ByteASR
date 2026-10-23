@@ -610,9 +610,14 @@ def _splice_split(
     index = next(
         position for position, item in enumerate(project.cues) if item.id == cue.id
     )
-    return SpliceCuesCommand(
+    command = SpliceCuesCommand(
         project, index, 1, (left, right), "Split subtitle", changed
     )
+    # 2026-10-22: the translation is divided between the halves with the cues
+    # (local estimate, "needs update"); before, the right half had none.
+    from ..subtitle_rules.subtitle_translation import split_snapshot
+    command._translation_states = split_snapshot(project, cue, left, right)
+    return command
 
 
 def _splice_merge_adjacent(
@@ -792,7 +797,13 @@ def _validate_speaker_references(project: SubtitleProject) -> None:
 
 
 class SpeakerStateCommand(QUndoCommand):
-    """Atomic snapshot for speaker metadata and all affected cue references."""
+    """Speaker metadata and the cue references it changes, as one undo step.
+
+    2026-10-22 (report-eb10 stage 2): keeps only the cues that differ, in
+    both directions, plus both cue orders. It used to deep-copy every cue
+    four times and fully validate the project, which also deep-copied all
+    recognition evidence: seconds for one speaker rename on 2090 cues.
+    """
 
     def __init__(
         self,
@@ -805,24 +816,51 @@ class SpeakerStateCommand(QUndoCommand):
         super().__init__(text)
         self.project = project
         self.before_speakers = copy.deepcopy(project.speakers)
-        self.before_cues = copy.deepcopy(project.cues)
         self.after_speakers = copy.deepcopy(list(speakers))
-        self.after_cues = copy.deepcopy(list(cues))
+        after = list(cues)
+        before = {cue.id: cue for cue in project.cues}
+        after_by_id = {cue.id: cue for cue in after}
+        self._before_order = [cue.id for cue in project.cues]
+        self._after_order = [cue.id for cue in after]
+        differing = [key for key in dict.fromkeys((*before, *after_by_id))
+                     if before.get(key) is not after_by_id.get(key) and before.get(key) != after_by_id.get(key)]
+        self._before_cues = {key: copy.deepcopy(before[key]) for key in differing if key in before}
+        self._after_cues = {key: copy.deepcopy(after_by_id[key]) for key in differing if key in after_by_id}
         self.changed = changed
 
-    def _apply(self, speakers: list[StudioSpeaker], cues: list[StudioCue]) -> None:
-        self.project.speakers = copy.deepcopy(speakers)
-        self.project.cues = copy.deepcopy(cues)
-        self.project.validate()
+    @property
+    def before_cues(self) -> list[StudioCue]:
+        return self._cue_list(False)
+
+    @property
+    def after_cues(self) -> list[StudioCue]:
+        return self._cue_list(True)
+
+    def _cue_list(self, forward: bool) -> list[StudioCue]:
+        """The cue list of one side: stored cues where they differ, live ones elsewhere."""
+        order = self._after_order if forward else self._before_order
+        stored = self._after_cues if forward else self._before_cues
+        live = {cue.id: cue for cue in self.project.cues}
+        missing = [key for key in order if key not in stored and key not in live]
+        if missing:
+            raise ValueError("字幕已在撤销记录之外改变，无法恢复：" + "、".join(missing[:5]))
+        return [copy.deepcopy(stored[key]) if key in stored else live[key] for key in order]
+
+    def _apply(self, forward: bool) -> None:
+        cues = self._cue_list(forward)
+        self.project.speakers = copy.deepcopy(self.after_speakers if forward else self.before_speakers)
+        self.project.cues = cues
+        # The project owns its JSON fields; normalizing them needs no copy.
+        self.project.validate(owned=True)
         _validate_speaker_references(self.project)
         if self.changed:
             self.changed()
 
     def redo(self) -> None:
-        self._apply(self.after_speakers, self.after_cues)
+        self._apply(True)
 
     def undo(self) -> None:
-        self._apply(self.before_speakers, self.before_cues)
+        self._apply(False)
 
 
 class RecoverSpeakersCommand(SpeakerStateCommand):
@@ -852,8 +890,7 @@ class RecoverSpeakersCommand(SpeakerStateCommand):
             self.project.generation_metadata = copy.deepcopy(self.after_metadata if forward else self.before_metadata)
             self.project.asr_evidence = copy.deepcopy(self.after_evidence if forward else self.before_evidence)
             self.project.studio_state["speaker_track_order"] = list(self.after_order if forward else self.before_order)
-            self._apply(self.after_speakers if forward else self.before_speakers,
-                        self.after_cues if forward else self.before_cues)
+            self._apply(forward)
             self._committed = True
         except Exception as exc:
             (self.project.generation_metadata, self.project.asr_evidence, self.project.studio_state,
@@ -951,13 +988,14 @@ class MergeSpeakerCommand(SpeakerStateCommand):
         if source is None or target is None:
             raise KeyError("source or target speaker not found")
         speakers = [copy.deepcopy(item) for item in project.speakers if item.id != source_id]
-        cues = copy.deepcopy(project.cues)
-        for cue in cues:
-            if cue.speaker_id != source_id:
-                continue
-            cue.speaker_id = target_id
-            if cue.style_id == source.style_id:
-                cue.style_id = target.style_id
+        cues = []
+        for cue in project.cues:
+            if cue.speaker_id == source_id:
+                cue = copy.deepcopy(cue)
+                cue.speaker_id = target_id
+                if cue.style_id == source.style_id:
+                    cue.style_id = target.style_id
+            cues.append(cue)
         super().__init__(project, speakers, cues, f"Merge {source_id} into {target_id}", changed)
 
 
@@ -975,12 +1013,14 @@ class AssignSpeakerCommand(SpeakerStateCommand):
         selected = {str(item) for item in cue_ids}
         if not selected:
             raise ValueError("at least one cue is required")
-        cues = copy.deepcopy(project.cues)
+        cues = []
         changed_count = 0
-        for cue in cues:
+        for cue in project.cues:
             if cue.id in selected and cue.speaker_id != target_id:
+                cue = copy.deepcopy(cue)
                 cue.speaker_id = target_id
                 changed_count += 1
+            cues.append(cue)
         if not changed_count:
             raise ValueError("selected cues already use this speaker")
         super().__init__(project, project.speakers, cues, f"Assign {changed_count} cues to {target_id}", changed)

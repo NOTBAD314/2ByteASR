@@ -85,9 +85,8 @@ def start(window,out):
         guard.timeout.connect(dialogs);guard.start(200)
         page._open_recognition_sheet();pump(.2)
         local=window.findChild(QCheckBox,'localSpeakerRecognition');sheet=local.parentWidget();local.setChecked(True)
-        selector=next(c for c in sheet.findChildren(QComboBox) if c.findData('moss')>=0)
-        check('sheet inherits disabled',selector.currentData()=='single')
-        selector.setCurrentIndex(selector.findData('moss'))
+        # 2026-10-23: speakers follow the primary model; the sheet has no speaker selector.
+        check('sheet has no speaker selector',not any(c.findData('single')>=0 for c in page._recognition_sheet.findChildren(QComboBox)))
         start_button=next(b for b in sheet.findChildren(QPushButton) if b.text()=='识别并替换当前字幕')
         QTest.mouseClick(start_button,Qt.LeftButton);pump(.15)
         confirm=next(b for b in sheet.findChildren(QPushButton) if b.text()=='确认替换')

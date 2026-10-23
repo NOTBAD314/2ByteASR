@@ -72,7 +72,8 @@ def organize(page, cap: int | None = None) -> None:
     ``cap``: a new limit of automatic main tracks (else the project's last)."""
     if page.project is None:
         return
-    state = decide(page.project, expanded=False, cap=cap)
+    from ..projects.studio_project import speaker_track_preference
+    state = decide(page.project, expanded=False, cap=cap, default_cap=speaker_track_preference())
     _push(page, state, "按主要/次要角色整理轨道" if cap is None else "调整主要角色上限")
     members = group_members(page.project)
     message = tr("已整理：{main} 条独立轨，{secondary} 位次要角色收进一条轨道（可撤销）",
@@ -145,7 +146,7 @@ def group_actions(page, menu) -> None:
                    lambda: organize(page))
     from ..recognition.speaker_roles import CAP_CHOICES, MAIN_CAP
     current_cap = int(state.get("cap") or MAIN_CAP) if state.get("policy") != "speaker-roles-v1" else None
-    caps = menu.addMenu(tr("自动主要角色上限"))
+    caps = menu.addMenu(tr("独立字幕轨数量"))
     for value in CAP_CHOICES:
         action = caps.addAction(tr("最多 {count} 条（可撤销）", count=value),
                                 lambda value=value: organize(page, cap=value))

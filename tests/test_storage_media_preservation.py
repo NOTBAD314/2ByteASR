@@ -263,3 +263,26 @@ def test_library_larger_than_the_old_total_read_cap_is_still_verified(service):
     result=proof.saved_project_references(service.paths,[str(cache)])
     assert result.complete, result.errors[:2]
     assert result.references[str(cache)] == (str(holder),)
+
+
+def test_autosave_overlay_media_counts_as_a_reference(service):
+    # 2026-10-22: later autosaves write only changes, next to a checkpoint.
+    cache = service.paths.cache_root / 'proxy.mp4'; cache.write_bytes(b'tiny')
+    other = service.paths.cache_root / 'other.mp4'; other.write_bytes(b'tiny')
+    folder = service.paths.project_root / 'autosave'; folder.mkdir(parents=True)
+    checkpoint = folder / 'key.session.2byteproj'
+    value = project(other, checkpoint)
+    payload = value.to_dict(); payload['autosave'] = {'checkpoint_id': 'abc'}
+    checkpoint.write_text(json.dumps(payload), encoding='utf8')
+    overlay = folder / 'key.session.2byteproj.overlay'
+    media = dict(payload['media'], path=str(cache))
+    overlay.write_text(json.dumps({'format': '2byteasr-autosave-overlay', 'version': 1, 'generation': 2,
+                                   'base': {'checkpoint_id': 'abc', 'generation': 1},
+                                   'replace': {'media': media}}), encoding='utf8')
+    result = proof.saved_project_references(service.paths, [str(cache)])
+    assert result.complete and result.references[str(cache)] == (str(overlay),)
+    # A stale overlay (its checkpoint was rewritten) is ignored, as by recovery.
+    payload['autosave'] = {'checkpoint_id': 'new'}
+    checkpoint.write_text(json.dumps(payload), encoding='utf8')
+    result = proof.saved_project_references(service.paths, [str(cache)])
+    assert result.complete and result.references[str(cache)] == ()

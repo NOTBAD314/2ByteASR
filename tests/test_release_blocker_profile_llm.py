@@ -59,7 +59,10 @@ def host(monkeypatch, tmp_path):
     h._asr_values = lambda: {}
     h._enabled_glossary_ids = lambda: []
     for name in ("recognition_mode_combo", "primary_asr_backend", "firered_asr_backend", "qwen_asr_backend"):
-        setattr(h, name, SimpleNamespace(currentData=lambda: "custom", findData=lambda v: -1))
+        # 2026-10-23: the plan menu adds / removes 自定义 itself (MainWindow._show_plan_choice).
+        setattr(h, name, SimpleNamespace(currentData=lambda: "custom", findData=lambda v: -1,
+                                         blockSignals=lambda *_: False, addItem=lambda *_: None,
+                                         removeItem=lambda *_: None, setCurrentIndex=lambda *_: None))
     yield h
     h.polish_editor.deleteLater(); h.group_editor.deleteLater()
 

@@ -327,7 +327,12 @@ class MotionInspector(QWidget):
         self.workflow, self.page = workflow, workflow.page
         self.setStyleSheet(STYLE)
         self.stages = STAGES
-        self.cards, self.grids, self.hosts, self.chips = {}, {}, {}, {}
+        self._cards, self.grids, self.hosts, self.chips = {}, {}, {}, {}
+        # 2026-10-22: the ~80 effect tiles (each a live preview with its own
+        # style sheet and timer) were built with the Studio page and both
+        # crashes of the user's 22:01/22:03 sessions happened while building
+        # them. They are built per stage when the 动效 page is first shown.
+        self._grid_hosts, self._tiles_built, self._tiles_allowed = {}, set(), False
         self.category = dict.fromkeys(STAGES, 'all')
         self.directions = {'entry': None, 'exit': None}
         self.columns = 0
@@ -393,10 +398,7 @@ class MotionInspector(QWidget):
             grid_host = QWidget(); grid = QGridLayout(grid_host); grid.setContentsMargins(0, 0, 0, 0); grid.setSpacing(7)
             grid.setAlignment(Qt.AlignTop)
             self.grids[stage] = grid
-            for key, label in CHOICES[stage]:
-                tile = MotionEffectTile(stage, key, label, grid_host)
-                tile.clicked.connect(lambda _=False, stage=stage, key=key: self.choose(stage, key))
-                self.cards[stage, key] = tile
+            self._grid_hosts[stage] = grid_host
             column.addWidget(grid_host)
             column.addStretch(1)
             self.hosts[stage] = host
@@ -419,20 +421,58 @@ class MotionInspector(QWidget):
                 if combo.findData(key) < 0:
                     combo.addItem(tr(label), key)
 
+    @property
+    def cards(self):
+        """Every tile, built on first use (internal code reads ``_cards``)."""
+        missing = [stage for stage in STAGES if stage not in self._tiles_built]
+        if missing:
+            self._tiles_allowed = True
+            for stage in missing:
+                self._build_tiles(stage)
+            self.reflow(self.columns or 3)
+        return self._cards
+
+    def _build_tiles(self, stage):
+        if stage in self._tiles_built:
+            return False
+        self._tiles_built.add(stage)
+        host = self._grid_hosts[stage]
+        for key, label in CHOICES[stage]:
+            tile = MotionEffectTile(stage, key, label, host)
+            tile.clicked.connect(lambda _=False, stage=stage, key=key: self.choose(stage, key))
+            self._cards[stage, key] = tile
+        if stage == 'words':
+            self._recolor_words()
+        return True
+
+    def _ensure_current_tiles(self):
+        if self._tiles_allowed and self._build_tiles(self.stages[self.tabs.currentIndex()]):
+            self.reflow(self.columns or 3)
+            self.fit_stack()
+            self.sync()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._tiles_allowed:
+            self._tiles_allowed = True
+            self._ensure_current_tiles()
+
     # ------------------------------------------------------------ layout --
     def reflow(self, columns):
         changed = self.columns != columns
         self.columns = columns
         for stage, choices in CHOICES.items():
+            if stage not in self._tiles_built:
+                continue
             grid = self.grids[stage]
             while grid.count():
                 grid.takeAt(0)
             shown = [key for key, _ in choices
                      if self.category[stage] in ('all', CATEGORY.get((stage, key)))]
             for key, _ in choices:
-                self.cards[stage, key].setVisible(key in shown)
+                self._cards[stage, key].setVisible(key in shown)
             for i, key in enumerate(shown):
-                grid.addWidget(self.cards[stage, key], i//columns, i % columns)
+                grid.addWidget(self._cards[stage, key], i//columns, i % columns)
             for column in range(columns):
                 grid.setColumnStretch(column, 1)
         if changed:
@@ -466,7 +506,10 @@ class MotionInspector(QWidget):
         self.cards_scroll.verticalScrollBar().setValue(0)
 
     def stage_changed(self, index):
-        self.stack.setCurrentIndex(index); self.fit_stack(); self.sync()
+        self.stack.setCurrentIndex(index)
+        if self._tiles_allowed and self._build_tiles(self.stages[index]):
+            self.reflow(self.columns or 3)
+        self.fit_stack(); self.sync()
         self.cards_scroll.verticalScrollBar().setValue(0)
 
     # ------------------------------------------------------------- state --
@@ -538,7 +581,7 @@ class MotionInspector(QWidget):
 
     def _recolor_words(self, *_):
         color = str(self.page.motion_word_color.currentData() or '')
-        for (stage, key), tile in self.cards.items():
+        for (stage, key), tile in self._cards.items():
             if stage == 'words' and key not in PRESETS and key != 'karaoke_wipe':
                 tile.recolor(color)
 
@@ -551,7 +594,7 @@ class MotionInspector(QWidget):
 
     def sync(self):
         page = self.page; stage = self.stages[self.tabs.currentIndex()]
-        for (card_stage, key), card in self.cards.items():
+        for (card_stage, key), card in self._cards.items():
             card.set_selected(self.selected(card_stage) == key)
         for i, name in enumerate(self.stages):
             text, active = self.summary(name)

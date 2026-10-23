@@ -7,26 +7,67 @@ import re
 from ..i18n import tr
 
 
+_NAME_KEYS=('project_name','project_name_automatic','project_name_origin')
+
+
+_READ_KEYS: set = set()
+
+
 @lru_cache(maxsize=512)
 def _read(path, modified, size):
+    """Only the naming fields of a project file.
+
+    2026-10-22: this cache held up to 512 whole parsed projects (the user's
+    library: 456 files, 462 MB of JSON) for the life of the process."""
+    _READ_KEYS.add((path, modified, size))
+    if len(_READ_KEYS) > 500:  # the lru_cache below keeps 512
+        _READ_KEYS.clear()
     try:
         payload=json.loads(Path(path).read_text('utf-8'))
-        return payload if isinstance(payload,dict) else {}
     except (OSError,ValueError):
         return {}
+    if not isinstance(payload,dict):
+        return {}
+    state=payload.get('studio_state') or {}
+    metadata=payload.get('generation_metadata') or {}
+    timeline=metadata.get('timeline_recognition') or {} if isinstance(metadata,dict) else {}
+    media=payload.get('media') or {}
+    return {'studio_state':{key:state[key] for key in _NAME_KEYS if isinstance(state,dict) and key in state},
+            'state_present':bool(state),
+            'generation_metadata':{'timeline_recognition':{key:timeline[key] for key in
+                ('source_project_id','source_project_path') if isinstance(timeline,dict) and key in timeline}},
+            'media':{'path':media.get('path')} if isinstance(media,dict) else {}}
 
 
-def display_project_name(record=None, *, path=None, project=None):
+def _read_key(path):
+    try:
+        stat=path.stat()
+        return str(path.resolve()),stat.st_mtime_ns,stat.st_size
+    except OSError:
+        return None
+
+
+def name_needs_read(record=None, *, path=None) -> bool:
+    """True if the exact name still needs the project file read."""
+    record=record or {}
+    path=Path(path or record.get('path') or '')
+    key=_read_key(path) if path.is_file() else None
+    return key is not None and key not in _READ_KEYS
+
+
+def display_project_name(record=None, *, path=None, project=None, read=True):
+    """``read=False``: never parse the project file here; until it has been
+    read once (``name_needs_read``) the library index's name is used.
+    2026-10-22: the project library read each card's whole file (up to tens of
+    MB) on the GUI thread just for this."""
     record=record or {}
     path=Path(path or record.get('path') or '')
     name=str(record.get('name') or path.stem)
     payload={}
     if project is None and path.is_file():
-        try:
-            stat=path.stat()
-            payload=_read(str(path.resolve()),stat.st_mtime_ns,stat.st_size)
-        except OSError:
-            pass
+        key=_read_key(path)
+        if key is not None and (read or key in _READ_KEYS):
+            payload=_read(*key)
     state=(project.studio_state if project is not None else payload.get('studio_state')) or {}
     # An explicit human rename always wins, even if it looks exactly like a
     # translated/default title. Old releases already recorded this field.
@@ -36,7 +77,8 @@ def display_project_name(record=None, *, path=None, project=None):
         and state.get('project_name') == f"{Path(timeline['source_project_path']).stem} · 识别结果")
     if state.get('project_name') and not state.get('project_name_automatic') and not legacy_result:
         return str(state['project_name'])
-    if record.get('name_custom') and not state:
+    state_present=bool(project.studio_state) if project is not None else bool(payload.get('state_present'))
+    if record.get('name_custom') and not state_present:
         return name
     origin=state.get('project_name_origin') or record.get('name_origin') or {}
     if not origin and legacy_result:

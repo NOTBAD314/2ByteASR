@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from ..diagnostics.studio_events import observed
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, is_dataclass
 import hashlib
 import json
 import copy
+import weakref
 
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtWidgets import (
@@ -57,6 +58,56 @@ from ..i18n import bind_text
 from ..i18n import tr
 
 
+# id(project) -> (weakref to it, {binding class: (runtime revision, document fingerprint)})
+_DOCUMENT_MEMO = {}
+
+
+# id(project) -> (weakref to it, {evidence key: (row object, row digest)})
+_EVIDENCE_MEMO = {}
+
+
+def _evidence_digest(project, evidence, *, trust_rows):
+    """Content digest of recognition evidence, row by row.
+
+    2026-10-22: the first search keystroke after each edit encoded all
+    evidence (~50 MB on 2090 cues, ~0.45 s of GUI time) to fingerprint the
+    document. Each row's digest is its marshal bytes' SHA-256; with
+    ``trust_rows`` a row object hashed before is not read again.
+    """
+    import marshal
+    if not isinstance(evidence, dict) or any(type(key) is not str for key in evidence):
+        return hashlib.sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True,
+                                         default=_dataclass_json).encode('utf8')).hexdigest()
+    entry = _EVIDENCE_MEMO.get(id(project))
+    previous = entry[1] if entry is not None and entry[0]() is project else {}
+    rows, total = {}, hashlib.sha256()
+    for key in sorted(evidence):
+        row = evidence[key]
+        hit = previous.get(key)
+        if trust_rows and hit is not None and hit[0] is row:
+            digest = hit[1]
+        else:
+            try:
+                digest = hashlib.sha256(marshal.dumps(row, 2)).digest()
+            except ValueError:
+                digest = hashlib.sha256(json.dumps(row, ensure_ascii=False, sort_keys=True,
+                                                   default=_dataclass_json).encode('utf8')).digest()
+        rows[key] = (row, digest)
+        total.update(key.encode('utf8'))
+        total.update(digest)
+    for stale in [key for key, (ref, _) in _EVIDENCE_MEMO.items() if ref() is None]:
+        del _EVIDENCE_MEMO[stale]
+    _EVIDENCE_MEMO[id(project)] = (weakref.ref(project), rows)
+    return total.hexdigest()
+
+
+def _dataclass_json(value):
+    # A dataclass nested in a plain field encodes as asdict did before.
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    raise TypeError(f'Object of type {type(value).__name__} is not JSON serializable')
+
+
 @dataclass(frozen=True)
 class PreviewBinding:
     project: object
@@ -70,9 +121,22 @@ class PreviewBinding:
         # asdict reads persisted edit data without to_dict's validate/persist
         # side effects. Runtime selection/render caches are not dataclass
         # fields; the following known bookmarks are view state only.
-        payload = asdict(project)
+        # 2026-10-22 (report-eb10): asdict(project) deep-copied all ASR
+        # evidence, ~1.9 s of a 2.4 s live-search keystroke on a 62 MB
+        # project. Dataclass parts are still converted (callers edit them);
+        # plain JSON values are referenced and encode to the same text.
+        payload = {}
+        for item in fields(project):
+            value = getattr(project, item.name)
+            if is_dataclass(value):
+                value = asdict(value)
+            elif isinstance(value, (list, tuple)) and any(is_dataclass(entry) for entry in value):
+                value = [asdict(entry) if is_dataclass(entry) else entry for entry in value]
+            payload[item.name] = value
         payload.pop('updated_at', None)
         state = payload.get('studio_state', {})
+        if isinstance(state, dict):
+            state = payload['studio_state'] = dict(state)
         for key in ('review_risks', 'last_selected_cue', 'playhead_ms', 'zoom',
                 'scroll_ms', 'bilingual_mode', 'follow_playhead',
                 'timeline_snap_enabled', 'timeline_tool',
@@ -81,9 +145,37 @@ class PreviewBinding:
         return payload
 
     @classmethod
-    def _document_fingerprint(cls, project):
-        return hashlib.sha256(json.dumps(cls._document_payload(project), ensure_ascii=False,
-            sort_keys=True).encode('utf8')).hexdigest()
+    def _document_fingerprint(cls, project, *, trust_rows=False):
+        payload = cls._document_payload(project)
+        evidence = payload.pop('asr_evidence', None)
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False,
+            sort_keys=True, default=_dataclass_json).encode('utf8'))
+        digest.update(_evidence_digest(project, evidence, trust_rows=trust_rows).encode('ascii'))
+        return digest.hexdigest()
+
+    @classmethod
+    def _cached_document_fingerprint(cls, project, revision):
+        """Live search captures a binding on every keystroke. Within one
+        runtime revision reuse the last full fingerprint; ``matches`` always
+        recomputes before anything is applied, and refreshes this memo, so a
+        change made without a revision makes a preview stale, never wrong."""
+        entry = _DOCUMENT_MEMO.get(id(project))
+        if entry is not None and entry[0]() is project and entry[1].get(cls, (None,))[0] == revision:
+            return entry[1][cls][1]
+        # A keystroke trusts evidence row objects it has hashed before;
+        # ``matches`` re-reads every row before anything is applied.
+        digest = cls._document_fingerprint(project, trust_rows=True)
+        cls.remember_document_fingerprint(project, revision, digest)
+        return digest
+
+    @classmethod
+    def remember_document_fingerprint(cls, project, revision, digest):
+        entry = _DOCUMENT_MEMO.get(id(project))
+        if entry is None or entry[0]() is not project:
+            for key in [key for key, (ref, _) in _DOCUMENT_MEMO.items() if ref() is None]:
+                del _DOCUMENT_MEMO[key]
+            entry = _DOCUMENT_MEMO[id(project)] = (weakref.ref(project), {})
+        entry[1][cls] = (revision, digest)
 
     @staticmethod
     def _fingerprint(project):
@@ -98,15 +190,19 @@ class PreviewBinding:
     @classmethod
     def capture(cls, project):
         from ..projects.studio_runtime_state import state_for
-        return cls(project, project.project_id, state_for(project).revision,
-            cls._fingerprint(project), cls._document_fingerprint(project))
+        revision = state_for(project).revision
+        return cls(project, project.project_id, revision,
+            cls._fingerprint(project), cls._cached_document_fingerprint(project, revision))
 
     def matches(self, project):
         from ..projects.studio_runtime_state import state_for
-        return (project is self.project and project.project_id == self.project_id
+        if not (project is self.project and project.project_id == self.project_id
                 and state_for(project).revision == self.revision
-                and self._fingerprint(project) == self.fingerprint
-                and self._document_fingerprint(project) == self.document_fingerprint)
+                and self._fingerprint(project) == self.fingerprint):
+            return False
+        current = self._document_fingerprint(project)
+        type(self).remember_document_fingerprint(project, self.revision, current)
+        return current == self.document_fingerprint
 
 
 class _GlossaryReviewThread(QThread):
@@ -577,10 +673,27 @@ class FindReplaceDialog(QDialog):
         self._preview_hits = list(hits)
         self._preview_binding = binding or PreviewBinding.capture(self._page.session.project)
         self.preview.clear()
+        # Thousands of matches for a first letter: no layout or paint per row.
+        self.preview.setUpdatesEnabled(False)
+        try:
+            self._add_preview_rows(hits)
+        finally:
+            self.preview.setUpdatesEnabled(True)
+        if hits:
+            bind_text(self.status_label, '找到 {value0} 处', value0=len(hits))
+        elif self.tabs.currentIndex() == 0 and not self.find_edit.text().strip():
+            bind_text(self.status_label, '输入查找文字后显示匹配数量')
+        else:
+            bind_text(self.status_label, '没有匹配的字幕')
+        self._refresh_status()
+
+    def _add_preview_rows(self, hits) -> None:
+        detailed = self.tabs.currentIndex() == 3
+        cues = {c.id: c for c in self._page.session.project.cues} if detailed else {}
         for hit in hits:
             item = QListWidgetItem(format_preview_row(hit))
-            if self.tabs.currentIndex() == 3:
-                cue = next((c for c in self._page.session.project.cues if c.id == hit.cue_id), None)
+            if detailed:
+                cue = cues.get(hit.cue_id)
                 if cue is not None:
                     changed = cue.text[:hit.span[0]] + hit.replacement + cue.text[hit.span[1]:]
                     reason = {'case_normalization':'大小写规范化','confirmed_alias':'已确认别名/纠错',
@@ -594,13 +707,6 @@ class FindReplaceDialog(QDialog):
             item.setData(Qt.ItemDataRole.UserRole+1, {'surface':hit.original,'canonical_options':[hit.replacement],
                 'state':'proposal','cue_id':hit.cue_id})
             self.preview.addItem(item)
-        if hits:
-            bind_text(self.status_label, '找到 {value0} 处', value0=len(hits))
-        elif self.tabs.currentIndex() == 0 and not self.find_edit.text().strip():
-            bind_text(self.status_label, '输入查找文字后显示匹配数量')
-        else:
-            bind_text(self.status_label, '没有匹配的字幕')
-        self._refresh_status()
 
     def _show_terms_result(self, result, binding, snapshot, identities):
         self._fill_preview(list(result.hits), binding)
@@ -703,6 +809,8 @@ class FindReplaceDialog(QDialog):
                     and all(delta.action_id == 'select_cue' and not delta.dirty & ~navigation for delta in deltas)
                     and PreviewBinding._document_fingerprint(project) == binding.document_fingerprint
                     and PreviewBinding._fingerprint(project) == binding.fingerprint):
+                # Just verified at this revision: re-capture without hashing again.
+                PreviewBinding.remember_document_fingerprint(project, runtime.revision, binding.document_fingerprint)
                 self._preview_binding = PreviewBinding.capture(project)
 
     def _checked_hits(self) -> list[TextOccurrence]:

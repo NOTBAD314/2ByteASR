@@ -27,7 +27,14 @@ def font_face(family, bold):
     return face.full_name, face.file, not reason
 
 
-@lru_cache(maxsize=4096)
+# 2026-10-22 (report-eb10): one entry per caption text and style. A bilingual
+# project with 2090 cues needs ~4180; with 4096 slots every rebuild of the
+# caption preview walked the project in order and missed every time (an LRU
+# smaller than a cyclic pass never hits). Room for a 10,000-cue bilingual one.
+MEASURE_CACHE_SIZE = 32768
+
+
+@lru_cache(maxsize=MEASURE_CACHE_SIZE)
 def fit_single_line(text, family, bold, size, spacing, max_width, scale_x,
                     weight=0, style_name='', filename='', face_index=0):
     from PIL import ImageFont
@@ -40,7 +47,7 @@ def fit_single_line(text, family, bold, size, spacing, max_width, scale_x,
     return face.full_name, not reason, float(size), round(width, 3), width > max_width
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=MEASURE_CACHE_SIZE)
 def layout_caption(text,family,bold,size,spacing,max_width,scale_x,weight=0,style_name='',filename='',face_index=0):
     from PIL import ImageFont
     from .font_metadata import resolve_local_face
@@ -52,7 +59,7 @@ def layout_caption(text,family,bold,size,spacing,max_width,scale_x,weight=0,styl
     return face.full_name,not reason,result,(sum(font.getmetrics())/1000*size)
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=MEASURE_CACHE_SIZE)
 def visible_glyph_size(text, family, bold, size, spacing, weight=0,
                        style_name='', filename='', face_index=0):
     """Ink bounds of the actual face, excluding ascent/descent line-box slack.

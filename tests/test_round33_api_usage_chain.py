@@ -76,12 +76,15 @@ def test_model_state_uses_card_provider_key(monkeypatch):
 
 
 def test_api_transcription_plan():
+    # 2026-10-22: 「API 转写」 is MOSS Pro, no review pass; 2026-10-23: timed by
+    # FireRedASR2 for Chinese and Qwen3 对齐 for other languages.
     from twobyteasr.recognition.recognition_plans import RECOGNITION_PLANS, matching_plan, recognition_plan
 
-    plan = recognition_plan("api")
-    assert plan.primary == "api" and plan.review == "api" and plan.timeline == "off"
-    assert matching_plan("api", "off", "api") == "api"
-    assert "api" in [p.key for p in RECOGNITION_PLANS]
+    plan = recognition_plan("moss_pro_qwen")
+    assert plan.label == "API 转写" and plan.primary == "api" and plan.review == "off"
+    assert (plan.timeline, plan.foreign_timeline) == ("local", "qwen_aligner")
+    assert matching_plan("api", "qwen_aligner", "off") == "moss_pro_qwen"
+    assert "api" not in [p.key for p in RECOGNITION_PLANS]
 
 
 def test_mai_card_branding():

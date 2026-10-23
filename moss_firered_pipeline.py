@@ -191,6 +191,19 @@ def _script_paths(legacy):
     }
 
 
+def _grouping_prompt_signature(uses_ai):
+    """The AI line-breaking prompt in the grouped cache key (2026-10-18).
+
+    Left out for the unchanged built-in Chinese prompt, so existing Chinese
+    caches stay valid; the revised Japanese prompt and any user guidance
+    (settings ``grouping_prompts``) make a new key.
+    """
+    from twobyteasr.subtitle_rules.grouping_request import (
+        GROUPING_PROMPT_VERSION, grouping_prompt_key, task_prompt_language)
+    key = grouping_prompt_key(task_prompt_language()) if uses_ai else GROUPING_PROMPT_VERSION
+    return {} if key == GROUPING_PROMPT_VERSION else {"grouping_prompt": key}
+
+
 def _path_signature(path):
     if not os.path.exists(path):
         return {"path": os.path.normcase(os.path.abspath(path)), "missing": True}
@@ -3951,6 +3964,7 @@ def process_media(
     # 按真实人声区间 + 10s 上限切块。代价：API 主力失去流式 provisional。
     if primary_backend in INCREMENTAL_PRIMARY_BACKENDS:
         try:
+            from twobyteasr.recognition.asr import NoRecognizedTextError
             from twobyteasr.recognition.incremental_asr import IncrementalASRPipeline
             from twobyteasr.media.media_service import GLOBAL_MEDIA_SERVICE
 
@@ -3972,11 +3986,9 @@ def process_media(
                         None,
                         duration,
                     )
-                except RuntimeError as exc:
-                    if (
-                        primary_backend in {"sensevoice", "funasr_nano"}
-                        and "没有生成有效文字" in str(exc)
-                    ):
+                except NoRecognizedTextError:
+                    # A silent chunk (in-process or the packaged app's worker).
+                    if primary_backend in {"sensevoice", "funasr_nano"}:
                         return []
                     raise
 
@@ -4024,6 +4036,9 @@ def process_media(
     legacy.record_run_event("task_audio_ready", seconds=round(audio_seconds, 3))
     from twobyteasr.recognition.speaker_evidence import save_speaker_evidence, fuse_moss_speakers
     speaker_audit_root = Path(cache_context["cache_dir"]) / "speaker-evidence"
+    # 2026-10-22: every forced-alignment receipt (MFA raw tiers, Qwen3 raw slots) is kept whole here.
+    from twobyteasr.recognition.timing_evidence import FOLDER as _TIMING_EVIDENCE
+    timing_evidence_root = Path(cache_context["cache_dir"]) / _TIMING_EVIDENCE
     save_speaker_evidence(speaker_audit_root, "task-input", {
         "path": media_path, "seconds": audio_seconds, "samples": len(shared_audio),
         "sample_rate": legacy.AUDIO_SAMPLE_RATE, "time_domain": "timeline" if runtime_context.recognition_snapshot else "source",
@@ -4043,6 +4058,36 @@ def process_media(
             sample_rate=legacy.AUDIO_SAMPLE_RATE, samples=len(shared_audio), start_seconds=0,
             end_seconds=audio_seconds, fingerprint=runtime_context.media_identity.get("fingerprint", ""),
             job_id=runtime_context.job_id, media_sha256=runtime_context.media_identity.get("sha256", ""))
+
+    def primary_signature(regions):
+        return {
+            "backend": primary_backend,
+            "vad": regions,
+            **(
+                # 三十六轮 bump v2：VAD 区间 + 10s 短块 + 切分缝
+                # 不互 pad（v1=verbose_json 25s 块），旧缓存不复活。
+                # 四十轮 bump v3：协议入签名——filetrans 整段
+                # 上传（服务端 VAD）与 v2 短块语义不同，不互访缓存。
+                {
+                    "api_identity": {key:runtime_context.asr_endpoint_snapshot.get(key,'') for key in ('provider','model','url')},
+                    "speaker_strategy":getattr(runtime_context,'speaker_source','single'),
+                    "api_timing": "request_scoped_180s_v4",
+                    "api_protocol": str(
+                        runtime_context.asr_endpoint_snapshot.get(
+                            "protocol",
+                            "dashscope_multimodal",
+                        )
+                    ),
+                    **_cloud_hint_signature(runtime_context, legacy),
+                }
+                if primary_backend == "api"
+                else {}
+            ),
+        }
+
+    # [] = run the cloud stage without its cache lookup and store the rows
+    # here; set only when VAD runs beside a whole-file upload (2026-10-22).
+    deferred_primary_cache = None
 
     def run_moss_stage():
         audit_branch(primary_backend)
@@ -4081,6 +4126,16 @@ def process_media(
                 "funasr_nano": "GPU/CPU",
             }
             if incremental_primary_rows:
+                # Adjacent chunks share 0.5 s of audio; overlapping rows let a
+                # time sort interleave their characters (2026-10-21 report).
+                from twobyteasr.recognition.incremental_asr import split_chunk_overlaps
+                primary_rows, overlap_seams = split_chunk_overlaps(incremental_primary_rows)
+                if overlap_seams:
+                    legacy.record_run_event(
+                        "incremental_chunk_overlap_split",
+                        backend=primary_backend,
+                        seams=overlap_seams,
+                    )
                 references = [
                     {
                         "start": float(item["start_ms"]) / 1000.0,
@@ -4088,7 +4143,7 @@ def process_media(
                         "text": str(item["text"]),
                         "source": str(item.get("source") or primary_backend),
                     }
-                    for item in incremental_primary_rows
+                    for item in primary_rows
                 ]
                 legacy.record_run_event(
                     "cache_hit",
@@ -4097,48 +4152,52 @@ def process_media(
                     chunks=len(references),
                 )
             else:
-                references = legacy.run_timed_stage(
-                    2,
-                    stage_total,
-                    labels.get(primary_backend, f"{primary_backend} 主力转写"),
-                    resources.get(primary_backend, "GPU"),
-                    lambda: legacy.run_cached_stage(
-                        f"primary_{primary_backend}",
-                        cache_context,
-                        lambda: legacy.transcribe_primary_reference(
-                            primary_backend,
-                            media_path,
-                            speech_regions,
-                            shared_audio,
-                            audio_seconds,
-                        ),
-                        should_cache=bool,
-                        extra_signature={
-                            "backend": primary_backend,
-                            "vad": speech_regions,
-                            **(
-                                # 三十六轮 bump v2：VAD 区间 + 10s 短块 + 切分缝
-                                # 不互 pad（v1=verbose_json 25s 块），旧缓存不复活。
-                                # 四十轮 bump v3：协议入签名——filetrans 整段
-                                # 上传（服务端 VAD）与 v2 短块语义不同，不互访缓存。
-                                {
-                                    "api_identity": {key:runtime_context.asr_endpoint_snapshot.get(key,'') for key in ('provider','model','url')},
-                                    "speaker_strategy":getattr(runtime_context,'speaker_source','single'),
-                                    "api_timing": "request_scoped_180s_v4",
-                                    "api_protocol": str(
-                                        runtime_context.asr_endpoint_snapshot.get(
-                                            "protocol",
-                                            "dashscope_multimodal",
-                                        )
-                                    ),
-                                    **_cloud_hint_signature(runtime_context, legacy),
-                                }
-                                if primary_backend == "api"
-                                else {}
-                            ),
-                        },
-                    ),
+                transcribe = lambda: legacy.transcribe_primary_reference(
+                    primary_backend,
+                    media_path,
+                    speech_regions,
+                    shared_audio,
+                    audio_seconds,
                 )
+                if deferred_primary_cache is not None:
+                    # VAD runs beside the whole-file upload; the cache entry is
+                    # written once VAD is known, under the same key as before.
+                    with legacy.capture_review_items() as stage_review_items:
+                        references = legacy.run_timed_stage(
+                            2,
+                            stage_total,
+                            labels.get(primary_backend, f"{primary_backend} 主力转写"),
+                            resources.get(primary_backend, "GPU"),
+                            transcribe,
+                        )
+                    legacy.extend_review_items(stage_review_items)
+                    deferred_primary_cache.extend([references, list(stage_review_items)])
+                else:
+                    references = legacy.run_timed_stage(
+                        2,
+                        stage_total,
+                        labels.get(primary_backend, f"{primary_backend} 主力转写"),
+                        resources.get(primary_backend, "GPU"),
+                        lambda: legacy.run_cached_stage(
+                            f"primary_{primary_backend}",
+                            cache_context,
+                            transcribe,
+                            should_cache=bool,
+                            extra_signature=primary_signature(speech_regions),
+                        ),
+                    )
+                if primary_backend in {"sensevoice", "funasr_nano"}:
+                    # One row per padded chunk: speech regions closer than both
+                    # pads overlap (2026-10-23 report, after incremental
+                    # recognition fell back). Split here so cached rows are too.
+                    from twobyteasr.recognition.incremental_asr import split_chunk_overlaps
+                    references, overlap_seams = split_chunk_overlaps(references, keys=("start", "end"), margin=0.02)
+                    if overlap_seams:
+                        legacy.record_run_event(
+                            "primary_chunk_overlap_split",
+                            backend=primary_backend,
+                            seams=overlap_seams,
+                        )
             payload = {
                 "segments": [
                     {
@@ -4285,7 +4344,8 @@ def process_media(
                     "CPU" if use_mfa else "GPU",
                     lambda: canonical_result_from_segments(
                         legacy.transcribe_qwen_aligner_reference(
-                            shared_audio, moss_payload.get("segments", []), language=language_name),
+                            shared_audio, moss_payload.get("segments", []), language=language_name,
+                            evidence_dir=timing_evidence_root),
                         producer="qwen_aligner_worker", consumer="firered_stage", backend="qwen_aligner",
                         language=task_language, allow_empty=True)),
                 selected=True, allow_failure=True)
@@ -4409,7 +4469,8 @@ def process_media(
                 "CPU" if mfa_selected else "GPU",
                 lambda: (
                     canonical_result_from_segments(
-                        legacy.transcribe_qwen_aligner_reference(shared_audio, moss_payload.get("segments", [])),
+                        legacy.transcribe_qwen_aligner_reference(shared_audio, moss_payload.get("segments", []),
+                                                                 evidence_dir=timing_evidence_root),
                         producer="qwen_aligner_worker", consumer="firered_stage", backend="qwen_aligner",
                         allow_empty=True)
                     if timeline_backend == "qwen_aligner"
@@ -4459,13 +4520,48 @@ def process_media(
         admission = api_local_admission(_gpu_runtime_snapshot(), audio_bytes=getattr(shared_audio, "nbytes", 0))
         legacy.record_run_event("api_local_admission", **admission)
         api_overlap = admission["admitted"]
+    # 2026-10-22 (user report, MOSS Pro, 24-minute anime): VAD ran 26 s before
+    # the upload started, although a whole-file upload never reads it. When
+    # the cloud has to run anyway (no cache entry for this file yet), VAD runs
+    # beside it and the entry is written afterwards with the usual VAD key.
+    overlap_vad = False
+    if primary_backend == "api" and legacy.PARALLEL_CPU_VAD and not incremental_primary_rows:
+        try:
+            from twobyteasr.recognition.asr import api_uploads_whole_file
+            from twobyteasr.providers.llm_config import qwen_asr_endpoint_from_settings
+            overlap_vad = api_uploads_whole_file(dict(runtime_context.asr_endpoint_snapshot or
+                qwen_asr_endpoint_from_settings(getattr(legacy, "RUNTIME_SETTINGS", {}) or {})))
+            overlap_vad = overlap_vad and not os.path.exists(
+                os.path.join(str((cache_context or {}).get("cache_dir") or ""), f"primary_{primary_backend}.json"))
+        except Exception:  # noqa: BLE001 - unknown endpoint or cache: keep the serial order
+            overlap_vad = False
+    if overlap_vad:
+        speech_regions = None
+        deferred_primary_cache = []
     if api_overlap:
-        speech_regions = run_vad_stage()
         moss_payload = {}
-        legacy.record_run_event("local_stages_parallel", stages=["primary_api", "firered"], max_workers=2)
-        parallel_results = run_parallel_stages(legacy, {"primary":run_moss_stage, "firered":run_firered_stage},
+        runners = {"primary": run_moss_stage, "firered": run_firered_stage}
+        if overlap_vad:
+            runners["vad"] = run_vad_stage
+        else:
+            speech_regions = run_vad_stage()
+        legacy.record_run_event("local_stages_parallel", stages=["primary_api", *(["firered_vad"] if overlap_vad else []),
+                                                                 "firered"], max_workers=len(runners))
+        parallel_results = run_parallel_stages(legacy, runners,
             thread_name_prefix="api-firered", cancel_poll=_parallel_cancel_poll)
         moss_payload, firered_early = parallel_results["primary"], parallel_results["firered"]
+        if overlap_vad:
+            speech_regions = parallel_results["vad"]
+    elif overlap_vad:
+        legacy.record_run_event("local_stages_parallel", stages=["primary_api", "firered_vad"])
+        parallel_results = run_parallel_stages(
+            legacy,
+            {"primary": run_moss_stage, "vad": run_vad_stage},
+            thread_name_prefix="api-vad",
+            cancel_poll=_parallel_cancel_poll,
+        )
+        moss_payload = parallel_results["primary"]
+        speech_regions = parallel_results["vad"]
     elif legacy.PARALLEL_CPU_VAD and primary_backend == "moss":
         print("   [并行加速] FireRedVAD 与 MOSS 同时运行。")
         legacy.record_run_event("local_stages_parallel", stages=["moss", "firered_vad"])
@@ -4484,6 +4580,16 @@ def process_media(
         else:
             speech_regions = run_vad_stage()
             moss_payload = run_moss_stage()
+    if deferred_primary_cache:
+        rows, primary_review_items = deferred_primary_cache
+        if rows:
+            from twobyteasr.recognition.cache import store_cached_stage_value
+            try:
+                store_cached_stage_value(f"primary_{primary_backend}", cache_context, rows,
+                                         extra_signature=primary_signature(speech_regions),
+                                         review_items=primary_review_items)
+            except Exception as exc:  # noqa: BLE001 - a missing cache entry only costs a later re-upload
+                legacy.record_run_event("cache_write_failed", stage=f"primary_{primary_backend}", error=str(exc)[:300])
     stage_index = 3
 
     # The language this task runs with: a manual choice, otherwise the kana
@@ -5189,11 +5295,16 @@ def process_media(
                 "firered_tokens": firered_tokens,
                 "speech_regions": speech_regions,
                 "use_ai": grouping_uses_ai,
+                **_grouping_prompt_signature(grouping_uses_ai),
             },
         ),
     )
 
     save_speaker_evidence(speaker_audit_root, 'grouped-before-final-timing', legacy.serialize_cues(cues))
+    # 2026-10-22 (MFA plan step 5): every step that moves caption times, in order (timing_ledger).
+    from twobyteasr.recognition.timing_ledger import TimingLedger
+    timing_ledger = TimingLedger()
+    timing_ledger.checkpoint("grouped", cues, reason="captions as line breaking cut them, before the display rules")
     stage_index += 1
     cues = legacy.run_timed_stage(
         stage_index,
@@ -5234,18 +5345,27 @@ def process_media(
     # Run outside the cache callback too: old final_timing artifacts may carry
     # editorial tails across a different speaker's source onset.
     from twobyteasr.subtitle_rules.display_timing import protect_runtime_display_tails
+    timing_ledger.checkpoint("final_timing", cues, reason="display rules: onsets, reading tails, frame grid, "
+                             "short-gap bridging (a cached result keeps the earlier run's times)")
     overlap_audit = protect_runtime_display_tails(cues, segments)
-    if (japanese_task or english_task or korean_task or european_task) and not analysis_transcript and str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) != "off":
+    timing_ledger.checkpoint("display_tails", cues, reason="reading tails kept off another speaker's onset",
+                             receipts=overlap_audit)
+    # 2026-10-22: Chinese too when its timeline is a forced aligner (MFA or Qwen3).
+    from twobyteasr.recognition.cue_forced_alignment import chinese_final_alignment
+    chinese_aligned = chinese_final_alignment(getattr(runtime_context, "task_language", ""),
+                                              getattr(legacy, "FIRERED_ASR_BACKEND", "local"))
+    if (japanese_task or english_task or korean_task or european_task or chinese_aligned) and not analysis_transcript and str(getattr(legacy, "FIRERED_ASR_BACKEND", "local")) != "off":
         # Word timing must belong to the text the user will edit: align each
         # final caption's current text (adjacent same-speaker captions together).
         from twobyteasr.recognition.cue_forced_alignment import align_final_cues
         from twobyteasr.subtitle_rules.language_rules import qwen_language_name
         from twobyteasr.subtitle_rules.european_text import LABELS as _EU_LABELS
-        timing_label = ('英语单词时间' if english_task else '韩语字词时间' if korean_task
+        timing_label = ('中文字级时间' if chinese_aligned else '英语单词时间' if english_task else '韩语字词时间' if korean_task
                         else f'{_EU_LABELS[runtime_context.task_language]}单词时间' if european_task else '日语字级时间')
         print(f"   [{timing_label}] 按最终字幕文字对齐（同说话人相邻字幕成段对齐）…")
         aligned_cues = align_final_cues(cues, shared_audio, legacy, speech_regions=speech_regions,
-                                        language=qwen_language_name(runtime_context.task_language) or "Japanese")
+                                        language=qwen_language_name(runtime_context.task_language) or "Japanese",
+                                        evidence_dir=timing_evidence_root)
         measured = sum(1 for cue in cues if any(
             piece.get("start_basis") == "model" and piece.get("end_basis") == "model"
             for piece in (getattr(cue, "forced_alignment", None) or {}).get("segments") or ()))
@@ -5255,25 +5375,37 @@ def process_media(
         legacy.record_run_event("japanese_word_timing_summary", cues=len(cues), attached=aligned_cues,
                                 language=str(runtime_context.task_language or "ja"),
                                 measured=measured)
+        timing_ledger.checkpoint("final_cue_alignment", cues, reason="word timing of the final text; times unchanged")
         # Cuts inside one speaker's utterance that the aligner did not measure
         # were estimated by line breaking; move them to the pause in the audio
         # when (and only when) there is a clear one.
         from twobyteasr.recognition.cue_boundary_refine import apply_to_runtime_cues
         snapped = apply_to_runtime_cues(cues, shared_audio, legacy, fps=timeline_fps)
+        timing_ledger.checkpoint("pause_snap", cues, reason="unmeasured cuts moved to a clear pause", receipts=snapped)
         if snapped:
-            print(f"   [{'英语切点' if english_task else '日语切点'}] {len(snapped)} 个未实测的切点移到了前面的停顿处（中位 "
+            print(f"   [{'中文切点' if chinese_aligned else '英语切点' if english_task else '日语切点'}] {len(snapped)} 个未实测的切点移到了前面的停顿处（中位 "
                   f"{sorted(c['old_ms'] - c['new_ms'] for c in snapped)[len(snapped) // 2]} ms）。")
         # Line starts placed by the optional CTC aligner when they agree within
         # 80 ms with an independent reference (aligner-measured start, else the
         # current start). Ends are never taken from it.
         from twobyteasr.recognition.ctc_alignment import apply_to_runtime_cues as refine_starts
         refined = refine_starts(cues, shared_audio, legacy, fps=timeline_fps) if japanese_task else []  # the CTC model is Japanese-only
+        if japanese_task:
+            timing_ledger.checkpoint("ctc_starts", cues, reason="Japanese line starts from the CTC aligner (agreeing within 80 ms)",
+                                     receipts=refined)
         if refined:
             print(f"   [日语句首] {len(refined)} 条字幕的开头按 CTC 对齐模型校正（与参考相差 80 ms 内）。")
         # Both refinements run after the frame quantizing and short-gap
         # bridging; put the result back under the same rules (2026-10-18:
         # a start moved 12 ms later showed a blank frame between two lines).
         legacy.relock_display_timing(cues, audio_seconds, timeline_fps, stage="after_word_refinements")
+        timing_ledger.checkpoint("display_rules", cues, reason="frame grid, minimum duration and short-gap bridging again")
+    timing_ledger.acoustic(cues)
+    saved_ledger = timing_ledger.save(timing_evidence_root, job_id=str(getattr(runtime_context, "job_id", "") or ""),
+                                      language=str(getattr(runtime_context, "task_language", "") or ""),
+                                      timeline=str(getattr(legacy, "FIRERED_ASR_BACKEND", "") or ""))
+    legacy.record_run_event("timing_ledger", evidence=saved_ledger or "",
+                            stages=[row["stage"] for row in timing_ledger.stages])
     save_speaker_evidence(speaker_audit_root, "final", legacy.serialize_cues(cues))
     speaker_processing['stages']['final_cues'] = label_summary(cues)
     legacy.record_run_event('speaker_identity_stages', **speaker_processing)

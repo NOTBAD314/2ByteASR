@@ -277,6 +277,12 @@ QFrame#resultSummaryCard[outcome="danger"] {{ background:{blend_hex(t.surface, t
 QToolButton#completionReviewChip {{ background:{t.warning_soft}; color:{t.warning}; border:1px solid {blend_hex(t.surface, t.warning, 0.45)}; }}
 QToolButton#completionReviewChip:hover {{ background:{blend_hex(t.surface, t.warning, 0.24)}; border-color:{t.warning}; }}
 QToolButton#completionReviewChip:focus {{ border-color:{t.focus}; }}
+QFrame#completionDiagnosisHint {{ background:{t.panel}; border:1px solid {t.border}; border-radius:{COMPLETION_RADIUS_SMALL}px; }}
+QFrame#completionDiagnosisHint[tone="danger"] {{ background:{t.danger_soft}; border-color:{blend_hex(t.surface, t.danger, 0.45)}; }}
+QFrame#completionDiagnosisHint[tone="warning"] {{ background:{t.warning_soft}; border-color:{blend_hex(t.surface, t.warning, 0.45)}; }}
+QFrame#completionDiagnosisHint[tone="info"] {{ background:{t.info_soft}; border-color:{blend_hex(t.surface, t.info, 0.45)}; }}
+QLabel#completionDiagnosisText {{ color:{t.text}; font-size:13px; font-weight:500; background:transparent; }}
+QLabel#completionDiagnosisCause {{ color:{t.text_secondary}; font-size:13px; background:transparent; }}
 QFrame#resultSummaryRule {{ background:{t.border}; border:0; min-height:1px; max-height:1px; }}
 QFrame#completionPreview {{ background:{t.surface}; border:1px solid {t.border}; border-radius:{COMPLETION_RADIUS_MAIN}px; }}
 QLabel#completionPreviewTitle {{ color:{t.text}; font-size:15px; font-weight:600; background:transparent; }}
@@ -1144,3 +1150,101 @@ class CompletionSecondaryGroup(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reflow()
+
+
+class CompletionDiagnosisHint(QFrame):
+    """The likely cause, right on the result card (2026-10-23, user request).
+
+    The local check (``recognition.run_diagnosis``) names a known problem; this
+    strip shows its title and first sentence with 「查看原因与解决办法」, which
+    opens the 排查原因 window. A failed task without a known cause still gets the
+    strip, offering the window (and its AI analysis) instead of a cause.
+    """
+
+    clicked = Signal()
+    TONES = {'blocker': 'danger', 'problem': 'warning', 'quality': 'info', 'tip': 'info'}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName('completionDiagnosisHint')
+        self.setProperty('tone', 'info')
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 8, 8)
+        row.setSpacing(10)
+        self.icon = QLabel()
+        self.icon.setFixedSize(20, 20)
+        self.icon.setStyleSheet('background:transparent; border:0;')
+        row.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
+        copy = QVBoxLayout()
+        copy.setSpacing(2)
+        self.text_label = QLabel()
+        self.text_label.setObjectName('completionDiagnosisText')
+        self.text_label.setWordWrap(True)
+        copy.addWidget(self.text_label)
+        self.cause_label = QLabel()
+        self.cause_label.setObjectName('completionDiagnosisCause')
+        self.cause_label.setWordWrap(True)
+        copy.addWidget(self.cause_label)
+        # The other causes found (the root cause is often one of these).
+        self.related_label = QLabel()
+        self.related_label.setObjectName('completionDiagnosisCause')
+        self.related_label.setWordWrap(True)
+        self.related_label.hide()
+        copy.addWidget(self.related_label)
+        row.addLayout(copy, 1)
+        self.open_button = QPushButton()
+        self.open_button.setObjectName('completionDiagnosisOpen')
+        self.open_button.setProperty('completionRole', 'chip')
+        self.open_button.setProperty('completionRadius', COMPLETION_RADIUS_SMALL)
+        self.open_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_button.clicked.connect(self.clicked.emit)
+        row.addWidget(self.open_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.finding = None
+        self.hide()
+
+    def set_finding(self, finding, *, failed=False, others=()):
+        """Show ``finding`` (a run_diagnosis Finding), or for a failed task
+        without one, the invitation to look; otherwise hide. ``others``: the
+        further findings, named on a third line (at most two)."""
+        from ..i18n import bind_text, join_text, tr
+        self.finding = finding
+        others = [other for other in others if other is not finding][:2]
+        if others and finding is not None:
+            bind_text(self.related_label, '还发现：{items}',
+                      items=join_text([tr(other.issue.title) for other in others]))
+        else:
+            self.related_label.clear()
+        self.related_label.setVisible(bool(others and finding is not None))
+        if finding is None and not failed:
+            self.hide()
+            return
+        if finding is not None:
+            tone = self.TONES.get(finding.severity, 'info')
+            bind_text(self.text_label, '可能原因：{title}', title=tr(finding.issue.title))
+            short = finding.issue.short
+            if short:
+                bind_text(self.cause_label, short)
+            else:
+                self.cause_label.clear()
+            self.cause_label.setVisible(bool(short))
+        else:
+            tone = 'danger'
+            bind_text(self.text_label, '没有对上已知问题。可以打开排查，让 AI 读这次的报告找原因。')
+            self.cause_label.clear()
+            self.cause_label.hide()
+        bind_text(self.open_button, '查看原因与解决办法 ›')
+        self.setProperty('tone', tone)
+        import qtawesome as qta
+        theme = theme_definition(theme_key())
+        color = {'danger': theme.danger, 'warning': theme.warning}.get(tone, theme.info)
+        self.icon.setPixmap(qta.icon('fa5s.stethoscope', color=color).pixmap(QSize(18, 18)))
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.show()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+

@@ -795,8 +795,12 @@ class StudioVideoFlowMixin:
         needed_widget = int(timeline.minimumHeight())
         host = timeline.parentWidget()
         needed_host = needed_widget + 48
-        if host is not None:
-            host.setMinimumHeight(max(260, needed_host))
+        if host is not None and host.layout() is not None:
+            # 2026-10-22: the host's layout (SetMinimumSize) already sums the
+            # toolbar and the timeline; a fixed 260 px floor only pinned the
+            # workspace divider on 1080p screens.
+            host.layout().invalidate()
+            needed_host = max(needed_widget, host.layout().totalMinimumSize().height())
         splitter = getattr(self, "workspace_splitter", None)
         if splitter is None:
             return

@@ -87,14 +87,16 @@ def test_corrupt_and_interrupted_writes_leave_valid_recovery(tmp_path, monkeypat
     path, _ = save_autosave_revision(store.refresh_persistence(1), official, tmp_path, session_id="one")
     saved = path.read_bytes()
     real_replace = model.os.replace
+    # Since 2026-10-22 the second autosave goes to the checkpoint's overlay.
+    overlay = path.with_name(path.name + ".overlay")
     def killed_write(source, target):
-        if target == path:
+        if Path(target) in (path, overlay):
             raise OSError("injected crash before replace")
         return real_replace(source, target)
     monkeypatch.setattr(model.os, "replace", killed_write)
     with pytest.raises(OSError):
         save_autosave_revision(store.refresh_persistence(2), official, tmp_path, session_id="one")
-    assert path.read_bytes() == saved
+    assert path.read_bytes() == saved and not overlay.exists()
     monkeypatch.setattr(model.os, "replace", real_replace)
     damaged = json.loads(saved)
     damaged["video_tracks"].pop()

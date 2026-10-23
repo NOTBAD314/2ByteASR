@@ -381,7 +381,7 @@ def test_audio_track_menu_names_the_gain_and_delete_keys(qapp, store, tmp_path, 
     from twobyteasr.timeline.studio_track_delete import track_menu
     menus = []
 
-    def menu_without_exec(parent=None):
+    def menu_without_exec(parent=None, **_options):  # theme_on_show (2026-10-22)
         menu = QMenu(parent)
         menu.exec = lambda *_args: None
         menus.append(menu)

@@ -169,6 +169,7 @@ from twobyteasr.glossary.glossary_learning import GlossaryLearningStore
 from twobyteasr.recognition.recognition_profiles import ASR_CONFIG_KEYS, ProjectProfile, ProjectProfileStore, normalize_llm_config
 from twobyteasr.diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 from twobyteasr.recognition.recognition_plans import (
+    FOREIGN,
     lightweight_media_profile,
     matching_plan,
     plan_options,
@@ -217,6 +218,7 @@ from ..i18n import bind_text, tr, user_text
 from subtitle_core import run_llm_json_self_test
 from twobyteasr.recognition.service import CancellationToken, RunOptions, run_media_queue
 from twobyteasr.app.updater import (
+    GITCODE_RELEASE_PAGE,
     RELEASE_PAGE,
     UpdateCancelled,
     automatic_check_delay_ms,
@@ -912,6 +914,22 @@ _HOST_LIMIT_STATUSES = frozenset({"需要 NVIDIA 显卡", "只能在 Apple Silic
 _HOST_LIMIT_RECOVERY = "换成能用的方式"
 
 
+def studio_translation_choice(language_options: dict, studio_context: dict, ai_ready: bool) -> dict:
+    """The run's language options with the Studio sheet's translation choice (2026-10-23).
+
+    The 识别字幕 sheet picks 原文 / 双语 / 只显示翻译 and the target for that one
+    run; the home choice stays as it is. Translating still needs a connected AI.
+    """
+    options = dict(language_options)
+    output = str((studio_context or {}).get("subtitle_output") or "")
+    if output:
+        options["subtitle_output"] = output if ai_ready else "original"
+        target = str((studio_context or {}).get("translation_script") or "")
+        if target:
+            options["translation_script"] = target
+    return options
+
+
 def _bind_home_shortcuts(window, owner):
     """Home keys from the shared registry: start, choose media, search (2026-10-13).
 
@@ -1218,6 +1236,7 @@ class MainWindow(QWidget):
             page.workshop_requested.connect(self._open_model_workshop)
             page.terms_requested.connect(self._open_terms_from_history)
             page.result_requested.connect(self._open_completion_from_history)
+            page.diagnose_requested.connect(self._open_history_diagnosis)
         elif name == "studio":
             # Imported on first use (or by the idle warm-up after startup):
             # the Studio module tree is ~0.5 s of the home page's start.
@@ -1519,7 +1538,6 @@ class MainWindow(QWidget):
         search_key = keys.tooltip_key("home.search")
         entries = (
             ("新手教学", self._start_home_tour),
-            ("新手教学 · 进阶（改错字与工作台）", lambda: self._start_home_tour("advanced")),
             ("显示新手引导", lambda: self._next_step_action("show_guide")),
             ("打开范例工程", self._open_sample_project),
             ("选择识别方式…", lambda: self._next_step_action("choose_plan")),
@@ -1939,6 +1957,9 @@ class MainWindow(QWidget):
             "recognition_plan": plan_key,
             "models": dict(models),
             "speaker_source": str(models.get('speaker_source') or self.speaker_source.currentData() or 'native'),
+            # 2026-10-23: the sheet's translation choice is for this run only (home keeps its own).
+            "subtitle_output": str(request_options.get("subtitle_output") or ""),
+            "translation_script": str(request_options.get("translation_script") or ""),
         }
         from ..recognition.recognition_input import capture_recognition_snapshot
         try:
@@ -2248,7 +2269,8 @@ class MainWindow(QWidget):
             self._open_ai_settings_dialog()
             # Open on the service the guide was about (it is saved only with 保存).
             dialog = getattr(self, "_ai_settings_dialog", None)
-            editor = dialog.findChild(EndpointEditor) if dialog is not None else None
+            # The top form (2026-10-22): the shared service, or 校对 and translation.
+            editor = self.__dict__.get("_ai_main_editor") if dialog is not None else None
             index = editor.service.findData(str(service_id)) if editor is not None else -1
             if index >= 0:
                 editor.service.setCurrentIndex(index)
@@ -2508,14 +2530,13 @@ class MainWindow(QWidget):
         elif action == "tour":
             self._start_home_tour()
 
-    def _start_home_tour(self, part: str = "basic"):
+    def _start_home_tour(self, part: str = "all"):
         """Point at the real page parts one by one (2026-10-14).
 
-        2026-10-15: two parts. ``basic`` starts on the home page and ends with an
-        exported subtitle file; its last step can go straight on to ``advanced``
-        (proofreading and the workbench), which also opens from 说明.
+        2026-10-22 (user: "进阶" made people think the basics were enough): one
+        tutorial from the first video to the workbench; it starts on the home page.
         """
-        if part == "basic" and self.pages.currentWidget() is not self.__dict__.get("settings_scroll"):
+        if part != "advanced" and self.pages.currentWidget() is not self.__dict__.get("settings_scroll"):
             self._switch_page(0)
             self._home_tour_pending = True
             return
@@ -2524,11 +2545,24 @@ class MainWindow(QWidget):
 
         def done(completed):
             onboarding.save_state(dict(onboarding.load_state(), tour_done=True))
-            if self.__dict__.pop("_tutorial_continue", "") == "advanced" and completed:
-                QTimer.singleShot(0, lambda: self._start_home_tour("advanced"))
-                return
             self._tutorial_finish(completed)
         start_home_tour(self, done, part)
+
+    def _current_plan_key(self) -> str:
+        """Which quick-chooser plan the saved roles are: cloud, local, apple, light or '' (custom)."""
+        from .quick_setup import PLANS
+        models = dict((self.legacy.RUNTIME_SETTINGS or {}).get("models") or {})
+        primary = str(models.get("primary_asr_backend") or "")
+        if primary == "api":
+            return "cloud" if str(models.get("qwen_asr_api_provider") or "") == "mosi_moss_pro" else ""
+        return next((key for key, plan in PLANS.items() if key != "cloud" and plan.backends[0] == primary), "")
+
+    def _choose_plan_in_tutorial(self) -> str:
+        """The tutorial's ② (2026-10-22): cloud or local compared, the choice saved, downloads after the tutorial."""
+        choice = _open_quick_setup(self, compare=True)
+        self._refresh_asr_summary()
+        self._refresh_next_step()
+        return choice or ""
 
     def _after_quick_setup(self):
         """After the chooser (2026-10-21): the tutorial if its box stayed ticked, on the home page."""
@@ -2775,12 +2809,16 @@ class MainWindow(QWidget):
         bind_text(message, '检查更新失败', property='windowTitle')
         message.setIcon(QMessageBox.Icon.Warning)
         bind_text(message, '暂时无法取得更新信息，程序可以照常使用。')
-        bind_text(message, '{value0}\n\n可稍后重试，或打开发布页手动下载。', property='informativeText', value0=detail)
-        open_release = message.addButton(tr("打开发布页"), QMessageBox.ButtonRole.AcceptRole)
+        bind_text(message, '{value0}\n\n可稍后重试，或打开发布页手动下载。在中国大陆，GitCode 通常更快。',
+                  property='informativeText', value0=detail)
+        # 2026-10-22: github.com timed out on a mainland line while GitCode
+        # carried the same release files at ~14 MB/s.
+        pages = {message.addButton(tr("打开 GitHub 发布页"), QMessageBox.ButtonRole.AcceptRole): RELEASE_PAGE,
+                 message.addButton(tr("打开 GitCode 发布页"), QMessageBox.ButtonRole.AcceptRole): GITCODE_RELEASE_PAGE}
         message.addButton(tr("关闭"), QMessageBox.ButtonRole.RejectRole)
         message.exec()
-        if message.clickedButton() is open_release:
-            QDesktopServices.openUrl(QUrl(RELEASE_PAGE))
+        if message.clickedButton() in pages:
+            QDesktopServices.openUrl(QUrl(pages[message.clickedButton()]))
 
     def _update_check_finished(self, check):
         if not check.newer:
@@ -3131,8 +3169,12 @@ class MainWindow(QWidget):
         content_head.addStretch(1)
         profile_layout.addLayout(content_head)
         # Three columns divided by hairlines: content name and recent chips |
-        # glossary correction | the optional web check.
-        content_body = QHBoxLayout()
+        # glossary correction | the optional web check. One widget, so the
+        # frosted lock can cover exactly these columns (2026-10-22).
+        self.content_terms_body = QWidget()
+        self.content_terms_body.setObjectName("homeContentBody")
+        content_body = QHBoxLayout(self.content_terms_body)
+        content_body.setContentsMargins(0, 0, 0, 0)
         content_body.setSpacing(20)
         choice_panel = QWidget()
         choice_panel.setObjectName("homeContentPlain")
@@ -3143,7 +3185,7 @@ class MainWindow(QWidget):
         content_body.addWidget(choice_panel, 16)
         # Label + 46 px box: its size hint is taken before the QSS fonts apply.
         ui_zoom.set_size(choice_panel, min_h=80)
-        profile_layout.addLayout(content_body)
+        profile_layout.addWidget(self.content_terms_body)
         self.current_content_title = QLabel("通用内容")
         self.current_content_title.setObjectName("contentHeroTitle")
         self.current_content_title.setParent(content_profile)
@@ -3222,6 +3264,17 @@ class MainWindow(QWidget):
         # as one statement: switch, its state, the enabled libraries.
         self.term_state_label.setContentsMargins(46, 0, 0, 0)
         batch_layout.addWidget(self.term_state_label)
+        # 2026-10-22: shown while the AI is not connected (the switch is locked).
+        self.terms_unlock_button = AnimatedButton("去设置 AI")
+        self.terms_unlock_button.setObjectName("linkButton")
+        self.terms_unlock_button.setIcon(_icon("fa5s.key"))
+        self.terms_unlock_button.clicked.connect(lambda: self._open_ai_settings_dialog())
+        self.terms_unlock_button.hide()
+        unlock_row = QHBoxLayout()
+        unlock_row.setContentsMargins(40, 0, 0, 0)
+        unlock_row.addWidget(self.terms_unlock_button)
+        unlock_row.addStretch(1)
+        batch_layout.addLayout(unlock_row)
         self.term_search = SwitchControl('联网补充核验（可选）')
         self.term_search.setObjectName("homeSwitch")
         self.term_search.setChecked(False)
@@ -3287,7 +3340,7 @@ class MainWindow(QWidget):
         self.home_process_card = QFrame()
         self.home_process_card.setObjectName("homeProcessCard")
         process_layout = QVBoxLayout(self.home_process_card)
-        process_layout.setContentsMargins(8, 4, 12, 4)
+        process_layout.setContentsMargins(16, 10, 16, 10)
         self._home_ai_layout = process_layout
         process_layout.setSpacing(0)
 
@@ -3345,7 +3398,7 @@ class MainWindow(QWidget):
         self.recognition_mode_combo.setObjectName("recognitionPlanCombo")
         for plan in plan_options():
             self.recognition_mode_combo.addItem(plan.label, plan.key)
-        bind_text(self.recognition_mode_combo, '新手只需选择目标；高级用户可切换到自定义并继续使用模型卡', property='toolTip')
+        bind_text(self.recognition_mode_combo, '选一个目标即可；在下面的模型卡换了模型时，这里显示「自定义」', property='toolTip')
         self.recognition_mode_combo.currentIndexChanged.connect(self._apply_recognition_plan_from_ui)
         plan_row.addWidget(self.recognition_mode_combo)
         self.recognition_plan_hint = QLabel("")
@@ -3586,50 +3639,156 @@ class MainWindow(QWidget):
             "fa5s.project-diagram",
             expanded=False,
         )
-        self.ai_polish = SwitchControl("字幕校对使用 AI（可关闭）")
+        # 2026-10-22 (design B): one page — the service, key and test first,
+        # then 「让 AI 负责」, then 高级设置 (closed): model, address, protocol,
+        # output, a second service for line breaking and the prompt.
+        panel_layout = self.ai_panel.content_layout
+        panel_layout.setSpacing(14)
+        self.ai_polish = SwitchControl("字幕校对")
         self.ai_polish.setChecked(settings["switches"].get("enable_ai_polish", True))
         bind_text(self.ai_polish, '关闭后不请求校对模型，也不需要校对 API Key；保留本地转写和文字规则。', property='toolTip')
-        self.ai_panel.content_layout.addWidget(self.ai_polish)
-        self.ai_grouping = SwitchControl("全文断句使用 AI（关闭后使用本地规则）")
+        self.ai_grouping = SwitchControl("按意思断句")
         self.ai_grouping.setChecked(
             settings["switches"].get("use_ai_grouping", True)
         )
         bind_text(self.ai_grouping, '关闭后不请求断句模型，也不需要断句 API Key；将使用 MOSS 自然语句、FireRed 停顿与本地护栏断句。', property='toolTip')
-        self.ai_panel.content_layout.addWidget(self.ai_grouping)
-        self.prefer_arabic_numbers = SwitchControl('数字规范化（保留口语小数字）')
+        self.prefer_arabic_numbers = SwitchControl('数字规范化')
         self.prefer_arabic_numbers.setChecked(settings['switches'].get('prefer_arabic_numbers', True))
         bind_text(self.prefer_arabic_numbers, '只影响之后生成的字幕；普通整数1～9保留原文，明确数值从10开始转为阿拉伯数字；小数、百分比和比例除外。保留约数、成语和已确认术语，不求和或去重，不改已保存工程。', property='toolTip')
-        self.ai_panel.content_layout.addWidget(self.prefer_arabic_numbers)
         self.prefer_arabic_numbers.toggled.connect(self._mark_ai_configuration_dirty)
+        # The saved switch keeps its meaning (one service for both stages); the
+        # page shows its plain opposite, 「断句另用一个服务」, in 高级设置.
         self.unified_glm = SwitchControl("同一云端模型负责字幕校对与全文断句（推荐）")
         self.unified_glm.setChecked(
             settings["switches"].get("unified_glm_processing", True)
         )
-        self.ai_panel.content_layout.addWidget(self.unified_glm)
-        endpoint_row = QHBoxLayout()
+        self.unified_glm.hide()
         self.polish_editor = EndpointEditor("字幕校对模型", CORAL, "polish", settings)
         self.group_editor = EndpointEditor("全文断句模型", BLUE, "group", settings)
-        endpoint_row.addWidget(self.polish_editor, 1)
-        endpoint_row.addWidget(self.group_editor, 1)
-        self.ai_panel.content_layout.addLayout(endpoint_row)
-        prompt_row = QHBoxLayout()
-        self.share_key = SwitchControl("两阶段共用新填写的校对密钥")
+        for editor in (self.polish_editor, self.group_editor):
+            editor.connection_tested.connect(lambda _ok: self._refresh_home_process_facts())
+            editor.connection_tested.connect(lambda _ok: self._refresh_ai_dialog_state())
+            editor.advanced_wanted.connect(lambda: self.ai_advanced_toggle.setChecked(True))
+            editor.key_help_requested.connect(lambda: self._open_api_key_explainer())
+        # The main form: the shared editor, or 校对 (and translation) when line
+        # breaking has its own service (_place_ai_editors).
+        # 2026-10-22 (design D2 refined): the guide column (what to do now, the
+        # three steps, the lent 「申请教程」) beside the form; everything else is
+        # folded into 「更多选项」, whose closed line says what is set inside.
+        from .ai_settings_widgets import AiGuidePanel
+        split = QHBoxLayout()
+        split.setSpacing(16)
+        self.ai_guide = AiGuidePanel()
+        split.addWidget(self.ai_guide)
+        form_column = QVBoxLayout()
+        form_column.setSpacing(10)
+        self.ai_main_slot = QVBoxLayout()
+        self.ai_main_slot.setContentsMargins(0, 0, 0, 0)
+        self.ai_main_slot.addWidget(self.polish_editor)
+        self.ai_main_slot.addWidget(self.group_editor)
+        form_column.addLayout(self.ai_main_slot)
+        form_column.addStretch(1)
+        # The dialog puts its save line, 取消 and 保存设置 here, level with the
+        # guide's foot (2026-10-22, user: no empty block under 测试连接).
+        self.ai_actions_row = QHBoxLayout()
+        self.ai_actions_row.setContentsMargins(0, 0, 0, 0)
+        self.ai_actions_row.setSpacing(10)
+        form_column.addLayout(self.ai_actions_row)
+        split.addLayout(form_column, 1)
+        panel_layout.addLayout(split)
+        advanced_head = QHBoxLayout()
+        advanced_head.setSpacing(10)
+        self.ai_advanced_toggle = QToolButton()
+        self.ai_advanced_toggle.setObjectName("endpointAdvancedToggle")
+        self.ai_advanced_toggle.setCheckable(True)
+        self.ai_advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.ai_advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        bind_text(self.ai_advanced_toggle, '更多选项')
+        advanced_head.addWidget(self.ai_advanced_toggle)
+        self.ai_advanced_summary = QLabel()
+        self.ai_advanced_summary.setObjectName("aiAdvancedSummary")
+        advanced_head.addWidget(self.ai_advanced_summary, 1)
+        advanced_head.addStretch(0)
+        panel_layout.addLayout(advanced_head)
+        self.ai_advanced_box = QFrame()
+        self.ai_advanced_box.setObjectName("aiAdvancedBox")
+        advanced_layout = QVBoxLayout(self.ai_advanced_box)
+        advanced_layout.setContentsMargins(16, 12, 16, 14)
+        advanced_layout.setSpacing(10)
+        # Left: 「让 AI 负责」, one switch per line with its effect beside it.
+        # Right: the top form's model, protocol, address and output.
+        options_row = QHBoxLayout()
+        options_row.setSpacing(20)
+        duties = QVBoxLayout()
+        duties.setSpacing(2)
+        duty_title = QLabel("让 AI 负责")
+        duty_title.setObjectName("aiSectionTitle")
+        duties.addWidget(duty_title)
+        self._ai_duty_notes = {}
+        for name, switch, note in (
+                ("group", self.ai_grouping, "关掉后用本地规则断句"),
+                ("polish", self.ai_polish, "改错字、统一专名"),
+                ("numbers", self.prefer_arabic_numbers, "“十二个”写成“12 个”")):
+            line_row = QHBoxLayout()
+            line_row.setSpacing(10)
+            line_row.addWidget(switch)
+            line = QLabel()
+            bind_text(line, note)
+            line.setObjectName("aiDutyNote")
+            line_row.addWidget(line, 1)
+            duties.addLayout(line_row)
+            self._ai_duty_notes[name] = line
+            switch.toggled.connect(self._refresh_ai_advanced_summary)
+            switch.toggled.connect(self._refresh_ai_dialog_state)
+        duties.addStretch(1)
+        options_row.addLayout(duties, 2)
+        self.ai_advanced_editor_slot = QVBoxLayout()
+        self.ai_advanced_editor_slot.setContentsMargins(0, 0, 0, 0)
+        options_row.addLayout(self.ai_advanced_editor_slot, 3)
+        advanced_layout.addLayout(options_row)
+        advanced_rule = QFrame()
+        advanced_rule.setObjectName("aiAdvancedRule")
+        advanced_rule.setFixedHeight(1)
+        advanced_layout.addWidget(advanced_rule)
+        # The switch, what it means and the prompt share one row.
+        separate_row = QHBoxLayout()
+        separate_row.setSpacing(12)
+        self.separate_group_service = SwitchControl("断句另用一个服务")
+        self.separate_group_service.setChecked(not self.unified_glm.isChecked())
+        self.separate_group_service.toggled.connect(lambda on: self.unified_glm.setChecked(not on))
+        separate_row.addWidget(self.separate_group_service)
+        self.separate_group_note = QLabel()
+        bind_text(self.separate_group_note, '关着时断句、校对和翻译共用上面的服务和 Key')
+        self.separate_group_note.setObjectName("aiDutyNote")
+        separate_row.addWidget(self.separate_group_note)
+        advanced_layout.addLayout(separate_row)
+        advanced_layout.addWidget(self.unified_glm)
+        self.ai_second_slot = QVBoxLayout()
+        self.ai_second_slot.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.addLayout(self.ai_second_slot)
+        self.ai_advanced_box.hide()
+        self.ai_advanced_toggle.toggled.connect(self._show_ai_advanced)
+        self.share_key = SwitchControl("断句也用上面新填的 Key")
         self.share_key.setChecked(True)
-        prompt_button = AnimatedButton("查看项目内置提示词")
+        # 2026-10-18: the line-breaking guidance of the AI prompt is editable.
+        prompt_button = AnimatedButton("断句提示词")
         prompt_button.setObjectName("linkButton")
-        prompt_button.setIcon(_icon("fa5s.info-circle"))
-        prompt_button.clicked.connect(lambda: PromptDialog(self).exec())
+        prompt_button.setIcon(_icon("fa5s.edit"))
+        bind_text(prompt_button, '查看或修改 AI 断句提示词里的断句说明', property='toolTip')
+        prompt_button.clicked.connect(
+            lambda: PromptDialog(prompt_button.window(), self.legacy.RUNTIME_SETTINGS).exec())
+        self.grouping_prompt_button = prompt_button
         self.save_ai_button = AnimatedButton("保存 AI 配置")
         self.save_ai_button.setObjectName("outline")
         self.save_ai_button.setIcon(_icon("fa5s.save"))
         self.save_ai_button.clicked.connect(
             lambda: self._save_ai_configuration(show_feedback=True)
         )
-        prompt_row.addWidget(self.share_key)
-        prompt_row.addStretch(1)
-        prompt_row.addWidget(prompt_button)
-        prompt_row.addWidget(self.save_ai_button)
-        self.ai_panel.content_layout.addLayout(prompt_row)
+        separate_row.addWidget(self.share_key)
+        separate_row.addStretch(1)
+        separate_row.addWidget(prompt_button)
+        separate_row.addWidget(self.save_ai_button)
+        panel_layout.addWidget(self.ai_advanced_box)
         self.ai_save_status = QLabel(credential_storage_notice() if session_credentials_enabled() else "供应商、模型、地址和新填写的密钥可在这里单独保存")
         self.ai_save_status.setObjectName("muted")
         self.ai_panel.content_layout.addWidget(self.ai_save_status)
@@ -3653,6 +3812,10 @@ class MainWindow(QWidget):
             editor.base_url.textChanged.connect(self._mark_ai_configuration_dirty)
             editor.protocol.currentIndexChanged.connect(self._mark_ai_configuration_dirty)
             editor.key.textChanged.connect(self._mark_ai_configuration_dirty)
+            editor.key.textChanged.connect(self._refresh_ai_dialog_state)
+            editor.model.currentTextChanged.connect(self._refresh_ai_advanced_summary)
+            editor.base_url.textChanged.connect(self._refresh_ai_advanced_summary)
+            editor.service.currentIndexChanged.connect(self._refresh_ai_advanced_summary)
             editor.json_mode.toggled.connect(self._mark_ai_configuration_dirty)
             editor.structured_output.toggled.connect(self._mark_ai_configuration_dirty)
         self.ai_grouping.toggled.connect(self._mark_ai_configuration_dirty)
@@ -3734,39 +3897,15 @@ class MainWindow(QWidget):
         # ------------------------------------------------------------
         # 首页只保留直接影响本批任务的 AI 智能断句入口。
         # ------------------------------------------------------------
-        from twobyteasr.design.ui_widgets import SettingTile
+        from .home_ai_widgets import HomeAiCard
 
-        self.setting_tiles: dict[str, SettingTile] = {}
         self._tile_panels = [
             ("ai", self.ai_panel, "AI 智能断句", "fa5s.project-diagram"),
         ]
-        tiles = []
-        for key, _panel, title, icon_name in self._tile_panels:
-            tile = SettingTile(title, "", icon_name)
-            self.setting_tiles[key] = tile
-            tiles.append(tile)
-            if key == "ai":
-                # Opens the AI settings dialog (_build_home_process_card).
-                continue
-
-            def _toggle(tile=tile, key=key):
-                panels = {k: p for k, p, _t, _i in self._tile_panels}
-                panel = panels[key]
-                if tile.isChecked():
-                    for other_key, other_panel, _t, _i in self._tile_panels:
-                        if other_key != key:
-                            other_panel.set_expanded(False, animate=False)
-                            other_panel.setVisible(False)
-                    panel.setVisible(True)
-                    panel.set_expanded(True, animate=True)
-                else:
-                    panel.set_expanded(False, animate=True)
-                    panel.setVisible(False)
-
-            tile.toggled.connect(
-                lambda _checked=False, tile=tile, key=key: _toggle(tile, key)
-            )
-        self._build_home_process_card(tiles[0])
+        # 2026-10-22 (design B): one card under the recognition plan; it
+        # opens the AI settings dialog (_build_home_process_card).
+        self.setting_tiles = {"ai": HomeAiCard()}
+        self._build_home_process_card(self.setting_tiles["ai"])
         self._refresh_ai_summary()
         for key, panel, _t, _i in self._tile_panels:
             if key == "ai":
@@ -3851,6 +3990,9 @@ class MainWindow(QWidget):
         self.recognition_plan.setMinimumHeight(height)
         self.recognition_plan.setMaximumHeight(height + ui_zoom.px(48))
         rows = 3 if tier == 2 else 2
+        ai_card = getattr(self, "setting_tiles", {}).get("ai")
+        if ai_card is not None:
+            ai_card.set_compact(tier == 0)  # short windows: one row, no feature tags
         recent = getattr(self, "studio_recent_list", None)
         if recent is not None and recent.limit != rows:
             recent.limit = rows
@@ -3897,7 +4039,7 @@ class MainWindow(QWidget):
         # Everything added outside the drop zone (its own extra is in drop_now).
         self._home_room_px = ui_zoom.px(round(step * 4.5) + self._home_plan_extra + middle)
         ui_zoom.set_layout(self._home_studio_layout, (20, 18 + step, 20, 18 + step), 12)
-        ui_zoom.set_layout(self._home_ai_layout, (8, 4 + step // 2, 12, 4 + step // 2), 0)
+        ui_zoom.set_layout(self._home_ai_layout, (16, 10 + step // 2, 16, 10 + step // 2), 0)
         ui_zoom.set_layout(self._home_content_layout, (22, 16 + step, 22, 18 + step), 12 + step // 2)
         self._sync_home_plan(getattr(self, "_home_tier", (1,))[0])
         if not getattr(self, "media_paths", None):
@@ -3972,42 +4114,27 @@ class MainWindow(QWidget):
             self.studio_recent_list.set_current(index - 1)
 
     def _build_home_process_card(self, tile) -> None:
-        """AI segmentation summary (2026-10-08): the current service and model,
-        separate saved / key / connection facts, and a 设置 AI button. All
-        settings open in a dialog; nothing expands on the home page."""
+        """The AI card under the recognition plan (2026-10-22, design B): only
+        the way to set the AI up while it is not connected (the card and
+        内容与术语 turn blue-grey, the content columns go under frosted glass),
+        who does the work once it is. Settings open in a dialog."""
         card = self.home_process_card
-        layout = card.layout()
-        tile.chevron.hide()
-        tile.setMinimumHeight(60)
-        self.ai_settings_button = AnimatedButton("设置 AI")
-        self.ai_settings_button.setObjectName("homeAiSettings")
-        install_themed_icon(self.ai_settings_button, "fa5s.sliders-h", "secondary")
-        self.ai_settings_button.clicked.connect(lambda: self._open_ai_settings_dialog())
-        tile.clicked.connect(lambda _checked=False: self._open_ai_settings_dialog())
-        layout.addWidget(tile)
-        # One row (home C′): title and service, the three facts, 设置 AI.
-        tile_layout = tile.layout()
-        tile_layout.setStretch(1, 0)
-        tile.summary_label.setWordWrap(False)
-        self.home_fact_row = QWidget(tile)
-        row = QHBoxLayout(self.home_fact_row)
-        row.setContentsMargins(14, 0, 8, 0)
-        row.setSpacing(8)
-        self._ai_state_chips = {}
-        for key in ("saved", "key", "connection"):
-            chip = QLabel()
-            chip.setObjectName("homeFactChip")
-            row.addWidget(chip, 0, Qt.AlignmentFlag.AlignVCenter)
-            self._ai_state_chips[key] = chip
+        card.layout().addWidget(tile)
+        self.ai_settings_button = tile.settings_button
         # 2026-10-15: the picture explainer for people who never heard of a key.
-        self.ai_key_help_button = AnimatedButton("API Key 是什么？")
-        self.ai_key_help_button.setObjectName("linkButton")
-        self.ai_key_help_button.setIcon(_icon("fa5s.question-circle"))
-        self.ai_key_help_button.clicked.connect(lambda: self._open_api_key_explainer())
-        row.addWidget(self.ai_key_help_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        row.addStretch(1)
-        tile_layout.insertWidget(2, self.home_fact_row, 1)
-        tile_layout.addWidget(self.ai_settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.ai_key_help_button = tile.help_button
+        # 2026-10-22: a key that was never tested (or failed) locks translation and the
+        # glossary; the test runs right here, without opening the settings.
+        self.home_ai_test_button = tile.test_button
+        self.home_ai_connect_button = tile.connect_button
+        tile.clicked.connect(lambda _checked=False: self._open_ai_settings_dialog())
+        tile.connect_requested.connect(lambda: self._open_ai_settings_dialog())
+        tile.settings_requested.connect(lambda: self._open_ai_settings_dialog())
+        tile.test_requested.connect(self._test_ai_connection_from_home)
+        tile.help_requested.connect(lambda: self._open_api_key_explainer())
+        from .home_ai_widgets import FrostOverlay
+        self.content_frost = FrostOverlay(self.content_terms_body, self.content_profile_card)
+        self.content_frost.activated.connect(lambda: self._open_ai_settings_dialog())
         self._refresh_home_process_facts()
 
     def _open_api_key_explainer(self) -> None:
@@ -4015,84 +4142,184 @@ class MainWindow(QWidget):
         open_api_key_explainer(self)
 
     def _refresh_home_process_facts(self, *_args) -> None:
-        """Saved settings, key and connection are three facts, never one
-        "ready" (user, 2026-10-08)."""
-        chips = getattr(self, "_ai_state_chips", None)
-        if not chips:
+        """The AI card's facts, then what they unlock on the home page (2026-10-22)."""
+        self._refresh_home_ai_chips()
+        self._apply_ai_feature_gate()
+
+    def _refresh_home_ai_chips(self) -> None:
+        """The AI card's state (2026-10-22, design B): the AI gate, a test
+        running from the home card and, once connected, who does the work.
+        Key and connection stay separate facts in its words (user, 2026-10-08);
+        a key that was never tested is never called connected."""
+        tile = getattr(self, "setting_tiles", {}).get("ai")
+        if tile is None or not hasattr(tile, "set_view"):
             return
+        from ..providers import ai_connection_record as record
         from ..providers.llm_config import effective_ai_identity
-        language = getattr(self, "_ui_language", current_language())
-
-        def show(name, text, state):
-            chip = chips[name]
-            chip.setVisible(bool(text))
-            chip.setText(translate(text, language) if text else "")
-            chip.setProperty("state", state)
-            chip.style().unpolish(chip)
-            chip.style().polish(chip)
-
+        from .home_ai_widgets import AiCardView, TESTING
         saved = self.legacy.RUNTIME_SETTINGS
         switches = saved.get("switches", {})
         polish_on = bool(switches.get("enable_ai_polish", True))
         group_on = bool(switches.get("use_ai_grouping", True))
-        tile = getattr(self, "setting_tiles", {}).get("ai")
-        if not (polish_on or group_on):
-            if tile is not None:
-                tile.set_summary(translate("未启用 AI · 使用本地规则断句", language))
-            show("saved", "AI 已关闭", "off")
-            show("key", "", "off")
-            show("connection", "", "off")
-            return
-        stage = "polish" if polish_on else "group"
         try:
-            identity = effective_ai_identity(saved, stage)
-        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-            identity = {}
-
-        def lacks_key(name):
-            from ..providers.llm_config import endpoint_requires_key
+            gate = record.feature_gate(saved)
+        except Exception:  # noqa: BLE001 - unknown: never lock anyone out
+            gate = record.READY
+        view = AiCardView(gate, polish_on=polish_on, group_on=group_on)
+        tester = getattr(self._primary_ai_editor(), "_tester", None)
+        if gate in (record.UNTESTED, record.FAILED) and tester is not None and tester.isRunning():
+            view = AiCardView(TESTING, polish_on=polish_on, group_on=group_on)
+        elif gate == record.READY:
             try:
-                found = identity if name == stage else effective_ai_identity(saved, name)
+                identity = effective_ai_identity(saved, "polish" if polish_on else "group")
             except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-                return False
-            return (str(found.get("transport", "")) == AITransport.OPENAI_COMPATIBLE.value
-                    and not found.get("credential_configured")
-                    and endpoint_requires_key({"provider": found.get("provider"), "base_url": found.get("base_url")}))
+                identity = {}
+            checked = record.checked_at(saved, "polish")
+            view = AiCardView(record.READY, service=tr(str(identity.get("label") or "AI")),
+                              model=str(identity.get("model") or ""),
+                              tested_at=checked[5:16].replace("T", " ") if len(checked) >= 16 else "",
+                              polish_on=polish_on, group_on=group_on)
+        tile.set_view(view)
+        self._apply_ai_zone_lock(view.locked, gate)
 
-        # 2026-10-21 (user): new users are asked for a key — translation, AI 断句
-        # and AI 校对 need it — with DeepSeek recommended; never "不填也能用".
-        enabled = [name for name, on in (("polish", polish_on), ("group", group_on)) if on]
-        without_key = [name for name in enabled if lacks_key(name)]
-        key_help = getattr(self, "ai_key_help_button", None)
-        if key_help is not None:
-            key_help.setVisible(bool(without_key))
-        if without_key and len(without_key) == len(enabled) and not getattr(self, "_ai_has_draft", False):
-            if tile is not None:
-                tile.set_summary(translate("还没填 API Key · 推荐 DeepSeek", language))
-            show("saved", "", "off")
-            show("key", "翻译和断句要用", "warn")
-            show("connection", "", "off")
+    def _apply_ai_zone_lock(self, locked: bool, gate: str) -> None:
+        """Blue-grey AI card and 内容与术语 while the AI is not connected; the
+        content columns under frosted glass (2026-10-22, user)."""
+        frames = [frame for frame in (self.__dict__.get("home_process_card"),
+                                      self.__dict__.get("content_profile_card")) if frame is not None]
+        for frame in frames:
+            if frame.property("aiLock") == locked:
+                continue
+            frame.setProperty("aiLock", locked)
+            for widget in (frame, *frame.findChildren(QWidget)):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+        frost = self.__dict__.get("content_frost")
+        if frost is not None:
+            frost.set_gate(gate)
+            frost.set_active(locked)
+            if gate != self.__dict__.get("_ai_zone_gate"):
+                frost.refresh()  # the columns' lock lines change with the gate
+        self._ai_zone_gate = gate
+
+    def _primary_ai_editor(self):
+        """The service form AI 设置 shows first: the shared one when both stages use one service."""
+        switches = self.legacy.RUNTIME_SETTINGS.get("switches", {})
+        polish, group = switches.get("enable_ai_polish", True), switches.get("use_ai_grouping", True)
+        shared = bool(switches.get("unified_glm_processing", True)) and polish and group
+        return self.group_editor if shared or not polish else self.polish_editor
+
+    def _test_ai_connection_from_home(self) -> None:
+        """测试连接 on the home card: the saved service and key, as the AI settings would test them."""
+        self._primary_ai_editor().test_connection()
+        self._refresh_home_ai_chips()
+
+    # ---- 2026-10-22: AI-only features wait for a key and a passed 测试连接 -------------
+    AI_LOCK_LINES = {
+        "no_key": "需要先填 API Key 并测试连接才能用",
+        "untested": "需要先测试 AI 连接才能用",
+        "failed": "AI 连接测试没通过，暂时不能用",
+        "off": "AI 已关闭，打开后才能用",
+    }
+
+    def _ai_unlocked(self) -> bool:
+        """Translation, 术语库校对 and 联网补充核验 may be used (the last _apply_ai_feature_gate answer)."""
+        return _ai_unlocked(self)
+
+    def _apply_ai_feature_gate(self) -> None:
+        """Grey out what needs the AI text service until it has a key and passed a test.
+
+        User (10-22): 术语库校对, 联网补充核验 and translation stay dark grey and
+        say a key is needed; punctuation is local and stays free. Only the
+        shown and the task's values change: the saved choices (enable_domain_terms,
+        the subtitle output) are kept and come back once the AI is connected.
+        """
+        try:
+            from ..providers.ai_connection_record import feature_gate
+            gate = feature_gate(self.legacy.RUNTIME_SETTINGS)
+        except Exception:  # noqa: BLE001 - unknown: never lock anyone out
+            gate = "ready"
+        was = self.__dict__.get("_ai_gate_state")
+        self._ai_gate_state = gate
+        ready = gate == "ready"
+        line = "" if ready else self.AI_LOCK_LINES.get(gate, self.AI_LOCK_LINES["no_key"])
+        terms = self.__dict__.get("terms")
+        if terms is not None:
+            saved = bool((self.legacy.RUNTIME_SETTINGS.get("glossary") or {}).get("enable_domain_terms", False))
+            with QSignalBlocker(terms):
+                terms.setChecked(saved and ready)
+            terms.setEnabled(ready)
+            bind_text(terms, '使用本批已确认词库进行本地匹配和文字校对；联网核验独立选择' if ready else line,
+                      property='toolTip')
+        search = self.__dict__.get("term_search")
+        if search is not None:
+            if not ready:
+                with QSignalBlocker(search):
+                    search.setChecked(False)
+            search.setEnabled(ready)
+        note = self.__dict__.get("term_search_note")
+        if note is not None:
+            bind_text(note, line or '仅本次任务启用；需可验证的搜索能力')
+            note.setProperty("tone", "warn" if line else "off")
+            note.style().unpolish(note)
+            note.style().polish(note)
+        unlock = self.__dict__.get("terms_unlock_button")
+        if unlock is not None:
+            unlock.setVisible(not ready)
+        self._sync_translation_lock(ready)
+        if was != gate:
+            self._refresh_glossary_chips()
+            if self.__dict__.get("recognition_language") is not None:
+                self._subtitle_language_changed(save=False)
+
+    def _sync_translation_lock(self, ready: bool) -> None:
+        """Only "只显示原文" while the AI is not connected; the saved choice comes back after."""
+        combo = self.__dict__.get("subtitle_output")
+        if combo is None:
             return
-        if tile is not None and identity:
-            tile.set_summary(f"{translate(str(identity.get('label', '')), language)} · {identity.get('model') or translate('默认模型', language)}")
-        if getattr(self, "_ai_has_draft", False):
-            show("saved", "有未保存的修改", "warn")
-        else:
-            show("saved", "设置已保存", "on")
-        if without_key:
-            show("key", {("group",): "AI 断句没填 Key · 用本地规则", ("polish",): "AI 校对没填 Key · 不做校对"}.get(
-                tuple(without_key), "没填 Key · 用本地规则"), "off")
-        elif str(identity.get("transport", "")) == AITransport.OPENAI_COMPATIBLE.value:
-            show("key", "密钥已配置" if identity.get("credential_configured") else "未配置密钥",
-                 "on" if identity.get("credential_configured") else "warn")
-        else:
-            show("key", "使用账号登录", "off")
-        editor = self.polish_editor if stage == "polish" else self.group_editor
-        result = getattr(editor, "last_connection_ok", None)
-        if result is None:
-            show("connection", "尚未测试连接", "off")
-        else:
-            show("connection", "连接正常" if result else "连接失败", "on" if result else "warn")
+        labels = {"original": "只显示原文", "bilingual": "原文 + 翻译（双语）", "translation": "只显示翻译"}
+        model = combo.model()
+        for index in range(combo.count()):
+            value = str(combo.itemData(index) or "")
+            item = model.item(index) if hasattr(model, "item") else None
+            if value == "original" or item is None:
+                continue
+            item.setEnabled(ready)
+            label = labels.get(value, combo.itemText(index))
+            combo.setItemText(index, str(tr(label)) if ready else str(tr("{value0}（需要 API Key）", value0=tr(label))))
+        saved = str(((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {}).get("output") or "original")
+        wanted = saved if ready else "original"
+        index = combo.findData(wanted)
+        if index >= 0 and combo.currentIndex() != index:
+            with QSignalBlocker(combo):
+                combo.setCurrentIndex(index)
+        # User (10-23): locked shut, in the lock colour with a lock, on 「只显示原文」
+        # (the saved choice is untouched and comes back once the AI is connected).
+        combo.setEnabled(ready)
+        combo.setProperty("aiLock", not ready)
+        original = combo.findData("original")
+        if original >= 0:
+            from PySide6.QtGui import QIcon
+            icon = QIcon()
+            if not ready:
+                import qtawesome as qta
+                from ..design.home_qss import ai_lock_palette
+                side = ui_zoom.px(14)
+                pixmap = qta.icon("fa5s.lock", color=ai_lock_palette(_active_theme_definition())["title"]).pixmap(
+                    QSize(side, side))
+                for mode in (QIcon.Mode.Normal, QIcon.Mode.Disabled):
+                    icon.addPixmap(pixmap, mode)
+            combo.setItemIcon(original, icon)
+        bind_text(combo, '译文/双语：识别完成后用已配置的 AI 文字服务把字幕翻成所选语言（只发送字幕文字，不发送音频）；原文、说话人和时间保持不变。'
+                  if ready else '连上 AI 才能翻译字幕；现在只显示原文，连上后恢复你选的', property='toolTip')
+        caption = self.__dict__.get("subtitle_output_caption")
+        if caption is not None:
+            bind_text(caption, '字幕显示' if ready else '字幕显示 · 连上 AI 才能翻译')
+            caption.setProperty("aiLock", not ready)
+        for widget in (combo, caption):
+            if widget is not None:
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
 
     def _ai_settings_snapshot(self) -> dict:
         names = ("ai_polish", "ai_grouping", "prefer_arabic_numbers", "unified_glm", "share_key")
@@ -4153,33 +4380,26 @@ class MainWindow(QWidget):
         dialog.setObjectName("aiSettingsDialog")
         bind_text(dialog, 'AI 文字服务设置', property='windowTitle')
         dialog.setWindowIcon(_app_icon())
-        dialog.resize(min(1040, max(720, self.width() - 160)), min(800, max(520, self.height() - 120)))
+        # 2026-10-22 (design D2 refined): narrow and as tall as its content (fit()).
+        dialog.resize(min(ui_zoom.px(800), max(ui_zoom.px(660), self.width() - 120)),
+                      min(800, max(520, self.height() - 120)))
         outer = QVBoxLayout(dialog)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         header = QFrame(dialog)
         header.setObjectName("aiDialogHeader")
         head = QHBoxLayout(header)
-        head.setContentsMargins(24, 18, 16, 14)
-        head.setSpacing(12)
-        titles = QVBoxLayout()
-        titles.setSpacing(2)
+        head.setContentsMargins(20, 14, 14, 12)
+        head.setSpacing(10)
+        # One line: the title and where the connection stands; what a key is
+        # and what to do now live in the guide column (2026-10-22).
         title = QLabel("AI 文字服务设置")
         title.setObjectName("aiDialogTitle")
-        subtitle = QLabel("字幕翻译使用左侧“字幕校对模型”的服务与密钥；全文断句可共用或单独设置")
-        subtitle.setObjectName("aiDialogSubtitle")
-        titles.addWidget(title)
-        titles.addWidget(subtitle)
-        # 2026-10-21 (user): say what the key is needed for, where people look.
-        no_key = QLabel("翻译、AI 断句、AI 校对都要先填 API Key（推荐 DeepSeek）")
-        no_key.setObjectName("aiDialogSubtitle")
-        titles.addWidget(no_key)
-        head.addLayout(titles, 1)
-        key_help = AnimatedButton("API Key 是什么？")
-        key_help.setObjectName("linkButton")
-        key_help.setIcon(_icon("fa5s.question-circle"))
-        key_help.clicked.connect(lambda: self._open_api_key_explainer())
-        head.addWidget(key_help, 0, Qt.AlignmentFlag.AlignTop)
+        head.addWidget(title)
+        self.ai_dialog_state_label = QLabel()
+        self.ai_dialog_state_label.setObjectName("aiDialogState")
+        head.addWidget(self.ai_dialog_state_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
         close = button_role(QPushButton(""), "ghost")
         close.setFixedSize(36, 36)
         install_themed_icon(close, "fa5s.times", "secondary")
@@ -4187,7 +4407,7 @@ class MainWindow(QWidget):
         bind_text(close, '关闭 AI 设置', property='accessibleName')
         bind_text(close, '关闭（不保存修改）', property='toolTip')
         close.clicked.connect(dialog.reject)
-        head.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+        head.addWidget(close, 0, Qt.AlignmentFlag.AlignVCenter)
         outer.addWidget(header)
         scroll = QScrollArea(dialog)
         scroll.setObjectName("aiDialogScroll")
@@ -4197,7 +4417,7 @@ class MainWindow(QWidget):
         body = QWidget()
         body.setObjectName("aiDialogBody")
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(24, 4, 24, 16)
+        body_layout.setContentsMargins(20, 16, 20, 14)
         body_layout.setSpacing(0)
         panel.setParent(body)
         body_layout.addWidget(panel)
@@ -4206,25 +4426,56 @@ class MainWindow(QWidget):
         self.save_ai_button.hide()
         panel.setVisible(True)
         panel.set_expanded(True, animate=False)
+        # 高级设置 starts closed, except for a custom service (it needs its address).
+        main_editor = self.__dict__.get("_ai_main_editor") or self._primary_ai_editor()
+        self.ai_advanced_toggle.setChecked(str(main_editor.service.currentData() or "") == "custom")
+        self._show_ai_advanced(self.ai_advanced_toggle.isChecked())
         # Inside the scrolling form the panel may grow (advanced groups).
         panel.content.setMaximumHeight(16777215)
         scroll.setWidget(body)
         outer.addWidget(scroll, 1)
-        footer = QFrame(dialog)
-        footer.setObjectName("aiDialogFooter")
-        foot = QHBoxLayout(footer)
-        foot.setContentsMargins(24, 12, 24, 16)
-        foot.setSpacing(10)
+        # 取消 and 保存设置 sit at the foot of the form column, beside the save
+        # line (only a warning — unsaved changes, a failed save — shows there).
+        foot = self.ai_actions_row
+        status = self.ai_save_status
+        status_home = panel.content_layout
+        status.setWordWrap(True)   # other languages' warnings are longer than the room beside the buttons
+        foot.addWidget(status, 3)
+        status.setVisible(status.objectName() == "statusWarn")
         foot.addStretch(1)
         cancel = button_role(QPushButton("取消"), "secondary")
         cancel.clicked.connect(dialog.reject)
         save = QPushButton("保存设置")
         save.setObjectName("primary")
         button_role(save, "primary")
+        for button in (cancel, save):   # as tall as the fields and 测试连接 beside them
+            button.setProperty("aiDialogAction", True)
         foot.addWidget(cancel)
         foot.addWidget(save)
-        outer.addWidget(footer)
         self.ai_dialog_save_button = save
+        self._refresh_ai_dialog_state()
+        self._refresh_ai_advanced_summary()
+
+        def fit():
+            """As tall as the form (2026-10-22: no empty band under it), within the window."""
+            if not dialog.isVisible():
+                return
+
+            def height_of(widget, width):
+                # Wrapped labels over-state their size hint; ask for this width.
+                value = widget.heightForWidth(width) if widget.hasHeightForWidth() else -1
+                return value if value > 0 else widget.sizeHint().height()
+
+            want = height_of(header, dialog.width()) + height_of(body, scroll.viewport().width()) + 6
+            screen = dialog.screen().availableGeometry() if dialog.screen() is not None else None
+            limit = min(max(520, self.height() - 80), screen.height() - 60 if screen is not None else 10_000)
+            height = max(300, min(limit, want))
+            if height != dialog.height():
+                center = self.geometry().center()
+                dialog.setGeometry(center.x() - dialog.width() // 2, max(0, center.y() - height // 2),
+                                   dialog.width(), height)
+
+        self._ai_dialog_fit = fit
         saved = [False]
 
         def save_and_close():
@@ -4242,6 +4493,16 @@ class MainWindow(QWidget):
             panel.hide()
             self.save_ai_button.show()
             self._ai_settings_dialog = None
+            self.ai_dialog_state_label = None   # it and the save button go with the dialog
+            self.ai_dialog_save_button = None
+            self._ai_dialog_fit = None
+            while foot.count():                  # the dialog's buttons and spacer go with it
+                widget = foot.takeAt(0).widget()
+                if widget is cancel or widget is save:
+                    widget.hide()
+                    widget.deleteLater()
+            status_home.addWidget(status)       # back under the off-page form
+            status.show()
             self._refresh_ai_summary()
             if on_finished is not None:
                 on_finished()
@@ -4253,8 +4514,17 @@ class MainWindow(QWidget):
         # CollapsibleFrame.showEvent re-caps the content height; inside the
         # scrolling form it must grow freely (advanced groups, two editors).
         panel.content.setMaximumHeight(16777215)
+        fit()
+        # Again once the zoom and the style sheets have settled: the first pass
+        # came out a few px short and left a scroll bar (10-23, real window).
+        QTimer.singleShot(0, fit)
+        QTimer.singleShot(250, fit)
         dialog.raise_()
         dialog.activateWindow()
+        # Ready to paste: the key box has the focus while there is no key.
+        main_editor = self.__dict__.get("_ai_main_editor")
+        if main_editor is not None:
+            (main_editor.key if not main_editor.has_key() else main_editor.service).setFocus()
 
     def _apply_media_mode(self, ready: bool) -> None:
         """Empty: a one-row dashed drop zone (title, hint and formats, the
@@ -4300,7 +4570,7 @@ class MainWindow(QWidget):
             content_icon.setPixmap(qta.icon("fa5s.tags", color=zones["content"]).pixmap(QSize(18, 18)))
         tile = getattr(self, "setting_tiles", {}).get("ai")
         if tile is not None:
-            tile.icon_label.setPixmap(qta.icon("fa5s.project-diagram", color=zones["ai"]).pixmap(QSize(19, 19)))
+            tile.refresh_theme()
 
 
     def _action_bar(self):
@@ -4974,6 +5244,14 @@ class MainWindow(QWidget):
         summary_notices.addWidget(self.result_exception_summary, 1)
         summary_notices.addStretch(1)
         summary_copy.addLayout(summary_notices)
+        # 2026-10-23 (user): the likely cause of a failure or a poor result,
+        # from the local check of the report; opens 排查原因 (all findings,
+        # what to do, and an optional AI analysis).
+        from .completion_widgets import CompletionDiagnosisHint
+        self.result_diagnosis_hint = CompletionDiagnosisHint()
+        self.result_diagnosis_hint.clicked.connect(
+            lambda: self._completion_action('diagnose', self._open_completion_diagnosis))
+        summary_copy.addWidget(self.result_diagnosis_hint)
         self.result_task_summary = QLabel('')
         self.result_task_summary.setWordWrap(True)
         summary_copy.addWidget(self.result_task_summary)
@@ -5051,6 +5329,9 @@ class MainWindow(QWidget):
         self.result_more_menu = QMenu(self.result_more_button)
         self.result_more_menu.setProperty("completionRole", "secondary")
         self.result_more_menu.setProperty("completionRadius", COMPLETION_RADIUS_SMALL)
+        self.diagnose_result_action = self.result_more_menu.addAction(
+            '排查原因…', lambda: self._completion_action('diagnose', self._open_completion_diagnosis))
+        self.diagnose_result_action.setEnabled(False)
         self.result_more_menu.addAction('打开报告目录', self._open_completion_report_directory)
         self.open_subtitle_result_button = self.result_more_menu.addAction('打开字幕目录', self._open_subtitle_dir)
         self.open_subtitle_result_button.setEnabled(False)
@@ -5095,6 +5376,17 @@ class MainWindow(QWidget):
         self.result_console.clear()
         bind_text(self.result_log_toggle, '运行日志 · 本次报告事件')
 
+    def _open_history_diagnosis(self, record):
+        """排查原因 of a recognition history record (2026-10-23); task-only actions are left out."""
+        from .run_diagnosis_dialog import TASK_ACTIONS, open_run_diagnosis
+        from ..recognition.diagnosis_catalog import ACTION_LABELS
+        payload = getattr(record, 'payload', None)
+        if not isinstance(payload, dict):
+            return
+        error = str(((payload.get('result') or {}) if isinstance(payload.get('result'), dict) else {}).get('error') or '')
+        open_run_diagnosis(self, payload, item_error=error, task_name=str(getattr(record, 'media_name', '') or ''),
+                           available_actions=set(ACTION_LABELS) - TASK_ACTIONS)
+
     def _show_completion_review_details(self):
         self.result_files_panel.set_mode('full')
         self.result_files.setFocus()
@@ -5135,6 +5427,8 @@ class MainWindow(QWidget):
             self.result_task_selector.setToolTip('')
             bind_text(self.result_task_summary, '')
             self.result_task_summary.hide()
+            self.result_diagnosis_hint.set_finding(None)
+            self.diagnose_result_action.setEnabled(False)
             self._refresh_completion_summaries()
             return
         item, project = task
@@ -5248,7 +5542,84 @@ class MainWindow(QWidget):
         else:
             bind_text(self.retry_failed_button, '重试失败项')
         self.retry_term_action.setVisible(bool(outcome and outcome.search_retryable and getattr(self, '_last_run_options', None)))
+        diagnosis = self._completion_diagnosis(item, evidence)
+        self.diagnose_result_action.setEnabled(diagnosis is not None)
+        self.result_diagnosis_hint.set_finding(
+            diagnosis.headline() if diagnosis is not None else None,
+            failed=bool(outcome and outcome.core_status == 'failed'),
+            others=[finding for finding in (diagnosis.findings if diagnosis is not None else ()) if finding.severity != 'tip'])
         self._refresh_completion_summaries()
+
+    def _completion_diagnosis(self, item, evidence):
+        """The local check of one task's report, computed once per task (2026-10-23)."""
+        if 'diagnosis' in evidence:
+            return evidence['diagnosis']
+        report = evidence.get('display_payload')
+        if isinstance(report, dict) and not report.get('events') and item.status in {'failed', 'cancelled'}:
+            # A failed task's result carries no report path; its report has
+            # the steps and events that explain the failure.
+            from .run_diagnosis_dialog import locate_task_report
+            located = locate_task_report(item.media_path, str(getattr(item, 'job_id', '') or ''))
+            if located is not None:
+                report = located
+        evidence['diagnosis_report'] = report
+        diagnosis = None
+        if isinstance(report, dict):
+            from ..recognition.run_diagnosis import DiagnosisInput, diagnose_run
+            try:
+                diagnosis = diagnose_run(DiagnosisInput(report=report, item_error=str(getattr(item, 'error', '') or ''),
+                                                        ai_ready=self._text_ai_ready()))
+            except Exception as exc:  # the page must still show the result
+                print(f"[diagnosis] local check failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        evidence['diagnosis'] = diagnosis
+        return diagnosis
+
+    def _completion_notification_with_cause(self, result, outcomes):
+        """The end-of-run note, plus the likely cause of the first failed task (2026-10-23)."""
+        title, message, icon, details = _completion_notification_spec(result, outcomes)
+        for item, _project in getattr(self, '_completion_tasks', ()):
+            if item.status != 'failed':
+                continue
+            evidence = self._completion_task_evidence.get(self._completion_task_key(item), {})
+            diagnosis = self._completion_diagnosis(item, evidence)
+            headline = diagnosis.headline() if diagnosis is not None else None
+            if headline is not None:
+                cause = tr('可能原因：{title}（结果页的「查看原因与解决办法」有详细说明）', title=tr(headline.issue.title))
+                details = f'{details}\n{cause}' if details else str(cause)
+            break
+        return title, message, icon, details
+
+    def _text_ai_ready(self):
+        """Has the 字幕校对 text AI a key (no request); None when unknown."""
+        try:
+            from ..providers.llm_config import text_ai_key_missing
+            return not text_ai_key_missing(self.legacy.RUNTIME_SETTINGS, 'polish')
+        except Exception:
+            return None
+
+    def _open_completion_diagnosis(self):
+        tasks = getattr(self, '_completion_tasks', [])
+        index = self.result_task_selector.currentIndex()
+        if not 0 <= index < len(tasks):
+            return
+        item, project = tasks[index]
+        evidence = self._completion_task_evidence.get(self._completion_task_key(item), {})
+        self._completion_diagnosis(item, evidence)
+        report = evidence.get('diagnosis_report')
+        if not isinstance(report, dict):
+            return
+        from .run_diagnosis_dialog import TASK_ACTIONS, open_run_diagnosis
+        from ..recognition.diagnosis_catalog import ACTION_LABELS
+        outcome = evidence.get('outcome')
+        available = set(ACTION_LABELS) - TASK_ACTIONS
+        if project is not None and outcome is not None and outcome.result_usable:
+            available |= {'studio', 'glossary_proofread'}
+        if getattr(self, '_last_failed_items', None) and getattr(self, '_last_run_options', None):
+            available.add('retry')
+        if outcome is not None and not outcome.result_usable:
+            available.add('recover')
+        open_run_diagnosis(self, report, item_error=str(getattr(item, 'error', '') or ''),
+                           task_name=Path(item.media_path).name, available_actions=available)
 
     def _refresh_completion_summaries(self):
         from .completion_summary import completion_summary
@@ -5620,18 +5991,13 @@ class MainWindow(QWidget):
         os.startfile(target)
 
     def _open_ai_provider_config(self) -> None:
-        """跳到设置页并展开 AI 模型与密钥面板（重试失败项引导）。"""
+        """跳到首页并打开 AI 设置（重试失败项引导）。The form lives in its dialog
+        since 2026-10-08; expanding the off-page panel showed nothing (2026-10-22)."""
         try:
             self._switch_page(self.settings_scroll)
         except Exception:
             return
-        panel = getattr(self, "ai_panel", None)
-        if panel is not None:
-            try:
-                panel.set_expanded(True)
-                self._schedule_ai_panel_visibility(True)
-            except Exception:
-                pass
+        self._open_ai_settings_dialog()
 
     def _retry_completion_stage(self, stage=None):
         if getattr(self, '_run_in_progress', False) or getattr(self, '_completion_retry_in_progress', False):
@@ -6070,6 +6436,9 @@ class MainWindow(QWidget):
         # used to shadow this call and left the box on its build-time theme.
         self._style_active_tasks_label()
         self._restyle_progress_page()
+        frost = self.__dict__.get("content_frost")
+        if frost is not None:
+            frost.refresh()  # the frosted picture and its tint follow the theme
 
     def _style_media_summary(self) -> None:
         theme = _active_theme_definition()
@@ -6387,6 +6756,8 @@ class MainWindow(QWidget):
         self._set_backend_combo(self.primary_asr_backend, profile.primary_asr)
         self._set_backend_combo(self.firered_asr_backend, profile.timestamp_model)
         self._set_backend_combo(self.qwen_asr_backend, profile.evidence_model)
+        if str(profile.recognition_plan) == "custom":
+            self._show_plan_choice("custom")  # not a menu choice; shown while it is the current one
         plan_index = self.recognition_mode_combo.findData(profile.recognition_plan)
         if plan_index >= 0:
             self.recognition_mode_combo.setCurrentIndex(plan_index)
@@ -6655,25 +7026,77 @@ class MainWindow(QWidget):
         if key != "custom" and all(hasattr(self, name) for name in ("primary_asr_backend", "firered_asr_backend", "qwen_asr_backend")):
             self._applying_recognition_plan = True
             try:
-                self._set_backend_combo(self.primary_asr_backend, plan.primary)
-                self._set_backend_combo(self.firered_asr_backend, plan.timeline)
-                self._set_backend_combo(self.qwen_asr_backend, plan.review)
                 if plan.language and self.__dict__.get("recognition_language") is not None:
-                    # 日语/英语推荐 also set the spoken language (2026-10-14).
-                    language_index = self.recognition_language.findData(plan.language)
+                    # 日语 / 外语 also set the spoken language (2026-10-14); 外语 keeps a
+                    # foreign language already chosen and starts at English otherwise.
+                    current = str(self.recognition_language.currentData() or "auto")
+                    wanted = plan.language if plan.language != FOREIGN else (current if plan.for_language(current) else "en")
+                    language_index = self.recognition_language.findData(wanted)
                     if language_index >= 0:
                         self.recognition_language.setCurrentIndex(language_index)
+                # API 转写 times Chinese with FireRedASR2 and other languages (or a
+                # computer without an NVIDIA GPU) with Qwen3 对齐 (2026-10-23).
+                spoken = (self._subtitle_language_options()["recognition_language"]
+                          if self.__dict__.get("recognition_language") is not None else "")
+                host = self.__dict__.get("_home_host_profile")
+                if host is None:
+                    from ..recognition.recognition_choices import host_profile
+                    host = self._home_host_profile = host_profile()
+                primary, timeline, review = plan.backends(spoken, host)
+                self._set_backend_combo(self.primary_asr_backend, primary)
+                self._set_backend_combo(self.firered_asr_backend, timeline)
+                self._set_backend_combo(self.qwen_asr_backend, review)
                 if plan.language == "ja":
                     try:
                         from ..recognition.ctc_alignment import set_enabled
                         set_enabled(True, self.legacy.RUNTIME_SETTINGS)
                     except (OSError, RuntimeError, ValueError):
                         pass  # the plan's backends still apply; the workshop card shows the switch
+                if plan.api_provider and self.__dict__.get("qwen_asr_api_provider") is not None:
+                    provider_index = self.qwen_asr_api_provider.findData(plan.api_provider)
+                    if provider_index >= 0:
+                        self.qwen_asr_api_provider.setCurrentIndex(provider_index)
+                    self._apply_asr_preset_fields(plan.api_provider)
             finally:
                 self._applying_recognition_plan = False
             self._mark_asr_configuration_dirty()
             self._refresh_asr_summary()
+            if plan.api_provider:
+                self._remind_plan_api_key(plan)
         self._refresh_recognition_recommendation()
+
+    def _show_plan_choice(self, key: str) -> None:
+        """Select ``key`` in the plan menu without applying it.
+
+        2026-10-23 (user): the menu lists 本地识别 / API 转写 / 日语 / 外语 only;
+        自定义 is added while the models match none of them and removed after.
+        """
+        combo = self.recognition_mode_combo
+        combo.blockSignals(True)
+        try:
+            custom = combo.findData("custom")
+            if key == "custom" and custom < 0:
+                combo.addItem(recognition_plan("custom").label, "custom")
+            elif key != "custom" and custom >= 0:
+                combo.removeItem(custom)
+            index = combo.findData(key)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        finally:
+            combo.blockSignals(False)
+
+    def _remind_plan_api_key(self, plan) -> None:
+        """A cloud plan without its saved key opens the key guide (2026-10-22, user:
+        「使用后要提醒配置」). Once per plan and session; a saved key stays silent."""
+        from ..providers.llm_config import read_asr_api_key
+        url = self.qwen_asr_api_url.text().strip() if self.__dict__.get("qwen_asr_api_url") is not None else ""
+        if read_asr_api_key(plan.api_provider, url)[0]:
+            return
+        reminded = self.__dict__.setdefault("_plan_key_reminded", set())
+        if plan.key in reminded:
+            return
+        reminded.add(plan.key)
+        QTimer.singleShot(0, lambda: self._open_api_setup_guide(plan.api_provider))
 
     def _refresh_recognition_recommendation(self) -> None:
         if not hasattr(self, "recognition_mode_combo"):
@@ -6683,14 +7106,12 @@ class MainWindow(QWidget):
         review = str(self.qwen_asr_backend.currentData() or "") if hasattr(self, "qwen_asr_backend") else ""
         language = (self._subtitle_language_options()["recognition_language"]
                     if self.__dict__.get("recognition_language") is not None else "")
-        key = matching_plan(primary, timeline, review, language)
+        provider = (str(self.qwen_asr_api_provider.currentData() or "")
+                    if self.__dict__.get("qwen_asr_api_provider") is not None else None)
+        key = matching_plan(primary, timeline, review, language, provider=provider)
         blocker = bool(getattr(self, "_applying_recognition_plan", False))
         if not blocker:
-            self.recognition_mode_combo.blockSignals(True)
-            index = self.recognition_mode_combo.findData(key)
-            if index >= 0:
-                self.recognition_mode_combo.setCurrentIndex(index)
-            self.recognition_mode_combo.blockSignals(False)
+            self._show_plan_choice(key)
         profile = lightweight_media_profile(self.media_paths)
         recommended = recognition_plan(str(profile["recommended_plan"]))
         current = recognition_plan(key)
@@ -6783,7 +7204,7 @@ class MainWindow(QWidget):
     def _restore_glossary_switch(self):
         settings = self.legacy.RUNTIME_SETTINGS.get("glossary", {})
         with QSignalBlocker(self.terms):
-            self.terms.setChecked(bool(settings.get("enable_domain_terms", False)))
+            self.terms.setChecked(bool(settings.get("enable_domain_terms", False)) and _ai_unlocked(self))
         self._refresh_glossary_chips()
 
     def _task_glossary_selection(self):
@@ -6792,6 +7213,8 @@ class MainWindow(QWidget):
             ids = tuple(context["enabled_glossary_ids"])
             checked = bool(context.get("enable_domain_terms", bool(ids)))
             return ids if checked else (), checked
+        if not _ai_unlocked(self):   # 2026-10-22: 术语库校对 needs a connected AI
+            return (), False
         ids = tuple(self._enabled_glossary_ids())
         checked = self.terms.isChecked()
         return ids if checked else (), checked
@@ -6935,7 +7358,8 @@ class MainWindow(QWidget):
         output_row = QHBoxLayout(self.subtitle_output_fields)
         output_row.setContentsMargins(0, 0, 0, 0)
         output_row.setSpacing(10)
-        column("字幕显示", self.subtitle_output, 1, output_row)
+        output_box = column("字幕显示", self.subtitle_output, 1, output_row)
+        self.subtitle_output_caption = output_box.findChild(QLabel, "homeLanguageCaption")
         self.translation_field = column("翻译成", self.translation_script, 1, output_row)
         row.addWidget(self.subtitle_output_fields, 2)
         self._subtitle_language_row = row
@@ -6982,7 +7406,7 @@ class MainWindow(QWidget):
             return {"recognition_language": spoken,
                     "chinese_script": ("zh-Hant" if spoken == "zh" and saved.get("chinese_script") == "zh-Hant"
                                        else "zh-Hans"),
-                    "subtitle_output": saved.get("output", "original"),
+                    "subtitle_output": saved.get("output", "original") if _ai_unlocked(self) else "original",
                     "translation_script": saved.get("translation_script", "zh-Hans")}
         choice = str(self.recognition_language.currentData() or "auto")
         return {"recognition_language": "zh" if choice == "zh-Hant" else choice,
@@ -7082,8 +7506,12 @@ class MainWindow(QWidget):
                 no_key = text_ai_key_missing(self.legacy.RUNTIME_SETTINGS, "polish")
             except Exception:  # noqa: BLE001
                 no_key = False
-            hints.append(tr("还没填 API Key：先在上面「AI 智能断句」点「设置 AI」填好，才能翻译。") if no_key
+            hints.append(tr("还没填 API Key：先在上面「AI 智能断句」点「连接 AI」填好，才能翻译。") if no_key
                          else tr("翻译由 AI 完成，只发送字幕文字（可能产生少量费用）；说的话和译文是同一种语言时不翻译。"))
+        saved_output = str(((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {}).get("output")
+                           or "original")
+        if not _ai_unlocked(self) and saved_output != "original":
+            hints.append(tr("你选的翻译要先连接 AI（填 API Key 并测试连接）才会生效，现在只显示原文。"))
         punctuation = str(self.subtitle_punctuation.currentData() or "original") \
             if self.__dict__.get("subtitle_punctuation") is not None else "original"
         if punctuation != "original":
@@ -7097,7 +7525,9 @@ class MainWindow(QWidget):
                 section = self.legacy.RUNTIME_SETTINGS.setdefault("subtitle_language", {})
                 section.update(recognition_language=options["recognition_language"],
                                chinese_script=options["chinese_script"],
-                               output=options["subtitle_output"],
+                               # locked (no connected AI): "只显示原文" is shown, the choice is kept
+                               output=(options["subtitle_output"] if _ai_unlocked(self)
+                                       else section.get("output", "original")),
                                translation_script=options["translation_script"])
                 self.legacy.RUNTIME_SETTINGS.setdefault("switches", {})["subtitle_punctuation"] = punctuation
                 save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
@@ -7390,10 +7820,14 @@ class MainWindow(QWidget):
             widget.setEnabled(api_mode)
         self._refresh_asr_summary()
 
-    def _refresh_asr_summary(self):
-        if not hasattr(self, "asr_panel"):
-            return
-        self._schedule_next_step_probe()
+    def recognition_role_state(self, backends=None, provider=None) -> dict:
+        """Per role what the home card shows: effective backend, name, readiness and model.
+
+        2026-10-23: one rule for the home cards and the Studio 识别字幕 sheet.
+        The sheet passes its own ``backends`` (primary / timeline / review) and,
+        for a plan with its own cloud service (MOSS Pro + Qwen 对齐), that
+        ``provider``; without them the home selectors are read.
+        """
         language = getattr(self, "_ui_language", current_language())
         # 短标签：角色卡 / 摘要共用的紧凑叫法。
         primary_short = {
@@ -7425,37 +7859,44 @@ class MainWindow(QWidget):
             "paraformer": "Paraformer",
             "off": translate("已关闭", language),
         }
-        # 2026-10-21: a saved choice whose files are still to come (云端识别's
-        # timeline model downloads after the tutorial) is shown as itself with
-        # 需要下载, not as the 已关闭 / 未选择 its selector falls back to.
-        pending = dict(getattr(self, "_missing_saved_asr_backends", ()) or ())
+        models_cfg = dict(self.legacy.RUNTIME_SETTINGS.get("models", {}) or {})
+        typed_key = self.qwen_asr_api_key.text()
+        if provider and provider != str(models_cfg.get("qwen_asr_api_provider") or ""):
+            preset = ASR_API_PRESETS.get(str(provider)) or {}
+            models_cfg.update(qwen_asr_api_provider=str(provider), qwen_asr_api_model=str(preset.get("model") or ""),
+                              qwen_asr_api_url=str(preset.get("url") or ""),
+                              qwen_asr_api_protocol=str(preset.get("protocol") or ""))
+            typed_key = ""  # the typed key belongs to the provider shown on home
+        if backends is None:
+            # 2026-10-21: a saved choice whose files are still to come (云端识别's
+            # timeline model downloads after the tutorial) is shown as itself with
+            # 需要下载, not as the 已关闭 / 未选择 its selector falls back to.
+            pending = dict(getattr(self, "_missing_saved_asr_backends", ()) or ())
 
-        def shown(combo, key, fallback):
-            # Only while the selector still sits on the fallback it was given; a choice made since wins.
-            current = str(combo.currentData())
-            return str(pending[key]) if key in pending and current == fallback else current
+            def shown(combo, key, fallback):
+                # Only while the selector still sits on the fallback it was given; a choice made since wins.
+                current = str(combo.currentData())
+                return str(pending[key]) if key in pending and current == fallback else current
 
-        primary_backend = shown(self.primary_asr_backend, "primary_asr_backend", "none")
+            primary_backend = shown(self.primary_asr_backend, "primary_asr_backend", "none")
+            qwen_backend = shown(self.qwen_asr_backend, "qwen_asr_backend", "off")
+            firered_backend = shown(self.firered_asr_backend, "firered_asr_backend", "off")
+        else:
+            primary_backend = str(backends.get("primary") or "none")
+            firered_backend = str(backends.get("timeline") or "off")
+            qwen_backend = str(backends.get("review") or "off")
         if sys.platform == 'darwin':
             primary_short['sensevoice'] = 'SenseVoice · CPU'
             review_short['sensevoice'] = 'SenseVoice · CPU'
-        qwen_backend = shown(self.qwen_asr_backend, "qwen_asr_backend", "off")
-        firered_backend = shown(self.firered_asr_backend, "firered_asr_backend", "off")
         # 主页角色卡在 API 生效时显示具体服务商 · 模型（三十三轮：要能
         # 看出当前用的是哪个 API）。
         if primary_backend == "api":
             from ..local_models.model_workshop import _api_combo_label
 
-            api_label, _ready = _api_combo_label(self.legacy.RUNTIME_SETTINGS.get("models", {}))
+            api_label, _ready = _api_combo_label(models_cfg)
             primary_short["api"] = api_label
-        from ..providers.llm_config import read_asr_api_key
-
-        _models_cfg = self.legacy.RUNTIME_SETTINGS.get("models", {})
         from ..recognition.recognition_choices import cloud_asr_readiness
-        key_ready, self._cloud_asr_block_reason = cloud_asr_readiness(
-            _models_cfg, typed_key=self.qwen_asr_api_key.text())
-        if self.__dict__.get("subtitle_language_hint") is not None:
-            self._subtitle_language_changed(save=False)
+        key_ready, block_reason = cloud_asr_readiness(models_cfg, typed_key=typed_key)
         # 2026-10-14: the timeline card names what really runs for the spoken
         # language. Japanese and English never use the Chinese timeline model:
         # words are timed by Qwen3-ForcedAligner, and Japanese line starts are
@@ -7487,15 +7928,6 @@ class MainWindow(QWidget):
                                            spoken, "字幕语言是英语，{value0} 只用于中文"), value0=timeline_name)
             timeline_name = translate(language_stage["name"], language)
         timeline_short = dict(timeline_short, **{timeline_backend: timeline_name})
-        self.asr_panel.set_summary(
-            " / ".join(
-                (
-                    primary_short.get(primary_backend, primary_backend),
-                    review_short.get(qwen_backend, qwen_backend),
-                    timeline_name,
-                )
-            )
-        )
         installed = installed_model_keys(APP_ROOT)
         required = {
             "primary": {
@@ -7551,44 +7983,68 @@ class MainWindow(QWidget):
             ready = bool(needs and needs <= installed)
             return ("本地", "已就绪" if ready else "需要下载", "good" if ready else "warn")
 
+        from ..local_models.model_workshop import model_for_backend, model_role_line
+        roles = {}
+        for role, backend, labels in (
+            ("primary", primary_backend, primary_short),
+            ("timeline", timeline_backend, timeline_short),
+            ("review", qwen_backend, review_short),
+        ):
+            kind, status, tone = _status(role, backend)
+            if backend == "api" and status == "未配置":
+                recovery = "配置 API"
+            elif status in _HOST_LIMIT_STATUSES:
+                recovery = _HOST_LIMIT_RECOVERY
+            elif status == "需要下载":
+                recovery = "安装模型"
+            else:
+                recovery = ""
+            # 2026-10-18: logo, the line under the name and the language
+            # badges come from the model this role really runs.
+            model = model_for_backend(
+                role, backend, str(models_cfg.get("qwen_asr_api_provider", "qwen31_filetrans")))
+            line = model_role_line(model, role) if model is not None else None
+            if line is not None and role == "timeline" and language_stage and language_stage["ctc"]:
+                line = tr("{line}，日语句首再校正", line=line)
+            short = labels.get(backend, backend)
+            if backend == "api":
+                # The sheet's thin rows name the service only; the model id stays in the tooltip.
+                preset = ASR_API_PRESETS.get(str(models_cfg.get("qwen_asr_api_provider") or "qwen31_filetrans")) or {}
+                short = str(preset.get("short") or short)
+            roles[role] = {
+                "backend": backend, "name": translate(labels.get(backend, backend), language),
+                "short": translate(short, language),
+                "kind": translate(kind, language), "status": translate(status, language),
+                "status_key": status, "tone": tone, "recovery": translate(recovery, language),
+                "model": model, "line": line, "note": timeline_note if role == "timeline" else None,
+            }
+        summary = " / ".join((
+            primary_short.get(primary_backend, primary_backend),
+            review_short.get(qwen_backend, qwen_backend),
+            timeline_name,
+        ))
+        return {"roles": roles, "summary": summary, "block_reason": block_reason}
+
+    def _refresh_asr_summary(self):
+        if not hasattr(self, "asr_panel"):
+            return
+        self._schedule_next_step_probe()
+        language = getattr(self, "_ui_language", current_language())
+        state = self.recognition_role_state()
+        self._cloud_asr_block_reason = state["block_reason"]
+        if self.__dict__.get("subtitle_language_hint") is not None:
+            self._subtitle_language_changed(save=False)
+        self.asr_panel.set_summary(state["summary"])
+
         # 角色卡：model 名是视觉主体；卡点击 → 工坊对应角色。
         if hasattr(self, "recognition_plan"):
-            role_specs = (
-                ("primary", primary_backend, primary_short),
-                ("timeline", timeline_backend, timeline_short),
-                ("review", qwen_backend, review_short),
-            )
-            for role, backend, labels in role_specs:
+            for role, facts in state["roles"].items():
                 card = self.recognition_plan.cards[role]
-                kind, status, tone = _status(role, backend)
-                model_name = labels.get(backend, backend)
-                if backend == "api" and status == "未配置":
-                    recovery = "配置 API"
-                elif status in _HOST_LIMIT_STATUSES:
-                    recovery = _HOST_LIMIT_RECOVERY
-                elif status == "需要下载":
-                    recovery = "安装模型"
-                else:
-                    recovery = ""
-                card.set_state(
-                    translate(model_name, language),
-                    translate(kind, language),
-                    translate(status, language),
-                    tone,
-                    translate(recovery, language),
-                )
-                # 2026-10-18: logo, the line under the name and the language
-                # badges come from the model this role really runs.
-                from ..local_models.model_workshop import model_for_backend, model_role_line
-                card_model = model_for_backend(
-                    role, backend, str(_models_cfg.get("qwen_asr_api_provider", "qwen31_filetrans")))
-                card_line = model_role_line(card_model, role) if card_model is not None else None
-                if card_line is not None and role == "timeline" and language_stage and language_stage["ctc"]:
-                    card_line = tr("{line}，日语句首再校正", line=card_line)
-                card.set_model(card_model, card_line)
+                card.set_state(facts["name"], facts["kind"], facts["status"], facts["tone"], facts["recovery"])
+                card.set_model(facts["model"], facts["line"])
                 if role == "timeline":
-                    card.set_note(timeline_note)
-                if sys.platform == 'darwin' and backend == 'sensevoice':
+                    card.set_note(facts["note"])
+                if sys.platform == 'darwin' and facts["backend"] == 'sensevoice':
                     from ..system.platform_macos import macos_copy
                     card.setToolTip(macos_copy(
                         '当前采用 CPU 路线；MPS 设备可用性与模型算子支持分开验证，模型 MPS 适配尚未验证。',
@@ -7599,12 +8055,8 @@ class MainWindow(QWidget):
         if hasattr(self, "action_status"):
             problems = []
             plan_items = []
-            for role, backend in (
-                ("primary", primary_backend),
-                ("timeline", timeline_backend),
-                ("review", qwen_backend),
-            ):
-                _kind, status, _tone = _status(role, backend)
+            for role in ("primary", "timeline", "review"):
+                status = state["roles"][role]["status_key"]
                 if status in {"需要下载", "未配置"} or status in _HOST_LIMIT_STATUSES:
                     problems.append(status)
                     plan_items.append((role, status))
@@ -8244,7 +8696,8 @@ class MainWindow(QWidget):
                 widget.deleteLater()
         enabled = self._enabled_glossary_ids()
         effective = bool(getattr(getattr(self, "terms", None), "isChecked", lambda: False)())
-        for identity in enabled:
+        unlocked = _ai_unlocked(self)
+        for identity in enabled if unlocked else ():
             chip = AnimatedButton("")
             chip.setObjectName("glossaryChip")
             display = self._glossary_display_name(identity)
@@ -8280,7 +8733,11 @@ class MainWindow(QWidget):
             bind_text(self.add_glossary_button, translate('管理术语库', current_language()))
         state = getattr(self, "term_state_label", None)
         if state is not None:
-            if enabled and effective:
+            if not unlocked:
+                gate = self.__dict__.get("_ai_gate_state", "no_key")
+                bind_text(state, self.AI_LOCK_LINES.get(gate, self.AI_LOCK_LINES["no_key"]))
+                tone = "warn"
+            elif enabled and effective:
                 count = self._home_term_summary['effective_terms']
                 reason = ('；存在冲突，请检查术语库' if self._home_term_summary['conflicts'] else
                           '；所选词库只有参考项、无已确认词，或词库已不存在' if count == 0 else '')
@@ -8317,7 +8774,8 @@ class MainWindow(QWidget):
         try:
             self.legacy.RUNTIME_SETTINGS.setdefault("glossary", {})
             self.legacy.RUNTIME_SETTINGS["glossary"]["enabled_glossary_ids"] = self._enabled_glossary_ids()
-            self.legacy.RUNTIME_SETTINGS["glossary"]["enable_domain_terms"] = bool(self.terms.isChecked())
+            if _ai_unlocked(self):   # locked (no connected AI): the switch only looks off
+                self.legacy.RUNTIME_SETTINGS["glossary"]["enable_domain_terms"] = bool(self.terms.isChecked())
             save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
         except Exception as exc:
             if hasattr(self, "term_hint"):
@@ -8499,6 +8957,9 @@ class MainWindow(QWidget):
         refresh_card = getattr(self, "_refresh_home_process_facts", None)
         if callable(refresh_card):
             refresh_card()
+        refresh_dialog = getattr(self, "_refresh_ai_dialog_state", None)
+        if callable(refresh_dialog):
+            refresh_dialog()
 
     def _mark_ai_configuration_dirty(self, *_args):
         if getattr(self, "_applying_profile", False):
@@ -8508,6 +8969,7 @@ class MainWindow(QWidget):
             return
         self.ai_save_status.setObjectName("statusWarn")
         bind_text(self.ai_save_status, '有未保存的 AI 配置修改')
+        self.ai_save_status.show()
         self.ai_save_status.style().unpolish(self.ai_save_status)
         self.ai_save_status.style().polish(self.ai_save_status)
 
@@ -8608,9 +9070,17 @@ class MainWindow(QWidget):
         enable_ai_polish = self.ai_polish.isChecked()
         self.unified_glm.setEnabled(use_ai_grouping and enable_ai_polish)
         unified = bool(checked and use_ai_grouping and enable_ai_polish)
-        self.polish_editor.setVisible(enable_ai_polish and not unified)
-        self.group_editor.setVisible(use_ai_grouping)
-        self.share_key.setVisible(use_ai_grouping and not unified)
+        separate = self.__dict__.get("separate_group_service")
+        if separate is not None:
+            with QSignalBlocker(separate):
+                separate.setChecked(not self.unified_glm.isChecked())
+            separate.setEnabled(use_ai_grouping and enable_ai_polish)
+        self._place_ai_editors(unified, enable_ai_polish, use_ai_grouping)
+        own_key = use_ai_grouping and enable_ai_polish and not unified
+        self.share_key.setVisible(own_key)
+        note = self.__dict__.get("separate_group_note")
+        if note is not None:
+            note.setVisible(not own_key)   # the key switch takes the note's place on that row
         self.group_editor.title_label.setText(
             "统一校对与断句模型" if unified else "全文断句模型"
         )
@@ -8620,6 +9090,157 @@ class MainWindow(QWidget):
             else "仅用于全文断句。"
         )
         self._refresh_ai_summary()
+
+    def _place_ai_editors(self, unified: bool, polish_on: bool, group_on: bool) -> None:
+        """One form on top (2026-10-22, design B): the shared service, or 校对
+        and translation when line breaking has its own service, which then
+        sits in 高级设置. The top form's model, address and protocol live in
+        高级设置 too. With both stages off the 校对 form stays: translation
+        uses it."""
+        if "ai_main_slot" not in self.__dict__:
+            return
+        main = self.group_editor if unified or (group_on and not polish_on) else self.polish_editor
+        second = self.group_editor if main is self.polish_editor and polish_on and group_on else None
+        target, other = ((self.ai_second_slot, self.ai_main_slot) if second is self.group_editor
+                         else (self.ai_main_slot, self.ai_second_slot))
+        if target.indexOf(self.group_editor) < 0:
+            other.removeWidget(self.group_editor)
+            target.addWidget(self.group_editor)
+        for editor in (self.polish_editor, self.group_editor):
+            if editor is not main:
+                editor.restore_advanced()
+                editor.restore_guide()
+                editor.set_emphasis(test=False, guide=False)
+                editor.set_bare(False)
+                editor.key_help_button.hide()
+        main.host_advanced(self.ai_advanced_editor_slot)
+        main.host_guide(self.ai_guide.guide_slot)
+        main.set_bare(True)
+        main.key_help_button.show()
+        self.polish_editor.setVisible(main is self.polish_editor)
+        self.group_editor.setVisible(main is self.group_editor or second is self.group_editor)
+        # No titles: the top form is the dialog's subject, the second one sits
+        # under 「断句另用一个服务」 (2026-10-22: no row for a few words).
+        main.title_label.hide()
+        if second is not None:
+            second.title_label.hide()
+        self._ai_main_editor = main
+        self._refresh_ai_advanced_summary()
+        fit = self.__dict__.get("_ai_dialog_fit")
+        if fit is not None:
+            QTimer.singleShot(0, fit)
+
+    def _show_ai_advanced(self, shown: bool) -> None:
+        self.ai_advanced_toggle.setArrowType(Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow)
+        self.ai_advanced_box.setVisible(bool(shown))
+        self.ai_advanced_summary.setVisible(not shown)
+        fit = self.__dict__.get("_ai_dialog_fit")
+        if fit is not None:
+            QTimer.singleShot(0, fit)
+
+    def _refresh_ai_advanced_summary(self, *_args) -> None:
+        """What 高级设置 holds, on its closed line: model, address, the line-breaking service."""
+        label = self.__dict__.get("ai_advanced_summary")
+        main = self.__dict__.get("_ai_main_editor")
+        if label is None or main is None:
+            return
+        values = main.values()
+        duties = [str(tr(name)) for name, switch in (("断句", self.ai_grouping), ("校对", self.ai_polish),
+                                                     ("数字", self.prefer_arabic_numbers)) if switch.isChecked()]
+        parts = [str(tr("AI 负责：{duties}", duties=" · ".join(duties))) if duties else str(tr("AI 负责的事都关着"))]
+        parts.append(str(tr("模型 {model}", model=values.get("model") or tr("默认模型"))))
+        if self.separate_group_service.isChecked() and self.separate_group_service.isEnabled():
+            parts.append(str(tr("断句另用一个服务")))
+        label.setText("  ｜  ".join(parts))
+
+    def _refresh_ai_dialog_state(self, *_args) -> None:
+        """Where the AI settings stand (2026-10-22, design D2 refined): the tag,
+        the guide column, and the one pink button of the moment — 申请教程
+        without a key, 测试连接 once one is in, 保存设置 after a passed test."""
+        from ..providers import ai_connection_record as record
+        from .ai_settings_widgets import FAILED, NO_KEY, OFF, READY, UNTESTED
+        from .home_ai_widgets import STATE_CHIP
+        editor = self.__dict__.get("_ai_main_editor") or self._primary_ai_editor()
+        draft = bool(getattr(self, "_ai_has_draft", False))
+        result = getattr(editor, "last_connection_ok", None)
+        try:
+            gate = record.feature_gate(self.legacy.RUNTIME_SETTINGS)
+        except Exception:  # noqa: BLE001 - unknown: say nothing alarming
+            gate = record.READY
+        if not (self.ai_polish.isChecked() or self.ai_grouping.isChecked()):
+            state = OFF
+        elif result is True:
+            state = READY
+        elif result is False:
+            state = FAILED
+        elif not editor.has_key():
+            state = NO_KEY
+        elif not draft and gate in (READY, FAILED):
+            state = gate
+        else:
+            state = UNTESTED
+        service = editor.service.currentText().split("（")[0].strip()
+        guide = self.__dict__.get("ai_guide")
+        if guide is not None:
+            detail = ""
+            if state == READY:
+                # When it passed; the model is on the 更多选项 line below.
+                checked = record.checked_at(self.legacy.RUNTIME_SETTINGS, "polish") if not draft else ""
+                if result is True:
+                    detail = str(tr("刚刚测试通过"))
+                elif len(checked) >= 16 and checked[:10] == time.strftime("%Y-%m-%d"):
+                    detail = str(tr("今天 {time} 测试通过", time=checked[11:16]))
+                elif len(checked) >= 16:
+                    detail = str(tr("{time} 测试通过", time=checked[5:16].replace("T", " ")))
+            guide.set_state(state, service=service, detail=detail, fresh=result is True,
+                            features={"group": self.ai_grouping.isChecked(), "polish": self.ai_polish.isChecked()})
+        editor.set_emphasis(test=state in (UNTESTED, FAILED), guide=state == NO_KEY)
+        editor.key_help_button.setVisible(state != READY)   # connected: no need to explain the key
+        if state == NO_KEY:
+            # A space only between Chinese and a Latin name (打开 DeepSeek 申请教程, 打开阿里云百炼申请教程);
+            # the other languages' sentences carry their own spaces.
+            from ..i18n import current_language
+            spaced = service
+            if current_language().startswith("zh"):
+                spaced = (" " if service[:1].isascii() else "") + service + (" " if service[-1:].isascii() else "")
+            bind_text(editor.guide_button, '打开{service}申请教程', service=spaced)
+        else:
+            bind_text(editor.guide_button, '再看一次申请教程')
+        editor.guide_button.setVisible(state != READY)
+        bind_text(editor.test_button, '重新测试' if state == READY else '测试连接')
+        if state == READY and result is None and editor.status.objectName() != "statusWarn":
+            # Connected from an earlier test: say so beside the button (the guide
+            # column names the model and when it passed).
+            editor.status.setObjectName("statusGood")
+            bind_text(editor.status, '连接正常')
+            editor.status.style().unpolish(editor.status)
+            editor.status.style().polish(editor.status)
+        editor.test_button.setEnabled(editor.has_key() or state == READY)
+        save = self.__dict__.get("ai_dialog_save_button")
+        if save is not None:
+            from ..design.presentation import button_role
+            role = "primary" if state == READY else "secondary"
+            if save.property("buttonRole") != role:
+                save.setObjectName("primary" if state == READY else "aiDialogSave")
+                button_role(save, role)
+                save.style().unpolish(save)
+                save.style().polish(save)
+        fit = self.__dict__.get("_ai_dialog_fit")
+        if fit is not None:   # texts change with the state; never leave a scroll bar behind
+            QTimer.singleShot(0, fit)
+        label = self.__dict__.get("ai_dialog_state_label")
+        if label is None:
+            return
+        if state == READY:
+            text, tone = ("连接正常 · 保存后生效" if draft else "已连接"), "ready"
+        elif state == FAILED:
+            text, tone = "测试没通过", "warn"
+        else:
+            text, tone = STATE_CHIP.get(state, "未连接"), "lock"
+        bind_text(label, text)
+        label.setProperty("state", tone)
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def _apply_ai_grouping_mode(self, enabled: bool):
         enabled = bool(enabled)
@@ -8951,7 +9572,8 @@ class MainWindow(QWidget):
             except Exception:
                 pass
             from ..glossary.terminology import snapshot_glossaries
-            language_options = self._subtitle_language_options()
+            language_options = studio_translation_choice(
+                self._subtitle_language_options(), studio_context, _ai_unlocked(self))
             options = RunOptions(
                 **language_options,
                 settings_snapshot_json=json.dumps(self._run_settings_snapshot(), ensure_ascii=False),
@@ -8960,7 +9582,8 @@ class MainWindow(QWidget):
                     ensure_ascii=False),
                 content_name=game_name,
                 enable_domain_terms=terms_enabled,
-                enable_term_search=bool(getattr(self, 'term_search', None) and self.term_search.isChecked()),
+                enable_term_search=bool(getattr(self, 'term_search', None) and self.term_search.isChecked()
+                                        and _ai_unlocked(self)),
                 enabled_glossary_ids=enabled_glossary_ids,
                 output_review_track=self.review_track.isChecked(),
                 output_jianying_txt=self.jianying_txt.isChecked(),
@@ -10206,14 +10829,14 @@ class MainWindow(QWidget):
             if not hasattr(self, 'result_task_selector'):
                 self.open_priority_review_button.setVisible(bool(self._last_studio_project and review_total))
         if not studio_context and not getattr(self, "_tutorial_demo_result", False):
-            self._show_task_notification(*_completion_notification_spec(result, outcomes))
+            self._show_task_notification(*self._completion_notification_with_cause(result, outcomes))
         elif studio_context and (failure_count or cancel_count):
             self.studio_page.fail_recognition_runtime(
                 "任务已取消" if cancel_count and not failure_count else "识别失败，请检查模型与运行日志"
             )
             # 四十二轮：识别转后台后用户可能已离开 Studio 页——失败/取消也要
             # 任务通知，否则只剩藏在字幕列表里的芯片，用户无感知。
-            self._show_task_notification(*_completion_notification_spec(result, outcomes))
+            self._show_task_notification(*self._completion_notification_with_cause(result, outcomes))
         if studio_context and result.successes:
             delivered = next((item for item, loaded in self._completion_tasks if loaded is not None
                 and os.path.normcase(os.path.abspath(item.media_path)) == os.path.normcase(os.path.abspath(studio_context.get('media_path','')))), None)
@@ -10469,6 +11092,8 @@ def run_desktop_app(
     app.setApplicationName("2ByteASR")
     from ..diagnostics.editor_diagnostics import install_gui
     install_gui(app)
+    from ..playback.playback_gc_budget import install_gui_thread_collector
+    install_gui_thread_collector(app)
     app.setApplicationDisplayName("2ByteASR")
     app.setWindowIcon(_app_icon())
     app.setStyle("Fusion")
@@ -10634,18 +11259,33 @@ def _offer_first_run_setup(window) -> None:
     window._after_quick_setup()
 
 
-def _open_quick_setup(parent) -> bool:
-    """Big cards: cloud / local / light (Mac: cloud / Apple chip / light). ``自己选择模型…`` opens the detailed dialog."""
+def _ai_unlocked(owner) -> bool:
+    """The home page's last AI gate answer; owners that never computed one (tests, stand-ins) are unlocked."""
+    return getattr(owner, "__dict__", {}).get("_ai_gate_state", "ready") == "ready"
+
+
+def _open_quick_setup(parent, *, compare: bool = False):
+    """Big cards: cloud / local / light (Mac: cloud / Apple chip / light). ``自己选择模型…`` opens the detailed dialog.
+
+    2026-10-22 ``compare``: the tutorial's plan step. Only cloud and local, each with
+    what it is good for and what to watch out for, the saved plan chosen; downloads
+    wait for the end of the tutorial. Returns the plan key ('' when nothing changed).
+    """
     try:
         from . import onboarding
         from .quick_setup import QuickSetupDialog
-        dialog = QuickSetupDialog(parent, size_of=lambda backends: GuidedSetupDialog.estimate_size(*backends))
+        extra = dict(compare=True, current=parent._current_plan_key()) if compare else {}
+        dialog = QuickSetupDialog(parent, size_of=lambda backends: GuidedSetupDialog.estimate_size(*backends), **extra)
         if onboarding.load_state().get("tour_done"):
             dialog.tour_check.setChecked(False)   # reopened later: no tutorial unless asked for
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
-        parent._quick_setup_tour = dialog.tour_check.isChecked()
+        if not compare:
+            parent._quick_setup_tour = dialog.tour_check.isChecked()
         if not accepted or dialog.choice is None:
-            return False
+            return "" if compare else False
+        if compare:
+            _apply_plan_for_tutorial(parent, dialog)
+            return dialog.choice
         if dialog.choice == "custom":
             return _open_guided_setup(parent)
         primary, timeline, review = dialog.backends
@@ -10675,6 +11315,20 @@ def _open_quick_setup(parent) -> bool:
         traceback.print_exc()
         _startup_mark("FIRST_RUN_WIZARD_FAILED", traceback=traceback.format_exc())
         return False
+
+
+def _apply_plan_for_tutorial(parent, dialog) -> None:
+    """Save the plan picked in the tutorial; what it downloads waits for the end of the tutorial."""
+    primary, timeline, review = dialog.backends
+    if dialog.choice == "cloud":
+        preset = getattr(dialog, "api_preset", "") or "mosi_moss_pro"
+        index = parent.qwen_asr_api_provider.findData(preset)
+        if index >= 0:
+            parent.qwen_asr_api_provider.setCurrentIndex(index)
+        parent._apply_asr_preset_fields(preset)
+    keys = GuidedSetupDialog.download_keys_for(primary, timeline, review)
+    _apply_setup_choice(parent, primary, timeline, review, keys, open_workshop=False, auto_download=False)
+    parent._first_run_downloads = (primary, tuple(keys), str(dialog.source_combo.currentData() or 'AUTO'))
 
 
 def _open_guided_setup(parent) -> bool:

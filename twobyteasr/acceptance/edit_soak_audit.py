@@ -46,7 +46,7 @@ def start(window, output):
 
 
 def run(output, *, window):
-    from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer
+    from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, Qt, QTimer
     from PySide6.QtGui import QKeyEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QWidget
@@ -60,10 +60,18 @@ def run(output, *, window):
     batch = os.environ.get('TWOBYTEASR_SOAK_BATCH', '0') == '1'
     mode = os.environ.get('TWOBYTEASR_EDITOR_MODE', 'paused')
     budget = int(os.environ.get('TWOBYTEASR_EDITOR_SOAK_SECONDS', '900'))
+    # 2026-10-22 (report-eb10): optional user-like steps, all off by default.
+    seek = os.environ.get('TWOBYTEASR_SOAK_SEEK', '0') == '1'
+    pause_every = int(os.environ.get('TWOBYTEASR_SOAK_PAUSE_EVERY', '0') or 0)
+    pause_s = float(os.environ.get('TWOBYTEASR_SOAK_PAUSE_S', '4') or 4)
+    click_every = int(os.environ.get('TWOBYTEASR_SOAK_CLICK_EVERY', '0') or 0)
+    search_text = os.environ.get('TWOBYTEASR_SOAK_SEARCH', '')
     page = window.studio_page
     window.resize(1440, 900)
     window.show()
     result = dict(passed=False, size=size, iterations_requested=iterations, batch=batch, mode=mode,
+                  seek=seek, pause_every=pause_every, pause_s=pause_s, click_every=click_every,
+                  search_text=search_text,
                   frozen=bool(getattr(sys, 'frozen', False)), identity=load_build_identity().to_dict(),
                   method='posted QKeyEvent typing and Enter; GUI blocked time = longest gap of a 10 ms QTimer heartbeat',
                   batch_steps=[], rows=[])
@@ -138,6 +146,15 @@ def run(output, *, window):
         if errors:
             raise RuntimeError(errors[0])
 
+    # Exceptions raised inside Qt virtual overrides (eventFilter) go to
+    # sys.excepthook; count them by type.
+    exceptions = []
+    previous_hook = sys.excepthook
+
+    def counting_hook(kind, value, trace):
+        exceptions.append(kind.__name__)
+        previous_hook(kind, value, trace)
+    sys.excepthook = counting_hook
     try:
         path = output / f'{size}.2byteproj'
         path.write_bytes((fixture / f'{size}.2byteproj').read_bytes())
@@ -176,6 +193,9 @@ def run(output, *, window):
             cue_id = f'c{(i * 37) % size}'
             t_sel = time.perf_counter()
             page.select_cue(cue_id)
+            if seek:
+                cue = page._cue_lookup[cue_id]
+                page._seek((cue.start_ms + cue.end_ms) / 2000)
             sel_settled, sel_gap = settle(t_sel, quiet_ms=200)
             page._begin_canvas_inline_edit()
             wait(lambda: page._canvas_editor is not None and page.subtitle_edit_input.isVisible(), 10)
@@ -186,16 +206,38 @@ def run(output, *, window):
             QTest.qWait(150)
             typing_gap = blocked_since(t_type)
             expected = editor.toPlainText()
+            by_click = bool(click_every) and i % click_every == click_every - 1
             t0 = time.perf_counter()
-            QCoreApplication.postEvent(editor, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, '\r'))
+            if by_click:
+                # A real press through the window: Qt hands it to the QWindow
+                # first, then to the timeline ruler under the pointer.
+                ruler = page.timeline
+                point = ruler.mapTo(window, QPoint(ruler.width() // 2, 6))
+                QTest.mouseClick(window.windowHandle(), Qt.MouseButton.LeftButton,
+                                 Qt.KeyboardModifier.NoModifier, point)
+            else:
+                QCoreApplication.postEvent(editor, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier, '\r'))
             wait(lambda: page._canvas_editor is None, 30)
             commit_ms = (time.perf_counter() - t0) * 1000
             settled, gap = settle(t0)
             committed = page._cue_lookup[cue_id].text == expected
-            row = dict(i=i, cue=cue_id, commit_ms=round(commit_ms, 1), enter_settled_ms=None if settled is None else round(settled, 1),
+            row = dict(i=i, cue=cue_id, commit_by='click' if by_click else 'enter',
+                       commit_ms=round(commit_ms, 1), enter_settled_ms=None if settled is None else round(settled, 1),
                        enter_longest_gap_ms=round(gap, 1), select_settled_ms=None if sel_settled is None else round(sel_settled, 1),
                        select_longest_gap_ms=round(sel_gap, 1), typing_longest_gap_ms=round(typing_gap, 1),
                        committed=committed, elapsed_s=round(time.monotonic() - started, 1))
+            if pause_every and i % pause_every == pause_every - 1:
+                # The user stops to read or listen: autosave fires after 3 s idle.
+                profile = getattr(page, '_autosave_profile', None)
+                before_saves = len(profile) if profile is not None else 0
+                t_pause = time.perf_counter()
+                QTest.qWait(int(pause_s * 1000))
+                wait(lambda: not getattr(page, '_autosave_worker_running', False), 60)
+                settle(t_pause, quiet_ms=200)
+                saves = list(profile[before_saves:]) if profile is not None else []
+                row.update(pause_ms=round((time.perf_counter() - t_pause) * 1000, 1),
+                           pause_longest_gap_ms=round(blocked_since(t_pause), 1),
+                           pause_autosaves=saves)
             if i % 5 == 0 or gap > 500:
                 row.update(sizes())
             result['rows'].append(row)
@@ -207,6 +249,24 @@ def run(output, *, window):
                 del beats[:100000]
             if i % 10 == 9:
                 save()
+        if search_text:
+            # Live search runs on every keystroke (180 ms debounce).
+            from ..studio.studio_find_replace import FindReplaceDialog
+            dialog = FindReplaceDialog(page, page)
+            dialog.show()
+            QTest.qWait(500)
+            result['search'] = []
+            for char in search_text:
+                t0 = time.perf_counter()
+                dialog.find_edit.insert(char)
+                QTest.qWait(250)
+                settled, gap = settle(t0)
+                result['search'].append(dict(char=char, settled_ms=None if settled is None else round(settled, 1),
+                                             longest_gap_ms=round(gap, 1)))
+            save()
+            dialog.close()
+            dialog.deleteLater()
+            QTest.qWait(200)
         result['final'] = sizes()
         rows = result['rows']
 
@@ -231,6 +291,8 @@ def run(output, *, window):
         except Exception:
             pass
     finally:
+        sys.excepthook = previous_hook
+        result['python_exceptions'] = {name: exceptions.count(name) for name in sorted(set(exceptions))}
         heart.stop()
         try:
             page.undo_stack.setClean()

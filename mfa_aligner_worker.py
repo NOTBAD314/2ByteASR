@@ -11,16 +11,19 @@ phone tiers back into units with spans in the original text
 with the Qwen3 aligner's.
 
 Words MFA did not output (or that cannot be matched to the text) become
-units with interpolated times, which never offer a boundary. For Chinese
-every syllable has one tone-marked phone, so a word whose syllable count
-equals its character count also gets per-character times. MFA has no
-per-boundary posterior; its Viterbi phone boundaries count as measured.
+units with interpolated times, which never offer a boundary. A Chinese
+word also gets per-character times when its phones split into its
+characters without doubt (``char_starts``); otherwise it stays whole. MFA
+has no per-boundary posterior; its Viterbi phone boundaries count as
+measured. Each row keeps MFA's raw word and phone tiers and how every
+word was split (2026-10-22), so a time can be traced back to MFA.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import math
 import os
 import subprocess
 import sys
@@ -50,7 +53,14 @@ BEAM, RETRY_BEAM = 100, 400
 GROUP_SIZE = 60
 EDGE_MS = 10
 TONES = frozenset("˥˦˧˨˩")
-CODAS = frozenset({"n", "ŋ", "ɻ", "m"})
+# mandarin_mfa phones (2026-10-22): ŋ and ɻ only close a syllable; n closes
+# 安 and opens 难, and ɲ is n+j merged by MFA's own rules, so a lone n, n
+# before a glide, or ɲ between two syllables may belong to either side.
+CODA_ONLY = frozenset({"ŋ", "ɻ"})
+GLIDES = frozenset({"j", "w", "ɥ"})
+# Toneless vowels (neutral-tone syllables), syllabic consonants and noise:
+# a syllable the tone marks cannot place.
+UNTONED = frozenset({"a", "e", "i", "o", "u", "y", "ə", "aj", "ej", "aw", "ow", "z̩", "ʐ̩", "ŋ̍", "spn", "sil"})
 
 
 def _emit(event: str, **payload: object) -> None:
@@ -109,25 +119,148 @@ def match_words(text: str, words: list) -> list:
     return out
 
 
-def syllable_starts(phones: list) -> list:
-    """Start time of each syllable of one Mandarin word (one tone-marked phone per syllable)."""
-    nuclei = [i for i, phone in enumerate(phones) if any(t in phone[2] for t in TONES)]
-    if not nuclei:
-        return []
-    starts = [phones[0][0]]
+def _toneless(label: str) -> str:
+    return "".join(c for c in str(label) if c not in TONES)
+
+
+def _rule_variants(phones: tuple, rules: list, limit: int = 32) -> set:
+    """``phones`` and the variants MFA's pronunciation rules can make of it."""
+    out, todo = {phones}, [phones]
+    while todo and len(out) < limit:
+        current = todo.pop()
+        for segment, replacement in rules:
+            for i in range(len(current) - len(segment) + 1):
+                if current[i:i + len(segment)] == segment:
+                    variant = current[:i] + replacement + current[i + len(segment):]
+                    if variant and variant not in out:
+                        out.add(variant)
+                        todo.append(variant)
+    return out
+
+
+def load_pronunciations(dictionary: Path) -> dict:
+    """``{character: {tone-free phones}}`` from the single-character entries of an MFA dictionary.
+
+    Tones are left out because tone sandhi changes them inside words. The
+    variants of the model's ``rules.yaml`` (glottal stop or ɻ dropped,
+    onset and glide merged), which MFA applies while aligning, are added,
+    and a final n may be ɲ: the dictionary writes the n of 阴 before 影 that
+    way (阴影 ``i ɲ i ŋ``). ``_dictionary_splits`` accepts that ɲ only
+    before i or y; in 信仰 ``ɕ i ɲ a ŋ`` it is the n of 信 merged with the
+    j of 仰, which no cut can separate.
+    """
+    rules = []
+    rules_file = Path(dictionary).parent / "rules.yaml"
+    if rules_file.is_file():
+        try:
+            import yaml
+            data = yaml.safe_load(rules_file.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 - without rules only exact readings match
+            data = {}
+        listed = list(data.get("rules") or ())
+        for group in (data.get("dialects") or {}).values():
+            listed.extend(group or ())
+        for rule in listed:
+            if rule.get("preceding_context") or rule.get("following_context"):
+                continue  # none in the 3.4.3 models; never guess a context
+            pair = (tuple(str(rule.get("segment") or "").split()), tuple(str(rule.get("replacement") or "").split()))
+            if pair[0] and pair not in rules:
+                rules.append(pair)
+    found = {}
+    with Path(dictionary).open(encoding="utf-8") as stream:
+        for line in stream:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 2 or len(parts[0]) != 1:
+                continue
+            phones = tuple(_toneless(p) for p in parts[-1].split())
+            if phones:
+                variants = _rule_variants(phones, rules)
+                variants |= {variant[:-1] + ("ɲ",) for variant in variants if variant[-1] == "n"}
+                found.setdefault(parts[0], set()).update(variants)
+    return {char: frozenset(readings) for char, readings in found.items()}
+
+
+def _dictionary_splits(chars: str, labels: list, pronunciations: dict, limit: int = 2) -> set:
+    """Distinct ways (phone index of each later character) to read ``labels`` as the characters' readings."""
+    sequence = tuple(_toneless(label) for label in labels)
+    found = set()
+
+    def walk(k, position, starts):
+        if len(found) >= limit:
+            return
+        if k == len(chars):
+            if position == len(sequence):
+                found.add(tuple(starts))
+            return
+        for reading in pronunciations.get(chars[k], ()):
+            end = position + len(reading)
+            if sequence[position:end] == reading and (reading[-1] != "ɲ" or sequence[end:end + 1] in (("i",), ("y",))):
+                walk(k + 1, end, (starts + [position]) if k else starts)
+
+    walk(0, 0, [])
+    return found
+
+
+def _phonotactic_starts(labels: list, count: int) -> tuple:
+    """Phone index of each later syllable where Mandarin syllable structure decides it, else ``(None, reason)``."""
+    if any(label in UNTONED for label in labels):
+        return None, "untoned_syllable"
+    nuclei = [i for i, label in enumerate(labels) if any(t in label for t in TONES)]
+    if len(nuclei) != count:
+        return None, "syllable_count_mismatch"
+    starts = []
     for left, right in zip(nuclei, nuclei[1:]):
-        between = list(range(left + 1, right))
-        if not between:
-            starts.append(phones[right][0])
-        elif len(between) >= 2 and phones[between[0]][2] in CODAS:
-            starts.append(phones[between[1]][0])
+        between = [_toneless(label) for label in labels[left + 1:right]]
+        codas = 0
+        while codas < len(between) and between[codas] in CODA_ONLY:
+            codas += 1
+        rest = between[codas:]
+        if not rest:
+            starts.append(right)
+        elif not codas and (rest[0] == "ɲ" or rest[0] == "n" and (len(rest) == 1 or rest[1] in GLIDES)):
+            return None, "coda_or_onset"
+        elif not codas and rest[0] == "n":
+            starts.append(left + 2)  # n closes the left syllable; the next consonant opens the right one
         else:
-            starts.append(phones[between[0]][0])
-    return starts
+            starts.append(left + 1 + codas)
+    return starts, "phonotactic"
 
 
-def build_row(row: dict, mfa: dict | None, *, window_ms: int, quality: dict | None = None) -> dict:
-    """Fill ``row`` (id, text, language, window_*) from one utterance's MFA JSON."""
+def char_starts(chars: str, phones: list, pronunciations: dict | None = None) -> tuple:
+    """Start time of each character of one Mandarin word from its phones, or ``(None, reason)``.
+
+    The phones are read as the characters' own dictionary readings first;
+    exactly one reading must fit. Without one (a G2P word, a reading across
+    characters) the syllable structure decides where it is certain. A word
+    that could be cut in more than one place stays whole (2026-10-22: the
+    earlier rule treated m as a coda and ŋ as a possible onset, and cut
+    2.4% of the dictionary's multi-character readings one consonant off).
+    """
+    labels = [str(phone[2]) for phone in phones]
+    if len(chars) < 2 or len(labels) < len(chars):
+        return None, "too_few_phones"
+    splits = _dictionary_splits(chars, labels, pronunciations) if pronunciations else set()
+    if len(splits) > 1:
+        return None, "dictionary_ambiguous"
+    if splits:
+        indices, method = list(next(iter(splits))), "dictionary"
+    else:
+        indices, method = _phonotactic_starts(labels, len(chars))
+        if indices is None:
+            return None, method
+    return [phones[0][0]] + [phones[i][0] for i in indices], method
+
+
+def _raw_tier(entries) -> list:
+    return [[round(float(a) * 1000), round(float(b) * 1000), str(label)] for a, b, label in entries or ()]
+
+
+def build_row(row: dict, mfa: dict | None, *, window_ms: int, quality: dict | None = None,
+              pronunciations: dict | None = None) -> dict:
+    """Fill ``row`` (id, text, language, window_*) from one utterance's MFA JSON.
+
+    ``pronunciations``: ``load_pronunciations`` of the Chinese dictionary.
+    """
     from twobyteasr import forced_alignment as fa
     text = row["text"]
     content = fa.content_char_map(text)
@@ -140,6 +273,9 @@ def build_row(row: dict, mfa: dict | None, *, window_ms: int, quality: dict | No
     matched = match_words(text, words)
     row["mapping"] = "mfa_words"
     row["tokenizer_words"] = [str(w[2]) for w in words]
+    # MFA's own output in window milliseconds, before anything is mapped or merged.
+    row["mfa_raw"] = {"words": _raw_tier((tiers.get("words") or {}).get("entries")), "phones": _raw_tier(phones)}
+    row["char_split"] = []  # [first char, last char, method or reason] of every multi-character Chinese word
     offset = int(row["window_start_ms"])
 
     def basis(ms):
@@ -179,8 +315,9 @@ def build_row(row: dict, mfa: dict | None, *, window_ms: int, quality: dict | No
         chars = last - first + 1
         if word is not None and row.get("language") == "Chinese" and chars > 1 and base.kind == "word":
             inside = [p for p in phones if float(p[0]) >= float(word[0]) - 1e-6 and float(p[1]) <= float(word[1]) + 1e-6]
-            starts = syllable_starts(inside)
-            if len(starts) == chars:
+            starts, method = char_starts(_label_chars(word[2]), inside, pronunciations)
+            row["char_split"].append([first, last, method])
+            if starts is not None and len(starts) == chars:
                 for k in range(chars):
                     ca = round(float(starts[k]) * 1000)
                     cb = round(float(starts[k + 1]) * 1000) if k + 1 < chars else b
@@ -195,6 +332,11 @@ def build_row(row: dict, mfa: dict | None, *, window_ms: int, quality: dict | No
     stats["mfa_words"] = len(words)
     stats["mfa_words_unmatched"] = len(words) - len(matched)
     stats["interpolated_units"] = sum(1 for word, _f, _l in plan if word is None)
+    if chinese:
+        methods = [method for _first, _last, method in row["char_split"]]
+        stats["char_split_dictionary"] = methods.count("dictionary")
+        stats["char_split_phonotactic"] = methods.count("phonotactic")
+        stats["char_split_kept_whole"] = len(methods) - stats["char_split_dictionary"] - stats["char_split_phonotactic"]
     if quality:  # MFA's own per-line scores; kept out of ``stats``, which receipts sum
         row["mfa_quality"] = quality
     row["status"] = "aligned"
@@ -262,6 +404,19 @@ def align_language(prepared: list, language: str, model_dir: Path, work: Path, j
     return found, _quality(output / "alignment_analysis.csv")
 
 
+def process_count(jobs: list) -> int:
+    """MFA processes for these jobs (``--num_jobs``).
+
+    2026-10-22, the user's 24-minute episode (384 utterances, 953 s of windows,
+    16-core CPU): 2/4/6/8/16 processes took 74/72/80/96-101/139 s with identical
+    alignments. Each process costs ~5-6 s to start while the alignment itself
+    was under a minute, so sqrt(window seconds / 95) balances the two: 3 here,
+    1 for a single caption, 8 only past ~1.7 hours of speech.
+    """
+    seconds = sum(max(0, int(job["window_end_ms"]) - int(job["window_start_ms"])) for job in jobs) / 1000
+    return max(1, min(8, (os.cpu_count() or 2) - 1, round(math.sqrt(seconds / 95))))
+
+
 def mfa_version() -> str:
     try:
         from importlib.metadata import version
@@ -303,7 +458,7 @@ def main() -> None:
     for item in args.model_dir:
         language, _sep, folder = item.partition("=")
         model_dirs[language] = Path(folder)
-    jobs_count = args.jobs or max(1, min(8, (os.cpu_count() or 2) - 1))
+    jobs_count = args.jobs or process_count(jobs)
     _emit("loading", python=sys.executable, models={k: str(v) for k, v in model_dirs.items()}, pid=os.getpid(), jobs=len(jobs),
           mfa_version=mfa_version(), processes=jobs_count)
     started = time.perf_counter()
@@ -341,9 +496,11 @@ def main() -> None:
             _emit("aligning", language=language, utterances=len(items))
             found, quality = align_language([(n, g, b, t) for n, g, b, t, _r, _s in items], language,
                                             model_dirs[language], work, jobs_count)
+            readings = (load_pronunciations(model_paths(model_dirs[language], language)[1])
+                        if language == "Chinese" else None)
             for name, _group, _bytes, _text, row, samples in items:
                 build_row(row, found.get(name), window_ms=round(samples * 1000 / sample_rate),
-                          quality=quality.get(name))
+                          quality=quality.get(name), pronunciations=readings)
                 aligned += row.get("status") == "aligned"
             _emit("progress", language=language, aligned=sum(1 for *_x, r, _s in items if r.get("status") == "aligned"),
                   total=len(items))
@@ -356,7 +513,7 @@ def main() -> None:
         "model": "; ".join(MODEL_IDS[language] for language in languages) or "Montreal Forced Aligner",
         "model_revision": f"montreal-forced-aligner {mfa_version() or MFA_VERSION}",
         "code": f"montreal-forced-aligner=={mfa_version() or MFA_VERSION} align --beam {BEAM} --retry_beam {RETRY_BEAM}",
-        "unit_policy": "mfa-words-v1", "load_ms": 0.0, "inference_ms": round(inference_ms, 3)})
+        "unit_policy": "mfa-words-v2", "load_ms": 0.0, "inference_ms": round(inference_ms, 3)})
     _emit("completed", aligned=aligned, jobs=len(jobs), inference_ms=round(inference_ms, 3))
 
 

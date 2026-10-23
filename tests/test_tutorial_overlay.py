@@ -75,7 +75,9 @@ def test_changing_step_hides_the_bubble_glides_the_outline_then_shows_the_bubble
     class Watch(QObject):
         def eventFilter(self, _obj, event):  # noqa: N802 - Qt override
             if event.type() == QEvent.Type.Paint:
-                seen.append((tour.mode, tour.bubble.isVisible(), tour.bubble.geometry().topLeft(), tour.reveal))
+                # 2026-10-22: while it fades in, the overlay draws a picture of the bubble.
+                drawn = tour.bubble.isVisible() or tour._reveal_pixmap is not None
+                seen.append((tour.mode, drawn, tour.bubble.geometry().topLeft(), tour.reveal))
             return False
 
     watch = Watch()

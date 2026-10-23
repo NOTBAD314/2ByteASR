@@ -15,6 +15,8 @@ A record never stores whether it is current. Its status is derived from the
 sha of the Japanese text it was made from versus the cue's current text, so
 undo/redo of text edits stays correct. Structural merges also compose the
 existing translations in the same cue transaction; they never call a provider.
+Splits divide the parent's translation between the two halves the same way
+(2026-10-22, a local estimate flagged "needs update"; ``split_snapshot``).
 
 The provider is injected by the caller (the configured "polish" client); this
 module never chooses a model. ``translate`` is synchronous and only reads a
@@ -325,7 +327,7 @@ def _migrated_container(meta: Mapping, cues: Sequence) -> tuple[dict | None, boo
     legacy = legacy if isinstance(legacy, Mapping) else {}
     if not _valid_container(stored) and not any(str(v or "").strip() for v in legacy.values()):
         return None, False
-    container = copy.deepcopy(stored) if _valid_container(stored) else _empty_container()
+    container = _json_copy(stored) if _valid_container(stored) else _empty_container()
     changed = not _valid_container(stored)
     container.setdefault("version", RECORDS_VERSION)
     container.setdefault("target", DEFAULT_TARGET)
@@ -400,7 +402,7 @@ def status_of(record: Mapping | None, text: str, *, target: str | None = None) -
         return FAILED
     if not str(record.get("text") or "").strip():
         return UNTRANSLATED
-    if record.get("merge_missing") or record.get("merge_stale"):
+    if record.get("merge_missing") or record.get("merge_stale") or record.get("split_estimate"):
         return NEEDS_UPDATE
     if str(record.get("source_sha") or "") != source_sha(text):
         return NEEDS_UPDATE
@@ -499,9 +501,24 @@ def _rebuild_view(project) -> dict[str, str]:
 # Snapshots (one undo command per change)
 
 
+def _json_copy(value):
+    """Deep copy of JSON-shaped translation state.
+
+    2026-10-22: a split copied the whole translation store five times with
+    copy.deepcopy (~0.5 s on 2090 cues); a marshal round trip gives the same
+    values about four times faster. Anything marshal cannot keep exactly
+    falls back to deepcopy.
+    """
+    import marshal
+    try:
+        return marshal.loads(marshal.dumps(value))
+    except (TypeError, ValueError):
+        return copy.deepcopy(value)
+
+
 def snapshot(project) -> dict[str, Any]:
     meta = _metadata(project)
-    return {key: copy.deepcopy(meta[key]) if key in meta else None for key in (RECORDS_KEY, RENDER_KEY)}
+    return {key: _json_copy(meta[key]) if key in meta else None for key in (RECORDS_KEY, RENDER_KEY)}
 
 
 def restore_snapshot(project, state: Mapping[str, Any]) -> None:
@@ -511,7 +528,7 @@ def restore_snapshot(project, state: Mapping[str, Any]) -> None:
         if value is None:
             meta.pop(key, None)
         else:
-            meta[key] = copy.deepcopy(value)
+            meta[key] = _json_copy(value)
 
 
 def merged_snapshot(project, sources: Sequence, merged) -> tuple[dict, dict]:
@@ -524,10 +541,10 @@ def merged_snapshot(project, sources: Sequence, merged) -> tuple[dict, dict]:
     """
     from types import SimpleNamespace
     before = snapshot(project)
-    shadow = SimpleNamespace(generation_metadata=copy.deepcopy(before), cues=list(project.cues))
+    shadow = SimpleNamespace(generation_metadata=_json_copy(before), cues=list(project.cues))
     container, _ = _migrated_container(shadow.generation_metadata, shadow.cues)
     if container is None:
-        return before, copy.deepcopy(before)
+        return before, _json_copy(before)
     shadow.generation_metadata[RECORDS_KEY] = container
     records = container['records']
     target = container_target_value(container)
@@ -558,13 +575,195 @@ def merged_snapshot(project, sources: Sequence, merged) -> tuple[dict, dict]:
         joined = value[-1:].isspace() or text[:1].isspace()
         punctuated = target in ('zh-Hans','zh-Hant','ja') and value[-1:] in '。！？!?，,；;：:、…'
         value += ('' if joined or punctuated else ' ') + text
+    rejoined = _rejoined_split(records, sources, merged, target)
     for cue in sources:
         records.pop(cue.id, None)
-    records[merged.id] = _record(value, merged.text, origin=ORIGIN_MANUAL if manual else 'local_merge',
+    records[merged.id] = rejoined or _record(value, merged.text, origin=ORIGIN_MANUAL if manual else 'local_merge',
         target=target, merge_sources=parts, merge_missing=list(dict.fromkeys(missing)), merge_stale=stale)
     removed = {cue.id for cue in sources}
     shadow.cues = [cue for cue in shadow.cues if cue.id not in removed] + [merged]
     _append_history(container, {'kind': 'local_merge', 'cue_ids': [cue.id for cue in sources], 'result_id': merged.id})
+    _rebuild_view(shadow)
+    return before, snapshot(shadow)
+
+
+def _rejoined_split(records: Mapping, sources: Sequence, merged, target: str) -> dict | None:
+    """Merging back every piece of one split restores that split's translation.
+
+    Only when each source carries the same ``split_from`` and the merged text
+    has exactly the content of the text that was split (2026-10-22)."""
+    roots = [(records.get(cue.id) or {}).get('split_from') for cue in sources]
+    if not roots or not all(isinstance(root, Mapping) for root in roots):
+        return None
+    first = roots[0]
+    if any((root.get('cue_id'), root.get('translation')) != (first.get('cue_id'), first.get('translation'))
+           for root in roots[1:]):
+        return None
+    if not str(first.get('translation') or '').strip() or _content(merged.text) != _content(first.get('source_text')):
+        return None
+    origin = ORIGIN_MANUAL if first.get('origin') == ORIGIN_MANUAL else str(first.get('origin') or ORIGIN_AI)
+    return _record(str(first['translation']), merged.text, origin=origin, target=target, rejoined_split=True)
+
+
+# Japanese shinjitai whose Chinese form is another code point. The Traditional
+# form is given; ``chinese_script.fold`` reaches the Simplified one.
+_SHINJITAI = dict(zip(
+    "遅対気発図読売続単変険戦実学体来国会広歳号帰当声楽数様薬鉄駅円絵権雑辺霊写処剣戻恵悪払抜択拡挙栄桜歩"
+    "満灯焼獣県礼経緑総聴脳蔵覚観訳豊転軽酔釈関隠静顔騒験髪黙竜亀児両争仏価労区医営圧壊将尽届巻廃弾従応恋"
+    "拝撃毎沢涙狭盗穏継装賛郷銭闘隣頼鶏麦黒齢渋浅残践伝団辞乱芸糸呉娯帯滞徴恒歴暦剤斉済増稲粋砕姫拠掲揺捜"
+    "挿摂効収双囲圏堕塁壌奥嬢宝寝専峡巣庁径徳悩懐戯担挟断昼暁枢検楼横欧殴殻浄浜渇渓温湾湿滝潜炉点犠状独猟"
+    "献畳痴禅秘称穂粛縁縄縦繊臓舎荘薫虚虫蚕蛍蛮覇覧触証誉謡譲逓遥醸鋳録陥隷顕駆髄麺黄",
+    "遲對氣發圖讀賣續單變險戰實學體來國會廣歲號歸當聲樂數樣藥鐵驛圓繪權雜邊靈寫處劍戾惠惡拂拔擇擴舉榮櫻步"
+    "滿燈燒獸縣禮經綠總聽腦藏覺觀譯豐轉輕醉釋關隱靜顏騷驗髮默龍龜兒兩爭佛價勞區醫營壓壞將盡屆卷廢彈從應戀"
+    "拜擊每澤淚狹盜穩繼裝贊鄉錢鬥鄰賴雞麥黑齡澀淺殘踐傳團辭亂藝絲吳娛帶滯徵恆歷曆劑齊濟增稻粹碎姬據揭搖搜"
+    "插攝效收雙圍圈墮壘壤奧孃寶寢專峽巢廳徑德惱懷戲擔挾斷晝曉樞檢樓橫歐毆殼淨濱渴溪溫灣濕瀧潛爐點犧狀獨獵"
+    "獻疊癡禪祕稱穗肅緣繩縱纖臟舍莊薰虛蟲蠶螢蠻霸覽觸證譽謠讓遞遙釀鑄錄陷隸顯驅髓麵黃"))
+# A split translation is cut after these rather than inside a phrase.
+_CUT_AFTER = "，。！？!?、…；;：:～~」』）)"
+_LINE_END_COMMAS = "，,、；;"
+
+
+def _han_keys(text: str) -> list[str]:
+    from .chinese_script import fold
+    keys = []
+    for char in str(text or ""):
+        code = ord(char)
+        keys.append(fold(_SHINJITAI.get(char, char)) if _is_han(code) else "")
+    return keys
+
+
+def _chinese_word_interiors(text: str) -> set[int]:
+    """Offsets inside a Chinese word of ``text`` (jieba on the Simplified fold; empty if unavailable)."""
+    try:
+        import warnings
+        from .chinese_script import to_simplified
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            import jieba
+        jieba.setLogLevel(60)
+        simplified = to_simplified(text)
+        if len(simplified) != len(text):
+            simplified = text
+        inside, cursor = set(), 0
+        for word in jieba.lcut(simplified):
+            if len(word) > 1:
+                inside.update(range(cursor + 1, cursor + len(word)))
+            cursor += len(word)
+        return inside
+    except Exception:  # noqa: BLE001 - word boundaries only refine the estimate
+        return set()
+
+
+def _source_weight(text: str) -> float:
+    """Content length of one source half; kana count half (Chinese is denser than kana)."""
+    total = 0.0
+    for char in str(text or ""):
+        if char.isspace() or unicodedata.category(char).startswith(("P", "Z", "S")):
+            continue
+        code = ord(char)
+        total += 0.5 if _is_hiragana(code) or _is_katakana(code) else 1.0
+    return total
+
+
+def split_translation_text(left_source: str, right_source: str, translation: str,
+                           target: str = DEFAULT_TARGET) -> tuple[str, str] | None:
+    """Divide ``translation`` between the two halves of a split caption (local estimate).
+
+    2026-10-22 (user report: after a razor split the second half's Chinese
+    vanished). Each cut position of the translation is scored by
+    - Han characters the halves share with it (日文汉字 / 新字体 folded to
+      简繁 keys): ones only in the left half should stay left, and so on;
+    - how far its content share is from the left half's share of the source;
+    - a small preference for cutting after punctuation, and against cutting
+      inside a doubled character (偷偷), a Chinese word (jieba: 第一次, 直觉)
+      or a Latin/number run.
+    Spaced targets are only cut between words. Returns ``None`` when the
+    translation cannot be divided (too short, one word).
+    """
+    text = clean_translation(translation)
+    if len(_content(text)) < 2:
+        return None
+    total = _source_weight(left_source) + _source_weight(right_source)
+    share = _source_weight(left_source) / total if total else 0.5
+    spaced = TARGET_LANGUAGE.get(normalize_target(target), "zh") not in ("zh", "ja")
+    left_keys = {key for key in _han_keys(left_source) if key}
+    right_keys = {key for key in _han_keys(right_source) if key}
+    only_left, only_right = left_keys - right_keys, right_keys - left_keys
+    keys = _han_keys(text)
+    interiors = _chinese_word_interiors(text) if TARGET_LANGUAGE.get(normalize_target(target)) == "zh" else set()
+    counts = [0]
+    for char in text:
+        counts.append(counts[-1] + (1 if _content(char) else 0))
+    content_total = counts[-1]
+    best = None
+    for k in range(1, len(text)):
+        before, after = text[k - 1], text[k]
+        if spaced and not (before.isspace() or after.isspace()):
+            continue
+        if not spaced and (after in _CUT_AFTER or (before.isascii() and before.isalnum() and after.isascii() and after.isalnum())):
+            continue
+        if not counts[k] or counts[k] == content_total:
+            continue
+        violations = sum(1 for index, key in enumerate(keys)
+                         if key and ((index < k and key in only_right) or (index >= k and key in only_left)))
+        score = 0.5 * violations + abs(counts[k] / content_total - share)
+        if before in _CUT_AFTER:
+            score -= 0.2
+        if before == after and not before.isspace():
+            score += 0.3
+        if k in interiors:
+            score += 0.6
+        candidate = (round(score, 6), abs(counts[k] / content_total - share), k)
+        if best is None or candidate < best:
+            best = candidate
+    if best is None:
+        return None
+    k = best[2]
+    left, right = text[:k].rstrip(), text[k:].lstrip()
+    if not spaced:
+        left = left.rstrip(_LINE_END_COMMAS).rstrip() or left
+    if not _content(left) or not _content(right):
+        return None
+    return left, right
+
+
+def split_snapshot(project, parent, left, right) -> tuple[dict, dict]:
+    """Translation records for splitting ``parent`` into ``left`` (same id) and ``right``.
+
+    Like ``merged_snapshot``: prepared on a copy, installed by the split
+    command with its cues, undone with them, no request. Both halves get a
+    piece of the parent's translation (``split_translation_text``) marked
+    ``split_estimate`` (status "needs update"); ``split_from`` keeps the whole
+    sentence as the reference a later AI update reads. A translation that
+    cannot be divided stays on the left half; the right one then waits for a
+    translation with the same reference.
+    """
+    from types import SimpleNamespace
+    before = snapshot(project)
+    shadow = SimpleNamespace(generation_metadata=_json_copy(before), cues=list(project.cues))
+    container, _ = _migrated_container(shadow.generation_metadata, shadow.cues)
+    if container is None:
+        return before, _json_copy(before)
+    records = container['records']
+    old = records.get(parent.id)
+    text = str((old or {}).get('text') or '') if isinstance(old, Mapping) else ''
+    if not text.strip():
+        return before, _json_copy(before)
+    shadow.generation_metadata[RECORDS_KEY] = container
+    target = container_target_value(container)
+    reference = copy.deepcopy(old.get('split_from')) if isinstance(old.get('split_from'), Mapping) else {
+        'cue_id': parent.id, 'source_text': str(old.get('source_text') or parent.text), 'translation': text,
+        'origin': str(old.get('origin') or '')}
+    origin = ORIGIN_MANUAL if old.get('origin') == ORIGIN_MANUAL else 'local_split'
+    pieces = split_translation_text(left.text, right.text, text, target)
+    left_text, right_text = pieces if pieces else (text, '')
+    records[left.id] = _record(left_text, left.text, origin=origin, target=target, previous=_pushed_previous(old),
+                               split_estimate=True, split_from=reference)
+    records[right.id] = _record(right_text, right.text, origin=origin, target=target,
+                                split_estimate=True, split_from=copy.deepcopy(reference))
+    shadow.cues = [cue for cue in shadow.cues if cue.id != parent.id] + [left, right]
+    _append_history(container, {'kind': 'local_split', 'cue_id': parent.id, 'result_ids': [left.id, right.id],
+                                'divided': pieces is not None})
     _rebuild_view(shadow)
     return before, snapshot(shadow)
 
@@ -628,6 +827,17 @@ def _candidates(cues: Sequence, records: Mapping, receipts: Mapping, *, target: 
             continue
         kind, parents = "", []
         match = _SPLIT_ID.match(cue.id)
+        origin = (records.get(cue.id) or {}).get("split_from") if isinstance(records.get(cue.id), Mapping) else None
+        if isinstance(origin, Mapping) and str(origin.get("translation") or "").strip():
+            # 2026-10-22: a divided split keeps the whole sentence as its reference.
+            result.append({
+                "cue_id": cue.id, "kind": "split", "status": status, "source_text": cue.text,
+                "parents": [{"cue_id": str(origin.get("cue_id") or ""),
+                             "source_text": str(origin.get("source_text") or ""),
+                             "translation": str(origin.get("translation") or ""),
+                             "origin": str(origin.get("origin") or "")}],
+            })
+            continue
         if match:
             ancestor = match.group("parent")
             while ancestor:
@@ -1394,8 +1604,12 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
               overwrite_legacy: bool = False, suggest_for_manual: bool = True,
               max_items: int = 40, max_chars: int = 2400, context_cues: int = 3, timeout: float = 180.0,
               retry_wait: Callable[[float], bool] | None = None,
-              event: Callable[[dict], None] | None = None) -> TranslationResult:
+              event: Callable[[dict], None] | None = None, workers: int = 1) -> TranslationResult:
     """Translate cues in timeline-ordered batches; never mutates the project.
+
+    ``workers`` > 1 sends that many first-round batches at once (2026-10-22:
+    recognition sent 10 batches of a 24-minute episode one after another,
+    26 s); prompts do not change, a batch's retries stay in its own thread.
 
     ``project`` may be a ``SubtitleProject`` or a ``TranslationSource`` (build
     it with ``translation_source`` on the UI thread before starting a worker).
@@ -1439,13 +1653,16 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     keys: dict[str, str] = {}
     contexts: dict[str, str] = {}
     fresh: dict[str, str] = {}
+    import threading
+    lock = threading.RLock()  # result, cache and the request log are shared by batch threads
 
     def emit(kind: str, **fields) -> None:
         if event is not None:
             from ..providers.provider_diagnostics import redact_diagnostics
             try:
-                event(redact_diagnostics(dict(event=kind, at=_now(), provider=provider_id,
-                                             model=model, target=target, **fields)))
+                with lock:
+                    event(redact_diagnostics(dict(event=kind, at=_now(), provider=provider_id,
+                                                 model=model, target=target, **fields)))
             except Exception:
                 pass  # Diagnostics must never discard a finished translation.
 
@@ -1458,19 +1675,21 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
 
     def report(message: str) -> None:
         if progress is not None:
-            done = len(result.translations) + len(result.suggestions) + len(result.failed)
-            progress(done, total, message)
+            with lock:
+                done = len(result.translations) + len(result.suggestions) + len(result.failed)
+                progress(done, total, message)
 
     def succeed(cue_id: str, text: str, cached: bool) -> None:
         item = TranslatedItem(cue_id, text, result.sources[cue_id], source_sha(result.sources[cue_id]),
                               contexts[cue_id], cached)
-        (result.suggestions if cue_id in protected_set else result.translations)[cue_id] = item
-        fresh[cue_id] = text
-        if cached:
-            result.cache_hits.append(cue_id)
-        elif cache is not None:
-            cache[keys[cue_id]] = {"text": text, "target": target, "model": model, "provider": provider_id,
-                                   "prompt_version": prompt_version, "at": _now()}
+        with lock:
+            (result.suggestions if cue_id in protected_set else result.translations)[cue_id] = item
+            fresh[cue_id] = text
+            if cached:
+                result.cache_hits.append(cue_id)
+            elif cache is not None:
+                cache[keys[cue_id]] = {"text": text, "target": target, "model": model, "provider": provider_id,
+                                       "prompt_version": prompt_version, "at": _now()}
 
     for cue_id in work:
         window = context_texts(source, cue_id, context_cues)
@@ -1509,9 +1728,10 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         except InputBudgetError:
             split(batch, ids, retries_left, "request_too_large")
             return
-        batch_counter[0] += 1
-        batch_no = batch_counter[0]
-        result.requests += 1
+        with lock:
+            batch_counter[0] += 1
+            batch_no = batch_counter[0]
+            result.requests += 1
         report(f"第 {batch_no} 批：请求翻译 {len(ids)} 条，等待模型返回…")
         emit("request", batch=batch_no, ids=ids, max_tokens=max_tokens,
              timeout=timeout, messages=messages, schema=RESPONSE_SCHEMA)
@@ -1570,8 +1790,10 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
                         result.cancelled = True
                         return
             size = max(1, len(ids) // 2)
+            with lock:
+                known = dict(fresh)
             for sub in plan_batches(source, remaining, max_items=size, max_chars=max_chars,
-                                    context_cues=context_cues, known_translations=fresh):
+                                    context_cues=context_cues, known_translations=known):
                 run(sub, retries_left - 1, retry_output_floor)
             return
         for cue_id in remaining:
@@ -1584,17 +1806,28 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
             for cue_id in ids:
                 result.failed[cue_id] = reason
             return
+        with lock:
+            known = dict(fresh)
         for sub in plan_batches(source, ids, max_items=max(1, len(ids) // 2), max_chars=max_chars,
-                                context_cues=context_cues, known_translations=fresh):
+                                context_cues=context_cues, known_translations=known):
             run(sub, retries_left)
 
     pending = [cue_id for cue_id in work if not resolved(cue_id)]
     report(f"共 {total} 条，待请求 {len(pending)} 条")
-    for batch in plan_batches(source, pending, max_items=max_items, max_chars=max_chars,
-                              context_cues=context_cues):
-        if result.cancelled or result.fatal_error:
-            break
-        run(batch, 1)
+    batches = plan_batches(source, pending, max_items=max_items, max_chars=max_chars,
+                           context_cues=context_cues)
+    workers = max(1, min(int(workers or 1), len(batches)))
+    if workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        emit("parallel", batches=len(batches), workers=workers)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="subtitle-translation") as pool:
+            for future in [pool.submit(run, batch, 1) for batch in batches]:
+                future.result()
+    else:
+        for batch in batches:
+            if result.cancelled or result.fatal_error:
+                break
+            run(batch, 1)
     leftover = [cue_id for cue_id in work if not resolved(cue_id)]
     if result.fatal_error and not result.cancelled:
         for cue_id in leftover:

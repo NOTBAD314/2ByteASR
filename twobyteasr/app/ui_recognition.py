@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import (
@@ -76,6 +78,13 @@ def home_plan_height(tier: int) -> int:
     """Height (100% px) of the three compact model cards on home (C′,
     2026-10-17) per window-height tier: < 900, 900–1149, ≥ 1150."""
     return {0: 152, 1: 170, 2: 200}.get(tier, 170)
+
+
+# The cards' density profiles, smallest first.
+_PROFILES = ("compact", "normal", "large", "extra_large")
+# A profile change undone this soon with the same window and card texts is the
+# cards pushing each other across a threshold, not the room changing (2026-10-22).
+_PROFILE_BOUNCE_SECONDS = 1.0
 
 
 class RecognitionRoleCard(QFrame):
@@ -481,6 +490,11 @@ class RecognitionRoleCard(QFrame):
 
     def name_lines(self, px: int) -> int:
         """How many lines the name takes beside the logo at ``px``."""
+        height, line = self._name_text_height(px)
+        return max(1, round(height / max(1, line)))
+
+    def _name_text_height(self, px: int) -> tuple[int, int]:
+        """(text height, line spacing) of the name beside the logo at ``px``."""
         font = QFont(self.model_label.font())
         font.setPixelSize(px)
         metrics = QFontMetrics(font)
@@ -488,13 +502,29 @@ class RecognitionRoleCard(QFrame):
         beside = self.icon_label.width() + self.change_hint.width() + self._identity_layout.spacing() * 2
         width = max(80, self.width() - margins.left() - margins.right() - beside)
         height = metrics.boundingRect(0, 0, width, 2000, Qt.TextFlag.TextWordWrap, self.model_label.text()).height()
-        return max(1, round(height / max(1, metrics.lineSpacing())))
+        return max(metrics.lineSpacing(), height), metrics.lineSpacing()
+
+    def content_height_with_name(self, px: int) -> int:
+        """The card's minimum height when its name is drawn at ``px``."""
+        layout = self.layout()
+        others = layout.minimumSize().height() - self.model_label.minimumHeight()
+        return others + self._name_text_height(px)[0]
 
     def set_name_px(self, px) -> None:
+        """Step the name down to ``px`` real pixels (already zoomed, see name_base_px); None = the profile's size."""
         if px == self._name_px:
             return
         self._name_px = px
-        self.model_label.setStyleSheet("" if px is None else f"font-size: {px}px;")
+        from . import ui_zoom
+        sheet = "" if px is None else f"font-size: {px}px;"
+        # 2026-10-21 (user at 120%: after coming back from Studio the names grew
+        # over the line below): the zoom pass treats a widget's own sheet as
+        # 100% and scaled this already-zoomed size a second time. Record its
+        # 100% size as the sheet's base so a later zoom pass keeps it.
+        base = "" if px is None else f"font-size: {px / ui_zoom.zoom_factor():g}px;"
+        self.model_label.setProperty("_uiZoomSheetBase", base)
+        self.model_label.setProperty("_uiZoomSheetLast", sheet)
+        self.model_label.setStyleSheet(sheet)
 
     def _required_description_height(self) -> int:
         """Lines the description needs at this width (the plan takes the tallest card)."""
@@ -601,6 +631,12 @@ class RecognitionPlanWidget(QWidget):
             layout.addWidget(card, 12 if role == "primary" else 10)
             self.cards[role] = card
         self._responsive_profile = ""
+        # See _update_responsive_profile (2026-10-22).
+        self._applying_profile = False
+        self._profile_recheck = False
+        self._profile_inputs = None  # window size, zoom and card texts the two below belong to
+        self._profile_left = {}      # profile -> when the cards last left it
+        self._profile_cap = None     # the largest profile allowed after a change was undone
 
     def apply_density(self, comfortable: bool):
         self._update_responsive_profile(comfortable)
@@ -622,17 +658,36 @@ class RecognitionPlanWidget(QWidget):
         finally:
             self._syncing_identity_height = False
 
+    def _card_room(self):
+        """The tallest a card can get inside this plan (None when the plan may grow freely)."""
+        limit = self.maximumHeight()
+        if limit >= 16777215 // 2:
+            return None
+        margins = self.layout().contentsMargins()
+        return limit - margins.top() - margins.bottom()
+
     def _fit_names(self) -> None:
         """A name needing a third line (e.g. the Japanese stage name in a
-        narrow window) steps all three names down together, to at most 0.6 of the size."""
+        narrow window), or a two-line name the card has no room for, steps all
+        three names down together, to at most 0.6 of the size.
+
+        2026-10-21 (user at 120% interface zoom): back from Studio a two-line
+        「FireRedASR2-AED」 at the full size made its slot taller than home's
+        capped plan, and the names were drawn over the lines below.
+        """
         cards = list(self.cards.values())
         base = cards[0].name_base_px()
         if base <= 0:
             return
+        room = self._card_room()
+
+        def fits(card, size):
+            return card.name_lines(size) <= 2 and (room is None or card.content_height_with_name(size) <= room)
+
         chosen = None
         for scale in (1.0, 0.86, 0.76, 0.68, 0.6):
             size = round(base * scale)
-            if all(card.name_lines(size) <= 2 for card in cards):
+            if all(fits(card, size) for card in cards):
                 chosen = None if scale == 1.0 else size
                 break
             chosen = size
@@ -651,6 +706,68 @@ class RecognitionPlanWidget(QWidget):
         self._update_responsive_profile()
 
     def _update_responsive_profile(self, comfortable: bool | None = None):
+        """Give the cards the profile that fits the room they have now.
+
+        2026-10-22 (the app closed with a stack overflow, 0xC00000FD, on home
+        with a 1100 px window on the 175% monitor, or a maximized one moved to
+        the 1080 px portrait monitor): applying a profile shows the cards'
+        chips, and showing one makes Qt lay the window out at once, so this
+        plan was resized, and this method entered again, from inside the
+        apply. A 765 px plan gave the side cards 247 px in the large profile
+        (the timeline card's wider top line took the rest: normal) and 251 px
+        in the normal one (large), and the two applied each other until the
+        stack ran out. Now a resize during the apply only asks for another
+        look once it is done, and a change undone straight away with the same
+        window size and card texts leaves the smaller profile until one of
+        them changes.
+        """
+        if self._applying_profile:
+            self._profile_recheck = True
+            return False
+        changed = False
+        for _ in _PROFILES:  # a few looks at most; the cap ends any back-and-forth sooner
+            profile = self._settled_profile(self._measured_profile(comfortable))
+            if profile == self._responsive_profile:
+                break
+            self._apply_profile(profile)
+            changed = True
+            if not self._profile_recheck:
+                break
+        return changed
+
+    def _settled_profile(self, profile: str) -> str:
+        """``profile``, or the smaller one when it would undo the change just made."""
+        from .ui_zoom import zoom_factor
+        window = self.window()
+        # The texts, not the chips: the chips are what the profile itself shows or hides.
+        texts = tuple((card.role_label.text(), card.model_label.text(), card.kind_badge.text(),
+                       card.status_badge.text(), card._recovery_action, card.description_label.text())
+                      for card in self.cards.values())
+        key = (window.width(), window.height(), zoom_factor(), texts)
+        if key != self._profile_inputs:
+            self._profile_inputs, self._profile_left, self._profile_cap = key, {}, None
+        current = self._responsive_profile
+        left = self._profile_left.get(profile)
+        if (current in _PROFILES and profile != current and left is not None
+                and time.monotonic() - left < _PROFILE_BOUNCE_SECONDS):
+            self._profile_cap = min(profile, current, key=_PROFILES.index)
+        cap = self._profile_cap
+        if cap is not None and _PROFILES.index(profile) > _PROFILES.index(cap):
+            return cap
+        return profile
+
+    def _apply_profile(self, profile: str) -> None:
+        if self._responsive_profile in _PROFILES:
+            self._profile_left[self._responsive_profile] = time.monotonic()
+        self._responsive_profile = profile
+        self._applying_profile, self._profile_recheck = True, False
+        try:
+            for card in self.cards.values():
+                card.apply_responsive_profile(profile)
+        finally:
+            self._applying_profile = False
+
+    def _measured_profile(self, comfortable: bool | None = None) -> str:
         layout = self.layout()
         spacing = layout.spacing() if layout is not None else 10
         calculated_width = max(0, (self.width() - spacing * 2) // 3)
@@ -679,9 +796,4 @@ class RecognitionPlanWidget(QWidget):
             profile = "extra_large"
         if available_height <= 0:
             profile = "normal" if comfortable else "compact"
-        if profile == self._responsive_profile:
-            return False
-        self._responsive_profile = profile
-        for card in self.cards.values():
-            card.apply_responsive_profile(profile)
-        return True
+        return profile

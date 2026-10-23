@@ -116,6 +116,26 @@ def _read_json(path, cancel, deadline, limit=MAX_JSON_BYTES):
     return payload, before
 
 
+def _overlay_effective(overlay, checkpoint):
+    """The project an autosave overlay describes, or None for a stale one.
+
+    Mirrors studio_project's overlay reader (kept here: storage does not
+    import the project model)."""
+    if not isinstance(overlay, dict) or not isinstance(checkpoint, dict):
+        raise ValueError('自动保存增量结构未知')
+    autosave = checkpoint.get('autosave') if isinstance(checkpoint.get('autosave'), dict) else {}
+    base = overlay.get('base') if isinstance(overlay.get('base'), dict) else {}
+    replace = overlay.get('replace')
+    if (overlay.get('format') != '2byteasr-autosave-overlay' or not autosave.get('checkpoint_id')
+            or base.get('checkpoint_id') != autosave.get('checkpoint_id')):
+        return None
+    if not isinstance(replace, dict):
+        raise ValueError('自动保存增量结构未知')
+    effective = dict(checkpoint)
+    effective.update(replace)
+    return effective
+
+
 def strong_media_references(payload, project_path):
     """Actual persisted media graph only. Malformed/unknown graphs raise."""
     if not isinstance(payload, dict) or type(payload.get('schema_version')) is not int or payload['schema_version'] != 1:
@@ -240,7 +260,9 @@ def saved_project_references(runtime_paths, watched_paths, *, cancel=None):
                         errors.append(f'工程范围内链接不可检查：{path}')
                     elif stat.S_ISDIR(info.st_mode):
                         stack.append((path, depth + 1))
-                    elif path.suffix.lower() == '.2byteproj':
+                    elif path.suffix.lower() == '.2byteproj' or path.name.lower().endswith('.2byteproj.overlay'):
+                        # An autosave overlay (2026-10-22) carries the media
+                        # fields changed since its checkpoint.
                         projects[canonical_media_path(path)] = path
                         if len(projects) > MAX_PROJECTS:
                             raise ValueError(f'工程检查达到数量上限：{path}')
@@ -267,6 +289,14 @@ def saved_project_references(runtime_paths, watched_paths, *, cancel=None):
                 if total > MAX_TOTAL_JSON_BYTES:
                     raise ValueError(f'工程检查达到总读取上限：{path}')
                 remember(path, identity)
+                if path.name.lower().endswith('.overlay'):
+                    checkpoint_path = path.with_name(path.name[:-len('.overlay')])
+                    checkpoint, checkpoint_identity = _read_json(checkpoint_path, cancel, deadline)
+                    total += checkpoint_identity[2]
+                    remember(checkpoint_path, checkpoint_identity)
+                    payload = _overlay_effective(payload, checkpoint)
+                    if payload is None:
+                        continue  # stale overlay: recovery ignores it as well
                 refs = set(strong_media_references(payload, path))
                 for watched_path, normalized in wanted.items():
                     if normalized in refs:

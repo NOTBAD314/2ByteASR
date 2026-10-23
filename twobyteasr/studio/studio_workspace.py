@@ -319,14 +319,8 @@ class StudioWorkspaceBuilder:
         build_punctuation_menu(page, punctuation_menu)
         page.punctuation_button.setMenu(punctuation_menu)
         bar.addWidget(page.punctuation_button)
-        # 2026-10-19: the whole project's subtitles to 简体 / 繁體 (one undo step).
-        page.chinese_script_button = QPushButton("简繁")
-        page.chinese_script_button.setObjectName("studioButton")
-        chinese_script_menu = create_studio_menu(page)
-        from .studio_chinese_script import build_menu as build_chinese_script_menu
-        build_chinese_script_menu(page, chinese_script_menu)
-        page.chinese_script_button.setMenu(chinese_script_menu)
-        bar.addWidget(page.chinese_script_button)
+        # 字幕简繁转换 (2026-10-19) is a submenu of 双语 / 翻译 since 2026-10-22
+        # (user request); it has no toolbar button of its own.
         clip_assistant = QPushButton("剪辑助手")
         page.studio_clip_assistant_button = clip_assistant
         clip_assistant.setObjectName("studioButton")
@@ -382,7 +376,7 @@ class StudioWorkspaceBuilder:
             page.review_mode_button, clip_assistant, page.studio_usage_button)
         page._studio_compact_commands = (page.speaker_manager_button, shortcut_entry, find_replace, script_match)
         # Leave the bar first to last when it is too narrow (_fit_studio_toolbar).
-        page._studio_toolbar_collapse_order = (script_match, shortcut_entry, find_replace, page.chinese_script_button,
+        page._studio_toolbar_collapse_order = (script_match, shortcut_entry, find_replace,
                                                page.punctuation_button,
                                                page.speaker_manager_button, page.report_problem_button,
                                                page.cue_list_toggle_button, page.context_expand_button)
@@ -425,7 +419,6 @@ class StudioWorkspaceBuilder:
             (clip_assistant,'secondary','fa5s.film'),
             (shortcut_entry,'secondary','fa5s.keyboard'),
             (page.punctuation_button,'secondary','fa5s.paragraph'),
-            (page.chinese_script_button,'secondary','fa5s.sync-alt'),
             (export,'secondary','fa5s.file-export'),(render,'secondary','fa5s.file-video'),
             (page.report_problem_button,'secondary','fa5s.flag')):
             button_role(button,role,icon=icon_name)
@@ -433,7 +426,7 @@ class StudioWorkspaceBuilder:
         # with a green icon and 「压制成片」 was the only filled block with a
         # film-strip icon. Both now share the toolbar's ghost buttons; render
         # keeps its emphasis through accent text and icon only.
-        for button in (page.punctuation_button, page.chinese_script_button, page.bilingual_toggle_button):
+        for button in (page.punctuation_button, page.bilingual_toggle_button):
             button.setProperty('hasMenu', True)
         render.setProperty('emphasis', 'accent')
         install_themed_icon(render, 'fa5s.file-video', 'accent')
@@ -463,7 +456,7 @@ class StudioWorkspaceBuilder:
             page.speaker_manager_button, find_replace, shortcut_entry, export, render,
             import_media,
             # A per-project display choice; nothing to set in the library (2026-10-14).
-            page.punctuation_button, page.chinese_script_button, script_match,
+            page.punctuation_button, script_match,
         ]
         page._hub_toolbar_hidden.extend([page.relink_button])
         page._hub_toolbar_hidden.extend(toolbar.findChildren(QFrame, "toolbarDivider"))
@@ -489,9 +482,12 @@ class StudioWorkspaceBuilder:
         page.workspace_splitter.setObjectName("studioWorkspaceSplitter")
         page.workspace_splitter.setChildrenCollapsible(False)
         page.workspace_splitter.setHandleWidth(5)
-        # Rubber-band the timeline split so mpv/HWND is not resized on every
-        # mouse pixel. Video preview follows after the drag, not ahead of it.
-        page.workspace_splitter.setOpaqueResize(False)
+        # 2026-10-22 (user): live, like the side dividers. The 2026-08
+        # rubber band showed only a line and moved the video after release,
+        # which users saw as the picture following "one beat late". mpv's
+        # window and picture now match the surface within 1 ms of each step
+        # (scripts/verify_studio_splitter_headed.py).
+        page.workspace_splitter.setOpaqueResize(True)
         page.upper_splitter = QSplitter(Qt.Orientation.Horizontal)
         page.upper_splitter.setObjectName("studioUpperSplitter")
         page.upper_splitter.setChildrenCollapsible(False)
@@ -507,7 +503,8 @@ class StudioWorkspaceBuilder:
         page.center_splitter.setHandleWidth(5)
         page.center_splitter.setOpaqueResize(True)
         video_host = QWidget()
-        video_host.setMinimumHeight(160)
+        # 2026-10-22: no fixed minimum below the picture + review strip;
+        # 160 px squeezed the strip's legend onto the candidate cards.
         video_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         video_layout = QVBoxLayout(video_host)
         video_layout.setContentsMargins(0, 0, 0, 0)
@@ -649,13 +646,15 @@ class StudioWorkspaceBuilder:
         strip_layout.setContentsMargins(10, 4, 10, 4)
         strip_layout.setSpacing(7)
         strip_header = QHBoxLayout()
-        page.review_summary_text = QLabel("需要检查：-")
+        # 2026-10-22: these texts elide (full text on hover); at their full
+        # width the strip held the video column at 886 px, so the side
+        # dividers could not move on a 1536 px wide (1080p 125%) window.
+        from ..design.elided_label import ElidedLabel
+        page.review_summary_text = ElidedLabel("需要检查：-", mode=Qt.TextElideMode.ElideRight, minimum=80)
         page.review_summary_text.setObjectName("reviewIssueSummary")
-        page.review_summary_text.setWordWrap(False)
         strip_header.addWidget(page.review_summary_text, 1)
-        page.review_reason_label = QLabel("")
+        page.review_reason_label = ElidedLabel("", mode=Qt.TextElideMode.ElideRight, minimum=40)
         page.review_reason_label.setObjectName("reviewReason")
-        page.review_reason_label.setWordWrap(False)
         strip_header.addWidget(page.review_reason_label, 2)
         page.review_queue_label = QLabel("需要检查  - / -")
         page.review_queue_label.setObjectName("reviewQueueCount")
@@ -698,9 +697,9 @@ class StudioWorkspaceBuilder:
         page.review_dock_scroll.setFixedHeight(REVIEW_DOCK_ROW_HEIGHT)
         page.review_dock_scroll.setWidget(page.review_dock_candidates)
         strip_layout.addWidget(page.review_dock_scroll)
-        page.review_legend = QLabel("[1–4] 采用并下一条   [↑↓] 切换   [Space] 重听   [E] 编辑   [P] 他/她   [R] 退出审核   [Enter] 当前正确")
+        page.review_legend = ElidedLabel("[1–4] 采用并下一条   [↑↓] 切换   [Space] 重听   [E] 编辑   [P] 他/她   [R] 退出审核   [Enter] 当前正确",
+                                         mode=Qt.TextElideMode.ElideRight, minimum=120)
         page.review_legend.setObjectName("reviewLegend")
-        page.review_legend.setTextFormat(Qt.TextFormat.RichText)
         strip_layout.addWidget(page.review_legend)
         page.review_summary_strip.hide()
         video_layout.addWidget(page.review_summary_strip)
@@ -794,6 +793,12 @@ class StudioWorkspaceBuilder:
         bind_text(page.cue_text, '当前字幕文本', property='placeholderText')
         page.cue_text.setMinimumHeight(58)
         page.cue_text.textChanged.connect(page._text_changed)
+        # 2026-10-22: Ctrl+Enter splits the current caption at the text cursor.
+        page._cue_text_split_shortcut = QShortcut(QKeySequence("Ctrl+Return"), page.cue_text)
+        page._cue_text_split_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        page._cue_text_split_shortcut.activated.connect(lambda: page.cue_controller.split_at_text(
+            page.selected_cue_id, page.cue_text.textCursor().position(),
+            page.cue_text.mapToGlobal(page.cue_text.cursorRect().bottomLeft())))
         page.translation_text = InputLatencyTextEdit(page.cue_editor)
         page.translation_text.setObjectName("cueText")
         bind_text(page.translation_text, '第二语言文本', property='placeholderText')
@@ -1360,11 +1365,15 @@ class StudioWorkspaceBuilder:
         page.highlight_panel.autocut_cancel_requested.connect(page._cancel_autocut)
         page.highlight_panel.autocut_preview_requested.connect(page._preview_autocut_seam)
         page.timeline.text_edit_committed.connect(page._timeline_text_edited)
+        # 2026-10-22: Ctrl+Enter in the inline editor splits at the text cursor.
+        page.timeline.text_split_requested.connect(
+            lambda cue_id, position, point: page.cue_controller.split_at_text(cue_id, position, point))
         page.waveform_toggle.toggled.connect(page.timeline.set_waveform_visible)
         timeline_layout.addWidget(page.timeline, 1)
         from .timeline_add_track import install_add_track_button
         install_add_track_button(page)
-        timeline_host.setMinimumHeight(260)
+        # The toolbar layout (SetMinimumSize) derives the host minimum from
+        # the toolbar and the timeline; no fixed floor (2026-10-22).
         page.workspace_splitter.addWidget(timeline_host)
         page.workspace_splitter.setStretchFactor(0, 3)
         page.workspace_splitter.setStretchFactor(1, 2)
@@ -1700,7 +1709,27 @@ class StudioWorkspaceBuilder:
         # 1920px at 175% DPI is only ~1097 logical px. Keep all three major
         # regions visible while retaining the normal 380px list width at 100%.
         panel.setMinimumWidth(280)
-        layout = QVBoxLayout(panel)
+        # 2026-10-22 (user, 1080p at 125%): the list's controls need 329 px,
+        # which pinned the workspace divider. A short panel scrolls instead.
+        frame_layout = QVBoxLayout(panel)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(panel)
+        scroll.setObjectName("cueListScroll")
+        scroll.viewport().setObjectName("cueListViewport")
+        scroll.setStyleSheet("QScrollArea#cueListScroll, QWidget#cueListViewport, "
+                             "QWidget#cueListContent { background: transparent; }")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        content = QWidget()
+        content.setObjectName("cueListContent")
+        # Width follows the panel (rows squeeze as before); only height scrolls.
+        content.setMinimumWidth(0)
+        content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        scroll.setWidget(content)
+        frame_layout.addWidget(scroll)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 9, 8, 8)
         layout.setSpacing(7)
         title = QLabel("字幕列表")

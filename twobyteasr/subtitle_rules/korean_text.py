@@ -25,11 +25,18 @@ _WORD_CORE = re.compile(r"[0-9A-Za-z가-힣ᄀ-ᇿ㄰-㆏㐀-鿿]+")
 
 @dataclass(frozen=True)
 class KoreanLineRules:
-    """Limits for one Korean subtitle (lengths in Netflix units, see display_length)."""
+    """Limits for one Korean subtitle (lengths in Netflix units, see display_length).
+
+    ``max_chars``/``preferred_chars`` are one line; since 2026-10-21 a subtitle
+    holds up to ``max_lines`` lines (``cue_*``), so a whole sentence stays one.
+    """
     preferred_chars: float = 12.0
     max_chars: float = 16.0
     min_chars: float = 4.0
-    max_seconds: float = 6.0
+    max_lines: int = 2
+    cue_preferred_chars: float = 24.0
+    cue_max_chars: float = 32.0
+    max_seconds: float = 7.0
     min_seconds: float = 0.8
     comfortable_cps: float = 12.0     # adult programmes
     warning_cps: float = 14.0

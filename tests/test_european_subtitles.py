@@ -80,7 +80,8 @@ def test_lines_break_between_words_and_never_hang_on_a_function_word(code):
     tokens = eu.words(SAMPLES[code])
     lines = [" ".join(tokens[a:b]) for a, b in seg.split_tokens(tokens, lexicon=lex)]
     assert " ".join(lines) == SAMPLES[code]
-    assert len(lines) >= 2 and all(eu.display_length(line) <= lex.rules.max_chars for line in lines)
+    # 2026-10-21: a subtitle holds two lines; these 125–145 character samples still need two or three.
+    assert len(lines) >= 2 and all(eu.display_length(line) <= lex.rules.cue_max_chars for line in lines)
     hanging = lex.determiners | lex.prepositions | lex.subjects
     assert not [line for line in lines[:-1] if eu.word_core(line.split()[-1]) in hanging], lines
 
@@ -91,6 +92,9 @@ def test_german_keeps_the_clause_final_auxiliary_and_russian_lines_are_shorter()
     assert not any(line.split()[0] in {"haben", "habe"} and index and lines[index - 1].endswith("geschafft")
                    for index, line in enumerate(lines))
     assert eu.lexicon("ru").rules.max_chars == 39 and eu.lexicon("es").rules.max_chars == 42
+    assert eu.lexicon("ru").rules.cue_max_chars == 78 and eu.lexicon("es").rules.cue_max_chars == 84
+    # A German clause may end on its auxiliary before "und": "… geschafft haben | und ehrlich gesagt …".
+    assert "weil wir es letzte Woche nicht geschafft haben" in lines
     # English is unchanged: the default lexicon is English.
     assert seg.split_tokens(["Nice", "shot!"]) == [(0, 2)]
 
@@ -204,7 +208,8 @@ def test_home_menu_offers_the_six_languages(home):
     assert subtitle_core.RUNTIME_SETTINGS["subtitle_language"]["recognition_language"] == "es"
     output = home.subtitle_output
     # 2026-10-21: the output choices name no language; the line under the row says it.
-    assert output.itemText(output.findData("bilingual")) == "原文 + 翻译（双语）"
+    # 2026-10-22: without a connected AI the item also says "（需要 API Key）" (and is greyed out).
+    assert output.itemText(output.findData("bilingual")).startswith("原文 + 翻译（双语）")
     output.setCurrentIndex(output.findData("bilingual"))
     assert home.subtitle_language_summary.text() == "字幕会显示：西班牙语原文 + 简体中文翻译"
     output.setCurrentIndex(output.findData("original"))
@@ -237,3 +242,59 @@ def test_a_line_never_ends_on_a_number_word():
                       "e anche come onda")
     lines = [" ".join(tokens[a:b]) for a, b in seg.split_tokens(tokens, lexicon=eu.lexicon("it"))]
     assert not any(line.endswith(" due") for line in lines), lines
+
+
+def test_aligner_words_outside_the_utterance_never_place_a_cut():
+    # Real Russian clip (2026-10-21, 59.34–62.34 s): the aligner, which hears 0.3 s on either side,
+    # stretched "дом" to 62.56 s; the cut landed after the sentence and the whole grouping stage
+    # failed its source check ("断句阶段结果未通过来源正文、归属与时间校验").
+    import dataclasses
+    from twobyteasr.subtitle_rules.grouping_contract import validate_grouping_result
+    text = "Подерживайте задув дом мяу как раз твоя задача!"
+    rows = [{"text": "Подерживайте", "start": 59.04, "end": 59.36}, {"text": "задув", "start": 59.36, "end": 59.6},
+            {"text": "дом", "start": 59.6, "end": 62.56}]
+    utterance = segment(21, 59.34, 62.34, text)
+    tokens = eu.words(text)
+    times = seg._word_times(utterance, tokens, rows, eu.word_core)
+    assert times[1] == (59.36, 59.6) and times[2] is None          # the stretched word counts as unmeasured
+    assert times[0] is None                                        # 0.3 s early is outside too
+    base = eu.lexicon("ru")
+    one_line = dataclasses.replace(base, rules=dataclasses.replace(base.rules, cue_max_chars=39, cue_preferred_chars=30))
+    cues = seg.group_english([utterance], rows, lexicon=one_line)
+    assert len(cues) == 2 and all(59.34 <= cue.start < cue.end <= 62.34 for cue in cues), cues
+    assert validate_grouping_result([{"segment_id": 21, "start": 59.34, "end": 62.34, "text": text, "speaker": "S00"}],
+                                    cues)
+    # With two-line subtitles (78 characters in Russian) the sentence stays whole.
+    assert [cue.text for cue in seg.group_english([utterance], rows, lexicon=base)] == [text]
+
+
+def test_a_sentence_whose_pieces_fail_the_source_check_stays_whole_with_a_review_note():
+    from subtitle_core import capture_review_items
+    from twobyteasr.recognition.cache import run_event_observer
+    # Two spaces inside the first piece: the rebuilt piece would no longer match the source text.
+    text = ("Bueno chicos hoy vamos a  intentar derrotar al jefe final porque la semana pasada no pudimos hacerlo "
+            "y la verdad es que me da un poco de miedo")
+    events = []
+    with capture_review_items() as items, run_event_observer(lambda event, payload: events.append((event, payload))):
+        cues = seg.group_english([segment(4, 10.0, 18.0, text)], (), lexicon=eu.lexicon("es"))
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [(10.0, 18.0, text)]
+    assert [item["category"] for item in items] == ["断句回退"] and items[0]["text"]
+    assert any(event == "word_grouping_sentence_kept" and payload["reason"] == "text_mutation_rejected"
+               for event, payload in events)
+
+
+def test_italian_sentences_stay_whole_and_ai_breaks_are_checked():
+    # Real Italian clip (2026-10-21): an 81-character sentence was cut into
+    # "Così se un fotone verrà mandato | per un piano con | due fessure mentre le osserviamo".
+    lex = eu.lexicon("it")
+    whole = "Così se un fotone verrà mandato per un piano con due fessure mentre le osserviamo"
+    assert [cue.text for cue in seg.group_english([segment(1, 0.68, 4.28, whole)], (), lexicon=lex)] == [whole]
+    text = whole + " non passerà per nessuna delle due non osservandole passerà"
+    tokens = eu.words(text)
+    con, non = tokens.index("con"), len(tokens) - 3                 # "… con | due", "… due non | osservandole"
+    assert seg.pieces_from_breaks(tokens, [con], lexicon=lex) is None
+    assert seg.pieces_from_breaks(tokens, [non], lexicon=lex) is None
+    cues = seg.group_english_with_ai([segment(1, 0.68, 7.28, text)], lexicon=lex,
+                                     complete=lambda _m: '{"breaks": {"1": [%d, %d]}}' % (con, non))
+    assert len(cues) == 2 and " ".join(cue.text for cue in cues) == text
+    assert not any(cue.text.endswith((" con", " non")) for cue in cues[:-1]), [cue.text for cue in cues]

@@ -15,6 +15,27 @@ def test_frozen_startup_log_goes_to_user_data(monkeypatch, tmp_path):
     assert not (tmp_path/'read-only-install').exists()
 
 
+def test_owned_clipboard_is_flushed_before_the_hard_exit(monkeypatch, tmp_path):
+    # 2026-10-22: TerminateProcess skips Qt's teardown, which is what hands copied text to Windows.
+    import types
+    import quick_start
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    flushed = []
+    fake = types.SimpleNamespace(windll=types.SimpleNamespace(ole32=types.SimpleNamespace(
+        OleFlushClipboard=lambda: flushed.append(1) or 0)))
+    monkeypatch.setattr(quick_start, 'ctypes', fake)
+    monkeypatch.setattr(quick_start.os, 'name', 'nt')
+    monkeypatch.setenv('2BYTEASR_USER_DATA_ROOT', str(tmp_path/'user'))
+    owns = [False]
+    monkeypatch.setattr(type(app.clipboard()), 'ownsClipboard', lambda self: owns[0])
+    quick_start._flush_owned_clipboard()
+    assert flushed == []  # another program's clipboard is left alone
+    owns[0] = True
+    quick_start._flush_owned_clipboard()
+    assert flushed == [1]
+
+
 def test_frozen_trace_goes_to_user_data(monkeypatch, tmp_path):
     from twobyteasr.diagnostics import startup_trace
     monkeypatch.setattr(sys, 'frozen', True, raising=False)

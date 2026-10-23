@@ -101,6 +101,7 @@ def normalized_preferences(value):
     for key, default, allowed in (
         ('autosave_interval_seconds', 60, {30, 60, 120, 300}),
         ('recent_project_count', 9, set(range(1, 101))),
+        ('speaker_main_tracks', 2, {1, 2, 3, 5, 8}),
     ):
         try:
             raw = prefs.get(key, default)

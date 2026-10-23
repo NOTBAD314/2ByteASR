@@ -1,5 +1,7 @@
 ﻿"""Post-grouping cleanup for dangling, short, and repeated subtitle cues."""
 
+import re
+
 from subtitle_core import *  # noqa: F401,F403
 from twobyteasr.subtitle_rules.segmentation import should_merge_hanging_attribute
 from .subtitle_fidelity import independent_response
@@ -11,6 +13,8 @@ __all__ = [
     "validate_editorial_cue_result",
     "apply_isolated_single_character_rules_safely",
     "merge_consecutive_short_repeated_cues",
+    "merge_short_japanese_cues",
+    "merge_japanese_sentence_cues",
 ]
 
 def merge_same_speaker_dangling_cues(cues):
@@ -339,11 +343,13 @@ def validate_editorial_cue_result(before_cues, after_cues, resolution):
     }
     if expected != actual:
         raise RuntimeError("单字成片处理后出现未记录的漏字、重复或调序，已停止写入。")
+    from twobyteasr.subtitle_rules.language_rules import finished_cue_limits
+    max_chars, max_seconds = finished_cue_limits(COMPLETE_PHRASE_SOFT_MAX_CHARS, MAX_SUBTITLE_SECONDS)
     invalid = [
         cue
         for cue in after_cues
-        if display_length(cue.text) > COMPLETE_PHRASE_SOFT_MAX_CHARS
-        or cue.end - cue.start > MAX_SUBTITLE_SECONDS + 0.05
+        if display_length(cue.text) > max_chars
+        or cue.end - cue.start > max_seconds + 0.05
         or cue.end <= cue.start
     ]
     if invalid:
@@ -445,5 +451,113 @@ def merge_consecutive_short_repeated_cues(cues):
     return result
 
 
+# 2026-10-18 (日常 19): AI line breaking and its local word-edge repairs left
+# Japanese lines of 2-4 characters on screen for well under a second
+# (「本当に」「いいから」「飛びなよ」). Such a line joins the same speaker's
+# adjacent line when no more than the display's own short-gap bridge lies
+# between them (0.5 s; the screen is never blank there anyway). Real pauses,
+# other speakers and timing-locked lines stay cut.
+# 2026-10-21 (日常 20, user: every language except Chinese should keep whole
+# sentences): grouping cuts Japanese at 16 characters, so a sentence just over
+# that loses its last words to a line of their own (「前はねみんなに隠してこっそり」
+# 「書いてたんだよ」). A finished Japanese subtitle holds two lines
+# (language_rules.JAPANESE_CUE_MAX_CHARS / _SECONDS), and the same speaker's
+# next line also joins when the sentence goes on across the seam.
+JAPANESE_SHORT_CUE_MAX_CHARS = 4
+JAPANESE_SHORT_CUE_MIN_SECONDS = 0.6
+JAPANESE_SHORT_CUE_MERGE_MAX_GAP_SECONDS = SHORT_DISPLAY_GAP_BRIDGE_SECONDS
+JAPANESE_SHORT_CUE_MERGE_MAX_CHARS = COMPLETE_PHRASE_SOFT_MAX_CHARS
+# Times are on the frame grid here: 12 frames at 23.976 fps are 0.5005 s,
+# which the gap bridge (rounding to whole frames) still closes.
+_FRAME_TOLERANCE_SECONDS = 0.025
 
 
+def merge_short_japanese_cues(cues):
+    """Japanese (10-18): join only a line too short to read, within one line (16 characters / 5 s).
+
+    Final timing runs merge_japanese_sentence_cues, which includes this rule.
+    """
+    return _join_japanese_cues(cues, max_chars=JAPANESE_SHORT_CUE_MERGE_MAX_CHARS,
+                               max_seconds=MAX_SUBTITLE_SECONDS, sentences=False)
+
+
+def merge_japanese_sentence_cues(cues):
+    """Japanese (10-21): join within two lines when the sentence goes on or one side is too short to read."""
+    from twobyteasr.subtitle_rules.language_rules import JAPANESE_CUE_MAX_CHARS, JAPANESE_CUE_MAX_SECONDS
+    return _join_japanese_cues(cues, max_chars=JAPANESE_CUE_MAX_CHARS, max_seconds=JAPANESE_CUE_MAX_SECONDS,
+                               sentences=True)
+
+
+def _join_japanese_cues(cues, *, max_chars, max_seconds, sentences):
+    """Join a line into the same speaker's adjacent line.
+
+    A seam joins when one side is too short to read (at most four content
+    characters or under 0.6 s) or, with ``sentences``, when the sentence goes
+    on across it (no Japanese strong break: sentence end, final particle,
+    interjection). The best join is made first, again and again: a seam that is
+    not a strong break before one that is, then the smaller gap, then the
+    shorter joined line. A joined line that crosses a strong break gets a
+    space, the way repeated short lines are shown; content characters never
+    change.
+    """
+    from twobyteasr.subtitle_rules.language_rules import is_japanese, japanese_strong_breaks
+    if not is_japanese() or len(cues) < 2:
+        return cues
+    rows = sorted(cues, key=lambda cue: (cue.start, cue.end, cue.speaker or "S00"))
+    strong_cache = {}
+
+    def short(cue):
+        return (len(content_exact(cue.text)) <= JAPANESE_SHORT_CUE_MAX_CHARS
+                or cue.end - cue.start < JAPANESE_SHORT_CUE_MIN_SECONDS)
+
+    def strong_seam(left, right):
+        key = (left.text, right.text)
+        if key not in strong_cache:
+            strong_cache[key] = len(content_exact(left.text)) in japanese_strong_breaks(f"{left.text}{right.text}")
+        return strong_cache[key]
+
+    def best_join():
+        best = None
+        latest_end = float("-inf")  # of every line before the seam's left line
+        for seam in range(len(rows) - 1):
+            left, right = rows[seam], rows[seam + 1]
+            gap = right.start - left.end
+            # Nobody else is on screen across the seam (an earlier, longer line).
+            joinable = (
+                (left.speaker or "S00") == (right.speaker or "S00")
+                and not left.timing_locked and not right.timing_locked
+                and -0.20 <= gap <= JAPANESE_SHORT_CUE_MERGE_MAX_GAP_SECONDS + _FRAME_TOLERANCE_SECONDS
+                and display_length(left.text + right.text) <= max_chars
+                and right.end - left.start <= max_seconds + 0.05
+                and latest_end <= left.end
+                and (short(left) or short(right) or (sentences and not strong_seam(left, right)))
+            )
+            latest_end = max(latest_end, left.end)
+            if joinable:
+                key = (strong_seam(left, right), max(0.0, gap), display_length(left.text + right.text), seam)
+                best = key if best is None or key < best else best
+        return best
+
+    merged = []
+    while (best := best_join()) is not None:
+        strong, _gap, _length, seam = best
+        left, right = rows[seam], rows[seam + 1]
+        separator = " " if strong and not re.search(r"[\s！？!?]$", left.text) else ""
+        merged.append(f"{left.text}|{right.text}")
+        left.text = clean_subtitle_text(f"{left.text}{separator}{right.text}")
+        left.start = min(left.start, right.start)
+        left.end = max(left.end, right.end)
+        rows.pop(seam + 1)
+    for cue_id, cue in enumerate(rows, 1):
+        cue.cue_id = cue_id
+    if merged and sentences:
+        print(f"   [日语整句] {len(merged)} 处同一句话或一闪而过的短字幕并回同说话人相邻字幕（两行以内）。")
+        record_run_event("japanese_sentence_cue_merge", merged=len(merged), samples=merged[:40],
+                         max_gap_ms=round(JAPANESE_SHORT_CUE_MERGE_MAX_GAP_SECONDS * 1000),
+                         max_chars=max_chars, max_seconds=max_seconds)
+    elif merged:
+        print(f"   [日语短句] {len(merged)} 条一闪而过的短字幕并入同说话人相邻字幕。")
+        record_run_event("japanese_short_cue_merge", merged=len(merged), samples=merged[:40],
+                         max_gap_ms=round(JAPANESE_SHORT_CUE_MERGE_MAX_GAP_SECONDS * 1000),
+                         max_chars=max_chars)
+    return rows

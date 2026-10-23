@@ -25,6 +25,14 @@ the whole tutorial the way a person does and records what was painted:
 * window pictures during each change of step and after each click (main
   window by PrintWindow so the native video is in them, the overlay window
   laid over it), written as small JPEGs.
+* 2026-10-22 (one tutorial): the plan step opens the cloud / local comparison
+  by itself (answered with ``TWOBYTEASR_TOUR_CHOOSE``, default cloud); the AI
+  step opens AI 设置 and the tutorial points into that window (a click at each
+  outline must reach the window, the 申请教程 guide opens and closes, a test
+  key is pasted, 测试连接 fails offline, 保存并开启 or 先不开 closes it); the
+  home page locks (glossary, web check, translation) are recorded; every show
+  and hide of the overlay is logged (no hide while a page opens: the workbench
+  flash), and how long each change of step takes.
 """
 from __future__ import annotations
 
@@ -95,7 +103,7 @@ def start(window, output: Path):
     from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer
     from PySide6.QtGui import QEnterEvent, QMovie
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
+    from PySide6.QtWidgets import QApplication, QDialog, QLineEdit, QMessageBox, QWidget
     from ..diagnostics.build_identity import load_build_identity
     from .onboarding_settings_audit import _offline_dns
     _offline_dns()
@@ -143,6 +151,35 @@ def start(window, output: Path):
             return False
 
     paint_log = PaintLog(window)
+    # 2026-10-22: how long the tutorial's own handlers take (is a dropped frame ours or the page's?).
+    slow: list = []
+    from ..app.home_tour import GuidedTour as _Tour
+
+    def timed(name, method):
+        def wrapper(self, *args, **kwargs):
+            begun = time.perf_counter()
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                spent = (time.perf_counter() - begun) * 1000
+                if spent >= 8:
+                    slow.append(dict(t=now(), call=name, ms=round(spent, 1), i=getattr(self, 'index', -1),
+                                     mode=str(getattr(self, 'mode', ''))))
+        return wrapper
+    for _name in ('_poll', '_follow_target', '_glide_step', '_glide_done', '_arrive', '_show_bubble', '_reveal_step',
+                  '_reveal_done', '_pulse', 'paintEvent', '_place', '_bubble_picture'):
+        setattr(_Tour, _name, timed(_name, getattr(_Tour, _name)))
+    shows: list = []
+
+    class ShowLog(QObject):
+        """Every show and hide of the overlay window, with the tutorial's mode at that moment."""
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+            if event.type() in (QEvent.Type.Show, QEvent.Type.Hide):
+                shows.append(dict(t=now(), shown=event.type() == QEvent.Type.Show,
+                                  mode=str(getattr(watched, 'mode', '')), i=getattr(watched, 'index', -1)))
+            return False
+
+    show_log = ShowLog(window)
 
     class PressLog(QObject):
         def eventFilter(self, watched, event):  # noqa: N802 - Qt override
@@ -182,6 +219,10 @@ def start(window, output: Path):
             image, origin = _print_window_rgba(hwnd)
             image = image.convert('RGB')
             tour = state['tour']
+            host = tour._step_host() if tour is not None and hasattr(tour, '_step_host') else None
+            if host is not None:   # 2026-10-22: AI 设置 is its own window, between the page and the overlay
+                dialog, corner = _print_window_rgba(int(host.winId()))
+                image.paste(dialog.convert('RGB'), (corner[0] - origin[0], corner[1] - origin[1]))
             if tour is not None and tour.isVisible() and tour.isWindow():
                 shot = tour.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
                 data = bytes(shot.constBits())
@@ -209,10 +250,10 @@ def start(window, output: Path):
             return None, None
         if isinstance(target, tuple):
             widget, part = target
-            centre = widget.mapTo(window, part.center().toPoint())
+            centre = window.mapFromGlobal(widget.mapToGlobal(part.center().toPoint()))
         else:
             widget = target
-            centre = widget.mapTo(window, widget.rect().center())
+            centre = window.mapFromGlobal(widget.mapToGlobal(widget.rect().center()))
         return widget, centre
 
     def system_window_at(point):
@@ -231,12 +272,22 @@ def start(window, output: Path):
             return 'overlay'
         if found == hwnd or user.IsChild(W.HWND(hwnd), W.HWND(found)):
             return 'main'
+        tour = state['tour']
+        host = tour._step_host() if tour is not None and hasattr(tour, '_step_host') else None
+        if host is not None:
+            host_hwnd = int(host.winId())
+            if found == host_hwnd or user.IsChild(W.HWND(host_hwnd), W.HWND(found)):
+                return 'host'
         return f'other:{found}'
 
     def send_click(point, where, double=False):
         """A press and release where the system would deliver it (QTest through that window's handle)."""
         tour = state['tour']
         top = tour if where == 'overlay' and tour is not None and tour.isWindow() else window
+        if where == 'host' and tour is not None and tour._step_host() is not None:
+            host = tour._step_host()
+            point = host.mapFromGlobal(window.mapToGlobal(point))
+            top = host
         handle = top.windowHandle()
         QApplication.sendEvent(handle, QEnterEvent(QPointF(point), QPointF(point), QPointF(window.mapToGlobal(point))))
         QTest.mouseMove(handle, point)
@@ -249,7 +300,11 @@ def start(window, output: Path):
         popup = QApplication.activePopupWidget()
         if popup is not None:
             popup.close()
+        tour = tour_alive()
+        host = tour._step_host() if tour is not None else None
         for top in QApplication.topLevelWidgets():
+            if top is host or (tour is not None and getattr(tour._step(), 'host', None) is not None):
+                continue
             if top is not window and top.isVisible() and isinstance(top, (QDialog, QMessageBox)):
                 top.reject() if isinstance(top, QDialog) else top.close()
 
@@ -265,7 +320,7 @@ def start(window, output: Path):
         mark = dict(since=time.monotonic(), last=None, begun=time.monotonic(), index=tour.index)
 
         def done():
-            if tour_alive() is None:
+            if tour_alive() is None or compare_window() is not None:
                 return True
             if mark['index'] != tour.index:
                 mark.update(index=tour.index, since=time.monotonic(), last=None)
@@ -277,6 +332,32 @@ def start(window, output: Path):
                 return True
             return key[0] and (time.monotonic() - mark['since']) * 1000 >= quiet_ms
         return done
+
+    def above(upper: int, lower: int) -> bool:
+        """``upper`` comes before ``lower`` in the system's z-order (it is drawn over it)."""
+        import ctypes
+        from ctypes import wintypes as W
+        user = ctypes.windll.user32
+        user.GetWindow.argtypes = [W.HWND, W.UINT]
+        user.GetWindow.restype = W.HWND
+        node = upper
+        for _ in range(4000):
+            node = int(user.GetWindow(W.HWND(node), 2) or 0)   # GW_HWNDNEXT: the window below
+            if not node:
+                return False
+            if node == lower:
+                return True
+        return False
+
+    def compare_window():
+        from ..app.quick_setup import QuickSetupDialog
+        return next((top for top in QApplication.topLevelWidgets()
+                     if isinstance(top, QuickSetupDialog) and top.isVisible() and getattr(top, 'compare', False)), None)
+
+    def other_window(host):
+        """A visible dialog that is not the window the step points into (a guide shown with exec())."""
+        return next((top for top in QApplication.topLevelWidgets()
+                     if isinstance(top, QDialog) and top.isVisible() and top is not host), None)
 
     def watch_overlay(tour):
         state['overlay_hwnd'] = int(tour.winId()) if tour.isWindow() else 0
@@ -344,6 +425,7 @@ def start(window, output: Path):
         tour = tour_alive()
         state['tour'] = tour
         tour.installEventFilter(paint_log)
+        tour.installEventFilter(show_log)
         tour.bubble.installEventFilter(paint_log)
         watch_overlay(tour)
         result['overlay'] = dict(top_level=tour.isWindow(), floating=bool(getattr(tour, 'floating', False)))
@@ -386,9 +468,20 @@ def start(window, output: Path):
                 row['timeline_card'] = (card.model_label.text(), card.status_badge.text()) if card is not None else None
             hint = window.__dict__.get('subtitle_language_hint')
             row['language_hint'] = hint.text() if hint is not None and hint.isVisible() else ''
+            row['host'] = bool(getattr(step, 'host', None) is not None and tour._step_host() is not None)
+            if row['host']:
+                row['host_on_top'] = (tour.isVisible() and tour._foreign_dialog() is None
+                                      and above(state.get('overlay_hwnd') or 0, int(tour._step_host().winId())))
+            if step.anim == 'glossary' and window.__dict__.get('terms') is not None:
+                output = window.subtitle_output
+                row['locks'] = dict(gate=window.__dict__.get('_ai_gate_state'), terms=window.terms.isEnabled(),
+                                    search=window.term_search.isEnabled(),
+                                    translation=[output.model().item(i).isEnabled() for i in range(output.count())],
+                                    punctuation=window.subtitle_punctuation.isEnabled(),
+                                    state_line=window.term_state_label.text())
             if widget is not None:
                 where = system_window_at(point)
-                want = 'overlay' if row['click_step'] else 'main'
+                want = 'overlay' if row['click_step'] else ('host' if row['host'] else 'main')
                 row.update(where=where, reaches=where == want, target=type(widget).__name__)
                 hole, box = QRectF(tour.hole), QRectF(tour.bubble.geometry())
                 dx = max(0.0, max(hole.left() - box.right(), box.left() - hole.right()))
@@ -408,7 +501,66 @@ def start(window, output: Path):
             # Go on the way a person does.
             moving = next((i for i, a in enumerate(step.actions) if a.advance), None)
             before = index
-            if (not detoured and step.anim == 'plan_ok' and widget is not None and clicking == 'real'
+            modal_move = next((i for i, a in enumerate(step.actions) if a.advance and a.modal), None)
+            if getattr(step, 'auto', None) is not None:
+                # 2026-10-22: the plan step opens the comparison by itself a moment after it appears.
+                film(f's{index + 1:02d}-plans', 2.0)
+                yield lambda: compare_window() is not None or tour_alive() is None or tour.index != before
+                compare = compare_window()
+                plans = dict(index=row['index'], opened=compare is not None, mode=getattr(tour, 'mode', ''),
+                             overlay_visible=tour.isVisible())
+                if compare is not None:
+                    yield 0.6
+                    compare.grab().save(str(folder / f"S{row['index'] + 1:02d}-plans.png"))
+                    plans.update(cards=list(compare.cards), selected=compare.choice,
+                                 points={key: len(card.points) for key, card in compare.cards.items()},
+                                 tour_box=compare.tour_check.isVisible(), go=compare.go_button.text())
+                    compare.select(choose or 'cloud')
+                    QTest.mouseClick(compare.go_button, Qt.MouseButton.LeftButton)
+                yield lambda: tour_alive() is None or tour.index != before
+                plans.update(next_index=tour.index if tour_alive() is not None else None,
+                             plan=window._current_plan_key())
+                result['plans'] = plans
+            elif modal_move is not None and getattr(step, 'host', None) is not None and clicking == 'real':
+                # 申请教程 inside AI 设置: the guide opens with exec() - from the timer, never inside this step.
+                film(f's{index + 1:02d}-guide', 3.0)
+                host = tour._step_host()
+                QTimer.singleShot(0, lambda b=tour.action_buttons[modal_move]: QTest.mouseClick(b, Qt.MouseButton.LeftButton))
+                opened = dict(index=row['index'], where='action', t=now())
+                yield lambda: other_window(host) is not None
+                yield 0.8
+                dialog = other_window(host)
+                opened.update(dialog=type(dialog).__name__, title=dialog.windowTitle() if dialog is not None else '',
+                              mode=getattr(tour, 'mode', ''), overlay_visible=tour.isVisible(),
+                              bubble_visible=tour.bubble.isVisible())
+                if dialog is not None:
+                    dialog.grab().save(str(folder / f"S{row['index'] + 1:02d}-window.png"))
+                    dialog.reject()
+                yield lambda: tour_alive() is None or tour.index != before
+                yield settled(tour)
+                opened.update(back_index=tour.index, back_mode=getattr(tour, 'mode', ''),
+                              back_bubble=tour.bubble.isVisible(), host_still_open=tour._step_host() is not None)
+                result['windows'].append(opened)
+            elif getattr(step, 'host', None) is not None and not step.show_next and step.actions:
+                # 要开启 AI 吗: 保存并开启 (with the test key); if it cannot save, 先不开. From the timer:
+                # a refusal comes as a message box with exec().
+                tried = []
+                for button in list(tour.action_buttons):
+                    tried.append(button.text())
+                    QTimer.singleShot(0, lambda b=button: QTest.mouseClick(b, Qt.MouseButton.LeftButton))
+                    yield 1.5
+                    for top in QApplication.topLevelWidgets():
+                        if isinstance(top, QMessageBox) and top.isVisible():
+                            tried.append('message: ' + top.text()[:80])
+                            top.close()
+                            yield 0.4
+                    if tour_alive() is None or tour.index != before:
+                        break
+                result['ai_enable'] = dict(index=row['index'], tried=tried,
+                                           closed=window.__dict__.get('_ai_settings_dialog') is None,
+                                           next_index=tour.index if tour_alive() is not None else None,
+                                           gate=window.__dict__.get('_ai_gate_state'))
+            elif (not detoured and step.anim == 'plan_ok' and widget is not None and clicking == 'real'
                     and getattr(tour, 'mode', None) is not None):
                 # Detour: the model card opens the workshop; the tutorial waits on its chip.
                 detoured = True
@@ -501,7 +653,17 @@ def start(window, output: Path):
                 limit = time.monotonic() + (25 if step.anim == 'studio_open' else 6)
                 yield lambda: tour_alive() is None or tour.index != before or time.monotonic() > limit
                 click['advanced'] = tour_alive() is None or tour.index != before
-                if not click['advanced'] and step.actions:
+                if not click['advanced'] and getattr(step, 'host', None) is not None and step.show_next:
+                    # Inside AI 设置 the click is the user's part (a key pasted, a test run offline);
+                    # the step itself waits for 下一步.
+                    click['advanced'] = True
+                    click['inside_window'] = True
+                    if step.focus is not None and isinstance(QApplication.focusWidget(), QLineEdit):
+                        QApplication.focusWidget().insert('sk-tutorial-audit-0000000000000000')
+                        click['typed'] = True
+                    QTest.mouseClick(tour.next, Qt.MouseButton.LeftButton)
+                    yield lambda: tour_alive() is None or tour.index != before
+                elif not click['advanced'] and step.actions:
                     click['helper'] = True     # the click did not do it: "帮我做" so the walk goes on
                     QTest.mouseClick(tour.action_buttons[0], Qt.MouseButton.LeftButton)
                     yield lambda: tour_alive() is None or tour.index != before
@@ -532,9 +694,9 @@ def start(window, output: Path):
                 watch_overlay(tour)
                 film(f's{tour.index + 1:02d}', 1.4)
         yield lambda: tour_alive() is None
-        check('tutorial walked to the end of 基础 and 进阶',
+        check('tutorial walked to its end in one part (no separate 进阶)',
               walked and walked[-1]['index'] == state['offset'] + len(tour.steps) - 1
-              and {r['part'] for r in walked} == {'basic', 'advanced'}, [(r['part'], r['index']) for r in walked])
+              and len({r['part'] for r in walked}) == 1, [(r['part'], r['index']) for r in walked])
 
     # ---------------------------------------------------------------- analysis
     def analyse():
@@ -613,6 +775,39 @@ def start(window, output: Path):
             check('while a guide window is open, nothing of the tutorial is shown; it comes back when it closes',
                   all(not w.get('overlay_visible') and w.get('mode') == 'dialog' and w.get('back_bubble')
                       for w in windows), windows)
+        plans = result.get('plans') or {}
+        check('plan step: the cloud / local comparison opens by itself, each card says what it is good for and '
+              'what to watch out for, no tutorial box in it; the choice is saved and the tutorial goes on',
+              plans.get('opened') and plans.get('cards', [])[:2] in (['cloud', 'local'], ['cloud', 'apple'])
+              and all(count >= 4 for count in (plans.get('points') or {0: 0}).values()) and not plans.get('tour_box')
+              and plans.get('plan') == (choose or 'cloud') and plans.get('next_index') != plans.get('index'), plans)
+        inside = [s for s in result['steps'] if s.get('host')]
+        check('AI 设置: the tutorial points into the open window (above it, clicks at each outline reach the window)',
+              len(inside) >= 4 and all(s.get('host_on_top') and s.get('reaches') for s in inside),
+              [(s['index'], s.get('where'), s.get('host_on_top')) for s in inside])
+        enable = result.get('ai_enable') or {}
+        check('要开启 AI 吗: the window closes and the tutorial goes on with the content steps',
+              enable.get('closed') and enable.get('next_index') is not None, enable)
+        locks = next((s.get('locks') for s in result['steps'] if s.get('locks')), None) or {}
+        check('without a tested key: 术语库校对 and 联网补充核验 are locked, only "只显示原文" can be picked, '
+              'punctuation stays free',
+              locks.get('gate') != 'ready' and locks.get('terms') is False and locks.get('search') is False
+              and locks.get('translation') == [True, False, False] and locks.get('punctuation') is True, locks)
+        flashes = [row for row in shows if not row['shown'] and row['mode'] not in ('dialog', 'closed')]
+        check('the overlay is never hidden while a page opens (no bright flash, e.g. entering the workbench)',
+              not flashes, flashes)
+        # How long a change of step takes: from the first frame of the new step to its bubble fully shown.
+        timings = []
+        for index, rows in sorted(by_step.items()):
+            start = next((row['t'] for row in rows if row['m'] in ('wait', 'glide')), None)
+            ready = next((row['t'] for row in rows if row['m'] == 'shown' and row['r'] >= 0.99 and row['v']), None)
+            if start is not None and ready is not None and ready >= start:
+                timings.append((index, ready - start))
+        result['step_ms'] = timings
+        values = sorted(ms for _i, ms in timings)
+        median = values[len(values) // 2] if values else 0
+        check('a change of step takes at most 450 ms in the middle (outline glide + bubble fade-in)',
+              values and median <= 450, dict(median=median, slowest=sorted(timings, key=lambda x: -x[1])[:5]))
         chooser = result.get('chooser') or {}
         check('first-run chooser: cloud first, chosen by default, tutorial box ticked',
               chooser.get('order', [None])[0] == 'cloud' and chooser.get('selected') == 'cloud'
@@ -627,6 +822,8 @@ def start(window, output: Path):
     timer = QTimer(window)
 
     def save():
+        result['shows'] = shows
+        result['slow_calls'] = slow
         (output / 'result-tour.json').write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), 'utf-8')
         with (folder / 'paints.jsonl').open('w', encoding='utf-8') as handle:
             for row in paints:

@@ -128,6 +128,10 @@ class ProjectProfile:
         self.id = str(self.id or uuid.uuid4().hex).strip()
         self.name = str(self.name or "未命名方案").strip()
         self.recognition_plan = str(self.recognition_plan or "custom")
+        from .recognition_plans import REMOVED_PLANS
+        if self.recognition_plan in REMOVED_PLANS:
+            # 2026-10-22: the plan was removed; its saved models still apply.
+            self.recognition_plan = "custom"
         self.primary_asr = str(self.primary_asr or "")
         self.timestamp_model = str(self.timestamp_model or "")
         self.evidence_model = str(self.evidence_model or "")

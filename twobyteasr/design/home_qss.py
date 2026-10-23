@@ -9,6 +9,136 @@ what is missing. Appended after the surface sheet so it owns these selectors.
 """
 from .typography import UI_FONT_STACK
 
+# 2026-10-22 (user): while no AI is connected the AI card and 内容与术语 are
+# blue-grey (the first draft's sand "跟紫色背景不搭"): a steel blue mixed into
+# each theme's own surface, quiet on the purple themes and the light ones alike.
+AI_LOCK_HUE = "#7c9cbd"
+
+
+def ai_lock_palette(t) -> dict[str, str]:
+    """The blue-grey of the locked AI zone for theme ``t`` (QSS and the frosted overlay share it)."""
+    from .ui_theme import blend_hex
+    light = t.is_light
+    return {
+        "band": blend_hex(t.surface, AI_LOCK_HUE, 0.11 if light else 0.08),
+        "band_edge": blend_hex(t.surface, AI_LOCK_HUE, 0.34 if light else 0.26),
+        "card": blend_hex(t.surface, AI_LOCK_HUE, 0.17 if light else 0.13),
+        "edge": blend_hex(t.surface, AI_LOCK_HUE, 0.48 if light else 0.40),
+        "edge_strong": blend_hex(t.surface, AI_LOCK_HUE, 0.72 if light else 0.62),
+        "chip": blend_hex(t.surface, AI_LOCK_HUE, 0.28 if light else 0.25),
+        "title": blend_hex(t.text, AI_LOCK_HUE, 0.42 if light else 0.38),
+        "text": blend_hex(t.text_secondary, AI_LOCK_HUE, 0.30),
+        "frost": blend_hex(t.surface, AI_LOCK_HUE, 0.20 if light else 0.14),
+    }
+
+
+def _ai_card_rules(t, zones, strong, chip_amount) -> str:
+    """The home AI card (design B) and the locked zone around it (2026-10-22)."""
+    from .ui_theme import blend_hex
+    light = t.is_light
+    lock = ai_lock_palette(t)
+    card = blend_hex(t.surface, zones["ai"], 0.13 if light else 0.09)
+    card_edge = blend_hex(t.surface, zones["ai"], 0.42 if light else 0.32)
+    good = blend_hex(t.surface, t.success, 0.18 if light else 0.16)
+    return f"""
+QFrame#homeProcessCard[aiLock="true"] {{ background: {lock['band']}; border-top: 1px solid {lock['band_edge']}; }}
+QFrame#homeAiCard {{ background: {card}; border: 1px solid {card_edge}; border-radius: 14px; }}
+QFrame#homeAiCard:hover {{ border-color: {strong['ai']}; }}
+QFrame#homeAiCard:focus {{ border-color: {t.focus}; }}
+QFrame#homeAiCard[aiLock="true"] {{ background: {lock['card']}; border-color: {lock['edge']}; }}
+QFrame#homeAiCard[aiLock="true"]:hover {{ border-color: {lock['edge_strong']}; }}
+QFrame#homeAiCard[aiLock="true"]:focus {{ border-color: {t.focus}; }}
+QLabel#homeAiRole {{ color: {blend_hex(t.text, zones['ai'], 0.55)}; font-size: 13px; font-weight: 700; background: transparent; }}
+QFrame#homeAiCard[aiLock="true"] QLabel#homeAiRole {{ color: {lock['title']}; }}
+QLabel#homeAiIcon {{ background: {t.accent}; border-radius: 15px; }}
+QFrame#homeAiCard[aiLock="true"] QLabel#homeAiIcon {{ background: {lock['chip']}; }}
+QLabel#homeAiTitle {{ color: {t.text}; font-family: {UI_FONT_STACK}; font-size: 20px; font-weight: 700; background: transparent; }}
+QLabel#homeAiSummary {{ color: {t.text_secondary}; font-size: 13px; font-weight: 500; background: transparent; }}
+QFrame#homeAiCard[aiLock="true"] QLabel#homeAiSummary {{ color: {lock['text']}; }}
+QWidget#homeAiFeatures {{ background: transparent; }}
+QLabel#homeAiState {{ border-radius: 7px; padding: 2px 9px; font-size: 12px; font-weight: 700; }}
+QLabel#homeAiState[state="ready"] {{ background: {good}; color: {t.success}; }}
+QLabel#homeAiState[state="lock"] {{ background: {lock['chip']}; color: {lock['title']}; }}
+QLabel#homeAiState[state="warn"] {{ background: {t.warning_soft}; color: {t.warning}; }}
+QLabel#homeAiFeature {{ border-radius: 6px; padding: 2px 9px; font-size: 12px; font-weight: 600; }}
+QLabel#homeAiFeature[on="true"] {{ background: {good}; color: {t.success}; }}
+QLabel#homeAiFeature[on="false"] {{ background: transparent; color: {t.text_muted}; border: 1px solid {t.border}; }}
+QPushButton#homeAiSettings {{ background: {blend_hex(t.surface, zones['ai'], chip_amount)}; color: {t.text};
+    border: 1px solid {card_edge}; border-radius: 10px; min-height: 38px; padding: 0 16px; font-size: 14px; font-weight: 600; }}
+QPushButton#homeAiSettings:hover {{ border-color: {strong['ai']}; background: {blend_hex(t.surface, zones['ai'], chip_amount + 0.1)}; }}
+QFrame#homeAiCard[aiLock="true"] QPushButton#homeAiSettings {{ background: {lock['chip']}; border-color: {lock['edge']}; }}
+QFrame#homeAiCard[aiLock="true"] QPushButton#homeAiSettings:hover {{ border-color: {lock['edge_strong']}; }}
+QPushButton#homeAiPrimary {{ min-height: 40px; padding: 0 20px; font-size: 15px; font-weight: 700; border-radius: 10px; }}
+QFrame#homeContentProfile[aiLock="true"] {{ background: {lock['band']}; border-top: 1px solid {lock['band_edge']}; }}
+QFrame#homeContentProfile[aiLock="true"] QLabel#homeSectionTitle {{ color: {t.text_muted}; }}
+QFrame#homeContentProfile[aiLock="true"] QLabel#homeCardIcon {{ background: {lock['chip']}; }}
+QFrame#homeContentProfile[aiLock="true"] QFrame#homePanelRule {{ background: {lock['band_edge']}; }}
+QWidget#homeContentBody {{ background: transparent; }}
+QDialog#aiSettingsDialog QLabel#aiDialogState {{ border-radius: 7px; padding: 2px 10px; font-size: 12px; font-weight: 700; }}
+QDialog#aiSettingsDialog QLabel#aiDialogState[state="ready"] {{ background: {good}; color: {t.success}; }}
+QDialog#aiSettingsDialog QLabel#aiDialogState[state="lock"] {{ background: {lock['chip']}; color: {lock['title']}; }}
+QDialog#aiSettingsDialog QLabel#aiDialogState[state="warn"] {{ background: {t.warning_soft}; color: {t.warning}; }}
+QDialog#aiSettingsDialog QLabel#aiSectionTitle {{ color: {t.text}; font-size: 15px; font-weight: 700; background: transparent; padding-top: 2px; }}
+QDialog#aiSettingsDialog QFrame#aiAdvancedBox {{
+    background: {blend_hex(t.surface, t.text, 0.03 if light else 0.025)}; border: 1px solid {t.border}; border-radius: 12px; }}
+QDialog#aiSettingsDialog QFrame#aiAdvancedRule {{ background: {t.border}; border: 0; }}
+QFrame#aiGuide {{ background: {blend_hex(t.surface, t.accent, 0.12 if light else 0.10)}; border: 1px solid {blend_hex(t.surface, t.accent, 0.4 if light else 0.32)}; border-radius: 12px; }}
+QFrame#aiGuide[state="untested"], QFrame#aiGuide[state="failed"], QFrame#aiGuide[state="off"] {{
+    background: {blend_hex(t.surface, t.text, 0.04 if light else 0.03)}; border-color: {t.border}; }}
+QFrame#aiGuide[state="ready"] {{ background: {blend_hex(t.surface, t.success, 0.12 if light else 0.09)}; border-color: {blend_hex(t.surface, t.success, 0.4 if light else 0.3)}; }}
+QFrame#aiGuide QLabel {{ background: transparent; }}
+QLabel#aiGuideEyebrow {{ color: {t.accent_text}; font-size: 12px; font-weight: 700; }}
+QFrame#aiGuide[state="ready"] QLabel#aiGuideEyebrow {{ color: {t.success}; }}
+QFrame#aiGuide[state="failed"] QLabel#aiGuideEyebrow {{ color: {t.warning}; }}
+QLabel#aiGuideHeading {{ color: {t.text}; font-size: 16px; font-weight: 700; }}
+QLabel#aiGuideText {{ color: {t.text_secondary}; font-size: 13px; }}
+QLabel#aiGuideStep {{ color: {t.text}; font-size: 13px; }}
+QLabel#aiGuideStep[step="next"] {{ color: {t.text_muted}; }}
+QLabel#aiGuideBadge {{ border-radius: 10px; font-size: 11px; font-weight: 700; }}
+QLabel#aiGuideBadge[step="now"] {{ background: {t.accent}; color: {t.text_on_accent}; }}
+QLabel#aiGuideBadge[step="next"] {{ background: {blend_hex(t.surface, t.text, 0.12)}; color: {t.text_muted}; }}
+QLabel#aiGuideBadge[step="done"] {{ background: {t.success}; }}
+QLabel#aiGuideBadge[step="plain"] {{ background: transparent; }}
+QFrame#aiGuide QWidget#aiGuideSteps, QFrame#aiGuide QWidget#aiWin {{ background: transparent; }}
+QLabel#aiWinEyebrow {{ color: {t.success}; font-size: 12px; font-weight: 700; }}
+QLabel#aiWinHeading {{ color: {t.text}; font-size: 17px; font-weight: 700; }}
+QLabel#aiWinMeta {{ color: {t.text_secondary}; font-size: 12px; }}
+QLabel#aiWinCaption {{ color: {t.text_secondary}; font-size: 12px; font-weight: 700; }}
+QFrame#aiWinTile {{ background: {blend_hex(t.surface, t.success, 0.17 if light else 0.14)};
+    border: 1px solid {blend_hex(t.surface, t.success, 0.4 if light else 0.32)}; border-radius: 10px; }}
+QFrame#aiWinTile[on="false"] {{ background: transparent; border: 1px dashed {t.border}; }}
+QLabel#aiWinTileIcon {{ background: {blend_hex(t.surface, t.success, 0.28 if light else 0.24)}; border-radius: 7px; }}
+QFrame#aiWinTile[on="false"] QLabel#aiWinTileIcon {{ background: {blend_hex(t.surface, t.text, 0.08)}; }}
+QLabel#aiWinTileName {{ color: {t.text}; font-size: 13px; font-weight: 650; }}
+QFrame#aiWinTile[on="false"] QLabel#aiWinTileName {{ color: {t.text_muted}; font-weight: 500; }}
+QLabel#aiWinTileUse {{ color: {t.text_secondary}; font-size: 12px; }}
+QFrame#aiWinTile[on="false"] QLabel#aiWinTileUse {{ color: {t.text_muted}; }}
+QFrame#aiWinNext {{ background: transparent; border: 0; border-top: 1px solid {blend_hex(t.surface, t.success, 0.32)}; }}
+QLabel#aiWinNextText {{ color: {t.text}; font-size: 13px; }}
+QDialog#aiSettingsDialog QPushButton[aiDialogAction="true"] {{ min-height: 46px; max-height: 46px; padding: 0 20px;
+    font-size: 14px; font-weight: 650; }}
+QDialog#aiSettingsDialog QPushButton#helpLink[emphasis="primary"] {{ color: {t.text_on_accent}; background: {t.accent};
+    border: 1px solid {t.accent}; border-radius: 10px; min-height: 42px; padding: 0 14px; font-size: 14px; font-weight: 650; }}
+QDialog#aiSettingsDialog QPushButton#helpLink[emphasis="primary"]:hover {{ background: {t.accent_hover}; border-color: {t.accent_hover}; }}
+QDialog#aiSettingsDialog QPushButton#helpLink[emphasis="secondary"] {{ color: {t.text}; background: {t.control_background};
+    border: 1px solid {t.border}; border-radius: 10px; min-height: 42px; padding: 0 14px; font-size: 14px; font-weight: 600; }}
+QDialog#aiSettingsDialog QPushButton#helpLink[emphasis="secondary"]:hover {{ background: {t.control_hover}; border-color: {t.border_strong}; }}
+QDialog#aiSettingsDialog QLabel#aiAdvancedSummary {{ color: {t.text_muted}; font-size: 13px; background: transparent; }}
+QDialog#aiSettingsDialog QLabel#aiDutyNote {{ color: {t.text_muted}; font-size: 12px; background: transparent; }}
+QDialog#aiSettingsDialog QToolButton#endpointAdvancedToggle {{ font-size: 14px; color: {t.text}; }}
+QLabel#homeFrostNote {{ background: transparent; color: {t.text}; font-size: 18px; font-weight: 700; }}
+QLabel#homeFrostSub {{ background: transparent; color: {lock['text']}; font-size: 12px; }}
+QFrame#homeFrostTile {{ background: {blend_hex(lock['card'], t.surface_elevated, 0.25)};
+    border: 1px dashed {lock['edge_strong']}; border-radius: 10px; }}
+QLabel#homeFrostTileIcon {{ background: {lock['chip']}; border-radius: 9px; }}
+QLabel#homeFrostTileName {{ background: transparent; color: {t.text}; font-size: 14px; font-weight: 700; }}
+QLabel#homeFrostTileLock {{ background: transparent; }}
+QLabel#homeFrostTileUse {{ background: transparent; color: {lock['text']}; font-size: 12px; }}
+QComboBox#homeLanguageCombo[aiLock="true"], QComboBox#homeLanguageCombo[aiLock="true"]:disabled {{
+    background: {lock['card']}; color: {lock['title']}; border: 1px dashed {lock['edge_strong']}; }}
+QLabel#homeLanguageCaption[aiLock="true"] {{ color: {lock['title']}; }}
+"""
+
 
 def build_home_qss(t):
     from .ui_theme import blend_hex
@@ -98,27 +228,22 @@ QPushButton#contentQuickChip {{ background: {t.surface_elevated}; color: {t.text
     font-size: 14px; font-weight: 500; }}
 QPushButton#contentQuickChip:hover {{ color: {t.text}; border-color: {strong['content']}; background: {t.selected}; }}
 QPushButton#contentQuickChip:checked {{ background: {chip['content']}; color: {t.text}; border-color: {strong['content']}; }}
-QFrame#homeProcessCard QFrame#settingTile, QFrame#homeProcessCard QFrame#settingTile[checked="true"] {{
-    background: transparent; border: 0; border-radius: 14px; }}
-QFrame#homeProcessCard QFrame#settingTile:hover {{ background: {band_chip['ai']}; border: 0; }}
-QFrame#homeProcessCard QLabel#settingTileIcon {{ background: {band_chip['ai']}; border-radius: 11px; }}
-QFrame#homeProcessCard QLabel#settingTileTitle {{ color: {t.text}; font-size: 17px; font-weight: 600; }}
-QFrame#homeProcessCard QLabel#settingTileSummary {{ color: {t.text_secondary}; font-size: 13px; font-weight: 500; }}
-QFrame#homeProcessCard QLabel#settingTileChevron {{ background: transparent; }}
 QFrame#homeProcessCard QFrame#accordion {{ background: transparent; border: 0; }}
-QLabel#homeFactChip {{ border-radius: 8px; padding: 4px 10px; font-size: 13px; font-weight: 500; }}
-QLabel#homeFactChip[state="on"] {{ background: {band_chip['ai']}; color: {t.text}; }}
-QLabel#homeFactChip[state="off"] {{ background: transparent; color: {t.text_muted}; border: 1px solid {band_edge['ai']}; }}
-QLabel#homeFactChip[state="warn"] {{ background: {t.warning_soft}; color: {t.warning}; }}
-QPushButton#homeAiSettings {{ background: {band_chip['ai']}; color: {t.text}; border: 1px solid {band_edge['ai']};
-    border-radius: 10px; min-height: 36px; padding: 0 16px; font-size: 14px; font-weight: 600; }}
-QPushButton#homeAiSettings:hover {{ border-color: {strong['ai']}; background: {blend_hex(t.surface, zones['ai'], chip_amount + 0.1)}; }}
+{_ai_card_rules(t, zones, strong, chip_amount)}
 QDialog#aiSettingsDialog QFrame#aiDialogHeader {{ background: {t.surface}; border: 0; border-bottom: 1px solid {t.border}; }}
-QDialog#aiSettingsDialog QFrame#aiDialogFooter {{ background: {t.surface}; border: 0; border-top: 1px solid {t.border}; }}
 QDialog#aiSettingsDialog QLabel#aiDialogTitle {{ color: {t.text}; font-size: 20px; font-weight: 600; background: transparent; }}
 QDialog#aiSettingsDialog QLabel#aiDialogSubtitle {{ color: {t.text_secondary}; font-size: 13px; background: transparent; }}
 QDialog#aiSettingsDialog QScrollArea#aiDialogScroll, QDialog#aiSettingsDialog QWidget#aiDialogBody {{ background: {t.surface}; border: 0; }}
 QDialog#aiSettingsDialog QFrame#accordion {{ background: transparent; border: 0; }}
+QDialog#groupingPromptDialog {{ background: {t.surface}; }}
+QDialog#groupingPromptDialog QFrame#aiDialogHeader {{ background: {t.surface}; border: 0; border-bottom: 1px solid {t.border}; }}
+QDialog#groupingPromptDialog QFrame#aiDialogFooter {{ background: {t.surface}; border: 0; border-top: 1px solid {t.border}; }}
+QDialog#groupingPromptDialog QLabel#aiDialogTitle {{ color: {t.text}; font-size: 20px; font-weight: 600; background: transparent; }}
+QDialog#groupingPromptDialog QLabel#aiDialogSubtitle {{ color: {t.text_secondary}; font-size: 13px; background: transparent; }}
+QDialog#groupingPromptDialog QWidget#aiDialogBody {{ background: {t.surface}; border: 0; }}
+QDialog#groupingPromptDialog QPlainTextEdit#groupingPromptEditor, QDialog#groupingPromptDialog QPlainTextEdit#groupingPromptFixed {{
+    font-size: 14px; border: 1px solid {t.border}; border-radius: 8px; padding: 6px; }}
+QDialog#groupingPromptDialog QPlainTextEdit#groupingPromptFixed {{ color: {t.text_secondary}; }}
 QToolButton#endpointAdvancedToggle {{ background: transparent; border: 0; color: {t.text_secondary};
     font-size: 13px; font-weight: 600; padding: 6px 0; }}
 QToolButton#endpointAdvancedToggle:hover {{ color: {t.text}; }}

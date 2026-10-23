@@ -320,22 +320,126 @@ def test_source_choice_explains_the_runtime_sources():
     dialog.deleteLater()
 
 
-def test_quiet_runtime_step_says_the_process_is_still_working(monkeypatch):
+def _running(dialog, monkeypatch, started_ago=200.0):
+    """Pretend the installer runs; returns the run's monotonic start."""
     import time
     from PySide6.QtCore import QProcess
-    dialog = _dialog()
     monkeypatch.setattr(dialog.process, 'state', lambda: QProcess.ProcessState.Running)
-    now = time.monotonic()
-    dialog._started_at, dialog._last_log_at = now - 90, now - 56
-    dialog._phase = 'interpreter_preparing'  # e.g. uv downloading the private Python
-    dialog._refresh_activity_clock()
-    assert dialog.activity_status.text().endswith('正在等待子程序输出；达到阶段期限后会停止并说明原因')
-    dialog._last_log_at = now - 5
-    dialog._refresh_activity_clock()
-    assert '不逐行报告进度' not in dialog.activity_status.text()
-    dialog._last_log_at, dialog._phase = now - 56, 'weights_downloading'  # weights report every second
-    dialog._refresh_activity_clock()
-    assert '不逐行报告进度' not in dialog.activity_status.text()
+    monkeypatch.setattr(dialog.process, 'processId', lambda: 0)
+    start = time.monotonic() - started_ago
+    dialog._started_at = start
+    dialog._activity.reset(start, time.time() - started_ago)
+    return start
+
+
+def test_heartbeats_are_not_progress_and_an_idle_silent_step_says_where_and_why(monkeypatch):
+    # User report 2026-10-21: "最后日志：0 秒前" stayed fresh because the supervisors
+    # print a heartbeat every 15 s, so a stuck dependency install looked alive.
+    dialog = _dialog()
+    dialog._modelscope_cache = True  # every selected model is on ModelScope
+    start = _running(dialog, monkeypatch)
+    feed = dialog._activity.feed
+    feed(_line('[2BYTEASR_PHASE]', phase='dependencies_installing'), start + 1, 0)
+    feed(_line('[2BYTEASR_DEPLOY]', phase='dependencies_installing', state='start', component='main',
+               attempt=1, source='PyPI 官方'), start + 1, 0)
+    for second in range(16, 200, 15):
+        feed(_line('[2BYTEASR_DEPLOY]', phase='dependencies_installing', state='waiting', component='下载并安装依赖',
+                   elapsed_s=second, output_age_s=second, waiting='subprocess'), start + second, 0)
+    for second in range(100, 200):  # the whole process tree is idle
+        dialog._activity.tick(start + second, {'cpu': 0.0, 'io': 0.0})
+    dialog._refresh_view(start + 200)
+    assert '最后进展：3 分 19 秒前' in dialog.activity_status.text()
+    assert dialog.note_label.text().startswith('已用 3 分 20 秒 · 第 2/4 步')
+    assert dialog.health_pill.text() == '可能卡住' and dialog.health_pill.property('tone') == 'bad'
+    assert dialog.notice.isVisibleTo(dialog)
+    assert '没有进展，子程序也几乎没有活动' in dialog.notice_title.text()
+    assert '卡在：运行环境 · 安装依赖（main 环境）' in dialog.notice_where.text()
+    assert 'PyPI 官方' in dialog.notice_body.text()
+    actions = [dialog.notice_buttons.itemAt(index).widget() for index in range(dialog.notice_buttons.count())]
+    assert [button.property('noticeAction') for button in actions] == ['switch:MODELSCOPE', 'export']
+    assert actions[0].text() == '改用 ModelScope 继续'
+    # The same silence while the tree unpacks and writes is work, not a stall.
+    for second in range(200, 260):
+        dialog._activity.tick(start + second, {'cpu': 60.0, 'io': 40 << 20})
+    dialog._refresh_view(start + 260)
+    assert dialog.health_pill.text() == '仍在工作'
+    assert not dialog.notice.isVisibleTo(dialog)
+    dialog.deleteLater()
+
+
+def test_measured_download_fills_the_task_bar_and_steps_never_bounce(monkeypatch):
+    dialog = _dialog()
+    start = _running(dialog, monkeypatch, 30)
+    feed = dialog._activity.feed
+    feed(_line('[2BYTEASR_PHASE]', phase='tools_preparing'), start + 1, 0)
+    feed(_line('[2BYTEASR_RUNTIME_DOWNLOAD]', file='torch.whl', package='torch', index=1, count=2,
+               downloaded=512 << 20, total=2048 << 20, speed=8 << 20, source='上海交大 PyTorch 镜像',
+               host='mirror.sjtu.edu.cn', phase='download'), start + 29, 0)
+    dialog._refresh_view(start + 30)
+    assert dialog.task_title.text() == '下载 PyTorch（1/2）'
+    assert dialog.task_bar.isVisibleTo(dialog) and dialog.task_bar.value() == 250
+    assert '512.0 MiB / 2.00 GiB' in dialog.task_figures.text() and '8.0 MB/s' in dialog.task_figures.text()
+    assert dialog.task_source.text() == '来源：上海交大 PyTorch 镜像（mirror.sjtu.edu.cn）'
+    states = [state for _key, _label, state, _note, _fraction in dialog.step_track.rows()]
+    assert states == ['done', 'active', 'pending', 'pending']
+    assert dialog.health_pill.text() == '正常进行'
+    assert dialog.background_summary() == '第 2/4 步 · 运行环境 · 25%'  # the workshop page line
+    # The legacy bar keeps its busy semantics for scripts, but is never shown.
+    assert not dialog.progress.isVisibleTo(dialog)
+    dialog.deleteLater()
+
+
+def test_switching_source_stops_then_continues_with_the_chosen_source(monkeypatch):
+    from PySide6.QtCore import QProcess
+    dialog = _dialog()
+    _running(dialog, monkeypatch)
+    stops, starts = [], []
+    monkeypatch.setattr(dialog, '_request_pause', lambda: stops.append(True))
+    monkeypatch.setattr(dialog, 'start', lambda: starts.append(dialog.source_combo.currentData()))
+    dialog._switch_source_and_resume('MODELSCOPE')
+    assert stops == [True] and dialog._resume_with_source == 'MODELSCOPE'
+    monkeypatch.setattr(dialog.process, 'state', lambda: QProcess.ProcessState.NotRunning)
+    dialog._paused = True
+    dialog._finished_v2(1, None)
+    QApplication.processEvents()
+    from PySide6.QtTest import QTest
+    QTest.qWait(400)
+    assert starts == ['MODELSCOPE']
+    assert dialog.headline.text().startswith('已暂停')
+    dialog.deleteLater()
+
+
+def test_failure_names_the_step_and_keeps_the_installer_advice(monkeypatch):
+    dialog = _dialog()
+    start = _running(dialog, monkeypatch)
+    dialog._activity.feed(_line('[2BYTEASR_PHASE]', phase='model_loading', model='funasr_nano'), start + 5, 0)
+    from PySide6.QtCore import QProcess
+    monkeypatch.setattr(dialog.process, 'state', lambda: QProcess.ProcessState.NotRunning)
+    dialog._finished_v2(1, None)
+    assert dialog.health_pill.text() == '未完成'
+    assert dialog.notice.isVisibleTo(dialog) and dialog.notice.property('tone') == 'bad'
+    assert not dialog.task_card.isVisibleTo(dialog)  # the notice says it once
+    assert dialog.notice_title.text() == '没有完成：加载试跑'
+    assert dialog.notice_where.text().startswith('停在：加载试跑')
+    assert dialog.notice_body.text() == dialog.progress_status.text()
+    assert dialog.headline.text().endswith('没有准备完成')
+    states = [state for _key, _label, state, _note, _fraction in dialog.step_track.rows()]
+    assert states == ['done', 'done', 'done', 'failed']
+    dialog.deleteLater()
+
+
+def test_recent_events_are_listed_without_opening_the_raw_log(monkeypatch):
+    dialog = _dialog()
+    start = _running(dialog, monkeypatch)
+    feed = dialog._activity.feed
+    feed('[工具] GitHub 官方 未成功（连接或传输超时）', start + 1, 1_800_000_000)
+    feed('Resolved 104 packages in 5.08s', start + 2, 1_800_000_001)
+    feed('Prepared 104 packages in 34.54s', start + 3, 1_800_000_002)
+    dialog._refresh_view(start + 4)
+    texts = [text.text() for _stamp, _dot, text in dialog._event_rows if text.isVisibleTo(dialog)]
+    assert texts == ['GitHub 官方 未成功（连接或传输超时）', '依赖下载完成（104 个）']
+    assert dialog._event_rows[0][2].property('tone') == 'bad'
+    assert not dialog.log.isVisibleTo(dialog)
     dialog.deleteLater()
 
 

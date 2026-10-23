@@ -40,6 +40,19 @@ While such a window (any dialog of the main window) is open the tutorial steps
 aside completely (mode ``dialog``) and comes back when it closes. A step may
 carry a smaller second line (``note``). "继续学进阶" swaps the advanced steps
 into the same overlay instead of closing it and opening a new one.
+
+2026-10-22 (user): one tutorial again - "进阶" made people think the basics
+were enough. Right after the video the plan step opens the cloud / local
+comparison by itself (``TourStep.auto``). The AI step opens AI 设置 and the
+next steps live in that window (``TourStep.host``): the overlay stays above it
+(raised without taking the keyboard from it) instead of stepping aside, points
+at its parts, and goes on after them once the window closes. Motion: the
+outline sets off at once and follows a target that is still moving (it used to
+wait ~200 ms for it to hold still); the bubble fades in as one picture drawn by
+the overlay (a QGraphicsOpacityEffect re-rendered all its widgets on every
+frame); only an interactive step's ring pulses, twice. While a page answers a
+click (the workbench takes seconds to open) the shade stays and lets clicks
+through; hiding it made the whole window flash bright and dark again.
 """
 from __future__ import annotations
 
@@ -51,7 +64,7 @@ from typing import Callable
 from PySide6.QtCore import (QEasingCurve, QElapsedTimer, QEvent, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt,
                             QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import QColor, QImage, QMovie, QPainter, QPainterPath, QPen, QPolygonF, QRegion
-from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton,
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
 from ..i18n import bind_text, tr
@@ -64,6 +77,7 @@ class TourAction:
     advance: bool = False   # go to the next step after running
     modal: bool = False     # opens a window: the tutorial steps aside until it closes
     big: bool = False       # the step's main suggestion: a large primary button that takes the row
+    goto: str = ''          # go on at the step with this ``name`` instead (2026-10-22)
 
 
 @dataclass
@@ -84,6 +98,13 @@ class TourStep:
     click: TourAction | None = None                      # a click in the outline runs this instead
     page: Callable[[], None] | None = None               # "回到教学": bring the step's page back
     note: str | Callable[[], str] = ''                   # a smaller second line (why, what it costs...)
+    # 2026-10-22: a step inside a window of its own (AI 设置): the tutorial stays above that
+    # window instead of stepping aside, and goes on after the window's steps once it closes.
+    host: Callable[[], QWidget | None] | None = None
+    name: str = ''                                       # for TourAction.goto
+    auto: TourAction | None = None                       # runs once, a moment after the step has appeared
+    chapter: str = ''                                    # the counter counts within it: "做字幕 · 3 / 19"
+    group: str = ''                                      # alternatives (only one is shown) count once
 
 
 def tutorial_anim_path(name: str, light: bool, still: bool = False):
@@ -224,15 +245,19 @@ class GuidedTour(QWidget):
     WAIT_MS = 20000                                      # a page that never comes: skip the step
     TEXT_WIDTH = 440                                     # bubble text column (logical px)
     COMPACT_WIDTH = 340                                  # when no full-size spot near the target is free
-    SETTLE_MS = 160                                      # the target must hold still this long...
-    SETTLE_LIMIT_MS = 1500                               # ...or the outline goes there anyway
-    GLIDE_MS = 260
-    REVEAL_MS = 170
+    # 2026-10-22 (user: the outline still stutters and is slow to change place): the outline
+    # sets off at once and follows a target that is still moving while it glides (before, it
+    # first waited for the target to hold still: about 200 ms of nothing on every step).
+    GLIDE_MS = 220
+    CATCH_UP_MS = 120                                    # the target moved during the glide: once more
+    CATCH_UPS = 6
+    REVEAL_MS = 150
     GAP = 22                                             # bubble ↔ outline
     MARGIN = 16                                          # bubble ↔ window edge
-    POLL_MS = 50
+    POLL_MS = 40
     FLOATING = None                                      # None: a tool window on Windows, a child widget elsewhere
-    FOLLOW_MS = 120
+    FOLLOW_MS = 60
+    JUMP = 48                                            # a shown target that moves less than this is followed at once
 
     def __init__(self, window, steps: list[TourStep], avoid: Callable[[], list] | None = None):
         floating = (sys.platform == 'win32') if self.FLOATING is None else bool(self.FLOATING)
@@ -269,8 +294,10 @@ class GuidedTour(QWidget):
         self._final_pos = QPoint(0, 0)                   # the bubble's place once faded in
         self._wait_left = 0
         self._wait_direction = 1
-        self._settle = None                              # (rect, since) while the target settles
-        self._settle_started = 0
+        self._catch_ups = 0
+        self._auto_done = set()                          # steps whose ``auto`` action has run
+        self._reveal_pixmap = None                       # the bubble, drawn by the overlay while it fades in
+        self._click_through = False
         self._scrolled = False
         self._pending_left = 0
         self._clock = QElapsedTimer()
@@ -434,7 +461,10 @@ class GuidedTour(QWidget):
         self.buttons.addStretch(1)
         self.buttons.addWidget(self.back)
         self.buttons.addWidget(self.next)
-        self.back.setVisible(self.index > 0 and step.show_next)
+        # 上一步 never crosses into or out of a window's own steps (AI 设置 may be closed by then).
+        previous = self.steps[self.index - 1] if self.index > 0 else None
+        self.back.setVisible(previous is not None and step.show_next
+                             and (previous.host is None) == (step.host is None))
         self.next.setVisible(step.show_next)
         bind_text(self.next, step.next_label)
 
@@ -453,7 +483,9 @@ class GuidedTour(QWidget):
                 self._modal_running -= 1
         if self.mode == 'closed' or index != self.index:
             return
-        if action.advance:
+        if action.goto and self._index_of(action.goto) >= 0:
+            self.go(self._index_of(action.goto))
+        elif action.advance:
             self.go(self.index + 1)
         elif action.modal and self.mode == 'dialog' and self._foreign_dialog() is None:
             self._resume(navigate=False)
@@ -465,10 +497,26 @@ class GuidedTour(QWidget):
         note = step.note() if callable(step.note) else step.note
         self.note.setText(emphasis_html(str(tr(note)), self.theme.accent) if note else '')
         self.note.setVisible(bool(note))
-        self.count.setText(f'{self.index + 1} / {len(self.steps)}')
+        self.count.setText(self._progress_text(step))
         name = step.anim() if callable(step.anim) else step.anim
         self._has_anim = self.anim.load(name, self.light)
         self._fill_buttons(step)
+
+    def _progress_text(self, step: TourStep) -> str:
+        """Where we are: within the step's chapter, alternatives of one step counted once (2026-10-22).
+
+        One tutorial counted 40 steps (three ways of saying ③, two of ⑤...), which
+        looked endless; "做字幕 · 8 / 19" then "改字幕 · 2 / 18" reads as two short parts.
+        """
+        units = []
+        for index, other in enumerate(self.steps):
+            key = (other.chapter, other.group or f'#{index}')
+            if other.chapter == step.chapter and key not in units:
+                units.append(key)
+        current = (step.chapter, step.group or f'#{self.index}')
+        position = units.index(current) + 1 if current in units else self.index + 1
+        count = f'{position} / {len(units)}'
+        return f'{tr(step.chapter)} · {count}' if step.chapter else count
 
     def _set_size(self, key: str):
         """full: wide text and animation; compact: narrower; mini: compact text, no animation."""
@@ -506,6 +554,37 @@ class GuidedTour(QWidget):
     def _step(self) -> TourStep | None:
         return self.steps[self.index] if 0 <= self.index < len(self.steps) else None
 
+    def _host_of(self, step) -> QWidget | None:
+        """The open window a step lives in (AI 设置), None for the main window or a closed one."""
+        if step is None or step.host is None:
+            return None
+        try:
+            host = step.host()
+        except Exception:  # noqa: BLE001 - a window that is not built yet
+            return None
+        return host if host is not None and host.isVisible() else None
+
+    def _step_host(self) -> QWidget | None:
+        return self._host_of(self._step())
+
+    def _host_gone(self, step) -> bool:
+        return step is not None and step.host is not None and self._host_of(step) is None
+
+    def _index_of(self, name: str) -> int:
+        return next((index for index, step in enumerate(self.steps) if name and step.name == name), -1)
+
+    def _leave_host(self):
+        """The window of these steps was closed: on with the first step outside it (or back before them)."""
+        index = self.index
+        if self._wait_direction < 0:
+            while index >= 0 and self.steps[index].host is not None:
+                index -= 1
+            self.go(max(0, index), step=-1)
+            return
+        while index < len(self.steps) and self.steps[index].host is not None:
+            index += 1
+        self.go(index)
+
     def _raw_target(self, index):
         """The step's target if it is shown on its page (it may still be covered)."""
         step = self.steps[index] if 0 <= index < len(self.steps) else None
@@ -522,11 +601,14 @@ class GuidedTour(QWidget):
             return None
         return target
 
-    def _exposed(self, target) -> bool:
+    def _exposed(self, target, host=None) -> bool:
         """Nothing of the window lies over the target's centre (an in-window dialog such as the model picker)."""
         widget, point = (target[0], target[1].center().toPoint()) if isinstance(target, tuple) \
             else (target, target.rect().center())
-        hit = self.window_.childAt(widget.mapTo(self.window_, point))
+        if host is not None:
+            hit = host.childAt(host.mapFromGlobal(widget.mapToGlobal(point)))
+        else:
+            hit = self.window_.childAt(widget.mapTo(self.window_, point))
         node = hit
         while node is not None:
             if node is widget or node is self:   # a child overlay (not floating) hides the answer: assume yes
@@ -536,14 +618,18 @@ class GuidedTour(QWidget):
 
     def _target(self, index):
         target = self._raw_target(index)
-        return target if target is not None and self._exposed(target) else None
+        host = self._host_of(self.steps[index]) if 0 <= index < len(self.steps) else None
+        return target if target is not None and self._exposed(target, host) else None
 
     def _covered(self, index) -> bool:
         target = self._raw_target(index)
-        return target is not None and not self._exposed(target)
+        host = self._host_of(self.steps[index]) if 0 <= index < len(self.steps) else None
+        return target is not None and not self._exposed(target, host)
 
     def _is_ready(self, index) -> bool:
         step = self.steps[index]
+        if step.host is not None and (not self.floating or self._host_of(step) is None):
+            return False   # a child overlay cannot cover another window; a closed window has no steps
         try:
             if step.ready is not None and not step.ready():
                 return False
@@ -580,7 +666,7 @@ class GuidedTour(QWidget):
             self._set_hole(QRectF())   # the old outline belongs to a page that is going away
         self._wait_left = self.WAIT_MS
         self._wait_direction = step
-        self._settle = None
+        self._catch_ups = 0
         self._scrolled = False
         self._set_mode('wait')
         self._poll()
@@ -596,10 +682,11 @@ class GuidedTour(QWidget):
         SpringDialog.exec() runs its own loop without Qt modality (an input
         guard and a backdrop over the main window instead), so it is known by
         its guard. A download window that keeps running beside the pages does
-        not count."""
+        not count, nor does the window the current step points into."""
         from PySide6.QtWidgets import QDialog
+        host = self._step_host()
         for widget in QApplication.topLevelWidgets():
-            if widget is self or not isinstance(widget, QDialog) or not widget.isVisible():
+            if widget is self or widget is host or not isinstance(widget, QDialog) or not widget.isVisible():
                 continue
             if (widget.isModal() or getattr(widget, '_input_guard', None) is not None
                     or widget.objectName() in self.PAUSING_DIALOGS):
@@ -607,15 +694,18 @@ class GuidedTour(QWidget):
         return None
 
     def _poll(self):
-        """Waiting for the step's page and target, then for the target to hold still."""
+        """Waiting for the step's page and target; the outline sets off as soon as the target is there."""
         if self.mode != 'wait':
             self._poller.stop()
+            return
+        if self._host_gone(self._step()):
+            self._poller.stop()
+            self._leave_host()
             return
         if self._foreign_dialog() is not None:
             self._set_mode('dialog')
             return
         if not self._is_ready(self.index):
-            self._settle = None
             if self._covered(self.index):   # an in-window dialog is open over it: wait on the chip
                 self._poller.stop()
                 self._set_hole(QRectF())
@@ -641,26 +731,18 @@ class GuidedTour(QWidget):
                 scroll = scroll.parent()
             if scroll is not None:
                 scroll.ensureWidgetVisible(widget, 40, 60)
-        rect = self._rect_of(target)
-        now = self._clock.elapsed()
-        if self._settle is None:
-            self._settle_started = now
-        if self._settle is None or not _close(rect, self._settle[0]):
-            self._settle = (rect, now)
-            return
-        from ..design.ui_motion import reduced_motion
-        still = now - self._settle[1] >= self.SETTLE_MS or reduced_motion()
-        if not still and now - self._settle_started < self.SETTLE_LIMIT_MS:
-            return
         self._poller.stop()
-        self._arrive(rect)
+        self._arrive(self._rect_of(target))
 
     def _arrive(self, rect: QRectF):
-        """Place the bubble for the final outline, glide the outline there, then show the bubble."""
+        """Glide the outline to the target at once, then show the bubble beside it."""
         from ..design.ui_motion import reduced_motion
         step = self._step()
         self._prepare_bubble(step)
         self._placement = self._place(rect)
+        self._placed_for = QRectF(rect)
+        if self._step_host() is not None:
+            self._raise_above_host()
         if rect.isNull() or reduced_motion():
             self._glide.stop()
             self._set_hole(rect)
@@ -671,19 +753,52 @@ class GuidedTour(QWidget):
                                                                  rect.width() * 0.7, rect.height() * 0.7)
         self._set_mode('glide')
         self._glide.stop()
+        self._glide.setDuration(self.GLIDE_MS)
         self._glide.setStartValue(QRectF(start))
         self._glide.setEndValue(QRectF(rect))
         self._glide.start()
 
+    def _current_rect(self, fallback: QRectF) -> QRectF:
+        target = self._target(self.index)
+        return self._rect_of(target) if target is not None else QRectF(fallback)
+
     def _glide_step(self, value):
-        if self.mode == 'glide':
-            self._set_hole(QRectF(value))
+        if self.mode != 'glide':
+            return
+        self._set_hole(QRectF(value))
+        # A target still on its way (a page settling, a list scrolling): aim at where it is now.
+        end = QRectF(self._glide.endValue())
+        rect = self._current_rect(end)
+        if not _close(rect, end):
+            self._glide.setEndValue(QRectF(rect))
 
     def _glide_done(self):
         if self.mode != 'glide':
             return
-        self._set_hole(QRectF(self._glide.endValue()))
+        end = QRectF(self._glide.endValue())
+        self._set_hole(end)
+        rect = self._current_rect(end)
+        if not _close(rect, end) and self._catch_ups < self.CATCH_UPS:
+            self._catch_ups += 1
+            self._glide.setDuration(self.CATCH_UP_MS)
+            self._glide.setStartValue(QRectF(end))
+            self._glide.setEndValue(QRectF(rect))
+            self._glide.start()
+            return
+        if not _close(self.hole, getattr(self, '_placed_for', QRectF())):
+            self._placement = self._place(self.hole)
         self._show_bubble(animate=True)
+
+    def _bubble_picture(self):
+        """The bubble as one picture, drawn by the overlay while it fades in (None: show it at once)."""
+        try:
+            for child in self.bubble.findChildren(QWidget):
+                child.ensurePolished()
+            self.bubble.layout().activate()
+            picture = self.bubble.grab()
+        except Exception:  # noqa: BLE001
+            return None
+        return None if picture.isNull() else picture
 
     def _show_bubble(self, *, animate: bool):
         step = self._step()
@@ -695,32 +810,53 @@ class GuidedTour(QWidget):
         self._slide = {'right': QPoint(10, 0), 'left': QPoint(-10, 0), 'below': QPoint(0, 10),
                        'above': QPoint(0, -10)}.get(side, QPoint(0, 8)) if animate else QPoint(0, 0)
         self.pointer = pointer
+        self.bubble.setGraphicsEffect(None)
         self.bubble.move(self._final_pos + self._slide)
-        if animate:
-            effect = QGraphicsOpacityEffect(self.bubble)
-            effect.setOpacity(0.0)
-            self.bubble.setGraphicsEffect(effect)
-            self.reveal = 0.0
-        else:
-            self.bubble.setGraphicsEffect(None)
+        # 2026-10-22: the fade-in draws one picture of the bubble; a QGraphicsOpacityEffect rendered
+        # all its widgets (rich text, the animation) off screen again on every frame.
+        self._reveal_pixmap = self._bubble_picture() if animate else None
+        if self._reveal_pixmap is None:
             self.reveal = 1.0
-        self.bubble.show()
-        self.bubble.raise_()
-        if self._size_key != 'mini':
-            self.anim.start()
+            self.bubble.move(self._final_pos)
+            self.bubble.show()
+            self.bubble.raise_()
+            if self._size_key != 'mini':
+                self.anim.start()
+        else:
+            self.reveal = 0.0
         if not self.floating:
             self.raise_()
+        if self._step_host() is not None:
+            self._raise_above_host()
         self._apply_mask()
         self.update()
-        if animate:
+        if self._reveal_pixmap is not None:
             self._reveal.stop()
             self._reveal.start()
         from ..design.ui_motion import reduced_motion
-        if not reduced_motion():
+        if step.interactive and not reduced_motion():
             self._attention.stop()
-            self._attention.setLoopCount(-1 if step.interactive else 2)
+            self._attention.setLoopCount(2)   # then a steady ring: no repaint for as long as the step stays
             self._attention.start()
-        if step.interactive:
+        if step.auto is not None and self.index not in self._auto_done:
+            index, action = self.index, step.auto
+            tries = [0]
+
+            def run_auto():
+                # Once, when the step has settled. A banner that a background check
+                # adds above the target moves it right after the step shows; the
+                # box glides again and the single 450 ms try used to miss (10-23).
+                if self.index != index or index in self._auto_done:
+                    return
+                if self.mode != 'shown':
+                    tries[0] += 1
+                    if tries[0] <= 40:
+                        QTimer.singleShot(150, run_auto)
+                    return
+                self._auto_done.add(index)
+                self._run_action(action)
+            QTimer.singleShot(450, run_auto)
+        if step.interactive and step.host is None:
             keys = None
             try:
                 keys = step.focus() if step.focus is not None else None
@@ -729,18 +865,21 @@ class GuidedTour(QWidget):
             (keys or self.window_).setFocus()
 
     def _reveal_step(self, value):
+        dirty = self._bubble_dirty()
         self.reveal = float(value)
-        effect = self.bubble.graphicsEffect()
-        if isinstance(effect, QGraphicsOpacityEffect):
-            effect.setOpacity(self.reveal)
         slide = getattr(self, '_slide', QPoint(0, 0))
         self.bubble.move(self._final_pos + QPoint(round(slide.x() * (1 - self.reveal)), round(slide.y() * (1 - self.reveal))))
-        self.update(self._bubble_dirty())
+        self.update(dirty.united(self._bubble_dirty()))
 
     def _reveal_done(self):
         self.reveal = 1.0
+        self._reveal_pixmap = None
         self.bubble.move(self._final_pos)
-        self.bubble.setGraphicsEffect(None)   # no off-screen rendering while the animation plays
+        if self.mode == 'shown':
+            self.bubble.show()
+            self.bubble.raise_()
+            if self._size_key != 'mini':
+                self.anim.start()
         self._apply_mask()
         self.update(self._bubble_dirty())
 
@@ -754,20 +893,37 @@ class GuidedTour(QWidget):
         self.pointer = None
         self.anim.stop()
         self.bubble.setGraphicsEffect(None)
-        if self.bubble.isVisible():
+        if self.bubble.isVisible() or self._reveal_pixmap is not None:
             dirty = self._bubble_dirty()
+            self._reveal_pixmap = None
             self.bubble.hide()
             self.update(dirty)
 
+    PENDING_MS = 12000                                   # a click that leads elsewhere: the chip after this
+
     def _set_mode(self, mode: str):
         self.mode = mode
-        if mode in ('pending', 'dialog'):   # the page is answering a click, or a window is open: step aside
+        if mode == 'dialog':   # a window is open: nothing of the tutorial over it
             self._poller.stop()
             self._hide_bubble()
             self.chip.hide()
+            self._set_click_through(False)
             self.hide()
+        elif mode == 'pending':
+            # 2026-10-22 (user: entering the workbench flickers): the page is answering a click and
+            # the workbench takes seconds to open. Hiding the overlay meanwhile made the whole window
+            # flash bright and then dim again; the shade now stays, without outline or bubble, and
+            # lets every click through to the page.
+            self._poller.stop()
+            self._hide_bubble()
+            self.chip.hide()
+            self._set_click_through(True)
+            if not self.isVisible() and self.window_.isVisible():
+                self._sync_geometry()
+                self.show()
         elif mode == 'away':
             self._hide_bubble()
+            self._set_click_through(False)
             self.chip.ensurePolished()
             for child in self.chip.findChildren(QWidget):
                 child.ensurePolished()
@@ -780,11 +936,59 @@ class GuidedTour(QWidget):
                 self.show()
         else:
             self.chip.hide()
+            self._set_click_through(False)
             if not self.isVisible() and self.window_.isVisible():
                 self._sync_geometry()
                 self.show()
         self._apply_mask()
         self.update()
+
+    def _native_handle(self) -> int:
+        """The overlay's HWND when it is a real Windows window (not offscreen, not a child widget)."""
+        if not self.floating or QApplication.platformName() != 'windows':
+            return 0
+        try:
+            return int(self.winId())
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _set_click_through(self, on: bool):
+        """Every click passes the overlay (WS_EX_TRANSPARENT on its layered window) while a page answers one."""
+        if bool(on) == self._click_through:
+            return
+        self._click_through = bool(on)
+        if not self.floating:
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, bool(on))
+            return
+        hwnd = self._native_handle()
+        if not hwnd:
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            get, put = user32.GetWindowLongPtrW, user32.SetWindowLongPtrW
+            get.restype, get.argtypes = ctypes.c_ssize_t, [ctypes.c_void_p, ctypes.c_int]
+            put.restype, put.argtypes = ctypes.c_ssize_t, [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+            style = get(hwnd, -20)                   # GWL_EXSTYLE
+            put(hwnd, -20, (style | 0x20) if on else (style & ~0x20))   # WS_EX_TRANSPARENT
+        except Exception:  # noqa: BLE001 - only means clicks wait until the page is back
+            pass
+
+    def _raise_above_host(self):
+        """Above the window the step points into, without taking the keyboard from it."""
+        if not self.floating or not self.isVisible():
+            return
+        hwnd = self._native_handle()
+        if hwnd:
+            try:
+                import ctypes
+                # HWND_TOP; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER
+                ctypes.windll.user32.SetWindowPos(ctypes.c_void_p(hwnd), ctypes.c_void_p(0), 0, 0, 0, 0,
+                                                  0x0001 | 0x0002 | 0x0010 | 0x0200)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        self.raise_()
 
     def _resume(self, navigate: bool = True):
         """回到教学: back to the step's page (if it has one) and show the step again."""
@@ -796,7 +1000,7 @@ class GuidedTour(QWidget):
                 import traceback
                 traceback.print_exc()
         self._wait_left = self.WAIT_MS
-        self._settle = None
+        self._catch_ups = 0
         self._scrolled = False
         self._set_mode('wait')
         self._poller.start()
@@ -812,6 +1016,10 @@ class GuidedTour(QWidget):
         if self.mode == 'dialog':
             if not self._modal_running and self._foreign_dialog() is None:
                 self._resume(navigate=False)   # the window was closed: the same step again
+            return
+        if self._host_gone(step):
+            self._carry.stop()
+            self._leave_host()
             return
         if self._foreign_dialog() is not None:
             self._carry.stop()
@@ -841,7 +1049,7 @@ class GuidedTour(QWidget):
                 self._carry.stop()
                 self._hide_bubble()
                 self._set_hole(QRectF())
-                self._pending_left = self.WAIT_MS
+                self._pending_left = self.PENDING_MS
                 self._set_mode('pending' if step.done is not None and not self._covered(self.index) else 'away')
                 return
             if self._reveal.state() == QVariantAnimation.State.Running \
@@ -862,23 +1070,23 @@ class GuidedTour(QWidget):
 
     def _follow_move(self, rect: QRectF):
         """The shown target moved: carry outline and bubble along when it still fits, else place it again."""
+        from ..design.ui_motion import reduced_motion
         old = QRectF(self.hole)
         delta = rect.center() - old.center()
         same_size = abs(rect.width() - old.width()) <= 3 and abs(rect.height() - old.height()) <= 3
         start = QPointF(self._final_pos)
         moved = QRectF(start, QSizeF(self.bubble.size())).translated(delta)
         if same_size and self._fits(moved, rect):
-            from ..design.ui_motion import reduced_motion
+            self._carry.stop()
             self._carry_path = (old, QRectF(rect), start, moved.topLeft(), self.pointer, delta)
-            if reduced_motion():
+            if reduced_motion() or abs(delta.x()) + abs(delta.y()) <= self.JUMP:
+                # A few pixels (the page scrolling): stay on the target instead of trailing behind it.
                 self._carry_step(1.0)
                 self._carry_done()
             else:
-                self._carry.stop()
                 self._carry.start()
             return
         self._hide_bubble()
-        self._settle = None
         self._set_mode('wait')
         self._poller.start()
 
@@ -905,13 +1113,19 @@ class GuidedTour(QWidget):
         self._apply_mask()
 
     def _rect_of(self, target) -> QRectF:
-        if isinstance(target, tuple):
-            widget, part = target
+        widget, part = target if isinstance(target, tuple) else (target, None)
+        if widget.window() is not self.window_:
+            # In another window (AI 设置): through screen coordinates.
+            origin = self.mapFromGlobal(widget.mapToGlobal(part.topLeft().toPoint() if part is not None else QPoint(0, 0)))
+            size = part.size() if part is not None else QSizeF(widget.width(), widget.height())
+            pad = 6 if part is not None else 8
+            rect = QRectF(origin.x(), origin.y(), size.width(), size.height()).adjusted(-pad, -pad, pad, pad)
+        elif part is not None:
             top_left = widget.mapTo(self.window_, part.topLeft().toPoint())
             rect = QRectF(top_left.x(), top_left.y(), part.width(), part.height()).adjusted(-6, -6, 6, 6)
         else:
-            top_left = target.mapTo(self.window_, QPoint(0, 0))
-            rect = QRectF(top_left.x(), top_left.y(), target.width(), target.height()).adjusted(-8, -8, 8, 8)
+            top_left = widget.mapTo(self.window_, QPoint(0, 0))
+            rect = QRectF(top_left.x(), top_left.y(), widget.width(), widget.height()).adjusted(-8, -8, 8, 8)
         return rect.intersected(QRectF(self.rect()).adjusted(6, 6, -6, -6))
 
     def _set_hole(self, rect: QRectF):
@@ -934,7 +1148,7 @@ class GuidedTour(QWidget):
             self.clearMask()
             return
         region = QRegion(self.rect()).subtracted(QRegion(self.hole.toAlignedRect()))
-        if self.bubble.isVisible():
+        if self.bubble.isVisible() or self._reveal_pixmap is not None:
             region = region.united(QRegion(self.bubble.geometry().adjusted(-2, -2, 2, 2)))
         self.setMask(region)
 
@@ -957,7 +1171,6 @@ class GuidedTour(QWidget):
             self._show_bubble(animate=False)
         elif self.mode == 'glide':
             self._glide.stop()
-            self._settle = None
             self._set_mode('wait')
             self._poller.start()
         elif self.mode == 'away':
@@ -1071,17 +1284,17 @@ class GuidedTour(QWidget):
         return box.toAlignedRect()
 
     def _pulse(self, value):
+        """The ring of an interactive step breathes twice (only the ring is repainted, never the bubble)."""
         self.glow = math.sin(math.pi * float(value))
-        dirty = self._bubble_dirty()
         if not self.hole.isNull():
-            dirty = dirty.united(self.hole.adjusted(-24, -24, 24, 24).toAlignedRect())
-        self.update(dirty)
+            self.update(self.hole.adjusted(-16, -16, 16, 16).toAlignedRect())
 
     def continue_with(self, steps: list, part: str):
         """The next part in this same overlay (继续学进阶): no window closes and reopens in between."""
         self.steps = list(steps)
         self.part = part
         self._entered = set()
+        self._auto_done = set()
         self.index = -1
         self.go(0)
 
@@ -1128,9 +1341,14 @@ class GuidedTour(QWidget):
                 self._sync_geometry()
             elif kind == QEvent.Type.Hide and self.floating:
                 self.hide()
-            elif kind == QEvent.Type.Show and self.floating and self.mode not in ('pending', 'dialog', 'closed', 'idle'):
+            elif kind == QEvent.Type.Show and self.floating and self.mode not in ('dialog', 'closed', 'idle'):
                 self._sync_geometry()
                 self.show()
+            return False
+        if kind == QEvent.Type.WindowActivate and self.mode in ('wait', 'glide', 'shown'):
+            host = self._step_host()
+            if host is not None and watched is host:   # AI 设置 came forward again (a guide closed)
+                QTimer.singleShot(0, self._raise_above_host)
             return False
         if kind == QEvent.Type.ShortcutOverride:
             if self._keys_are_ours(watched):
@@ -1185,20 +1403,18 @@ class GuidedTour(QWidget):
                 painter.drawRoundedRect(ring, 17, 17)
             painter.setPen(QPen(accent, 2.5))
             painter.drawRoundedRect(ring, 17, 17)
-        if self.bubble.isVisible() and self.reveal > 0.01:
+        picture = self._reveal_pixmap
+        if (self.bubble.isVisible() or picture is not None) and self.reveal > 0.01:
             box = QRectF(self.bubble.geometry())
             painter.setPen(Qt.PenStyle.NoPen)
             for spread, alpha in ((22, 22), (14, 30), (7, 40)):   # soft shadow under the bubble
                 painter.setBrush(QColor(0, 0, 0, int(alpha * self.reveal)))
                 painter.drawRoundedRect(box.adjusted(-spread / 2, -spread / 2 + 8, spread / 2, spread / 2 + 10),
                                         20 + spread / 2, 20 + spread / 2)
-            if self.glow > 0.01:   # a short glow that draws the eye to the bubble
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                for spread, alpha in ((16, 46), (9, 70), (4, 96)):
-                    glow = QColor(accent)
-                    glow.setAlpha(int(alpha * self.glow * self.reveal))
-                    painter.setPen(QPen(glow, spread))
-                    painter.drawRoundedRect(box.adjusted(-spread / 2, -spread / 2, spread / 2, spread / 2), 22, 22)
+            if picture is not None:   # fading in: the overlay draws the bubble's picture
+                painter.setOpacity(self.reveal)
+                painter.drawPixmap(box.topLeft(), picture)
+                painter.setOpacity(1.0)
             if self.pointer is not None:
                 tip = QColor(accent)
                 tip.setAlphaF(min(1.0, self.reveal))
@@ -1214,11 +1430,15 @@ HomeTour = GuidedTour
 
 # ---------------------------------------------------------------- the tutorial
 
-def tutorial_steps(window, part: str = 'basic') -> list[TourStep]:
-    """The tutorial with demo data, in two parts (2026-10-15).
+def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
+    """The tutorial with demo data, one road from the first video to a corrected subtitle (2026-10-22).
 
-    ``basic``: home → pretend result → export (the first subtitle file).
-    ``advanced``: pretend result → proofreading → workbench.
+    2026-10-15 it had two parts (basic, then 进阶 on request). User 10-22: someone who
+    finished the basics thought that was enough, so there is one tutorial again, in this
+    order: the video → the recognition plan (cloud or local, compared in a window) → the
+    three model cards → AI 智能断句 and its key, inside the real AI 设置 window → content
+    and glossary → languages → result → export → proofreading → workbench.
+    ``part='advanced'`` still gives only the steps after the export (kept for audits).
     """
     from .sample_project import TUTORIAL_LIBRARY
     w = window
@@ -1328,13 +1548,18 @@ def tutorial_steps(window, part: str = 'basic') -> list[TourStep]:
         page = proofread()
         if page is None:
             return None
-        page.list.repaint()
-        boxes = [QRectF(rect) for rect, action, cue_id, *_rest in getattr(page.list, '_hit_boxes', ())
-                 if cue_id == fix_cue() and action in ('mark', 'check', 'option')]
-        if not boxes:
+
+        def boxes():
+            return [QRectF(rect) for rect, action, cue_id, *_rest in getattr(page.list, '_hit_boxes', ())
+                    if cue_id == fix_cue() and action in ('mark', 'check', 'option')]
+        found = boxes()
+        if not found:   # the list lays out its hit boxes when it paints (only then: this runs every follow tick)
+            page.list.repaint()
+            found = boxes()
+        if not found:
             return None
-        rect = boxes[0]
-        for box in boxes[1:]:
+        rect = found[0]
+        for box in found[1:]:
             rect = rect.united(box)
         return page.list, rect
 
@@ -1462,9 +1687,6 @@ def tutorial_steps(window, part: str = 'basic') -> list[TourStep]:
                 then()
         return run
 
-    def continue_advanced():
-        w.__dict__['_tutorial_continue'] = 'advanced'
-
     def explain_key():
         opener = getattr(w, '_open_api_key_explainer', None)
         if callable(opener):
@@ -1491,138 +1713,184 @@ def tutorial_steps(window, part: str = 'basic') -> list[TourStep]:
     def open_moss_guide():
         w._open_api_setup_guide('mosi_moss_pro')
 
-    def ai_settings():
-        return dict(getattr(getattr(w, 'legacy', None), 'RUNTIME_SETTINGS', None) or {})
-
-    def ai_stage():
-        switches = ai_settings().get('switches') or {}
-        return 'polish' if switches.get('enable_ai_polish', True) else 'group'
-
-    def ai_key_saved():
-        settings = ai_settings()
-        try:
-            from ..providers.llm_config import effective_ai_identity, text_ai_key_missing
-            return (bool(effective_ai_identity(settings, ai_stage()).get('credential_configured'))
-                    and not text_ai_key_missing(settings, ai_stage()))
-        except Exception:  # noqa: BLE001 - unknown: ask for the key
-            return False
-
-    def open_deepseek_guide():
-        w._open_api_setup_guide('deepseek', 'text')
-
-    connection = {'shown': None}
-
-    def connection_editor():
-        return w.__dict__.get('polish_editor' if ai_stage() == 'polish' else 'group_editor')
-
-    def test_connection():
-        editor = connection_editor()
-        if editor is not None:
-            editor.test_connection()
-
-    def connection_ok():
-        editor = connection_editor()
-        result = getattr(editor, 'last_connection_ok', None)
-        if result != connection['shown']:   # the home card shows the answer as soon as it comes
-            connection['shown'] = result
-            refresh = getattr(w, '_refresh_home_process_facts', None)
-            if callable(refresh):
-                refresh()
-        return result is True
-
     def field(name, fallback):
         return lambda: w.__dict__.get(name) or w.__dict__.get(fallback)
 
-    # 2026-10-15 (user: “更简单、更图文化、少读字，跟着做就能完成”): the basics are the
-    # shortest road to a first subtitle file; proofreading and the workbench are 进阶.
-    # 2026-10-21 (user): cloud first — 主力转写 opens the MOSS Pro sign-up (skippable),
-    # 字幕时间轴 shows why it matters, AI asks for a key (DeepSeek recommended) and
-    # tests it; never "no key needed".
-    if moss_pro_chosen() and not moss_key_saved():
-        primary_step = TourStep(
-            '③ **主力转写**把说话变成文字。**点这张卡**，注册 MOSS Pro', role_card('primary'),
-            [TourAction('注册 MOSS Pro', open_moss_guide, advance=True, modal=True),
-             TourAction('先跳过', lambda: None, advance=True)],
-            note='注册、每天签到都送免费额度，电脑配置一般也能用。拿到 Key 贴进去就行',
-            show_next=False, anim='moss_signup', page=home,
-            click=TourAction('', open_moss_guide, advance=True, modal=True))
-    elif moss_pro_chosen():
-        primary_step = TourStep('③ **主力转写**把说话变成文字：MOSS Pro 已经设置好了', role_card('primary'),
-                                note='点这张卡可以换成别的模型', anim='moss_signup', page=home)
-    else:
-        primary_step = TourStep('③ **主力转写**把说话变成文字：保持推荐就行', role_card('primary'),
-                                note='点这张卡可以换模型；电脑配置一般，推荐换成 MOSS Pro 云端',
-                                anim='plan_ok', page=home)
-    if ai_key_saved():
-        ai_step = TourStep('⑤ **AI** 把句子改通顺、断好句，还能翻译', get('home_process_card'),
-                           note='API Key 已经填好了，下一步测一下连接', anim='ai_polish', page=home)
-    else:
-        ai_step = TourStep(
-            '⑤ **AI** 把句子改通顺、断好句，还能翻译', get('home_process_card'),
-            [TourAction('填 DeepSeek 的 API Key', open_deepseek_guide, modal=True),
-             TourAction('API Key 是什么？', explain_key),
-             TourAction('稍后再填', lambda: None, advance=True)],
-            note='翻译、AI 断句、AI 校对都要先填 **API Key**。推荐 **DeepSeek**（最适配），充 10 元就够用一阵',
-            show_next=False, done=ai_key_saved, anim='ai_polish', page=home,
-            click=TourAction('', open_deepseek_guide, modal=True))
-    basic = [
-        TourStep('跟着点几下，学会做第一份字幕', note='用的是自带的演示视频，不上传、不花钱',
+    # ---- 2026-10-22: the plan compared, the AI settings shown for real ------------------
+    def choose_plan():
+        chooser = getattr(w, '_choose_plan_in_tutorial', None)
+        if callable(chooser):
+            chooser()
+
+    def plan_note():
+        from .quick_setup import PLANS
+        key = w._current_plan_key() if hasattr(w, '_current_plan_key') else ''
+        name = PLANS[key].title if key in PLANS else ''
+        return ('马上会弹出比较：云端不挑电脑，本机免费不上传' if not name
+                else tr('现在用的是「{value0}」；马上会弹出两种方案的比较', value0=tr(name)))
+
+    def ai_ready():
+        unlocked = getattr(w, '_ai_unlocked', None)
+        return bool(unlocked()) if callable(unlocked) else False
+
+    def open_ai_settings():
+        w._open_ai_settings_dialog()
+
+    def ai_dialog():
+        dialog = w.__dict__.get('_ai_settings_dialog')
+        return dialog if dialog is not None and dialog.isVisible() else None
+
+    def ai_editor():
+        """The service form AI 设置 shows first (one form for both when they share a service)."""
+        if ai_dialog() is None:
+            return None
+        for name in ('polish_editor', 'group_editor'):
+            form = w.__dict__.get(name)
+            if form is not None and form.isVisible():
+                return form
+        return None
+
+    def editor_part(name):
+        def find():
+            form = ai_editor()
+            part_ = getattr(form, name, None) if form is not None else None
+            return part_ if part_ is not None and part_.isVisible() else None
+        return find
+
+    def editor_note():
+        both = w.__dict__.get('group_editor')
+        shared = both is not None and ai_editor() is both and not w.polish_editor.isVisible()
+        return ('这一套服务同时做 AI 断句、翻译和校对' if shared
+                else '上面管校对和翻译，「更多选项」里管 AI 断句；两边都要填')
+
+    def pick_deepseek():
+        form = ai_editor()
+        index = form.service.findData('deepseek') if form is not None else -1
+        if index >= 0:
+            form.service.setCurrentIndex(index)
+
+    def open_provider_guide():
+        form = ai_editor()
+        if form is not None:
+            form.guide_button.click()
+
+    def test_ai():
+        form = ai_editor()
+        if form is not None:
+            form.test_connection()
+
+    def ai_tested():
+        return getattr(ai_editor(), 'last_connection_ok', None) is True
+
+    def save_ai():
+        button = w.__dict__.get('ai_dialog_save_button')
+        if button is not None:
+            button.click()
+
+    def close_ai():
+        dialog = ai_dialog()
+        if dialog is not None:
+            dialog.reject()
+
+    def downloads_note():
+        return '模型会在教学结束后开始下载' if w.__dict__.get('_first_run_downloads') else ''
+
+    choose = TourAction('比较两种方案', choose_plan, modal=True, advance=True)
+    open_ai = TourAction('打开 AI 设置看看', open_ai_settings, advance=True, big=True)
+    home_steps = [
+        TourStep('跟着做一遍：从放入视频到改好字幕', note='用自带的演示视频，不上传、不花钱，约 6 分钟',
                  next_label='开始', enter=w._tutorial_prepare_demo),
         TourStep('① 把视频拖到这里；现在**点一下**放入演示视频', get('media_frame'),
                  [TourAction('放入演示视频', w._tutorial_add_demo_media, advance=True)], show_next=False, ready=on_home,
                  anim='drop', click=TourAction('', w._tutorial_add_demo_media, advance=True), page=home),
-        TourStep('② 视频里说的是什么话，就选什么', field('spoken_language_field', 'recognition_language'),
+        # User 10-22: right after the video, the plan - local or cloud - with what each is good for.
+        TourStep('② 先选**识别方案**：云端还是本机', get('recognition_plan'), [choose], note=plan_note,
+                 anim='plan_compare', page=home, auto=choose),
+        TourStep('③ **主力转写**把说话变成文字。**点这张卡**，注册 MOSS Pro', role_card('primary'),
+                 [TourAction('注册 MOSS Pro', open_moss_guide, advance=True, modal=True),
+                  TourAction('先跳过', lambda: None, advance=True)],
+                 note='注册、每天签到都送免费额度，拿到 Key 贴进去就行',
+                 show_next=False, anim='moss_signup', page=home, optional=True,
+                 ready=lambda: moss_pro_chosen() and not moss_key_saved(),
+                 click=TourAction('', open_moss_guide, advance=True, modal=True)),
+        TourStep('③ **主力转写**把说话变成文字：MOSS Pro 已经设置好了', role_card('primary'),
+                 note='点这张卡可以换成别的模型', anim='moss_signup', page=home, optional=True,
+                 ready=lambda: moss_pro_chosen() and moss_key_saved()),
+        TourStep('③ **主力转写**在这台电脑上把说话变成文字', role_card('primary'),
+                 note=lambda: downloads_note() or '点这张卡可以换模型', anim='plan_ok', page=home, optional=True,
+                 ready=lambda: not moss_pro_chosen()),
+        TourStep('④ **字幕时间轴**：让每句字幕出现、消失的时间更准', role_card('timeline'),
+                 note='字幕跟着说话一起出来，不会早一截或晚一截', anim='timeline_mg', page=home),
+        # User 10-22: AI 断句, translation and 术语库校对 all need the key; open the real settings.
+        TourStep('⑤ **AI 智能断句**要先填 **API Key**', get('home_process_card'),
+                 [open_ai, TourAction('API Key 是什么？', explain_key), TourAction('先不设置', lambda: None, goto='after_ai')],
+                 note='AI 断句、翻译字幕、术语库校对都靠它，推荐 **DeepSeek**。没连接的话，这三样都用不了',
+                 show_next=False, anim='ai_lock', page=home, optional=True, ready=lambda: not ai_ready(),
+                 click=TourAction('', open_ai_settings, advance=True)),
+        TourStep('⑤ **AI 智能断句**已经连好了', get('home_process_card'),
+                 [TourAction('打开 AI 设置看看', open_ai_settings, advance=True)],
+                 note='AI 断句、翻译字幕、术语库校对都能用了', anim='ai_lock', page=home, optional=True, ready=ai_ready),
+        # ---- inside AI 设置 (the tutorial stays above that window)
+        TourStep('这是 **AI 设置**。「服务」选 **DeepSeek**（推荐）', editor_part('service'),
+                 [TourAction('帮我选 DeepSeek', pick_deepseek)], note=editor_note,
+                 host=ai_dialog, optional=True, anim='ai_lock'),
+        TourStep('还没有 Key？点「**申请教程**」', editor_part('guide_button'),
+                 [TourAction('打开申请教程', open_provider_guide, modal=True, advance=True)],
+                 note='一步步带你注册、充值、复制 Key；看完回到这里贴上',
+                 host=ai_dialog, optional=True, anim='key_get'),
+        TourStep('把 **API Key** 贴到这里', editor_part('key_row_host'),
+                 note='Key 只存在这台电脑上，加密保存', host=ai_dialog, optional=True, interactive=True,
+                 focus=editor_part('key'), anim='apikey'),
+        TourStep('点**测试连接**，看到“连接正常”就好了', editor_part('test_button'),
+                 [TourAction('帮我点', test_ai)], note='连不上的话，看看 Key 有没有贴全、余额够不够',
+                 host=ai_dialog, optional=True, interactive=True, done=ai_tested, anim='apikey'),
+        TourStep('要开启 AI 吗？点「**保存设置**」就开启', get('ai_dialog_save_button'),
+                 [TourAction('保存并开启', save_ai, big=True), TourAction('先不开', close_ai)],
+                 note='开启后能用 AI 断句、字幕翻译和术语库校对（要测试连接通过）。不开的话这三样都用不了，首页会变灰；'
+                      '以后随时可以在首页的 AI 卡片上再设置',
+                 host=ai_dialog, optional=True, show_next=False, anim='ai_lock'),
+        # ---- content, glossary, languages
+        TourStep('⑥ 填**游戏名**，人名和术语会写对（可以不填）', get('content_choice_panel'), anim='glossary', page=home,
+                 name='after_ai'),
+        TourStep('⑦ **术语库校对**：照词库改对专名和错词', get('batch_glossary_card'),
+                 note=lambda: ('右边的「联网补充核验」会再上网查一遍（可选）' if ai_ready()
+                               else '要先连接 AI（填 API Key 并测试连接）才能用，现在是灰的'),
+                 anim='glossary', page=home),
+        TourStep('⑧ 视频里说的是什么话，就选什么', field('spoken_language_field', 'recognition_language'),
                  [TourAction('中文', lambda: set_language('zh')), TourAction('日本語', lambda: set_language('ja')),
                   TourAction('English', lambda: set_language('en'))],
                  note='不确定就选“自动识别”', anim='spoken', page=home),
-        primary_step,
-        TourStep('④ **字幕时间轴**：让每句字幕出现、消失的时间更准', role_card('timeline'),
-                 note=lambda: ('字幕跟着说话一起出来，不会早一截或晚一截。教学结束后会自动下载这个模型'
-                               if w.__dict__.get('_first_run_downloads') else '字幕跟着说话一起出来，不会早一截或晚一截'),
-                 anim='timeline_mg', page=home),
-        ai_step,
-        TourStep('⑥ 测一下连接：点**测试连接**', get('home_process_card'),
-                 [TourAction('测试连接', test_connection)],
-                 note='看到“连接正常”就能用了；失败的话检查 Key 有没有贴全、余额够不够',
-                 ready=ai_key_saved, optional=True, done=connection_ok, anim='apikey', page=home),
-        TourStep('⑦ 要翻译吗？选“原文 + 翻译”，再选翻译成哪种语言', field('subtitle_output_fields', 'subtitle_output'),
-                 note='翻译也是 AI 做的，要用到上一步的 API Key', anim='subtitle_lang', page=home),
-        TourStep('⑧ 填游戏名，人名和术语会写对（可以不填）', get('content_profile_card'), anim='glossary', page=home),
-        TourStep('⑨ 点这里开始；现在**点一下**看演示结果', get('start_button'),
+        TourStep('⑨ 要翻译就在「字幕显示」选“原文 + 翻译”', field('subtitle_output_fields', 'subtitle_output'),
+                 note=lambda: ('翻译也是 AI 做的，会用上面的 API Key' if ai_ready()
+                               else '没连接 AI 时只能选“只显示原文”，翻译是灰的'),
+                 anim='subtitle_lang', page=home),
+        TourStep('⑩ 点这里开始；现在**点一下**看演示结果', get('start_button'),
                  [TourAction('看演示结果', w._tutorial_demo_completion, advance=True)], show_next=False, anim='start',
                  click=TourAction('', w._tutorial_demo_completion, advance=True), page=home),
         TourStep('做好了！字幕已经生成，下面可以先看一眼', field('result_summary_card', 'result_title'), ready=on_completion,
                  page=to_completion),
-        TourStep('⑩ 点这里导出字幕文件（SRT、ASS、TXT）', get('export_result_button'),
+        TourStep('点这里导出字幕文件（SRT、ASS、TXT）', get('export_result_button'),
                  ready=on_completion, anim='export', page=to_completion),
-        TourStep('学会了！推荐再学 3 分钟**进阶**', show_next=False,
-                 note='一键找出写错的字、在工作台改字、审核、调时间。也可以先放入你自己的视频试试',
-                 actions=[TourAction('继续学进阶（约 3 分钟）', continue_advanced, advance=True, big=True),
-                          TourAction('回到首页', lambda: None, advance=True)], anim='advanced'),
     ]
-    advanced = [
-        # Straight on from the basics the demo result is already shown: building it again
-        # would move every outline of the first steps while they appear.
-        TourStep('进阶：改错字、审核、调时间，约 3 分钟', next_label='开始',
-                 enter=lambda: None if on_completion() else w._tutorial_demo_completion()),
-        # ---- result page
-        TourStep('点这里，一次找出写错的人名和术语', get('repolish_current_glossary_button'),
+    later_steps = [
+        # ---- result page: find wrong names and terms
+        TourStep('接着学改字幕：点这里，一次找出写错的人名和术语', get('repolish_current_glossary_button'),
                  [TourAction('帮我做', lambda: w.repolish_current_glossary_button.click())], show_next=False,
                  interactive=True, done=on_proofread, ready=on_completion, page=to_completion),
         # ---- proofreading, step by step
-        TourStep('① 勾选「原神」词库（本机查找，免费）',
+        TourStep('勾选「原神」词库（本机查找，免费）',
                  library_target, [TourAction('帮我做', check_library)], show_next=False, interactive=True,
                  done=library_checked, enter=offline_ai, ready=on_proofread, anim='gl_check',
                  click=TourAction('', check_library)),
-        TourStep('② 点 AI 校对，找出词库外的错字（教学里不联网、不收费）', proofread_part('ai_button'),
+        TourStep('点 AI 校对，找出词库外的错字（教学里不联网、不收费）', proofread_part('ai_button'),
                  [TourAction('帮我做', lambda: proofread().ai_button.click())], show_next=False, interactive=True,
                  done=ai_shown, ready=lambda: on_proofread() and not busy(), anim='gl_ai'),
-        TourStep('③ 红字是错字，点下面的建议改正（至东 → 至冬）。按 **Ctrl+Z** 撤销', fix_target,
+        TourStep('红字是错字，点下面的建议改正（至东 → 至冬）。按 **Ctrl+Z** 撤销', fix_target,
                  [TourAction('帮我做', fix_it)], show_next=False, interactive=True, done=fixed,
                  ready=lambda: on_proofread() and not busy(), anim='gl_fix'),
         TourStep('其余建议也可以逐条点，或一次采用全部', proofread_part('select_all'),
                  ready=on_proofread, optional=True),
-        TourStep('④ 改好了，点返回结果', proofread_part('back_button'),
+        TourStep('改好了，点返回结果', proofread_part('back_button'),
                  [TourAction('帮我做', lambda: proofread().back_button.click())], show_next=False, interactive=True,
                  done=on_completion, ready=on_proofread, anim='gl_back'),
         # ---- result page again
@@ -1659,9 +1927,17 @@ def tutorial_steps(window, part: str = 'basic') -> list[TourStep]:
                  anim='export', enter=quiet(), page=to_studio),
         TourStep('压制成片：把字幕烧进视频', studio_part('studio_render_button'), ready=studio_ready,
                  anim='burn', enter=quiet(), page=to_studio),
-        TourStep('完成！现在放入你自己的影音开始吧', next_label='回到首页', enter=None),
+        TourStep('全部学会了！现在放入你自己的视频开始吧', next_label='回到首页', note=downloads_note),
     ]
-    return advanced if part == 'advanced' else basic
+    for step in home_steps:
+        step.chapter = '做字幕'
+        if step.anim in ('moss_signup', 'plan_ok'):
+            step.group = 'primary'             # ③: one of three, by the chosen plan
+        elif step.anim == 'ai_lock' and step.host is None:
+            step.group = 'ai'                  # ⑤: key missing or connected
+    for step in later_steps:
+        step.chapter = '改字幕'
+    return later_steps if part == 'advanced' else home_steps + later_steps
 
 
 def tutorial_avoid(window):
@@ -1680,20 +1956,13 @@ def tutorial_avoid(window):
     return rects
 
 
-def start_home_tour(window, on_finished=None, part: str = 'basic') -> GuidedTour | None:
-    """Start the tutorial (one at a time); ``part`` is 'basic' or 'advanced'."""
+def start_home_tour(window, on_finished=None, part: str = 'all') -> GuidedTour | None:
+    """Start the tutorial (one at a time). 2026-10-22: one tutorial; ``part`` is kept for old callers."""
     existing = window.findChild(GuidedTour)
     if existing is not None and getattr(existing, 'mode', '') != 'closed':
         return existing
     tour = GuidedTour(window, tutorial_steps(window, part), avoid=tutorial_avoid(window))
     tour.part = part
-
-    def next_part():
-        """继续学进阶 on the last basic step: the advanced steps in the same overlay (2026-10-21)."""
-        if tour.part == 'basic' and window.__dict__.pop('_tutorial_continue', '') == 'advanced':
-            return tutorial_steps(window, 'advanced'), 'advanced'
-        return None
-    tour.next_part = next_part
     if on_finished is not None:
         tour.finished.connect(on_finished)
     tour.start()

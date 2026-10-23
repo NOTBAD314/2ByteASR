@@ -174,6 +174,24 @@ def test_default_names_localize_without_mutation(tmp_path,monkeypatch):
     assert display_project_name(path=path,project=project)=='游戏剪辑第一版'
 
 
+def test_library_names_cache_only_naming_fields(tmp_path,monkeypatch):
+    # 2026-10-22: the cache kept up to 512 whole parsed projects for the life of the process.
+    from twobyteasr.projects.studio_project import SubtitleProject,StudioMedia,StudioCue,save_project
+    from twobyteasr.projects import project_display_name as names
+    monkeypatch.setattr(i18n,'_CURRENT_LANGUAGE_CACHE','zh')
+    path=tmp_path/'第10话.2byteproj'
+    project=SubtitleProject(media=StudioMedia(path='I:/movie/第10话.mp4'),
+                            cues=[StudioCue(str(i),i*1000,i*1000+900,'字幕'*20) for i in range(200)])
+    project.studio_state['project_name']='日常 第10话'
+    save_project(project,path)
+    assert names.display_project_name({'path':str(path),'name':'x','name_custom':True})=='日常 第10话'
+    stat=path.stat()
+    cached=names._read(str(path.resolve()),stat.st_mtime_ns,stat.st_size)
+    assert set(cached)=={'studio_state','state_present','generation_metadata','media'}
+    assert cached['studio_state']=={'project_name':'日常 第10话'} and cached['state_present']
+    assert len(repr(cached))<500
+
+
 def test_uncertain_offline_names_are_not_guessed(tmp_path,monkeypatch):
     from twobyteasr.projects.project_display_name import display_project_name
     monkeypatch.setattr(i18n,'_CURRENT_LANGUAGE_CACHE','en')

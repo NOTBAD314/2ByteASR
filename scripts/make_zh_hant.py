@@ -41,6 +41,7 @@ OVERRIDES = (
     ("後臺", "後台"),
     ("平臺", "平台"),
     ("臺式", "桌上型"),
+    ("文書處理", "文字處理"),   # 文字处理 is text handling here, not "word processing" (2026-10-23)
 )
 
 

@@ -251,3 +251,89 @@ def test_title_drag_restores_a_maximized_window_only_after_moving(monkeypatch):
     finally:
         window.close()
         window.deleteLater()
+
+def _top_level(app, width, height):
+    window = QWidget()
+    window.resize(width, height)
+    window.show()
+    app.processEvents()
+    return window
+
+
+def test_user_placed_window_may_hang_past_the_screen_but_keeps_its_title_reachable():
+    # 2026-10-22 user video: a window almost as tall as the work area could not
+    # be dragged down; constrain pushed every pixel back inside the screen.
+    app = _app()
+    avail = app.primaryScreen().availableGeometry()
+    window = _top_level(app, avail.width() - 100, avail.height() - 20)
+    try:
+        for x, y in ((avail.left() + 40, avail.top() + avail.height() // 2), (avail.left() - 300, avail.top() + 20)):
+            window.move(x, y)
+            window_constraints.constrain(window, user_placed=True)
+            assert (window.x(), window.y()) == (x, y)
+        window.move(avail.left() + 40, avail.bottom() - 10)  # title below the work area
+        window_constraints.constrain(window, user_placed=True)
+        assert window.y() < avail.bottom() - 10 and window_constraints.title_reachable(window.frameGeometry())
+        window.move(avail.left() + 40, avail.top() - 50)  # title above the screen
+        window_constraints.constrain(window, user_placed=True)
+        assert window.y() >= avail.top() and window_constraints.title_reachable(window.frameGeometry())
+        # Placed by the program or by Windows (decision 0121), and dialogs kept
+        # inside the main window: still fully inside their bounds.
+        for options in ({}, {"within_parent": True}, {"within_parent": True, "user_placed": True}):
+            window.move(avail.left() + 40, avail.top() + avail.height() // 2)
+            window_constraints.constrain(window, **options)
+            assert avail.contains(window.frameGeometry()), options
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_window_bounds_leaves_a_window_alone_until_its_drag_ends(monkeypatch):
+    from PySide6.QtTest import QTest
+    app = _app()
+    avail = app.primaryScreen().availableGeometry()
+    dragging = {"value": True}
+    monkeypatch.setattr(window_constraints, "in_move_size_loop", lambda widget: dragging["value"])
+    window = _top_level(app, avail.width() - 100, avail.height() - 20)
+    try:
+        window_constraints.install_window_bounds(window)
+        QTest.qWait(30)
+        x, middle = avail.left() + 40, avail.top() + avail.height() // 2
+        window.move(x, middle)
+        QTest.qWait(150)
+        assert window.y() == middle  # Windows' move loop owns it now
+        dragging["value"] = False
+        QTest.qWait(150)
+        assert window.y() == middle and not avail.contains(window.frameGeometry())  # dropped there
+        window.resize(window.width() - 10, window.height())
+        QTest.qWait(150)
+        assert window.y() == middle  # still where the user put it
+        window.move(x, middle + 10)  # a program move goes fully inside again
+        QTest.qWait(150)
+        assert avail.contains(window.frameGeometry())
+        dragging["value"] = True
+        window.move(x, avail.bottom() - 10)
+        QTest.qWait(150)
+        assert window.y() == avail.bottom() - 10
+        dragging["value"] = False
+        QTest.qWait(150)
+        pulled = window.y()
+        assert pulled < avail.bottom() - 10 and window_constraints.title_reachable(window.frameGeometry())
+        QTest.qWait(150)
+        assert window.y() == pulled and not avail.contains(window.frameGeometry())
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_title_drag_fallback_counts_as_a_drag():
+    app = _app()
+    window = _top_level(app, 400, 300)
+    try:
+        assert not window_constraints.in_move_size_loop(window)
+        window._title_drag = object()
+        assert window_constraints.in_move_size_loop(window)
+    finally:
+        window._title_drag = None
+        window.close()
+        window.deleteLater()

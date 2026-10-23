@@ -9,7 +9,8 @@ Windows, so this runtime is a conda environment instead of a uv venv:
    ``scripts/mfa_runtime_win64.txt`` (every package checked against its md5);
 3. three small pure-Python packages MFA's Chinese tokenizer needs, from PyPI
    with ``--require-hashes`` (not on conda-forge), and the two pkuseg models it
-   loads (``<env>\\share\\pkuseg``, SHA-256 pinned; GitHub, then GitHub proxies);
+   loads (``<env>\\share\\pkuseg``, SHA-256 pinned; GitHub, then GitHub proxies,
+   resumable and moving to a clearly faster source when one stays slow);
 4. a smoke test (``montreal_forced_aligner version`` and the tokenizers);
 5. the completion marker ``conda-meta/2byteasr-mfa-runtime.json``.
 
@@ -26,15 +27,20 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -164,14 +170,19 @@ def fetch_packages(work: Path) -> dict:
     items = explicit_packages()
     done, total_bytes, used = 0, 0, {}
     say(f"[运行库] 下载 MFA 运行环境的 {len(items)} 个包（约 340 MB）")
+    reported = time.monotonic()
     with ThreadPoolExecutor(max_workers=6) as pool:
         for future in as_completed([pool.submit(_fetch_one, item, pkgs) for item in items]):
             _relative, size, source = future.result()
             done += 1
             total_bytes += size
             used[source] = used.get(source, 0) + 1
-            if done % 20 == 0 or done == len(items):
-                say(f"[运行库] MFA 运行环境：{done}/{len(items)} 个包，{total_bytes / 1048576:.0f} MB")
+            # The download window shows these as progress (2026-10-21): often
+            # enough to see it move, with the source the last package came from.
+            if done % 10 == 0 or done == len(items) or time.monotonic() - reported >= 2:
+                reported = time.monotonic()
+                host = urllib.parse.urlparse(source).hostname or "本机缓存"
+                say(f"[运行库] MFA 运行环境：{done}/{len(items)} 个包，{total_bytes / 1048576:.0f} MB（来源：{host}）")
     return used
 
 
@@ -226,8 +237,326 @@ def pip_install(target: Path, work: Path) -> None:
 
 GITHUB_PROXIES = ("https://ghfast.top/", "https://ghproxy.net/", "https://gh-proxy.org/")  # as app/updater.py
 
+# 2026-10-22 (mainland line): GitHub gave the pkuseg models 15-60 KB/s (postag about
+# 45 minutes) while ghfast.top gave ~330 KB/s and gh-proxy.org ~470 KB/s at the same
+# time, and the next source was only tried after a failure. As the PyTorch wheels
+# (install_managed_backend.WheelDownload): a source that stays slow gets a short
+# trial of the next one, and a clearly faster one goes on from the bytes already here.
+SLOW_BYTES_PER_SECOND = 256 << 10
+SPEED_GRACE_S = 20.0      # a source is judged once it has had this long,
+SPEED_WINDOW_S = 30.0     # by its average over this window,
+SPEED_CHECK_S = 20.0      # at most this often (doubled after a trial that was not faster),
+WORTH_SWITCHING_S = 60.0  # and only while the rest would take longer than this
+TRIAL_S = 8.0
+SWITCH_FACTOR = 2.0
+READ_TIMEOUT_S = 60
+TRIAL_TIMEOUT_S = 15
+READ_BLOCK = 256 << 10
+PROGRESS_S = 2.0          # the download window shows these lines as speed and time left
+MAX_RESUMES = 5           # reconnects to a source that broke off after sending bytes
+CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+)", re.IGNORECASE)
 
-def install_pkuseg(target: Path) -> None:
+
+def _mb(value: float) -> str:
+    return f"{value / 1048576:.1f}"
+
+
+def _rate(value: float) -> str:
+    return f"{value / 1048576:.1f} MB/s" if value >= 1048576 else f"{value / 1024:.0f} KB/s"
+
+
+def _size(path: Path) -> int:
+    return path.stat().st_size if path.is_file() else 0
+
+
+class SourceFailed(Exception):
+    def __init__(self, reason: str, gained: bool = False):
+        super().__init__(reason)
+        self.gained = gained  # bytes arrived on this connection before it failed
+
+
+class _Answer:
+    """One open response and the file its bytes go to (from absolute offset ``start``)."""
+
+    def __init__(self, index: int, response, start: int, path: Path, mode: str):
+        self.index, self.response, self.start, self.position = index, response, start, start
+        self.path, self.out = path, path.open(mode)
+
+    def close(self) -> None:
+        self.out.close()
+        self.response.close()
+
+
+class PkusegDownload:
+    """One pinned pkuseg archive into ``<home>/<name>.zip``, checked against its SHA-256.
+
+    The bytes collect in ``<work>/pkuseg-<name>-<sha>.zip.part``. The work folder
+    outlives the env, so a restart with another download source (the window's
+    "改用 HF 镜像继续") continues them; a verified archive is never replaced by
+    anything unverified. Every request asks for the rest from the current offset.
+    A source that ignores Range sends the whole file, into a ``.fresh`` file that
+    replaces the partial only once it holds more. When the current source stays
+    below SLOW_BYTES_PER_SECOND, the next untried source reads into a ``.trial``
+    file for TRIAL_S while the current answer waits: SWITCH_FACTOR times faster
+    takes over with those bytes, otherwise they go and the current answer goes
+    on. Each source gets one trial per file, so slow sources never alternate.
+    """
+
+    def __init__(self, name: str, item: dict, home: Path, work: Path, prefixes, *,
+                 opener=urllib.request.urlopen, clock=time.monotonic):
+        self.label = f"中文分词模型 {name}"
+        self.urls = [prefix + item["url"] for prefix in prefixes]
+        self.hosts = [urllib.parse.urlsplit(url).netloc or url for url in self.urls]
+        self.sha256 = item["sha256"]
+        self.total = int(item.get("bytes") or 0)
+        self.target = home / f"{name}.zip"
+        self.partial = work / f"pkuseg-{name}-{self.sha256[:12]}.zip.part"
+        self.fresh = self.partial.with_name(self.partial.name + ".fresh")
+        self.trial = self.partial.with_name(self.partial.name + ".trial")
+        self.opener, self.clock = opener, clock
+        self.current = 0
+        self.dead: set[int] = set()               # failed, or sent bytes that did not match
+        self.measured: dict[int, float] = {}      # judged or tried: no further trial
+        self.ranges: dict[int, bool] = {}
+        self.resumes = [0] * len(self.urls)
+        self.served: set[int] = set()             # whose bytes are in the partial file
+        self.samples: deque = deque()             # (time, offset) on the current source
+        self.check_gap = SPEED_CHECK_S
+        self.next_check = self.reported = 0.0
+
+    def fetch(self) -> None:
+        self.partial.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            while True:
+                self._download()
+                if hashlib.sha256(self.partial.read_bytes()).hexdigest() == self.sha256:
+                    os.replace(self.partial, self.target)
+                    return
+                say(f"[运行库] 校验不符，换下一个来源：{self.urls[self.current]}")
+                self.partial.unlink()
+                # Which source sent the wrong bytes is unknown: none that sent some is used again.
+                self.dead |= self.served
+                self.served.clear()
+                self.measured.clear()
+        finally:
+            self.trial.unlink(missing_ok=True)
+            self.fresh.unlink(missing_ok=True)
+
+    def _download(self) -> None:
+        current = self._alive(self.current - 1)
+        if current is None:
+            raise RuntimeError(f"{self.label} 下载失败（GitHub 与镜像都失败）。请检查网络后重试。")
+        self.current = current
+        self._restart_clock()
+        while True:
+            have = _size(self.partial)
+            if self.total and have >= self.total:
+                if have == self.total:
+                    return
+                self.partial.unlink()  # longer than the file: never trusted
+                continue
+            try:
+                self._pump(self._connect(self.current, have))
+            except SourceFailed as failure:
+                self._failed(failure)
+
+    def _alive(self, after: int) -> int | None:
+        """The first usable source after ``after`` (in order, wrapping round), or None."""
+        for step in range(1, len(self.urls) + 1):
+            index = (after + step) % len(self.urls)
+            if index not in self.dead:
+                return index
+        return None
+
+    def _candidate(self) -> int | None:
+        """The next source after the current one that has not been judged or tried yet."""
+        for step in range(1, len(self.urls)):
+            index = (self.current + step) % len(self.urls)
+            if index not in self.dead and index not in self.measured:
+                return index
+        return None
+
+    def _connect(self, index: int, have: int, trial: bool = False) -> _Answer:
+        request = urllib.request.Request(self.urls[index], headers={
+            "User-Agent": "2ByteASR", "Range": f"bytes={have}-", "Accept-Encoding": "identity"})
+        try:
+            response = self.opener(request, timeout=TRIAL_TIMEOUT_S if trial else READ_TIMEOUT_S)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise SourceFailed(f"HTTP {error.code}") from error
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            raise SourceFailed(str(getattr(error, "reason", None) or error) or type(error).__name__) from error
+        status = getattr(response, "status", None) or response.getcode()
+        match = CONTENT_RANGE.fullmatch(str(response.headers.get("Content-Range", "")).strip())
+        length = str(response.headers.get("Content-Length", "")).strip()
+        kind = str(response.headers.get("Content-Type", "")).split(";")[0].strip().lower()
+        if status == 206 and match and int(match.group(1)) == have:
+            start, total = have, int(match.group(3))
+        elif status == 200:
+            start, total = 0, int(length) if length.isdigit() else self.total
+        else:
+            response.close()
+            raise SourceFailed(f"HTTP {status}，返回的范围不符")
+        webpage = kind in ("text/html", "application/json")  # a proxy's error or notice page
+        if webpage or not total or (self.total and total != self.total):
+            response.close()
+            raise SourceFailed("返回网页而不是文件" if webpage else "返回的不是这个文件")
+        self.total = total
+        if status == 206 or have:  # a 200 to "bytes=0-" does not tell
+            self.ranges[index] = status == 206
+        host = self.hosts[index]
+        if trial:
+            return _Answer(index, response, start, self.trial, "wb")
+        if start == have:
+            if have:
+                say(f"[运行库] {self.label}：{host} 从 {_mb(have)} MB 处继续")
+            return _Answer(index, response, start, self.partial, "ab")
+        say(f"[运行库] {self.label}：{host} 不支持断点续传，从头下载（已下载的 {_mb(have)} MB 先保留）")
+        return _Answer(index, response, start, self.fresh, "wb")
+
+    def _block(self, answer: _Answer) -> bytes:
+        try:
+            block = answer.response.read1(READ_BLOCK)  # what has arrived, even a trickle
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            raise SourceFailed(str(error) or type(error).__name__, answer.position > answer.start) from error
+        if not block:
+            raise SourceFailed("连接提前结束", answer.position > answer.start)
+        if answer.position + len(block) > self.total:
+            raise SourceFailed("返回的数据比文件长")
+        return block
+
+    def _write(self, answer: _Answer, block: bytes) -> None:
+        answer.out.write(block)
+        answer.position += len(block)
+        self._settle(answer)
+
+    def _settle(self, answer: _Answer) -> None:
+        if answer.path == self.partial:
+            self.served.add(answer.index)
+        elif answer.path == self.fresh and answer.position > _size(self.partial):
+            # The whole-file answer has passed the bytes kept from before: it is the partial now.
+            answer.out.close()
+            os.replace(self.fresh, self.partial)
+            self.served = {answer.index}
+            answer.path, answer.out = self.partial, self.partial.open("ab")
+
+    def _pump(self, answer: _Answer) -> None:
+        """Read the current answer (or, after a switch, the faster source's) until the file is complete."""
+        try:
+            while answer.position < self.total:
+                self._write(answer, self._block(answer))
+                now = self.clock()
+                if not self.samples or now - self.samples[-1][0] >= 0.5:
+                    self.samples.append((now, answer.position))
+                self._report(answer, now)
+                if answer.position < self.total and self._too_slow(now, answer.position):
+                    waiting = answer
+                    answer = self._try_faster(answer)
+                    if answer is not waiting:
+                        self._report(answer, self.clock(), True)
+        finally:
+            answer.close()
+
+    def _report(self, answer: _Answer, now: float, force: bool = False) -> None:
+        if force or now - self.reported >= PROGRESS_S or answer.position == self.total:
+            self.reported = now
+            say(f"[运行库] {self.label}：{_mb(answer.position)}/{_mb(self.total)} MB（来源：{self.hosts[answer.index]}）")
+
+    def _failed(self, failure: SourceFailed) -> None:
+        index = self.current
+        self.fresh.unlink(missing_ok=True)  # shorter than the partial, or it would have replaced it
+        if failure.gained and self.ranges.get(index, True) and self.resumes[index] < MAX_RESUMES:
+            self.resumes[index] += 1
+            say(f"[运行库] {self.label}：{self.hosts[index]} 连接中断（{failure}），重新连接")
+        else:
+            self.dead.add(index)
+            say(f"[运行库] 下载失败，换下一个来源：{self.urls[index]}（{failure}）")
+            following = self._alive(index)
+            if following is None:
+                raise RuntimeError(f"{self.label} 下载失败（GitHub 与镜像都失败）。请检查网络后重试。")
+            self.current = following
+        self._restart_clock()
+
+    def _restart_clock(self, wait: float | None = None) -> None:
+        self.samples.clear()
+        self.next_check = self.clock() + (SPEED_GRACE_S if wait is None else wait)
+
+    def _speed(self, now: float) -> float:
+        while self.samples and now - self.samples[0][0] > SPEED_WINDOW_S:
+            self.samples.popleft()
+        if len(self.samples) < 2 or self.samples[-1][0] - self.samples[0][0] < 1.0:
+            return 0.0
+        return (self.samples[-1][1] - self.samples[0][1]) / (self.samples[-1][0] - self.samples[0][0])
+
+    def _too_slow(self, now: float, position: int) -> bool:
+        if now < self.next_check or self._candidate() is None:
+            return False
+        self.next_check = now + self.check_gap
+        rate = self._speed(now)
+        if rate >= SLOW_BYTES_PER_SECOND:
+            return False
+        return not rate or (self.total - position) / rate > WORTH_SWITCHING_S
+
+    def _try_faster(self, answer: _Answer) -> _Answer:
+        """Try the next source while ``answer`` waits; return whichever goes on."""
+        rate = self._speed(self.clock())
+        self.measured[answer.index] = rate
+        candidate = self._candidate()
+        old, new = self.hosts[answer.index], self.hosts[candidate]
+        say(f"[运行库] {self.label}：{old} 最近 {int(SPEED_WINDOW_S)} 秒平均 {_rate(rate)}，试用 {new}")
+        answer.out.flush()
+        trial = None
+        try:
+            trial = self._connect(candidate, _size(self.partial), trial=True)
+            started = self.clock()
+            while trial.position < self.total and self.clock() - started < TRIAL_S:
+                self._write(trial, self._block(trial))
+            trial_rate = (trial.position - trial.start) / max(self.clock() - started, 1e-3)
+        except SourceFailed as failure:
+            if trial:
+                trial.close()
+            self.trial.unlink(missing_ok=True)
+            self.measured[candidate] = 0.0
+            say(f"[运行库] {self.label}：{new} 没有成功（{failure}），继续使用 {old}")
+            return self._stay(answer)
+        self.measured[candidate] = trial_rate
+        left_here = (self.total - answer.position) / max(rate, 1.0)
+        left_there = (self.total - trial.position) / trial_rate if trial_rate else float("inf")
+        if trial_rate < SWITCH_FACTOR * max(rate, 1.0) or left_there >= left_here:
+            trial.close()
+            self.trial.unlink()
+            say(f"[运行库] {self.label}：{new} 试下 {_rate(trial_rate)}，不比 {old} 明显更快，继续使用 {old}")
+            return self._stay(answer)
+        answer.close()
+        self.fresh.unlink(missing_ok=True)
+        trial.out.close()
+        if trial.start == _size(self.partial):
+            with self.partial.open("ab") as out, self.trial.open("rb") as source:
+                shutil.copyfileobj(source, out, 1 << 20)
+            self.trial.unlink()
+            trial.path = self.partial
+            how = f"从 {_mb(trial.start)} MB 处继续"
+        else:  # the whole file from a source that ignores Range: kept apart until it passes the partial
+            os.replace(self.trial, self.fresh)
+            trial.path = self.fresh
+            how = f"从头下载（它不支持断点续传，已下载的 {_mb(_size(self.partial))} MB 先保留）"
+        trial.out = trial.path.open("ab")
+        self._settle(trial)
+        say(f"[运行库] {self.label}：{old}（{_rate(rate)}）太慢，已改用 {new}（{_rate(trial_rate)}），{how}")
+        self.current = candidate
+        self.check_gap = SPEED_CHECK_S
+        self._restart_clock()
+        return trial
+
+    def _stay(self, answer: _Answer) -> _Answer:
+        self.check_gap *= 2
+        self._restart_clock(max(SPEED_GRACE_S, self.check_gap))
+        if self._candidate() is None:
+            say(f"[运行库] {self.label}：其他来源都不比 {self.hosts[answer.index]} 明显更快，继续使用它")
+        return answer
+
+
+def install_pkuseg(target: Path, work: Path) -> None:
     """spacy_ontonotes (segmentation) and postag: pkuseg would fetch them from GitHub on first use."""
     import zipfile
     home = target / "share" / "pkuseg"
@@ -236,8 +565,9 @@ def install_pkuseg(target: Path) -> None:
         archive = home / f"{name}.zip"
         if not (archive.is_file() and hashlib.sha256(archive.read_bytes()).hexdigest() == item["sha256"]):
             say(f"[运行库] 下载中文分词模型 {name}（约 {item['bytes'] // 1048576} MB）")
-            if not any(_download(prefix + item["url"], archive, item["sha256"]) for prefix in ("", *GITHUB_PROXIES)):
-                raise RuntimeError(f"中文分词模型 {name} 下载失败（GitHub 与镜像都失败）。请检查网络后重试。")
+            # The mirror source ("改用 HF 镜像继续") tries the GitHub proxies first, as channel_order() does.
+            prefixes = (*GITHUB_PROXIES, "") if os.environ.get("2BYTEASR_RUNTIME_SOURCE", "") == "mirror" else ("", *GITHUB_PROXIES)
+            PkusegDownload(name, item, home, work, prefixes).fetch()
         with zipfile.ZipFile(archive) as package:
             package.extractall(home / name)
 
@@ -304,8 +634,10 @@ def main() -> int:
     started = time.perf_counter()
     exe = micromamba(work, pinned["micromamba"])
     sources = create_env(exe, work, target)
+    say("[运行库] 安装 MFA 中文分词依赖")
     pip_install(target, work)
-    install_pkuseg(target)
+    install_pkuseg(target, work)
+    say("[运行库] 检查 MFA 运行环境能否运行（首次可能要一两分钟）")
     version = smoke(target)
     (target / "conda-meta" / MARKER).write_text(json.dumps({
         "montreal_forced_aligner": version, "explicit": pinned["explicit"],

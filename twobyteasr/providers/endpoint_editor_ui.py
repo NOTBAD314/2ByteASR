@@ -23,8 +23,9 @@ import re
 import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget, QToolButton,
     QVBoxLayout, QWidget,
 )
@@ -45,6 +46,23 @@ from .llm_config import (
     update_active_profile, validate_endpoint,
 )
 from .provider_registry import GLOBAL_PROVIDER_REGISTRY
+
+
+class _CurrentPageStack(QStackedWidget):
+    """Sized by the page on show: the hidden account-login page must not reserve
+    height above 测试连接 (2026-10-22; QStackedLayout counts every page)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.currentChanged.connect(lambda _index: self.updateGeometry())
+
+    def sizeHint(self):
+        page = self.currentWidget()
+        return page.sizeHint() if page is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        page = self.currentWidget()
+        return page.minimumSizeHint() if page is not None else super().minimumSizeHint()
 
 
 def provider_for_stage(settings, stage):
@@ -282,29 +300,186 @@ class AsrModelsFetchWorker(QThread):
 
 
 class PromptDialog(SpringDialog):
-    def __init__(self, parent=None):
+    """AI line-breaking guidance per subtitle language (2026-10-18; was a read-only note).
+
+    Only the guidance part of each grouping prompt is edited here; the
+    protocol, protected boundaries, hard limits and verbatim text stay
+    program-owned (``subtitle_rules.grouping_request``) and are shown read-only.
+    Saved to settings ``grouping_prompts``; an empty or unchanged text means
+    the built-in guidance. A running task keeps the settings it started with.
+    """
+
+    LANGUAGES = (("zh", "中文字幕"), ("ja", "日语字幕"), ("en", "英语字幕"))
+
+    def __init__(self, parent=None, settings=None):
         super().__init__(parent)
-        bind_text(self, '项目内置提示词', property='windowTitle')
-        self.resize(720, 480)
-        layout = QVBoxLayout(self)
-        text = QPlainTextEdit()
-        text.setReadOnly(True)
-        text.setPlainText(
-            "字幕校对提示词（项目内置，只读）\n\n"
-            "模型会收到 MOSS 主稿、FireRed/Qwen3-ASR 独立证据、项目背景、术语候选和严格安全规则；"
-            "只能返回结构化修正，不允许自由改写原话。\n\n"
-            "全文断句提示词（项目内置，只读）\n\n"
-            "模型只能在已经校对的原文中插入字幕边界；不得增删改字，必须保留硬边界、完整词、"
-            "说话人切换与真实停顿。更换服务商或模型不会移除这些提示词。"
-        )
-        layout.addWidget(text)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        from ..design.presentation import button_role
+        from ..design.themed_icons import install_themed_icon
+        from ..subtitle_rules.grouping_request import CUSTOM_GUIDANCE_MAX_CHARS, default_grouping_guidance
+        if settings is None:
+            import subtitle_core
+            settings = subtitle_core.RUNTIME_SETTINGS
+        self._settings = settings
+        self._limit = CUSTOM_GUIDANCE_MAX_CHARS
+        stored = settings.get("grouping_prompts") if isinstance(settings.get("grouping_prompts"), dict) else {}
+        self._defaults = {code: default_grouping_guidance(code) for code, _label in self.LANGUAGES}
+        self._drafts = {code: str(stored.get(code) or "").strip() or self._defaults[code]
+                        for code, _label in self.LANGUAGES}
+        spoken = str((settings.get("subtitle_language") or {}).get("recognition_language") or "")
+        self._current = spoken if spoken in self._drafts else "zh"
+        self.setObjectName("groupingPromptDialog")
+        bind_text(self, 'AI 断句提示词', property='windowTitle')
+        self.resize(820, 680)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        header = QFrame(self)
+        header.setObjectName("aiDialogHeader")
+        head = QHBoxLayout(header)
+        head.setContentsMargins(24, 18, 16, 14)
+        titles = QVBoxLayout()
+        titles.setSpacing(2)
+        title = bind_text(QLabel(), 'AI 断句提示词')
+        title.setObjectName("aiDialogTitle")
+        subtitle = bind_text(QLabel(), '告诉断句模型在哪里换字幕。可以按自己的习惯改，只影响之后新识别的字幕。')
+        subtitle.setObjectName("aiDialogSubtitle")
+        subtitle.setWordWrap(True)
+        titles.addWidget(title)
+        titles.addWidget(subtitle)
+        head.addLayout(titles, 1)
+        close = button_role(QPushButton(""), "ghost")
+        close.setFixedSize(36, 36)
+        install_themed_icon(close, "fa5s.times", "secondary")
+        bind_text(close, '关闭断句提示词', property='accessibleName')
+        bind_text(close, '关闭（不保存修改）', property='toolTip')
+        close.clicked.connect(self.reject)
+        head.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+        outer.addWidget(header)
+
+        body = QWidget(self)
+        body.setObjectName("aiDialogBody")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 16, 24, 12)
+        layout.setSpacing(10)
+        row = QHBoxLayout()
+        row.addWidget(bind_text(QLabel(), '字幕语言'))
+        self.language = FramelessPopupCombo()
+        for code, label in self.LANGUAGES:
+            self.language.addItem(tr(label), code)
+        self.language.setCurrentIndex(max(0, self.language.findData(self._current)))
+        row.addWidget(self.language)
+        row.addStretch(1)
+        self.state = QLabel()
+        self.state.setObjectName("muted")
+        row.addWidget(self.state)
+        layout.addLayout(row)
+        self.editor = QPlainTextEdit()
+        self.editor.setObjectName("groupingPromptEditor")
+        self.editor.setPlainText(self._drafts[self._current])
+        self.editor.setMinimumHeight(260)
+        bind_text(self.editor, '断句说明', property='accessibleName')
+        layout.addWidget(self.editor, 3)
+        fixed_note = bind_text(QLabel(), '程序固定的部分不能改：模型只返回换字幕的位置，不改一个字；说话人切换和长停顿处一定断开；每条字幕的长度上限照旧。字幕校对的提示词由程序内置，不在这里修改。')
+        fixed_note.setObjectName("muted")
+        fixed_note.setWordWrap(True)
+        layout.addWidget(fixed_note)
+        self.fixed_toggle = QToolButton()
+        self.fixed_toggle.setObjectName("endpointAdvancedToggle")
+        self.fixed_toggle.setCheckable(True)
+        self.fixed_toggle.setText(tr('查看程序固定的部分'))
+        layout.addWidget(self.fixed_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self.fixed = QPlainTextEdit()
+        self.fixed.setObjectName("groupingPromptFixed")
+        self.fixed.setReadOnly(True)
+        self.fixed.setMinimumHeight(150)
+        self.fixed.hide()
+        layout.addWidget(self.fixed, 2)
+        outer.addWidget(body, 1)
+
+        footer = QFrame(self)
+        footer.setObjectName("aiDialogFooter")
+        foot = QHBoxLayout(footer)
+        foot.setContentsMargins(24, 12, 24, 16)
+        foot.setSpacing(10)
+        self.restore = button_role(bind_text(QPushButton(), '恢复内置说明'), "secondary")
+        foot.addWidget(self.restore)
+        foot.addStretch(1)
+        self.error = QLabel()
+        self.error.setObjectName("statusBad")
+        self.error.hide()
+        foot.addWidget(self.error)
+        cancel = button_role(bind_text(QPushButton(), '取消'), "secondary")
+        cancel.clicked.connect(self.reject)
+        self.save_button = button_role(bind_text(QPushButton(), '保存'), "primary")
+        self.save_button.setObjectName("primary")
+        self.save_button.clicked.connect(self.save)
+        foot.addWidget(cancel)
+        foot.addWidget(self.save_button)
+        outer.addWidget(footer)
+
+        self.language.currentIndexChanged.connect(self._switch_language)
+        self.editor.textChanged.connect(self._refresh_state)
+        self.restore.clicked.connect(lambda: self.editor.setPlainText(self._defaults[self._current]))
+        self.fixed_toggle.toggled.connect(self._show_fixed)
+        self._refresh_fixed()
+        self._refresh_state()
         apply_ui_language(self)
+
+    def _switch_language(self, _index):
+        self._drafts[self._current] = self.editor.toPlainText()
+        self._current = str(self.language.currentData() or "zh")
+        self.editor.setPlainText(self._drafts[self._current])
+        self._refresh_fixed()
+
+    def _show_fixed(self, shown):
+        self.fixed.setVisible(bool(shown))
+        self.fixed_toggle.setText(tr('收起程序固定的部分') if shown else tr('查看程序固定的部分'))
+
+    def _refresh_fixed(self):
+        from ..subtitle_rules.grouping_request import fixed_grouping_prompt_parts
+        head, reminder, tail = fixed_grouping_prompt_parts(self._current)
+        self.fixed.setPlainText(f"{head}\n{tr('（这里是上面可以修改的断句说明；改过时程序再加一句：）')}\n{reminder}\n\n{tail}")
+
+    def _refresh_state(self):
+        text = self.editor.toPlainText().strip()
+        builtin = not text or text == self._defaults[self._current].strip()
+        too_long = len(text) > self._limit
+        self.state.setText(tr('超过 {limit} 字，请删减').format(limit=self._limit) if too_long
+                           else tr('内置说明') if builtin else tr('自定义说明'))
+        self.restore.setEnabled(not builtin)
+        self.save_button.setEnabled(not too_long)
+
+    def guidance_values(self) -> dict:
+        """What saving writes: empty for the built-in guidance."""
+        self._drafts[self._current] = self.editor.toPlainText()
+        values = {}
+        for code, text in self._drafts.items():
+            text = text.strip()
+            values[code] = "" if not text or text == self._defaults[code].strip() else text[:self._limit]
+        return values
+
+    def save(self):
+        from ..storage.settings import save_runtime_settings
+        previous = self._settings.get("grouping_prompts")
+        self._settings["grouping_prompts"] = self.guidance_values()
+        try:
+            save_runtime_settings(self._settings)
+        except Exception as exc:
+            if previous is None:
+                self._settings.pop("grouping_prompts", None)
+            else:
+                self._settings["grouping_prompts"] = previous
+            self.error.setText(tr('保存失败：{error}').format(error=exc))
+            self.error.show()
+            return
+        self.accept()
 
 
 class EndpointEditor(QFrame):
+    connection_tested = Signal(bool)   # 测试连接 finished (2026-10-22: the home page unlocks the AI-only features)
+    advanced_wanted = Signal()         # a custom service needs its Base URL (the dialog opens 高级设置)
+    key_help_requested = Signal()      # 「API Key 是什么？」 beside the key box
+
     def __init__(self, title: str, accent: str, stage: str, settings: dict):
         super().__init__()
         self.setObjectName("endpointCard")
@@ -323,19 +498,19 @@ class EndpointEditor(QFrame):
         self.title_label.setObjectName("endpointTitle")
         self.title_label.setStyleSheet(f"color: {accent}; font-size: 15px; font-weight: 700;")
         layout.addWidget(self.title_label)
+        self._layout = layout
+        # 2026-10-22 (design B): the service, key and test come first in plain
+        # words; model, address, protocol and output live in the advanced group.
         if stage == "group":
-            self.grouping_recommendation = QLabel()
+            self.grouping_recommendation = QLabel(self)
             self.grouping_recommendation.setObjectName("groupingRecommendation")
             self.grouping_recommendation.setWordWrap(True)
             bind_text(self.grouping_recommendation,
                 "智能断句推荐 DeepSeek。已选服务可继续使用；所有模型都经过相同检查，结果不合格时改用本地断句，可能需要人工检查。")
             self.grouping_recommendation.setProperty("class", "hint")
-            layout.addWidget(self.grouping_recommendation)
+            # The service list already says 断句推荐; the full note is its hover text.
+            self.grouping_recommendation.hide()
 
-        def section_label(text: str) -> QLabel:
-            label = QLabel(text)
-            label.setObjectName("endpointSectionLabel")
-            return label
         self.service = FramelessPopupCombo()
         for service_id, spec in AI_SERVICE_SPECS.items():
             label = spec["label"]
@@ -413,16 +588,42 @@ class EndpointEditor(QFrame):
         # placeholder 只是 UI metadata，绝不参与 secret 保存。
         self._key_state = "unchanged"
         self.key.textChanged.connect(self._on_key_text_changed)
-        (bind_text(self.key, '已配置：{value0}', property='placeholderText', value0=source) if existing else bind_text(self.key, '请输入 API Key', property='placeholderText'))
+        self._show_key_placeholder(existing, source)
         self.clear_key_button = QToolButton()
         self.clear_key_button.setIcon(_icon("fa5s.eraser"))
         self.clear_key_button.setFixedSize(36, 36)
         bind_text(self.clear_key_button, '清除已保存的 API Key（保存时生效；环境变量不受影响）', property='toolTip')
         bind_text(self.clear_key_button, '清除已保存的 API Key', property='accessibleName')
         self.clear_key_button.clicked.connect(self._request_key_clear)
-        self.clear_key_button.setVisible(bool(existing))
+        for button in (self.reveal_key, self.clear_key_button):
+            button.setParent(self)
+            button.hide()
+        from ..design.themed_icons import install_themed_icon
+        # Owned by the key box itself (PySide's addAction(icon, position) result
+        # did not survive the AI settings dialog closing).
+        self._reveal_action = QAction(_icon("fa5s.eye"), "", self.key)
+        self.key.addAction(self._reveal_action, QLineEdit.ActionPosition.TrailingPosition)
+        install_themed_icon(self._reveal_action, "fa5s.eye", "secondary")
+        bind_text(self._reveal_action, '显示或隐藏 API Key', property='toolTip')
+        self._reveal_action.triggered.connect(self.reveal_key.toggle)
+        self.reveal_key.toggled.connect(lambda visible: install_themed_icon(
+            self._reveal_action, "fa5s.eye-slash" if visible else "fa5s.eye", "secondary"))
+        self._clear_action = QAction(_icon("fa5s.eraser"), "", self.key)
+        self.key.addAction(self._clear_action, QLineEdit.ActionPosition.TrailingPosition)
+        install_themed_icon(self._clear_action, "fa5s.eraser", "secondary")
+        bind_text(self._clear_action, '清除已保存的 API Key（保存时生效；环境变量不受影响）', property='toolTip')
+        self._clear_action.triggered.connect(self.clear_key_button.click)
+        self._clear_action.setVisible(bool(existing))
         self.test_button = AnimatedButton("测试连接")
         self.test_button.setObjectName("endpointPrimary")
+        # Its width comes from the sheet (min-width) and its label; the language
+        # pass's +4 px pin made 重新测试 wider than 测试连接 (10-23).
+        self.test_button.setProperty("flexibleWidth", True)
+        # Service, key and 测试连接 share one height (2026-10-22): the large
+        # control size, full width (the presets otherwise cap a list at 360 px).
+        from ..design.presentation import field_width
+        field_width(self.service, "expanding", size="large")
+        field_width(self.key, "expanding", size="large")
         if stage == "group":
             bind_text(self.test_button,
                 "只检查连接与基础响应；连接成功不代表断句结果合格，实际结果仍须通过本地验证。",
@@ -434,32 +635,43 @@ class EndpointEditor(QFrame):
         key_row = QHBoxLayout()
         key_row.setContentsMargins(0, 0, 0, 0)
         key_row.addWidget(self.key, 1)
-        key_row.addWidget(self.reveal_key)
-        key_row.addWidget(self.clear_key_button)
         self.api_page = QWidget()
         self.api_page.setObjectName("endpointApiPage")
         form = QFormLayout(self.api_page)
+        form.setContentsMargins(0, 0, 0, 0)   # level with the service list and 测试连接
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(8)
         self.custom_name_label = QLabel("Provider 名称")
         form.addRow(self.custom_name_label, self.custom_name)
         self.provider_label = QLabel("服务商预设")
         self.base_url_label = QLabel("Base URL")
-        self.protocol_label = QLabel("协议 / Protocol")
-        # Rarely changed connection details live in the advanced group below
-        # (2026-10-08); the key stays in the main form.
-        self.api_advanced = QWidget()
-        advanced_form = QFormLayout(self.api_advanced)
-        advanced_form.setContentsMargins(0, 0, 0, 0)
-        advanced_form.setHorizontalSpacing(12)
-        advanced_form.setVerticalSpacing(8)
-        advanced_form.addRow(self.base_url_label, self.base_url)
-        advanced_form.addRow("", self.endpoint_hint)
-        advanced_form.addRow(self.protocol_label, self.protocol)
-        self.key_label = QLabel("API 密钥")
+        self.protocol_label = QLabel("协议")
+        # The step caption 「② 贴上 API Key」 names the key box (2026-10-22).
+        self.key_label = QLabel("API 密钥", self.api_page)
+        self.key_label.hide()
         self.key_row_host = QWidget()
         self.key_row_host.setLayout(key_row)
-        form.addRow(self.key_label, self.key_row_host)
+        form.addRow(self.key_row_host)
+        # Said where people worry: the key never leaves this computer.
+        self.key_note = QLabel()
+        bind_text(self.key_note, "只存在这台电脑上，已加密")
+        if session_credentials_enabled():
+            self.key_note.setText(credential_storage_notice())
+        self.key_note.setObjectName("endpointKeyNote")
+        note_row = QHBoxLayout()
+        note_row.setContentsMargins(0, 0, 0, 0)
+        note_row.addWidget(self.key_note)
+        note_row.addStretch(1)
+        self.key_help_button = AnimatedButton("API Key 是什么？")
+        self.key_help_button.setObjectName("linkButton")
+        self.key_help_button.clicked.connect(self.key_help_requested.emit)
+        self.key_help_button.hide()   # the AI settings dialog shows it on its top form
+        # Hidden once connected, but its line keeps its height: 测试连接 below must not move (10-23).
+        policy = self.key_help_button.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.key_help_button.setSizePolicy(policy)
+        note_row.addWidget(self.key_help_button)
+        form.addRow(note_row)
 
         advanced = QHBoxLayout()
         advanced.setContentsMargins(0, 0, 0, 0)
@@ -528,74 +740,105 @@ class EndpointEditor(QFrame):
         cli_layout.addWidget(self.diagnostics_toggle)
         cli_layout.addWidget(self.diagnostics_details)
 
-        service_form = QFormLayout()
-        service_form.setHorizontalSpacing(12)
-        service_form.setVerticalSpacing(8)
-        service_row = QHBoxLayout()
-        service_row.setContentsMargins(0, 0, 0, 0)
-        service_row.addWidget(self.service, 1)
+        # 2026-10-22 (user: no row may hold a few words across the whole width):
+        # one row of three steps — ① service, ② key (or account login), ③ test —
+        # each with its one line underneath: the guide, where the key is kept,
+        # the test result.
         # 2026-10-13: every provider has its own application guide.
         self.guide_button = QPushButton("申请教程")
         self.guide_button.setObjectName("helpLink")
         self.guide_button.setCursor(Qt.CursorShape.PointingHandCursor)
         bind_text(self.guide_button, '查看这家服务的申请步骤、官方链接与费用说明', property='toolTip')
         self.guide_button.clicked.connect(self._open_provider_guide)
-        service_row.addWidget(self.guide_button)
-        service_form.addRow("AI 服务", service_row)
-        layout.addWidget(section_label("Provider"))
-        layout.addLayout(service_form)
-        layout.addWidget(section_label("Account / Auth"))
-        status_row = QHBoxLayout()
-        status_row.addWidget(self.status, 1)
-        status_row.addWidget(self.test_button)
-        layout.addLayout(status_row)
-        layout.addWidget(section_label("Connection"))
-        self.settings_stack = QStackedWidget()
+        self.guide_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.service_label = QLabel("服务")
+        self.key_step_label = QLabel("API Key")
+        for caption in (self.service_label, self.key_step_label):
+            caption.setObjectName("endpointStep")
+        self.settings_stack = _CurrentPageStack()
         self.settings_stack.setObjectName("endpointSettingsStack")
         self.settings_stack.addWidget(self.api_page)
         self.settings_stack.addWidget(self.cli_page)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # 2026-10-22 (design D2 refined): service, key, then the test with its
+        # result beside it; the guide and 「模型与地址」 share the last line (the
+        # AI settings dialog lends the guide to its left column).
+        layout.setSpacing(6)
+        layout.addWidget(self.service_label)
+        layout.addWidget(self.service)
+        layout.addSpacing(4)
+        layout.addWidget(self.key_step_label)
         layout.addWidget(self.settings_stack)
-        layout.addWidget(section_label("Model"))
-        model_form = QFormLayout()
+        test_row = QHBoxLayout()
+        test_row.setContentsMargins(0, 4, 0, 0)
+        test_row.setSpacing(12)
+        test_row.addWidget(self.test_button, 0, Qt.AlignmentFlag.AlignTop)
+        test_row.addWidget(self.status, 1, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(test_row)
+        self._links_row = QHBoxLayout()
+        self._links_row.setContentsMargins(0, 0, 0, 0)
+        self._links_row.setSpacing(10)
+        self._links_row.addWidget(self.guide_button)
+        self._links_row.addStretch(1)
+        layout.addLayout(self._links_row)
+        self._guide_host = None
         self.model_label = QLabel("模型")
         model_row = QHBoxLayout()
         model_row.setContentsMargins(0, 0, 0, 0)
+        model_row.setSpacing(8)
         model_row.addWidget(self.model, 1)
-        self.discover_models_button = QPushButton("刷新模型")
+        self.discover_models_button = QPushButton("刷新列表")
         self.discover_models_button.setObjectName("endpointSecondary")
         bind_text(self.discover_models_button, '后台获取模型列表；不支持时仍可手动输入', property='toolTip')
         model_row.addWidget(self.discover_models_button)
-        model_form.addRow(self.model_label, model_row)
+        model_row.addSpacing(12)
+        model_row.addWidget(self.protocol_label)
+        model_row.addWidget(self.protocol)
         # 已下线模型的显式提示位：不静默换模型，也绝不把墓碑 id 当正常选项。
         self.model_warning = QLabel()
         self.model_warning.setObjectName("fieldHint")
         self.model_warning.setWordWrap(True)
         self.model_warning.setStyleSheet("color:#f2c66d;")
         self.model_warning.hide()
-        model_form.addRow(self.model_warning)
-        layout.addLayout(model_form)
         self.advanced_toggle = QToolButton()
         self.advanced_toggle.setObjectName("endpointAdvancedToggle")
         self.advanced_toggle.setCheckable(True)
         self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        bind_text(self.advanced_toggle, '进阶设置：Base URL、协议与输出能力')
+        bind_text(self.advanced_toggle, '模型与地址')
         self.advanced_box = QWidget()
+        self.advanced_box.setObjectName("endpointAdvancedBox")
         advanced_layout = QVBoxLayout(self.advanced_box)
         advanced_layout.setContentsMargins(0, 4, 0, 0)
         advanced_layout.setSpacing(8)
-        advanced_layout.addWidget(self.api_advanced)
-        advanced_layout.addWidget(section_label("Capabilities"))
-        advanced_layout.addWidget(self.capabilities_host)
-        advanced_layout.addWidget(self.json_capability_status)
+        # One grid, so model, address and output line up (2026-10-22).
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+        self.capabilities_label = QLabel("输出能力")
+        grid.addWidget(self.model_label, 0, 0)
+        grid.addLayout(model_row, 0, 1)
+        grid.addWidget(self.model_warning, 1, 1)
+        grid.addWidget(self.base_url_label, 2, 0)
+        grid.addWidget(self.base_url, 2, 1)
+        grid.addWidget(self.endpoint_hint, 3, 1)
+        grid.addWidget(self.capabilities_label, 4, 0)
+        grid.addWidget(self.capabilities_host, 4, 1)
+        grid.addWidget(self.json_capability_status, 5, 1)
+        grid.setColumnStretch(1, 1)
+        advanced_layout.addLayout(grid)
         self.advanced_box.hide()
+        self._advanced_hosted = False   # True while the dialog's 高级设置 shows the group
+        self._advanced_host = None
 
         def show_advanced(checked):
             self.advanced_toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
-            self.advanced_box.setVisible(checked)
+            if not self._advanced_hosted:
+                self.advanced_box.setVisible(checked)
 
         self.advanced_toggle.toggled.connect(show_advanced)
-        layout.addWidget(self.advanced_toggle)
+        self._links_row.insertWidget(1, self.advanced_toggle)
         layout.addWidget(self.advanced_box)
         self.last_connection_ok = None
 
@@ -643,6 +886,92 @@ class EndpointEditor(QFrame):
             signal.connect(self._invalidate_endpoint_tasks)
         self._queue_model_discovery()
         self.refresh_theme_palette()
+
+    def _show_key_placeholder(self, existing, source) -> None:
+        """Plain words in the key box (2026-10-22): no storage names in sight, they are the hover text."""
+        if existing:
+            bind_text(self.key, '已保存；要换就直接粘贴新的 Key', property='placeholderText')
+            bind_text(self.key, '已保存的 Key：{value0}', property='toolTip', value0=source)
+        else:
+            bind_text(self.key, '粘贴 API Key', property='placeholderText')
+            self.key.setToolTip("")
+
+    def host_guide(self, layout) -> None:
+        """Lend 「申请教程」 to ``layout`` (the AI settings dialog's guide column)."""
+        if self._guide_host is layout:
+            return
+        self.restore_guide()
+        self._links_row.removeWidget(self.guide_button)
+        self._guide_host = layout
+        self.guide_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout.addWidget(self.guide_button)
+
+    def restore_guide(self) -> None:
+        host = self._guide_host
+        if host is None:
+            return
+        self._guide_host = None
+        host.removeWidget(self.guide_button)
+        self.guide_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        bind_text(self.guide_button, "申请教程")
+        self._links_row.insertWidget(0, self.guide_button)
+
+    def has_key(self) -> bool:
+        """A key typed here or saved for this service (account logins need none)."""
+        if self.values()["transport"] != AITransport.OPENAI_COMPATIBLE.value:
+            return True
+        if self._key_state == "clear":
+            return False
+        if self.key.text().strip():
+            return True
+        prov, burl = self._current_provider_base()
+        existing, _source = read_api_key(prov, burl)
+        if not existing and prov in {"bailian", "dashscope"}:
+            existing = resolve_api_key(self.stage)[0]
+        return bool(existing)
+
+    def set_bare(self, bare: bool) -> None:
+        """No frame of its own (the AI settings dialog's top form sits beside the guide)."""
+        bare = bool(bare)
+        if self.property("bare") == bare:
+            return
+        self.setProperty("bare", bare)
+        self._layout.setContentsMargins(*((0, 0, 0, 0) if bare else (14, 12, 14, 13)))
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_emphasis(self, *, test: bool, guide: bool) -> None:
+        """The one pink button of the moment: 申请教程 without a key, 测试连接 once one is in."""
+        for button, strong in ((self.test_button, test), (self.guide_button, guide)):
+            if button.property("emphasis") != ("primary" if strong else "secondary"):
+                button.setProperty("emphasis", "primary" if strong else "secondary")
+                button.style().unpolish(button)
+                button.style().polish(button)
+
+    def host_advanced(self, layout) -> None:
+        """Show the advanced group (model, address, protocol, output) in ``layout`` — the
+        AI settings dialog's own 高级设置 — instead of under this editor."""
+        if self._advanced_host is layout:
+            return
+        self.restore_advanced()
+        self._layout.removeWidget(self.advanced_box)
+        self._advanced_host = layout
+        self._advanced_hosted = True
+        self.advanced_toggle.hide()
+        layout.addWidget(self.advanced_box)
+        self.advanced_box.show()
+
+    def restore_advanced(self) -> None:
+        """Put the advanced group back under this editor, behind its own toggle."""
+        host = self._advanced_host
+        if host is None:
+            return
+        self._advanced_host = None
+        self._advanced_hosted = False
+        host.removeWidget(self.advanced_box)
+        self._layout.addWidget(self.advanced_box)   # the group is the editor's last block
+        self.advanced_toggle.show()
+        self.advanced_box.setVisible(self.advanced_toggle.isChecked())
 
     def _refresh_model_retirement_warning(self, service_id: str = "") -> None:
         """已下线模型的显式告知：编辑器回落默认，但绝不静默沿用墓碑 id。"""
@@ -713,10 +1042,13 @@ class EndpointEditor(QFrame):
         self.settings_stack.updateGeometry()
         self.custom_name.setVisible(service_id == "custom")
         self.custom_name_label.setVisible(service_id == "custom")
-        self.api_advanced.setVisible(is_api)
+        for widget in (self.base_url_label, self.base_url, self.endpoint_hint, self.protocol, self.protocol_label):
+            widget.setVisible(is_api)
+        bind_text(self.key_step_label, 'API Key' if is_api else '登录账号')
         if service_id == "custom" and hasattr(self, "advanced_toggle"):
             # A custom service needs its Base URL: open the advanced group.
             self.advanced_toggle.setChecked(True)
+            self.advanced_wanted.emit()
         if not initial:
             # 原子切换：Base URL / 模型 / 协议必须一次性按新 Provider 的
             # profile 加载。期间屏蔽这些控件自身的信号，避免旧字段的部分
@@ -799,16 +1131,22 @@ class EndpointEditor(QFrame):
         theme = _active_theme_definition()
         accent = theme.primary_role if self.stage == "polish" else theme.secondary_role
         self.setStyleSheet(f"""
-            QFrame#endpointCard {{ background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 8px; }}
+            QFrame#endpointCard {{ background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 12px; }}
+            QFrame#endpointCard[bare="true"] {{ background: transparent; border: 0; }}
+            QFrame#endpointCard QLabel#endpointKeyNote {{ color: {theme.text_muted}; font-size: 12px; }}
+            QFrame#endpointCard QLabel#muted, QFrame#endpointCard QLabel#statusGood, QFrame#endpointCard QLabel#statusWarn {{
+                font-size: 13px; font-weight: 500; }}
+            QFrame#endpointCard QLabel#muted {{ color: {theme.text_secondary}; }}
+            QFrame#endpointCard QLabel#statusGood {{ color: {theme.success}; }}
+            QFrame#endpointCard QLabel#statusWarn {{ color: {theme.warning}; }}
+            QFrame#endpointCard QLabel#endpointStep {{ color: {theme.text_secondary}; font-size: 12px; font-weight: 700; }}
+            QFrame#endpointCard QWidget#endpointAdvancedBox {{ background: transparent; border: 0; }}
             QFrame#endpointCard QLabel {{ color: {theme.text}; background: transparent; }}
             QFrame#endpointCard QLabel#endpointTitle {{ color: {accent}; font-size: 15px; font-weight: 700; }}
-            QFrame#endpointCard QLabel#endpointSectionLabel {{
-                color: {theme.text_muted}; font-size: 12px; font-weight: 700;
-                padding-top: 4px; border: 0;
-            }}
             QFrame#endpointCard QLineEdit, QFrame#endpointCard QComboBox {{
                 color: {theme.text}; background: {theme.surface_input}; border: 1px solid {theme.border};
-                border-radius: 6px; padding: 6px 8px; selection-background-color: {theme.selected};
+                border-radius: 10px; padding: 6px 12px; selection-background-color: {theme.selected};
+                min-height: 34px; max-height: 34px;
             }}
             QFrame#endpointCard QLineEdit:focus, QFrame#endpointCard QComboBox:focus {{ border-color: {theme.accent}; }}
             QFrame#endpointCard QPlainTextEdit#endpointDiagnostics {{
@@ -823,8 +1161,16 @@ class EndpointEditor(QFrame):
             QFrame#endpointCard QPushButton#endpointSecondary:hover {{ background: {theme.control_hover}; border-color: {theme.accent}; }}
             QFrame#endpointCard QPushButton#endpointPrimary {{
                 color: {theme.text_on_accent}; background: {theme.accent}; border: 1px solid {theme.accent};
-                border-radius: 6px; padding: 6px 12px; font-weight: 650;
+                border-radius: 10px; padding: 0 18px; font-size: 14px; font-weight: 650;
+                min-height: 46px; max-height: 46px; min-width: 112px;
             }}
+            QFrame#endpointCard QPushButton#endpointPrimary:hover {{
+                background: {theme.accent_hover}; border-color: {theme.accent_hover}; }}
+            QFrame#endpointCard QPushButton#endpointPrimary[emphasis="secondary"] {{
+                color: {theme.text}; background: {theme.control_background}; border: 1px solid {theme.border}; }}
+            QFrame#endpointCard QPushButton#endpointPrimary[emphasis="secondary"]:hover {{
+                background: {theme.control_hover}; border-color: {theme.border_strong}; }}
+            QFrame#endpointCard QPushButton#endpointPrimary:disabled {{ background: {theme.control_background}; color: {theme.text_muted}; border-color: {theme.border}; }}
             QFrame#endpointCard QWidget#endpointApiPage, QFrame#endpointCard QWidget#endpointCliPage,
             QFrame#endpointCard QStackedWidget#endpointSettingsStack {{ background: transparent; border: 0; }}
         """)
@@ -851,16 +1197,23 @@ class EndpointEditor(QFrame):
         if self._key_state == "clear":
             return
         self._key_state = "replace" if text.strip() else "unchanged"
+        if text.strip() and self.status.objectName() != "statusWarn":
+            self.status.setObjectName("muted")
+            bind_text(self.status, '发一条很短的请求，几秒就好')
+            self.status.style().unpolish(self.status)
+            self.status.style().polish(self.status)
+        elif not text.strip():
+            self.refresh_secret_status()
 
     def _request_key_clear(self) -> None:
         self._key_state = "clear"
         self.key.clear()
         bind_text(self.key, '将在保存时清除已保存的密钥（环境变量不受影响）', property='placeholderText')
         self.status.setObjectName("statusWarn")
-        bind_text(self.status, '已请求清除：点击“保存 AI 配置”生效')
+        bind_text(self.status, '已请求清除：点「保存设置」后生效')
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
-        self.clear_key_button.setVisible(False)
+        self._clear_action.setVisible(False)
 
     def refresh_secret_status(self):
         prov, burl = self._current_provider_base()
@@ -869,10 +1222,10 @@ class EndpointEditor(QFrame):
         existing, source = read_api_key(prov, burl)
         if not existing and prov in {"bailian", "dashscope"}:
             existing, source = resolve_api_key(self.stage)
-        (bind_text(self.key, '已配置：{value0}', property='placeholderText', value0=source) if existing else bind_text(self.key, '请输入 API Key', property='placeholderText'))
-        self.clear_key_button.setVisible(bool(existing))
-        self.status.setObjectName("statusGood" if existing else "statusWarn")
-        (bind_text(self.status, credential_storage_notice() if session_credentials_enabled() else '密钥已保存') if existing else bind_text(self.status, '尚未配置密钥'))
+        self._show_key_placeholder(existing, source)
+        self._clear_action.setVisible(bool(existing))
+        self.status.setObjectName("statusGood" if existing else "muted")
+        (bind_text(self.status, credential_storage_notice() if session_credentials_enabled() else '密钥已保存，测一次就好') if existing else bind_text(self.status, '贴上 Key 后就能测试'))
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
 
@@ -889,7 +1242,7 @@ class EndpointEditor(QFrame):
             # Only reset placeholder text; do not clear an explicitly typed value.
             typed = self.key.text().strip()
             if not typed:
-                (bind_text(self.key, '已配置：{value0}', property='placeholderText', value0=source) if existing else bind_text(self.key, '请输入 API Key', property='placeholderText'))
+                self._show_key_placeholder(existing, source)
             # If nothing typed, show hint of existing for this provider/url.
             if not typed and existing:
                 self.status.setObjectName("statusGood")
@@ -1363,6 +1716,13 @@ class EndpointEditor(QFrame):
 
     def _connection_finished(self, ok: bool, message: str):
         self.last_connection_ok = bool(ok)
+        # 2026-10-22: remembered across restarts; the AI-only features on the home page wait for it.
+        try:
+            from .ai_connection_record import remember
+            remember(self._provider_settings(), self.stage, ok)
+        except Exception:  # noqa: BLE001 - a record that cannot be written only means "test again"
+            pass
+        self.connection_tested.emit(bool(ok))
         self.test_button.setEnabled(True)
         bind_text(self.test_button, '测试连接')
         if self.values()['transport'] != AITransport.OPENAI_COMPATIBLE.value:

@@ -70,6 +70,8 @@ def resolve(timeline, cue: StudioCue, pointer_ms: int, *, bypass_snap: bool = Fa
         if best is not None:
             split, snap = best[2], best[3]
     result = describe_split(cue, split, project=timeline.project, alignment=(words, reason))
+    if isinstance(result, SplitPreview) and result.timing_reason == 'snapped_to_word_boundary':
+        snap = 'word'  # moved out of a word's sound to its boundary (2026-10-22)
     return RazorResolution(cue, int(pointer_ms), int(result.split_ms), snap, result, tuple(words), reason,
                            cue.speaker_id in timeline.locked_speakers)
 
@@ -144,7 +146,10 @@ def status_lines(resolution) -> tuple[str, str, str]:
         state = tr('缺少字级对齐 · 文字分界为估算')
     elif result.straddled is not None:
         heard = resolution.cue.text[result.straddled.char_start:result.straddled.char_end]
-        state = tr('切在「{word}」发音中，该字归前段', word=heard)
+        if result.timing_reason == 'snapped_to_word_boundary':
+            state = tr('「{word}」正在发音，切点移到它之后', word=heard)
+        else:
+            state = tr('切在「{word}」发音中，该字归前段', word=heard)
     elif result.timing_source == 'derived_term_source_span':
         state = tr('字级时间 · 替换词按原读音整体')
     else:

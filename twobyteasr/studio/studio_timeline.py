@@ -127,6 +127,8 @@ def format_timeline_ruler_label(milliseconds: int, major_ms: int) -> str:
 class _TimelineInlineEdit(QPlainTextEdit):
     commit_requested = Signal(int)
     cancel_requested = Signal()
+    # Ctrl+Enter: split the caption at the text cursor (2026-10-22, MFA plan step 4).
+    split_requested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -161,7 +163,10 @@ class _TimelineInlineEdit(QPlainTextEdit):
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._finished = True
-            self.commit_requested.emit(0)
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self.split_requested.emit(self.textCursor().position())
+            else:
+                self.commit_requested.emit(0)
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape:
@@ -213,6 +218,8 @@ class WaveformTimeline(QWidget):
     segment_selection_changed = Signal(object)
     candidate_clicked = Signal(str)
     text_edit_committed = Signal(str, bool, str)
+    # cue id, text position, global point under the cursor (Ctrl+Enter in the inline editor)
+    text_split_requested = Signal(str, int, object)
     speaker_changed = Signal(str, str, str)
     selection_changed = Signal(object)
     interaction_changed = Signal(bool)
@@ -227,6 +234,12 @@ class WaveformTimeline(QWidget):
     TRACK_HEADER_WIDTH = 228
     RULER_HEIGHT = 34
     VIDEO_CLIP_TRIM_HANDLE_PX = 10.0
+    # While playback follows, the static picture also covers this share of
+    # the content width beyond the right edge (see _follow_scroll).
+    FOLLOW_OVERSCAN = 0.6
+    _render_extra_px = 0
+    _clock_selection = None
+    _clock_selection = None
 
     SPEAKER_TRACK_HEIGHT = 48
     TRANSLATION_TRACK_HEIGHT = 44
@@ -262,6 +275,9 @@ class WaveformTimeline(QWidget):
         self.selected_audio_track_id = ""
         self.selected_ids: set[str] = set()
         self.selection_scope = SelectionScope.empty()
+        # "translation" after a click on the selected cue's translation block
+        # (2026-10-22, user: select the translation so E edits it).
+        self.selected_lane = ""
         self.bilingual = False
         self.waveform_visible = True
         self.waveform_state = "EMPTY"
@@ -798,7 +814,9 @@ class WaveformTimeline(QWidget):
             self.update()
 
     def _content_right(self) -> int:
-        return max(self.TRACK_HEADER_WIDTH + 1, self.width() - self.vertical_scrollbar.width())
+        # _render_extra_px is non-zero only while the static picture is drawn
+        # wider than the view for playback follow (_paint_timeline).
+        return max(self.TRACK_HEADER_WIDTH + 1, self.width() - self.vertical_scrollbar.width()) + self._render_extra_px
 
     def _canvas_bottom(self) -> int:
         return max(self.RULER_HEIGHT + 1, self.height() - (self.horizontal_scrollbar.height() if self.horizontal_scrollbar.isVisible() else 0))
@@ -842,11 +860,9 @@ class WaveformTimeline(QWidget):
         # （否则大轨高会把整个时间轴 widget 的最小高度撑爆）。
         # 2026-10-12: at most four rows count toward the minimum; with
         # 20 speakers the old 20 x 52 px minimum pushed the preview out.
-        subtitle_minimum = max(
-            56,
-            min(4, max(1, len(self._display_rows()))) * 52
-            + (44 if self.bilingual else 0),
-        )
+        # 2026-10-22 (user, 1080p at 125%): one row. The rows scroll, and
+        # three speakers' 156 px left the workspace divider 54 px of travel.
+        subtitle_minimum = max(56, 52 + (44 if self.bilingual else 0))
         minimum = (
             self.RULER_HEIGHT
             + self._pinned_bottom_height(minimum=True)
@@ -1260,7 +1276,28 @@ class WaveformTimeline(QWidget):
         content_pixels = (self._content_right() - self.TRACK_HEADER_WIDTH) * self.devicePixelRatioF()
         if abs(target_left - self.visible_start_ms) * max(1.0, content_pixels) < self.visible_duration_ms:
             return False
-        self.set_visible_window(target_left, self.visible_duration_ms)
+        return self._follow_scroll(target_left)
+
+    def _follow_scroll(self, start_ms: int) -> bool:
+        """Move the view with playback without invalidating the static picture.
+
+        2026-10-22 (user report, 24-minute bilingual episode at 175%): every
+        followed frame went through set_visible_window -> update(), which
+        redrew the whole timeline from Python: 4,528 redraws in 140 s of
+        playback, 11 ms typical, up to 228 ms. _paint_timeline now shifts
+        the picture it drew FOLLOW_OVERSCAN wider and redraws only when that
+        runs out or the content changes.
+        """
+        duration = self._duration_ms()
+        maximum = max(0, duration - self.visible_duration_ms,
+                      min(duration, getattr(self, '_page_tail_start_ms', 0)))
+        start = min(maximum, max(0, int(start_ms)))
+        self._follow_active_until = perf_counter() + 0.5
+        if start == self.visible_start_ms:
+            return False
+        self.visible_start_ms = start
+        self._sync_scrollbars()
+        QWidget.update(self)
         return True
 
     def set_tool_mode(self, mode: str) -> None:
@@ -1470,6 +1507,8 @@ class WaveformTimeline(QWidget):
         previous_ids = set(self.selected_ids)
         if self.selected_id:
             previous_ids.add(self.selected_id)
+        if str(cue_id) != self.selected_id:
+            self.selected_lane = ""
         self.selected_id = str(cue_id)
         self.selected_ids = {self.selected_id} if self.selected_id else set()
         self.selection_scope = SelectionScope.explicit(
@@ -1512,7 +1551,10 @@ class WaveformTimeline(QWidget):
     def set_selected_ids(self, cue_ids: Iterable[str], active_id: str = "") -> None:
         self.selected_gap = None
         self.selected_ids = {str(item) for item in cue_ids if str(item)}
-        self.selected_id = str(active_id or (next(iter(self.selected_ids), "")))
+        active = str(active_id or (next(iter(self.selected_ids), "")))
+        if active != self.selected_id or len(self.selected_ids) > 1:
+            self.selected_lane = ""
+        self.selected_id = active
         self.selection_scope = SelectionScope.explicit(
             self.selected_ids, self.selected_id
         )
@@ -1521,6 +1563,8 @@ class WaveformTimeline(QWidget):
     def set_selection_scope(self, scope: SelectionScope) -> None:
         self.selected_gap = None
         self.selection_scope = scope
+        if str(scope.active_id) != self.selected_id:
+            self.selected_lane = ""
         self.selected_id = str(scope.active_id)
         self.selected_ids = (
             set(scope.explicit_ids)
@@ -1528,6 +1572,37 @@ class WaveformTimeline(QWidget):
             else set()
         )
         self.update()
+
+    def set_clock_selection_scope(self, scope: SelectionScope) -> None:
+        """The selection that follows the playing caption (cue controller).
+
+        2026-10-22: after _follow_scroll, 45 of the 48 timeline redraws left
+        in 140 s of playback came from this selection moving at each caption
+        start, exactly on the caption's first frame. While playback follows,
+        the static picture is drawn without it and the dynamic layer outlines
+        it; any other selection change, or pausing, redraws normally.
+        """
+        cached = getattr(self, '_static_timeline_cache', None)
+        view = cached[3] if cached is not None and len(cached) > 3 else None
+        drawn_without = (view is not None and view[4] and self._following()
+                         and not getattr(self, '_static_timeline_dirty', True))
+        self.selected_gap = None
+        self.selection_scope = scope
+        if str(scope.active_id) != self.selected_id:
+            self.selected_lane = ""
+        self.selected_id = str(scope.active_id)
+        self.selected_ids = set(scope.explicit_ids) if scope.mode == SelectionMode.EXPLICIT_IDS else set()
+        self._clock_selection = scope
+        if drawn_without:
+            QWidget.update(self)
+        else:
+            self.update()
+
+    def _following(self) -> bool:
+        """Playback is running and the view moved with it in the last 0.5 s.
+        The filmstrip cache is told ``paused`` while playback runs."""
+        return (perf_counter() < getattr(self, '_follow_active_until', 0.0)
+                and bool(getattr(self._thumbnails, 'paused', False)))
 
     def _cue_is_selected(self, cue: StudioCue) -> bool:
         return cue.id == self.selected_id or self.selection_scope.contains(
@@ -2247,6 +2322,10 @@ class WaveformTimeline(QWidget):
         source time stay valid while only the view moves; the bucket grid no
         longer shifts with the scroll position either. Incomplete
         (still-decoding) tiles are not cached.
+
+        2026-10-22: tiles are kept at unit amplitude and scaled to the lane
+        height here. Keyed by height, every step of a panel-divider drag
+        that changed the lane height re-read the waveform from disk.
         """
         span = float(source_out) - float(source_in)
         width = float(right) - float(left)
@@ -2259,6 +2338,7 @@ class WaveformTimeline(QWidget):
         tiles = getattr(self, "_waveform_tile_cache", None)
         if tiles is None:
             tiles = self._waveform_tile_cache = OrderedDict()
+        to_lane = QTransform.fromScale(1.0, rect.height() * 0.36)
         pieces = []
         first = int(float(source_in) // tile_ms)
         last = int(max(float(source_in), float(source_out) - 1e-6) // tile_ms)
@@ -2267,7 +2347,7 @@ class WaveformTimeline(QWidget):
             end = min(float(clip_out), (index + 1) * tile_ms)
             if end <= start:
                 continue
-            key = (id(cache), index, round(start, 3), round(end, 3), ms_per_px, rect.height())
+            key = (id(cache), index, round(start, 3), round(end, 3), ms_per_px)
             cached = tiles.get(key)
             if cached is not None:
                 tiles.move_to_end(key)
@@ -2277,7 +2357,7 @@ class WaveformTimeline(QWidget):
             else:
                 self._paint_envelope_misses = getattr(self, '_paint_envelope_misses', 0) + 1
                 built = self._build_waveform_envelope(cache, start, end, max(1, round((end - start) / ms_per_px)),
-                                                      (end - start) / ms_per_px, rect.height())
+                                                      (end - start) / ms_per_px, rect.height(), amplitude=1.0)
                 if built is None:
                     continue
                 path, stats, complete = built
@@ -2285,11 +2365,14 @@ class WaveformTimeline(QWidget):
                     tiles[key] = (path, stats)
                     while len(tiles) > 96:
                         tiles.popitem(last=False)
-            pieces.append((path, float(left) + (start - float(source_in)) / ms_per_px))
+            pieces.append((to_lane.map(path), float(left) + (start - float(source_in)) / ms_per_px))
         return pieces
 
-    def _build_waveform_envelope(self, cache, source_in, source_out, pixels, width, height):
-        """Envelope polygon at x=0..width, y around 0 (same drawing as before)."""
+    def _build_waveform_envelope(self, cache, source_in, source_out, pixels, width, height, *, amplitude=None):
+        """Envelope polygon at x=0..width, y around 0 (same drawing as before).
+
+        ``amplitude`` overrides the lane-height scale (1.0 = unit tiles).
+        """
         envelope_started = perf_counter()
         try:
             _level, pairs = cache.read_window(source_in, source_out, pixels)
@@ -2298,7 +2381,7 @@ class WaveformTimeline(QWidget):
         if not len(pairs):
             return None
         import numpy as np
-        amplitude = height * 0.36
+        amplitude = height * 0.36 if amplitude is None else float(amplitude)
         heights = waveform_db_heights
         stride = max(1, int(np.ceil(len(pairs) / max(1, pixels / 2))))
         expected_buckets = max(
@@ -2531,6 +2614,30 @@ class WaveformTimeline(QWidget):
             rows=getattr(self,"selection_feedback_metrics",[]);rows.append(feedback)
             self.selection_feedback_metrics=rows[-128:];self._selection_feedback_pending=None
 
+    def _static_shift(self, view, dpr):
+        """Device pixels to shift the cached picture left, or None to redraw it.
+
+        Reuse needs the same zoom and content width, a view that only moved
+        right since the picture was drawn, and drawn pixels still covering
+        it. Rounding to whole device pixels leaves the cached content at most
+        half a device pixel from the live mapping; it is redrawn exactly when
+        the overscan runs out or anything else invalidates it.
+        """
+        if view is None:
+            return None
+        start, duration, right, extra, without_clock_selection = view
+        if duration != self.visible_duration_ms or right != self._content_right():
+            return None
+        if without_clock_selection and not (self._following() and self._clock_selection is self.selection_scope):
+            return None
+        moved = self.visible_start_ms - start
+        if moved == 0:
+            return 0
+        if moved < 0 or extra <= 0:
+            return None
+        shift = round(moved * (right - self.TRACK_HEADER_WIDTH) / max(1, duration) * dpr)
+        return shift if shift <= extra * dpr else None
+
     def _paint_timeline(self, event):
         palette = self._timeline_palette()
         dpr = self.devicePixelRatioF()
@@ -2538,25 +2645,75 @@ class WaveformTimeline(QWidget):
         cached = getattr(self, "_static_timeline_cache", None)
         self._paint_item_counts = {'viewport_height': self.height()}
         self._paint_envelope_hits = self._paint_envelope_misses = 0
-        if cached is None or cached[0] != key or getattr(self, '_static_timeline_dirty', False):
-            if cached is not None and cached[0] == key:
+        shift = None
+        if cached is not None and cached[0] == key and not getattr(self, '_static_timeline_dirty', False):
+            shift = self._static_shift(cached[3] if len(cached) > 3 else None, dpr)
+        if shift is None:
+            following = self._following()
+            content = self._content_right() - self.TRACK_HEADER_WIDTH
+            extra = round(content * self.FOLLOW_OVERSCAN) if following and content > 1 else 0
+            size = (max(1, round((self.width() + extra) * dpr)), max(1, round(self.height() * dpr)))
+            if cached is not None and cached[0] == key and (cached[1].width(), cached[1].height()) == size:
                 image = cached[1]
             else:
-                image = QPixmap(max(1, round(self.width()*dpr)), max(1, round(self.height()*dpr)))
+                image = QPixmap(*size)
                 image.setDevicePixelRatio(dpr)
             image.fill(Qt.GlobalColor.transparent)
             backing = QPainter(image)
             backing.setFont(self.font())
-            self._paint_timeline_contents(backing, QPaintEvent(self.rect()), palette)
+            without = following and self._clock_selection is self.selection_scope
+            view = (self.visible_start_ms, self.visible_duration_ms, self._content_right(), extra, without)
+            selection = (self.selected_id, self.selected_ids, self.selection_scope)
+            duration = self.visible_duration_ms
+            if without:
+                self.selected_id, self.selected_ids, self.selection_scope = "", set(), SelectionScope.empty()
+            try:
+                if extra:
+                    # Same pixels per millisecond, a wider content area and window.
+                    backing.fillRect(QRectF(0, 0, self.width() + extra, self.height()), QColor(palette.background))
+                    self._render_extra_px = extra
+                    self.visible_duration_ms = round(duration * (content + extra) / content)
+                    self._paint_timeline_contents(backing, QPaintEvent(QRect(0, 0, self.width() + extra, self.height())), palette)
+                else:
+                    self._paint_timeline_contents(backing, QPaintEvent(self.rect()), palette)
+            finally:
+                self._render_extra_px = 0
+                self.visible_duration_ms = duration
+                self.selected_id, self.selected_ids, self.selection_scope = selection
             backing.end()
-            self._static_timeline_cache = (key, image, dict(self._paint_item_counts))
+            self._static_timeline_cache = (key, image, dict(self._paint_item_counts), view)
             self._static_timeline_dirty = False
             self._last_paint_stats = {**self._paint_item_counts, 'static_cache_hit': False}
+            shift = 0
         else:
             image = cached[1]
-            self._last_paint_stats = {**cached[2], 'static_cache_hit': True}
+            self._last_paint_stats = {**cached[2], 'static_cache_hit': True, 'static_shift_px': shift}
         painter = QPainter(self)
-        painter.drawPixmap(0, 0, image)
+        if shift == 0 and image.width() == round(self.width() * dpr):
+            painter.drawPixmap(0, 0, image)
+        else:
+            # Track headers stay; the time-mapped content moves left by whole
+            # device pixels; the column right of the content is background.
+            right = self._content_right()
+            painter.save()
+            painter.setClipRect(QRect(0, 0, self.TRACK_HEADER_WIDTH, self.height()))
+            painter.drawPixmap(0, 0, image)
+            painter.setClipRect(QRect(self.TRACK_HEADER_WIDTH, 0, right - self.TRACK_HEADER_WIDTH, self.height()))
+            painter.drawPixmap(QPointF(-shift / dpr, 0), image)
+            painter.restore()
+            painter.fillRect(QRect(right, 0, self.width() - right, self.height()), QColor(palette.background))
+        view = self._static_timeline_cache[3]
+        if view[4] and self.selected_id:
+            # The playing caption's selection, outlined like a selected clip.
+            rect = self._active_cue_rect(self.selected_id)
+            if not rect.isEmpty():
+                painter.save()
+                painter.setClipRect(self._track_viewport())
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setPen(QPen(QColor(palette.clip_selected_border), 3.0))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(rect.adjusted(-2, -2, 2, 2), 6, 6)
+                painter.restore()
         self._paint_item_counts = {'viewport_height': self.height()}
         if self._drag and self._timing_preview:
             speaker_rects,translation,_waveform=self._track_layout()
@@ -3206,6 +3363,7 @@ class WaveformTimeline(QWidget):
                             labels.clear()
                         labels[label_key] = label
                 painter.drawText(inner, flags, label)
+                self._paint_acoustic_span(painter, cue, block, color, to_x)
                 if selected and block.width() >= 32 and (self._resize_hover and self._resize_hover[0] == cue.id):
                     painter.setPen(QPen(QColor(palette.handle_dot_border), 1))
                     painter.setBrush(QColor(palette.handle_dot_fill))
@@ -3237,7 +3395,10 @@ class WaveformTimeline(QWidget):
                         continue
                     block = QRectF(left, translation_rect.top() + 6, max(4, right - left), translation_rect.height() - 12)
                     self._count_paint_item('translation_items', bounds=block)
-                    painter.setPen(QPen(QColor(palette.translation_clip_border), 1))
+                    if self.selected_lane == "translation" and cue.id == self.selected_id:
+                        painter.setPen(QPen(QColor(palette.clip_selected_border), 2.4))
+                    else:
+                        painter.setPen(QPen(QColor(palette.translation_clip_border), 1))
                     painter.setBrush(QColor(palette.translation_clip))
                     painter.drawRoundedRect(block, 5, 5)
                     painter.setPen(QColor(palette.translation_clip_text))
@@ -3925,6 +4086,10 @@ class WaveformTimeline(QWidget):
             self.selection_scope = SelectionScope.explicit(
                 self.selected_ids, self.selected_id
             )
+            lane = "translation" if mode == "translation" and len(self.selected_ids) == 1 else ""
+            if lane != self.selected_lane:
+                self.selected_lane = lane
+                self.invalidate_ranges([(cue.start_ms, cue.end_ms)], {cue.id})
             drag_ids = set(self.selected_ids)
             self.cue_selected.emit(cue.id)
             if self.tool_mode == "razor" and mode != "translation":
@@ -4103,6 +4268,7 @@ class WaveformTimeline(QWidget):
         editor.commit_requested.connect(
             lambda direction: self._commit_inline_edit(direction)
         )
+        editor.split_requested.connect(self._split_inline_at)
         editor.cancel_requested.connect(self._cancel_inline_edit)
         self._inline_target = (cue.id, translation)
         self._inline_editor = editor
@@ -4119,6 +4285,77 @@ class WaveformTimeline(QWidget):
         self.text_edit_committed.emit(cue_id, translation, text)
         if navigate:
             self._open_adjacent_inline_editor(cue_id, translation, navigate)
+
+    def acoustic_span_of(self, cue):
+        """The caption's measured speech span (``timeline.acoustic_span``), cached per caption state."""
+        from ..timeline.acoustic_span import acoustic_span, cache_key
+        cache = self.__dict__.setdefault("_acoustic_spans", {})
+        key = cache_key(self.project, cue)
+        if key not in cache:
+            if len(cache) >= 8192:
+                cache.clear()
+            try:
+                cache[key] = acoustic_span(self.project, cue)
+            except Exception:  # noqa: BLE001 - a display hint must never break painting
+                cache[key] = None
+        return cache[key]
+
+    def _paint_acoustic_span(self, painter, cue, block: QRectF, color: QColor, to_x) -> None:
+        """A thin line under the caption: where its words were measured (2026-10-22, MFA plan step 5).
+
+        The caption block is display time; this line is the sound. Solid when a
+        second aligner or a pause confirmed both edges, faint otherwise.
+        """
+        if self.project is None or block.width() < 24:
+            return
+        span = self.acoustic_span_of(cue)
+        if span is None:
+            return
+        left = max(block.left() - 40, to_x(span.start_ms))
+        right = min(block.right() + 40, to_x(span.end_ms))
+        if right - left < 2:
+            return
+        line = QColor(color.lighter(160))
+        line.setAlpha(235 if span.confirmed else 110)
+        pen = QPen(line, 2.0)
+        if not span.confirmed:
+            pen.setStyle(Qt.PenStyle.DashLine)
+        painter.save()
+        painter.setPen(pen)
+        y = block.bottom() + 5.0  # below the selection glow (2 px + 3 px pen), inside the 7 px band margin
+        painter.drawLine(QPointF(left, y), QPointF(right, y))
+        painter.restore()
+
+    def _split_inline_at(self, position: int) -> None:
+        """Ctrl+Enter: commit an edited text first, then ask to split at the cursor."""
+        if self._inline_editor is None or self._inline_target is None:
+            return
+        cue_id, translation = self._inline_target
+        editor = self._inline_editor
+        point = editor.mapToGlobal(editor.cursorRect().bottomLeft())
+        text = editor.toPlainText()
+        self._cancel_inline_edit()
+        if translation:
+            self.text_edit_committed.emit(cue_id, translation, text)
+            return
+        cue = next((item for item in self.project.cues if item.id == cue_id), None) if self.project else None
+        if cue is not None and text != cue.text:
+            self.text_edit_committed.emit(cue_id, False, text)
+        self.text_split_requested.emit(cue_id, int(position), point)
+
+    def open_text_split_editor(self, cue_id: str) -> bool:
+        """Open the inline editor with the cursor at the end, for "split at a text position"."""
+        cue = next((item for item in self.project.cues if item.id == cue_id), None) if self.project else None
+        if cue is None:
+            return False
+        self.selected_id = cue.id
+        self._open_inline_editor(cue, False, cue.text)
+        if self._inline_editor is None:
+            return False
+        cursor = self._inline_editor.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._inline_editor.setTextCursor(cursor)
+        return True
 
     def _open_adjacent_inline_editor(
         self, cue_id: str, translation: bool, direction: int

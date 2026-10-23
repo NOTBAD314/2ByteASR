@@ -506,6 +506,12 @@ class StudioProjectController:
             ensure_independent_captions(project)
             recover_caption_sources(project)
             recovered_words = recover_caption_words(project, allow_realign=False)
+            # 2026-10-22: automatic speaker groups follow the current rule and
+            # the 「默认独立字幕轨」 preference (a cap the user picked is kept).
+            from ..recognition.speaker_roles import refresh_automatic_roles
+            from .studio_project import speaker_track_preference
+            if refresh_automatic_roles(project, speaker_track_preference()):
+                page._studio_trace("SPEAKER_ROLES_REFRESHED", cap=project.studio_state["speaker_roles"]["cap"])
             consistency = validate_project(project, stage="load")
             if not consistency.ok:
                 raise SubtitleConsistencyError(consistency)
@@ -566,12 +572,14 @@ class StudioProjectController:
                 audio_timebase=str((primary_asset.audio_metadata if primary_asset is not None else {}).get("timebase") or ""),
             )
         except Exception as exc:
+            # Record the cause first: 2026-10-22 the process died natively in
+            # the toolbar step below and the original exception was never logged.
+            page._studio_trace("OPEN_FAILED", stage=open_stage, exception_type=type(exc).__name__, message=str(exc), traceback=traceback.format_exc())
             page._project_view_state = previous_view_state if self.session.project is not None else "hub"
             page._project_opening_path = ""
             page._set_hub_toolbar_mode(self.session.project is None)
             page.studio_empty.setEnabled(True)
             page.hub_loading_label.hide()
-            page._studio_trace("OPEN_FAILED", stage=open_stage, exception_type=type(exc).__name__, message=str(exc), traceback=traceback.format_exc())
             from .subtitle_consistency import SubtitleConsistencyError
             if isinstance(exc, (SubtitleConsistencyError, ProjectValidationError)):
                 from .subtitle_consistency_ui import show_load_failure
@@ -1035,7 +1043,8 @@ class StudioProjectController:
             project_path_value = payload.get("autosave", {}).get("project_path", "")
             project_path = Path(str(project_path_value)) if project_path_value else None
             saved_time = datetime.fromtimestamp(project_path.stat().st_mtime).strftime("%H:%M") if project_path else "--:--"
-            recovery_time = datetime.fromtimestamp(candidate.stat().st_mtime).strftime("%H:%M")
+            from .studio_project import autosave_effective_mtime_ns
+            recovery_time = datetime.fromtimestamp(autosave_effective_mtime_ns(candidate) / 1e9).strftime("%H:%M")
             bind_text(box, '正式保存  {value0}\n自动恢复  {value1}\n\n请选择要打开的版本。', property='informativeText', value0=saved_time, value1=recovery_time)
         except OSError:
             bind_text(box, '请选择恢复自动保存、打开正式保存，或删除恢复点。', property='informativeText')
@@ -1106,10 +1115,8 @@ class StudioProjectController:
             page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(candidate), decision="recover")
             return recovered, True
         if choice == "ignore":
-            try:
-                candidate.unlink()
-            except FileNotFoundError:
-                pass
+            from .studio_project import discard_autosave
+            discard_autosave(candidate)
         page._studio_trace("RECOVERY", official_path=str(project_path), autosave_path=str(candidate), chosen_path=str(project_path), decision="official")
         return official, False
 

@@ -88,10 +88,13 @@ def _run():
         now=time.monotonic()
         if not _poll_due(owned,now,last):continue
         last=now
+        # 2026-10-22: children(recursive=True) takes a full system process
+        # snapshot per call, holding the GIL; one per tick serves every child.
+        tree=_process_tree(psutil)
         for pid,(process,path,payload,_started) in list(owned.items()):
             try:
                 if not process.is_running():owned.pop(pid,None);continue
-                family=[process,*process.children(recursive=True)]
+                family=[process,*(_descendants(psutil,tree,pid) if tree is not None else process.children(recursive=True))]
                 for child in family:
                     for window in _window_snapshot(child.pid):
                         identity=(child.pid,child.create_time(),window['hwnd'],window['title'])
@@ -121,6 +124,30 @@ def _run():
                         'command':_safe_command(system.cmdline()),'owned':False,'trigger':'unknown; correlate with child start timestamps'})
                 except psutil.Error:pass
         if len(seen)>512:seen.clear()
+
+
+def _process_tree(psutil):
+    """{parent pid: [child pids]} from one system snapshot, or None."""
+    snapshot=getattr(psutil,'_ppid_map',None)
+    if not callable(snapshot):return None
+    try:parents=snapshot()
+    except Exception:return None
+    tree={}
+    for child,parent in parents.items():
+        if child!=parent:tree.setdefault(parent,[]).append(child)
+    return tree
+
+
+def _descendants(psutil, tree, pid):
+    result=[];pending=list(tree.get(pid,()));visited={pid}
+    while pending:
+        child=pending.pop()
+        if child in visited:continue
+        visited.add(child)
+        try:result.append(psutil.Process(child))
+        except psutil.Error:continue
+        pending.extend(tree.get(child,()))
+    return result
 
 
 def _safe_command(command):

@@ -47,6 +47,33 @@ def test_component_offer_lists_only_changed_parts(app):
     dialog.deleteLater()
 
 
+@pytest.mark.parametrize("label, page", [
+    ("打开 GitHub 发布页", "https://github.com/NOTBAD314/2ByteASR/releases"),
+    ("打开 GitCode 发布页", "https://gitcode.com/Notbad314/2ByteASR/releases"),
+    ("关闭", None),
+])
+def test_check_failed_box_offers_github_and_gitcode(app, monkeypatch, label, page):
+    # 2026-10-22: on a mainland line github.com timed out while GitCode had the release.
+    from PySide6.QtWidgets import QMessageBox, QWidget
+    from twobyteasr.app import ui
+
+    seen, opened = {}, []
+
+    def press(box):
+        seen["buttons"] = [b.text() for b in box.buttons()]
+        seen["text"] = box.informativeText()
+        next(b for b in box.buttons() if b.text() == label).click()
+        return 0
+    monkeypatch.setattr(QMessageBox, "exec", press)
+    monkeypatch.setattr(ui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    host = QWidget()
+    ui.MainWindow._update_check_failed(host, "github.com：Read timed out")
+    assert seen["buttons"] == ["打开 GitHub 发布页", "打开 GitCode 发布页", "关闭"]
+    assert "github.com：Read timed out" in seen["text"] and "GitCode" in seen["text"]
+    assert opened == ([page] if page else [])
+    host.deleteLater()
+
+
 def test_setup_fallback_states_size_and_reason(app):
     from twobyteasr.app.ui import UpdateOfferDialog
 

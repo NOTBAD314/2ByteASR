@@ -2039,7 +2039,13 @@ class StudioAIFlowMixin:
         web_updater = getattr(self, "_update_web_adjust_visibility", None)
         if callable(web_updater):
             web_updater()
-        status = AdvancedRendererBackend().status()
+        # Runs on every subtitle selection; the check stats files and resolves
+        # Node/browser paths (2026-10-22: ~5 ms each time). 30 s is fresh enough.
+        cached = getattr(self, "_advanced_renderer_status", None)
+        now = time.monotonic()
+        if cached is None or now - cached[0] > 30.0:
+            cached = self._advanced_renderer_status = (now, AdvancedRendererBackend().status())
+        status = cached[1]
         (bind_text(self.advanced_style_status, '渲染环境就绪') if status.available else bind_text(self.advanced_style_status, '未安装 · {value0}', value0=status.reason))
         if payload:
             try:

@@ -121,6 +121,15 @@ def build_menu(page, menu) -> None:
     add_actions(page, menu)
     translate_all = menu.addAction(tr('翻译整个工程…'))
     translate_all.triggered.connect(lambda: page._open_translation_dialog(scope='all'))
+    # 2026-10-22 (user): 字幕简繁转换 lives here instead of its own toolbar button.
+    from ..design.studio_theme import create_studio_menu
+    from .studio_chinese_script import build_menu as build_chinese_script_menu
+    script_menu = create_studio_menu(menu, theme_on_show=True)
+    script_menu.setObjectName('studioChineseScriptMenu')
+    bind_text(script_menu, '字幕简繁转换', property='title')
+    menu.addMenu(script_menu)
+    page.chinese_script_menu = script_menu
+    build_chinese_script_menu(page, script_menu)
     menu.addSeparator()
     group = QActionGroup(menu)
     group.setExclusive(True)

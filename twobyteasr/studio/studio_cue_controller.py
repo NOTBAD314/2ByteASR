@@ -173,7 +173,8 @@ class StudioCueController:
         page._manual_selection_hold = False
         scope = SelectionScope.explicit((cue_id,), cue_id) if cue_id else SelectionScope.empty()
         page.selection_model.set_scope(scope)
-        page.timeline.set_selection_scope(scope)
+        clock = getattr(page.timeline, 'set_clock_selection_scope', None)
+        (clock or page.timeline.set_selection_scope)(scope)
         model = page.cue_table.selectionModel()
         blocker = QSignalBlocker(model)
         model.clearSelection()
@@ -766,10 +767,14 @@ class StudioCueController:
         if visual_dirty:
             page._initial_preview_timer.stop()
             page._visual_update_timer.start()
-            targets = affected or {self.session.selected_cue_id}
-            for cue_id in targets:
-                if cue_id:
-                    page._schedule_render_refresh(cue_id)
+            # Only the selected cue gets overlay work; any other id just
+            # restarts the same timer (once, not once per affected cue).
+            selected = self.session.selected_cue_id
+            targets = affected or {selected}
+            if selected and selected in targets:
+                page._schedule_render_refresh(selected)
+            elif any(targets):
+                page._schedule_render_refresh(next(cue_id for cue_id in targets if cue_id))
 
         selected_id = self.session.selected_cue_id
         selected_affected = bool(selected_id and selected_id in affected)
@@ -813,11 +818,14 @@ class StudioCueController:
         )
         if refresh_advanced:
             dirty |= DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TRANSFORM
+        # The body mutates nothing, so a rollback copy of every cue (2090
+        # deep copies per speaker edit, 2026-10-22) could never be used.
         with state_for(project).transaction(
             project,
             action_id="legacy_project_changed",
             dirty=dirty,
             affected_cue_ids=(cue.id for cue in project.cues),
+            snapshot_cues=False,
         ):
             pass
 
@@ -834,6 +842,7 @@ class StudioCueController:
             return
         with state_for(project).transaction(
             project,
+            snapshot_cues=False,  # empty body: nothing to roll back
             action_id="legacy_model_changed",
             dirty=(
                 DirtyDomain.CUE_MODEL
@@ -1354,6 +1363,109 @@ class StudioCueController:
             return
         view = self.session.runtime.cue_by_id.get(cue_id, cue)
         self.split_at(cue_id, (view.start_ms + view.end_ms) // 2)
+
+    # Why a position cannot be cut on its own (``text_split`` reasons, by prefix).
+    TEXT_SPLIT_REASONS = (
+        ("unconfirmed", "这里的切点没有第二份证据确认"),
+        ("aligners_disagree", "两个对齐器在这里的切点不一致"),
+        ("unmeasured", "对齐器没有实测到这里的切点"),
+        ("not_graded", "这条字幕还没有切点分级（旧工程、改过文字，或时间轴不是对齐器）"),
+        ("words_mismatch", "这里的字词时间对不上，或切出来太短"),
+    )
+
+    def open_text_split(self, cue_id: str) -> None:
+        """Timeline menu: open the caption text; Ctrl+Enter splits at the cursor (2026-10-22)."""
+        if self.page.timeline.open_text_split_editor(cue_id):
+            bind_text(self.page.save_state, '把文字光标放在要切开的位置，按 Ctrl+Enter 拆分')
+
+    @observed('cue.split_at_text')
+    def split_at_text(self, cue_id: str, position: int, global_pos=None) -> None:
+        """Split at a position in the caption text (2026-10-22, MFA plan step 4).
+
+        An independently measured position is cut at its acoustic boundary
+        (the middle of the pause between the two words when there is one);
+        a position inside a word offers the nearest word boundaries; an
+        unreliable one offers a new alignment (``timeline.text_split``).
+        """
+        project = self.session.project
+        if not project or not cue_id:
+            return
+        from ..timeline.text_split import plan_text_split
+        cue = cue_by_id(project, cue_id)
+        view = self.session.runtime.cue_by_id.get(cue_id, cue)
+        plan = plan_text_split(project, view, int(position))
+        self.page._last_text_split_plan = plan
+        if plan.grade == "blocked":
+            bind_text(self.page.save_state, '光标在字幕开头或结尾，没有可以拆分的位置')
+            return
+        if plan.grade == "independent":
+            self.commit_text_split(cue_id, plan.choices[0])
+            return
+        self._offer_text_split(cue_id, plan, global_pos)
+
+    def commit_text_split(self, cue_id: str, choice) -> None:
+        """Apply one ``text_split.SplitChoice`` of kind cut or estimate as one undo step."""
+        project = self.session.project
+        if not project:
+            return
+        from ..timeline.studio_edit_sequence import map_timing_to_source
+        cue = cue_by_id(project, cue_id)
+        mapped = map_timing_to_source(project, cue, int(choice.split_ms), int(choice.split_ms) + 1)
+        if mapped is None:
+            bind_text(self.page.save_state, '切点跨剪辑边界，无法无损映射到原字幕')
+            return
+        self.session.undo_stack.push(split_cue_command(
+            project, cue.id, mapped[0], choice.left_text, choice.right_text, self.model_changed))
+        if choice.kind == "estimate":
+            bind_text(self.page.save_state, '已在估算时间拆分：「{left}」｜「{right}」，请试听核对',
+                      left=choice.left_text[-6:], right=choice.right_text[:6])
+        else:
+            bind_text(self.page.save_state, '已按声学切点拆分：「{left}」｜「{right}」',
+                      left=choice.left_text[-6:], right=choice.right_text[:6])
+        self.page._studio_trace('TextSplit', cue_id=cue_id, position=choice.position, kind=choice.kind,
+                                cut=choice.split_ms, stored_cut=mapped[0])
+
+    def _offer_text_split(self, cue_id: str, plan, global_pos=None) -> None:
+        from PySide6.QtGui import QCursor
+        from .studio_realign import aligner_language
+        from ..design.studio_theme import create_studio_menu
+        if plan.grade == "whole":
+            header = tr('这里在一个词里面，或和旁边的字连读太快，不能单独切开')
+        else:
+            header = tr(next((text for prefix, text in self.TEXT_SPLIT_REASONS if plan.reason.startswith(prefix)),
+                             '这里的切点对不上声音'))
+        menu = create_studio_menu(self.page)
+        menu.setObjectName("textSplitMenu")
+        title = menu.addAction(header)
+        title.setEnabled(False)
+        menu.addSeparator()
+        for choice in plan.choices:
+            if choice.kind == "realign":
+                action = menu.addAction(tr('重新对齐这条字幕，再在这里拆分'),
+                                        lambda: self._realign_then_split(cue_id, plan.position, global_pos))
+                if aligner_language(self.session.project) is None:
+                    action.setEnabled(False)
+            elif choice.kind == "cut":
+                menu.addAction(tr('改在「{left}｜{right}」切开', left=choice.left_text[-6:], right=choice.right_text[:6]),
+                               lambda c=choice: self.commit_text_split(cue_id, c))
+            elif choice.kind == "estimate":
+                menu.addAction(tr('仍在这里切（时间是估算的，请试听）'),
+                               lambda c=choice: self.commit_text_split(cue_id, c))
+        bind_text(self.page.save_state, header)
+        self.page._text_split_menu = menu
+        menu.popup(global_pos if global_pos is not None else QCursor.pos())
+
+    def _realign_then_split(self, cue_id: str, position: int, global_pos=None) -> None:
+        from .studio_realign import start_realign
+        text = cue_by_id(self.session.project, cue_id).text
+
+        def again(results):
+            project = self.session.project
+            if project is None or cue_id not in results or not any(c.id == cue_id and c.text == text for c in project.cues):
+                return
+            self.split_at_text(cue_id, position, global_pos)
+
+        start_realign(self.page, [cue_id], on_done=again)
 
     def merge_next(self) -> None:
         project = self.session.project

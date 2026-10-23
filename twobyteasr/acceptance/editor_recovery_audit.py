@@ -14,7 +14,8 @@ def run(window, output):
     from .blank_project_audit import _capture
     phase = os.environ['TWOBYTEASR_RECOVERY_PHASE']
     fixture = Path(os.environ['TWOBYTEASR_RECOVERY_FIXTURE'])
-    expected = dict(committed='已提交但未正式保存的中文', draft='尚未确认的草稿 日本語\n第二行')
+    expected = dict(first='第一次提交、已自动保存的中文', committed='已提交但未正式保存的中文',
+                    draft='尚未确认的草稿 日本語\n第二行')
     page = window.studio_page
     result = dict(passed=False, phase=phase, pid=os.getpid(), frozen=bool(getattr(sys, 'frozen', False)), decisions=[], checks={})
 
@@ -56,7 +57,18 @@ def run(window, output):
         window.open_studio_project(fixture, mode='edit', source='recovery_acceptance')
         wait(lambda : page.project is not None and page._readiness.ready)
         if phase in ('terminate', 'native'):
+            # 2026-10-22: the first autosave writes the checkpoint, the next
+            # one only an overlay; recovery must bring back the overlay's edit.
+            page.cue_controller.set_text('c0', expected['first'])
+            wait(lambda : getattr(page, '_draft_autosave_base', None) is not None
+                 and (not page._autosave_worker_running), 120)
+            checkpoint = Path(page._draft_autosave_base[1])
+            overlay = checkpoint.with_name(checkpoint.name + '.overlay')
+            checkpoint_bytes = checkpoint.read_bytes()
             page.cue_controller.set_text('c0', expected['committed'])
+            wait(lambda : overlay.is_file() and (not page._autosave_worker_running), 120)
+            require(checkpoint.read_bytes() == checkpoint_bytes, 'second autosave rewrote the checkpoint')
+            result['checks'].update(checkpoint_then_overlay=True)
             page.select_cue('c1')
             page._begin_canvas_inline_edit()
             page.subtitle_edit_input.setPlainText(expected['draft'])

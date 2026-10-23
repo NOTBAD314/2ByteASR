@@ -24,6 +24,16 @@ def main():
                         help='2026-10-21: N typed edits + Enter on different cues, no reopen; GUI blocked time per Enter')
     parser.add_argument('--batch-style', action='store_true',
                         help='with --edit-soak: first select all, click the 已选 scope and move Y twice')
+    # 2026-10-22 (report-eb10): what the reporting user did between edits.
+    parser.add_argument('--soak-seek', action='store_true',
+                        help='with --edit-soak: move the playhead onto each edited cue so its caption is shown')
+    parser.add_argument('--soak-pause-every', type=int, default=0,
+                        help='with --edit-soak: after every N-th edit stay idle --soak-pause-s seconds (autosave runs)')
+    parser.add_argument('--soak-pause-s', type=float, default=4.0)
+    parser.add_argument('--soak-click-every', type=int, default=0,
+                        help='with --edit-soak: commit every N-th edit by clicking the timeline instead of Enter')
+    parser.add_argument('--soak-search', default='',
+                        help='with --edit-soak: afterwards type this text into find/replace, one character at a time')
     parser.add_argument('--open-timing', action='append', default=[], metavar='LABEL=PROJECT',
                         help='2026-10-21: open these projects (fresh copies) and record readiness stages')
     parser.add_argument('--open-repeats', type=int, default=2)
@@ -54,7 +64,12 @@ def main():
     env['TWOBYTEASR_EDITOR_DIAGNOSTICS'] = '1' if args.diagnostics == 'on' else '0'
     if args.edit_soak:
         env.update(TWOBYTEASR_EDIT_SOAK='1', TWOBYTEASR_SOAK_ITERATIONS=str(args.edit_soak),
-                   TWOBYTEASR_SOAK_BATCH='1' if args.batch_style else '0')
+                   TWOBYTEASR_SOAK_BATCH='1' if args.batch_style else '0',
+                   TWOBYTEASR_SOAK_SEEK='1' if args.soak_seek else '0',
+                   TWOBYTEASR_SOAK_PAUSE_EVERY=str(args.soak_pause_every),
+                   TWOBYTEASR_SOAK_PAUSE_S=str(args.soak_pause_s),
+                   TWOBYTEASR_SOAK_CLICK_EVERY=str(args.soak_click_every),
+                   TWOBYTEASR_SOAK_SEARCH=args.soak_search)
     if args.open_timing:
         projects=[f"{label}={Path(path).resolve()}" for label,path in (item.split('=',1) for item in args.open_timing)]
         env.update(TWOBYTEASR_OPEN_TIMING='1',TWOBYTEASR_OPEN_PROJECTS=';'.join(projects),

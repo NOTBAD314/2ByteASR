@@ -93,3 +93,21 @@ def test_partially_decoded_tiles_are_not_cached():
         assert len(cache.calls) == calls
     finally:
         timeline.deleteLater()
+
+
+def test_lane_height_changes_reuse_tiles():
+    # 2026-10-22: dragging the workspace divider changes the audio lane
+    # height on every step; tiles are kept at unit amplitude and scaled.
+    timeline = _timeline()
+    cache = _Cache()
+    try:
+        short = timeline._waveform_envelope_tiles(cache, 10_000, 15_000, 228, 1028, QRectF(0, 100, 1600, 40), 0, 60_000)
+        calls = len(cache.calls)
+        tall = timeline._waveform_envelope_tiles(cache, 10_000, 15_000, 228, 1028, QRectF(0, 100, 1600, 80), 0, 60_000)
+        assert len(cache.calls) == calls
+        assert [x for _path, x in short] == [x for _path, x in tall]
+        for (low, _x), (high, _x2) in zip(short, tall):
+            assert abs(high.boundingRect().height() - 2 * low.boundingRect().height()) < 0.01
+            assert abs(high.boundingRect().width() - low.boundingRect().width()) < 0.01
+    finally:
+        timeline.deleteLater()

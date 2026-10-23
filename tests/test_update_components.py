@@ -560,3 +560,154 @@ def test_download_candidates_follow_the_answering_source():
     assert updater._candidates(updater.STABLE_FEED) == (updater.STABLE_FEED,
                                                        *(prefix + updater.STABLE_FEED for prefix in updater.GITHUB_MIRRORS))
     assert updater._candidates("http://127.0.0.1:9/feed.json") == ("http://127.0.0.1:9/feed.json",)
+
+
+def test_mirrors_follow_the_mainland_measurement():
+    # 2026-10-22 mainland line: gh-proxy.org 0.9-2.8 MB/s, ghfast.top 0.9-1.7 MB/s, ghproxy.net 0.02 MB/s.
+    assert updater.GITHUB_MIRRORS == ("https://gh-proxy.org/", "https://ghfast.top/", "https://ghproxy.net/")
+    url = GITHUB_V066 + "2ByteASR-0.6.6-app-abc.zip"
+    assert [u.split("/")[2] for u in updater._asset_sources([url])] == \
+        ["github.com", "gitcode.com", "gh-proxy.org", "ghfast.top", "ghproxy.net"]
+
+
+def test_manifest_listing_gitcode_first_does_not_change_this_programs_order(tmp_path, isolated_state, trusted_key):
+    # release_pipeline.py feed --gitcode-first lists [GitCode, GitHub] for older programs;
+    # here the source that answered the check still decides.
+    url = GITHUB_V066 + "2ByteASR-0.6.6-app-abc.zip"
+    listed = [updater.gitcode_url(url), url]
+    assert updater._asset_sources(listed) == updater._asset_sources([url])
+    assert updater._asset_sources(listed, prefer_gitcode=True) == updater._asset_sources([url], prefer_gitcode=True)
+    installed, files = _signed_sources(tmp_path, trusted_key, gitcode_version=None)
+    manifest = json.loads(files[updater.STABLE_FEED])
+    for record in [manifest["setup"]] + [c["archive"] for c in manifest["components"].values() if c["archive"]]:
+        record["urls"] = [updater.gitcode_url(record["urls"][0]), record["urls"][0]]
+    files[updater.STABLE_FEED] = json.dumps(manifest).encode()
+    files[updater.STABLE_FEED + ".sig"] = um.sign_manifest(files[updater.STABLE_FEED], trusted_key)
+    check = updater.check_for_update(request_get=_server(files), root=installed)
+    assert not check.from_gitcode and check.installer_url == GITHUB_V066 + "2ByteASR-Setup-0.6.6.exe"
+
+
+# ------------------------------------------------------------- slow sources
+# 2026-10-22 mainland line: github.com connected and then sent ~40 KB/s without
+# an error (849 MB = about six hours); GitCode served the same file at ~14 MB/s.
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+class RatedResponse(FakeResponse):
+    """A source that sends ``rate`` bytes per second on a fake clock."""
+
+    def __init__(self, data, rate, clock, **kwargs):
+        super().__init__(data, **kwargs)
+        self._rate, self._clock = rate, clock
+
+    def iter_content(self, chunk_size):
+        for start in range(0, len(self.content), chunk_size):
+            block = self.content[start:start + chunk_size]
+            self._clock.now += len(block) / self._rate
+            yield block
+
+
+def _rated_server(files, rates, clock, *, no_ranges=(), log=None):
+    def get(url, headers=None, **kwargs):
+        host = url.split("/")[2]
+        response = _server(files, ranges=host not in no_ranges, log=log)(url, headers=headers, **kwargs)
+        if host in rates and response.status_code < 400:
+            return RatedResponse(response.content, rates[host], clock,
+                                 status=response.status_code, headers=response.headers)
+        return response
+    return get
+
+
+def _release_asset(size_mib: int):
+    data = bytes(range(256)) * (4096 * size_mib)
+    asset = _Asset(data, name="2ByteASR-0.6.6-app-abc.zip")
+    asset.urls = (GITHUB_V066 + asset.name,)
+    return data, asset, {url: data for url in updater._asset_sources(asset.urls)}
+
+
+def _hosts(log):
+    return [url.split("/")[2] for url, _headers in log]
+
+
+def _resumed_at(entry):
+    return int(entry[1]["Range"].split("=")[1].rstrip("-"))
+
+
+KB = 1024
+MB = 1024 * 1024
+
+
+def test_slow_source_hands_the_partial_file_to_the_next_one(tmp_path, isolated_state):
+    data, asset, files = _release_asset(8)
+    clock, log = FakeClock(), []
+    getter = _rated_server(files, {"github.com": 40 * KB, "gitcode.com": 14 * MB}, clock, log=log)
+    path = updater.download_asset(asset, tmp_path / "dl", request_get=getter, clock=clock, sleep=lambda s: None)
+    assert path.read_bytes() == data
+    assert _hosts(log) == ["github.com", "gitcode.com"]
+    # About 30 s of github.com is kept and resumed, not downloaded again.
+    assert 30 * 40 * KB <= _resumed_at(log[1]) < 2 * MB
+    assert clock.now < 40  # before: 8 MiB at 40 KB/s = 205 s
+
+
+def test_when_every_source_is_slow_each_is_judged_once_and_the_fastest_finishes(tmp_path, isolated_state):
+    data, asset, files = _release_asset(16)
+    rates = {"github.com": 40 * KB, "gitcode.com": 100 * KB, "gh-proxy.org": 60 * KB,
+             "ghfast.top": 50 * KB, "ghproxy.net": 20 * KB}
+    clock, log = FakeClock(), []
+    path = updater.download_asset(asset, tmp_path / "dl", request_get=_rated_server(files, rates, clock, log=log),
+                                  clock=clock, sleep=lambda s: None)
+    assert path.read_bytes() == data
+    assert _hosts(log) == ["github.com", "gitcode.com", "gh-proxy.org", "ghfast.top", "ghproxy.net", "gitcode.com"]
+    offsets = [_resumed_at(entry) for entry in log[1:]]
+    assert offsets == sorted(offsets) and len(set(offsets)) == len(offsets)  # every switch resumes, never restarts
+
+
+def test_a_mirror_that_ignores_range_never_wipes_the_bytes_already_here(tmp_path, isolated_state):
+    data, asset, files = _release_asset(16)
+    folder = tmp_path / "dl"
+    clock, log = FakeClock(), []
+    # github.com is slow; GitCode ignores Range and is slow too; gh-proxy.org resumes fast.
+    getter = _rated_server(files, {"github.com": 40 * KB, "gitcode.com": 20 * KB, "gh-proxy.org": 2 * MB},
+                           clock, no_ranges={"gitcode.com"}, log=log)
+    path = updater.download_asset(asset, folder, request_get=getter, clock=clock, sleep=lambda s: None)
+    assert path.read_bytes() == data
+    assert _hosts(log) == ["github.com", "gitcode.com", "gh-proxy.org"]
+    assert _resumed_at(log[2]) == _resumed_at(log[1])  # GitCode's restart from zero was dropped, github's bytes kept
+    assert not list(folder.glob("*.fresh")) and not list(folder.glob("*.part"))
+
+
+def test_a_range_ignoring_source_takes_over_once_it_has_more(tmp_path, isolated_state):
+    data, asset, files = _release_asset(8)
+    clock, log = FakeClock(), []
+    getter = _rated_server(files, {"github.com": 40 * KB, "gitcode.com": 14 * MB}, clock,
+                           no_ranges={"gitcode.com"}, log=log)
+    seen = []
+    path = updater.download_asset(asset, tmp_path / "dl", request_get=getter, clock=clock, sleep=lambda s: None,
+                                  progress=lambda received, total: seen.append(received))
+    assert path.read_bytes() == data and _hosts(log) == ["github.com", "gitcode.com"]
+    assert seen == sorted(seen)  # progress never jumps back while the new copy catches up
+
+
+def test_nearly_finished_download_stays_on_its_source(tmp_path, isolated_state):
+    data, asset, files = _release_asset(2)  # at 40 KB/s the rest after 30 s arrives within a minute
+    clock, log = FakeClock(), []
+    getter = _rated_server(files, {"github.com": 40 * KB, "gitcode.com": 14 * MB}, clock, log=log)
+    path = updater.download_asset(asset, tmp_path / "dl", request_get=getter, clock=clock, sleep=lambda s: None)
+    assert path.read_bytes() == data and _hosts(log) == ["github.com"]
+
+
+def test_slow_switch_keeps_the_answering_source_first(tmp_path, isolated_state):
+    data, asset, files = _release_asset(8)
+    clock, log = FakeClock(), []
+    # GitCode answered the check but crawls on this network; github.com is fast.
+    getter = _rated_server(files, {"gitcode.com": 30 * KB, "github.com": 10 * MB}, clock, log=log)
+    path = updater.download_asset(asset, tmp_path / "dl", request_get=getter, clock=clock, sleep=lambda s: None,
+                                  prefer_gitcode=True)
+    assert path.read_bytes() == data and _hosts(log) == ["gitcode.com", "github.com"]

@@ -13,7 +13,7 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QRect, QSize
-from PySide6.QtGui import QAction, QFontDatabase, QFontMetricsF, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QFontDatabase, QFontMetricsF, QIcon, QIconEngine, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QAbstractButton, QTabWidget, QWidget
 
 import qtawesome as qta
@@ -88,12 +88,57 @@ def icon_role_color(role: str, theme: ThemeDefinition | None = None) -> str:
 _OPTICAL_OPTIONS = {"fa5s.play": {"offset": (0.08, 0.0)}}
 
 
+class _CachedIconEngine(QIconEngine):
+    """A qtawesome icon rasterized once per pixel size, mode and state.
+
+    qtawesome draws the glyph with QPainter text on every paint. Toolbars
+    repaint on each step of a panel-divider drag; 2026-10-22 that was about
+    35 glyph renders per step in the Studio. Theme changes build new icons
+    (``refresh_themed_icons``), so a cache never outlives its colours.
+    """
+
+    def __init__(self, source: QIcon, cache: dict | None = None):
+        super().__init__()
+        self._source = source
+        self._cache = {} if cache is None else cache
+
+    def pixmap(self, size, mode, state):  # noqa: D401 - Qt override
+        key = (size.width(), size.height(), mode.value, state.value)
+        cached = self._cache.get(key)
+        if cached is None:
+            # dpr 1.0: ``size`` is already in device pixels here.
+            cached = self._source.pixmap(size, 1.0, mode, state)
+            self._cache[key] = cached
+        return QPixmap(cached)
+
+    def scaledPixmap(self, size, mode, state, scale):  # noqa: N802 - Qt override
+        # Qt 6.9 passes the logical size and the device pixel ratio.
+        scale = max(1.0, float(scale))
+        pixmap = self.pixmap(QSize(max(1, round(size.width() * scale)), max(1, round(size.height() * scale))),
+                             mode, state)
+        pixmap.setDevicePixelRatio(scale)
+        return pixmap
+
+    def paint(self, painter, rect, mode, state):
+        device = painter.device()
+        dpr = float(device.devicePixelRatioF()) if device is not None else 1.0
+        pixmap = self.pixmap(QSize(max(1, round(rect.width() * dpr)), max(1, round(rect.height() * dpr))),
+                             mode, state)
+        painter.drawPixmap(rect, pixmap)
+
+    def actualSize(self, size, mode, state):  # noqa: N802 - Qt override
+        return self._source.actualSize(size, mode, state)
+
+    def clone(self):
+        return _CachedIconEngine(self._source, self._cache)
+
+
 def themed_icon(name: str, role: str = "primary", theme: ThemeDefinition | None = None) -> QIcon:
     _prime_platform_font_fallback()
     active = _active_theme(theme)
     color = icon_role_color(role, active)
-    return qta.icon(name, color=color, color_active=color, color_disabled=active.disabled,
-                    **_OPTICAL_OPTIONS.get(str(name), {}))
+    return QIcon(_CachedIconEngine(qta.icon(name, color=color, color_active=color, color_disabled=active.disabled,
+                                            **_OPTICAL_OPTIONS.get(str(name), {}))))
 
 
 def cached_icon_pixmap(

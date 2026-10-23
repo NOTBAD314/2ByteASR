@@ -114,9 +114,11 @@ def recover_final_content(finalized, grouped, segments, tokens, legacy):
             start=source[0].start,end=source[-1].end,expected_numbers=expected[1],actual_numbers=signature(rows)[1])
         low,high=source[0].start-.15,source[-1].end+.05
         def valid(cues):
+            from .language_rules import finished_cue_limits   # Japanese: two lines (2026-10-21)
+            max_chars,max_seconds=finished_cue_limits(legacy.COMPLETE_PHRASE_SOFT_MAX_CHARS,legacy.MAX_SUBTITLE_SECONDS)
             ordered=sorted(cues,key=lambda c:(c.start,c.end))
-            return (signature(cues)==expected and all(0<c.end-c.start<=legacy.MAX_SUBTITLE_SECONDS+.05
-                    and legacy.display_length(c.text)<=legacy.COMPLETE_PHRASE_SOFT_MAX_CHARS
+            return (signature(cues)==expected and all(0<c.end-c.start<=max_seconds+.05
+                    and legacy.display_length(c.text)<=max_chars
                     and low<=c.start and c.end<=high for c in cues)
                     and all(b.start>=a.end-.001 for a,b in zip(ordered,ordered[1:])))
         safe=[c for c,owner in zip(grouped,grouped_owners) if owner==index]

@@ -7,6 +7,7 @@ accepting arbitrary ASS or renderer code here.
 
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any, Mapping
 
@@ -194,8 +195,26 @@ def validate_effect(value: Mapping[str, Any] | None) -> dict[str, Any]:
     return {"entry": validate_effect_part(payload), "exit": {"type": "none"}}
 
 
+_BUILTIN_EFFECTS: dict[str, dict[str, Any]] | None = None
+
+
 def builtin_effects() -> dict[str, dict[str, Any]]:
-    """Return restrained presets suitable for long-form subtitle defaults."""
+    """Return restrained presets suitable for long-form subtitle defaults.
+
+    Validated once (2026-10-22: the motion preview rebuilt and validated all
+    of them on every subtitle selection, ~8 ms); callers get their own copy.
+    """
+    global _BUILTIN_EFFECTS
+    if _BUILTIN_EFFECTS is None:
+        _BUILTIN_EFFECTS = _validated_builtin_effects()
+    try:
+        import marshal
+        return marshal.loads(marshal.dumps(_BUILTIN_EFFECTS))  # ~4x faster than deepcopy
+    except (TypeError, ValueError):
+        return copy.deepcopy(_BUILTIN_EFFECTS)
+
+
+def _validated_builtin_effects() -> dict[str, dict[str, Any]]:
     raw = {
         "none": {"type": "none"},
         "fade": {"entry": {"type": "fade", "duration": 180}, "exit": {"type": "fade", "duration": 150}},

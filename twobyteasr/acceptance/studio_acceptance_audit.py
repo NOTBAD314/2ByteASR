@@ -63,7 +63,11 @@ def isolate_acceptance_settings() -> None:
         from .translation_requests_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'run-diagnosis':
+        from .run_diagnosis_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'studio-splitter', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -87,15 +91,19 @@ def isolate_acceptance_settings() -> None:
         from .claude_service_audit import install_guards
         install_guards()
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'grouping-prompt':
+        from .grouping_prompt_audit import install_guards
+        install_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'math-ai':
         from .math_ai_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('razor-word-split', 'ja-bilingual', 'bilingual-playback', 'speaker-roles', 'mcp', 'ctc-refine', 'onboarding-settings', 'api-setup', 'tour-motion', 'review-window', 'review-click-fix', 'math-formulas', 'style-background-grid', 'workbench-fixes'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('razor-word-split', 'ja-bilingual', 'bilingual-playback', 'speaker-roles', 'mcp', 'ctc-refine', 'onboarding-settings', 'api-setup', 'tour-motion', 'review-window', 'window-drag', 'review-click-fix', 'math-formulas', 'style-background-grid', 'workbench-fixes', 'text-split', 'ja-split-report', 'playback-hitch', 'feedback-20261022', 'open-after-idle'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         output = audit_directory()
-        if output is not None and os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('ja-bilingual', 'ctc-refine'):
+        if output is not None and os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('ja-bilingual', 'ctc-refine', 'text-split'):
             # Re-alignment runs the real aligner from the declared read-only
             # model folder and existing main runtime (hashed manifest).
             from .glossary_live_resources import install
@@ -488,6 +496,31 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-ai-card':
+        from .home_ai_card_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-plan-zoom':
+        from .home_plan_zoom_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'recognition-sheet':
+        from .recognition_sheet_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'feedback-20261022':
+        from .feedback_20261022_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'open-after-idle':
+        from .open_after_idle_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'api-setup':
         from .api_setup_audit import start
         output = audit_directory()
@@ -505,6 +538,21 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ctc-refine':
         from .ctc_refine_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'text-split':
+        from .text_split_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ja-split-report':
+        from .ja_split_report_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'playback-hitch':
+        from .playback_hitch_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -688,6 +736,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'run-diagnosis':
+        from .run_diagnosis_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-workflow':
         from .editor_workflow_audit import start
         output = audit_directory()
@@ -716,6 +769,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'timeline-toolbar':
         from .timeline_toolbar_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-splitter':
+        from .studio_splitter_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -779,6 +837,12 @@ def start_acceptance(window) -> None:
         if output is not None:
             start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'window-drag':
+        from .window_drag_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-click-fix':
         from .review_click_fix_audit import start
         output = audit_directory()
@@ -811,6 +875,12 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'claude-service':
         from .claude_service_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'grouping-prompt':
+        from .grouping_prompt_audit import start
         output = audit_directory()
         if output is not None:
             start(window, output)

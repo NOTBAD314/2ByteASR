@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 
+#: Plan language for every spoken language other than Chinese, Japanese and auto.
+FOREIGN = "foreign"
+
+
+def chinese_or_auto(language: str) -> bool:
+    return str(language or "") in ("", "auto", "zh", "zh-Hant")
+
+
 @dataclass(frozen=True)
 class RecognitionPlan:
     key: str
@@ -22,41 +30,66 @@ class RecognitionPlan:
     timeline: str
     review: str
     estimated_vram_gb: float
-    # The spoken language the plan is for ("" = any). Japanese and English use
-    # the same backends; the language tells them apart (2026-10-14).
+    # The spoken language the plan is for ("" = any, FOREIGN = not Chinese or
+    # Japanese). 日语 and 外语 use the same backends; the language tells them
+    # apart (2026-10-14).
     language: str = ""
+    # Cloud transcription service the plan selects ("" = keep the current one).
+    api_provider: str = ""
+    # Timeline for a spoken language other than Chinese / auto, and on a
+    # computer that cannot run ``timeline`` ("" = always ``timeline``).
+    foreign_timeline: str = ""
+
+    def backends(self, language: str = "", host=None) -> tuple[str, str, str]:
+        """(primary, timeline, review) this plan selects for the spoken language.
+
+        ``host``: a ``recognition_choices.HostProfile``; FireRedASR2 needs an
+        NVIDIA GPU, so without one the plan's other timeline is used.
+        """
+        timeline = self.timeline
+        if self.foreign_timeline:
+            unavailable = False
+            if host is not None:
+                from .recognition_choices import unavailable_on_host
+                unavailable = bool(unavailable_on_host("timeline", timeline, host))
+            if unavailable or not chinese_or_auto(language):
+                timeline = self.foreign_timeline
+        return self.primary, timeline, self.review
+
+    def for_language(self, language: str) -> bool:
+        if not self.language:
+            return True
+        if self.language == FOREIGN:
+            return not chinese_or_auto(language) and str(language) != "ja"
+        return self.language == str(language or "")
 
 
 RECOGNITION_PLANS: tuple[RecognitionPlan, ...] = (
+    # 2026-10-23 (user): the menu is 本地识别 / API 转写 / 日语 / 外语; 自定义
+    # only shows itself when the models were changed by hand.
     RecognitionPlan(
-        "quality", "质量优先（推荐）", "主稿 + 字级时间轴 + 独立复核，适合多人和长视频", "moss", "local", "local", 10.8
+        "quality", "本地识别", "主稿 + 字级时间轴 + 独立复核，适合多人和长视频", "moss", "local", "local", 10.8
     ),
-    # 2026-10-14 (user request): language presets. For Japanese and English the
-    # Chinese timeline model is never used; words are timed by
+    # Cloud MOSS Pro transcription, no review pass; word times by FireRedASR2
+    # for Chinese (and auto), by Qwen3-ForcedAligner for other languages or
+    # without an NVIDIA GPU. Choosing it asks for the MOSS Pro key when none
+    # is saved (2026-10-22: replaced 速度优先 / 省显存 / 仅转写 / the old API 转写).
+    RecognitionPlan(
+        "moss_pro_qwen", "API 转写",
+        "云端 MOSS Pro 转写 + 本机字级时间轴（中文用 FireRedASR2，其他语言用 Qwen3 对齐），不做复核；需 MOSS Pro API Key",
+        "api", "local", "off", 4.5, api_provider="mosi_moss_pro", foreign_timeline="qwen_aligner",
+    ),
+    # 2026-10-14 (user request): language presets. For Japanese and the other
+    # languages the Chinese timeline model is never used; words are timed by
     # Qwen3-ForcedAligner-0.6B and, for Japanese, line starts are checked by the
     # Japanese CTC aligner. Review is the local Qwen3-ASR 1.7B.
     RecognitionPlan(
-        "japanese", "日语推荐", "MOSS 主稿 + Qwen3 对齐字词时间、日语 CTC 校正句首 + Qwen3-ASR 1.7B 复核",
+        "japanese", "日语", "MOSS 主稿 + Qwen3 对齐字词时间、日语 CTC 校正句首 + Qwen3-ASR 1.7B 复核",
         "moss", "qwen_aligner", "local", 10.8, "ja",
     ),
     RecognitionPlan(
-        "english", "英语推荐", "MOSS 主稿 + Qwen3-ForcedAligner 0.6B 单词时间 + Qwen3-ASR 1.7B 复核",
-        "moss", "qwen_aligner", "local", 10.8, "en",
-    ),
-    RecognitionPlan(
-        "speed", "速度优先", "轻量主稿，尽快得到可编辑字幕", "sensevoice", "off", "off", 1.2
-    ),
-    RecognitionPlan(
-        "low_memory", "省显存", "CPU 友好或在线处理，适合低配置设备", "sensevoice", "off", "off", 1.2
-    ),
-    RecognitionPlan(
-        "transcribe_only", "仅转写", "只生成文字稿，不额外建立字幕时间轴", "moss", "off", "off", 1.7
-    ),
-    RecognitionPlan(
-        # 三十三轮：用户点名"API 接管主力转写+字幕时间轴"——timeline 关闭时
-        # 管线沿用主力 ASR 的转写块边界作为时间轴（moss_firered_pipeline
-        # timeline-off 语义），即由 API 块接管时间轴；复核同走 API。
-        "api", "API 转写", "在线 API 接管主力转写与时间轴（块边界）；免下载，需 API Key", "api", "off", "api", 0.0
+        "english", "外语", "MOSS 主稿 + Qwen3-ForcedAligner 0.6B 单词时间 + Qwen3-ASR 1.7B 复核",
+        "moss", "qwen_aligner", "local", 10.8, FOREIGN,
     ),
     RecognitionPlan(
         "custom", "自定义", "保留当前底层模型组合", "", "", "", 0.0
@@ -66,17 +99,28 @@ RECOGNITION_PLANS: tuple[RecognitionPlan, ...] = (
 _BY_KEY = {plan.key: plan for plan in RECOGNITION_PLANS}
 
 
+#: Plans removed on 2026-10-22; saved profiles naming them read as custom.
+REMOVED_PLANS = frozenset({"speed", "low_memory", "transcribe_only", "api"})
+
+
 def recognition_plan(key: str) -> RecognitionPlan:
     """Return a known plan, falling back to custom for stale settings."""
     return _BY_KEY.get(str(key), _BY_KEY["custom"])
 
 
-def matching_plan(primary: str, timeline: str, review: str, language: str = "") -> str:
-    """The plan with these backends; a language plan only for its language."""
+def matching_plan(primary: str, timeline: str, review: str, language: str = "",
+                  provider: str | None = None) -> str:
+    """The plan with these backends; a language plan only for its language.
+
+    ``provider``: the selected cloud service; a plan naming one matches only
+    it (``None`` = not known, do not check). A plan with two timelines
+    (API 转写) matches either."""
     values = (str(primary), str(timeline), str(review))
     for plan in RECOGNITION_PLANS:
-        if (plan.key != "custom" and values == (plan.primary, plan.timeline, plan.review)
-                and plan.language in ("", str(language or ""))):
+        timelines = {plan.timeline, plan.foreign_timeline} - {""}
+        if (plan.key != "custom" and (values[0], values[2]) == (plan.primary, plan.review)
+                and values[1] in timelines and plan.for_language(language)
+                and (not plan.api_provider or provider is None or plan.api_provider == provider)):
             return plan.key
     return "custom"
 
@@ -94,14 +138,10 @@ def lightweight_media_profile(paths: Sequence[str | Path], *, has_gpu: bool | No
         files.append(path)
         total_bytes += int(stat.st_size)
     audio_like = all(path.suffix.lower() in {".wav", ".mp3", ".m4a", ".flac", ".aac", ".ogg"} for path in files) if files else False
-    # Large batches and audio-only files are more likely to benefit from a
-    # lighter first pass; no expensive media inspection is needed here.
-    if not files:
-        recommended = "quality"
-    elif audio_like and total_bytes < 2 * 1024**3:
-        recommended = "speed"
-    elif total_bytes > 8 * 1024**3 or len(files) > 4:
-        recommended = "low_memory"
+    # 2026-10-22: the light local plans are gone; without a GPU the cloud plan
+    # is the light first pass. No expensive media inspection is needed here.
+    if files and has_gpu is False:
+        recommended = "moss_pro_qwen"
     else:
         recommended = "quality"
     plan = recognition_plan(recommended)
@@ -112,9 +152,10 @@ def lightweight_media_profile(paths: Sequence[str | Path], *, has_gpu: bool | No
         "has_gpu": has_gpu,
         "recommended_plan": plan.key,
         "estimated_vram_gb": plan.estimated_vram_gb,
-        "estimated_minutes_per_hour": 18 if plan.key in {"speed", "low_memory"} else 42,
+        "estimated_minutes_per_hour": 18 if plan.key == "moss_pro_qwen" else 42,
     }
 
 
 def plan_options() -> tuple[RecognitionPlan, ...]:
-    return RECOGNITION_PLANS
+    """The plans people choose from; 自定义 is a state, shown only when it is the current one."""
+    return tuple(plan for plan in RECOGNITION_PLANS if plan.key != "custom")

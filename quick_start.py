@@ -99,6 +99,26 @@ def _append_startup_log(message: str) -> None:
         pass
 
 
+def _flush_owned_clipboard() -> None:
+    """Keep what the user copied after the hard exit below (2026-10-22).
+
+    Qt hands copied text to Windows lazily and writes it out only while the
+    application object is torn down, which TerminateProcess skips: "复制
+    JSON", close the app, paste gave nothing. OleFlushClipboard on the GUI
+    thread renders it now; nothing happens when another program owns the clipboard.
+    """
+    if os.name != "nt" or "PySide6.QtWidgets" not in sys.modules:
+        return
+    try:
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None and app.clipboard().ownsClipboard():
+            result = ctypes.windll.ole32.OleFlushClipboard()
+            _append_startup_log(f"clipboard flushed hr=0x{result & 0xFFFFFFFF:08x}")
+    except Exception as exc:
+        _append_startup_log(f"clipboard flush failed: {exc}")
+
+
 def _show_error(title: str, message: str) -> None:
     """Show a native message box; never fail silently (pythonw has no console).
 
@@ -369,6 +389,7 @@ def main() -> int:
             sys.stderr.flush()
         except Exception:
             pass
+        _flush_owned_clipboard()
         # 2026-10-10: the untyped call truncated the pseudo handle of
         # GetCurrentProcess() to 32 bits, so TerminateProcess failed with
         # ERROR_INVALID_HANDLE and every exit fell through to the full

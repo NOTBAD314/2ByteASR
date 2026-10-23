@@ -135,6 +135,31 @@ def test_request_soon_runs_the_six_hourly_check_now(qapp, monkeypatch):  # noqa:
     maintenance.stop(); owner.deleteLater(); qapp.processEvents()
 
 
+def test_six_hours_hold_across_launches(service, qapp, monkeypatch):  # noqa: F811
+    # 2026-10-22: every launch ran the whole pass a minute later (~2 min of a core in the GUI process).
+    from PySide6.QtWidgets import QWidget
+    from twobyteasr.storage import storage_ui
+    started = []
+    monkeypatch.setattr(storage_ui, 'StorageService', lambda **kwargs: service)
+    monkeypatch.setattr(storage_ui.StorageWorker, 'start', lambda self: started.append(self))
+
+    def launch():
+        owner = QWidget()
+        maintenance = storage_ui.IdleStorageMaintenance(owner)
+        maintenance.check()
+        maintenance.stop(); owner.deleteLater(); qapp.processEvents()
+
+    launch()
+    assert len(started) == 1
+    state = json.loads((service.state_root / storage_ui.IdleStorageMaintenance.STATE).read_text('utf8'))
+    assert abs(state['last_attempt'] - time.time()) < 60
+    launch()  # restarted within six hours: nothing runs
+    assert len(started) == 1
+    service.write_state_json(storage_ui.IdleStorageMaintenance.STATE, {'last_attempt': time.time() - 7 * 3600})
+    launch()
+    assert len(started) == 2
+
+
 def test_storage_summary_shows_real_runtime_use(service, qapp):  # noqa: F811
     managed = service.paths.user_data_root / 'runtimes'
     env = managed / 'main' / '0123456789abcdef'; env.mkdir(parents=True)

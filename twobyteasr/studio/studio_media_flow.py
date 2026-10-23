@@ -14,7 +14,7 @@ from pathlib import Path
 from time import perf_counter
 from PySide6.QtCore import (QTimer, Qt)
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QRadioButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 from ..media.media_ingest import (MediaIngestResult, ingest_media, result_matches_request)
 from ..recognition.recognition_plans import matching_plan, plan_options, recognition_plan
 from ..system.resource_governor import ResourceKind
@@ -23,12 +23,13 @@ from ..timeline.studio_commands import MutationOrigin
 from .studio_helpers import probe_media_identity
 from ..projects.studio_project import (StudioCue, SubtitleProject, library_project_snapshot, load_project, parse_ass_dialogue_line, parse_subtitle_timecode_ms, project_library_root, repair_project_library_metadata, save_project, studio_settings_path)
 from .studio_reasr import (LocalReASRResult, run_local_reasr)
+from ..design.presentation import field_width
 from ..design.studio_theme import studio_message_box
 from ..playback.waveform_cache import (WaveformCache, generate_progressive_waveform_cache)
 
 from ..i18n import bind_text
 
-from ..i18n import tr
+from ..i18n import tr, user_text
 
 class StudioMediaFlowMixin:
     """Feature-domain mixin; host class provides widgets and state."""
@@ -750,40 +751,108 @@ class StudioMediaFlowMixin:
         host = self.window()
         sheet = QWidget()
         sheet.setObjectName("studioRecognitionSheet")
-        layout = QVBoxLayout(sheet)
-        layout.setContentsMargins(12, 8, 12, 10)
-        layout.setSpacing(8)
-        title = QLabel("识别当前工程")
-        title.setObjectName("sectionTitle")
-        layout.addWidget(title)
-        media = bind_text(QLabel(), '媒体 · {value0}', value0=Path(media_path).name)
-        media.setObjectName("contextValue")
-        media.setWordWrap(True)
-        layout.addWidget(media)
+        # 2026-10-22：ModalHost 给卡片定高且不设尺寸约束；内容超出时 Qt 把
+        # 各行压到最小值以下互相叠住（展开「高级配置」后三行模型被压成一条）。
+        # 内容放进滚动区，放不下就滚动。
+        sheet_layout = QVBoxLayout(sheet)
+        sheet_layout.setContentsMargins(0, 0, 0, 0)
+        sheet_layout.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setObjectName("studioRecognitionScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea#studioRecognitionScroll, "
+            "QScrollArea#studioRecognitionScroll > QWidget#qt_scrollarea_viewport, "
+            "QWidget#studioRecognitionBody { background: transparent; border: 0; }"
+        )
+        sheet_layout.addWidget(scroll)
+        body = QWidget()
+        body.setObjectName("studioRecognitionBody")
+        scroll.setWidget(body)
+        # 2026-10-23（用户选方案 C）：阅读次序 = ①顶部一行识别方案 → ②左栏三个
+        # 模型角色（主页同款 logo、模型名、支持语言与状态，点一行换模型）→
+        # ③右栏「这次识别」（唯一强调色：媒体与会替换多少条、术语词库、翻译、
+        # 还缺什么、唯一主按钮）。左右两栏上下对齐。说话人跟随主力转写，不再单选；
+        # 原来说话人的位置换成翻译（要先连上 AI）。
+        from ..design.presentation import button_role
+        from ..design.theme_manager import theme_key
+        from ..design.tokens import RADIUS_SCALE, TYPE_SCALE
+        from ..design.ui_theme import blend_hex, hex_luminance, theme_definition
+        from .recognition_role_rows import RecognitionRoleRow, catalog_facts, role_row_rules
+        palette = theme_definition(theme_key())
+        light = hex_luminance(palette.surface) > 0.5
+        sheet.setStyleSheet(
+            f"QWidget#studioRecognitionSheet QLabel#recognitionStepTitle {{ color: {palette.text};"
+            f" font-size: {TYPE_SCALE['heading2']}px; font-weight: 700; background: transparent; }}"
+            f"QWidget#studioRecognitionSheet QFrame#recognitionSummary {{"
+            f" background: {blend_hex(palette.surface, palette.accent, 0.12 if light else 0.11)};"
+            f" border: 1px solid {blend_hex(palette.surface, palette.accent, 0.45 if light else 0.55)};"
+            f" border-radius: {RADIUS_SCALE['surface']}px; }}"
+            f"QWidget#studioRecognitionSheet QFrame#recognitionSummary QLabel {{ background: transparent; }}"
+            f"QWidget#studioRecognitionSheet QFrame#recognitionPlanCard {{"
+            f" background: {blend_hex(palette.surface, palette.text, 0.035 if light else 0.03)};"
+            f" border: 1px solid {palette.border}; border-radius: {RADIUS_SCALE['surface']}px; }}"
+            f"QWidget#studioRecognitionSheet QWidget#recognitionCardHeader {{ background: transparent; }}"
+            f"QWidget#studioRecognitionSheet QLabel#recognitionContext {{ color: {palette.text_secondary};"
+            f" font-size: {TYPE_SCALE['small']}px; }}"
+            f"QWidget#studioRecognitionSheet QLabel#recognitionImpact {{ color: {palette.accent_text};"
+            f" font-size: {TYPE_SCALE['small']}px; font-weight: 600; }}"
+            f"QWidget#studioRecognitionSheet QLabel#recognitionFieldLabel {{ color: {palette.text_secondary};"
+            f" font-size: {TYPE_SCALE['small']}px; font-weight: 700; }}"
+            f"QWidget#studioRecognitionSheet QCheckBox#localSpeakerRecognition {{ color: {palette.text_secondary};"
+            f" font-size: {TYPE_SCALE['small']}px; background: transparent; }}"
+            f"QWidget#studioRecognitionSheet QLabel#recognitionStepHint {{ color: {palette.text_muted};"
+            f" font-size: {TYPE_SCALE['caption']}px; }}"
+            f"QWidget#studioRecognitionSheet QLabel#recognitionProblem {{ color: {palette.warning};"
+            f" font-size: {TYPE_SCALE['small']}px; font-weight: 600; }}"
+            + role_row_rules(palette, light, RADIUS_SCALE['surface'], TYPE_SCALE)
+        )
 
-        plan_row = QHBoxLayout()
-        plan_row.addWidget(QLabel("识别方案"))
+        # 2026-10-23（用户：比例臃肿、右边不对称）：两张对称的卡片，等高、同样的内边距、
+        # 同样一行标题栏——左「识别方案」+ 方案下拉，下面三行薄模型行；右「这次识别」
+        # + 文件名 + 右上角「AI 设置」，下面词库、翻译、仅本地识别和唯一的主按钮。
+        from ..design.presentation import CONTROL_HEIGHTS
+        outer = QVBoxLayout(body)
+        outer.setContentsMargins(18, 14, 18, 16)
+        outer.setSpacing(0)
+        layout = QHBoxLayout()
+        layout.setSpacing(14)
+        outer.addLayout(layout)
+        outer.addStretch(1)  # room left over stays below; the rows keep their height
+
+        def card(name: str):
+            frame = QFrame()
+            frame.setObjectName(name)
+            frame.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+            box = QVBoxLayout(frame)
+            box.setContentsMargins(16, 14, 16, 14)
+            box.setSpacing(8)
+            header = QWidget()
+            header.setObjectName("recognitionCardHeader")
+            header.setFixedHeight(CONTROL_HEIGHTS["default"])
+            header_row = QHBoxLayout(header)
+            header_row.setContentsMargins(0, 0, 0, 0)
+            header_row.setSpacing(10)
+            box.addWidget(header)
+            return frame, box, header_row
+
+        left_column, left, plan_row = card("recognitionPlanCard")
+
+        # ① 识别方案：最先看到。
+        plan_title = QLabel("识别方案")
+        plan_title.setObjectName("recognitionStepTitle")
+        plan_row.addWidget(plan_title, 0, Qt.AlignmentFlag.AlignVCenter)
         plan = QComboBox()
-        # 四十二轮：方案与主页 plan_options() 对齐（补 省显存/仅转写/API 转写），
-        # 另保留"当前主页方案"快捷项。此前硬编码 4 项，API 识别根本选不到。
+        # 四十二轮：方案与主页 plan_options() 对齐，另保留"当前主页方案"快捷项。
+        # 2026-10-23：本地识别 / API 转写 / 日语 / 外语；「自定义」只在换过模型时出现。
         for entry in plan_options():
             plan.addItem(entry.label, entry.key)
         plan.addItem("当前主页方案", "home")
         plan.setCurrentIndex(plan.findData("home"))
-        plan_row.addWidget(plan, 1)
-        layout.addLayout(plan_row)
-
-        advanced_toggle = QPushButton("▸ 高级配置 · 模型")
-        advanced_toggle.setObjectName("studioButton")
-        advanced_toggle.setCheckable(True)
-        advanced_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout.addWidget(advanced_toggle)
-        advanced = QFrame()
-        advanced.setObjectName("contextCard")
-        advanced_grid = QGridLayout(advanced)
-        advanced_grid.setContentsMargins(12, 10, 12, 10)
-        advanced_grid.setHorizontalSpacing(10)
-        advanced_grid.setVerticalSpacing(7)
+        field_width(plan, "expanding")
+        plan_row.addWidget(plan, 1, Qt.AlignmentFlag.AlignVCenter)
 
         def copy_model_choices(target: QComboBox, source_name: str, fallback) -> None:
             source = getattr(host, source_name, None)
@@ -796,9 +865,13 @@ class StudioMediaFlowMixin:
                 for label, value in fallback:
                     target.addItem(label, value)
 
-        primary_model = QComboBox()
-        timeline_model = QComboBox()
-        review_model = QComboBox()
+        # The three selectors hold the choice; the rows below show it (and the
+        # model picker changes it), so the selectors themselves stay hidden.
+        primary_model = QComboBox(body)
+        timeline_model = QComboBox(body)
+        review_model = QComboBox(body)
+        for combo in (primary_model, timeline_model, review_model):
+            combo.hide()
         copy_model_choices(
             primary_model,
             "primary_asr_backend",
@@ -844,64 +917,62 @@ class StudioMediaFlowMixin:
             full = f"在线 ASR API（{short} · {model_id}）" if model_id else f"在线 ASR API（{short}）"
             return full, short
 
-        api_full_label, api_short = _api_entry_labels()
+        api_full_label, _api_short = _api_entry_labels()
         for combo in (primary_model, review_model):
             index = combo.findData("api")
             if index >= 0:
                 combo.setItemText(index, api_full_label)
-        plan_api_index = plan.findData("api")
-        if plan_api_index >= 0:
-            plan.setItemText(plan_api_index, f"API 转写（{api_short}）")
-        for row, (label, combo, role) in enumerate(
-            (
-                ("主力转写", primary_model, "primary"),
-                ("字幕时间轴", timeline_model, "timeline"),
-                ("文字复核", review_model, "review"),
-            )
-        ):
-            advanced_grid.addWidget(QLabel(label), row, 0)
-            advanced_grid.addWidget(combo, row, 1)
-            # 四十二轮：接入主页同款模型选择弹窗作为二级弹窗——本地下载、
-            # 在线 API 服务商选择与"配置"（Key/地址/转写风格）都能在这里完成。
-            picker_button = QPushButton("选择…")
-            picker_button.setObjectName("studioButton")
-            bind_text(picker_button, '打开与主页相同的模型选择弹窗（本地模型下载、在线 API 服务与配置）', property='toolTip')
-            picker_button.setCursor(Qt.CursorShape.PointingHandCursor)
-            picker_button.clicked.connect(lambda _checked=False, r=role: open_role_picker(r))
-            advanced_grid.addWidget(picker_button, row, 2)
-        advanced.hide()
-        layout.addWidget(advanced)
 
-        speaker_source = QComboBox()
-        speaker_source.addItem("统一字幕轨（默认，不额外运行说话人分离）", "single")
-        speaker_source.addItem("Filetrans 原生分轨（使用所选 Filetrans 版本）", "filetrans")
-        speaker_source.addItem("说话人：ECAPA 快速分离 · 不重复转写（身份需复核）", "ecapa")
-        speaker_source.addItem("高级：按接口原始标签整理说话人", "native")
-        speaker_source.addItem("说话人：MOSS · 保留模型身份（主稿为其它模型时额外运行 MOSS）", "moss")
-        from ..recognition.speaker_strategy import resolve
-        speaker_settings=getattr(getattr(host,'legacy',None),'RUNTIME_SETTINGS',{})
-        speaker_source.setCurrentIndex(max(0, speaker_source.findData(resolve(speaker_settings))))
-        bind_text(speaker_source, '默认只组织为统一字幕轨，不代表已确认同一个人。原标签保留；旧版本自动分轨设置不沿用。其余方式需要在这里明确选择。', property='toolTip')
-        layout.addWidget(speaker_source)
-        local_analysis = QCheckBox('仅本地识别与分轨（跳过云端校对和 AI 断句）')
-        local_analysis.setObjectName('localSpeakerRecognition')
-        bind_text(local_analysis, '仍使用所选主转写与时间轴模型；需选择本地模型。说话人按上方选择运行，身份需试听确认。', property='toolTip')
-        layout.addWidget(local_analysis)
-        speaker_scope=QLabel('默认来自当前方案；此处选择仅影响本次识别，不修改其他方案或已有字幕。')
-        speaker_scope.setWordWrap(True)
-        layout.addWidget(speaker_scope)
+        # ② 三个模型角色：薄薄一行（logo、角色、模型名 + 支持语言、状态），点一行换模型。
+        advanced = QFrame()
+        advanced.setObjectName("recognitionRoles")
+        advanced.setStyleSheet("QFrame#recognitionRoles { background: transparent; border: 0; }")
+        roles_column = QVBoxLayout(advanced)
+        roles_column.setContentsMargins(0, 0, 0, 0)
+        roles_column.setSpacing(8)
+        role_rows: dict[str, RecognitionRoleRow] = {}
+        for role in ("primary", "timeline", "review"):
+            row = RecognitionRoleRow(role)
+            row.clicked.connect(lambda r: open_role_picker(r))
+            roles_column.addWidget(row, 1)
+            role_rows[role] = row
+        left.addWidget(advanced, 1)
+        layout.addWidget(left_column, 3)
 
-        glossary_card = QFrame()
-        glossary_card.setObjectName("contextCard")
-        glossary_layout = QVBoxLayout(glossary_card)
-        glossary_layout.setContentsMargins(12, 10, 12, 10)
-        glossary_layout.setSpacing(5)
-        glossary_layout.addWidget(QLabel("本次识别词库"))
-        # 四十三轮：词库改常驻勾选 chips。下拉方案两轮翻车——三十一轮前复选行
-        # 被 ModalHost 钳制压成切片；四十二轮 activated 已修但用户实录"点开后
-        # 又马上退出"（不同 DPI/屏幕下 popup 存活不稳，headed 无法复现）。
-        # chips 没有 popup 可关，勾选状态直接可见；空 identity 条目（工程
-        # glossary_ids 历史污染出的空串，用户截图 6 项 4 空白）直接过滤。
+        # ③「这次识别」：文件、词库、翻译、仅本地识别，最后是唯一的主按钮。
+        summary_card, summary, title_row = card("recognitionSummary")
+        summary_title = QLabel("这次识别")
+        summary_title.setObjectName("recognitionStepTitle")
+        title_row.addWidget(summary_title, 0, Qt.AlignmentFlag.AlignVCenter)
+        from .recognition_role_rows import ElidedLabel
+        context = user_text(ElidedLabel(Path(media_path).name)) if project.cues \
+            else bind_text(ElidedLabel(), '{name} · 还没有字幕', name=Path(media_path).name)
+        context.setObjectName("recognitionContext")
+        context.setToolTip(media_path)
+        title_row.addWidget(context, 1, Qt.AlignmentFlag.AlignVCenter)
+        # The AI text service (translation needs it) is one button in the corner.
+        import qtawesome as qta
+        ai_button = QPushButton("AI 设置")
+        ai_button.setObjectName("recognitionTranslationUnlock")
+        button_role(ai_button, "secondary", size="compact")
+        ai_button.setIcon(qta.icon("fa5s.magic", color=palette.accent_text))
+        ai_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        title_row.addWidget(ai_button, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        def field_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setObjectName("recognitionFieldLabel")
+            return label
+
+        # 词库：一个下拉，弹出勾选列表。四十三轮：词库曾改常驻勾选 chips
+        # （下拉复选在 ModalHost 里被压扁 / 点开就退出）。2026-10-22（用户：多按钮
+        # 没必要，下拉能显示更多）：菜单里嵌一列勾选框（QWidgetAction）——点勾选框
+        # 菜单不关、不经 QComboBox 视图；空 identity 条目照旧过滤。
+        options = QGridLayout()
+        options.setHorizontalSpacing(12)
+        options.setVerticalSpacing(8)
+        options.setColumnStretch(1, 1)
+        options.addWidget(field_label("词库"), 0, 0, Qt.AlignmentFlag.AlignVCenter)
         glossary_entries: dict[str, str] = {}
         profiles = getattr(getattr(host, "legacy", None), "load_game_profiles", lambda: {})() or {}
         identity_fn = getattr(getattr(host, "legacy", None), "runtime_game_identity", str)
@@ -914,67 +985,178 @@ class StudioMediaFlowMixin:
             key = str(identity or "").strip()
             if key:
                 glossary_entries.setdefault(key, key)
-        if not glossary_entries:
-            empty_glossary = QLabel("未关联词库；可继续识别。")
-            empty_glossary.setObjectName("studioSaveState")
-            glossary_layout.addWidget(empty_glossary)
 
         glossary_checks: list[tuple[QCheckBox, str]] = []
 
         def _glossary_checked_ids(*_args) -> list[str]:
             return [identity for box, identity in glossary_checks if box.isChecked()]
 
+        from .recognition_role_rows import MenuComboBox
+        glossary_button = MenuComboBox(lambda: show_glossary_menu())
+        glossary_button.setObjectName("recognitionGlossaryButton")
+        field_width(glossary_button, "expanding")
+
         def _sync_glossary_summary(*_args) -> None:
             names = [box.text() for box, _identity in glossary_checks if box.isChecked()]
             if not names:
-                bind_text(glossary_summary, '未选择词库')
+                glossary_button.set_text(str(tr('选择词库（{count} 个可选）', count=len(glossary_checks))))
+                glossary_button.setToolTip("")
             else:
                 joined = "、".join(names)
-                (bind_text(glossary_summary, '已选 {value0} 个词库：{value1}…', value0=len(names), value1=joined[:38]) if len(joined) > 40 else bind_text(glossary_summary, '已选 {value0} 个词库：{value1}', value0=len(names), value1=joined))
+                glossary_button.set_text(str(tr('已选 {count} 个：{names}', count=len(names), names=joined)))
+                glossary_button.setToolTip(joined)
 
+        from PySide6.QtWidgets import QMenu, QWidgetAction
+        glossary_menu = QMenu(glossary_button)
+        glossary_menu.setObjectName("recognitionGlossaryMenu")
         chips_host = QWidget()
-        chips_grid = QGridLayout(chips_host)
-        chips_grid.setContentsMargins(0, 0, 0, 0)
-        chips_grid.setHorizontalSpacing(8)
-        chips_grid.setVerticalSpacing(4)
-        for index, (identity, display_name) in enumerate(glossary_entries.items()):
+        chips_host.setObjectName("recognitionGlossaryList")
+        chips_grid = QVBoxLayout(chips_host)
+        chips_grid.setContentsMargins(12, 8, 12, 8)
+        chips_grid.setSpacing(6)
+        for identity, display_name in glossary_entries.items():
             box = QCheckBox(display_name)
             bind_text(box, '识别时启用词库：{display_name}', property='toolTip', display_name=display_name)
             box.stateChanged.connect(_sync_glossary_summary)
             glossary_checks.append((box, identity))
-            chips_grid.addWidget(box, index // 2, index % 2)
-        glossary_summary = QLabel("未选择词库")
-        glossary_summary.setObjectName("studioSaveState")
-        glossary_summary.setWordWrap(True)
-        if glossary_entries:
-            glossary_layout.addWidget(chips_host)
-            glossary_layout.addWidget(glossary_summary)
-        layout.addWidget(glossary_card)
+            chips_grid.addWidget(box)
+        list_action = QWidgetAction(glossary_menu)
+        if len(glossary_entries) > 10:
+            # A long library scrolls inside the dropdown instead of growing off screen.
+            list_scroll = QScrollArea()
+            list_scroll.setWidgetResizable(True)
+            list_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            list_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            list_scroll.setMaximumHeight(360)
+            list_scroll.setWidget(chips_host)
+            list_action.setDefaultWidget(list_scroll)
+        else:
+            list_action.setDefaultWidget(chips_host)
+        glossary_menu.addAction(list_action)
 
-        scope_note = QLabel("")
-        scope_note.setObjectName("studioSaveState")
-        scope_note.setWordWrap(True)
-        layout.addWidget(scope_note)
+        def show_glossary_menu() -> None:
+            list_action.defaultWidget().setMinimumWidth(glossary_button.width())
+            glossary_menu.popup(glossary_button.mapToGlobal(glossary_button.rect().bottomLeft()))
+
+        if glossary_entries:
+            options.addWidget(glossary_button, 0, 1)
+            _sync_glossary_summary()
+        else:
+            empty_glossary = QLabel("未关联词库；可继续识别。")
+            empty_glossary.setObjectName("recognitionStepHint")
+            options.addWidget(empty_glossary, 0, 1)
+
+        # 翻译（原来说话人的位置）：和主页同一组选择，只管这一次识别；要先连上 AI。
+        options.addWidget(field_label("翻译"), 1, 0, Qt.AlignmentFlag.AlignVCenter)
+        from ..subtitle_rules.subtitle_translation import TARGET_LABELS, TARGETS, targets_for
+        output_labels = (("只显示原文", "original"), ("原文 + 翻译（双语）", "bilingual"), ("只显示翻译", "translation"))
+        translation_output = QComboBox()
+        translation_output.setObjectName("recognitionTranslationOutput")
+        for text, value in output_labels:
+            translation_output.addItem(tr(text), value)
+        translation_target = user_text(QComboBox())
+        translation_target.setObjectName("recognitionTranslationTarget")
+        language_options = {}
+        language_fn = getattr(host, "_subtitle_language_options", None)
+        if callable(language_fn):
+            try:
+                language_options = dict(language_fn() or {})
+            except Exception:  # noqa: BLE001 - home not built: originals only
+                language_options = {}
+        spoken = str(language_options.get("recognition_language") or "auto")
+        for value in (TARGETS if spoken == "auto" else targets_for(spoken)):
+            translation_target.addItem(TARGET_LABELS[value], value)
+        translation_target.setCurrentIndex(max(0, translation_target.findData(
+            str(language_options.get("translation_script") or "zh-Hans"))))
+        for combo in (translation_output, translation_target):
+            field_width(combo, "expanding")
+        translation_row = QHBoxLayout()
+        translation_row.setSpacing(8)
+        translation_row.addWidget(translation_output, 3)
+        translation_row.addWidget(translation_target, 2)
+        options.addLayout(translation_row, 1, 1)
+        summary.addSpacing(2)
+        summary.addLayout(options)
+        translation_state = {"ready": False}
+
+        def ai_gate() -> str:
+            try:
+                from ..providers.ai_connection_record import feature_gate
+                return str(feature_gate(getattr(getattr(host, "legacy", None), "RUNTIME_SETTINGS", {}) or {}))
+            except Exception:  # noqa: BLE001 - unknown: never lock anyone out
+                return "ready"
+
+        def refresh_translation_lock(initial: bool = False) -> None:
+            gate = ai_gate() if callable(language_fn) else "no_key"
+            ready = gate == "ready"
+            translation_state["ready"] = ready
+            model = translation_output.model()
+            for index in range(translation_output.count()):
+                value = str(translation_output.itemData(index) or "")
+                item = model.item(index) if hasattr(model, "item") else None
+                if value == "original" or item is None:
+                    continue
+                item.setEnabled(ready)
+                label = dict((v, t) for t, v in output_labels)[value]
+                translation_output.setItemText(index, str(tr(label)) if ready else str(tr("{value0}（需要 API Key）", value0=tr(label))))
+            wanted = str(translation_output.currentData() or "original")
+            if initial:
+                wanted = str(language_options.get("subtitle_output") or "original")
+            if not ready:
+                wanted = "original"
+            translation_output.setCurrentIndex(max(0, translation_output.findData(wanted)))
+            lines = getattr(host, "AI_LOCK_LINES", {}) or {}
+            note = (tr("翻译由 AI 完成，只发送字幕文字（可能产生少量费用）。") if ready
+                    else tr(lines.get(gate) or lines.get("no_key") or "需要先填 API Key 并测试连接才能用"))
+            translation_output.setToolTip(str(note))
+            ai_button.setToolTip(str(note))
+            ai_button.setVisible(callable(getattr(host, "_open_ai_settings_dialog", None)))
+            translation_target.setVisible(ready and translation_output.currentData() != "original")
+            QTimer.singleShot(0, fit_card)
+
+        def open_ai_settings() -> None:
+            opener = getattr(host, "_open_ai_settings_dialog", None)
+            if callable(opener):
+                opener(on_finished=refresh_translation_lock)
+
+        ai_button.clicked.connect(open_ai_settings)
+        translation_output.currentIndexChanged.connect(lambda _index: refresh_translation_lock())
+
+        local_analysis = QCheckBox('仅本地识别与分轨')
+        local_analysis.setObjectName('localSpeakerRecognition')
+        bind_text(local_analysis, '跳过云端校对和 AI 断句；仍使用所选主转写与时间轴模型（需选本地模型）。说话人跟随主力转写，身份需试听确认。', property='toolTip')
+        summary.addSpacing(2)
+        summary.addWidget(local_analysis)
+        # Only for a start that cannot go ahead; what each model still needs is on its row.
+        problem = QLabel("")
+        problem.setObjectName("recognitionProblem")
+        problem.setWordWrap(True)
+        problem.hide()
+        summary.addWidget(problem)
+        summary.addStretch(1)
         start = QPushButton("识别字幕")
         start.setObjectName("studioPrimary")
-        start.setMinimumHeight(42)
+        button_role(start, "primary", size="large")
+        field_width(start, "expanding", size="large")
         start.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout.addWidget(start)
+        summary.addWidget(start)
         confirm_row = QFrame()
-        confirm_layout = QHBoxLayout(confirm_row)
+        confirm_layout = QVBoxLayout(confirm_row)
         confirm_layout.setContentsMargins(0, 0, 0, 0)
-        confirm_layout.addWidget(QLabel("仅替换正式字幕稿；保留样式、剪辑和候选。"), 1)
+        confirm_layout.setSpacing(6)
+        confirm_text = bind_text(QLabel(), '将替换当前 {count} 条字幕；保留样式、剪辑和候选。', count=len(project.cues))
+        confirm_text.setObjectName("recognitionImpact")
+        confirm_text.setWordWrap(True)
+        confirm_layout.addWidget(confirm_text)
         confirm_replace = QPushButton("确认替换")
         confirm_replace.setObjectName("studioPrimary")
+        button_role(confirm_replace, "primary", size="large")
+        field_width(confirm_replace, "expanding", size="large")
         confirm_replace.setCursor(Qt.CursorShape.PointingHandCursor)
         confirm_layout.addWidget(confirm_replace)
         confirm_row.hide()
-        layout.addWidget(confirm_row)
-
-        configure = QPushButton("在主页管理全部识别设置")
-        configure.setObjectName("studioButton")
-        configure.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout.addWidget(configure)
+        summary.addWidget(confirm_row)
+        layout.addWidget(summary_card, 2)
 
         def set_combo_value(combo: QComboBox, value: str) -> None:
             index = combo.findData(value)
@@ -989,66 +1171,169 @@ class StudioMediaFlowMixin:
 
         applying_plan = {"value": False}
 
+        def plan_provider() -> str | None:
+            key = str(plan.currentData() or "custom")
+            if key in {"home", "custom"}:
+                return None
+            return recognition_plan(key).api_provider or None
+
+        def refresh_role_rows() -> None:
+            backends = {role: str(combo.currentData() or "") for role, combo in
+                        (("primary", primary_model), ("timeline", timeline_model), ("review", review_model))}
+            state_fn = getattr(host, "recognition_role_state", None)
+            facts = None
+            if callable(state_fn):
+                try:
+                    facts = state_fn(backends, plan_provider())["roles"]
+                except Exception:  # noqa: BLE001 - the rows fall back to the catalog
+                    facts = None
+            if facts is None:
+                facts = {role: catalog_facts(role, backends[role], combo.currentText(), plan_provider() or "")
+                         for role, combo in (("primary", primary_model), ("timeline", timeline_model),
+                                             ("review", review_model))}
+            missing = []
+            for role, row in role_rows.items():
+                if backends[role] in {"", "none"}:
+                    facts[role] = dict(facts[role], status=tr("未选择"), tone="warn", model=None, line=None)
+                row.set_facts(facts[role])
+                if facts[role].get("tone") == "warn" and facts[role].get("status"):
+                    missing.append(str(tr("{role} {status}", role=row.role_label.text(), status=facts[role]["status"])))
+            # The rows' chips say it; the start button repeats it on hover.
+            start.setToolTip(str(tr("还需处理：{items}", items="、".join(missing))) if missing else "")
+
+        def update_plan_summary() -> None:
+            key = str(plan.currentData() or "custom")
+            if key == "home":
+                lead = tr('沿用主页当前的设置')
+            elif key == "custom":
+                lead = tr('按左边选的模型')
+            else:
+                lead = tr(recognition_plan(key).description)
+            # What the plan does stays one hover away; the rows show what it uses.
+            plan.setToolTip(str(lead))
+            refresh_role_rows()
+
         def apply_plan() -> None:
             key = str(plan.currentData() or "custom")
             if key == "home":
                 values = (home_models["primary"], home_models["timeline"], home_models["review"])
             else:
-                entry = recognition_plan(key)
-                values = (entry.primary, entry.timeline, entry.review)
+                values = recognition_plan(key).backends(spoken, plan_host())
             if values and any(values):
                 applying_plan["value"] = True
                 try:
                     for combo, value in zip((primary_model, timeline_model, review_model), values):
+                        if value and combo.findData(str(value)) < 0:
+                            # A plan model not installed yet: shown as itself with 需要下载
+                            # (home applies the plan the same way when recognition starts).
+                            combo.addItem(str(value), str(value))
                         set_combo_value(combo, str(value or ""))
                 finally:
                     applying_plan["value"] = False
+            if key != "custom":
+                select_plan(key)  # a real choice takes 自定义 out of the list again
+            else:
+                update_plan_summary()
 
-        def refresh_models_from_host() -> None:
-            # 二级模型选择弹窗关闭后：同步主页当前选择回弹窗下拉。
-            sources = (
-                (primary_model, "primary_asr_backend"),
-                (timeline_model, "firered_asr_backend"),
-                (review_model, "qwen_asr_backend"),
-            )
-            for target, source_name in sources:
+        role_sources = {
+            "primary": (primary_model, "primary_asr_backend"),
+            "timeline": (timeline_model, "firered_asr_backend"),
+            "review": (review_model, "qwen_asr_backend"),
+        }
+
+        def plan_host():
+            """The computer's profile (FireRedASR2 needs an NVIDIA GPU); None without the main window."""
+            profile = getattr(host, "_home_host_profile", None)
+            if profile is None and callable(getattr(host, "recognition_role_state", None)):
+                from ..recognition.recognition_choices import host_profile
+                profile = host._home_host_profile = host_profile()
+            return profile
+
+        def select_plan(key: str) -> None:
+            # Show ``key`` without applying it; 自定义 is in the list only while it is current.
+            plan.blockSignals(True)
+            try:
+                custom = plan.findData("custom")
+                if key == "custom" and custom < 0:
+                    plan.addItem(recognition_plan("custom").label, "custom")
+                elif key != "custom" and custom >= 0:
+                    plan.removeItem(custom)
+                plan.setCurrentIndex(max(0, plan.findData(key)))
+            finally:
+                plan.blockSignals(False)
+            update_plan_summary()
+
+        def host_value(role: str) -> str:
+            source = getattr(host, role_sources[role][1], None)
+            return str(source.currentData() or "") if isinstance(source, QComboBox) else ""
+
+        def refresh_models_from_host(role: str, before: str) -> None:
+            # 二级模型选择弹窗关闭后：只把在弹窗里换了的那个角色同步回来；
+            # 没换（直接关掉）就保留这里选的方案和模型（2026-10-23）。
+            for target, source_name in role_sources.values():
                 copy_model_choices(target, source_name, ())
-                source = getattr(host, source_name, None)
-                data = source.currentData() if isinstance(source, QComboBox) else None
-                if data:
-                    set_combo_value(target, str(data))
-            matched = matching_plan(
-                str(primary_model.currentData() or ""),
-                str(timeline_model.currentData() or ""),
-                str(review_model.currentData() or ""),
-            )
-            if matched != "custom" or plan.findData("custom") < 0:
-                plan.setCurrentIndex(max(0, plan.findData(matched)))
+            chosen = host_value(role)
+            if chosen and chosen != before:
+                set_combo_value(role_sources[role][0], chosen)
+                provider_combo = getattr(host, "qwen_asr_api_provider", None)
+                matched = matching_plan(
+                    str(primary_model.currentData() or ""),
+                    str(timeline_model.currentData() or ""),
+                    str(review_model.currentData() or ""),
+                    spoken,
+                    provider=str(provider_combo.currentData() or "") if isinstance(provider_combo, QComboBox) else None,
+                )
+                select_plan(matched)
+            update_plan_summary()
+
+        def sheet_size() -> tuple[int, int]:
+            # Wide enough for the two columns; the height is fitted to the content.
+            return min(1060, max(760, host.width() - 48)), min(760, max(520, host.height() - 48))
+
+        def fit_card() -> None:
+            modal_host = getattr(host, "_modal_host", None)
+            parent = modal_host.parentWidget() if modal_host is not None else None
+            if parent is None or not modal_host.isVisible() or not sheet.isVisible():
+                return
+            card = modal_host.card
+            viewport = scroll.viewport()
+            chrome = card.height() - viewport.height()
+            grid = body.layout()
+            need = grid.totalHeightForWidth(viewport.width()) if grid.hasHeightForWidth() else -1
+            need = need if need > 0 else body.sizeHint().height()
+            area = parent.rect()
+            width = min(card.width(), max(1, area.width() - 24))
+            height = max(320, min(area.height() - 24, need + chrome + 2))
+            card.setGeometry((area.width() - width) // 2, max(12, (area.height() - height) // 2), width, height)
 
         def open_role_picker(role: str) -> None:
             open_fn = getattr(host, "_open_model_picker", None)
             if not callable(open_fn):
                 return
 
+            before = host_value(role)
+
             def _restore() -> None:
-                refresh_models_from_host()
+                refresh_models_from_host(role, before)
                 host_modal = getattr(host, "_modal_host", None)
                 if host_modal is not None:
-                    sheet_height = min(760, max(520, host.height() - 120))
                     host_modal.show_content(
                         sheet,
                         title="识别字幕",
-                        size=(620, sheet_height),
-                        min_size=(500, 520),
+                        size=sheet_size(),
+                        min_size=(760, 420),
                         retain_content=True,
                     )
+                    QTimer.singleShot(0, fit_card)
 
             open_fn(role, on_closed=_restore)
 
-        (bind_text(scope_note, '当前字幕 {value0} 条；识别结果将替换字幕，保留样式和剪辑。', value0=len(project.cues)) if project.cues else bind_text(scope_note, '使用所选方案生成工程字幕。'))
         (bind_text(start, '识别并替换当前字幕') if project.cues else bind_text(start, '识别字幕'))
 
         def request_options() -> dict:
+            from ..recognition.speaker_strategy import resolve
+            settings = getattr(getattr(host, "legacy", None), "RUNTIME_SETTINGS", {}) or {}
+            output = str(translation_output.currentData() or "original") if translation_state["ready"] else "original"
             return {
                 "purpose": "analysis" if local_analysis.isChecked() else "final",
                 "recognition_plan": str(plan.currentData() or "custom"),
@@ -1061,7 +1346,10 @@ class StudioMediaFlowMixin:
                     _glossary_checked_ids() if glossary_entries else []
                 ),
                 "replace_policy": "replace_cues",
-                "speaker_source": str(speaker_source.currentData()),
+                # Speakers follow the primary model (speaker_strategy.resolve); not chosen here.
+                "speaker_source": resolve(settings),
+                "subtitle_output": output,
+                "translation_script": str(translation_target.currentData() or "zh-Hans"),
             }
 
         def dispatch(action: str) -> None:
@@ -1073,8 +1361,9 @@ class StudioMediaFlowMixin:
                 return
             if local_analysis.isChecked():
                 if (str(primary_model.currentData()) not in {'moss','firered','qwen_local','whisper_turbo','paraformer'}
-                        or str(timeline_model.currentData()) == 'api' or speaker_source.currentData()=='filetrans'):
-                    bind_text(scope_note, '仅本地识别需要本地主转写、时间轴及说话人方案，请展开高级配置。')
+                        or str(timeline_model.currentData()) == 'api'):
+                    bind_text(problem, '仅本地识别需要本地的主力转写和时间轴模型；请点左边那一行换成本地模型。')
+                    problem.show()
                     return
                 action='start_analysis'
             self._recognition_request_options = request_options()
@@ -1108,27 +1397,25 @@ class StudioMediaFlowMixin:
 
         def start_clicked() -> None:
             if project.cues:
+                # The second press confirms; the button's place keeps the panel's height.
+                start.hide()
                 confirm_row.show()
+                QTimer.singleShot(0, fit_card)
                 return
             dispatch("start_final")
 
-        advanced_toggle.toggled.connect(
-            lambda checked: (
-                advanced.setVisible(checked),
-                bind_text(advanced_toggle, '{value0} 高级配置 · 模型', value0='▾' if checked else '▸'),
-            )
-        )
         plan.currentIndexChanged.connect(lambda _index: apply_plan())
         for combo in (primary_model, timeline_model, review_model):
             combo.currentIndexChanged.connect(
-                lambda _index: plan.setCurrentIndex(plan.findData("custom"))
+                lambda _index: select_plan("custom")
                 if not applying_plan["value"] and str(plan.currentData()) not in {"custom", "home"}
                 else None
             )
+            combo.currentIndexChanged.connect(lambda _index: None if applying_plan["value"] else update_plan_summary())
         start.clicked.connect(start_clicked)
         confirm_replace.clicked.connect(lambda: dispatch("start_final"))
-        configure.clicked.connect(lambda: dispatch("configure"))
         apply_plan()
+        refresh_translation_lock(initial=True)
         # 四处引用旧 sheet 状态对象的地方都已改走左侧芯片；重建弹窗前清理
         # 上一张 retain 的 sheet，避免反复开关累积孤儿控件。
         previous_sheet = getattr(self, "_recognition_sheet", None)
@@ -1142,22 +1429,28 @@ class StudioMediaFlowMixin:
             "timeline": timeline_model,
             "review": review_model,
             "advanced": advanced,
+            "left": left_column,
+            "rows": role_rows,
+            "summary": summary_card,
             "glossaries": chips_host,
+            "translation": translation_output,
+            "translation_target": translation_target,
             "start": start,
             "confirm": confirm_row,
         }
 
         modal = getattr(host, "_modal_host", None)
         if modal is not None:
-            # 四十三轮：768 高的屏幕放不下 760 的弹窗（词库区会被压出视野）。
-            sheet_height = min(760, max(520, host.height() - 120))
+            # 四十三轮：768 高的屏幕放不下 760 的弹窗（词库区会被压出视野）；
+            # 2026-10-22：宽卡片，显示后按内容定高（放不下才滚动）。
             modal.show_content(
                 sheet,
                 title="识别字幕",
-                size=(620, sheet_height),
-                min_size=(500, 520),
+                size=sheet_size(),
+                min_size=(760, 420),
                 retain_content=True,
             )
+            QTimer.singleShot(0, fit_card)
         else:
             self.recognition_requested.emit("configure", media_path, project_path)
 

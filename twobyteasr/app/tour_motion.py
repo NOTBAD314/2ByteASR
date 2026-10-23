@@ -974,7 +974,54 @@ def burn(d: Draw, t: float) -> None:
     d.check(358, 58, shown(t, 2500))
 
 
+def plan_compare(d: Draw, t: float) -> None:
+    """② Two ways to turn speech into text: 云端 (any computer, uploads) or 本机 (free, needs a graphics card)."""
+    look = d.look
+    d.stage()
+    picked = span(t, 1500, 1750)
+    for index, (x, icon, title, good, care, role) in enumerate((
+            (18, 'fa5s.cloud', '云端识别', '不挑电脑', '要上传', 'primary'),
+            (226, 'fa5s.desktop', '本机识别', '免费', '要 N 卡', 'timeline'))):
+        color = look.role[role]
+        chosen = picked if index == 0 else 0.0
+        d.card(x, 18, 196, 150, highlight=chosen, radius=12)
+        d.box(x + 14, 32, 36, 36, faded(color, 0.18), None, 9)
+        d.icon(icon, x + 32, 50, 17, color)
+        d.text(x + 60, 50, title, 14, QFont.Weight.Bold, look.text, ui=True, width=120)
+        good_in = shown(t, 300 + 250 * index)
+        d.icon('fa5s.check', x + 22, 96, 11, look.success, good_in)
+        d.text(x + 34, 96, good, 12, QFont.Weight.DemiBold, look.text, good_in, ui=True, width=150)
+        care_in = shown(t, 700 + 250 * index)
+        d.icon('fa5s.exclamation-circle', x + 22, 124, 11, look.warning, care_in)
+        d.text(x + 34, 124, care, 12, QFont.Weight.DemiBold, look.secondary, care_in, ui=True, width=150)
+        d.check(x + 178, 34, chosen if index == 0 else 0.0)
+    d.pointer(t, [(0, 380, 176), (900, 300, 160), (1350, 120, 150), (2600, 120, 150), (3300, 400, 176)], (1400,))
+
+
+def ai_lock(d: Draw, t: float) -> None:
+    """⑤ AI 断句, 翻译字幕 and 术语库校对 stay locked until an API key is in and tested."""
+    look = d.look
+    d.stage()
+    unlock = span(t, 1900, 2300)
+    for index, (icon, label) in enumerate((('fa5s.cut', 'AI 断句'), ('fa5s.language', '翻译字幕'),
+                                           ('fa5s.book-open', '术语库校对'))):
+        y = 30 + index * 46
+        lit = span(t, 2000 + index * 160, 2350 + index * 160)
+        d.box(150, y, 270, 36, mix(look.input, look.surface, lit), mix(look.border, look.accent, lit * 0.6), 9)
+        d.icon(icon, 170, y + 18, 14, mix(look.muted, look.accent, lit))
+        d.text(188, y + 18, label, 13, QFont.Weight.DemiBold, mix(look.muted, look.text, lit), ui=True, width=170)
+        d.icon('fa5s.lock', 398, y + 18, 12, look.muted, 1 - lit)
+        d.check(398, y + 18, lit, 8.0)
+    slide = track(t, [(0, 0.0), (500, 0.0), (1500, 1.0)])
+    x = 18 + 92 * slide
+    d.box(x, 74, 46, 38, look.accent_tint, mix(look.border, look.accent, slide), 10, 1.0 - 0.6 * unlock)
+    d.icon('fa5s.key', x + 23, 93, 17, look.accent, 1.0 - 0.6 * unlock)
+    d.text(41, 132, 'API Key', 11.5, QFont.Weight.Bold, look.muted, 1 - span(t, 500, 900), align='center')
+
+
 SCENES: dict[str, Scene] = {
+    'plan_compare': Scene(3600, 0.62, plan_compare),
+    'ai_lock': Scene(4200, 0.8, ai_lock),
     'drop': Scene(3200, 0.66, drop),
     'spoken': Scene(3800, 0.75, spoken),
     'moss_signup': Scene(4800, 0.86, moss_signup),

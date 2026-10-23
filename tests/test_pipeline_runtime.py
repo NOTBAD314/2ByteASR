@@ -111,3 +111,23 @@ def test_finalize_cues_preserves_the_established_stage_order():
         'grouped_before_display', 'normalized_and_vad_onsets', 'speaker_reading_tail',
         'short_gap_bridge', 'validated_and_content_recovered', 'final_half_open_display']
     assert all(p['half_open'] for name,p in legacy.events if name=='display_boundary_phase')
+
+
+def test_japanese_finalize_joins_flashing_lines_before_the_limit_repair():
+    """2026-10-18 (日常 19): the joined line still goes through the 16-character / 5-second repair."""
+    from twobyteasr.subtitle_rules.language_rules import language_scope
+
+    class Legacy(_FinalizeLegacy):
+        def repair_overlong_cues_from_source(self, cues, *_args):
+            self.calls.append(("repair", [cue.text for cue in cues]))
+            return cues
+
+    legacy = Legacy()
+    cues = [SimpleNamespace(cue_id=1, speaker='S08', text='いいから', start=373.540, end=373.915, timing_locked=False),
+            SimpleNamespace(cue_id=2, speaker='S08', text='次は教えた通りに', start=374.249, end=375.458,
+                            timing_locked=False)]
+    with language_scope('ja'):
+        result = finalize_cues(cues, [], [], [], 1420.0, 24000 / 1001, legacy)
+    assert [cue.text for cue in result] == ['いいから次は教えた通りに']
+    assert [call[1] for call in legacy.calls if isinstance(call, tuple)] == [
+        ['いいから', '次は教えた通りに'], ['いいから次は教えた通りに']]

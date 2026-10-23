@@ -28,42 +28,24 @@ def test_split_lines_and_overlap_duplicates_count_once():
     assert len(roles.utterances(lines)["S1"]) == 2
 
 
-def test_sliding_window_not_fixed_blocks():
-    # 11 utterances between minute 5 and minute 14: no fixed 0-10 / 10-20
-    # block holds more than 10, a sliding 10-minute window does.
-    lines = spaced("S1", 11, 5 * MIN, 50_000) + spaced("S2", 40, 0, 30_000)
+def test_the_two_speakers_with_most_subtitles_keep_own_tracks():
+    # 2026-10-22 (user): 只挑最多字幕的两轨 + 一轨其它全部角色.
+    lines = spaced("S1", 11, 5 * MIN, 50_000) + spaced("S2", 40, 0, 30_000) + spaced("S3", 30, 1000, 30_000)
     result = roles.classify(lines, 24 * MIN)
-    assert result["speakers"]["S1"]["role"] == "main"
-    lines = spaced("S1", 10, 5 * MIN, 50_000) + spaced("S2", 40, 0, 30_000)
-    assert roles.classify(lines, 24 * MIN)["speakers"]["S1"]["role"] == "secondary"
+    assert {key for key, row in result["speakers"].items() if row["role"] == "main"} == {"S2", "S3"}
+    assert result["speakers"]["S1"]["role"] == "secondary" and result["speakers"]["S1"]["note"] == "over cap"
+    assert result["cap"] == 2 and "2 位" in result["rule"]
+    assert {key for key, row in roles.classify(lines, 24 * MIN, cap=1)["speakers"].items()
+            if row["role"] == "main"} == {"S2"}
 
 
-def test_splitting_a_line_does_not_flip_a_role():
-    base = spaced("S1", 10, 0, 50_000) + spaced("S2", 40, 0, 30_000)
-    before = roles.classify(base, 24 * MIN)["speakers"]["S1"]["role"]
-    split = []
-    for line in base:
-        if line.speaker_id == "S1":
-            middle = (line.start_ms + line.end_ms) // 2
-            split += [cue(line.id + "a", line.start_ms, middle, "S1", refs=line.evidence_refs),
-                      cue(line.id + "b", middle, line.end_ms, "S1", refs=line.evidence_refs)]
-        else:
-            split.append(line)
-    assert roles.classify(split, 24 * MIN)["speakers"]["S1"]["role"] == before == "secondary"
-
-
-def test_short_media_scaling_top_speaker_and_manual():
-    # 4 minutes: the count threshold scales to 4 (more than 4 utterances).
-    lines = spaced("S1", 5, 0, 40_000) + spaced("S2", 4, 1000, 40_000) + spaced("S3", 30, 0, 8000)
-    result = roles.classify(lines, 4 * MIN)
-    assert result["speakers"]["S1"]["role"] == "main" and result["speakers"]["S2"]["role"] == "secondary"
-    # Under one minute with few speakers everyone keeps an own track.
-    tiny = spaced("S1", 1, 0, 1000) + spaced("S2", 1, 2000, 1000) + spaced("S3", 1, 4000, 1000)
-    assert {row["role"] for row in roles.classify(tiny, 30_000)["speakers"].values()} == {"main"}
-    # The busiest speaker is always main; manual choices win.
-    quiet = spaced("S1", 2, 0, 200_000) + spaced("S2", 1, 1000, 1000)
-    result = roles.classify(quiet, 24 * MIN, manual={"S2": "own"})
-    assert result["speakers"]["S1"]["role"] == "main" and result["speakers"]["S2"]["source"] == "manual"
+def test_equal_counts_go_to_more_speech_and_manual_choices_win():
+    lines = spaced("S1", 5, 0, 40_000) + [cue(f"long{i}", 300_000 + i * 20_000, 310_000 + i * 20_000, "S2") for i in range(5)]
+    lines += spaced("S3", 5, 1000, 40_000)
+    result = roles.classify(lines, 24 * MIN, cap=1)
+    assert result["speakers"]["S2"]["role"] == "main"
+    result = roles.classify(lines, 24 * MIN, manual={"S3": "own"})
+    assert result["speakers"]["S3"]["role"] == "own" and result["speakers"]["S3"]["source"] == "manual"
 
 
 def project_with_roles(grouped=True):
@@ -111,8 +93,9 @@ def test_group_row_lanes_hits_and_heights(timeline):
     assert timeline._cue_at(QPoint(x, round(band3.center().y())))[0].id == "q3"
     assert timeline._cue_at(QPoint(x, round(band4.center().y())))[0].id == "q4"
     assert timeline._speaker_at(QPoint(x, round(band4.center().y()))) == "S4"
-    # The widget minimum no longer grows with the number of speakers.
-    assert timeline.minimumHeight() <= timeline.RULER_HEIGHT + timeline._pinned_bottom_height(minimum=True) + 4 * 52 + 60
+    # The widget minimum no longer grows with the number of speakers; since
+    # 2026-10-22 it counts one subtitle row (the rows scroll).
+    assert timeline.minimumHeight() < max(180, timeline.RULER_HEIGHT + timeline._pinned_bottom_height(minimum=True) + 2 * 52)
 
 
 def test_dragging_on_the_group_row_never_hands_a_line_to_another_member(timeline):
@@ -169,19 +152,16 @@ def test_roles_survive_save_and_never_touch_exports(tmp_path):
     assert [c.speaker_id for c in reopened.cues] == [c.speaker_id for c in grouped.cues]
 
 
-def test_main_tracks_are_capped_by_activity_and_cap_is_undoable(application):
-    # Eight busy speakers: at most five automatic main tracks, the busiest ones.
+def test_main_tracks_follow_the_default_and_a_picked_cap_is_undoable(application):
+    # Eight busy speakers: two automatic main tracks by default, the ones with most subtitles.
     lines = []
     for index in range(8):
         lines += spaced(f"S{index + 1}", 30 - index, index * 1000, 25_000)
     result = roles.classify(lines, 24 * MIN)
     mains = sorted(key for key, row in result["speakers"].items() if row["role"] == "main")
-    assert mains == ["S1", "S2", "S3", "S4", "S5"]
-    assert result["speakers"]["S6"]["note"] == "over cap"
+    assert mains == ["S1", "S2"]
+    assert result["speakers"]["S3"]["note"] == "over cap"
     assert len([1 for row in roles.classify(lines, 24 * MIN, cap=3)["speakers"].values() if row["role"] == "main"]) == 3
-    # 30 s of speech in 10 minutes is no longer enough on its own (v2: 90 s).
-    talker = [cue("long", 0, 40_000, "S9")] + spaced("S1", 40, 0, 30_000)
-    assert roles.classify(talker, 24 * MIN)["speakers"]["S9"]["role"] == "secondary"
     project = SubtitleProject(media=StudioMedia("", duration_ms=24 * MIN),
                               speakers=[StudioSpeaker(f"S{i + 1}") for i in range(8)], cues=lines)
     project.validate()
@@ -191,10 +171,34 @@ def test_main_tracks_are_capped_by_activity_and_cap_is_undoable(application):
     timeline.set_project(project)
     page = SimpleNamespace(project=project, undo_stack=QUndoStack(), timeline=timeline, save_state=None)
     studio_roles.organize(page)
-    assert project.studio_state["speaker_roles"]["cap"] == 5 and len(timeline._group_members) == 3
+    state = project.studio_state["speaker_roles"]
+    assert state["cap"] == 2 and not state["cap_chosen"] and len(timeline._group_members) == 6
     studio_roles.organize(page, cap=3)
-    assert project.studio_state["speaker_roles"]["cap"] == 3 and len(timeline._group_members) == 5
+    state = project.studio_state["speaker_roles"]
+    assert state["cap"] == 3 and state["cap_chosen"] and len(timeline._group_members) == 5
+    # A picked cap is the project's own: a different default leaves it alone.
+    assert not roles.refresh_automatic_roles(project, 5)
     page.undo_stack.undo()
     timeline.reindex_project()
-    assert project.studio_state["speaker_roles"]["cap"] == 5
+    assert project.studio_state["speaker_roles"]["cap"] == 2
     timeline.close()
+
+
+def test_older_automatic_groups_follow_the_new_rule_when_opened():
+    project = project_with_roles()
+    # The 2026-10-13 rule kept up to five busy speakers.
+    old = roles.decide(project)
+    old.update(policy="speaker-roles-v2", cap=5, cap_chosen=False)
+    old["auto"] = {key: "main" for key in old["auto"]}
+    old.pop("cap_chosen")
+    old["manual"] = {"S6": "own"}
+    project.studio_state["speaker_roles"] = old
+    assert roles.refresh_automatic_roles(project, None)
+    state = project.studio_state["speaker_roles"]
+    assert state["policy"] == roles.POLICY and state["cap"] == 2 and state["manual"] == {"S6": "own"}
+    assert set(roles.group_members(project)) == {"S3", "S4", "S5"}
+    assert not roles.refresh_automatic_roles(project, 2)          # nothing to do
+    assert roles.refresh_automatic_roles(project, 3)              # the default changed
+    assert project.studio_state["speaker_roles"]["cap"] == 3
+    ungrouped = project_with_roles(grouped=False)
+    assert not roles.refresh_automatic_roles(ungrouped, 2) and "speaker_roles" not in ungrouped.studio_state

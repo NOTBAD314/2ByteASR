@@ -13,6 +13,26 @@ import time
 import traceback
 
 
+def download_window_row(dialog, now, begun):
+    """What the redesigned download window shows right now, or None for an older dialog."""
+    activity=getattr(dialog,'_activity',None)
+    assessment=getattr(dialog,'_assessment',None)
+    if activity is None or assessment is None:return None
+    dialog._refresh_view(now)  # the labels follow the newest output, not the last 1-second tick
+    assessment=dialog._assessment
+    index,count=activity.step_position()
+    return dict(t=round(now-begun,2),job=getattr(getattr(dialog,'_journal',None),'job_id',''),
+                step=f'{index}/{count}',level=assessment.level,pill=str(assessment.pill),
+                headline=str(assessment.headline),where=str(assessment.where),
+                task_kind=activity.task.kind,task=dialog.task_title.text(),figures=dialog.task_figures.text(),
+                source=dialog.task_source.text(),activity=dialog.activity_status.text(),
+                output=dialog.task_output.text() if hasattr(dialog,'task_output') and not dialog.task_output.isHidden() else '',
+                parts=[label.text() for label in dialog._activity_part_labels if not label.isHidden()],
+                steps=[[key,state,note] for key,_label,state,note,_fraction in activity.step_rows(now)],
+                notice=[dialog.notice_title.text(),dialog.notice_where.text(),dialog.notice_body.text()]
+                       if not dialog.notice.isHidden() else [])
+
+
 def start(window, output):
     from PySide6.QtCore import QProcess, QTimer, Qt
     from PySide6.QtTest import QTest
@@ -39,6 +59,10 @@ def start(window, output):
     mode=config.get('mode','fresh')
     if mode=='restart':state['mode']='restart'
     if mode in {'resume','repair','diagnostic'}:state['mode']='open_existing'
+    # Workshop models installed after the first combination, in order. English
+    # smoke needs the product's English alignment model; others (e.g. MFA) are
+    # extra download-window coverage. The first-use local preset stays unchanged.
+    state['pending_addons']=[] if mode=='repair' else [str(key) for key in config.get('addons',['qwen_aligner'])]
 
     def event(name,**values):
         result['events'].append(dict(t=round(time.monotonic()-begun,2),event=name,**values))
@@ -80,6 +104,27 @@ def start(window, output):
                                                    args=proc.cmdline(),created=proc.create_time())
             except (psutil.NoSuchProcess,psutil.AccessDenied):pass
 
+    def record_window(dialog):
+        # 2026-10-21 download window: what the user sees (step, health, task,
+        # figures, notice), one row per change and a screenshot the first time
+        # each (job, step, health, task kind) appears. Warnings are kept apart.
+        row=download_window_row(dialog,time.monotonic(),begun)
+        if row is None:return
+        view=(row['job'],row['step'],row['level'],row['task_kind'])
+        if view!=state.get('last_view'):
+            state['last_view']=view
+            result.setdefault('window',[]).append(row)
+            if view not in state.setdefault('shot_views',set()):
+                state['shot_views'].add(view)
+                shot(dialog,'window-{:03d}-step{}-{}-{}'.format(len(result['window']),row['step'][0],
+                                                               row['level'],row['task_kind'] or 'none'))
+        if row['headline'] and row['level'] not in {'done','failed','paused','idle'}:
+            alerts=result.setdefault('window_alerts',[])
+            key=[row['level'],row['where']]
+            if not alerts or alerts[-1]['key']!=key or row['t']-alerts[-1]['t']>60:
+                alerts.append(dict(row,key=key))
+                shot(dialog,f'alert-{len(alerts):03d}-{row["level"]}')
+
     def observe_dialog(dialog):
         state['dialog']=dialog
         job=getattr(dialog,'_journal',None)
@@ -97,6 +142,7 @@ def start(window, output):
             result['phases'].append(dict(t=round(time.monotonic()-begun,2),phase=phase[0],text=phase[1],
                 indeterminate=dialog.progress.maximum()==0,bytes=getattr(dialog,'_last_bytes',0)))
             state['last_phase']=phase
+        record_window(dialog)
         if time.monotonic()-state['last_shot']>30:
             shot(dialog,f'deploy-{len(result["phases"]):04d}')
             state['last_shot']=time.monotonic()
@@ -121,20 +167,22 @@ def start(window, output):
     def prepared():
         dialog=state['dialog']
         require(dialog._finished_ok,'deployment did not finish successfully: '+dialog.progress_status.text())
-        (evidence/('aligner' if state['addon'] else 'first-combination')).mkdir(exist_ok=True)
-        dialog.export_deployment_diagnostic(evidence/('aligner-diagnostic.zip' if state['addon'] else 'first-diagnostic.zip'))
+        name={False:'first',None:'first','qwen_aligner':'aligner'}.get(state['addon'],state['addon'])
+        (evidence/('first-combination' if name=='first' else name)).mkdir(exist_ok=True)
+        dialog.export_deployment_diagnostic(evidence/(name+'-diagnostic.zip'))
+        shot(dialog,name+'-finished')
         dialog.hide()
-        if not state['addon'] and mode not in {'repair'}:
-            # English smoke needs the product's English alignment model.
-            # The first-use local preset remains unchanged.
+        if state['pending_addons']:
+            key=state['pending_addons'].pop(0)
             page=window.workshop_page
-            page._view_model('qwen_aligner')
+            page._view_model(key)
             action=page.detail_repair if page.detail_repair.isVisible() and page.detail_repair.isEnabled() else page.detail_action
-            require(action.isEnabled(),'aligner action unavailable')
+            require(action.isEnabled(),key+' action unavailable')
             QTest.mouseClick(action,Qt.MouseButton.LeftButton)
-            state['addon']=True
+            state['addon']=key
             state['mode']='aligner'
-            event('click_additional_english_alignment_model',text=action.text())
+            event('click_additional_english_alignment_model' if key=='qwen_aligner' else 'click_additional_model',
+                  key=key,text=action.text())
             return
         receipts={}
         for key in ('moss','firered_vad','firered_aed','qwen_asr','qwen_aligner'):
@@ -215,7 +263,7 @@ def start(window, output):
             elif state['mode'] in {'deployment','aligner'}:
                 page=getattr(window,'workshop_page',None)
                 dialogs=list(getattr(page,'_download_dialogs',[]))
-                wanted=('qwen_aligner',) if state['addon'] else None
+                wanted=(state['addon'],) if state['addon'] else None
                 dialog=next((d for d in reversed(dialogs) if wanted is None or d.download_keys==wanted),None)
                 if dialog is None:return
                 if state['mode']=='aligner':

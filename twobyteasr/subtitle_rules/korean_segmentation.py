@@ -13,18 +13,23 @@ into the AI prompt below, so both follow the same rules):
    가고 | 싶어), before a dependent noun (할 | 수, 먹을 | 것, 갈 | 때, 본 | 적),
    after a determiner or number word (이 | 사람, 그런 | 거, 몇 | 개, 세 | 번),
    after 안 / 못 (안 | 해), or between a number and its counter (3 | 개).
-3. Lines up to 16 characters, preferably about 12 (Netflix Korean guide: a
-   space, Latin letter, digit or mark counts half); at most 6 seconds; avoid a
-   one-word piece unless it is a sentence by itself.
+3. Lines up to 16 characters (Netflix Korean guide: a space, Latin letter,
+   digit or mark counts half) and a subtitle up to two lines, so an utterance
+   of up to 32 characters and 7 seconds stays whole (2026-10-21; one line of 16
+   before); a longer one is split into pieces of about 24; avoid a one-word
+   piece unless it is a sentence by itself.
 
 Timing comes from the aligner's units (Qwen3-ForcedAligner in Korean, which
 may split a word into stem and particle) matched character by character;
 otherwise it is shared out by characters inside the utterance and the final
-per-caption alignment measures it.
+per-caption alignment measures it. A unit timed outside its own utterance is
+not used (see english_segmentation).
 
 The optional AI pass sends numbered words and gets back only the indexes after
-which to break, so it can never change a word; anything invalid falls back to
-these local rules.
+which to break, so it can never change a word; anything invalid, a forbidden
+break, or more pieces than the local rules need falls back to these local
+rules. An utterance whose pieces fail the source check stays one subtitle with
+a review note.
 """
 from __future__ import annotations
 
@@ -32,7 +37,8 @@ import difflib
 import json
 import re
 
-from .english_segmentation import _fill_times
+from .english_segmentation import (FORBIDDEN_BREAK, SOURCE_TIME_TOLERANCE, _fill_times, _note_sentence_kept,
+                                   _source_problem)
 from .korean_text import RULES, display_length, join, normalize_spaces, word_core, words as split_words
 from ..recognition.transcript_data import SubtitleCue
 
@@ -112,18 +118,19 @@ def split_tokens(tokens: list[str], gaps: list[float] | None = None, *, duration
     count = len(tokens)
     if count == 0:
         return []
-    if display_length(" ".join(tokens)) <= rules.max_chars and (durations is None or sum(durations) <= rules.max_seconds):
+    if display_length(" ".join(tokens)) <= rules.cue_max_chars and (durations is None or sum(durations) <= rules.max_seconds):
         return [(0, count)]
     scores = break_scores(tokens, gaps)
     lengths = [display_length(token) for token in tokens]
 
     def piece_cost(start, end):
         length = sum(lengths[start:end]) + 0.5 * (end - start - 1)
-        if length > rules.max_chars and end - start > 1:
+        if length > rules.cue_max_chars and end - start > 1:
             return None
         seconds = sum(durations[start:end]) if durations else 0.0
-        # Every extra line costs a little (fewer, fuller lines read better); short scraps cost more.
-        cost = 18 + abs(length - rules.preferred_chars) * 1.5
+        # Every extra subtitle costs about what a connective-ending break earns (2026-10-21: whole
+        # sentences, not scraps); short scraps cost more.
+        cost = 40 + abs(length - rules.cue_preferred_chars) * 1.5
         if length < rules.min_chars:
             cost += 45
         if end - start == 1 and not _final(tokens[start]):
@@ -194,9 +201,18 @@ def _word_times(segment, tokens: list[str], aligned: list[dict]) -> list[tuple[f
             span = spans.setdefault(token, [cursor, cursor + part])
             span[0], span[1] = min(span[0], cursor), max(span[1], cursor + part)
             cursor += part
-    # A token counts as measured only when every character of it was matched.
-    return [(spans[index][0], spans[index][1]) if index in spans and matched[index] == len(_core(token)) else None
-            for index, token in enumerate(tokens)]
+    # A token counts as measured only when every character of it was matched, inside its own utterance.
+    first, last = float(segment.start), float(segment.end)
+    times = []
+    for index, token in enumerate(tokens):
+        span = spans.get(index)
+        if (span is None or matched[index] != len(_core(token))
+                or span[0] < first - SOURCE_TIME_TOLERANCE or span[1] > last + SOURCE_TIME_TOLERANCE):
+            times.append(None)
+            continue
+        start = min(max(span[0], first), last)
+        times.append((start, max(start, min(span[1], last))))
+    return times
 
 
 def group_korean(segments, firered_tokens=(), *, breaks_for=None) -> list[SubtitleCue]:
@@ -214,24 +230,36 @@ def group_korean(segments, firered_tokens=(), *, breaks_for=None) -> list[Subtit
         times = _fill_times(segment, tokens, _word_times(segment, tokens, aligned))
         gaps = [max(0.0, times[i + 1][0] - times[i][1]) for i in range(len(tokens) - 1)]
         durations = [max(0.0, end - start) for start, end in times]
-        pieces = None
-        if breaks_for is not None and display_length(segment.text) > RULES.max_chars:
+        pieces = split_tokens(tokens, gaps, durations=durations)
+        if breaks_for is not None and display_length(segment.text) > RULES.cue_max_chars:
             try:
-                pieces = pieces_from_breaks(tokens, breaks_for(segment, tokens))
+                answer = pieces_from_breaks(tokens, breaks_for(segment, tokens), gaps=gaps)
             except Exception:
-                pieces = None
-        pieces = pieces or split_tokens(tokens, gaps, durations=durations)
+                answer = None
+            if answer and len(answer) <= len(pieces):     # the AI may not chop finer than the rules
+                pieces = answer
+        locked, speaker = bool(getattr(segment, "timing_locked", False)), segment.speaker or "S00"
+        own = []
         for first, last in pieces:
             cue_start = times[first][0] if first else float(segment.start)
             cue_end = times[last - 1][1] if last < len(tokens) else float(segment.end)
-            cues.append(SubtitleCue(len(cues) + 1, round(cue_start, 3), round(max(cue_end, cue_start + 0.2), 3),
-                                    join(tokens[first:last]), bool(getattr(segment, "timing_locked", False)),
-                                    segment.speaker or "S00"))
+            own.append(SubtitleCue(0, round(cue_start, 3), round(max(cue_end, cue_start + 0.2), 3),
+                                   join(tokens[first:last]), locked, speaker))
+        problem = _source_problem(segment, own)
+        if problem:
+            own = [SubtitleCue(0, round(float(segment.start), 3),
+                               round(max(float(segment.end), float(segment.start) + 0.2), 3),
+                               segment.text, locked, speaker)]
+            _note_sentence_kept(segment, problem)
+        for cue in own:
+            cue.cue_id = len(cues) + 1
+            cues.append(cue)
     return cues
 
 
-def pieces_from_breaks(tokens: list[str], breaks) -> list[tuple[int, int]] | None:
-    """Ranges from 'break after word i' indexes; None when they are not valid or a piece is too long."""
+def pieces_from_breaks(tokens: list[str], breaks, gaps=None) -> list[tuple[int, int]] | None:
+    """Ranges from 'break after word i' indexes; None when they are not valid, a piece is too long
+    or a break is one the rules forbid (before an auxiliary verb, after a determiner…)."""
     try:
         cuts = sorted({int(value) for value in breaks})
     except (TypeError, ValueError):
@@ -240,18 +268,23 @@ def pieces_from_breaks(tokens: list[str], breaks) -> list[tuple[int, int]] | Non
         return None
     edges = [0] + [cut + 1 for cut in cuts] + [len(tokens)]
     pieces = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
-    if any(display_length(" ".join(tokens[a:b])) > RULES.max_chars and b - a > 1 for a, b in pieces):
+    if any(display_length(" ".join(tokens[a:b])) > RULES.cue_max_chars and b - a > 1 for a, b in pieces):
+        return None
+    scores = break_scores(tokens, gaps)
+    if any(scores[cut] <= FORBIDDEN_BREAK for cut in cuts):
         return None
     return pieces
 
 
 # ---------------------------------------------------------------- the AI pass
-KOREAN_GROUPING_PROMPT_VERSION = "korean-word-breaks-v2"   # v2: shared aligner units are split between words
+# v2: shared aligner units are split between words; v3: two-line subtitles, checked AI breaks (2026-10-21).
+KOREAN_GROUPING_PROMPT_VERSION = "korean-word-breaks-v3"
 KOREAN_GROUPING_SYSTEM_PROMPT = f"""You split Korean game-stream subtitles into readable lines.
 You receive utterances as numbered words (어절, separated by spaces). Return ONLY JSON: {{"breaks": {{"<utterance id>": [word numbers]}}}}
 where each number n means "a new subtitle starts after word n". Never change, add, remove or join words.
 Rules:
-1. Each subtitle at most {RULES.max_chars:g} characters (a Hangul syllable counts 1; a space, Latin letter, digit or punctuation mark counts 0.5), ideally about {RULES.preferred_chars:g}; at most {RULES.max_seconds:g} seconds.
+1. A subtitle shows up to two lines: at most {RULES.cue_max_chars:g} characters (a Hangul syllable counts 1; a space, Latin letter, digit or punctuation mark counts 0.5), ideally about {RULES.cue_preferred_chars:g}; at most {RULES.max_seconds:g} seconds.
+   Keep a whole sentence or clause in one subtitle whenever it fits; use as few subtitles as these limits allow.
 2. Prefer breaking after a sentence end (. ? ! or a final ending such as -요, -니다, -죠, -다), then after a comma, then after a connective ending (-고, -지만, -는데, -서, -니까, -면, -면서).
 3. Never break before an auxiliary verb (먹어 봐, 하고 있어, 하지 않아, 가고 싶어), before a dependent noun (할 수, 먹을 것, 갈 때, 본 적), after a determiner or number word (이 사람, 그런 거, 몇 개, 세 번), after 안/못, or between a number and its counter.
 4. Keep a short utterance whole; avoid one-word pieces unless the word is a sentence by itself.
@@ -278,7 +311,7 @@ def ai_breaks(segments, provider_snapshot, *, complete=None) -> dict:
                                      _timeout_policy=provider_snapshot.timeout_policy, enable_thinking=False,
                                      response_format={"type": "json_object"})
     long = [(str(segment.segment_id), split_words(segment.text)) for segment in segments
-            if display_length(segment.text) > RULES.max_chars]
+            if display_length(segment.text) > RULES.cue_max_chars]
     found: dict = {}
     for offset in range(0, len(long), 40):
         batch = long[offset:offset + 40]

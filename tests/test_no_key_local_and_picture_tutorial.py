@@ -166,27 +166,7 @@ def _note(step):
     return re.sub(r'\*\*', '', str(step.note() if callable(step.note) else step.note))
 
 
-def test_basic_tutorial_is_a_short_road_to_an_exported_file_with_one_line_per_step():
-    from twobyteasr.app.home_tour import tutorial_steps
-    window = _tour_window()
-    basic = tutorial_steps(window, 'basic')
-    assert len(basic) <= 14
-    assert all(len(_plain(step)) <= 30 for step in basic), [(_plain(s), len(_plain(s))) for s in basic]
-    texts = [_plain(step) + _note(step) for step in basic]
-    # 2026-10-21 (user): never "subtitles work without a key"; ask for one, DeepSeek recommended.
-    assert not any('不填 API Key' in text or '不填也能' in text for text in texts)
-    assert not any(name in _plain(step) for step in basic for name in ('FireRed', 'Qwen3'))
-    ai = next(step for step in basic if step.anim == 'ai_polish')
-    assert [action.label for action in ai.actions] == ['填 DeepSeek 的 API Key', 'API Key 是什么？', '稍后再填']
-    assert ai.actions[0].modal and not ai.show_next and 'DeepSeek' in _note(ai) and '翻译' in _note(ai)
-    assert any(step.anim == 'timeline_mg' and '更准' in _plain(step) for step in basic)
-    last = basic[-1]
-    go_on = [action for action in last.actions if action.advance]
-    assert last.target is None and go_on and go_on[0].big and '进阶' in go_on[0].label
-    go_on[0].run()
-    assert window.__dict__.get('_tutorial_continue') == 'advanced'
-    advanced = tutorial_steps(_tour_window(), 'advanced')
-    assert len(advanced) >= 15 and advanced[0].target is None
+# 2026-10-22: one tutorial instead of two parts: tests/test_tutorial_one_road.py.
 
 
 def test_every_tutorial_and_explainer_string_has_english_and_japanese():
@@ -195,15 +175,14 @@ def test_every_tutorial_and_explainer_string_has_english_and_japanese():
     catalogs = {language: json.loads((__import__('pathlib').Path(__file__).resolve().parents[1] / 'twobyteasr' / 'locales'
                                       / f'{language}.json').read_text(encoding='utf-8')) for language in ('en', 'ja')}
     texts = set(explainer_strings())
-    for part in ('basic', 'advanced'):
-        for step in tutorial_steps(_tour_window(), part):
-            texts.add(str(step.text() if callable(step.text) else step.text))
-            note = step.note() if callable(step.note) else step.note
-            if note:
-                texts.add(str(note))
-            texts.update(action.label for action in step.actions if action.label)
-            texts.add(step.next_label)
-    texts.update({'新手教学 · 进阶（改错字与工作台）', '第一次用 API Key？看图解', '需要 API Key（先充值）· 会上传音频',
+    for step in tutorial_steps(_tour_window()):
+        texts.add(str(step.text() if callable(step.text) else step.text))
+        note = step.note() if callable(step.note) else step.note
+        if note:
+            texts.add(str(note))
+        texts.update(action.label for action in step.actions if action.label)
+        texts.add(step.next_label)
+    texts.update({'第一次用 API Key？看图解', '需要 API Key（先充值）· 会上传音频',
                   '充值 10 元就够先用', '充值 10 元（约 5 小时音频）'})
     texts -= {'中文', '日本語', 'English'}   # language names stay as they are
     missing = {language: sorted(text for text in texts if text not in catalog) for language, catalog in catalogs.items()}

@@ -3079,7 +3079,11 @@ class ModelDownloadDialog(QDialog):
     completed = Signal(bool, str)
 
     def refresh_theme_palette(self) -> None:
-        self.setStyleSheet(build_workshop_qss())
+        from .download_widgets import download_dialog_qss
+        self.setStyleSheet(build_workshop_qss() + download_dialog_qss())
+        for widget in (getattr(self, 'step_track', None), getattr(self, 'activity_graph', None)):
+            if widget is not None:
+                widget.update()  # painted from the theme tokens
 
     def __init__(
         self,
@@ -3116,11 +3120,21 @@ class ModelDownloadDialog(QDialog):
         # Do not auto-delete while a download may be running in background.
         # We allow closing the window without stopping the task.
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
-        self.resize(760, 520)
+        # 2026-10-21 redesign: step track, current-task card with measured figures,
+        # activity graph and a notice that says where it is stuck and what to do.
+        self.resize(800, 680)
         self.setMinimumSize(420, 280)
         from ..app.window_constraints import install_window_bounds
         install_window_bounds(self, within_parent=True)
-        self.setStyleSheet(build_workshop_qss())
+        from .download_activity import DownloadActivity, ProcessTreeProbe
+        from .download_widgets import ActivityGraph, StepTrack, WrapRow, download_dialog_qss
+        self.setStyleSheet(build_workshop_qss() + download_dialog_qss())
+        self._activity = DownloadActivity({item.download_key: item.name for item in MODELS if item.download_key})
+        self._probe = ProcessTreeProbe()
+        self._failure_text = ''
+        self._resume_with_source = ''
+        self._notice_actions: tuple = ()
+        self._notice_level = ''
 
         shell = QVBoxLayout(self)
         shell.setContentsMargins(0, 0, 0, 0)
@@ -3128,40 +3142,220 @@ class ModelDownloadDialog(QDialog):
         card.setObjectName("modelDownloadCard")
         shell.addWidget(card)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(22, 0, 22, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(22, 0, 22, 16)
+        layout.setSpacing(10)
         self.title_bar = _DownloadTitleBar(self, self.windowTitle())
         layout.addWidget(self.title_bar)
+        header = QHBoxLayout()
+        header.setSpacing(12)
         title = QLabel(
             f"Preparing {self.display_name}"
             if language == "en"
             else ui_literal("正在准备 {name}", language).format(name=self.display_name)
         )
         title.setObjectName("workshopDetailTitle")
-        layout.addWidget(title)
+        title.setWordWrap(True)
+        self.headline = title
+        header.addWidget(title, 1)
+        self.health_pill = QLabel(tr('未开始'))
+        self.health_pill.setObjectName('downloadHealthPill')
+        self.health_pill.setProperty('tone', 'muted')
+        header.addWidget(self.health_pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(header)
         note = QLabel("窗口会一直保留；可断点续传，不需要重新安装 2ByteASR。")
         if sys.platform == 'darwin' and set(self.download_keys) <= MLX_DOWNLOAD_KEYS:
             note.setText('Apple Silicon 本地模型（MLX）：首次准备会联网下载私有运行库（不含 PyTorch）与模型，'
                          '完成后用自带的英文样本实际跑一次推理。社区 MLX 实现，兔白尚未在真机完成验收。')
-            note.setWordWrap(True)
         elif sys.platform == 'darwin' and set(self.download_keys) <= MAC_GPU_INSTALL_KEYS:
             note.setText('Apple 芯片 GPU（MPS）：首次准备会联网下载 PyTorch 运行库与模型，完成后在这台 Mac 上用自带样本实际跑一次，'
                          '通过才启用。MOSS 与 FireRed 用的是共享内存，建议 16 GB 以上；内存较小时请先关闭其他程序。')
-            note.setWordWrap(True)
         elif sys.platform == 'darwin':
             from ..system.platform_macos import macos_copy
             note.setText(macos_copy(
                 '当前使用 SenseVoice CPU：模型 MPS 适配尚未验证。首次准备自动联网；取消后已校验资源保持。',
                 'SenseVoice uses CPU: model support for MPS is not verified. Initial preparation connects automatically; verified resources remain after cancellation.',
                 'SenseVoice は CPU を使用します。モデルの MPS 対応は未検証です。初回は自動で接続し、中止後も検証済みリソースは保持します。'))
-            note.setWordWrap(True)
-        note.setObjectName("workshopMuted")
+        note.setWordWrap(True)
+        note.setObjectName("downloadSubtitle")
+        self.note_label = note
+        self._note_text = note.text()
         layout.addWidget(note)
-        source_row = QHBoxLayout()
-        source_row.setSpacing(7)
+
+        body = QWidget()
+        body.setObjectName('downloadBody')
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 4, 0, 4)
+        body_layout.setSpacing(12)
+        self.step_track = StepTrack()
+        self.step_track.set_rows(self._activity.step_rows(0.0), 'accent')
+        body_layout.addWidget(self.step_track)
+
+        # Where it is stuck and what to do comes first: at the user's 175% DPI with
+        # 120% interface zoom the body scrolls, and a notice below the task card
+        # was out of sight (2026-10-22).
+        self.notice = QFrame()
+        self.notice.setObjectName('downloadNotice')
+        self.notice.setProperty('tone', 'warn')
+        notice_layout = QVBoxLayout(self.notice)
+        notice_layout.setContentsMargins(16, 12, 16, 12)
+        notice_layout.setSpacing(6)
+        self.notice_title = QLabel()
+        self.notice_title.setObjectName('downloadNoticeTitle')
+        self.notice_title.setWordWrap(True)
+        notice_layout.addWidget(self.notice_title)
+        self.notice_where = QLabel()
+        self.notice_where.setObjectName('downloadNoticeWhere')
+        self.notice_where.setWordWrap(True)
+        notice_layout.addWidget(self.notice_where)
+        self.notice_body = QLabel()
+        self.notice_body.setObjectName('downloadNoticeBody')
+        self.notice_body.setWordWrap(True)
+        self.notice_body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        notice_layout.addWidget(self.notice_body)
+        self.notice_buttons = WrapRow(spacing=8)
+        notice_layout.addLayout(self.notice_buttons)
+        self.notice.hide()
+        body_layout.addWidget(self.notice)
+
+        self.task_card = QFrame()
+        self.task_card.setObjectName('downloadTaskCard')
+        task_layout = QVBoxLayout(self.task_card)
+        task_layout.setContentsMargins(16, 14, 16, 14)
+        task_layout.setSpacing(8)
+        self.task_title = QLabel()
+        self.task_title.setObjectName('downloadTaskTitle')
+        self.task_title.setWordWrap(True)
+        task_layout.addWidget(self.task_title)
+        self.task_bar = QProgressBar()
+        self.task_bar.setObjectName('downloadTaskBar')
+        self.task_bar.setTextVisible(False)
+        self.task_bar.setRange(0, 1000)
+        self.task_bar.hide()
+        task_layout.addWidget(self.task_bar)
+        self.task_figures = QLabel()
+        self.task_figures.setObjectName('downloadTaskFigures')
+        self.task_figures.setWordWrap(True)
+        task_layout.addWidget(self.task_figures)
+        self.task_source = QLabel()
+        self.task_source.setObjectName('downloadTaskSource')
+        self.task_source.setWordWrap(True)
+        task_layout.addWidget(self.task_source)
+        # The newest line the installer printed (2026-10-21): what it is doing
+        # right now, for every step, without opening the raw log.
+        self.task_output = ElideLabel('')
+        self.task_output.setObjectName('downloadTaskOutput')
+        self.task_output.hide()
+        task_layout.addWidget(self.task_output)
+        # The installer's own wording (before start, results, pause); the card
+        # shows it whenever no task is running.
+        self.progress_status = QLabel("选择下载源后，点击“开始下载”。")
+        self.progress_status.setObjectName("downloadTaskMessage")
+        self.progress_status.setWordWrap(True)
+        self.progress_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        task_layout.addWidget(self.progress_status)
+        live = QHBoxLayout()
+        live.setSpacing(12)
+        self.activity_graph = ActivityGraph()
+        self.activity_graph.setToolTip(tr('最近 90 秒每秒收到或写入的数据量；一条平线表示没有数据在动。'))
+        live.addWidget(self.activity_graph, 2)
+        live_text = QWidget()
+        live_text_layout = QVBoxLayout(live_text)
+        live_text_layout.setContentsMargins(0, 0, 0, 0)
+        live_text_layout.setSpacing(0)
+        # One label per figure: a narrow window wraps between figures, never inside one.
+        self.activity_parts = WrapRow(spacing=6)
+        self._activity_part_labels = []
+        for _index in range(4):
+            label = QLabel()
+            label.setObjectName('downloadActivityText')
+            label.hide()
+            self.activity_parts.addWidget(label)
+            self._activity_part_labels.append(label)
+        live_text_layout.addLayout(self.activity_parts)
+        self.activity_status = QLabel('尚未启动')
+        self.activity_status.setObjectName('downloadActivityText')
+        self.activity_status.setWordWrap(True)
+        live_text_layout.addWidget(self.activity_status)
+        live.addWidget(live_text, 3)
+        task_layout.addLayout(live)
+        # Kept for the workshop page's background mirror and older scripts; the
+        # card's own bar above only shows measured progress (no busy animation).
+        self.progress = QProgressBar()
+        self.progress.setObjectName("workshopCapability")
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.hide()
+        task_layout.addWidget(self.progress)
+        body_layout.addWidget(self.task_card)
+
+
+        events_header = QHBoxLayout()
+        events_label = QLabel('最近动态')
+        events_label.setObjectName('downloadSectionLabel')
+        events_header.addWidget(events_label)
+        events_header.addStretch(1)
+        self.log = QPlainTextEdit()
+        self.log.setObjectName("workshopDownloadLog")
+        self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(5000)
+        self.log.setMinimumHeight(180)
+        self.log_toggle = QPushButton('查看原始日志')
+        self.log_toggle.setObjectName('workshopSecondary')
+        self.log_toggle.setCheckable(True)
+        self.log_toggle.toggled.connect(self.log.setVisible)
+        events_header.addWidget(self.log_toggle)
+        body_layout.addLayout(events_header)
+        self.events_box = QWidget()
+        self.events_box.setObjectName('downloadEvents')
+        events_grid = QGridLayout(self.events_box)
+        events_grid.setContentsMargins(2, 0, 0, 0)
+        events_grid.setHorizontalSpacing(8)
+        events_grid.setVerticalSpacing(4)
+        events_grid.setColumnStretch(2, 1)
+        self._event_rows = []
+        for row in range(5):
+            stamp, dot, text = QLabel(), QLabel('●'), QLabel()
+            stamp.setObjectName('downloadEventTime')
+            dot.setObjectName('downloadEventDot')
+            text.setObjectName('downloadEventText')
+            text.setWordWrap(True)
+            events_grid.addWidget(stamp, row, 0, Qt.AlignmentFlag.AlignTop)
+            events_grid.addWidget(dot, row, 1, Qt.AlignmentFlag.AlignTop)
+            events_grid.addWidget(text, row, 2)
+            for widget in (stamp, dot, text):
+                widget.hide()
+            self._event_rows.append((stamp, dot, text))
+        self.events_empty = QLabel('开始后，这里会列出每一步的结果、换来源和重试。')
+        self.events_empty.setObjectName('downloadEventText')
+        events_grid.addWidget(self.events_empty, 5, 0, 1, 3)
+        body_layout.addWidget(self.events_box)
+        body_layout.addWidget(self.log, 1)
+        self.log.hide()
+        body_layout.addStretch(0)
+        scroll = QScrollArea()
+        scroll.setObjectName('downloadBodyScroll')
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(body)
+        scroll.viewport().setAutoFillBackground(False)
+        body.setAutoFillBackground(False)
+        self.body_scroll = scroll
+        layout.addWidget(scroll, 1)
+
+        rule = QFrame()
+        rule.setObjectName('downloadFooterRule')
+        layout.addWidget(rule)
+        # Wraps onto two lines in a narrow window instead of overlapping.
+        source_row = WrapRow(spacing=7)
+        source_box = QWidget()
+        source_box_layout = QHBoxLayout(source_box)
+        source_box_layout.setContentsMargins(0, 0, 0, 0)
+        source_box_layout.setSpacing(7)
         source_label = QLabel("下载源")
         source_label.setObjectName("workshopTiny")
-        source_row.addWidget(source_label)
+        source_box_layout.addWidget(source_label)
+        source_row.addWidget(source_box)
         self.source_combo = QComboBox()
         self.source_combo.setObjectName("workshopSourceCombo")
         for choice in user_facing_source_choices():
@@ -3171,7 +3365,7 @@ class ModelDownloadDialog(QDialog):
         bind_text(self.source_combo, '选 ModelScope 或 HF 镜像时，运行环境（PyTorch 等依赖）也先用国内镜像；'
                   '选自动时，Python 和依赖先尝试官方来源，太慢或失败时改用镜像；安装工具优先使用国内镜像。所有文件都按锁定的 SHA-256 校验。',
                   property='toolTip')
-        source_row.addWidget(self.source_combo)
+        source_box_layout.addWidget(self.source_combo)
         self.check_download_button = QPushButton('检查模型下载')
         self.check_download_button.setObjectName('workshopSecondary')
         self.check_download_button.clicked.connect(self._check_download)
@@ -3184,31 +3378,12 @@ class ModelDownloadDialog(QDialog):
         self._diagnostic_report = None
         self._diagnostic_cancel = threading.Event()
         self.diagnostic_finished.connect(self._diagnostic_complete)
-        source_row.addStretch(1)
+        self.export_diagnostic_button = QPushButton('导出部署诊断')
+        self.export_diagnostic_button.setObjectName('workshopSecondary')
+        self.export_diagnostic_button.setProperty('wrapRowEnd', True)
+        self.export_diagnostic_button.clicked.connect(self._export_deployment_diagnostic)
+        source_row.addWidget(self.export_diagnostic_button)
         layout.addLayout(source_row)
-        self.progress = QProgressBar()
-        self.progress.setObjectName("workshopCapability")
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        layout.addWidget(self.progress)
-        self.progress_status = QLabel("选择下载源后，点击“开始下载”。")
-        self.progress_status.setObjectName("workshopTiny")
-        self.progress_status.setWordWrap(True)
-        layout.addWidget(self.progress_status)
-        self.log = QPlainTextEdit()
-        self.log.setObjectName("workshopDownloadLog")
-        self.log.setReadOnly(True)
-        self.log.setMaximumBlockCount(5000)
-        self.log.setMinimumHeight(0)
-        self.log_toggle = QPushButton('查看原始日志')
-        self.log_toggle.setCheckable(True)
-        self.log_toggle.toggled.connect(self.log.setVisible)
-        layout.addWidget(self.log_toggle, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.log, 1)
-        self.log.hide()
-        self.activity_status = QLabel('尚未启动')
-        self.activity_status.setWordWrap(True)
-        layout.addWidget(self.activity_status)
         self._last_log_at = 0.0
         self._activity_timer = QTimer(self)
         self._activity_timer.timeout.connect(self._refresh_activity_clock)
@@ -3225,10 +3400,9 @@ class ModelDownloadDialog(QDialog):
         self._overall_file_index = 0
         self._overall_file_total = max(1, len(self.download_keys))
         actions = QHBoxLayout()
-        self.export_diagnostic_button = QPushButton('导出部署诊断')
-        self.export_diagnostic_button.clicked.connect(self._export_deployment_diagnostic)
-        actions.addWidget(self.export_diagnostic_button)
+        actions.setSpacing(8)
         self.rebuild_runtime_button = QPushButton('重建专用环境')
+        self.rebuild_runtime_button.setObjectName('workshopSecondary')
         self.rebuild_runtime_button.setToolTip('重新准备所选模型的专用 Python 和依赖；保留已校验模型与用户数据。')
         self.rebuild_runtime_button.clicked.connect(self._rebuild_runtime)
         self.rebuild_runtime_button.setVisible(True)
@@ -3256,6 +3430,7 @@ class ModelDownloadDialog(QDialog):
         actions.addWidget(self.pause_button)
         layout.addLayout(actions)
         apply_ui_language(self, language)
+        self._refresh_view()
 
 
     def _rebuild_runtime(self):
@@ -3379,6 +3554,13 @@ class ModelDownloadDialog(QDialog):
         self._finished_ok = False
         import time
         self._started_at = time.monotonic()
+        from .download_activity import ProcessTreeProbe
+        self._activity.reset(self._started_at, time.time())
+        self._probe = ProcessTreeProbe()
+        self._failure_text = ''
+        self._last_view_refresh = 0.0
+        self.headline.setText(f"Preparing {self.display_name}" if current_language() == "en"
+                              else ui_literal("正在准备 {name}", current_language()).format(name=self.display_name))
         from ..system.deployment import DeploymentJournal
         from ..runtime_paths import user_data_root
         previous_job = self._journal.job_id if self._journal else ''
@@ -3458,6 +3640,8 @@ class ModelDownloadDialog(QDialog):
         self.process.start(program, arguments)
         if not self.process.waitForStarted(5000):
             self._finish_with_error("无法启动模型下载器。请运行“配置或修复 2ByteASR”后重试。")
+        else:
+            self._refresh_view()  # not "未开始" until the 1-second clock ticks (2026-10-22)
 
     def _start_macos_mlx(self):
         from twobyteasr.runtime_paths import get_runtime_paths, user_data_root
@@ -3553,10 +3737,14 @@ class ModelDownloadDialog(QDialog):
             vertical = self.log.verticalScrollBar()
             previous = vertical.value()
             follow_tail = previous >= vertical.maximum() - 2
+            now, wall = time.monotonic(), time.time()
             for line in clean_lines:
                 if self._journal:
                     self._journal.record('output', line=line)
+                self._activity.feed(line, now, wall)
                 self._handle_progress_line(line)
+            if now - getattr(self, '_last_view_refresh', 0.0) >= 0.25:
+                self._refresh_view(now)
             # The PyTorch download reports every second; its readable [PyTorch]
             # lines stay in the log, the machine lines only drive the progress.
             clean_lines = [line for line in clean_lines if not line.startswith(_RUNTIME_DOWNLOAD_MARKER)]
@@ -3580,18 +3768,193 @@ class ModelDownloadDialog(QDialog):
             return
         import time
         now = time.monotonic()
-        active = self.process.state() != QProcess.ProcessState.NotRunning
-        age = f'{int(now-self._last_log_at)} 秒前' if self._last_log_at else '尚无日志'
-        state = '任务进程存活' if active else '任务进程已结束'
-        quiet = now - self._last_log_at if self._last_log_at else now - self._started_at
-        if active and quiet >= 20 and self._phase in {'runtime_installing', 'tools_preparing', 'interpreter_preparing', 'dependencies_installing'}:
-            # uv prints nothing into a pipe while it downloads (2026-10-14 user report).
-            bind_text(self.activity_status, '{state} · 已用 {value1} 秒 · 最后日志：{age} · 正在等待子程序输出；达到阶段期限后会停止并说明原因',
-                      state=state, value1=int(now - self._started_at), age=age)
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            # CPU and disk activity of the whole installer tree: tells a busy
+            # silent step (unpacking, hashing, loading) from a hung one.
+            self._activity.tick(now, self._probe.sample(self.process.processId(), now))
+        self._refresh_view(now)
+
+    def _modelscope_ok(self) -> bool:
+        cached = getattr(self, '_modelscope_cache', None)
+        if cached is None:
+            try:
+                from twobyteasr.download_sources import modelscope_declared
+                from twobyteasr.repository_download import effective_spec, load_model_sources
+                models = _load_lock(self.root).get('models', {})
+                # Same view as the downloader: pins in model_download_sources.json count.
+                pins = load_model_sources(Path(self.root) / 'scripts' / 'model_download_sources.json')
+                cached = all(modelscope_declared(effective_spec(key, models.get(key) or {}, pins))
+                             for key in self.download_keys)
+            except Exception:
+                cached = True
+            self._modelscope_cache = cached
+        return cached
+
+    def _refresh_view(self, now: float | None = None) -> None:
+        """Redraw steps, the current-task card, the notice and recent events (2026-10-21)."""
+        import time
+        now = time.monotonic() if now is None else now
+        self._last_view_refresh = now
+        activity = self._activity
+        running = self.process.state() != QProcess.ProcessState.NotRunning
+        assessment = activity.assess(now, running=running, paused=self._paused and not running,
+                                     mode=str(self.source_combo.currentData() or 'AUTO'),
+                                     modelscope_ok=self._modelscope_ok(), failure=self._failure_text)
+        self._assessment = assessment
+        tone = assessment.tone
+        self.health_pill.setText(str(assessment.pill))
+        if self.health_pill.property('tone') != tone:
+            self.health_pill.setProperty('tone', tone)
+            self.health_pill.style().unpolish(self.health_pill)
+            self.health_pill.style().polish(self.health_pill)
+        self.step_track.set_rows(activity.step_rows(now), {'warn': 'warn', 'bad': 'bad'}.get(tone, 'accent'))
+        for widget in (self.task_title, self.task_figures, self.task_source):
+            widget.setVisible(running)
+        self.progress_status.setVisible(not running)
+        # A failure is explained once, in the notice; the card would only repeat it.
+        self.task_card.setVisible(assessment.level != 'failed')
+        if running:
+            self.task_title.setText(str(activity.task_title()))
+            fraction = activity.task_fraction()
+            self.task_bar.setVisible(fraction is not None)
+            if fraction is not None:
+                self.task_bar.setValue(int(round(fraction * 1000)))
+            figures = '\n'.join(str(line) for line in (activity.figures(now), activity.weights_line()) if line)
+            self.task_figures.setText(figures)
+            self.task_figures.setVisible(bool(figures))
+            source = str(activity.source_line())
+            self.task_source.setText(source)
+            self.task_source.setVisible(bool(source))
+            if activity.last_line:
+                from .download_activity import duration_text
+                age = now - activity.last_line_at
+                when = tr('刚刚') if age < 1 else tr('{age}前', age=duration_text(age))
+                text = str(tr('最新输出（{when}）：{line}', when=when, line=activity.last_line))
+                self.task_output.setText(text)
+                self.task_output.setToolTip(activity.last_line)
+            self.task_output.setVisible(bool(activity.last_line))
+        else:
+            self.task_output.setVisible(False)
+            self.task_bar.setVisible(False)
+        started = bool(self._started_at)
+        values, _kind = activity.graph()
+        self.activity_graph.set_values(values, {'bad': 'bad', 'warn': 'warn'}.get(tone, 'good'))
+        self.activity_graph.setVisible(started and running)
+        from .download_activity import duration_text
+        if running:
+            parts = [str(part) for part in activity.activity_parts(now)]
+            elapsed = duration_text(now - self._started_at)
+            if sys.platform == 'darwin':
+                parts.insert(0, str(tr('已用 {elapsed}', elapsed=elapsed)))
+            else:
+                index, count = activity.step_position()
+                self.note_label.setText(str(tr('已用 {elapsed} · 第 {index}/{count} 步 · 关闭窗口后下载在后台继续，中断后可断点续传',
+                                               elapsed=elapsed, index=index, count=count)))
+            self.activity_status.setText('  ·  '.join(parts))
+            for index, label in enumerate(self._activity_part_labels):
+                if index < len(parts):
+                    label.setText(('·  ' if index else '') + parts[index])
+                label.setVisible(index < len(parts))
+        elif started:
+            spent = duration_text((getattr(self, '_finished_at', 0.0) or now) - self._started_at)
+            self.activity_status.setText(str(tr('共用时 {elapsed}', elapsed=spent)))
+            if sys.platform != 'darwin':
+                self.note_label.setText(str(tr('共用时 {elapsed}；已下载并校验的文件都会保留，下次准备会从断点继续。', elapsed=spent))
+                                        if assessment.level in {'failed', 'paused'} else self._note_text)
+        self.activity_status.setVisible(started and not running)
+        if not running:
+            for label in self._activity_part_labels:
+                label.hide()
+        if assessment.notice:
+            notice_tone = {'bad': 'bad', 'warn': 'warn'}.get(tone, 'info')
+            if self.notice.property('tone') != notice_tone:
+                self.notice.setProperty('tone', notice_tone)
+                for widget in (self.notice, self.notice_title):
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
+            self.notice_title.setText(str(assessment.headline))
+            self.notice_where.setText(str(assessment.where))
+            self.notice_where.setVisible(bool(assessment.where))
+            self.notice_body.setText(str(assessment.why))
+            self.notice_body.setVisible(bool(assessment.why))
+            self._set_notice_actions(assessment.actions)
+            appeared = self.notice.isHidden() or self._notice_level != assessment.level
+            self._notice_level = assessment.level
+            self.notice.show()
+            if appeared:
+                QTimer.singleShot(0, lambda: self.body_scroll.ensureWidgetVisible(self.notice, 0, 0))
+        else:
+            self._notice_level = ''
+            self.notice.hide()
+        events = activity.events_tail(len(self._event_rows))
+        for index, (stamp, dot, text) in enumerate(self._event_rows):
+            event = events[index] if index < len(events) else None
+            for widget in (stamp, dot, text):
+                widget.setVisible(event is not None)
+            if event is None:
+                continue
+            stamp.setText(datetime.fromtimestamp(event.wall).strftime('%H:%M:%S'))
+            text.setText(event.text)
+            for widget in (dot, text):
+                if widget.property('tone') != event.tone:
+                    widget.setProperty('tone', event.tone)
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
+        self.events_empty.setVisible(not events)
+
+    def _set_notice_actions(self, actions) -> None:
+        actions = tuple(actions)
+        if actions == self._notice_actions:
             return
-        bind_text(self.activity_status, '{state} · 已用 {value1} 秒 · 本阶段 {stage} 秒 · 最后日志：{age}',
-                  state=state, value1=int(now-self._started_at),
-                  stage=int(now-(self._stage_started or self._started_at)),age=age)
+        self._notice_actions = actions
+        while self.notice_buttons.count():
+            item = self.notice_buttons.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        for action in actions:
+            if action.startswith('switch:'):
+                from twobyteasr.download_sources import SOURCE_LABELS
+                mode = action.split(':', 1)[1]
+                button = QPushButton(tr('改用 {label} 继续', label=translate(SOURCE_LABELS.get(mode, mode))))
+                button.setObjectName('workshopPrimary')
+                button.setToolTip(tr('先停止当前任务，再用这个来源从断点继续；已下载并校验的文件都会保留。'))
+            else:
+                button = QPushButton({'export': tr('导出部署诊断'), 'log': tr('查看原始日志'),
+                                      'pause': tr('暂停下载')}.get(action, action))
+                button.setObjectName('workshopSecondary')
+            button.setProperty('noticeAction', action)
+            button.clicked.connect(lambda _checked=False, value=action: self._notice_action(value))
+            self.notice_buttons.addWidget(button)
+
+    def _notice_action(self, action: str) -> None:
+        if action.startswith('switch:'):
+            self._switch_source_and_resume(action.split(':', 1)[1])
+        elif action == 'export':
+            self._export_deployment_diagnostic()
+        elif action == 'log':
+            self.log_toggle.setChecked(True)
+            QTimer.singleShot(0, lambda: self.body_scroll.ensureWidgetVisible(self.log))
+        elif action == 'pause':
+            self._request_pause()
+
+    def _switch_source_and_resume(self, mode: str) -> None:
+        """Stop the current run and continue with another source; verified files stay."""
+        index = self.source_combo.findData(mode)
+        if index < 0:
+            return
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            self._resume_with_source = mode
+            self.log.appendPlainText(f'[模型工坊] 改用 {mode} 继续：先停止当前任务，已下载的部分保留。')
+            self._request_pause()
+            return
+        self.source_combo.setCurrentIndex(index)
+        self._finished_ok = False
+        self.start()
+
+    def background_summary(self) -> str:
+        """Step, measured percent and health for the workshop page while the window is hidden."""
+        import time
+        return str(self._activity.background_summary(time.monotonic(), getattr(self, '_assessment', None)))
 
     def _handle_progress_line(self, line: str):
         from ..system.deployment import MARKER
@@ -4083,13 +4446,17 @@ class ModelDownloadDialog(QDialog):
                     continue
         if failures:
                 failure=failures[-1]
-                if sources:
+                # A combination window names the combination, not its first model
+                # (2026-10-21: a FireRed load failure was headed "MOSS-…").
+                if failure.get('phase') in {'model_loading', 'model_forward', 'inference_verifying'}:
+                    header=f"{self.display_name} · 文件已下载并校验，加载或样本试跑时失败\n"
+                elif sources:
                     tried=' → '.join(tr(_SOURCE_NAMES.get(mode, mode)) for mode in sources)
-                    header=f"{self.model.name} · {tried}（{'已尝试备援' if len(sources)>1 else '未尝试备援'}）\n"
+                    header=f"{self.display_name} · {tried}（{'已尝试备援' if len(sources)>1 else '未尝试备援'}）\n"
                 elif failure.get('phase') in {'tools_preparing', 'interpreter_preparing', 'dependencies_installing'}:
-                    header=f"{self.model.name} · 运行环境准备阶段（尚未开始下载权重）\n"
+                    header=f"{self.display_name} · 运行环境准备阶段（尚未开始下载权重）\n"
                 else:
-                    header=f"{self.model.name} · 尚未请求权重源（未尝试备援）\n"
+                    header=f"{self.display_name} · 尚未请求权重源（未尝试备援）\n"
                 detail=str(failure.get('message') or failure.get('detail') or '').partition('\n')[0][:220]
                 category=failure.get('category','')
                 if category in {'','runtime_network'} and runtime_timeout:
@@ -4196,9 +4563,24 @@ class ModelDownloadDialog(QDialog):
             message = self._actionable_failure_message(exit_code)
         self.progress_status.setText(message)
         self.log.appendPlainText(f"\n[{'完成' if ok else '未完成'}] {message}")
+        import time
+        self._finished_at = time.monotonic()
+        self._activity.mark_finished('done' if ok else 'paused' if self._paused else 'failed', self._finished_at)
+        self._failure_text = '' if ok or self._paused else message
+        self.headline.setText(str(tr('{name} 已准备好', name=self.display_name) if ok else
+                                  tr('已暂停：{name}', name=self.display_name) if self._paused else
+                                  tr('{name} 没有准备完成', name=self.display_name)))
+        self._refresh_view(self._finished_at)
         if not self._paused:
             self._notify_result_sound(ok)
         self.completed.emit(ok, message)
+        if self._resume_with_source:
+            # "改用其他来源继续": the stop above was ours; restart with the new source.
+            mode, self._resume_with_source = self._resume_with_source, ''
+            index = self.source_combo.findData(mode)
+            if index >= 0:
+                self.source_combo.setCurrentIndex(index)
+                QTimer.singleShot(300, self.start)
 
     def _notify_result_sound(self, ok: bool) -> None:
         if self._result_sound_played:
@@ -4232,6 +4614,13 @@ class ModelDownloadDialog(QDialog):
         self.rebuild_runtime_button.setVisible(True)
         self.pause_button.setVisible(False)
         self.log.appendPlainText(f"[错误] {message}")
+        import time
+        self._finished_at = time.monotonic()
+        self._activity.mark_finished('failed', self._finished_at)
+        self._failure_text = message
+        self.progress_status.setText(message)
+        self.headline.setText(str(tr('{name} 没有准备完成', name=self.display_name)))
+        self._refresh_view(self._finished_at)
         self._notify_result_sound(False)
         self.completed.emit(False, message)
 
@@ -5787,6 +6176,22 @@ class ModelWorkshopPage(QWidget):
             return
 
         self.download_activity.show()
+        activity = getattr(dialog, '_activity', None)
+        if (activity is not None and getattr(dialog, '_started_at', 0.0)
+                and dialog.process.state() != QProcess.ProcessState.NotRunning):
+            # 2026-10-21: the step, measured percent and health of the hidden
+            # window. Without a measured figure the bar shows completed steps
+            # instead of a busy animation.
+            fraction = activity.task_fraction()
+            if fraction is None and dialog.progress.maximum() > dialog.progress.minimum():
+                fraction = dialog.progress.value() / dialog.progress.maximum()
+            if fraction is None:
+                index, count = activity.step_position()
+                fraction = (index - 1) / count
+            self.download_activity_progress.setRange(0, 100)
+            self.download_activity_progress.setValue(int(round(100 * fraction)))
+            self.download_activity_text.setText(f"{dialog.display_name} · {dialog.background_summary()}")
+            return
         minimum = dialog.progress.minimum()
         maximum = dialog.progress.maximum()
         if maximum <= minimum:

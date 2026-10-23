@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "verified_at": "2026-10-14",
-  "note": "Alternate sources for model weights. This file can only say WHERE a model's locked files can also be fetched (repository + fixed commit); it can never add, remove or re-hash files: every file is still checked against dependencies.lock.json before install. Kept out of the lock because update_manifest.model_contracts digests each models.<key> entry. Each ModelScope commit below was checked on 2026-10-14: all required files' SHA-256 equal the lock. A pin in the lock itself (moss, ja_ctc_aligner, MLX) takes precedence. Re-check with: python scripts/verify_model_download_sources.py --allow-network",
+  "note": "Alternate sources for model weights. This file can only say WHERE a model's locked files can also be fetched (repository + fixed commit); it can never add, remove or re-hash files: every file is still checked against dependencies.lock.json before install. Kept out of the lock because update_manifest.model_contracts digests each models.<key> entry. Each ModelScope commit below was checked on 2026-10-14: all required files' SHA-256 equal the lock. A pin in the lock itself (moss, ja_ctc_aligner, MLX) takes precedence. A pin may also name a maintainer-owned exact copy of a model that only Hugging Face hosts (made and checked with scripts/mirror_models_to_modelscope.py; 2026-10-22: the MFA models); it is trusted only through the same locked hashes. Re-check with: python scripts/verify_model_download_sources.py --allow-network",
   "hf_mirror": {
     "host": "hf-mirror.com",
     "official": false,
@@ -20,7 +20,9 @@
     "canary_qwen": {"repository": "nv-community/canary-qwen-2.5b", "revision": "33b66a4c0eb4edf1a3105d76dc2f8a8c9ed08cb2"},
     "omni_asr_llm_7b": {"repository": "facebook/omniASR-LLM-7B", "revision": "e8a44b04141d2c1a0c341ceccc386e503604aed3"},
     "speaker_embedding": {"repository": "speechbrain/spkrec-ecapa-voxceleb", "revision": "ac4bd1ce07f3d746b5761342e4116232d2402dc4"},
-    "canary_qwen_tokenizer": {"repository": "Qwen/Qwen3-1.7B", "revision": "4855588ea1a12789f2e965e5f52a9e4a24c94b2a"}
+    "canary_qwen_tokenizer": {"repository": "Qwen/Qwen3-1.7B", "revision": "4855588ea1a12789f2e965e5f52a9e4a24c94b2a"},
+    "mfa_aligner": {"repository": "Tubai2Byte/mandarin_mfa", "revision": "02b36926b5ea5eeb95c1c372cd553de5b8802fc3"},
+    "mfa_aligner_ja": {"repository": "Tubai2Byte/japanese_mfa", "revision": "b40ed1849933ab08dd5850de8f6fdbba97494984"}
   },
   "modelscope_partial": {
     "funasr_nano": {

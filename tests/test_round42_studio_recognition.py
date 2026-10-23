@@ -100,21 +100,16 @@ def test_recognition_glossary_chips_toggle_and_sync(monkeypatch, tmp_path):
     assert len(boxes) >= 2
     boxes[0].setChecked(True)
     _app().processEvents()
-    summary = next(
-        (
-            label
-            for label in page._recognition_sheet.findChildren(QLabel)
-            if label.text().startswith(("已选", "未选择词库"))
-        ),
-        None,
-    )
-    assert summary is not None and summary.text().startswith("已选 1 个词库"), summary.text()
+    # 2026-10-23: the glossary dropdown itself says what is ticked.
+    from PySide6.QtWidgets import QComboBox
+    summary = page._recognition_sheet.findChild(QComboBox, "recognitionGlossaryButton")
+    assert summary is not None and summary.text().startswith("已选 1 个"), summary.text()
     boxes[1].setChecked(True)
     _app().processEvents()
-    assert summary.text().startswith("已选 2 个词库")
+    assert summary.text().startswith("已选 2 个")
     boxes[0].setChecked(False)
     _app().processEvents()
-    assert summary.text().startswith("已选 1 个词库"), summary.text()
+    assert summary.text().startswith("已选 1 个") and boxes[1].text() in summary.text(), summary.text()
     page.close_page()
 
 
@@ -138,24 +133,149 @@ def test_recognition_plan_options_match_home_and_apply_api(monkeypatch, tmp_path
     controls = _open_sheet(page, tmp_path)
     plan = controls["plan"]
     keys = {plan.itemData(i) for i in range(plan.count())}
-    assert {"quality", "speed", "low_memory", "transcribe_only", "api", "custom", "home"} <= keys
-    # API 转写方案：api/off/api（三十三轮语义）。
-    plan.setCurrentIndex(plan.findData("api"))
+    # 2026-10-23: 本地识别 / API 转写 / 日语 / 外语 + 当前主页方案; 自定义 only
+    # while the models were changed by hand. API 转写 = MOSS Pro + FireRedASR2
+    # for Chinese / auto (Qwen3 对齐 for other languages), no review.
+    assert keys == {"quality", "japanese", "english", "moss_pro_qwen", "home"}
+    plan.setCurrentIndex(plan.findData("moss_pro_qwen"))
     _app().processEvents()
     assert controls["primary"].currentData() == "api"
-    assert controls["timeline"].currentData() == "off"
-    assert controls["review"].currentData() == "api"
+    assert controls["timeline"].currentData() == "local"
+    assert controls["review"].currentData() == "off"
+    controls["review"].setCurrentIndex(controls["review"].findData("local"))
+    _app().processEvents()
+    assert plan.currentData() == "custom" and plan.currentText() == "自定义"
+    plan.setCurrentIndex(plan.findData("quality"))
+    _app().processEvents()
+    assert plan.findData("custom") < 0
     page.close_page()
 
 
-def test_recognition_sheet_has_role_picker_buttons(monkeypatch, tmp_path):
-    from PySide6.QtWidgets import QPushButton
+def test_recognition_sheet_scrolls_instead_of_squeezing_rows(monkeypatch, tmp_path):
+    # 2026-10-22 user report: 高级配置 opened inside the fixed-height modal card
+    # squeezed the three model rows into one strip. The content scrolls now.
+    # 2026-10-23: speakers follow the primary model; the sheet has no speaker selector.
+    from PySide6.QtWidgets import QComboBox, QScrollArea
 
     page = _page(monkeypatch, tmp_path)
-    _open_sheet(page, tmp_path)
-    advanced = page._recognition_controls["advanced"]
-    buttons = [b for b in advanced.findChildren(QPushButton) if b.text() == "选择…"]
-    assert len(buttons) == 3
+    controls = _open_sheet(page, tmp_path)
+    scroll = page._recognition_sheet.findChild(QScrollArea, "studioRecognitionScroll")
+    assert scroll is not None and scroll.widgetResizable()
+    body = scroll.widget()
+    assert body.isAncestorOf(controls["advanced"])
+    assert not any(c.findData("single") >= 0 or c.findData("ecapa") >= 0 for c in body.findChildren(QComboBox))
+    assert controls["start"].parentWidget() is not None
+    page.close_page()
+
+
+def test_recognition_sheet_layout_c_plan_roles_left_summary_right(monkeypatch, tmp_path):
+    # 2026-10-23 user chose layout C: the left column has 识别方案 and under it
+    # three thin model rows (logo, role, name with its languages, readiness);
+    # 「这次识别」 on the right (glossary, translation, what is missing, the one
+    # start button); both columns share their top and bottom edge.
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QPushButton, QWidget
+
+    page = _page(monkeypatch, tmp_path)
+    controls = _open_sheet(page, tmp_path)
+    sheet = page._recognition_sheet
+    rows = controls["rows"]
+    assert list(rows) == ["primary", "timeline", "review"]
+    assert [row.objectName() for row in rows.values()] == ["sheetRoleRow"] * 3
+    for key in ("primary", "timeline", "review"):
+        assert controls["advanced"].isAncestorOf(rows[key]) and controls[key].isHidden()
+    summary_card = controls["summary"]
+    assert summary_card.objectName() == "recognitionSummary"
+    glossary_button = sheet.findChild(QWidget, "recognitionGlossaryButton")
+    for widget in (controls["start"], controls["confirm"], controls["translation"], glossary_button):
+        assert summary_card.isAncestorOf(widget)
+    assert controls["start"].property("buttonRole") == "primary" and controls["start"].property("controlSize") == "large"
+    primary_buttons = [b for b in sheet.findChildren(QPushButton) if b.property("buttonRole") == "primary"]
+    assert set(primary_buttons) <= {controls["start"], controls["confirm"].findChild(QPushButton)}
+    sheet.resize(1040, 300)  # shorter than the content: everything at its natural height
+    sheet.show()
+    _app().processEvents()
+    body = controls["left"].parentWidget()
+    plan_bottom = controls["plan"].mapTo(body, controls["plan"].rect().bottomLeft()).y()
+    left, right = controls["left"].geometry(), summary_card.geometry()
+    assert controls["left"].isAncestorOf(controls["plan"]) and controls["left"].isAncestorOf(controls["advanced"])
+    assert plan_bottom < controls["advanced"].mapTo(body, controls["advanced"].rect().topLeft()).y()
+    assert left.top() == right.top() and left.bottom() == right.bottom()
+    assert left.right() < right.left()
+    tops = [rows[key].geometry().top() for key in ("primary", "timeline", "review")]
+    assert tops == sorted(tops)
+    for row in rows.values():                      # thin rows: one line, not stretched into cards
+        assert row.height() <= row.sizeHint().height() * 1.6
+    # A local model the catalog knows shows its languages right after the name.
+    controls["primary"].setCurrentIndex(controls["primary"].findData("moss"))
+    _app().processEvents()
+    assert rows["primary"].languages.has_badges()
+    assert rows["primary"].name.text()
+    assert rows["primary"].languages.geometry().left() >= rows["primary"].name.geometry().right()
+    # No description line under the plan (user, 10-23): what it does is its tooltip.
+    controls["plan"].setCurrentIndex(controls["plan"].findData("quality"))
+    _app().processEvents()
+    assert controls["plan"].toolTip().startswith("主稿 + 字级时间轴")
+    assert not sheet.findChildren(QFrame, "recognitionFooter")
+    assert not [b for b in sheet.findChildren(QPushButton) if "在主页管理" in b.text()]
+    # Plan, glossary and translation are the same kind of dropdown.
+    assert all(isinstance(w, QComboBox) for w in (controls["plan"], glossary_button, controls["translation"]))
+    assert len({w.property("controlSize") for w in (controls["plan"], glossary_button, controls["translation"])}) == 1
+    box = controls["glossaries"].findChildren(QCheckBox)[0]
+    box.setChecked(True)
+    _app().processEvents()
+    assert glossary_button.text().startswith("已选 1 个") and box.text() in glossary_button.text()
+    page.close_page()
+
+
+def test_recognition_sheet_rows_open_the_model_picker(monkeypatch, tmp_path):
+    page = _page(monkeypatch, tmp_path)
+    opened = []
+    page._open_model_picker = lambda role, on_closed=None: opened.append(role)
+    controls = _open_sheet(page, tmp_path)
+    row = controls["rows"]["timeline"]
+    page._recognition_sheet.resize(1040, 680)
+    page._recognition_sheet.show()
+    _app().processEvents()
+    QTest.mouseClick(row, Qt.MouseButton.LeftButton)
+    QTest.keyClick(controls["rows"]["review"], Qt.Key.Key_Space)
+    assert opened == ["timeline", "review"]
+    page.close_page()
+
+
+def test_recognition_sheet_translation_needs_a_connected_ai(monkeypatch, tmp_path):
+    # 2026-10-23: translation took the speaker selector's place; like home it
+    # stays on 只显示原文 until the AI text service has a key and passed a test.
+    from PySide6.QtWidgets import QPushButton
+
+    import twobyteasr.providers.ai_connection_record as record
+
+    page = _page(monkeypatch, tmp_path)
+    page._subtitle_language_options = lambda: {"recognition_language": "ja", "chinese_script": "zh-Hans",
+                                               "subtitle_output": "bilingual", "translation_script": "zh-Hans"}
+    monkeypatch.setattr(record, "feature_gate", lambda _settings: "no_key")
+    controls = _open_sheet(page, tmp_path)
+    output, target = controls["translation"], controls["translation_target"]
+    assert output.currentData() == "original"
+    assert not output.model().item(output.findData("bilingual")).isEnabled()
+    assert target.isHidden()
+    page.close_page()
+
+    page = _page(monkeypatch, tmp_path)
+    page._subtitle_language_options = lambda: {"recognition_language": "ja", "chinese_script": "zh-Hans",
+                                               "subtitle_output": "bilingual", "translation_script": "zh-Hans"}
+    monkeypatch.setattr(record, "feature_gate", lambda _settings: "ready")
+    controls = _open_sheet(page, tmp_path)
+    output, target = controls["translation"], controls["translation_target"]
+    assert output.currentData() == "bilingual"
+    targets = [target.itemData(i) for i in range(target.count())]
+    assert "ja" not in targets and "zh-Hans" in targets
+    output.setCurrentIndex(output.findData("translation"))
+    controls["start"].click()
+    controls["confirm"].findChild(QPushButton).click()
+    _app().processEvents()
+    options = page.recognition_request_options()
+    assert options["subtitle_output"] == "translation" and options["translation_script"] == "zh-Hans"
+    assert options["speaker_source"] in {"moss", "native"}
     page.close_page()
 
 
@@ -255,8 +375,8 @@ def test_studio_recognition_start_failure_lands_on_chip(monkeypatch, tmp_path):
             win.studio_page,
             "recognition_request_options",
             lambda: {
-                "recognition_plan": "api",
-                "models": {"primary": "api", "timeline": "off", "review": "api"},
+                "recognition_plan": "moss_pro_qwen",
+                "models": {"primary": "api", "timeline": "qwen_aligner", "review": "off"},
                 "enabled_glossary_ids": [],
                 "replace_policy": "replace_cues",
             },
@@ -269,12 +389,16 @@ def test_studio_recognition_start_failure_lands_on_chip(monkeypatch, tmp_path):
             win._run_in_progress = False
 
         monkeypatch.setattr(win, "_start_run", _fake_start_run)
+        guides = []
+        monkeypatch.setattr(win, "_open_api_setup_guide", lambda preset="", kind="asr": guides.append(preset))
+        monkeypatch.setattr("twobyteasr.providers.llm_config.read_asr_api_key", lambda *a, **k: ("", ""))
         win._handle_studio_recognition_request("start_final", str(media), str(project_path))
         _app().processEvents()
         assert win._studio_recognition_context is not None
-        # 主页方案下拉应已切到 API 转写（Studio 选项接管主页状态）。
-        assert win.recognition_mode_combo.currentData() == "api"
+        # 云端方案（Studio 选项接管主页状态）；没存 MOSS Pro Key 时提醒去填。
         assert win.primary_asr_backend.currentData() == "api"
+        assert win.qwen_asr_api_provider.currentData() == "mosi_moss_pro"
+        assert guides == ["mosi_moss_pro"]
         assert (
             win.studio_page.recognition_chip_label.text()
             == "识别未完成 · 识别后端未保存：请填写 ASR API Key"
@@ -341,9 +465,6 @@ def test_recognition_sheet_shows_full_api_model_name(monkeypatch, tmp_path):
     assert index >= 0
     label = primary.itemText(index)
     assert "在线 ASR API" in label and "·" in label, label
-    plan = controls["plan"]
-    plan_api = plan.itemText(plan.findData("api"))
-    assert plan_api.startswith("API 转写（") and plan_api.endswith("）"), plan_api
     page.close_page()
 
 
@@ -409,3 +530,23 @@ def test_compositor_publish_rejected_when_media_detached(monkeypatch, tmp_path):
     video.remove_compositor_overlay(7, force=True)
     page.close_page()
 
+
+def test_language_badges_put_the_interface_language_first_and_count_the_rest():
+    # 2026-10-23 user: the interface language's support first, "+N" when the rest does not fit.
+    from twobyteasr.studio.recognition_role_rows import LanguageBadges, badge_plan
+
+    support = {"tiers": {"zh": "strong", "yue": "no", "dialects": "unknown", "en": "strong",
+                         "ja": "usable", "ko": "strong"}, "more": 12, "summary": ""}
+    badges, more = badge_plan(support, "ja")
+    assert [code for code, _tier in badges] == ["ja", "zh", "en", "ko"] and more == 12
+    badges, _more = badge_plan(support, "zh")
+    assert badges[0] == ("zh", "strong") and ("yue", "no") not in badges
+    not_supported = dict(support, tiers=dict(support["tiers"], en="no"))
+    assert badge_plan(not_supported, "en")[0][0] == ("en", "no")   # shown first, struck through
+    _app()
+    row = LanguageBadges()
+    row._badges, row._more = badge_plan(support, "zh")
+    shown, more_text = row.layout_badges(10_000)
+    assert len(shown) == 4 and more_text == "+12"
+    shown, more_text = row.layout_badges(row.minimumSizeHint().width())
+    assert shown == [("zh", "strong")] and more_text == "+15"

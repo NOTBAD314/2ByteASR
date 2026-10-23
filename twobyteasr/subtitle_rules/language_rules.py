@@ -252,6 +252,23 @@ def is_japanese(language=None) -> bool:
     return (active_task_language() if language is None else normalize_language(language)) == JA
 
 
+# 2026-10-21 (user: every language except Chinese should keep whole sentences): a
+# finished Japanese subtitle holds two lines (Netflix Japanese guide: 13 full-width
+# characters a line) and up to 7 seconds; Chinese stays one line of 16 / 5 seconds.
+JAPANESE_CUE_MAX_CHARS = 26
+JAPANESE_CUE_MAX_SECONDS = 7.0
+
+
+def finished_cue_limits(chinese_chars, chinese_seconds):
+    """(characters, seconds) one finished subtitle may hold in the active task language.
+
+    Callers pass the Chinese limits they used before, so Chinese is unchanged.
+    """
+    if is_japanese():
+        return JAPANESE_CUE_MAX_CHARS, JAPANESE_CUE_MAX_SECONDS
+    return chinese_chars, chinese_seconds
+
+
 def is_english(language=None) -> bool:
     return (active_task_language() if language is None else normalize_language(language)) == EN
 

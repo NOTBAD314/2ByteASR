@@ -130,8 +130,9 @@ def main() -> None:
                     "text": text,
                 }
             )
-        if not any(item.get("text") for item in results):
-            raise RuntimeError(f"{args.model_key} returned no text")
+        # No text at all is reported back, not raised: the host treats it as a
+        # silent chunk during incremental recognition and as a failure for a
+        # whole file (asr.NoRecognizedTextError, 2026-10-23).
         inference_ms = (time.perf_counter() - inference_started) * 1000.0
         _atomic_write(
             Path(args.output),

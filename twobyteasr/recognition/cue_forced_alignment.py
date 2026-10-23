@@ -1,4 +1,7 @@
-"""Forced alignment of final caption text (Japanese) and its project evidence.
+"""Forced alignment of final caption text and its project evidence.
+
+Japanese, English, Korean and the European languages; Chinese when its
+timeline is a forced aligner (2026-10-22, ``chinese_final_alignment``).
 
 Every final cue is aligned with its current text, so the stored timing
 always belongs to the effective transcript. Adjacent cues of one speaker are
@@ -29,6 +32,21 @@ RUN_SEPARATOR = " "
 # A pause of this length (voice activity) between two lines ends a run even
 # when display tails and short-gap bridging made the lines touch.
 RUN_PAUSE_BREAK_MS = 700
+# Timelines that are forced aligners. FireRed, Paraformer and Whisper
+# timelines time Chinese characters themselves (and Qwen3 may be absent).
+ALIGNER_TIMELINES = frozenset({"qwen_aligner", "mlx_qwen_aligner", "mfa_aligner"})
+
+
+def chinese_final_alignment(task_language, timeline_backend) -> bool:
+    """A Chinese task whose timeline is a forced aligner aligns its final captions too (2026-10-22).
+
+    Before, only the primary transcript was aligned, per segment in windows
+    that overlap the neighbours': reviewed or glossary-changed words had no
+    measured time, and one line's first syllable could be counted into the
+    previous line.
+    """
+    from ..subtitle_rules.language_rules import ZH
+    return str(task_language or "") == ZH and str(timeline_backend or "") in ALIGNER_TIMELINES
 
 
 def _compact(units):
@@ -211,72 +229,213 @@ def attach_results(cues, runs, payload):
     return attached
 
 
-def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions=None):
-    """Align every final cue's own text; failures leave cues without words."""
+def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions=None, evidence_dir=None):
+    """Align every final cue's own text; failures leave cues without words.
+
+    ``evidence_dir``: where the whole worker receipt is kept (``timing_evidence``).
+    """
     cues = list(cues)
     jobs, runs = alignment_jobs(cues, language=language, speech_regions=speech_regions)
     if not jobs:
         return 0
+    from concurrent.futures import ThreadPoolExecutor
     from twobyteasr.recognition.asr import AlignerUnavailableError, run_qwen_aligner_worker, summarize_aligner_payload
     from twobyteasr.recognition.service import CancelledError
+    # 2026-10-22 (user report: a 24-minute MOSS Pro task took 491 s): the
+    # second opinion only needs the same jobs, not the first aligner's answer,
+    # so it runs beside it (Qwen3 on the GPU while MFA runs on the CPU: 22 s).
+    # Its result is used only when the first aligner is the one predicted.
+    predicted = _predicted_second_engine(jobs)
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="second-aligner") if predicted else None
+    early = pool.submit(_second_attempt, predicted, audio, jobs) if pool else None
     try:
-        payload = run_qwen_aligner_worker(audio, jobs)
-    except AlignerUnavailableError as exc:
-        legacy.add_review_item(0.0, "缺少对齐模型", str(exc), priority=3, severity="warning")
-        legacy.record_run_event("forced_alignment_unavailable", stage="final_cues", reason=str(exc))
-        return 0
-    except CancelledError:
-        raise
-    except Exception as exc:
-        # A failed aligner must not discard the recognized subtitles; cues keep
-        # their recognizer bounds and stay marked as lacking word alignment.
-        legacy.add_review_item(0.0, "字级对齐失败", str(exc)[:200], priority=2, severity="warning")
-        legacy.record_run_event("forced_alignment_failed", stage="final_cues", reason=str(exc)[:500])
-        return 0
-    attached = attach_results(cues, runs, payload)
-    legacy.record_run_event("forced_alignment", stage="final_cues", language=language, attached=attached,
-                            runs=len(runs), **summarize_aligner_payload(payload))
-    return attached
+        try:
+            payload = run_qwen_aligner_worker(audio, jobs)
+        except AlignerUnavailableError as exc:
+            legacy.add_review_item(0.0, "缺少对齐模型", str(exc), priority=3, severity="warning")
+            legacy.record_run_event("forced_alignment_unavailable", stage="final_cues", reason=str(exc))
+            return 0
+        except CancelledError:
+            raise
+        except Exception as exc:
+            # A failed aligner must not discard the recognized subtitles; cues keep
+            # their recognizer bounds and stay marked as lacking word alignment.
+            legacy.add_review_item(0.0, "字级对齐失败", str(exc)[:200], priority=2, severity="warning")
+            legacy.record_run_event("forced_alignment_failed", stage="final_cues", reason=str(exc)[:500])
+            return 0
+        attached = attach_results(cues, runs, payload)
+        from .timing_evidence import save_aligner_payload
+        saved = save_aligner_payload(evidence_dir, "final_cues", language, payload,
+                                     runs=[{"id": f"run-{number}", "members": [m["key"] for m in run["members"]],
+                                            "spans": run["spans"]} for number, run in enumerate(runs, 1)])
+        legacy.record_run_event("forced_alignment", stage="final_cues", language=language, attached=attached,
+                                runs=len(runs), **summarize_aligner_payload(payload), **({"evidence": saved} if saved else {}))
+        if attached:
+            matched = early is not None and _second_engine(payload) == predicted
+            second = second_opinion(audio, jobs, payload, legacy, attempt=early.result() if matched else None)
+            if second is not None:
+                save_aligner_payload(evidence_dir, "final_cues", language, second)
+            grade_final_cues(cues, runs, second, audio, legacy)
+        return attached
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)  # never leave an aligner process running into the next stage
+
+
+def _second_engine(payload) -> str:
+    return "qwen3" if str((payload or {}).get("protocol") or "").startswith("mfa-") else "mfa"
+
+
+def _predicted_second_engine(jobs) -> str:
+    """The second-opinion engine before the first aligner answers ('' when unsure).
+
+    Same routing as ``run_qwen_aligner_worker``: MFA first when it is the
+    selected timeline and handles these jobs, otherwise Qwen3 (or MLX) first.
+    """
+    try:
+        from twobyteasr.recognition import asr
+        from . import mfa_aligner
+        from .run_context import get_runtime_context
+        settings = get_runtime_context().asr_settings_snapshot or asr._legacy_runtime_value(
+            "RUNTIME_SETTINGS", asr.RUNTIME_SETTINGS)
+        backend = str(((settings or {}).get("models") or {}).get("firered_asr_backend"))
+        return "qwen3" if backend == "mfa_aligner" and mfa_aligner.handles(jobs) else "mfa"
+    except Exception:  # noqa: BLE001 - no prediction: the second opinion runs after the first
+        return ""
+
+
+def _second_attempt(engine, audio, jobs):
+    """Run the other aligner; ``(status, value)`` without recording, so it may run on a helper thread."""
+    from twobyteasr.recognition.asr import AlignerUnavailableError, run_qwen_aligner_worker
+    from twobyteasr.recognition.service import CancelledError
+    from . import mfa_aligner
+    if engine == "mfa" and not (mfa_aligner.handles(jobs) and mfa_aligner.runtime_python()):
+        return "not_installed", None
+    try:
+        return "ok", (run_qwen_aligner_worker(audio, jobs, engine="qwen3") if engine == "qwen3"
+                      else mfa_aligner.run_aligner(audio, jobs))
+    except CancelledError as exc:
+        return "cancelled", exc
+    except (AlignerUnavailableError, mfa_aligner.MfaUnavailableError) as exc:
+        return "unavailable", exc
+    except Exception as exc:  # noqa: BLE001 - the second opinion is optional; grades then rest on pauses
+        return "failed", exc
+
+
+def second_opinion(audio, jobs, payload, legacy, *, attempt=None):
+    """The other aligner on the same jobs (Qwen3 after MFA, MFA after Qwen3), or None (2026-10-22).
+
+    It only confirms or questions the first aligner's boundaries
+    (``boundary_grades``); its times never replace them. ``attempt`` is a
+    ``_second_attempt`` result that already ran beside the first aligner.
+    """
+    engine = _second_engine(payload)
+    if attempt is None:
+        from . import mfa_aligner
+        if not (engine == "mfa" and not (mfa_aligner.handles(jobs) and mfa_aligner.runtime_python())):
+            print(f"   [切点分级] 用{'Qwen3 对齐器' if engine == 'qwen3' else ' MFA（实验）'}复核同一批字幕的切点…")
+        attempt = _second_attempt(engine, audio, jobs)
+    else:
+        print(f"   [切点分级] {'Qwen3 对齐器' if engine == 'qwen3' else ' MFA（实验）'}已与第一个对齐器同时复核了同一批字幕的切点。")
+    status, value = attempt
+    if status == "cancelled":
+        raise value
+    if status == "not_installed":
+        legacy.record_run_event("boundary_second_opinion", engine=engine, skipped="not_installed_or_language")
+        return None
+    if status == "unavailable":
+        legacy.record_run_event("boundary_second_opinion", engine=engine, skipped="unavailable", reason=str(value)[:300])
+        return None
+    if status == "failed":
+        legacy.record_run_event("boundary_second_opinion", engine=engine, failed=f"{type(value).__name__}: {value}"[:400])
+        return None
+    legacy.record_run_event("boundary_second_opinion", engine=engine, model=value.get("model"),
+                            inference_ms=value.get("inference_ms"))
+    return value
+
+
+def grade_final_cues(cues, runs, second, audio, legacy):
+    """Grade every cut position of the aligned captions (``boundary_grades``) into ``cue.forced_alignment``."""
+    from .boundary_grades import GRADES, POLICY, SpeechBand, grade_caption
+    band = SpeechBand(audio)
+    by_id = {str(row.get("id")): row for row in (second or {}).get("results") or ()}
+    engine = ("" if second is None else "mfa" if str(second.get("protocol") or "").startswith("mfa-") else "qwen3")
+    totals, reasons = {grade: 0 for grade in GRADES}, {}
+    for number, run in enumerate(runs, 1):
+        row = by_id.get(f"run-{number}")
+        parts = (split_run_row(row, run) if row is not None and row.get("text") == run["text"]
+                 else [None] * len(run["members"]))
+        for member, part in zip(run["members"], parts):
+            alignment = getattr(cues[member["key"] - 1], "forced_alignment", None)
+            if not alignment:
+                continue
+            other = part["segments"] if part and part["text"] == alignment.get("text") and part["segments"] else None
+            graded = grade_caption(str(alignment.get("text") or ""), alignment.get("segments"), other, band.pause)
+            alignment.update(boundaries=graded, boundary_policy=POLICY)
+            if other is not None:
+                alignment["second"] = {"engine": engine, "model": second.get("model"), "segments": copy.deepcopy(other)}
+            for item in graded:
+                totals[item["grade"]] += 1
+                reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
+    print(f"   [切点分级] 可独立切 {totals['independent']}、只能整词 {totals['whole']}、不可靠 {totals['unreliable']}"
+          f"（第二份证据：{ {'qwen3': 'Qwen3 对齐器 + 停顿', 'mfa': 'MFA + 停顿'}.get(engine, '只有停顿') }）。")
+    legacy.record_run_event("boundary_grades", policy=POLICY, second=engine, **totals, reasons=reasons)
+    return totals
 
 
 def evidence_row(cue_id, start_ms, end_ms, speaker_id, alignment):
-    """Project evidence row for one aligned cue (time = task/recognition clock)."""
+    """Project evidence row for one aligned cue (time = task/recognition clock).
+
+    The row names the aligner that measured it (2026-10-22: MFA rows were
+    labelled Qwen3-ForcedAligner).
+    """
     pieces = []
     text = str(alignment.get("text") or "")
+    mfa = str(alignment.get("model") or "").startswith("MontrealCorpusTools/")
+    model, source, owner = (("mfa_aligner", "montreal-forced-aligner", "Montreal-Forced-Aligner") if mfa
+                            else ("qwen3_forced_aligner", "qwen3-forced-aligner", "Qwen3-ForcedAligner"))
     for piece in alignment.get("segments") or ():
         a, b = int(piece["start_ms"]), int(piece["end_ms"])
         fragment = text[int(piece["char_start"]):int(piece["char_end"])]
         if b > a and fragment.strip():
             pieces.append({"text": fragment, "start_ms": a, "end_ms": b, "char_start": int(piece["char_start"]),
-                           "char_end": int(piece["char_end"]), "model": "qwen3_forced_aligner",
+                           "char_end": int(piece["char_end"]), "model": model,
                            "granularity": piece.get("granularity"), "start_basis": piece.get("start_basis"),
                            "end_basis": piece.get("end_basis")})
     return {
         "start_ms": int(start_ms), "end_ms": int(end_ms), "text": text, "speaker_id": str(speaker_id),
-        "primary_source": "qwen3-forced-aligner", "final_timing_owner": "Qwen3-ForcedAligner",
+        "primary_source": source, "final_timing_owner": owner,
         "final_text_owner": "current caption text",
         "cue_alignment": {key: alignment.get(key) for key in (
             "model", "model_revision", "code", "unit_policy", "language", "status", "mapping", "stats",
-            "window_start_ms", "window_end_ms", "run")} | {"cue_id": str(cue_id)},
+            "window_start_ms", "window_end_ms", "run")} | {"cue_id": str(cue_id)} | {
+            key: alignment[key] for key in ("script_remapped", "aligned_text") if key in alignment},
         "words": [{k: p[k] for k in ("text", "start_ms", "end_ms")} for p in pieces],
         "caption_arbitration": {"acoustic_words": pieces, "forced_alignment": {
             "unit_fields": alignment.get("unit_fields"), "units_word": alignment.get("units_word"),
-            "units_char": alignment.get("units_char"), "tokenizer_words": alignment.get("tokenizer_words")}},
+            "units_char": alignment.get("units_char"), "tokenizer_words": alignment.get("tokenizer_words"),
+            # 2026-10-22: every cut position graded (boundary_grades) and the second aligner's pieces.
+            **{key: alignment[key] for key in ("boundaries", "boundary_policy", "second") if key in alignment}}},
     }
 
 
 def remap_whitespace_only(alignment, text):
-    """Alignment re-indexed onto ``text`` when only whitespace differs, else None.
+    """Alignment re-indexed onto ``text`` when only whitespace (or 简/繁) differs, else None.
 
-    The delivery step normalises formatting whitespace after alignment; every
-    other character must be identical and in the same order.
+    The delivery step normalises formatting whitespace after alignment, and
+    (2026-10-22, Chinese captions are aligned too) converts 繁體 subtitles
+    character for character; every other character must be identical and in
+    the same order. The units keep the text the aligner heard
+    (``aligned_text``); the pieces read the delivered text.
     """
     old = str(alignment.get("text") or "")
     if old == text:
         return alignment
+    from ..subtitle_rules.chinese_script import fold
+    old_key, new_key = fold(old), fold(text)
     old_positions = [i for i, c in enumerate(old) if not c.isspace()]
     new_positions = [i for i, c in enumerate(text) if not c.isspace()]
-    if [old[i] for i in old_positions] != [text[i] for i in new_positions]:
+    if [old_key[i] for i in old_positions] != [new_key[i] for i in new_positions]:
         return None
     index = {o: n for o, n in zip(old_positions, new_positions)}
 
@@ -290,12 +449,18 @@ def remap_whitespace_only(alignment, text):
 
     moved = copy.deepcopy(alignment)
     moved["text"] = text
-    for piece in moved.get("segments") or ():
+    for piece in [*(moved.get("segments") or ()), *((moved.get("second") or {}).get("segments") or ())]:
         piece["char_start"], piece["char_end"] = start(int(piece["char_start"])), end(int(piece["char_end"]))
+    for row in moved.get("boundaries") or ():  # the line start and end stay the text's own edges
+        position = int(row["pos"])
+        row["pos"] = 0 if position == 0 else len(text) if position >= len(old) else start(position)
     for key in ("units_word", "units_char"):
         for row in moved.get(key) or ():
             row[1], row[2] = start(int(row[1])), end(int(row[2]))
     moved["whitespace_remapped"] = True
+    if [old[i] for i in old_positions] != [text[i] for i in new_positions]:
+        moved["script_remapped"] = True
+        moved["aligned_text"] = old
     return moved
 
 

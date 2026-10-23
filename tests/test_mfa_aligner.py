@@ -28,6 +28,17 @@ def _job(text, language, start=10_000, end=12_000):
     return {"id": "S01@10000-12000", "text": text, "language": language, "window_start_ms": start, "window_end_ms": end}
 
 
+def test_process_count_follows_the_amount_of_audio(worker, monkeypatch):
+    # 2026-10-22: 8 processes took 96-101 s on a 24-minute episode, 3-4 took ~72 s (same alignments).
+    monkeypatch.setattr(worker.os, "cpu_count", lambda: 32)
+    windows = lambda seconds: [{"window_start_ms": 0, "window_end_ms": seconds * 1000}]
+    assert worker.process_count(windows(5)) == 1           # one caption re-aligned in Studio
+    assert worker.process_count(windows(953)) == 3         # the user's episode
+    assert worker.process_count(windows(6 * 3600)) == 8    # long streams keep the old ceiling
+    monkeypatch.setattr(worker.os, "cpu_count", lambda: 4)
+    assert worker.process_count(windows(6 * 3600)) == 3
+
+
 def _mfa(words, phones=()):
     return {"start": 0, "end": 2.0, "tiers": {"words": {"type": "interval", "entries": [list(w) for w in words]},
                                               "phones": {"type": "interval", "entries": [list(p) for p in phones]}}}
@@ -47,6 +58,120 @@ def test_chinese_words_give_per_character_times_from_tone_syllables(worker):
     assert row["segments"][0]["char_start"] == 0 and row["segments"][-1]["char_end"] == len("看开头，路面")
     assert all(s["start_basis"] == "model" for s in row["segments"])
     assert row["char_units"] is not None and "mfa_quality" not in row
+
+
+MINI_DICT = {"上": "ʂ a˥˩ ŋ", "午": "u˨˩˦", "下": "ɕ a˥˩", "面": "m j e˥˩ n", "万": "w a˥˩ n", "物": "u˥˩",
+             "晚": "w a˨˩˦ n", "安": "ʔ a˥ n", "阳": "j a˧˥ ŋ", "好": "x aw˨˩˦", "了": "l ə",
+             "阴": "i˥ n", "影": "i˨˩˦ ŋ", "信": "ɕ i˥˩ n", "仰": "j a˨˩˦ ŋ|ʔ a˧˥ ŋ"}
+MINI_RULES = """dialects:
+  china:
+  - {segment: ʔ, replacement: '', preceding_context: '', following_context: '', probability: 0.3}
+  - {segment: n j, replacement: ɲ, preceding_context: '', following_context: '', probability: 0.09}
+"""
+
+
+def _phones(labels):
+    return [(i / 10, (i + 1) / 10, label) for i, label in enumerate(labels.split())]
+
+
+@pytest.fixture()
+def readings(worker, tmp_path):
+    folder = tmp_path / "dictionary"
+    folder.mkdir()
+    (folder / "mandarin_china_mfa.dict").write_text(
+        "".join(f"{char}\t0.99\t0.1\t1.0\t1.0\t{phones}\n" for char, readings in MINI_DICT.items()
+                for phones in readings.split("|"))
+        + "上午\t0.99\t0.1\t1.0\t1.0\tʂ a˥˩ ŋ u˨˩˦\n", encoding="utf-8")
+    (folder / "rules.yaml").write_text(MINI_RULES, encoding="utf-8")
+    return worker.load_pronunciations(folder / "mandarin_china_mfa.dict")
+
+
+@pytest.mark.parametrize("word, labels, with_dictionary, without_dictionary", [
+    # 2026-10-22: the old rule gave 午 the ŋ of 上 and 下 the m of 面.
+    ("上午", "ʂ a˥˩ ŋ u˨˩˦", [0, 3], [0, 3]),
+    ("下面", "ɕ a˥˩ m j e˥˩ n", [0, 2], [0, 2]),
+    # A lone n closes 万 here, but would open 怒 in 大怒: only the dictionary can tell.
+    ("万物", "w a˥˩ n u˥˩", [0, 3], "coda_or_onset"),
+    # MFA's rules drop the glottal stop of 安.
+    ("晚安", "w a˨˩˦ n a˥ n", [0, 3], "coda_or_onset"),
+    # n+j merged into one phone across the two characters: no place to cut,
+    # even where the second character also has a reading without the j.
+    ("安阳", "ʔ a˥ ɲ a˧˥ ŋ", "coda_or_onset", "coda_or_onset"),
+    ("信仰", "ɕ i˥˩ ɲ a˨˩˦ ŋ", "coda_or_onset", "coda_or_onset"),
+    # The dictionary writes the n of 阴 as ɲ before 影.
+    ("阴影", "i˥ ɲ i˨˩˦ ŋ", [0, 2], "coda_or_onset"),
+    # A neutral-tone syllable has no tone mark; the dictionary still finds it.
+    ("好了", "x aw˨˩˦ l ə", [0, 2], "untoned_syllable"),
+])
+def test_chinese_character_cuts_come_from_the_dictionary_or_certain_syllable_rules(
+        worker, readings, word, labels, with_dictionary, without_dictionary):
+    phones = _phones(labels)
+    for pronunciations, expected in ((readings, with_dictionary), (None, without_dictionary)):
+        starts, method = worker.char_starts(word, phones, pronunciations)
+        if isinstance(expected, str):
+            assert (starts, method) == (None, expected)
+        else:
+            assert starts == [phones[i][0] for i in expected]
+            assert method == ("dictionary" if pronunciations else "phonotactic")
+
+
+def test_rows_keep_raw_mfa_tiers_and_doubtful_words_whole(worker):
+    words = [(0.10, 0.50, "万物"), (0.50, 0.90, "上午")]
+    phones = [(0.10, 0.20, "w"), (0.20, 0.32, "a˥˩"), (0.32, 0.38, "n"), (0.38, 0.50, "u˥˩"),
+              (0.50, 0.60, "ʂ"), (0.60, 0.72, "a˥˩"), (0.72, 0.78, "ŋ"), (0.78, 0.90, "u˨˩˦")]
+    row = worker.build_row(_job("万物上午", "Chinese"), _mfa([(0.0, 0.1, ""), *words], phones), window_ms=2000)
+    assert row["mfa_raw"]["words"][0] == [0, 100, ""] and row["mfa_raw"]["phones"][2] == [320, 380, "n"]
+    assert row["char_split"] == [[0, 1, "coda_or_onset"], [2, 3, "phonotactic"]]
+    assert [u["text"] for u in row["char_units"]] == ["万物", "上", "午"]
+    assert row["char_units"][2]["start_ms"] == 10780  # 午 starts after the ŋ of 上
+    assert 1 not in [s["char_start"] for s in row["segments"]]  # never cut inside 万物
+    assert (row["stats"]["char_split_phonotactic"], row["stats"]["char_split_kept_whole"]) == (1, 1)
+
+
+def test_real_mandarin_dictionary_syllable_rules_never_contradict_it(worker):
+    """Every rule cut agrees with the dictionary's own unique reading (MFA 3.4.3 model, 2026-10-22)."""
+    dictionary = ROOT / "models" / "MFA-mandarin" / "dictionary" / "mandarin_china_mfa.dict"
+    if not dictionary.is_file():
+        pytest.skip("MFA Mandarin model not installed")
+    plain, readings = {}, worker.load_pronunciations(dictionary)
+    entries = []
+    for line in dictionary.read_text("utf-8").splitlines():
+        parts = line.split("\t")
+        if len(parts[0]) == 1:
+            plain.setdefault(parts[0], set()).add(tuple(worker._toneless(p) for p in parts[-1].split()))
+        elif 2 <= len(parts[0]) <= 4 and all("一" <= c <= "鿿" for c in parts[0]):
+            entries.append((parts[0], parts[-1].split()))
+    checked = cut = 0
+    for word, labels in entries:
+        phones = [(i, i + 1, label) for i, label in enumerate(labels)]
+        starts, _method = worker.char_starts(word, phones, readings)
+        cut += starts is not None
+        truth = worker._dictionary_splits(word, labels, plain)
+        rule, _reason = worker._phonotactic_starts(labels, len(word))
+        if len(truth) == 1:
+            checked += 1
+            assert rule is None or rule == list(next(iter(truth))), (word, labels)
+            assert starts is None or starts[1:] == list(next(iter(truth))), (word, labels)
+    assert checked > 50_000 and cut / len(entries) > 0.95
+
+
+def test_aligner_receipts_are_kept_per_stage(tmp_path, monkeypatch):
+    from twobyteasr.recognition import asr, timing_evidence
+    payload = {"protocol": "mfa-aligner-units-v1", "results": [{
+        "id": "S01@0.0-1.0", "text": "你好", "status": "aligned", "mfa_raw": {"words": [[300, 700, "你好"]], "phones": []},
+        "segments": [{"char_start": 0, "char_end": 2, "start_ms": 300, "end_ms": 700,
+                      "start_basis": "model", "end_basis": "model", "granularity": "word"}]}]}
+    monkeypatch.setattr(asr, "run_qwen_aligner_worker", lambda audio, jobs: payload)
+    events = []
+    monkeypatch.setattr(asr, "record_run_event", lambda event, **data: events.append((event, data)))
+    tokens = asr.transcribe_qwen_aligner_reference(np.zeros(32000, np.float32), [{"start": 0.0, "end": 1.0, "text": "你好"}],
+                                                   language="Chinese", evidence_dir=tmp_path / "timing-evidence")
+    assert [t["text"] for t in tokens] == ["你好"]
+    saved = tmp_path / "timing-evidence" / "segments-chinese-mfa.json.gz"
+    record = timing_evidence.load_receipt(saved)
+    assert record["stage"] == "segments" and record["engine"] == "mfa" and record["payload"] == payload
+    assert events[0][0] == "forced_alignment" and events[0][1]["evidence"] == str(saved)
+    assert timing_evidence.save_aligner_payload(None, "segments", "Chinese", payload) is None
 
 
 def test_unmatched_words_are_interpolated_and_offer_no_boundary(worker):

@@ -51,6 +51,30 @@ def test_unsupported_search_is_one_capability_fact_with_complete_unexecuted_scop
     assert not (Path(cache['cache_dir']) / 'term_verification').exists()
 
 
+def test_search_with_proofreading_off_is_skipped_not_a_failed_task(context, monkeypatch):
+    # 2026-10-22 user report: 联网补充核验 on, 文字校对 off -> the task failed
+    # after the whole ASR run with "Text AI stage is disabled for this task: polish".
+    _, owner, cache = context
+    owner.provider_snapshot = None
+    owner.provider_snapshots = {}
+    owner.asr_settings_snapshot = {'models': {'polish_provider': 'disabled', 'group_provider': 'disabled'},
+        'switches': {'enable_ai_polish': False, 'use_ai_grouping': False, 'unified_glm_processing': True}}
+    owner.enable_term_search = True
+    events = []
+    monkeypatch.setattr(domain_terms, 'record_run_event', lambda event, **kw: events.append((event, kw)))
+    monkeypatch.setattr(domain_terms, 'load_glossary', lambda: [])
+    monkeypatch.setattr(domain_terms, 'load_verified_game_terms', lambda: [])
+    monkeypatch.setattr(domain_terms, 'load_content_context', lambda *a: '')
+    monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: pytest.fail('no provider without proofreading'))
+    rows = [cue(1, '候选术语'), cue(2, '候选术语也在')]
+    assert [row.text for row in domain_terms.run_optional_term_verification(rows, '素材', cache)] == ['候选术语', '候选术语也在']
+    summary = owner.terminology_status
+    assert summary['status'] == 'not_configured' and summary['unverified_ids'] == [1, 2]
+    assert '文字校对未开启' in summary['reason'] and not summary['retryable']
+    assert [event for event, _ in events] == ['domain_term_verification_summary', 'domain_term_search_skipped']
+    assert domain_terms.term_search_capability()['status'] == 'not_configured'
+
+
 def test_confirmed_local_glossary_works_with_optional_search_disabled(context, monkeypatch):
     core, owner, cache = context
     frozen = snapshot_glossaries(facade([confirmed('Borlin', 'BerLIN')]), ['valorant-id'])

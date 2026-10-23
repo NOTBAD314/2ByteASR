@@ -665,6 +665,33 @@ def _grouped_stage_text_valid(value, extra_signature):
     return grouped_result_is_valid(source, value)
 
 
+# Plain words for the user when a grouping result is refused (2026-10-21: the bare
+# "did not pass" message gave the user nothing to act on).
+_GROUPING_PROBLEMS = {
+    "source_time_mismatch": "有字幕的时间超出了它那句话本身的起止",
+    "text_mutation_rejected": "字幕文字和识别原文对不上",
+    "protected_boundary": "有一条字幕跨过了不同说话人或相隔较远的两句",
+    "invalid_time": "有字幕的时间无效",
+    "source_identity": "说话人或句子编号对不上",
+    "source_text": "有字幕的文字为空",
+}
+
+
+def _grouped_stage_problem(value, extra_signature):
+    """Why a grouping result fails the source contract, in plain words ('' when it passes)."""
+    source = extra_signature.get("segments") if isinstance(extra_signature, dict) else None
+    if source is None:
+        return "缺少断句来源"
+    from ..subtitle_rules.grouping_contract import GroupingContractError, validate_grouping_result
+    try:
+        validate_grouping_result(source, value)
+    except GroupingContractError as error:
+        return _GROUPING_PROBLEMS.get(error.category, str(error))
+    except (TypeError, AttributeError, KeyError) as error:
+        return f"结果格式错误（{type(error).__name__}）"
+    return ""
+
+
 def run_cached_stage(
     stage,
     cache_context,
@@ -738,8 +765,11 @@ def run_cached_stage(
     with capture_review_items() as stage_review_items:
         value = runner()
     require_current()
-    if stage in {"grouped", "grouped_local"} and not _grouped_stage_text_valid(value, extra_signature):
-        raise ValueError("断句阶段结果未通过来源正文、归属与时间校验；未提交或缓存。")
+    problem = _grouped_stage_problem(value, extra_signature) if stage in {"grouped", "grouped_local"} else ""
+    if problem:
+        record_run_event("grouping_result_refused", stage=stage, problem=problem)
+        raise ValueError(f"断句阶段结果未通过来源正文、归属与时间校验：{problem}；未提交或缓存。"
+                         "请重新识别；同一个视频反复出现时，请用“回报问题”把这次的运行日志发给开发者。")
     extend_review_items(stage_review_items)
     used_fallback = any(
         item.get("category") in ("漏句回退", "校对回退", "断句回退")
@@ -957,8 +987,13 @@ def store_cached_stage_value(
     value,
     encoder=lambda value: value,
     extra_signature=None,
+    review_items=(),
 ):
-    """写入已经由批量常驻模型算出的阶段结果。"""
+    """写入已经由批量常驻模型算出的阶段结果。
+
+    Also used by the cloud stage when VAD ran beside it (2026-10-22): its
+    entry is written once the VAD key is known; ``review_items`` replay on a hit.
+    """
     cache_path = _stage_cache_path(stage, cache_context, cache_stage_signature(stage, extra_signature))
     atomic_write_json(
         cache_path,
@@ -971,7 +1006,7 @@ def store_cached_stage_value(
             "model_identity": (extra_signature.get("model_identity") if isinstance(extra_signature, dict) else ""),
             "runtime_version": (extra_signature.get("runtime_version") if isinstance(extra_signature, dict) else "") or PIPELINE_BUILD_ID,
             "upstream_artifact_hashes": (extra_signature.get("upstream_artifact_hashes") if isinstance(extra_signature, dict) else {}),
-            "review_items": [],
+            "review_items": list(review_items),
             "data": encoder(value),
         },
     )

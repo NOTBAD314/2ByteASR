@@ -6,7 +6,7 @@ Typical next release (only the version file changes by hand):
     python scripts/sync_product_version.py              # after editing 2byteasr_version.json
     python -B scripts/release_pipeline.py freeze --version 0.6.6 --output tmp/release-066/build-r1
     python -B scripts/release_pipeline.py feed --build tmp/release-066/build-r1 --assets releases/0.6.6 \
-        --notes-json docs/releases/0.6.6.in-app.json \
+        --notes-json docs/releases/0.6.6.in-app.json --gitcode-first \
         --previous-manifest https://github.com/NOTBAD314/2ByteASR/releases/download/v0.6.5/2ByteASR-update.json
     python -B scripts/release_pipeline.py sources --build tmp/release-066/build-r1 --assets releases/0.6.6
     python -B scripts/release_pipeline.py sums --assets releases/0.6.6
@@ -14,10 +14,12 @@ Typical next release (only the version file changes by hand):
     python -B scripts/release_pipeline.py verify-source --build tmp/release-066/build-r1 --commit <commit>
     python -B scripts/release_pipeline.py upload --assets releases/0.6.6 --tag v0.6.6 --target <commit> \
         --notes-file docs/releases/0.6.6.md
-    # after the owner publishes:
-    python -B scripts/release_pipeline.py verify-public --tag v0.6.6 --assets releases/0.6.6
-    # mainland mirror (token in ~/.config/gitcode/token.txt or GITCODE_TOKEN):
+    # mainland mirror (token in ~/.config/gitcode/token.txt or GITCODE_TOKEN), on the draft:
+    # everything but the update manifest, so --gitcode-first programs find their files there at once
+    python -B scripts/release_pipeline.py gitcode --tag v0.6.6 --assets releases/0.6.6 --before-publish
+    # right after the owner publishes:
     python -B scripts/release_pipeline.py gitcode --tag v0.6.6 --assets releases/0.6.6
+    python -B scripts/release_pipeline.py verify-public --tag v0.6.6 --assets releases/0.6.6
 
 Rules: outputs are never overwritten; a published release or its assets are
 never replaced (``upload`` refuses); the signing key stays outside the
@@ -30,6 +32,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,6 +53,7 @@ from twobyteasr.app.update_manifest import (  # noqa: E402
     entries_from_record, environment_contracts, file_sha256, model_contracts, parse_update_manifest,
     parse_version, validate_installed_manifest, verify_manifest_signature,
 )
+from twobyteasr.app.updater import gitcode_url, github_url  # noqa: E402
 
 REPOSITORY = "NOTBAD314/2ByteASR"
 DOWNLOAD_BASE = f"https://github.com/{REPOSITORY}/releases/download"
@@ -209,6 +213,31 @@ def _load_previous(reference: str | None):
     return json.loads(manifest.decode("utf-8"))
 
 
+def listed_urls(urls, gitcode_first: bool = False) -> list[str]:
+    """The ``urls`` of one release file in the signed manifest.
+
+    Default: the GitHub address only, as every release so far.  ``gitcode_first``
+    lists the GitCode copy (same tag and name, uploaded by the ``gitcode`` step)
+    before it.  Programs 0.6.5-0.8.2 try listed URLs in order (0.6.5-0.8.1
+    never ask GitCode themselves), so this moves their downloads to GitCode
+    (~14 MB/s on a mainland line) -- outside China too, where they cannot fall
+    back on speed.  Later programs ignore the order and start where their
+    update check was answered.  The manifest goes live when GitHub publishes,
+    so the files must already be on GitCode: ``gitcode --before-publish`` on
+    the draft, ``gitcode`` again right after publishing (otherwise old programs
+    fail on GitCode and fall back to a github.com that may crawl).  The owner
+    chose this for the release after 0.8.2 (2026-10-22).
+    """
+    github = list(dict.fromkeys(github_url(url) or url for url in urls))
+    if not gitcode_first:
+        return github
+    return [listed for url in github for listed in ((gitcode_url(url), url) if gitcode_url(url) else (url,))]
+
+
+def _github_listed(urls) -> str:
+    return next((url for url in urls if url.startswith(DOWNLOAD_BASE + "/")), urls[0])
+
+
 def cmd_feed(args) -> None:
     build = Path(args.build).resolve()
     freeze = json.loads((build / "evidence" / "freeze.json").read_text("utf-8"))
@@ -230,7 +259,9 @@ def cmd_feed(args) -> None:
         entry = {k: record[k] for k in ("content_sha256", "file_count", "bytes")}
         earlier = (previous or {}).get("components", {}).get(name)
         if earlier and earlier.get("content_sha256") == record["content_sha256"] and earlier.get("archive"):
-            entry["archive"] = earlier["archive"]  # identical content: reference the fixed earlier asset
+            # identical content: reference the fixed earlier asset (its tag on both hosts)
+            entry["archive"] = {**earlier["archive"],
+                                "urls": listed_urls(earlier["archive"]["urls"], args.gitcode_first)}
             reused.append(name)
         elif args.skip_archives and name in args.skip_archives:
             entry["archive"] = None
@@ -241,7 +272,8 @@ def cmd_feed(args) -> None:
             _log(f"archive {name}: {record['file_count']} files, {record['bytes']} bytes")
             _zip_component(payload, name, record, archive)
             entry["archive"] = {"name": archive.name, "size": archive.stat().st_size,
-                                "sha256": file_sha256(archive), "urls": [base + archive.name]}
+                                "sha256": file_sha256(archive),
+                                "urls": listed_urls([base + archive.name], args.gitcode_first)}
             uploaded.append(name)
         components[name] = entry
     setup_src = Path(freeze["setup"]["path"])
@@ -262,7 +294,7 @@ def cmd_feed(args) -> None:
         "release_page": args.release_page or f"https://github.com/{REPOSITORY}/releases/tag/{tag}",
         "notes": notes,
         "setup": {"name": setup_name, "size": freeze["setup"]["size"], "sha256": freeze["setup"]["sha256"],
-                  "urls": [base + setup_name]},
+                  "urls": listed_urls([base + setup_name], args.gitcode_first)},
         "components": components,
         "environments": environment_contracts(lock),
         "models": model_contracts(lock),
@@ -278,8 +310,10 @@ def cmd_feed(args) -> None:
     verify_manifest_signature(manifest_path.read_bytes(), (assets / UPDATE_SIGNATURE_NAME).read_bytes())
     _write_json(build / "evidence" / f"feed-{args.channel}-{version}.json",
                 {"assets": str(assets), "uploaded_components": uploaded, "referenced_components": reused,
-                 "manifest_sha256": file_sha256(manifest_path), "base_url": base}, exclusive=False)
-    _log(f"feed {version}: new archives {uploaded}, referenced {reused}")
+                 "manifest_sha256": file_sha256(manifest_path), "base_url": base,
+                 "gitcode_first": bool(args.gitcode_first)}, exclusive=False)
+    _log(f"feed {version}: new archives {uploaded}, referenced {reused}"
+         + ("; GitCode listed first: run the gitcode step right after publishing" if args.gitcode_first else ""))
 
 
 # -------------------------------------------------------------------------- sources
@@ -476,7 +510,9 @@ def cmd_verify_public(args) -> None:
         signature = session.get(latest + ".sig", timeout=(10, 60)).content
         verify_manifest_signature(manifest, signature)
         parsed = parse_update_manifest(manifest)
-        urls = [parsed.setup.urls[0]] + [c.archive.urls[0] for c in parsed.components.values() if c.archive]
+        # GitHub copies only: GitCode ones (--gitcode-first) are checked by the gitcode step.
+        urls = [_github_listed(parsed.setup.urls)] + [_github_listed(c.archive.urls)
+                                                      for c in parsed.components.values() if c.archive]
         reachable = {}
         for url in urls:
             response = session.head(url, timeout=(10, 60), allow_redirects=True)
@@ -497,32 +533,63 @@ def cmd_verify_public(args) -> None:
 
 
 def cmd_gitcode(args) -> None:
-    """Mirror the published GitHub release to GitCode, then check it anonymously.
+    """Mirror the GitHub release to GitCode, then check it anonymously.
 
     Safe to run again: files already on GitCode are skipped. Older component
     archives that the update manifest still references are fetched from
     GitHub, checked against the signed manifest and added to their own tag.
+
+    ``--before-publish`` runs on the GitHub draft (2026-10-22, for manifests
+    made with ``feed --gitcode-first``): every file except the update manifest
+    and its signature goes up, and GitCode's latest marker goes back to the
+    release GitHub calls latest, so no program sees the new version early.
+    When GitHub publishes, programs that follow the manifest's order find all
+    their files on GitCode at once.  Right after publishing, run again
+    without the flag: it adds the two held-back files and marks the release latest.
     """
     import gitcode_release as gc
     assets = Path(args.assets).resolve()
     files = upload_list(assets)
     release = _release_by_tag(args.tag)
-    if not release or release.get("draft"):
-        raise SystemExit(f"{args.tag} is not published on GitHub; GitCode only mirrors published releases")
+    early = bool(getattr(args, "before_publish", False) and release and release.get("draft"))
+    if not release or (release.get("draft") and not early):
+        raise SystemExit(f"{args.tag} is not published on GitHub; GitCode only mirrors published releases "
+                         "(--before-publish takes the draft)")
     manifest_bytes = (assets / UPDATE_MANIFEST_NAME).read_bytes()
     verify_manifest_signature(manifest_bytes, (assets / UPDATE_SIGNATURE_NAME).read_bytes())
     manifest = json.loads(manifest_bytes)
     if manifest.get("tag") != args.tag:
         raise SystemExit(f"{assets / UPDATE_MANIFEST_NAME} belongs to {manifest.get('tag')}, not {args.tag}")
+    commit = str(release.get("target_commitish") or "")
+    if early:
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise SystemExit(f"the {args.tag} draft targets {commit!r}; --before-publish needs the release "
+                             "commit (upload --target <commit>)")
+        held_back = (UPDATE_MANIFEST_NAME, UPDATE_SIGNATURE_NAME)
+        files = [path for path in files if path.name not in held_back]
+        _log(f"gitcode: before publishing; holding back {', '.join(held_back)}")
     token = gc.read_token(Path(args.token_file) if args.token_file else None)
     client = gc.GitCode(token, log=_log)
+    previous, keep = "", None
+    if early:
+        previous = _published_latest_tag()
+        keep = client.release(previous) if previous and previous != args.tag else None
+        if not (keep and keep.get("name") and keep.get("body")):
+            # mark_latest rewrites title and notes: never guess them
+            raise SystemExit(f"GitCode has no title and notes for {previous or 'the published release'}, "
+                             "which must stay marked latest until GitHub publishes")
     title = args.title or release.get("name") or args.tag
     notes = Path(args.notes_file).read_text("utf-8") if args.notes_file else (release.get("body") or args.tag)
     referenced = gc.referenced_archives(manifest, args.tag)
     tags = [args.tag] + sorted({item["tag"] for item in referenced})
     if not args.skip_push:
-        _run(["git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main",
-              *[f"refs/tags/{t}:refs/tags/{t}" for t in tags]], cwd=ROOT)
+        if early:  # GitHub creates the tag only when it publishes
+            _run(["git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main", commit,
+                  *[f"refs/tags/{t}:refs/tags/{t}" for t in tags[1:]]], cwd=ROOT)
+            _tag_commit(args.tag, commit)
+        else:
+            _run(["git", "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main",
+                  *[f"refs/tags/{t}:refs/tags/{t}" for t in tags]], cwd=ROOT)
         gc.push_refs(ROOT, ["+refs/remotes/origin/main:refs/heads/main",
                             *[f"refs/tags/{t}:refs/tags/{t}" for t in tags]], token, log=_log)
     current = client.release(args.tag) or client.create_release(args.tag, title, notes,
@@ -542,17 +609,38 @@ def cmd_gitcode(args) -> None:
             if item["tag"] == tag and item["name"] not in have:
                 path = gc.fetch_verified(item["github"], cache / tag / item["name"], item["size"], item["sha256"])
                 client.upload(tag, path)
-    if not release.get("prerelease"):
+    if early:
+        # Creating and filling the new release made it GitCode's latest; it has no manifest yet.
+        client.mark_latest(previous, keep["name"], keep["body"])
+    elif not release.get("prerelease"):
         client.mark_latest(args.tag, title, notes)
-    _gitcode_verify(args, assets, files, referenced, release, gc)
+    _gitcode_verify(args, assets, files, referenced, release, gc, expect_latest=previous if early else "")
 
 
-def _gitcode_verify(args, assets: Path, files: list[Path], referenced: list[dict], release: dict, gc) -> None:
+def _published_latest_tag() -> str:
+    try:
+        return str(json.loads(_gh("api", f"repos/{REPOSITORY}/releases/latest")).get("tag_name") or "")
+    except subprocess.CalledProcessError:
+        return ""
+
+
+def _tag_commit(tag: str, commit: str) -> None:
+    """A local lightweight tag on ``commit``, the same one GitHub creates when it publishes."""
+    found = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}^{{commit}}"], cwd=ROOT,
+                           capture_output=True, text=True).stdout.strip()
+    if found and found != commit:
+        raise SystemExit(f"local tag {tag} points at {found}, the draft at {commit}")
+    if not found:
+        _run(["git", "tag", tag, commit], cwd=ROOT)
+
+
+def _gitcode_verify(args, assets: Path, files: list[Path], referenced: list[dict], release: dict, gc,
+                    expect_latest: str = "") -> None:
     handlers = [urllib.request.ProxyHandler({"https": args.verify_proxy, "http": args.verify_proxy}
                                            if args.verify_proxy else {})]
     opener = urllib.request.build_opener(*handlers)
     report = {"tag": args.tag, "checked_at": datetime.now(timezone.utc).isoformat(), "anonymous": True,
-              "proxy": args.verify_proxy or "", "assets": [], "referenced": []}
+              "proxy": args.verify_proxy or "", "before_publish": bool(expect_latest), "assets": [], "referenced": []}
     small = 50 * 1024 * 1024
     for path in files:
         size = path.stat().st_size
@@ -564,7 +652,10 @@ def _gitcode_verify(args, assets: Path, files: list[Path], referenced: list[dict
                                  item["sha256"] if args.full or item["size"] < small else None, opener=opener)
         report["referenced"].append({"name": item["name"], "tag": item["tag"], **row})
     report["latest_tag"] = gc.GitCode().latest_tag()
-    report["latest_ok"] = bool(release.get("prerelease")) or report["latest_tag"] == args.tag
+    if expect_latest:  # before publishing: the release users have now must still be latest
+        report["latest_ok"] = report["latest_tag"] == expect_latest
+    else:
+        report["latest_ok"] = bool(release.get("prerelease")) or report["latest_tag"] == args.tag
     report["all_ok"] = (report["latest_ok"] and all(r["ok"] for r in report["assets"])
                         and all(r["ok"] for r in report["referenced"]))
     stamp = datetime.now().strftime('%Y%m%dT%H%M%S')
@@ -639,6 +730,10 @@ def main() -> None:
     p.add_argument("--notes-json")
     p.add_argument("--previous-manifest")
     p.add_argument("--skip-archives", nargs="*", default=[])
+    p.add_argument("--gitcode-first", action="store_true",
+                   help="list each file's GitCode copy before GitHub, so installed 0.6.5-0.8.2 download from "
+                        "GitCode (users outside China too); the owner chose it for the next release on "
+                        "2026-10-22, together with gitcode --before-publish (see listed_urls)")
     p.add_argument("--no-copy-setup", dest="copy_setup", action="store_false",
                    help="QA feeds: reference the Setup without copying it into the assets folder")
     p.set_defaults(func=cmd_feed)
@@ -680,6 +775,9 @@ def main() -> None:
     p.add_argument("--skip-push", action="store_true", help="tags and main are already on GitCode")
     p.add_argument("--full", action="store_true", help="hash every file in the check, not only small ones")
     p.add_argument("--verify-proxy", help="check downloads through this proxy (e.g. a mainland relay)")
+    p.add_argument("--before-publish", action="store_true",
+                   help="run on the GitHub draft: upload all but the update manifest and its signature, keep "
+                        "GitCode's latest on the published release; run again without it right after publishing")
     p.set_defaults(func=cmd_gitcode)
     p = sub.add_parser("verify-source", help="clean checkout of the release commit reproduces the build fingerprint")
     p.add_argument("--build", required=True)

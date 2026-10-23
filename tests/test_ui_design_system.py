@@ -42,9 +42,11 @@ def test_main_shell_fits_compact_desktop_density():
     win.show()
     QApplication.processEvents()
     assert win.settings_surface.height() >= win.settings_surface.minimumHeight()
-    # Home C′ (2026-10-17): compact model cards and a one-line AI row.
+    # Home C′ (2026-10-17): compact model cards; the AI card (2026-10-22,
+    # design B) drops its role line and feature tags on a short window.
     assert all(card.height() >= card.minimumHeight() >= 130 for card in win.recognition_plan.cards.values())
-    assert all(tile.minimumHeight() == 60 for tile in win.setting_tiles.values())
+    assert all(tile._compact and tile.role_label.isHidden() and tile.feature_row.isHidden()
+               for tile in win.setting_tiles.values())
     assert win.bottom_bar.isVisible()
     win.close()
 

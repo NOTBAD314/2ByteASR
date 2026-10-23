@@ -31,7 +31,9 @@ def capture_manual_save(page, project, generation):
     store = getattr(page, "_revision_store", None)
     if store is None or store.project is not project:
         store = page._revision_store = StudioRevisionStore(project)
-    revision = store.refresh_persistence(generation)
+    # Autosaves trust an evidence row object they have seen; a formal save
+    # compares every row's content (also catches a row changed in place).
+    revision = store.refresh_persistence(generation, deep=True)
     # Importers and compatibility callers may modify these records without
     # emitting a StateDelta. An explicit Save must include those changes too.
     return replace(

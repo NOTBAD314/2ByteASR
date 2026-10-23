@@ -190,6 +190,14 @@ from .studio_widgets import ScrubDoubleSpinBox, ScrubSpinBox, _icon, _icon_label
 
 
 _ORIGINAL_SAVE_AUTOSAVE = save_autosave
+# Geometry events the page filter acts on only for the video, the tool drawer
+# and the window (2026-10-22: a divider step moves/resizes ~200 widgets).
+_GEOMETRY_EVENT_TYPES = frozenset({
+    QEvent.Type.Move,
+    QEvent.Type.Resize,
+    QEvent.Type.Show,
+    QEvent.Type.DevicePixelRatioChange,
+})
 
 
 class SubtitleStudioPage(
@@ -353,6 +361,10 @@ class SubtitleStudioPage(
 
         runtime = state_for(value)
         runtime.subscribe(self._consume_state_delta)
+        # 2026-10-22 (MFA plan step 5): manual timing edits appended to a journal outside the project.
+        from ..projects.timing_journal import TimingJournal
+        self._timing_journal = TimingJournal(value, lambda: self.project_path)
+        runtime.subscribe(self._timing_journal.consume)
         self.session.runtime = runtime
         self._revision_store = StudioRevisionStore(value, revision=runtime.revision)
         recovery = getattr(self, "_draft_recovery", None)
@@ -532,6 +544,8 @@ class SubtitleStudioPage(
         self._autosave_write_lock = threading.Lock()
         from ..projects.editor_recovery import DraftRecovery
         self._draft_recovery = DraftRecovery(self)
+        from ..projects.evidence_idle_check import EvidenceIdleCheck
+        self._evidence_idle_check = EvidenceIdleCheck(self)
         self._autosave_profile: list[dict[str, object]] = []
         self._recovered_autosave_pending = False
         self._autosave_deadline = AutosaveDeadline()
@@ -1152,6 +1166,11 @@ class SubtitleStudioPage(
                 self._refresh_studio_empty_state(rescan=False)
         if event_type not in self._FILTERED_EVENT_TYPES:
             return False
+        if (event_type in _GEOMETRY_EVENT_TYPES and watched is not getattr(self, "video", None)
+                and watched is not getattr(self, "context_drawer", None) and watched is not self.window()):
+            # 2026-10-22: a panel-divider step moves/resizes ~200 widgets;
+            # only these three use the geometry events below.
+            return False
         if event_type in (QEvent.Type.MouseButtonDblClick, QEvent.Type.MouseButtonPress):
             if watched in {
                 getattr(self, "studio_toolbar", None),
@@ -1223,12 +1242,17 @@ class SubtitleStudioPage(
                     event.accept()
                     return True
             return super().eventFilter(watched, event)
-        if canvas_editor is not None and event.type() == QEvent.Type.MouseButtonPress and watched is not canvas_editor and not canvas_editor.isAncestorOf(watched):
+        # 2026-10-22: a press reaches the top-level QWindow before the widget
+        # under the pointer. isAncestorOf(QWindow) raised TypeError, and
+        # PySide built that message by stat-ing every loaded module (about
+        # 2 s per click in report-eb10). Decide on the widget's own press.
+        pressed_widget = event_type == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget)
+        if canvas_editor is not None and pressed_widget and watched is not canvas_editor and not canvas_editor.isAncestorOf(watched):
             self._commit_canvas_inline_edit()
         editor = getattr(getattr(self, "timeline", None), "_inline_editor", None)
         if (
             editor is not None
-            and event.type() == QEvent.Type.MouseButtonPress
+            and pressed_widget
             and watched is not editor
             and not editor.isAncestorOf(watched)
         ):
@@ -1406,8 +1430,30 @@ class SubtitleStudioPage(
             selected_cue=self.selected_cue_id,
             review_mode=self._review_mode,
         )
+        if self._edit_selected_translation():
+            return True
         self._edit_subtitle_at_playhead()
         return True
+
+    def _edit_selected_translation(self) -> bool:
+        """E on a selected translation block edits that translation in place.
+
+        2026-10-22 (user): the translation row could only be edited by double
+        click. A click on a translation block marks the translation line as
+        the selection (``timeline.selected_lane``); E then opens the same
+        timeline editor as a double click. Otherwise E keeps following the
+        playhead."""
+        timeline = getattr(self, "timeline", None)
+        if (timeline is None or not getattr(timeline, "bilingual", False)
+                or getattr(timeline, "selected_lane", "") != "translation"):
+            return False
+        cue = timeline._timeline_cue_by_id.get(timeline.selected_id)
+        if cue is None:
+            return False
+        translations = (self.project.generation_metadata or {}).get("translations", {})
+        text = str(translations.get(cue.id, "") or "") if isinstance(translations, dict) else ""
+        timeline._open_inline_editor(cue, True, text)
+        return timeline._inline_editor is not None
 
     def _shortcut_select_all(self):
         if not self.project:
@@ -2214,6 +2260,9 @@ class SubtitleStudioPage(
     def _split_current(self) -> None:
         return self.cue_controller.split_current()
 
+    def _open_text_split(self, cue_id: str) -> None:
+        return self.cue_controller.open_text_split(cue_id)
+
     def _merge_next(self) -> None:
         return self.cue_controller.merge_next()
 
@@ -2435,6 +2484,9 @@ class SubtitleStudioPage(
         self._last_autosave_at = datetime.now().strftime("%H:%M:%S")
         bind_text(self.save_state, '已自动保存 · {time}', time=self._last_autosave_at)
         bind_text(self.save_state, '恢复快照已安全写入磁盘；正式工程仍保留未保存修改。', property='toolTip')
+        check = getattr(self, "_evidence_idle_check", None)
+        if check is not None:
+            check.start()
 
     def _autosave_failed(self, generation: int, message: str) -> None:
         self._autosave_worker_running = False
@@ -2660,7 +2712,9 @@ class SubtitleStudioPage(
         # Show every row when that takes at most ~42% of the workspace (the
         # widget minimum no longer grows with the speaker count).
         target = max(target, min(self.timeline.preferred_height(), round(total * 0.42)))
-        target = min(target, max(210, total - 240))
+        # 2026-10-22: on short windows (1080p at 125%) the video keeps the
+        # larger half; the rows scroll and the divider is free to move.
+        target = min(target, max(210, total - 240), max(210, round(total * 0.45)))
         self.workspace_splitter.setSizes([max(240, total - target), target])
 
     def _apply_default_workspace_layout(self) -> None:
@@ -2834,6 +2888,9 @@ class SubtitleStudioPage(
         from .translation_actions import add_actions
         add_actions(self, menu)
         menu.addAction(_icon("fa5s.cut"), "拆分当前字幕", self._split_current)
+        if cue_id:
+            # 2026-10-22: opens the text with a hint; Ctrl+Enter splits at the cursor (text_split).
+            menu.addAction(_icon("fa5s.i-cursor"), tr("按文字位置拆分…"), lambda: self._open_text_split(cue_id))
         menu.addAction(_icon("fa5s.link"), "与下一条合并", self._merge_next)
         menu.addAction(_icon("fa5s.trash-alt"), "删除当前字幕", self._delete_current)
         current = cue_by_id(self.project, self.selected_cue_id) if self.project and self.selected_cue_id else None
@@ -2847,12 +2904,15 @@ class SubtitleStudioPage(
         if len(self.selected_cue_ids()) > 1:
             menu.addAction(_icon("fa5s.magic"), f"智能修轴选中字幕（{len(self.selected_cue_ids())}）", self._smart_align_selected)
         from ..subtitle_rules.language_rules import project_language
-        if self.project is not None and project_language(self.project) == "ja":
-            # Edited Japanese text: measure its word timing again on its own audio.
+        from .studio_realign import aligner_language
+        if self.project is not None and aligner_language(self.project):
+            # Edited text: measure its word timing again on its own audio and grade
+            # the cut positions (every aligner language since 2026-10-22; was Japanese).
             from .studio_realign import start_realign
             targets = self.selected_cue_ids() or ([self.selected_cue_id] if self.selected_cue_id else [])
-            menu.addAction(_icon("fa5s.ruler-horizontal"), tr("重新对齐字词时间（日语，{count} 条）", count=len(targets)),
+            menu.addAction(_icon("fa5s.ruler-horizontal"), tr("重新对齐字词时间（{count} 条）", count=len(targets)),
                            lambda ids=list(targets): start_realign(self, ids))
+        if self.project is not None and project_language(self.project) == "ja":
             from .studio_cut_refine import start_snap_cuts
             menu.addAction(_icon("fa5s.cut"), tr("按停顿校正日语切点（整个工程）"),
                            lambda: start_snap_cuts(self, None))

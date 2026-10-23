@@ -2064,7 +2064,8 @@ CACHE_STAGE_VERSIONS = {
 # 输出或日志不会无故让全文校对和全文断句缓存失效。
 POLISH_LOGIC_VERSION = "polish-v32-explicit-coverage-and-partial-cache"
 GROUP_LOGIC_VERSION = "group-v59-word-safe-comfort-length"
-TIMING_LOGIC_VERSION = "timing-v10-reading-rate-guard"
+# v11: Japanese short lines join (10-18); v12: lines of one Japanese sentence join within two lines (10-21).
+TIMING_LOGIC_VERSION = "timing-v12-ja-two-line-sentences"
 
 
 # 复核清单只打印在运行窗口，不增加第三个输出文件。

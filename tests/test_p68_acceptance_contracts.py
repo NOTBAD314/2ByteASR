@@ -390,7 +390,9 @@ def test_recognition_dialog_theme_tokens(monkeypatch, tmp_path):
     plum = theme_definition("plum")
     qss = build_studio_qss(plum).lower()
     assert sheet.objectName() == "studioRecognitionSheet"
-    assert len(sheet.findChildren(QFrame, "contextCard")) >= 2
+    # 2026-10-23 layout C: three model-role rows on the left, one 「这次识别」 panel on the right.
+    assert len(sheet.findChildren(QFrame, "sheetRoleRow")) == 3
+    assert len(sheet.findChildren(QFrame, "recognitionSummary")) == 1
     assert plum.text.lower() in qss
     assert plum.surface.lower() in qss
     page.close_page()
@@ -399,10 +401,9 @@ def test_recognition_dialog_theme_tokens(monkeypatch, tmp_path):
 def test_recognition_dialog_supports_profile_models_termbases(monkeypatch, tmp_path):
     page = _page(monkeypatch, tmp_path)
     controls = _open_recognition(page, tmp_path)
-    # 四十二轮：方案与主页 plan_options() 对齐（6 项）+ "当前主页方案"。
-    assert controls["plan"].count() == 7
+    # 方案与主页 plan_options() 对齐 + "当前主页方案"（2026-10-22：删去四项、加云端方案）。
     plan_keys = {controls["plan"].itemData(i) for i in range(controls["plan"].count())}
-    assert {"quality", "speed", "low_memory", "transcribe_only", "api", "custom", "home"} <= plan_keys
+    assert plan_keys == {"quality", "japanese", "english", "moss_pro_qwen", "home"}
     assert all(controls[key].count() >= 3 for key in ("primary", "timeline", "review"))
     # 四十三轮：词库是常驻勾选 chips（QCheckBox 网格，不再走下拉 popup）。
     chips_host = controls["glossaries"]

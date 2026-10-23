@@ -130,17 +130,21 @@ def test_split_and_merge_statuses_and_candidates():
     split = split_cue_command(project, "c1", 1500, "ちょっと待って、", "まだ準備できてない")
     split.redo()
     right = next(item.id for item in project.cues if item.id.startswith("c1-split-"))
+    # 2026-10-22 (user report): the translation is divided with the cue, as a
+    # flagged estimate; before, the right half showed no translation at all.
     assert st.cue_status(project, "c1") == "needs_update"
-    assert st.cue_status(project, right) == "untranslated"
+    assert st.cue_status(project, right) == "needs_update"
+    view = st.sync_render_view(project)
+    assert (view["c1"], view[right]) == ("等一下", "我还没准备好")
     candidates = {item["cue_id"]: item for item in st.split_merge_candidates(project)}
     assert set(candidates) == {"c1", right}
     for item in candidates.values():
         assert item["kind"] == "split"
         assert item["parents"][0]["translation"] == "等一下，我还没准备好"
-    # Never copied or divided: the right half has no translation at all.
-    assert right not in st.sync_render_view(project)
     split.undo()
     assert st.cue_status(project, "c1") == "done"
+    assert right not in st.sync_render_view(project)
+    assert st.sync_render_view(project)["c1"] == "等一下，我还没准备好"
 
     merge = merge_cues_command(project, ["c2", "c3"])
     merge.redo()
@@ -152,6 +156,51 @@ def test_split_and_merge_statuses_and_candidates():
     merge.undo()
     assert st.cue_status(project, "c3") == "done"
     assert st.sync_render_view(project)["c3"] == "真的假的"
+
+
+def test_split_translation_follows_kanji_punctuation_and_words():
+    # The user's two splits (《日常》第10话, 2026-10-22) and other shapes.
+    divide = st.split_translation_text
+    assert divide("なになに私に対してのこの遅刻", "制裁は", "什麼什麼，這遲到制裁是針對我嗎", "zh-Hant") == (
+        "什麼什麼，這遲到", "制裁是針對我嗎")
+    assert divide("後ろからこっそり", "入ればいいじゃないですか", "從後面偷偷進去不就好…", "zh-Hant") == (
+        "從後面偷偷", "進去不就好…")
+    assert divide("たった今初めて", "気づいたんだけど", "我刚刚才第一次注意到") == ("我刚刚才", "第一次注意到")
+    assert divide("ちょっと待って", "まだ準備できてない", "Wait a moment, I am not ready yet", "en") == (
+        "Wait a moment,", "I am not ready yet")
+    assert divide("あ", "いや", "啊") is None
+    assert divide("ちょっと", "待って", "Wait", "en") is None
+
+
+def test_split_then_merge_back_restores_the_translation():
+    from twobyteasr.timeline.studio_commands import merge_cues_command, split_cue_command
+
+    project = make_project()
+    apply_all(project)
+    split_cue_command(project, "c1", 1500, "ちょっと待って、", "まだ準備できてない").redo()
+    right = next(item.id for item in project.cues if item.id.startswith("c1-split-"))
+    merge = merge_cues_command(project, ["c1", right])
+    merge.redo()
+    merged = next(item for item in project.cues if item.start_ms <= 1000 < item.end_ms)
+    assert st.cue_status(project, merged) == "done"
+    assert st.sync_render_view(project)[merged.id] == "等一下，我还没准备好"
+
+
+def test_split_keeps_untranslated_and_manual_parents_honest():
+    from twobyteasr.timeline.studio_commands import split_cue_command
+
+    project = make_project()
+    split_cue_command(project, "c1", 1500, "ちょっと待って、", "まだ準備できてない").redo()
+    right = next(item.id for item in project.cues if item.id.startswith("c1-split-"))
+    assert st.cue_status(project, right) == "untranslated"  # nothing to divide, nothing invented
+    project = make_project()
+    st.set_manual(project, "c1", "稍等，我还没准备好")
+    split_cue_command(project, "c1", 1500, "ちょっと待って、", "まだ準備できてない").redo()
+    right = next(item.id for item in project.cues if item.id.startswith("c1-split-"))
+    records = st.records_of(project)
+    assert records["c1"]["origin"] == records[right]["origin"] == "manual"  # AI keeps away from a person's text
+    view = st.sync_render_view(project)
+    assert (view["c1"], view[right]) == ("稍等", "我还没准备好")
 
 
 def test_split_reference_reaches_the_prompt():
@@ -442,6 +491,30 @@ def test_progress_reports_counts():
     seen = []
     run(project, FakeProvider(), max_items=5, progress=lambda done, total, message: seen.append((done, total)))
     assert seen[-1] == (len(JA), len(JA))
+
+
+def test_parallel_batches_send_the_same_prompts():
+    # 2026-10-22: recognition sends first-round batches two at a time.
+    import threading
+    serial, parallel = FakeProvider(), FakeProvider()
+    inside, overlapped, lock = [0], [False], threading.Lock()
+
+    def responder(payload, call_no):
+        with lock:
+            inside[0] += 1
+            overlapped[0] = overlapped[0] or inside[0] > 1
+        threading.Event().wait(0.05)
+        with lock:
+            inside[0] -= 1
+        return FakeProvider.translate_all(payload, call_no)
+
+    parallel.responder = responder
+    expected = run(make_project(), serial, max_items=3)
+    result = run(make_project(), parallel, max_items=3, workers=2, cache={})
+    assert overlapped[0] and result.requests == expected.requests == len(serial.calls)
+    assert {k: v.text for k, v in result.translations.items()} == {k: v.text for k, v in expected.translations.items()}
+    prompts = lambda provider: sorted(json.dumps(call["payload"], ensure_ascii=False) for call in provider.calls)
+    assert prompts(parallel) == prompts(serial)
 
 
 def test_cache_hit_and_each_key_part_misses():

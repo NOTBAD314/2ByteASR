@@ -138,6 +138,11 @@ class ApplicationSettingsDialog(SpringDialog):
         row(layout,'生成工程封面',self.cover,'从素材中生成工程库缩略图')
         self.restore_layout_box=toggle(preferences.get('restore_layout',True));bind_text(self.restore_layout_box, '打开工程时恢复上次布局', property='accessibleName')
         row(layout,'恢复上次工作区',self.restore_layout_box,'记住面板和时间线的布局')
+        # 2026-10-22 (user): how many speakers keep an own subtitle track by default.
+        self.speaker_tracks=field_width(StudioComboBox(),'compact')
+        for count in (1,2,3,5,8):self.speaker_tracks.addItem(tr('{count} 位',count=count),count)
+        self.speaker_tracks.setCurrentIndex(max(0,self.speaker_tracks.findData(int(preferences.get('speaker_main_tracks',2) or 2))))
+        row(layout,'默认独立字幕轨',self.speaker_tracks,'字幕最多的几位说话人各占一条轨，其余合成一条；工程里手动选过的不变')
         maintenance=section(studio)
         usage=button_role(QPushButton('查看用量与估算费用'),'secondary')
         from ..studio.usage_dialog import open_usage

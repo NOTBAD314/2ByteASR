@@ -539,13 +539,20 @@ class StoragePanel(QWidget):
 
 
 class IdleStorageMaintenance:
-    """Run only after UI readiness, then at most once each six hours, no exit scan."""
+    """Run only after UI readiness, then at most once each six hours, no exit scan.
+
+    2026-10-22: the six hours now hold across launches (``STATE``). Each start
+    used to run the whole pass a minute later: on the user's PC ~2 minutes of
+    one core inside the GUI process (cache 39 s, walking every runtime file
+    81 s, uv 8 s), competing with the window for the GIL.
+    """
+    STATE='idle-maintenance.json'
     def __init__(self,owner):
         self.owner=owner;self.worker=None;self.cancel=threading.Event()
         self.timer=QTimer(owner);self.timer.setInterval(15*60*1000);self.timer.timeout.connect(self.check)
         QApplication.instance().aboutToQuit.connect(self.stop)
         QTimer.singleShot(60000,owner,self.check)
-        self.last_attempt=0
+        self.last_attempt=None
     def stop(self):
         self.cancel.set();self.timer.stop()
         if self.worker:self.worker.cancel.set()
@@ -559,11 +566,18 @@ class IdleStorageMaintenance:
         self.timer.start()
         if self.cancel.is_set() or app_busy(self.owner):return
         import time
-        if time.time()-self.last_attempt<6*3600:return
+        if self.last_attempt is not None and time.time()-self.last_attempt<6*3600:return
         if self.worker and self.worker.isRunning():return
         service=StorageService(busy=lambda:self.cancel.is_set() or app_busy(self.owner),media_references=lambda:loaded_media_graph(self.owner))
+        if self.last_attempt is None:
+            try:self.last_attempt=float(_read_receipt(service,self.STATE).get('last_attempt') or 0)
+            except (TypeError,ValueError,AttributeError):self.last_attempt=0
+            if self.last_attempt>time.time():self.last_attempt=0  # clock moved back
+            if time.time()-self.last_attempt<6*3600:return
         if not service.policy()['enabled']:return
         self.last_attempt=time.time()
+        try:_write_maintenance_receipt(service,self.STATE,dict(last_attempt=self.last_attempt))
+        except (OSError,ValueError):pass
         worker=StorageWorker(lambda cancel:maintain_registered_storage(service,cancel));self.worker=worker
         def finish():
             if self.worker is worker:self.worker=None

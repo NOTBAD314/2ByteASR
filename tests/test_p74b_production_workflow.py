@@ -228,7 +228,7 @@ def test_two_speaker_lanes_do_not_overlap_two_video_lanes(tmp_path):
     timeline = WaveformTimeline()
     timeline.resize(1200, timeline.minimumHeight())
     timeline.set_project(project)
-    timeline.resize(1200, timeline.minimumHeight())
+    timeline.resize(1200, timeline.preferred_height())
     timeline.show()
     APP.processEvents()
 
@@ -240,6 +240,14 @@ def test_two_speaker_lanes_do_not_overlap_two_video_lanes(tmp_path):
     )
     assert set(speaker_rects) == {"S00", "S02"}
     assert subtitle_bottom <= min(rect.top() for rect in video_rects.values())
+    # 2026-10-22: the minimum counts one subtitle row. Shorter than every
+    # row, the rows scroll inside the track viewport, which ends above the
+    # video lanes (painting and hit tests are clipped to it).
+    timeline.resize(1200, timeline.minimumHeight())
+    APP.processEvents()
+    video_rects = timeline._video_track_rects()
+    assert timeline._track_viewport().bottom() <= min(rect.top() for rect in video_rects.values())
+    assert timeline.vertical_scrollbar.maximum() > 0
     timeline.deleteLater()
 
 

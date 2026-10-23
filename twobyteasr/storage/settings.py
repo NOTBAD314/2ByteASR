@@ -109,6 +109,14 @@ DEFAULT_SETTINGS = {
         # Traditional after recognition. Set by the home menu's 繁体中文.
         "chinese_script": "zh-Hans",
     },
+    # 2026-10-18: the user's own line-breaking guidance for the AI grouping
+    # prompt, per subtitle language; empty = the built-in guidance. The prompt's
+    # protocol and hard limits are not part of it (grouping_request).
+    "grouping_prompts": {
+        "zh": "",
+        "ja": "",
+        "en": "",
+    },
     "performance": {
         "parallel_cloud_batches": True,
         "cloud_batch_workers": 4,

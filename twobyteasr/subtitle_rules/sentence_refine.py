@@ -80,7 +80,7 @@ ENGLISH_REFINE_SYSTEM_PROMPT = """You re-break English subtitle cues (game strea
 Prefer cutting after . ! ? , ; : and before and/but/or/so/because/when/which/who; never leave a piece ending with
 an article or determiner (a, an, the, this, my…), a preposition, a conjunction, an auxiliary (is, was, can, will…)
 or a subject pronoun waiting for its verb. Each piece should be at least two words and at least about 1.2 s; a piece
-may be up to 42 characters. pause_hints (after_chars, gap_ms) are real pauses between words: a long pause is good
+may be up to 84 characters (two lines); keep a whole sentence together when it fits. pause_hints (after_chars, gap_ms) are real pauses between words: a long pause is good
 evidence for a split; with no evidence decide by meaning or keep. There is no "space" action for English.
 Return only character indexes; never rewrite, add, remove or reorder any character. Return only JSON with a results
 array, every input cue_id exactly once:
@@ -95,8 +95,9 @@ KOREAN_REFINE_SYSTEM_PROMPT = """You re-break Korean subtitle cues (game streams
   before a dependent noun (할 수, 먹을 것, 갈 때, 본 적), after a determiner or number word (이 사람, 몇 개, 세 번),
   after 안/못, or between a number and its counter.
 Prefer cutting after a sentence end (. ? ! or -요, -니다, -죠, -다), then after a comma, then after a connective ending
-(-고, -지만, -는데, -서, -니까, -면, -면서). Each piece should be about 1.2 s or longer; a piece may be up to 16
-characters (a space, Latin letter, digit or punctuation mark counts half). pause_hints (after_chars, gap_ms) are real
+(-고, -지만, -는데, -서, -니까, -면, -면서). Each piece should be about 1.2 s or longer; a piece may be up to 32
+characters, two lines (a space, Latin letter, digit or punctuation mark counts half); keep a whole sentence together
+when it fits. pause_hints (after_chars, gap_ms) are real
 pauses between words: a long pause is good evidence for a split; with no evidence decide by meaning or keep. There is
 no "space" action for Korean.
 Return only character indexes; never rewrite, add, remove or reorder any character. Return only JSON with a results
@@ -120,7 +121,7 @@ def refine_system_prompt(language: str = "") -> str:
         return (ENGLISH_REFINE_SYSTEM_PROMPT.replace("English subtitle cues", f"{ENGLISH_NAMES[language]} subtitle cues")
                 .replace("(a, an, the, this, my…)", f"({examples(lex.determiners)}…)")
                 .replace("and/but/or/so/because/when/which/who", "/".join(sorted(lex.conjunctions)[:8]))
-                .replace("up to 42 characters", f"up to {lex.rules.max_chars} characters")
+                .replace("up to 84 characters", f"up to {lex.rules.cue_max_chars} characters")
                 .replace('no "space" action for English', f'no "space" action for {ENGLISH_NAMES[language]}'))
     return JAPANESE_REFINE_SYSTEM_PROMPT if language == "ja" else REFINE_SYSTEM_PROMPT
 

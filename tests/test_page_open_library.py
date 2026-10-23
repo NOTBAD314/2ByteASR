@@ -192,7 +192,9 @@ def test_cards_beyond_the_first_screens_are_built_when_scrolled_to(library):
             app.processEvents()
         total = len(page._hub_display_records)
         built = len(page._hub_card_widgets)
-        assert total == 40 and 16 <= built < total
+        # 2026-10-22: the first page is 10 projects (the started row completed).
+        columns = page._hub_grid_metrics[0]
+        assert total == 40 and 10 <= built <= -(-10 // columns) * columns < total
         bar = page.project_library_scroll.verticalScrollBar()
         for _ in range(12):
             bar.setValue(bar.maximum())

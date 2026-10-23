@@ -57,8 +57,9 @@ def test_long_sentences_break_between_words_at_good_places():
             "and then we push into the boss room before the timer runs out")
     lines = _lines(text)
     assert " ".join(lines) == text                                   # nothing added, lost or split inside a word
-    assert all(en.display_length(line) <= en.RULES.max_chars for line in lines)
-    assert len(lines) >= 3
+    # 2026-10-21: a subtitle holds two lines (84 characters), so 141 characters make two, not 3–4 scraps.
+    assert all(en.display_length(line) <= en.RULES.cue_max_chars for line in lines)
+    assert len(lines) == 2
     endings = {en.word_core(line.split()[-1]) for line in lines[:-1]}
     assert not endings & (seg.DETERMINERS | seg.PREPOSITIONS | {"and", "is"})
     assert any(line.endswith("map,") for line in lines)              # the comma wins
@@ -89,19 +90,29 @@ def test_cue_times_come_from_aligned_words():
 def test_ai_breaks_are_used_only_when_valid():
     text = "Alright everyone welcome back to the stream today we are finally going to beat the final boss together"
     tokens = en.words(text)
-    good = [3, 9, 14]    # a new subtitle after "back", "are" and "the"
-    expected = [(0, 4), (4, 10), (10, 15), (15, len(tokens))]
+    good = [7]           # a new subtitle after "today"
+    expected = [(0, 8), (8, len(tokens))]
     assert seg.pieces_from_breaks(tokens, good) == expected
     assert seg.pieces_from_breaks(tokens, [99]) is None
     assert seg.pieces_from_breaks(tokens, []) is None                 # one piece would be too long
+    # 2026-10-21: a break after a word that must not end a line is refused ("the", "are").
+    assert seg.pieces_from_breaks(tokens, [14]) is None
+    assert seg.pieces_from_breaks(tokens, [9]) is None
+    local = [" ".join(tokens[a:b]) for a, b in seg.split_tokens(tokens)]
 
-    def fake(messages):
-        assert "Never change, add or remove words" in messages[0]["content"]
-        return '{"breaks": {"1": [3, 9, 14]}}'
-    cues = seg.group_english_with_ai([segment(1, 0.0, 6.0, text)], complete=fake)
+    def fake(answer):
+        def complete(messages):
+            assert "Never change, add or remove words" in messages[0]["content"]
+            assert "up to two lines" in messages[0]["content"]
+            return '{"breaks": {"1": %s}}' % answer
+        return complete
+    cues = seg.group_english_with_ai([segment(1, 0.0, 6.0, text)], complete=fake("[7]"))
     assert [cue.text for cue in cues] == [" ".join(tokens[a:b]) for a, b in expected]
+    # Sound breaks that chop finer than the rules need fall back to the rules.
+    cues = seg.group_english_with_ai([segment(1, 0.0, 6.0, text)], complete=fake("[3, 7]"))
+    assert [cue.text for cue in cues] == local
     cues = seg.group_english_with_ai([segment(1, 0.0, 6.0, text)], complete=lambda _m: "not json")
-    assert " ".join(cue.text for cue in cues) == text and all(len(cue.text) <= 42 for cue in cues)
+    assert " ".join(cue.text for cue in cues) == text and all(len(cue.text) <= 84 for cue in cues)
 
 
 def test_cleanup_inside_an_english_task_keeps_punctuation_chinese_unchanged():
@@ -157,3 +168,17 @@ def test_english_projects_get_english_reading_checks_and_merges():
     assert "line_too_long" in chinese                            # the Chinese limits stay as they were
     merge_cues_command(english, ["a", "b"]).redo()
     assert english.cues[0].text == "This line is a normal English subtitle and it keeps going"
+
+
+def test_two_line_english_subtitles_are_not_too_long_but_three_lines_are():
+    # 2026-10-21: a subtitle holds two lines of 42; players wrap between words.
+    from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
+    from twobyteasr.subtitle_rules.studio_qc import SubtitleQCEngine
+    two = "Okay so the plan is that we go around the left side of the map, grab the shield"   # 79 characters
+    three = two + " and then we push into the boss room before the timer runs out"            # 141 characters
+    cues = [StudioCue("two", 0, 5000, two), StudioCue("three", 6000, 13500, three)]
+    project = SubtitleProject(media=StudioMedia(path="x.mp4", duration_ms=14000), cues=cues,
+                              generation_metadata={"language": {"code": "en"}})
+    issues = {(issue.cue_id, issue.issue_type) for issue in SubtitleQCEngine().analyze(project).issues}
+    assert ("two", "line_too_long") not in issues
+    assert ("three", "line_too_long") in issues

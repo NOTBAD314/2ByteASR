@@ -8,7 +8,10 @@ English line breaker (english_segmentation.py) and the English branches of
 cleanup, merging and quality checks use them.
 
 Lengths are characters including spaces, the way English subtitle guidelines
-count them (a comfortable line is up to about 42).
+count them (a comfortable line is up to about 42). Since 2026-10-21 one
+subtitle holds up to two such lines (players wrap them), so a whole sentence of
+up to 84 characters and 7 seconds stays one subtitle instead of being chopped
+into one-line scraps.
 """
 from __future__ import annotations
 
@@ -26,11 +29,18 @@ _WORD_CORE = re.compile(r"[A-Za-z0-9]+(?:['’][A-Za-z]+)*")
 
 @dataclass(frozen=True)
 class EnglishLineRules:
-    """Limits for one English subtitle (characters include spaces)."""
+    """Limits for one English subtitle (characters include spaces).
+
+    ``max_chars``/``preferred_chars`` are one line; ``cue_*`` are one subtitle
+    of up to ``max_lines`` lines, which is what the line breaker fills.
+    """
     preferred_chars: int = 32
     max_chars: int = 42
     min_chars: int = 8
-    max_seconds: float = 6.0
+    max_lines: int = 2
+    cue_preferred_chars: int = 60
+    cue_max_chars: int = 84
+    max_seconds: float = 7.0
     min_seconds: float = 0.8
     comfortable_cps: float = 17.0      # characters per second a viewer reads comfortably
     warning_cps: float = 20.0

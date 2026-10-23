@@ -14,9 +14,10 @@ Flow (all network and disk work runs off the GUI thread):
    or whose installed files are missing, are downloaded.  Environments and
    models keep their own contracts and are never re-downloaded here.
 3. ``prepare_update`` downloads those archives (resume when the server allows
-   ranges, restart cleanly when it does not, retries with back-off), verifies
-   every archive and every extracted file, and writes a staging folder plus a
-   helper plan.  Everything is pinned to the one manifest picked in step 1.
+   ranges, restart cleanly when it does not, retries with back-off, the next
+   source when one stays slow), verifies every archive and every extracted
+   file, and writes a staging folder plus a helper plan.  Everything is pinned
+   to the one manifest picked in step 1.
 4. After the user saved work and agreed to quit, ``launch_update_helper`` starts
    the separate updater (``2ByteASRUpdater.exe``) from a copy outside the
    install folder.  It replaces files transactionally and rolls back on error.
@@ -40,6 +41,7 @@ import threading
 import time
 import urllib.parse
 import zipfile
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,16 +84,19 @@ STABLE_FEED = f"https://github.com/{REPOSITORY}/releases/latest/download/{UPDATE
 RELEASES_API = f"https://api.github.com/repos/{REPOSITORY}/releases?per_page=20"
 # Download fallbacks for networks where github.com is slow.  Manifests are
 # signed and archives hashed, so a mirror can delay but not alter an update.
-# Tried in order after github.com and GitCode.  gh-proxy.org (2026-10-17) is
-# last: identical bytes from a Japan exit, not yet measured on a mainland line;
-# it sometimes ignores Range, and _download_once then restarts from zero.
-GITHUB_MIRRORS = ("https://ghfast.top/", "https://ghproxy.net/", "https://gh-proxy.org/")
+# Tried in order after github.com and GitCode.  Measured 2026-10-22 on a
+# mainland line without proxy (Range into a 442 MB archive, 30-40 s each):
+# gh-proxy.org 0.9-2.8 MB/s, ghfast.top 0.9-1.7 MB/s, ghproxy.net 0.02-0.03
+# MB/s; all three answered Range with 206 and served the manifest within a few
+# seconds, so ghproxy.net stays as the last resort.
+GITHUB_MIRRORS = ("https://gh-proxy.org/", "https://ghfast.top/", "https://ghproxy.net/")
 # GitCode carries every release file under the same tag and name
 # (scripts/release_pipeline.py gitcode).  Measured 2026-10-14 on a mainland line
 # without proxy: github.com failed outright, ghfast.top ~2 MB/s, GitCode
 # ~14 MB/s.  GitCode has no releases/latest/download, so its newest tag comes
 # from the API first.
 GITCODE_REPOSITORY = "Notbad314/2ByteASR"
+GITCODE_RELEASE_PAGE = f"https://gitcode.com/{GITCODE_REPOSITORY}/releases"
 GITCODE_LATEST_API = f"https://api.gitcode.com/api/v5/repos/{GITCODE_REPOSITORY}/releases/latest"
 _GITHUB_DOWNLOAD = f"https://github.com/{REPOSITORY}/releases/download/"
 _GITHUB_TAG_PAGE = f"https://github.com/{REPOSITORY}/releases/tag/"
@@ -106,6 +111,16 @@ MANUAL_RECHECK_SECONDS = 60
 MAX_BACKOFF = 24 * 3600
 CONNECT_TIMEOUT = 6
 READ_TIMEOUT = 20
+# 2026-10-22 (mainland line): github.com connected and then sent ~40 KB/s
+# without ever failing, so an 849 MB update would have taken six hours while
+# GitCode served ~14 MB/s.  A source whose average over the last
+# SLOW_WINDOW_SECONDS stays below SLOW_BYTES_PER_SECOND gives way to the next
+# one, which resumes from the bytes already here.  Each source is judged once;
+# when every source was slow, the fastest of them finishes the file.
+SLOW_BYTES_PER_SECOND = 256 * 1024
+SLOW_WINDOW_SECONDS = 30.0
+SLOW_REMAINING_SECONDS = 60.0  # the rest arrives sooner than this: not worth a switch
+DOWNLOAD_CHUNK = 256 * 1024    # a 1 MB read took ~25 s at 40 KB/s, too coarse to judge
 
 FEED_ENV = "TWOBYTEASR_UPDATE_FEED"          # explicit manifest URL (QA/local feeds)
 CHANNEL_ENV = "TWOBYTEASR_UPDATE_CHANNEL"    # override the installed channel
@@ -130,6 +145,14 @@ class UpdateError(RuntimeError):
 
 class UpdateCancelled(UpdateError):
     """The user cancelled the download."""
+
+
+class _SlowSource(UpdateError):
+    """The source keeps sending, but too slowly to wait for."""
+
+    def __init__(self, rate: float):
+        super().__init__(f"速度过慢（约 {format_bytes(int(rate))}/s），已换下一个来源，已下载的部分保留")
+        self.rate = rate
 
 
 # --------------------------------------------------------------------------
@@ -264,8 +287,7 @@ class UpdateCheck:
     def installer_url(self) -> str:
         if not (self.manifest and self.manifest.setup):
             return self.release_url
-        url = self.manifest.setup.urls[0]
-        return (gitcode_url(url) or url) if self.from_gitcode else url
+        return _asset_sources(self.manifest.setup.urls, self.from_gitcode)[0]
 
     @property
     def can_self_update(self) -> bool:
@@ -292,6 +314,13 @@ def gitcode_url(url: str) -> str:
     return ""
 
 
+def github_url(url: str) -> str:
+    """The GitHub original of a GitCode release file (same tag and name), or ''."""
+    if url.startswith(_GITCODE_DOWNLOAD):
+        return _GITHUB_DOWNLOAD + url[len(_GITCODE_DOWNLOAD):]
+    return ""
+
+
 def _candidates(url: str, prefer_gitcode: bool = False) -> tuple[str, ...]:
     if not url.startswith("https://github.com/"):
         return (url,)
@@ -300,6 +329,17 @@ def _candidates(url: str, prefer_gitcode: bool = False) -> tuple[str, ...]:
     if not mirror:
         return (url,) + proxies
     return ((mirror, url) if prefer_gitcode else (url, mirror)) + proxies
+
+
+def _asset_sources(urls, prefer_gitcode: bool = False) -> list[str]:
+    """Every source of one release file, in the order this program tries them.
+
+    A manifest may list the GitCode copy first so that older programs, which
+    try listed URLs in order, start there (``release_pipeline.py feed
+    --gitcode-first``).  Here the source that answered the check decides.
+    """
+    bases = dict.fromkeys(github_url(url) or url for url in urls)
+    return list(dict.fromkeys(c for base in bases for c in _candidates(base, prefer_gitcode)))
 
 
 def _fetch_bytes(url: str, *, request_get: Callable | None, limit: int = 4 * 1024 * 1024) -> bytes:
@@ -601,11 +641,13 @@ def _check_free_space(folder: Path, needed: int) -> None:
 def download_asset(asset, folder: Path, *, progress: Callable[[int, int], None] | None = None,
                    cancel: threading.Event | None = None, request_get: Callable | None = None,
                    attempts_per_url: int = 3, sleep: Callable[[float], None] = time.sleep,
-                   prefer_gitcode: bool = False) -> Path:
-    """Download one asset with resume, retries and SHA-256 verification.
+                   prefer_gitcode: bool = False, clock: Callable[[], float] = time.monotonic) -> Path:
+    """Download one asset with resume, retries, slow-source switching and SHA-256 verification.
 
     ``prefer_gitcode`` (the manifest came from GitCode) tries the GitCode copy
     before github.com; every source must still match the manifest's SHA-256.
+    A source that stays slow (SLOW_BYTES_PER_SECOND) hands the partial file to
+    the next one, which resumes it.
     """
     folder.mkdir(parents=True, exist_ok=True)
     output = folder / asset.name
@@ -615,12 +657,16 @@ def download_asset(asset, folder: Path, *, progress: Callable[[int, int], None] 
         return output
     partial = output.with_name(output.name + ".part")
     errors = []
-    for url in [c for base in asset.urls for c in _candidates(base, prefer_gitcode)]:
+    slow: dict[str, float] = {}  # source -> the rate it was judged slow at
+
+    def fetch(url: str, judge: bool) -> bool:
+        host = url.split('/')[2]
         for attempt in range(attempts_per_url):
             if cancel is not None and cancel.is_set():
                 raise UpdateCancelled("已取消下载")
             try:
-                _download_once(url, partial, asset, progress=progress, cancel=cancel, request_get=request_get)
+                _download_once(url, partial, asset, progress=progress, cancel=cancel, request_get=request_get,
+                               clock=clock if judge else None)
                 actual = file_sha256(partial)
                 if partial.stat().st_size != asset.size or actual != asset.sha256:
                     partial.unlink(missing_ok=True)  # never resume from a bad file
@@ -628,17 +674,44 @@ def download_asset(asset, folder: Path, *, progress: Callable[[int, int], None] 
                 os.replace(partial, output)
                 _verified_marker(output).write_text(json.dumps({"sha256": asset.sha256, "size": asset.size}),
                                                     encoding="utf-8")
-                return output
+                return True
             except UpdateCancelled:
                 raise
+            except _SlowSource as exc:
+                slow[url] = exc.rate
+                errors.append(f"{host}：{exc}")
+                print(f"[update] {asset.name} {host}: {exc}")
+                return False
             except Exception as exc:  # noqa: BLE001 - retry with back-off, then next mirror
-                errors.append(f"{url.split('/')[2]}：{' '.join(str(exc).split())[:160]}")
+                errors.append(f"{host}：{' '.join(str(exc).split())[:160]}")
                 if attempt + 1 < attempts_per_url:
                     sleep(min(8.0, 1.0 * (2 ** attempt)))
+        return False
+
+    for url in _asset_sources(asset.urls, prefer_gitcode):
+        if fetch(url, judge=True):
+            return output
+    # Every source that answered was slow: the fastest of them finishes the file.
+    if slow and fetch(max(slow, key=slow.get), judge=False):
+        return output
     raise UpdateError(f"{asset.name} 下载失败。\n" + "\n".join(errors[-6:]))
 
 
-def _download_once(url: str, partial: Path, asset, *, progress, cancel, request_get) -> None:
+def _judge_speed(samples, now: float, position: int, size: int) -> None:
+    """Raise _SlowSource once the last SLOW_WINDOW_SECONDS averaged below the limit."""
+    samples.append((now, position))
+    while len(samples) > 1 and samples[1][0] <= now - SLOW_WINDOW_SECONDS:
+        samples.popleft()
+    since, start = samples[0]
+    if now - since < SLOW_WINDOW_SECONDS:
+        return
+    rate = (position - start) / (now - since)
+    if rate < SLOW_BYTES_PER_SECOND and size - position > rate * SLOW_REMAINING_SECONDS:
+        raise _SlowSource(rate)
+
+
+def _download_once(url: str, partial: Path, asset, *, progress, cancel, request_get, clock=None) -> None:
+    """One request for the rest of ``partial``; ``clock`` set: give up on a slow source."""
     offset = partial.stat().st_size if partial.exists() else 0
     if offset > asset.size:
         partial.unlink()
@@ -655,28 +728,42 @@ def _download_once(url: str, partial: Path, asset, *, progress, cancel, request_
             raise UpdateError("服务器拒绝续传范围，将重新下载")
         if status >= 400:
             raise UpdateError(f"HTTP {status}")
-        mode = "ab"
+        target, kept = partial, offset
         if offset and status == 206:
             content_range = str(response.headers.get("Content-Range", ""))
             if not content_range.startswith(f"bytes {offset}-"):
-                mode, offset = "wb", 0
                 partial.unlink(missing_ok=True)
                 raise UpdateError("续传范围不一致，将重新下载")
         elif offset:
-            mode, offset = "wb", 0  # server ignored Range: start over from zero
-        received = offset
-        with partial.open(mode) as stream:
-            for block in response.iter_content(chunk_size=1024 * 1024):
+            # The server ignored Range and sends the whole file.  A slow switch
+            # can land here with hundreds of MB downloaded, so those bytes stay
+            # until the new copy holds more.
+            target, offset = partial.with_name(partial.name + ".fresh"), 0
+        position = offset
+        samples = deque([(clock(), position)]) if clock else None
+        stream = target.open("ab" if target == partial else "wb")
+        try:
+            for block in response.iter_content(chunk_size=DOWNLOAD_CHUNK):
                 if cancel is not None and cancel.is_set():
                     raise UpdateCancelled("已取消下载")
                 if not block:
                     continue
                 stream.write(block)
-                received += len(block)
-                if received > asset.size:
+                position += len(block)
+                if position > asset.size:
                     raise UpdateError("下载内容超过清单大小")
+                if target != partial and position > kept:
+                    stream.close()
+                    os.replace(target, partial)
+                    target, stream = partial, partial.open("ab")
                 if progress:
-                    progress(received, asset.size)
+                    progress(max(position, kept), asset.size)
+                if samples is not None:
+                    _judge_speed(samples, clock(), position, asset.size)
+        finally:
+            stream.close()
+            if target != partial:
+                target.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------
@@ -903,7 +990,7 @@ def format_bytes(value: int) -> str:
 
 
 __all__ = [
-    "RELEASE_PAGE", "UpdateCancelled", "UpdateCheck", "UpdateError", "UpdatePlan", "PreparedUpdate",
+    "GITCODE_RELEASE_PAGE", "RELEASE_PAGE", "UpdateCancelled", "UpdateCheck", "UpdateError", "UpdatePlan", "PreparedUpdate",
     "automatic_check_delay_ms", "automatic_check_due", "automatic_checks_allowed", "check_for_update", "cleanup_after_update",
     "confirm_started", "current_version", "download_asset", "format_bytes", "installed_channel",
     "last_result", "launch_update_helper", "normalize_version", "plan_update", "prepare_update",

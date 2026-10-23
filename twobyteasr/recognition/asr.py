@@ -51,6 +51,7 @@ __all__ = [
     'aligner_tokens',
     'summarize_aligner_payload',
     'AlignerUnavailableError',
+    'NoRecognizedTextError',
     'resolve_whisper_local_source',
     'transcribe_whisper_reference',
     'reference_chunks_to_timeline_tokens',
@@ -615,11 +616,13 @@ ALIGNER_WINDOW_PAD_MS = 300
 ALIGNER_PROTOCOL = "qwen-aligner-units-v1"
 
 
-def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=8):
+def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=8, engine=None):
     """Run ``qwen_aligner_worker.py`` in the main managed runtime and validate its receipt.
 
     ``jobs`` are ``{id, window_start_ms, window_end_ms, text, language}`` on the
     clock of ``audio`` (task PCM). The GUI process never imports torch.
+    ``engine="qwen3"`` keeps Qwen3 (or MLX) even when MFA is the selected
+    timeline: the second opinion of ``boundary_grades`` (2026-10-22).
     """
     import numpy as np
     from .run_context import get_runtime_context
@@ -631,7 +634,7 @@ def run_qwen_aligner_worker(audio, jobs, *, passes=("word", "char"), batch_size=
             return run_aligner(audio, jobs, passes=passes, batch_size=batch_size)
         except MlxUnavailableError as exc:
             raise AlignerUnavailableError(str(exc)) from exc
-    if str(((task_settings or {}).get("models") or {}).get("firered_asr_backend")) == "mfa_aligner":
+    if str(((task_settings or {}).get("models") or {}).get("firered_asr_backend")) == "mfa_aligner" and engine != "qwen3":
         from . import mfa_aligner
         if mfa_aligner.handles(jobs):
             # 2026-10-19: experimental Montreal Forced Aligner for Chinese and
@@ -714,7 +717,8 @@ def summarize_aligner_payload(payload):
             "load_ms": payload.get("load_ms"), "inference_ms": payload.get("inference_ms")}
 
 
-def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, language=None, raise_errors=False):
+def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, language=None, raise_errors=False,
+                                      evidence_dir=None):
     """Forced-align the primary transcript per segment with Qwen3-ForcedAligner.
 
     Runs in the main managed runtime (``qwen_aligner_worker.py``). Each segment
@@ -722,6 +726,7 @@ def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, lang
     forced into one monotonic sequence. Returns flat timeline tokens. A task
     keeps the primary model's coarse timeline when the aligner fails;
     ``raise_errors`` (the readiness check) raises the worker's own error instead.
+    ``evidence_dir``: where the whole worker receipt is kept (``timing_evidence``).
     """
     from twobyteasr.subtitle_rules.language_rules import qwen_language_name, active_task_language
     language = language or qwen_language_name(active_task_language()) or "Chinese"
@@ -773,8 +778,11 @@ def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, lang
             add_review_item(0.0, "时间轴模型失败", str(exc)[:160], priority=2)
         return []
     tokens = aligner_tokens(payload)
-    record_run_event("forced_alignment", stage="segments", language=language, **summarize_aligner_payload(payload))
-    print(f"   [完成] Qwen3 ForcedAligner：{len(tokens)} 个可靠时间片。")
+    from .timing_evidence import save_aligner_payload
+    saved = save_aligner_payload(evidence_dir, "segments", language, payload)
+    record_run_event("forced_alignment", stage="segments", language=language, **summarize_aligner_payload(payload),
+                     **({"evidence": saved} if saved else {}))
+    print(f"   [完成] {engine}：{len(tokens)} 个可靠时间片。")
     return tokens
 
 
@@ -947,6 +955,15 @@ def resolve_funasr_local_source(model_key):
     return ""
 
 
+class NoRecognizedTextError(RuntimeError):
+    """SenseVoice / Fun-ASR Nano answered every chunk and none held any text.
+
+    Incremental recognition skips such a chunk as silence. 2026-10-23 (user
+    log): it matched only the in-process wording, so the packaged app's worker
+    (tags such as <|BGM|> and nothing else) discarded the whole incremental run.
+    """
+
+
 def _clean_funasr_text(value):
     text = re.sub(r"<\|[^|>]+\|>", "", str(value or ""))
     return clean_subtitle_text(text)
@@ -1091,7 +1108,7 @@ def transcribe_funasr_reference(model_key, audio_path, speech_regions, shared_au
                 )
             print(f"      {model_key} 短块 {index}/{len(chunks)}", flush=True)
         if not references:
-            raise RuntimeError(f"{model_key} 没有生成有效文字。")
+            raise NoRecognizedTextError(f"{model_key} 没有生成有效文字。")
         return references
     finally:
         if model is not None and not _funasr_model_is_session_owned(model_key, model):
@@ -2497,6 +2514,20 @@ def _recognized_confidence(result, default=0.0):
     return float(default)
 
 
+def api_uploads_whole_file(endpoint) -> bool:
+    """The cloud model gets the whole waveform and finds speech itself.
+
+    Local VAD regions are never read for these models, so the pipeline runs
+    VAD beside the upload instead of before it (2026-10-22: 26 s of a
+    491 s MOSS Pro task were VAD waiting in front of the upload).
+    """
+    from ..providers.cloud_asr_jobs import FLASH, SPARK
+    from ..providers.qwen31_asr import is_filetrans_model
+    from ..providers.mosi_asr import MODEL as MOSI_MODEL
+    model = (endpoint or {}).get('model')
+    return model in {FLASH, SPARK, MOSI_MODEL} or is_filetrans_model(model)
+
+
 def transcribe_qwen_reference(
     audio_path,
     speech_regions,
@@ -2579,10 +2610,7 @@ def transcribe_qwen_reference(
             )
             from ..providers.llm_config import validate_qwen_asr_endpoint
             validate_qwen_asr_endpoint(api_endpoint)
-            from ..providers.cloud_asr_jobs import FLASH, SPARK
-            from ..providers.qwen31_asr import is_filetrans_model
-            from ..providers.mosi_asr import MODEL as MOSI_MODEL
-            if api_endpoint.get('model') in {FLASH,SPARK,MOSI_MODEL} or is_filetrans_model(api_endpoint.get('model')):
+            if api_uploads_whole_file(api_endpoint):
                 # Native workers receive the complete frozen analysis waveform;
                 # their own bounded chunks retain silence and exact offsets.
                 return _transcribe_api_owned(audio_path,[dict(start=0,end=len(audio)/sampling_rate,
@@ -3097,7 +3125,9 @@ def _transcribe_funasr_worker(model_key, chunks):
                     }
                 )
         if not references:
-            raise RuntimeError(f"{model_key} worker returned no parsed text")
+            if len(values) != len(chunks):
+                raise RuntimeError(f"{model_key} worker returned {len(values)} of {len(chunks)} results")
+            raise NoRecognizedTextError(f"{model_key} worker returned no parsed text")
         return references
 
 

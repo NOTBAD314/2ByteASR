@@ -101,9 +101,16 @@ def test_persistence_shares_unchanged_evidence_and_detects_inplace_change():
     first=store.refresh_persistence(1).asr_evidence
     assert store.refresh_persistence(2).asr_evidence is first
     project.asr_evidence["e"]["words"][0]["text"]="新"
-    updated=store.refresh_persistence(3).asr_evidence
+    # 2026-10-22: an autosave trusts a row object it has seen (re-reading all
+    # evidence cost ~80 ms per snapshot); a formal save compares every row,
+    # and the idle check after an autosave drops a row changed in place.
+    assert store.refresh_persistence(3).asr_evidence is first
+    updated=store.refresh_persistence(4,deep=True).asr_evidence
     assert updated is not first
     assert thaw_json(updated)["e"]["words"][0]["text"]=="新"
+    project.asr_evidence["e"]["words"][0]["text"]="再改"
+    assert store.evidence_rows_changed_in_place(["e"])==["e"]
+    assert thaw_json(store.refresh_persistence(5).asr_evidence)["e"]["words"][0]["text"]=="再改"
 
 
 

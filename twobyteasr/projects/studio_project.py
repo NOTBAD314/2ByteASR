@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -85,8 +86,12 @@ def _string_list(value: Any) -> list[str]:
     return result
 
 
-def _mapping(value: Any) -> dict[str, Any]:
-    return copy.deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+def _mapping(value: Any, *, owned: bool = False) -> dict[str, Any]:
+    """A dict of ``value``; deep-copied unless the caller owns the data
+    (fresh ``json.loads`` or revision thaw output that nothing else holds)."""
+    if not isinstance(value, Mapping):
+        return {}
+    return dict(value) if owned else copy.deepcopy(dict(value))
 
 
 @dataclass
@@ -943,12 +948,18 @@ class SubtitleProject:
                 state._sequence_runtime = None
         object.__setattr__(self, name, value)
 
-    def validate(self) -> None:
+    def validate(self, *, owned: bool = False) -> None:
+        """Normalize the persisted schema in place.
+
+        JSON fields are deep-copied so the project never shares them with a
+        caller; ``owned`` skips that for data nothing else holds (2026-10-22:
+        the copies were 2.4 s of every open and formal save on 2090 cues).
+        """
         if int(self.schema_version) != PROJECT_SCHEMA_VERSION:
             raise ProjectValidationError(
                 f"unsupported project schema_version {self.schema_version}"
             )
-        initialize_tracks = not self.video_tracks and not self.audio_tracks and not _mapping(self.edit_sequence).get('empty_timeline',False)
+        initialize_tracks = not self.video_tracks and not self.audio_tracks and not _mapping(self.edit_sequence, owned=True).get('empty_timeline',False)
         self.project_id = _clean_id(self.project_id, "project_id")
         self.media.validate()
         if not self.media_pool and (self.media.path or self.media.duration_ms):
@@ -959,7 +970,7 @@ class SubtitleProject:
             if asset.asset_id in asset_ids:
                 raise ProjectValidationError(f"duplicate media asset id {asset.asset_id}")
             asset_ids.add(asset.asset_id)
-        if not self.video_tracks and self.media_pool and not _mapping(self.edit_sequence).get('empty_timeline',False):
+        if not self.video_tracks and self.media_pool and not _mapping(self.edit_sequence, owned=True).get('empty_timeline',False):
             asset = self.media_pool[0]
             clip_id = "clip-" + hashlib.sha1(asset.asset_id.encode("utf-8")).hexdigest()[:12]
             self.video_tracks = [VideoTrack(
@@ -973,7 +984,7 @@ class SubtitleProject:
                     timeline_in_ms=0,
                     timeline_out_ms=asset.duration_ms,
                 )],
-                locked=bool(_mapping(self.edit_sequence).get("video_track_locked", True)),
+                locked=bool(_mapping(self.edit_sequence, owned=True).get("video_track_locked", True)),
                 z_index=0,
             )]
         track_ids: set[str] = set()
@@ -1028,22 +1039,22 @@ class SubtitleProject:
         self.updated_at = str(self.updated_at or self.created_at)
         self.report_path = str(self.report_path or "")
         self.glossary_ids = _string_list(self.glossary_ids)
-        self.effects = _mapping(self.effects)
-        self.style_recipes = _mapping(self.style_recipes)
-        self.generation_metadata = _mapping(self.generation_metadata)
-        self.asr_evidence = _mapping(self.asr_evidence)
-        self.render_settings = _mapping(self.render_settings)
+        self.effects = _mapping(self.effects, owned=owned)
+        self.style_recipes = _mapping(self.style_recipes, owned=owned)
+        self.generation_metadata = _mapping(self.generation_metadata, owned=owned)
+        self.asr_evidence = _mapping(self.asr_evidence, owned=owned)
+        self.render_settings = _mapping(self.render_settings, owned=owned)
         self.original_outputs = {
             str(key): str(value)
-            for key, value in _mapping(self.original_outputs).items()
+            for key, value in _mapping(self.original_outputs, owned=owned).items()
             if str(key).strip() and str(value).strip()
         }
-        self.studio_state = _mapping(self.studio_state)
+        self.studio_state = _mapping(self.studio_state, owned=owned)
         # Validation normalizes the persisted schema but is not an external
         # replacement of canonical runtime state.
-        object.__setattr__(self, "edit_sequence", _mapping(self.edit_sequence))
+        object.__setattr__(self, "edit_sequence", _mapping(self.edit_sequence, owned=owned))
         self.edit_history = [
-            _mapping(item) for item in self.edit_history if isinstance(item, Mapping)
+            _mapping(item, owned=owned) for item in self.edit_history if isinstance(item, Mapping)
         ]
 
         seen_cues: set[str] = set()
@@ -1114,7 +1125,9 @@ class SubtitleProject:
         return payload
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> "SubtitleProject":
+    def from_dict(cls, payload: Mapping[str, Any], *, owned: bool = False) -> "SubtitleProject":
+        """``owned``: nothing else holds ``payload`` (fresh parse or thaw), so
+        its JSON fields are used as they are instead of deep-copied twice."""
         if not isinstance(payload, Mapping):
             raise ProjectValidationError("project root must be a JSON object")
         schema_version = int(payload.get("schema_version", 0) or 0)
@@ -1175,23 +1188,23 @@ class SubtitleProject:
             cues=[StudioCue(**dict(item)) for item in payload.get("cues", [])],
             speakers=[StudioSpeaker(**dict(item)) for item in payload.get("speakers", [])],
             styles=[SubtitleStyle(**dict(item)) for item in payload.get("styles", [])],
-            effects=_mapping(payload.get("effects")),
-            style_recipes=_mapping(payload.get("style_recipes")),
-            generation_metadata=_mapping(payload.get("generation_metadata")),
-            asr_evidence=_mapping(payload.get("asr_evidence")),
+            effects=_mapping(payload.get("effects"), owned=owned),
+            style_recipes=_mapping(payload.get("style_recipes"), owned=owned),
+            generation_metadata=_mapping(payload.get("generation_metadata"), owned=owned),
+            asr_evidence=_mapping(payload.get("asr_evidence"), owned=owned),
             glossary_ids=_string_list(payload.get("glossary_ids")),
             edit_history=list(payload.get("edit_history", [])),
-            render_settings=_mapping(payload.get("render_settings")),
+            render_settings=_mapping(payload.get("render_settings"), owned=owned),
             report_path=str(payload.get("report_path") or ""),
-            original_outputs=_mapping(payload.get("original_outputs")),
-            studio_state=_mapping(payload.get("studio_state")),
-            edit_sequence=_mapping(payload.get("edit_sequence")),
+            original_outputs=_mapping(payload.get("original_outputs"), owned=owned),
+            studio_state=_mapping(payload.get("studio_state"), owned=owned),
+            edit_sequence=_mapping(payload.get("edit_sequence"), owned=owned),
             project_id=str(payload.get("project_id") or ""),
             created_at=str(payload.get("created_at") or ""),
             updated_at=str(payload.get("updated_at") or ""),
             schema_version=schema_version,
         )
-        project.validate()
+        project.validate(owned=owned)
         from ..timeline.studio_edit_sequence import ensure_edit_sequence
 
         ensure_edit_sequence(project)
@@ -1205,6 +1218,17 @@ def studio_data_root(base: str | os.PathLike[str] | None = None) -> Path:
         from ..runtime_paths import user_data_root
         return user_data_root() / STUDIO_DATA_DIRNAME
     return root / "2ByteASR" / STUDIO_DATA_DIRNAME
+
+
+def speaker_track_preference() -> int | None:
+    """「默认独立字幕轨」 (studio preference ``speaker_main_tracks``), or None."""
+    from ..recognition.speaker_roles import CAP_CHOICES
+    try:
+        payload = json.loads(studio_settings_path().read_text(encoding="utf-8"))
+        value = int((payload.get("studio_preferences") or {}).get("speaker_main_tracks") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return value if value in CAP_CHOICES else None
 
 
 def studio_settings_path(base: str | os.PathLike[str] | None = None) -> Path:
@@ -1378,8 +1402,11 @@ def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
         raise
 
 
-def _atomic_json_blob_write(path: Path, content: str) -> dict[str, float]:
-    """Atomically persist pre-serialized JSON and expose the durability phases."""
+def _atomic_json_blob_write(path: Path, content: str | Iterable[str]) -> dict[str, float]:
+    """Atomically persist pre-serialized JSON and expose the durability phases.
+
+    ``content`` may be string pieces; they are written one by one.
+    """
 
     import time
 
@@ -1392,7 +1419,11 @@ def _atomic_json_blob_write(path: Path, content: str) -> dict[str, float]:
     fsync_ms = 0.0
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
+            if isinstance(content, str):
+                stream.write(content)
+            else:
+                for piece in content:
+                    stream.write(piece)
             stream.flush()
             fsync_started = time.perf_counter()
             os.fsync(stream.fileno())
@@ -1451,6 +1482,41 @@ def save_project(project: SubtitleProject, path: str | os.PathLike[str]) -> Path
     return target
 
 
+def _private_project_payload(project: SubtitleProject) -> dict[str, Any]:
+    """``asdict(project)`` for a project nothing else holds.
+
+    Records (media, tracks, cues, styles, speakers) are converted as asdict
+    does; JSON fields are passed as they are instead of deep-copied (their
+    content is the same; 2026-10-22: asdict copied 2.0 s on 2090 cues).
+    """
+    from dataclasses import fields, is_dataclass
+    payload: dict[str, Any] = {}
+    for item in fields(project):
+        value = getattr(project, item.name)
+        if is_dataclass(value):
+            payload[item.name] = asdict(value)
+        elif isinstance(value, list) and any(is_dataclass(entry) for entry in value):
+            payload[item.name] = [asdict(entry) if is_dataclass(entry) else copy.deepcopy(entry) for entry in value]
+        else:
+            payload[item.name] = value
+    return payload
+
+
+_FORMAL_TEXT_CACHES: dict[str, object] = {}
+
+
+def _formal_text_cache(target: Path):
+    """Pretty text of unchanged evidence rows from this file's previous save."""
+    from .frozen_json_text import FrozenTextCache, pretty
+    key = str(target)
+    with _AUTOSAVE_TEXT_CACHES_LOCK:
+        cache = _FORMAL_TEXT_CACHES.pop(key, None) or FrozenTextCache(pretty)
+        _FORMAL_TEXT_CACHES[key] = cache
+        while len(_FORMAL_TEXT_CACHES) > 2:
+            _FORMAL_TEXT_CACHES.pop(next(iter(_FORMAL_TEXT_CACHES)))
+    return cache
+
+
 @project_io("save_revision")
 def save_project_revision(
     revision: object, path: str | os.PathLike[str],
@@ -1462,19 +1528,36 @@ def save_project_revision(
     if target.suffix.lower() != PROJECT_SUFFIX:
         target = target.with_suffix(PROJECT_SUFFIX)
     started = time.perf_counter()
+    from .studio_revisions import FrozenBlob, FrozenMap, PersistenceRevision
+    # 2026-10-22: validation only copies recognition evidence and generation
+    # metadata, so their text is encoded straight from the frozen values,
+    # reusing each unchanged evidence row's text from the previous save.
+    frozen = {}
+    if isinstance(revision, PersistenceRevision):
+        frozen = {name: getattr(revision, name) for name in ("asr_evidence", "generation_metadata")
+                  if isinstance(getattr(revision, name), (FrozenMap, FrozenBlob))}
     # Parsing/validation normalizes exactly the same project schema as the
-    # synchronous writer, but only on the worker's private materialized copy.
-    detached = SubtitleProject.from_dict(revision.to_payload())
+    # synchronous writer, but only on the worker's private materialized copy
+    # (owned: the thawed payload is not shared, so it is not copied again).
+    detached = SubtitleProject.from_dict(revision.to_payload(skip=frozenset(frozen)) if frozen
+                                         else revision.to_payload(), owned=True)
     from ..timeline.studio_edit_sequence import persist_sequence
     persist_sequence(detached)
-    payload = asdict(detached)
+    payload = _private_project_payload(detached)
     # Match SubtitleProject.to_dict: transient QC is never part of a save.
     state = payload.get("studio_state")
     if isinstance(state, dict):
         state.pop("review_risks", None)
     materialize_ms = (time.perf_counter() - started) * 1000.0
     started = time.perf_counter()
-    content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if frozen:
+        from .frozen_json_text import pretty_document_pieces
+        cache = _formal_text_cache(target)
+        _prefetch_evidence(cache, revision)
+        content = list(_text_chunks(pretty_document_pieces(payload, frozen, cache)))
+        cache.finish()
+    else:
+        content = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     serialize_ms = (time.perf_counter() - started) * 1000.0
     target.parent.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -1508,6 +1591,10 @@ def load_project(path: str | os.PathLike[str]) -> SubtitleProject:
         payload = json.loads(project_path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         raise ProjectValidationError(f"could not read project {project_path}: {exc}") from exc
+    # An autosave checkpoint may carry the later changes in its overlay.
+    overlay = _autosave_overlay(project_path, payload)
+    if overlay is not None:
+        payload = _apply_autosave_overlay(payload, overlay)
     from .media_graph_integrity import validate_autosave_integrity, graph_counts
     try:
         expected = validate_autosave_integrity(payload)
@@ -1517,7 +1604,7 @@ def load_project(path: str | os.PathLike[str]) -> SubtitleProject:
         from ..caption_style.style_cleanup import prune_unused_derived_payload
         if isinstance(payload, dict):
             prune_unused_derived_payload(payload)
-        project = SubtitleProject.from_dict(payload)
+        project = SubtitleProject.from_dict(payload, owned=True)
         if expected is not None:
             actual = graph_counts({key: [asdict(x) for x in getattr(project, key)]
                                    for key in ("media_pool", "video_tracks", "audio_tracks", "av_track_groups")})
@@ -1550,7 +1637,7 @@ def _project_autosave_snapshots(
     try:
         paths = sorted(
             autosave_dir.glob(f"*{PROJECT_SUFFIX}"),
-            key=lambda item: item.stat().st_mtime_ns,
+            key=autosave_effective_mtime_ns,
             reverse=True,
         )
     except OSError:
@@ -1558,13 +1645,13 @@ def _project_autosave_snapshots(
     snapshots: list[tuple[Path, SubtitleProject]] = []
     for path in paths:
         try:
-            stat = path.stat()
+            mtime_ns = autosave_effective_mtime_ns(path)
         except OSError:
             continue
         # 2026-09-19：官方保存成功后其内容总是 autosave 的超集；恢复链
         # (recoverable_autosave) 也只考虑 mtime 更新的候选。旧于官方的
         # autosave 在 Library 富化里永远不提供增量，跳过免掉重复全量解析。
-        if newer_than_ns is not None and stat.st_mtime_ns <= newer_than_ns:
+        if newer_than_ns is not None and mtime_ns <= newer_than_ns:
             continue
         try:
             snapshots.append((path, load_project(path)))
@@ -1867,6 +1954,9 @@ def save_autosave_revision(
     to_payload = getattr(revision, "to_payload", None)
     if not callable(to_payload):
         raise TypeError("revision must provide to_payload()")
+    from .studio_revisions import PersistenceRevision
+    if isinstance(revision, PersistenceRevision):
+        return _save_frozen_autosave_revision(revision, project_path, base, session_id=session_id)
     materialize_started = time.perf_counter()
     payload = to_payload()
     materialize_ms = (time.perf_counter() - materialize_started) * 1000.0
@@ -1878,39 +1968,375 @@ def save_autosave_revision(
     }
     from .media_graph_integrity import graph_integrity
     payload["autosave"]["media_graph_integrity"] = graph_integrity(payload)
+    generation = int(getattr(revision, "generation", 0))
+    # 2026-10-22: the newer-generation check parsed the whole previous file
+    # (62 MB in report-eb10) on every autosave. The generation is now
+    # remembered per target, with the sidecar as the on-disk record.
+    target, newer_on_disk = _autosave_target(str(payload.get("project_id") or ""), project_path, base,
+                                             session_id, generation)
+    if newer_on_disk:
+        return target, dict(materialize_ms=materialize_ms, serialize_ms=0., persist_ms=0., fsync_ms=0.)
     serialize_started = time.perf_counter()
     # Recovery files are machine-read. Pretty printing walks every nested item
     # in Python while the editor competes for the GIL. Compact JSON preserves
     # the complete payload and lets the standard encoder use its C fast path.
-    content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    # The same top-level parts also produce the content fingerprint below, so
+    # the project is encoded once instead of twice.
+    parts = _canonical_json_parts(payload)
+    content = (_join_canonical_object(parts) if parts is not None
+               else json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)) + "\n"
     serialize_ms = (time.perf_counter() - serialize_started) * 1000.0
-    target = _autosave_path_for_identity(str(payload.get("project_id") or ""), project_path, base)
-    if session_id:
-        if not session_id.isalnum():
-            raise ValueError("invalid autosave session id")
-        target = target.with_name(f"{target.stem}.{session_id}{target.suffix}")
-        # Writers from one page are serialized by its write lock. A shutdown
-        # flush may win that lock before an already captured background write.
-        if target.is_file():
-            try:
-                previous = json.loads(target.read_text(encoding="utf-8"))
-                previous_meta = previous.get("autosave") or {}
-                if int(previous_meta.get("generation", -1)) > int(getattr(revision, "generation", 0)):
-                    return target, dict(materialize_ms=materialize_ms, serialize_ms=serialize_ms,
-                                        persist_ms=0., fsync_ms=0.)
-            except (OSError, ValueError, TypeError):
-                pass
     phases = _atomic_json_blob_write(target, content)
-    _write_autosave_fingerprint_sidecar(target, payload)
+    if session_id:
+        _AUTOSAVE_GENERATIONS[str(target)] = max(generation, _AUTOSAVE_GENERATIONS.get(str(target), generation))
+    fingerprint_started = time.perf_counter()
+    _write_autosave_fingerprint_sidecar(
+        target, payload, fingerprint=_content_fingerprint_payload(payload, parts=parts),
+        generation=generation,
+    )
     phases.update({
         "materialize_ms": materialize_ms,
         "serialize_ms": serialize_ms,
+        "fingerprint_ms": (time.perf_counter() - fingerprint_started) * 1000.0,
     })
     return target, phases
 
 
-def _content_fingerprint_payload(payload: dict) -> str:
-    """Canonical content hash shared by loaded projects and autosave payloads."""
+def _autosave_target(project_id: str, project_path, base, session_id: str, generation: int) -> tuple[Path, bool]:
+    """Per-session autosave path, and whether a newer generation is already there."""
+    target = _autosave_path_for_identity(project_id, project_path, base)
+    if not session_id:
+        return target, False
+    if not session_id.isalnum():
+        raise ValueError("invalid autosave session id")
+    target = target.with_name(f"{target.stem}.{session_id}{target.suffix}")
+    # Writers from one page are serialized by its write lock. A shutdown
+    # flush may win that lock before an already captured background write.
+    if target.is_file():
+        previous_generation = _AUTOSAVE_GENERATIONS.get(str(target))
+        if previous_generation is None:
+            previous_generation = _autosave_generation_on_disk(target)
+        if previous_generation is not None and previous_generation > generation:
+            return target, True
+    return target, False
+
+
+def _save_frozen_autosave_revision(revision, project_path, base, *, session_id: str) -> tuple[Path, dict[str, float]]:
+    """``save_autosave_revision`` for a frozen PersistenceRevision.
+
+    Same file and fingerprint as encoding ``revision.to_payload()``, but text
+    of values unchanged since this target's previous autosave is reused
+    (``frozen_json_text``): one edited cue costs one cue, not the project.
+    """
+    import time
+    from .frozen_json_text import fingerprint_pieces, object_pieces, persistence_parts
+    from .media_graph_integrity import GRAPH_FIELDS, graph_integrity
+    from .studio_revisions import thaw_json
+
+    generation = int(revision.generation)
+    target, newer_on_disk = _autosave_target(revision.project_id, project_path, base, session_id, generation)
+    if newer_on_disk:
+        return target, dict(materialize_ms=0., serialize_ms=0., persist_ms=0., fsync_ms=0.)
+    started = time.perf_counter()
+    graph = {name: thaw_json(getattr(revision, name)) for name in GRAPH_FIELDS}
+    autosave = {
+        "saved_at": _utc_now(),
+        "project_path": str(Path(project_path).resolve()) if project_path else "",
+        "session_id": session_id,
+        "generation": generation,
+        "media_graph_integrity": graph_integrity(graph),
+    }
+    cache = _autosave_text_cache(target)
+    _prefetch_evidence(cache, revision)
+    parts = persistence_parts(revision, cache)
+    rows = _evidence_row_texts(revision, cache)
+    checkpoint = _AUTOSAVE_CHECKPOINTS.get(str(target))
+    overlay = None
+    if checkpoint is not None and rows is not None and checkpoint.matches(target):
+        overlay = checkpoint.overlay_pieces(parts, rows, autosave, generation)
+    if overlay is None:
+        autosave["checkpoint_id"] = uuid.uuid4().hex
+    parts["autosave"] = [_canonical_json(autosave, 1)]
+    fingerprint = fingerprint_pieces(revision, parts, cache)
+    cache.finish()
+    serialize_ms = (time.perf_counter() - started) * 1000.0
+    if overlay is not None:
+        # Stage 2 (2026-10-22): only the changed parts, next to the checkpoint.
+        phases = _atomic_json_blob_write(_autosave_overlay_path(target), _text_chunks(overlay))
+        phases["overlay_chars"] = sum(len(piece) for piece in overlay)
+    else:
+        pieces = object_pieces(parts)
+        pieces.append("\n")
+        # Large chunks: every buffer flush releases the GIL, and getting it back
+        # while the editor runs costs up to a switch interval. Writing ~20,000
+        # small pieces made one autosave take 21 s in the 2090-cue soak.
+        phases = _atomic_json_blob_write(target, _text_chunks(pieces))
+        _discard_autosave_overlay(target)
+        _AUTOSAVE_CHECKPOINTS[str(target)] = _AutosaveCheckpoint.after_write(
+            target, autosave["checkpoint_id"], generation, parts, rows)
+    if session_id:
+        _AUTOSAVE_GENERATIONS[str(target)] = max(generation, _AUTOSAVE_GENERATIONS.get(str(target), generation))
+    fingerprint_started = time.perf_counter()
+    digest = hashlib.sha256()
+    for chunk in _text_chunks(fingerprint):
+        digest.update(chunk.encode("utf-8"))
+    _write_autosave_fingerprint_sidecar(
+        target, {"project_id": revision.project_id}, fingerprint=digest.hexdigest(), generation=generation,
+    )
+    phases.update({
+        "materialize_ms": 0.0,
+        "serialize_ms": serialize_ms,
+        "fingerprint_ms": (time.perf_counter() - fingerprint_started) * 1000.0,
+        "pieces_encoded": cache.encoded,
+        "pieces_reused": cache.reused,
+    })
+    return target, phases
+
+
+# --------------------------------------------------------------------------
+# Autosave checkpoint + overlay (2026-10-22, report-eb10 stage 2)
+#
+# A 62 MB project rewrote 62 MB every ~20 s. Now the first autosave of a
+# session writes the whole project (the checkpoint, same format as before,
+# plus a random ``checkpoint_id`` in its autosave block); later ones write
+# ``<checkpoint>.overlay`` with only the top-level fields and evidence rows
+# that differ from it. ``load_project`` applies a matching overlay, so every
+# reader of an autosave sees the latest state. Programs older than this see
+# only the checkpoint (``*.overlay`` is not a project file): older content,
+# never a broken mix. A full checkpoint is written again when the overlay
+# grows past an eighth of the project, or the checkpoint changed on disk.
+
+OVERLAY_SUFFIX = ".overlay"
+OVERLAY_FORMAT = "2byteasr-autosave-overlay"
+
+
+def _autosave_overlay_path(target: Path) -> Path:
+    return Path(target).with_name(Path(target).name + OVERLAY_SUFFIX)
+
+
+def _discard_autosave_overlay(target: Path) -> None:
+    try:
+        _autosave_overlay_path(target).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def autosave_effective_mtime_ns(candidate: Path) -> int:
+    """mtime of an autosave including its overlay (when present)."""
+    mtime = Path(candidate).stat().st_mtime_ns
+    try:
+        return max(mtime, _autosave_overlay_path(candidate).stat().st_mtime_ns)
+    except OSError:
+        return mtime
+
+
+def discard_autosave(candidate: Path) -> None:
+    """Delete a recovery point: the autosave, its overlay and its sidecar."""
+    candidate = Path(candidate)
+    for path in (candidate, _autosave_overlay_path(candidate),
+                 candidate.with_name(f"{candidate.stem}.fingerprint.json")):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _prefetch_evidence(cache, revision) -> None:
+    """Rows not encoded yet (first save of a session) go to the resident worker."""
+    from .studio_revisions import FrozenMap
+    evidence = getattr(revision, "asr_evidence", None)
+    if isinstance(evidence, FrozenMap):
+        cache.prefetch([value for _key, value in evidence.items])
+
+
+def _evidence_row_texts(revision, cache) -> dict[str, str] | None:
+    """Canonical text of each evidence row (cache hits after persistence_parts)."""
+    from .studio_revisions import FrozenMap
+    evidence = revision.asr_evidence
+    if not isinstance(evidence, FrozenMap):
+        return None
+    return {key: cache.frozen(value) for key, value in evidence.items}
+
+
+class _AutosaveCheckpoint:
+    """What the last full autosave of one target contained."""
+
+    def __init__(self, checkpoint_id, generation, parts, rows, size, mtime_ns):
+        self.checkpoint_id = checkpoint_id
+        self.generation = generation
+        self.parts = parts
+        self.rows = rows
+        self.size = size
+        self.mtime_ns = mtime_ns
+
+    @classmethod
+    def after_write(cls, target, checkpoint_id, generation, parts, rows):
+        if rows is None:
+            return None
+        info = Path(target).stat()
+        kept = {key: value for key, value in parts.items() if key not in {"autosave", "asr_evidence"}}
+        return cls(checkpoint_id, generation, kept, dict(rows), info.st_size, info.st_mtime_ns)
+
+    def matches(self, target) -> bool:
+        try:
+            info = Path(target).stat()
+        except OSError:
+            return False
+        return info.st_size == self.size and info.st_mtime_ns == self.mtime_ns
+
+    def overlay_pieces(self, parts, rows, autosave, generation) -> list[str] | None:
+        """Overlay text pieces, or None when a full checkpoint is cheaper."""
+        replace = [key for key in sorted(parts) if key not in {"autosave", "asr_evidence"}
+                   and self.parts.get(key) != parts[key]]
+        stored = self.rows
+        changed = sorted(key for key, text in rows.items()
+                         if stored.get(key) is not text and stored.get(key) != text)
+        deleted = sorted(key for key in stored if key not in rows)
+        pieces = ['{"base":', _canonical_json({"checkpoint_id": self.checkpoint_id,
+                                               "generation": self.generation}, 1),
+                  ',"evidence_delete":', json.dumps(deleted, ensure_ascii=False), ',"evidence_set":{']
+        for index, key in enumerate(changed):
+            pieces.extend(("," if index else "", json.dumps(key, ensure_ascii=False), ":", rows[key]))
+        pieces.extend(('},"format":', json.dumps(OVERLAY_FORMAT), ',"generation":', str(int(generation)),
+                       ',"replace":{"autosave":', _canonical_json(autosave, 1)))
+        for key in replace:
+            pieces.extend((",", json.dumps(key, ensure_ascii=False), ":"))
+            pieces.extend(parts[key])
+        pieces.append('},"version":1}\n')
+        size = sum(len(piece) for piece in pieces)
+        if size > max(4 * 1024 * 1024, self.size // 8):
+            return None
+        return pieces
+
+
+_AUTOSAVE_CHECKPOINTS: dict[str, _AutosaveCheckpoint] = {}
+
+
+def _autosave_overlay(project_path: Path, payload: Mapping[str, Any]) -> dict | None:
+    """The overlay written on top of this autosave checkpoint, or None."""
+    overlay_path = _autosave_overlay_path(project_path)
+    autosave = payload.get("autosave") if isinstance(payload, Mapping) else None
+    checkpoint_id = autosave.get("checkpoint_id") if isinstance(autosave, Mapping) else None
+    if not checkpoint_id or not overlay_path.is_file():
+        return None
+    try:
+        overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    base = overlay.get("base") if isinstance(overlay, Mapping) else None
+    if (not isinstance(base, Mapping) or overlay.get("format") != OVERLAY_FORMAT
+            or overlay.get("version") != 1 or base.get("checkpoint_id") != checkpoint_id
+            or not isinstance(overlay.get("replace"), Mapping)):
+        return None
+    return overlay
+
+
+def _apply_autosave_overlay(payload: dict, overlay: Mapping[str, Any]) -> dict:
+    payload.update(overlay["replace"])
+    evidence = payload.get("asr_evidence")
+    if not isinstance(evidence, dict):
+        evidence = payload["asr_evidence"] = {}
+    for key in overlay.get("evidence_delete") or ():
+        evidence.pop(key, None)
+    rows = overlay.get("evidence_set")
+    if isinstance(rows, Mapping):
+        evidence.update(rows)
+    return payload
+
+
+def _text_chunks(pieces, limit: int = 4 * 1024 * 1024):
+    """Join string pieces into chunks of about ``limit`` characters."""
+    buffer, size = [], 0
+    for piece in pieces:
+        buffer.append(piece)
+        size += len(piece)
+        if size >= limit:
+            yield "".join(buffer)
+            buffer, size = [], 0
+    if buffer:
+        yield "".join(buffer)
+
+
+_AUTOSAVE_TEXT_CACHES: dict[str, object] = {}
+_AUTOSAVE_TEXT_CACHES_LOCK = threading.Lock()
+
+
+def _autosave_text_cache(target: Path):
+    """The text cache of one autosave target; a few targets at most.
+
+    One target is written by one page at a time (its write lock)."""
+    from .frozen_json_text import FrozenTextCache
+    key = str(target)
+    with _AUTOSAVE_TEXT_CACHES_LOCK:
+        cache = _AUTOSAVE_TEXT_CACHES.pop(key, None) or FrozenTextCache()
+        _AUTOSAVE_TEXT_CACHES[key] = cache
+        while len(_AUTOSAVE_TEXT_CACHES) > 3:
+            _AUTOSAVE_TEXT_CACHES.pop(next(iter(_AUTOSAVE_TEXT_CACHES)))
+    return cache
+
+
+# Highest autosave generation this process wrote to each per-session target.
+_AUTOSAVE_GENERATIONS: dict[str, int] = {}
+
+
+def _autosave_generation_on_disk(target: Path) -> int | None:
+    """Generation of an existing autosave this process did not write."""
+    sidecar = autosave_fingerprint_sidecar(target)
+    if "generation" in sidecar:
+        try:
+            return int(sidecar["generation"])
+        except (TypeError, ValueError):
+            pass
+    try:
+        # Sidecars before 2026-10-22 carry no generation: parse once.
+        previous = json.loads(target.read_text(encoding="utf-8"))
+        return int((previous.get("autosave") or {}).get("generation", -1))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _canonical_json(value: Any, depth: int = 1) -> str:
+    """``json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))``.
+
+    The first ``depth`` levels are encoded child by child and joined, which
+    gives the same text. The C encoder holds the GIL for a whole call; one
+    call over a 60 MB project kept the GUI thread waiting ~0.3 s per autosave
+    (report-eb10). Between children other threads get their turn. Only
+    dicts with all-``str`` keys are split; the encoder sorts and coerces other
+    key types itself.
+    """
+    if depth > 0 and isinstance(value, dict) and value and all(type(key) is str for key in value):
+        return "{" + ",".join(
+            json.dumps(key, ensure_ascii=False) + ":" + _canonical_json(value[key], depth - 1)
+            for key in sorted(value)
+        ) + "}"
+    if depth > 0 and isinstance(value, (list, tuple)) and value:
+        return "[" + ",".join(_canonical_json(item, depth - 1) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _canonical_json_parts(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """Canonical text of each top-level value, or None if a key is not ``str``."""
+    if not all(type(key) is str for key in payload):
+        return None
+    return {key: _canonical_json(value, 1) for key, value in payload.items()}
+
+
+def _join_canonical_object(parts: Mapping[str, str]) -> str:
+    return "{" + ",".join(
+        json.dumps(key, ensure_ascii=False) + ":" + parts[key] for key in sorted(parts)
+    ) + "}"
+
+
+def _content_fingerprint_payload(payload: dict, *, parts: Mapping[str, str] | None = None) -> str:
+    """Canonical content hash shared by loaded projects and autosave payloads.
+
+    ``parts`` are the already encoded top-level values of ``payload`` (from
+    ``_canonical_json_parts``); unchanged values are reused, not re-encoded.
+    """
+    source = payload
     payload = dict(payload)
     payload.pop("autosave", None)
     payload.pop("updated_at", None)
@@ -1922,7 +2348,13 @@ def _content_fingerprint_payload(payload: dict) -> str:
             if key not in {"last_opened", "review_risks", "review_confirmations", "cue_statuses"}
         }
     payload.pop("project_id", None)
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if parts is not None and all(type(key) is str for key in payload):
+        encoded = _join_canonical_object({
+            key: parts[key] if key in parts and value is source.get(key) else _canonical_json(value, 1)
+            for key, value in payload.items()
+        })
+    else:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
@@ -1931,18 +2363,23 @@ def project_content_fingerprint(project: SubtitleProject) -> str:
     return _content_fingerprint_payload(project.to_dict())
 
 
-def _write_autosave_fingerprint_sidecar(target: Path, payload: dict) -> None:
+def _write_autosave_fingerprint_sidecar(
+    target: Path, payload: dict, *, fingerprint: str = "", generation: int | None = None,
+) -> None:
     """Tiny sidecar so recovery can compare content without parsing 9MB JSON.
 
     2026-09-18：重复进入实测每次打开都为"官方 vs autosave 指纹比对"完整
     解析一次候选（438-710ms）。边车持有 project_id + content_fingerprint；
     读取方必须校验 sidecar mtime ≥ 候选 mtime，陈旧即回退全量解析。
+    2026-10-22：另存 generation，下一次自动保存不必再解析整份旧文件。
     """
     try:
         sidecar = {
             "project_id": str(payload.get("project_id") or ""),
-            "content_fingerprint": _content_fingerprint_payload(payload),
+            "content_fingerprint": fingerprint or _content_fingerprint_payload(payload),
         }
+        if generation is not None:
+            sidecar["generation"] = int(generation)
         _atomic_json_write(
             target.with_name(f"{target.stem}.fingerprint.json"),
             sidecar,
@@ -1955,7 +2392,8 @@ def autosave_fingerprint_sidecar(candidate: Path) -> dict:
     """Fresh fingerprint sidecar for an autosave candidate, or {}."""
     sidecar = candidate.with_name(f"{candidate.stem}.fingerprint.json")
     try:
-        if not sidecar.is_file() or sidecar.stat().st_mtime_ns < candidate.stat().st_mtime_ns:
+        # Written after the autosave and its overlay; older means stale.
+        if not sidecar.is_file() or sidecar.stat().st_mtime_ns < autosave_effective_mtime_ns(candidate):
             return {}
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -1975,9 +2413,9 @@ def recoverable_autosave(
     project = official if official is not None else load_project(target)
     canonical = autosave_path(project, target, base)
     candidates = [canonical, *canonical.parent.glob(f"{canonical.stem}.*{PROJECT_SUFFIX}")]
-    candidates = sorted((x for x in candidates if x.is_file()), key=lambda x: x.stat().st_mtime_ns, reverse=True)
+    candidates = sorted((x for x in candidates if x.is_file()), key=autosave_effective_mtime_ns, reverse=True)
     for candidate in candidates:
-        if candidate.stat().st_mtime_ns <= target.stat().st_mtime_ns:
+        if autosave_effective_mtime_ns(candidate) <= target.stat().st_mtime_ns:
             continue
         # 新鲜边车可直接校验身份，免去候选全量解析。
         sidecar = autosave_fingerprint_sidecar(candidate)
@@ -2270,7 +2708,7 @@ def create_studio_outputs(
     # Main/secondary speaker roles for the timeline: decided once here, on a
     # project nobody has arranged yet (older projects only via the menu).
     from ..recognition.speaker_roles import initialize_for_recognition
-    initialize_for_recognition(project)
+    initialize_for_recognition(project, cap=speaker_track_preference())
     if existing_job_project is not None:
         from ..recognition.recognition_result import committed_result_reference, cue_identity, digest_payload
         reference = committed_result_reference(existing_job_project, project_path)

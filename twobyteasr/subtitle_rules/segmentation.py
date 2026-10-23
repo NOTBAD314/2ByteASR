@@ -1800,7 +1800,7 @@ def locally_repair_resegmented_cue(
     # 2026-10-16 (users: "字幕保真检查未通过" with AI line breaking off): a cut
     # such as 一万｜金币 changes the numbers each cue reads (the final check
     # compares them per cue), so neither the DP nor the hard split takes it.
-    from .number_fidelity import numeric_unsafe_cut_offsets
+    from .number_fidelity import numeric_event_values, numeric_events, numeric_unsafe_cut_offsets
     numeric_unsafe = numeric_unsafe_cut_offsets(text)
     forbidden_boundaries = set(lexical_forbidden_boundary_offsets(text)) | set(
         segmenter_forbidden_boundary_offsets(text)
@@ -1810,6 +1810,23 @@ def locally_repair_resegmented_cue(
     count = len(units)
     if count <= 0 or display_length(text) != count:
         raise ValueError("本地修复的文字与时间单元不一致。")
+
+    # 2026-10-23 (user: 「字幕保真检查未通过：S00 1167.880s」): numeric_unsafe
+    # judges one cut at a time, so 我们｜两｜波 passed both cuts and left a
+    # lone 两 that reads as the number 2. A line must read exactly the numbers
+    # the whole text has inside it, and no number may cross its edges.
+    positions = [index for index, char in enumerate(text) if re.match(f"[{CONTENT_CHAR_CLASS}]", char)]
+    whole_numbers = [(event.start, event.end, event.value) for event in numeric_events(text)]
+
+    def raw_offset(offset):
+        return 0 if offset <= 0 else len(text) if offset >= len(positions) else positions[offset]
+
+    def line_keeps_numbers(start, end):
+        low, high = raw_offset(start), raw_offset(end)
+        if any(first < edge < last for first, last, _ in whole_numbers for edge in (low, high)):
+            return False
+        inside = tuple(value for first, last, value in whole_numbers if low <= first and last <= high)
+        return numeric_event_values(text[low:high]) == inside
 
     source_chars = content_exact(text)
     # score: (total_cost, distance_to_preferred_len, -left_len)
@@ -1832,6 +1849,8 @@ def locally_repair_resegmented_cue(
                 and end_index in forbidden_boundaries
                 and end_index not in forced_boundaries
             ):
+                continue
+            if not line_keeps_numbers(start_index, end_index):
                 continue
 
             cost = 10.0 + 0.22 * (length - PREFERRED_MAX_SUBTITLE_CHARS) ** 2
@@ -1885,6 +1904,11 @@ def locally_repair_resegmented_cue(
     if best_next[0] is None or best_score[0][0] == float("inf"):
         # Quality guards must not discard a completed file. Conservatively hard
         # split sparse/fully-protected timelines and preserve every character.
+        # A cut also needs the rest to read right as one line, or a later
+        # piece is left with a lone numeral (走｜三).
+        def cut_keeps_numbers(start, cut):
+            return line_keeps_numbers(start, cut) and line_keeps_numbers(cut, count)
+
         ranges = []
         start_index = 0
         while start_index < count:
@@ -1900,6 +1924,16 @@ def locally_repair_resegmented_cue(
                 if duration > MAX_SUBTITLE_SECONDS + 0.05:
                     break
             end_index = max(end_index, min(count, start_index + 1))
+            if end_index < count and end_index not in forced_boundaries and not any(
+                    cut_keeps_numbers(start_index, cut) for cut in range(start_index + 1, end_index + 1)):
+                # 2026-10-23: eight characters spread over a 23.7 s segment left
+                # room for one a line, so 两波 became a lone 两 and the whole
+                # file failed. When every cut that fits splits a number, run on
+                # to the nearest one that does not; the line is still shown for
+                # at most MAX_SUBTITLE_SECONDS below.
+                end_index = next((cut for cut in range(end_index + 1, limit + 1)
+                                  if cut == count or cut in forced_boundaries or cut_keeps_numbers(start_index, cut)),
+                                 end_index)
             if end_index < count and end_index not in forced_boundaries:
                 # 2026-10-18: cut near an even share of what is left (no
                 # 16 + 16 + 「ネ！」), preferring an allowed boundary (worth six
@@ -1925,7 +1959,7 @@ def locally_repair_resegmented_cue(
                            for size in (1, 2, 3, 4)
                            for i in range(max(0, cut - 2 * size + 1), min(cut, len(source_chars) - 2 * size + 1))):
                         penalty += 6
-                    return (penalty + abs(cut - target), -cut)
+                    return (not cut_keeps_numbers(start_index, cut), penalty + abs(cut - target), -cut)
 
                 end_index = min(range(start_index + 1, end_index + 1), key=cut_cost)
             ranges.append((start_index, end_index))

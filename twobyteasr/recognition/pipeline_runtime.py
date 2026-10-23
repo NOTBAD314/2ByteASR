@@ -191,8 +191,12 @@ def finalize_cues(    cues,
     # 无词级证据时只拆纯语气词（嗯/啊…），"好像还不错"等实词开头不拆。
     finalized = _apply_intra_phrase_spacing_to_cues(finalized)
     finalized = legacy.merge_consecutive_short_repeated_cues(finalized)
+    # Japanese only (2026-10-21): pieces of one sentence and flashing short lines
+    # join the same speaker's neighbour, up to two lines (26 characters / 7 s).
+    from ..subtitle_rules.cue_cleanup import merge_japanese_sentence_cues
+    finalized = merge_japanese_sentence_cues(finalized)
     # Cleanup can legitimately merge two short fragments back into a readable
-    # phrase, but that new phrase must still obey the five-second export limit.
+    # phrase, but that new phrase must still obey the export limit (5 s; Japanese 7 s).
     finalized = legacy.repair_overlong_cues_from_source(
         finalized,
         segments,
@@ -257,6 +261,7 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     Text is never changed. Korean (2026-10-19) uses the same steps with its own
     lengths and reading speed (korean_text: 16 characters, 12 per second), and
     so do the European languages (european_text: 42 characters, Russian 39).
+    Since 2026-10-21 a word-language subtitle holds up to two such lines.
     """
     from ..subtitle_rules.display_timing import protect_runtime_display_tails
     from ..subtitle_rules.language_rules import active_task_language, is_european, is_korean
@@ -300,11 +305,11 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     for index, cue in enumerate(finalized, 1):
         cue.cue_id = index
     lengths = sorted(display_length(cue.text) for cue in finalized)
-    within = sum(length <= RULES.max_chars for length in lengths) / len(lengths)
+    within = sum(length <= RULES.cue_max_chars for length in lengths) / len(lengths)
     from ..subtitle_rules.european_text import LABELS as european_labels
     label = "韩语" if is_korean() else european_labels.get(active_task_language(), "英文")
     print(f"[完成] {label}断句：{len(finalized)} 条，中位 {lengths[len(lengths) // 2]:g} 字符，"
-          f"{within:.0%} 不超过 {RULES.max_chars:g} 字符（按词断开，词完整）。")
+          f"{within:.0%} 不超过 {RULES.cue_max_chars:g} 字符（两行以内，按词断开，词完整）。")
     legacy.record_run_event('korean_cues_finalized' if is_korean() else 'word_cues_finalized' if is_european()
                             else 'english_cues_finalized', count=len(finalized), language=active_task_language(),
                             median_chars=lengths[len(lengths) // 2], within_max=round(within, 4))

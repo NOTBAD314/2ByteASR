@@ -159,6 +159,7 @@ def start(window, output: Path):
         # click or key would.
         from ..app.home_tour import GuidedTour
         from ..app.api_key_explainer import ApiKeyExplainerDialog
+        from ..providers.api_setup_dialog import ApiSetupDialog
 
         def live_tour():
             return next((t for t in window.findChildren(GuidedTour) if getattr(t, 'mode', '') != 'closed'), None)
@@ -181,11 +182,30 @@ def start(window, output: Path):
             grab(dialog, 'T-api-key-explainer')
             QTest.mouseClick(dialog.later_button, Qt.MouseButton.LeftButton)   # 稍后再填 (2026-10-21)
 
+        def compare_window():
+            return next((top for top in QApplication.topLevelWidgets()
+                         if isinstance(top, QuickSetupDialog) and top.isVisible() and getattr(top, 'compare', False)),
+                        None)
+        plans = {}
+
         for _ in range(80):
-            yield lambda: live_tour() is None or live_tour().bubble.isVisible()
+            yield lambda: live_tour() is None or live_tour().bubble.isVisible() or compare_window() is not None
             tour = live_tour()
             if tour is None:
                 break
+            if getattr(tour.steps[tour.index], 'auto', None) is not None:
+                # 2026-10-22: the plan step opens the cloud / local comparison by itself; keep the plan.
+                before = tour.index
+                yield lambda: compare_window() is not None or tour.index != before
+                compare = compare_window()
+                if compare is not None:
+                    yield 0.5
+                    plans.update(cards=list(compare.cards), selected=compare.choice,
+                                 points={key: len(card.points) for key, card in compare.cards.items()})
+                    grab(compare, 'T-plan-compare')
+                    QTest.mouseClick(compare.later_button, Qt.MouseButton.LeftButton)   # 先不换
+                yield lambda: live_tour() is None or tour.index != before
+                continue
             # 进阶 goes on in the same overlay (2026-10-21): a new part is a new ``part``, not a new tour.
             if not parts or parts[-1]['tour'] is not tour or parts[-1]['part'] != getattr(tour, 'part', ''):
                 parts.append(dict(tour=tour, part=getattr(tour, 'part', ''), total=len(tour.steps)))
@@ -219,7 +239,18 @@ def start(window, output: Path):
             # 进阶), "帮我做" on an interactive step (the step then moves on by itself once it sees
             # the result), else 下一步.
             moving = next((i for i, a in enumerate(step.actions) if a.advance), None)
-            if moving is not None:
+            inside = getattr(step, 'host', None) is not None   # a step inside AI 设置 (2026-10-22)
+            if inside and moving is not None and step.actions[moving].modal:
+                # 申请教程: the guide opens with exec(); close it when it is there.
+                on_modal(ApiSetupDialog, lambda dialog: dialog.reject(), 'api-guide-in-ai-settings', timeout=10)
+                before = tour.index
+                QTimer.singleShot(0, lambda b=tour.action_buttons[moving]: QTest.mouseClick(b, Qt.MouseButton.LeftButton))
+                yield lambda: live_tour() is None or tour.index != before
+                continue
+            if inside:
+                # The key field and the (offline) test are the user's part: 下一步; at the end 先不开.
+                button = tour.next if step.show_next else tour.action_buttons[-1]
+            elif moving is not None:
                 button = tour.action_buttons[moving]
             elif step.interactive and tour.action_buttons:
                 button = tour.action_buttons[0]
@@ -238,21 +269,23 @@ def start(window, output: Path):
         state = onboarding.load_state()
         totals = {item['part']: item['total'] for item in parts}
         by_part = {name: [s['index'] for s in seen if s['part'] == name] for name in totals}
-        check(f'first launch: the tutorial walks 基础 ({totals.get("basic")} steps) then 进阶 '
-              f'({totals.get("advanced")} steps) with demo data, then closes',
-              [item['part'] for item in parts] == ['basic', 'advanced'] and totals.get('basic', 99) <= 14
+        check(f'first launch: one tutorial ({sum(totals.values())} steps, no separate 进阶) with demo data, '
+              f'the plan comparison on the way, then closes',
+              len(parts) == 1 and plans.get('cards', [])[:2] == ['cloud', 'local']
+              and all(count >= 4 for count in (plans.get('points') or {0: 0}).values())
               # in order to the last step; an optional step (测试连接 without a key) may be skipped
               and all(by_part[name] and by_part[name][-1] == totals[name] - 1 and len(by_part[name]) >= totals[name] - 2
                       and all(b > a for a, b in zip(by_part[name], by_part[name][1:])) for name in totals)
               and state.get('tour_done') is True, dict(totals=totals, seen=by_part))
-        check('tutorial 基础: every step is one short line (at most 30 characters)',
-              all(len(s['plain']) <= 30 for s in seen if s['part'] == 'basic'),
-              [(s['index'], len(s['plain']), s['plain']) for s in seen if s['part'] == 'basic' and len(s['plain']) > 30])
+        check('tutorial on the home page: every step is one short line (at most 34 characters)',
+              all(len(s['plain']) <= 34 for s in seen if s['page'] == 'settingsScroll'),
+              [(s['index'], len(s['plain']), s['plain']) for s in seen
+               if s['page'] == 'settingsScroll' and len(s['plain']) > 34])
         # 2026-10-21 (user): never "no key needed"; the key is asked for, DeepSeek recommended.
         check('tutorial 基础: the AI step asks for an API key (DeepSeek recommended), never says none is needed, '
               'and opens the picture explainer (four animations: what AI does, the key, top up 10 yuan, paste it in)',
               not any('不填 API Key' in s['plain'] or '不填也能' in s['plain'] for s in seen)
-              and any('AI' in s['plain'] and s['anim'] == 'ai_polish' for s in seen)
+              and any('AI' in s['plain'] and s['anim'] in ('ai_polish', 'ai_lock') for s in seen)
               and explainer.get('anims') == ['ai_polish', 'key_what', 'key_topup', 'key_get']
               and explainer.get('playing') == 4 and any('充值 10 元' in text for text in explainer.get('texts', ())),
               explainer)
@@ -460,11 +493,10 @@ def start(window, output: Path):
         check('offline: the failure says connection, not "API Key 错误"', ('连' in offline or '网络' in offline)
               and 'API Key 错误' not in offline, offline)
         # A text-AI guide's "去填写这家服务的密钥" opens the AI settings on that service.
-        from ..app.ui import EndpointEditor
         window._api_setup_host().open_text_settings('deepseek')
         yield 0.6
         ai_dialog = getattr(window, '_ai_settings_dialog', None)
-        editor = ai_dialog.findChild(EndpointEditor) if ai_dialog is not None else None
+        editor = window.__dict__.get('_ai_main_editor') if ai_dialog is not None else None   # the top form
         check('a text-AI guide opens the AI settings on the same service',
               editor is not None and editor.service.currentData() == 'deepseek',
               editor.service.currentData() if editor is not None else None)

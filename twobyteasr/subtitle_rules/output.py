@@ -12,6 +12,7 @@ from statistics import median
 from subtitle_core import *  # noqa: F401,F403
 from twobyteasr.recognition import reporting as task_reporting
 from twobyteasr.recognition.run_context import get_runtime_context
+from twobyteasr.subtitle_rules.language_rules import finished_cue_limits
 
 __all__ = [
     'format_review_time',
@@ -191,6 +192,8 @@ def validate_final_cues(cues, segments, audio_seconds, validate_text=True):
 
     lengths = [display_length(cue.text) for cue in cues]
     durations = [cue.end - cue.start for cue in cues]
+    # Japanese subtitles hold two lines since 2026-10-21; Chinese keeps 16 / 5 s.
+    max_chars, max_seconds = finished_cue_limits(COMPLETE_PHRASE_SOFT_MAX_CHARS, MAX_SUBTITLE_SECONDS)
     # 三十四轮：短字幕继承长段时间（API/断句产物 2-7 字挂 5.05s）曾把整轮
     # 识别打成"硬性时长上限"失败。时长超限改为截断修复并告警；字数超限与
     # 空段仍是断句真坏了，保持硬失败。
@@ -198,12 +201,12 @@ def validate_final_cues(cues, segments, audio_seconds, validate_text=True):
     for cue in cues:
         if (
             cue.end > cue.start
-            and display_length(cue.text) <= COMPLETE_PHRASE_SOFT_MAX_CHARS
-            and cue.end - cue.start > MAX_SUBTITLE_SECONDS
+            and display_length(cue.text) <= max_chars
+            and cue.end - cue.start > max_seconds
         ):
             # 修复性截断用不带容差的阈值（比失败判定更宽松），避免 5.0501s
             # 这类边界值漏网。
-            cue.end = cue.start + MAX_SUBTITLE_SECONDS
+            cue.end = cue.start + max_seconds
             clamped.append(cue)
     if clamped:
         sample = "、".join(
@@ -211,14 +214,14 @@ def validate_final_cues(cues, segments, audio_seconds, validate_text=True):
             for cue in clamped[:6]
         )
         print(
-            f"   [护栏] {len(clamped)} 条短字幕时长超过 {MAX_SUBTITLE_SECONDS:.0f}s "
+            f"   [护栏] {len(clamped)} 条短字幕时长超过 {max_seconds:.0f}s "
             f"已截断到上限（不影响文字内容）：{sample}"
         )
         durations = [cue.end - cue.start for cue in cues]
     invalid = [
         cue
         for cue in cues
-        if display_length(cue.text) > COMPLETE_PHRASE_SOFT_MAX_CHARS
+        if display_length(cue.text) > max_chars
         or cue.end <= cue.start
     ]
     if invalid:
@@ -230,12 +233,13 @@ def validate_final_cues(cues, segments, audio_seconds, validate_text=True):
     within_preferred = (
         sum(length <= PREFERRED_MAX_SUBTITLE_CHARS for length in lengths) / len(lengths)
     )
-    within_limit = sum(length <= MAX_SUBTITLE_CHARS for length in lengths) / len(lengths)
+    hard_limit = max(MAX_SUBTITLE_CHARS, max_chars)
+    within_limit = sum(length <= hard_limit for length in lengths) / len(lengths)
     print(
         f"[完成] 断句：{len(cues)} 条，中位 {median(lengths):.0f} 字/"
         f"{median(durations):.2f} 秒，{within_preferred:.0%} 不超过 "
         f"{PREFERRED_MAX_SUBTITLE_CHARS} 字，{within_limit:.0%} 不超过硬上限 "
-        f"{MAX_SUBTITLE_CHARS} 字。"
+        f"{hard_limit} 字。"
     )
     if within_preferred < 0.8:
         print("   [警告] 本次长字幕比例偏高，建议抽查现场噪声较重的区段。")

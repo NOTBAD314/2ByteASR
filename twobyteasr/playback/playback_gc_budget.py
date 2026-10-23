@@ -3,11 +3,16 @@
 Reference counting and generations 0/1 stay enabled. A 128 MiB process-private
 growth guard restores normal policy even during playback. Explicit gc.collect
 calls are never intercepted. Pause/hide/close restore the caller's policy.
-An optional paused sweep skips active editing and an already completed full GC.
+An optional paused sweep skips active editing, an already completed full GC
+and plays that grew the heap less than SWEEP_GROWTH.
+
+In the desktop app automatic collection runs only on the GUI thread
+(GuiThreadCollector); the thresholds above then steer that collector.
 """
 import ctypes
 import gc
 import sys
+import time
 
 from PySide6.QtCore import QObject, QTimer
 
@@ -16,6 +21,12 @@ from ..diagnostics.playback_probe import mark
 _holders = set()
 _previous = None
 _applied = None
+_collector = None
+
+
+def collection_enabled():
+    """Automatic collection runs: Python's own, or the GUI-thread collector."""
+    return gc.isenabled() or (_collector is not None and _collector.active)
 
 
 def hold_full_collections(key):
@@ -24,7 +35,7 @@ def hold_full_collections(key):
     Shared by playback and project loading so one never restores a policy
     the other still relies on. Returns False when GC is disabled elsewhere."""
     global _previous, _applied
-    if not gc.isenabled():
+    if not collection_enabled():
         return False
     if not _holders:
         _previous = gc.get_threshold()
@@ -59,8 +70,120 @@ def private_bytes():
     return int(data.private)
 
 
+class GuiThreadCollector(QObject):
+    """Run automatic garbage collection on the GUI thread only.
+
+    2026-10-22 (two user crashes the same day): Python collects cyclic
+    garbage on whichever thread happens to allocate. Full collections ran on
+    the autosave, cover-backfill, filmstrip, storage-maintenance and
+    process-diagnostics threads; a cycle holding Qt objects was then
+    destroyed off the GUI thread, and the GUI thread later died with an
+    access violation (inside the autosave thread in report-eb10; inside a
+    toolbar icon while a project opened right after the tutorial closed).
+
+    Python's automatic collection is disabled; a GUI-thread timer applies
+    the same generation thresholds (gc.get_threshold, so the holds above
+    still defer full collections). Python skips a full collection until the
+    long-lived heap grew by a quarter; that count is not readable, so this
+    uses private bytes: a quarter of the size after the last full collection,
+    at least FULL_GROWTH_MIN. Explicit gc.collect() calls are unchanged.
+    """
+    INTERVAL_MS = 50
+    FULL_GROWTH_MIN = 64 * 1024 * 1024
+    FULL_GROWTH_SHARE = 0.25
+    # Without a memory reading, at most one full collection per interval.
+    FULL_FALLBACK_S = 30.0
+
+    def __init__(self, parent=None, *, memory_reader=private_bytes, clock=time.monotonic):
+        super().__init__(parent)
+        self._memory_reader = memory_reader
+        self._clock = clock
+        self.active = False
+        self.collections = [0, 0, 0]
+        self._baseline = None
+        self._last_full = clock()
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.INTERVAL_MS)
+        self.timer.timeout.connect(self.tick)
+
+    def start(self):
+        global _collector
+        if self.active or _collector is not None or not gc.isenabled():
+            return False  # Respect a policy owned elsewhere.
+        gc.collect()
+        self._full_finished()
+        gc.disable()
+        gc.callbacks.append(self._observe)
+        self.active = True
+        _collector = self
+        self.timer.start()
+        return True
+
+    def stop(self):
+        global _collector
+        self.timer.stop()
+        if self._observe in gc.callbacks:
+            gc.callbacks.remove(self._observe)
+        if self.active:
+            self.active = False
+            gc.enable()
+        if _collector is self:
+            _collector = None
+
+    def _observe(self, phase, info):
+        # Explicit full collections (project load settle, paused sweep) also
+        # reset the growth measure, on whichever thread they ran.
+        if phase == 'stop' and info.get('generation') == 2:
+            self._full_finished()
+
+    def _full_finished(self):
+        self._baseline = self._memory_reader()
+        self._last_full = self._clock()
+
+    def full_due(self):
+        current = self._memory_reader()
+        if current is None or self._baseline is None:
+            return self._clock() - self._last_full >= self.FULL_FALLBACK_S
+        grown = current - self._baseline
+        return grown >= max(self.FULL_GROWTH_MIN, self._baseline * self.FULL_GROWTH_SHARE)
+
+    def tick(self):
+        if not self.active or gc.isenabled():
+            return
+        counts = gc.get_count()
+        thresholds = gc.get_threshold()
+        if thresholds[0] <= 0:
+            return  # A zero threshold disables collection (Python semantics).
+        for generation in (2, 1, 0):
+            if counts[generation] <= thresholds[generation]:
+                continue
+            if generation == 2 and not self.full_due():
+                continue
+            gc.collect(generation)
+            self.collections[generation] += 1
+            return
+
+
+def install_gui_thread_collector(app):
+    """Desktop app only: automatic collection on the GUI thread from now on."""
+    import os
+    if _collector is not None or os.environ.get('TWOBYTEASR_GUI_THREAD_GC', '1') == '0':
+        return _collector
+    collector = GuiThreadCollector(app)
+    if collector.start():
+        app.aboutToQuit.connect(collector.timer.stop)
+    return _collector
+
+
 class PlaybackGcBudget(QObject):
     MAX_PRIVATE_GROWTH = 128 * 1024 * 1024
+    # 2026-10-22 (user report, 24-minute anime, 343 bilingual captions): the
+    # sweep after every pause rescanned a 1.4 GB heap for 0.25-0.35 s; while
+    # editing (63 play/pause in 5 min) it was 34 of 47 GUI stalls. A short
+    # play defers almost nothing, so only sweep after real growth, once the
+    # page has stayed paused for a moment.
+    SWEEP_GROWTH = 48 * 1024 * 1024
+    SWEEP_DELAY_MS = 1500
 
     def __init__(self, parent=None, *, memory_reader=private_bytes, busy=None):
         super().__init__(parent)
@@ -77,7 +200,7 @@ class PlaybackGcBudget(QObject):
         self.guard.timeout.connect(self.check_budget)
         self.idle_collect = QTimer(self)
         self.idle_collect.setSingleShot(True)
-        self.idle_collect.setInterval(150)
+        self.idle_collect.setInterval(self.SWEEP_DELAY_MS)
         self.idle_collect.timeout.connect(self._collect_paused)
 
     def set_playing(self, playing):
@@ -88,12 +211,14 @@ class PlaybackGcBudget(QObject):
         self.idle_collect.stop()
         if not playing:
             # Restoring the normal policy can itself trigger a full collection
-            # on any Python thread. Do not repeat that work 150 ms later.
+            # on any Python thread. Do not repeat that work a moment later.
             self._collections_at_pause = gc.get_stats()[2]['collections']
+            grown = self._growth()
             released = self._restore('paused')
-            if released: self.idle_collect.start()
+            if released and grown >= self.SWEEP_GROWTH:
+                self.idle_collect.start()
             return
-        if not gc.isenabled():
+        if not collection_enabled():
             return  # Respect a policy owned elsewhere.
         self.baseline_bytes = self._memory_reader()
         if self.baseline_bytes is None:
@@ -117,6 +242,15 @@ class PlaybackGcBudget(QObject):
         mark('gc_budget_memory', private_bytes=current, peak_growth=self.peak_growth,
              exhausted=self.budget_exhausted)
 
+    def _growth(self):
+        """Private bytes added while this hold deferred full collections."""
+        if not self.held or self.baseline_bytes is None:
+            return 0
+        current = self._memory_reader()
+        if current is not None:
+            self.peak_growth = max(self.peak_growth, current - self.baseline_bytes)
+        return self.peak_growth
+
     def _restore(self, reason):
         self.guard.stop()
         if not self.held:
@@ -127,7 +261,7 @@ class PlaybackGcBudget(QObject):
         return True
 
     def _collect_paused(self):
-        if self.playing or _holders or not gc.isenabled():
+        if self.playing or _holders or not collection_enabled():
             return
         due, self._collections_at_pause = self._collections_at_pause, None
         # Pausing to type is interaction, not idle. Normal automatic GC was

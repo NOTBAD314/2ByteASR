@@ -6,7 +6,8 @@ which words a line must not end with (articles, prepositions, conjunctions,
 auxiliaries, subject pronouns, negations) and which words a break prefers to
 come before (conjunctions, relative words). Lengths follow the usual
 subtitle guidelines for these languages (Netflix: 42 characters per line,
-Russian 39; about 17 characters per second for adults).
+Russian 39; about 17 characters per second for adults); since 2026-10-21 one
+subtitle holds up to two lines, like English.
 
 Unlike English, words may carry accents or be Cyrillic, so the comparable word
 core is Unicode-aware, and the cleanup only normalizes spacing: it never
@@ -150,7 +151,7 @@ LEXICONS = {
         subjects=_set("я ты он она оно мы вы они"),
         negations=_set("не ни нет никогда"),
         unit_words=_set("секунд секунды минут минуты часов часа дней раз процентов очков уровней монет жизней"),
-        rules=EnglishLineRules(preferred_chars=30, max_chars=39)),
+        rules=EnglishLineRules(preferred_chars=30, max_chars=39, cue_preferred_chars=56, cue_max_chars=78)),
 }
 
 

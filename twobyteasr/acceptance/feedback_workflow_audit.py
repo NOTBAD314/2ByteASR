@@ -156,12 +156,12 @@ def run(output, *, window):
         page.select_cue('c0')
         page.cue_controller.timeline_selection_changed(['c0','c1','c2'])
         key_missing=llm_config.text_ai_key_missing
-        key_ready=lambda:bool(window.polish_editor.key.text().strip()) or not key_missing(GLOBAL_PROVIDER_REGISTRY.settings(),'polish')
+        key_ready=lambda:bool(window._ai_main_editor.key.text().strip()) or not key_missing(GLOBAL_PROVIDER_REGISTRY.settings(),'polish')
         registry_type=type(GLOBAL_PROVIDER_REGISTRY)
         with (patch.object(registry_type,'credential',lambda self,selection:(key_ready(),'audit')),
              patch('twobyteasr.providers.llm_config.text_ai_key_missing',lambda *a,**k:not key_ready()),
              patch('twobyteasr.providers.ai_providers.provider_for_stage',lambda *a,**k:provider)):
-            window.polish_editor.key.clear()
+            window._ai_main_editor.key.clear()
             translate_selected(page,merge=True)
             dialog=page._translation_dialog
             wait(lambda:dialog.isVisible(),'translation dialog')
@@ -175,9 +175,9 @@ def run(output, *, window):
             check('double-merge-no-extra-edit',len(page.project.cues)==1 and page._translation_dialog is dialog)
             QTest.mouseClick(dialog.settings_button,Qt.MouseButton.LeftButton)
             settings=window._ai_settings_dialog;QTest.qWait(200)
-            check('settings-direct-key-focus',window.polish_editor.key.isVisible() and window.polish_editor.key.hasFocus())
+            check('settings-direct-key-focus',window._ai_main_editor.key.isVisible() and window._ai_main_editor.key.hasFocus())
             capture('translation-key-settings',settings)
-            QTest.keyClicks(window.polish_editor.key,'fixture-not-a-real-key')
+            QTest.keyClicks(window._ai_main_editor.key,'fixture-not-a-real-key')
             save_button=window.ai_dialog_save_button
             QTest.mouseClick(save_button,Qt.MouseButton.LeftButton)
             wait(lambda:dialog._thread is not None or bool(calls),'translation resumed')

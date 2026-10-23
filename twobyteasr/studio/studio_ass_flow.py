@@ -38,6 +38,24 @@ def _ass_text_forms(text: str) -> tuple[str, str]:
     return source.replace("\n", r"\N"), source.replace("\n", " ").replace(r"\N", " ").strip()
 
 
+def _authored_style_ids(owner, revision) -> frozenset:
+    """Style ids whose cues the web-theme/Remotion route draws (memo on ``owner``)."""
+    memo = getattr(owner, "_authored_style_memo", None)
+    style_ids = frozenset(cue.style_id for cue in revision.cues)
+    if memo is not None and memo[0] is revision.style_recipes and memo[1] == style_ids:
+        return memo[2]
+    recipes = thaw_json(revision.style_recipes)
+    authored = set()
+    for style_id in style_ids:
+        payload = recipe_payload_for_style(recipes, style_id)
+        if payload and (payload.get('webTheme') or payload.get('engine') == 'remotion'
+                        or route_recipe(payload).engine == 'remotion'):
+            authored.add(style_id)
+    result = frozenset(authored)
+    owner._authored_style_memo = (revision.style_recipes, style_ids, result)
+    return result
+
+
 class StudioAssFlowMixin:
     """Feature-domain mixin; host class provides widgets and state."""
 
@@ -145,15 +163,13 @@ class StudioAssFlowMixin:
         if self._revision_store is None:
             self._revision_store = StudioRevisionStore(self.project)
         revision = self._revision_store.render
-        hidden: set[str] = set()
         # Authored cues have no ordinary ASS stand-in. Filtering the timed
         # events also closes the PTS/GUI-tick race at adjacent cue boundaries.
         # Preparation still warms the actual theme before its first frame.
-        recipes=thaw_json(revision.style_recipes)
-        for cue in revision.cues:
-            payload=recipe_payload_for_style(recipes,cue.style_id)
-            if payload and (payload.get('webTheme') or payload.get('engine')=='remotion' or route_recipe(payload).engine=='remotion'):
-                hidden.add(cue.id)
+        # 2026-10-22: decided once per style and recipe set, not per cue on
+        # every edit (thawing all recipes and routing 2090 cues each time).
+        authored = _authored_style_ids(self, revision)
+        hidden: set[str] = {cue.id for cue in revision.cues if cue.style_id in authored}
         # A subtitle-track eye action is a render-state change, not merely a
         # timeline decoration. Remove cues from the generated ASS revision so
         # native libass cannot keep painting a hidden speaker while the global

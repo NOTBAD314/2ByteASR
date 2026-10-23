@@ -103,10 +103,16 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
     from .translation_diagnostics import TranslationLog
     request_log = TranslationLog()
     print(f"   [翻译] 请求日志（含字幕文字，不含 API Key）：{request_log.path}")
+    # 2026-10-22: batches go out like AI proofreading's, within the broker's admission limit.
+    workers = 1
+    if getattr(legacy, "PARALLEL_CLOUD_BATCHES", False):
+        from ..providers.provider_service import GLOBAL_PROVIDER_SERVICE
+        workers = max(1, min(int(getattr(legacy, "CLOUD_BATCH_WORKERS", 1) or 1),
+                             int(GLOBAL_PROVIDER_SERVICE.scheduling_capacity()["effective_workers"])))
     result = translate(translation_source(fake), None, provider, target=target,
                        game_context=str(getattr(runtime_context, "game_name", "") or ""),
                        cancel_check=(lambda: bool(token and token.is_cancelled)), progress=progress, cache=cache,
-                       event=request_log)
+                       event=request_log, workers=workers)
     if request_log.error:
         print(f"   [翻译] 请求日志写入失败：{request_log.error}")
     try:

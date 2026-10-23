@@ -301,6 +301,10 @@ def sync_controls(page) -> None:
             continue
         action.setChecked(chinese and value == script)
         action.setEnabled(usable and chinese_script.available(value))
+    menu = getattr(page, 'chinese_script_menu', None)
+    if menu is not None and isValid(menu):
+        # The 双语 / 翻译 submenu (2026-10-22): reachable whenever a project is open.
+        menu.menuAction().setEnabled(project is not None)
     button = getattr(page, 'chinese_script_button', None)
     if button is not None and isValid(button):
         # Keep the entry discoverable; an empty project explains why no content qualifies.

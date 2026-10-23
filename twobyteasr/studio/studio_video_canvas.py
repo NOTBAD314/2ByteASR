@@ -56,7 +56,9 @@ class MpvCanvas(QFrame):
         self.setObjectName("videoSurface")
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, sys.platform != 'darwin')
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setMinimumHeight(220)
+        # 2026-10-22 (user, 1080p at 125%): the picture may get small when
+        # the user drags the timeline up; 220 px pinned the divider.
+        self.setMinimumHeight(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.controller: MpvController | None = None
         self._media_path = ""
@@ -2785,12 +2787,17 @@ class MpvCanvas(QFrame):
             target = (self._project_source_in_ms +
                       (current*1000-self._project_timeline_in_ms)*self._project_playback_rate)/1000
         prepare_tail = getattr(page, '_prepare_audio_tail_seek', None)
-        if bool(paused) != bool(self._paused) and callable(prepare_tail):
+        # 2026-10-22 (user: jumping while playing still hitches): the pause that
+        # opens a seek hold is followed at once by the real seek. Aligning the
+        # paused frame (an exact seek to the old position) made mpv decode twice
+        # before the hold could end, about 60 ms of every jump.
+        hold_entry = bool(paused and self._seek_hold_entering)
+        if bool(paused) != bool(self._paused) and callable(prepare_tail) and not hold_entry:
             prepare_tail(target, round(current*1000), transition=True)
         elif paused and callable(invalidate_tail):
             invalidate_tail()
         try:
-            posted = callable(post) and post(paused, position_seconds=target if paused else None)
+            posted = callable(post) and post(paused, position_seconds=target if paused and not hold_entry else None)
         except TypeError:
             posted = callable(post) and post(paused)
         if not posted:

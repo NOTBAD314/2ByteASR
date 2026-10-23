@@ -286,6 +286,18 @@ def caption_replacement_receipts(project, removed, inserted):
         receipt.update(text=cue.text,words=words,word_alignment=reason,
             word_base_interval=[cue.start_ms,cue.end_ms],word_base_words=copy.deepcopy(words),
             word_base_alignment=reason,source_cue_ids=ids,word_clock_offset_ms=0)
+        # Graded cut positions (2026-10-22, re-alignment receipts): a split keeps its own
+        # slice of its parent's; a merge has none until it is aligned again.
+        graded=None
+        if len(removed)==1 and receipts.get(removed[0].id,{}).get('text')==removed[0].text:
+            from ..recognition.boundary_grades import slice_rows
+            parent_rows=receipts.get(removed[0].id,{}).get('boundaries')
+            graded=slice_rows(parent_rows,removed[0].text,cue.text) if parent_rows else None
+        if graded:
+            receipt['boundaries']=graded
+        else:
+            for key in ('boundaries','boundary_policy','boundary_second'):
+                receipt.pop(key,None)
         after[cue.id]=receipt;cursor=end
     return before,after
 

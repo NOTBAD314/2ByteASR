@@ -1,43 +1,41 @@
-"""Main / secondary speaker classification for timeline grouping (2026-10-12, v2 2026-10-13).
+"""Main / secondary speaker classification for timeline grouping (2026-10-12, v3 2026-10-22).
 
-Editing convenience, not story analysis: a "main" speaker talks often within
-some stretch of the media and keeps an own timeline track; the others share
-one collapsed "secondary" track. Speaker identity, cue ownership, styles and
-exports never change.
+Editing convenience, not story analysis: a "main" speaker keeps an own
+timeline track; the others share one collapsed "secondary" track. Speaker
+identity, cue ownership, styles and exports never change.
 
 Rule (one sentence each, all in ``explain``):
 
-* Long media (>= 10 min): a candidate when, in some 10-minute stretch
-  (sliding, not fixed blocks), the speaker has more than 10 utterances, or
-  speaks for at least 90 s in that stretch (a long monologue is one
-  utterance).
-* 1-10 min: the stretch is the whole media; the count threshold scales with
-  length (more than 10 x minutes / 10, at least 2), speech at least 15 % of
-  the media (at least 20 s).
-* Shorter than 1 min: a candidate with 2 utterances or 15 % of all speech (at
-  least 3 s); with 3 or fewer speakers everyone is main.
-* At most 5 candidates (the project's cap: 3, 5 or 8) become main, ranked by
-  utterances in their busiest stretch, then speech; the speaker with the most
-  speech is always main.
+* The speakers with the most subtitles keep an own track: 2 by default (the
+  「默认独立字幕轨」 preference, or the project's own choice: 1, 2, 3, 5 or 8).
+* Ties go to the speaker with more speech; everyone else shares one track.
 
-Utterances are counted from the recognition's source segments (``segment:N``
+Speech (the tie-break) is measured over utterances counted from the
+recognition's source segments (``segment:N``
 evidence refs), so one sentence split into three cues counts once, and a
 translation never counts. Cues without source segments (hand-made) merge with
 the same speaker's neighbour when the gap is under 300 ms. Repeated text of
 the same speaker within 1 s (overlapping chunk duplicates) counts once.
 Manual choices ("main", "secondary", "own" = always an own track) win.
+
+2026-10-22 (user): v2 kept every speaker that was busy somewhere (more than
+10 utterances or 90 s in a 10-minute stretch, at most 5), which on a
+26-speaker episode still left five speaker rows plus the group above the
+translation row. Projects grouped automatically by v1/v2 are regrouped by
+this rule when opened (``refresh_automatic_roles``); a cap the user picked
+and manual roles are kept.
 """
 from __future__ import annotations
 
 import bisect
 import re
 
-POLICY = "speaker-roles-v2"
+POLICY = "speaker-roles-v3"
 WINDOW_MS = 600_000
 COUNT_ABOVE = 10
 SPEECH_MS = 90_000
-MAIN_CAP = 5
-CAP_CHOICES = (3, 5, 8)
+MAIN_CAP = 2
+CAP_CHOICES = (1, 2, 3, 5, 8)
 SHORT_MS = 60_000
 MERGE_GAP_MS = 300
 MANUAL_ROLES = ("main", "secondary", "own")
@@ -91,52 +89,31 @@ def _peak(spans, window_ms):
 
 
 def classify(cues, media_ms: int, manual=None, cap: int | None = MAIN_CAP) -> dict:
-    """{"policy", "media_ms", "rule", "cap", "speakers": {id: {role, source, utterances, peak_count, peak_speech_ms}}}"""
+    """{"policy", "media_ms", "rule", "cap", "speakers": {id: {role, source, utterances, peak_count, peak_speech_ms}}}
+
+    ``utterances`` / ``peak_count``: subtitles of the speaker (``peak_count``
+    kept for older readers); ``peak_speech_ms``: all their speech."""
     manual = {str(k): v for k, v in (manual or {}).items() if v in MANUAL_ROLES}
     spans = utterances(cues)
     media_ms = max(1, int(media_ms or 0), max((e for v in spans.values() for _, e in v), default=0))
-    total_speech = sum(e - s for v in spans.values() for s, e in v) or 1
-    if media_ms >= WINDOW_MS:
-        window, count_above, speech_ms = WINDOW_MS, COUNT_ABOVE, SPEECH_MS
-        rule = f"10 分钟滑动区间内发言超过 10 次，或该区间内说话至少 {SPEECH_MS // 1000} 秒"
-    elif media_ms >= SHORT_MS:
-        window = media_ms
-        count_above = max(2, round(COUNT_ABOVE * media_ms / WINDOW_MS))
-        speech_ms = max(20_000, round(0.15 * media_ms))
-        rule = f"全片（{media_ms / 60000:.1f} 分钟）发言超过 {count_above} 次，或说话至少 {speech_ms / 1000:.0f} 秒"
-    else:
-        window, count_above, speech_ms = media_ms, 1, None
-        rule = "短片：至少 2 次发言或占全部说话的 15%（至少 3 秒）；3 位以内说话人全部保留独立轨"
-    cap = int(cap) if cap else None
-    if cap:
-        rule += f"；最多 {cap} 位主要角色（按最忙区间的发言次数排序）"
-    result = {}
-    for speaker, items in spans.items():
-        count, speech = _peak(items, window)
-        if speech_ms is None:
-            main = count > count_above or speech >= max(3_000, 0.15 * total_speech) or len(spans) <= 3
-        else:
-            main = count > count_above or speech >= speech_ms
-        result[speaker] = dict(role="main" if main else "secondary", source="auto", utterances=len(items),
-                               peak_count=count, peak_speech_ms=speech)
-    if result and not any(v["role"] == "main" for v in result.values()):
-        top = max(result, key=lambda key: (result[key]["peak_speech_ms"], result[key]["utterances"]))
-        result[top].update(role="main", note="most speech")
-    if cap:
-        # Keep the busiest candidates; the speaker with the most speech stays main.
-        ranked = sorted((key for key, row in result.items() if row["role"] == "main"),
-                        key=lambda key: (-result[key]["peak_count"], -result[key]["peak_speech_ms"], key))
-        top_speech = max(result, key=lambda key: (result[key]["peak_speech_ms"], result[key]["utterances"]))
-        keep = set(ranked[:cap])
-        if top_speech not in keep:
-            keep = set(ranked[:cap - 1]) | {top_speech}
-        for key in ranked:
-            if key not in keep:
-                result[key].update(role="secondary", note="over cap")
+    counts: dict[str, int] = {}
+    for cue in cues:
+        counts[str(cue.speaker_id)] = counts.get(str(cue.speaker_id), 0) + 1
+    cap = max(1, int(cap)) if cap else MAIN_CAP
+    rule = f"字幕最多的 {cap} 位说话人各占一条轨，其余说话人合成一条轨"
+    speech = {speaker: sum(max(0, e - s) for s, e in items) for speaker, items in spans.items()}
+    ranked = sorted(spans, key=lambda key: (-counts.get(key, 0), -speech[key], key))
+    keep = set(ranked[:cap])
+    result = {speaker: dict(role="main" if speaker in keep else "secondary", source="auto",
+                            utterances=counts.get(speaker, 0), peak_count=counts.get(speaker, 0),
+                            peak_speech_ms=speech[speaker])
+              for speaker in spans}
+    for speaker in ranked[cap:]:
+        result[speaker]["note"] = "over cap"
     for speaker, role in manual.items():
         row = result.setdefault(speaker, dict(utterances=0, peak_count=0, peak_speech_ms=0))
         row.update(role=role, source="manual")
-    return dict(policy=POLICY, media_ms=media_ms, rule=rule, window_ms=window, cap=cap, speakers=result)
+    return dict(policy=POLICY, media_ms=media_ms, rule=rule, window_ms=media_ms, cap=cap, speakers=result)
 
 
 def explain() -> str:
@@ -175,24 +152,41 @@ def group_members(project) -> tuple[str, ...]:
     return members if len(members) >= 2 else ()
 
 
-def decide(project, *, manual=None, expanded=False, source="organize", cap=None) -> dict:
+def decide(project, *, manual=None, expanded=False, source="organize", cap=None, default_cap=None) -> dict:
     """A fresh role state for ``project`` (classification + kept manual roles).
 
-    ``cap``: automatic main tracks (CAP_CHOICES); default the project's last
-    choice, else MAIN_CAP."""
+    ``cap``: a limit the user picks now (saved as the project's own choice).
+    Otherwise the project's own earlier choice, else ``default_cap`` (the
+    preference), else MAIN_CAP."""
     previous = state_of(project)
     manual = dict(manual if manual is not None else previous.get("manual") or {})
-    cap = int(cap or previous.get("cap") or MAIN_CAP)
+    chosen = bool(cap) or bool(previous.get("cap_chosen"))
+    cap = int(cap or (previous.get("cap") if previous.get("cap_chosen") else None) or default_cap or MAIN_CAP)
     result = classify(project.cues, media_ms_of(project), manual=None, cap=cap)
     auto = {key: row["role"] for key, row in result["speakers"].items()}
     return dict(policy=POLICY, grouped=True, expanded=bool(expanded), auto=auto, manual=manual, cap=cap,
-                rule=result["rule"], media_ms=result["media_ms"], source=source,
+                cap_chosen=chosen, rule=result["rule"], media_ms=result["media_ms"], source=source,
                 counts={key: dict(utterances=row["utterances"], peak_count=row["peak_count"],
                                   peak_speech_ms=row["peak_speech_ms"])
                         for key, row in result["speakers"].items()})
 
 
-def initialize_for_recognition(project) -> None:
+def initialize_for_recognition(project, cap=None) -> None:
     """New projects from a recognition start grouped (nothing the user arranged)."""
     if KEY not in project.studio_state and project.cues:
-        project.studio_state[KEY] = decide(project, manual={}, source="recognition")
+        project.studio_state[KEY] = decide(project, manual={}, source="recognition", default_cap=cap)
+
+
+def refresh_automatic_roles(project, cap) -> bool:
+    """Regroup a project grouped automatically under an older rule or another
+    default (``cap``: the 「默认独立字幕轨」 preference). Manual roles, a cap
+    the user picked, ungrouped and never-grouped projects stay as they are."""
+    state = state_of(project)
+    if not state or not state.get("grouped") or state.get("cap_chosen") or not project.cues:
+        return False
+    cap = int(cap or MAIN_CAP)
+    if state.get("policy") == POLICY and int(state.get("cap") or 0) == cap:
+        return False
+    project.studio_state[KEY] = decide(project, expanded=bool(state.get("expanded")),
+                                       source="refresh", default_cap=cap)
+    return True

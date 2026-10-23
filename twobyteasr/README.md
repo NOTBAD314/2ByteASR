@@ -150,6 +150,7 @@ Qt、mpv、原生視窗與播放器的持有關係（`MpvCanvas` 持有 mpv 控�
   | AI 遊戲術語搜尋 | `glossary/ai_term_search.py` |
 
   測試要替換這些類別裡用到的名稱（例如 `read_api_key`、`provider_for_stage`、`detect_cuda_runtime`），要打在上表的模組上，打在 `app.ui` 不會生效（[檢查方法](../docs/VERIFICATION.md)）。
+- 首頁 AI 卡與 AI 文字服務設定（2026-10-22／23 新增，不是從 `ui.py` 拆出）：首頁卡 `HomeAiCard`、「內容與術語」的毛玻璃 `FrostOverlay` 在 `app/home_ai_widgets.py`；設定窗口左欄的引導卡 `AiGuidePanel`（三步、連上後的成功卡片）與 `SuccessBadge` 在 `app/ai_settings_widgets.py`。接線、狀態判斷（`_refresh_home_ai_chips`、`_refresh_ai_dialog_state`、`_place_ai_editors`）仍在 `app/ui.py`。
 
 ## 命名說明
 

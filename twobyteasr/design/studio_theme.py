@@ -503,8 +503,16 @@ def refresh_secondary_surface_theme(widget: QWidget) -> None:
         widget.setStyleSheet(build_secondary_surface_qss(active))
 
 
-def create_studio_menu(parent: QWidget | None = None) -> QMenu:
+def create_studio_menu(parent: QWidget | None = None, *, theme_on_show: bool = False) -> QMenu:
+    """A themed popup menu. ``theme_on_show`` defers the style sheet to the
+    first opening: rows of cards each own menus that are rarely opened, and
+    each style sheet cost ~3 ms while the speaker manager was built."""
     menu = QMenu(parent)
+    if theme_on_show:
+        menu.aboutToShow.connect(lambda: (
+            refresh_secondary_surface_theme(menu) if getattr(menu, "_secondary_theme_surface", False)
+            else apply_secondary_surface_theme(menu)))
+        return menu
     apply_secondary_surface_theme(menu)
     menu.aboutToShow.connect(lambda: refresh_secondary_surface_theme(menu))
     return menu

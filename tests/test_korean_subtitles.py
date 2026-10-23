@@ -67,7 +67,7 @@ def test_long_utterances_break_between_words_at_good_places():
     text = "안녕하세요 여러분 오늘도 방송 시작하고 있는데 이번에는 보스를 잡으러 가고 싶어요 그런 거 할 수 있어요"
     lines = _lines(text)
     assert " ".join(lines) == text                                # nothing added, lost or cut inside a word
-    assert all(ko.display_length(line) <= ko.RULES.max_chars for line in lines)
+    assert all(ko.display_length(line) <= ko.RULES.cue_max_chars for line in lines)   # two lines since 2026-10-21
     assert len(lines) >= 3
     joined = "|".join(lines)
     for pair in ("시작하고 있는데", "가고 싶어요", "할 수", "그런 거"):   # auxiliaries, dependent nouns, determiners
@@ -120,15 +120,21 @@ def test_ai_breaks_are_used_only_when_valid():
     text = "안녕하세요 여러분 오늘도 방송 시작하고 있는데 이번에는 보스를 잡으러 가고 싶어요"
     tokens = ko.words(text)
 
-    def fake(messages):
-        assert "Never change, add, remove or join words" in messages[0]["content"]
-        return '{"breaks": {"1": [1, 5, 7]}}'
-    assert seg.pieces_from_breaks(tokens, [1, 5]) is None             # 이번에는 … 싶어요 would be 17 characters
-    cues = seg.group_korean_with_ai([segment(1, 0.0, 6.0, text)], complete=fake)
-    assert [cue.text for cue in cues] == [" ".join(tokens[a:b]) for a, b in ((0, 2), (2, 6), (6, 8), (8, len(tokens)))]
+    def fake(answer):
+        def complete(messages):
+            assert "Never change, add, remove or join words" in messages[0]["content"]
+            return '{"breaks": {"1": %s}}' % answer
+        return complete
+    assert seg.pieces_from_breaks(tokens, [0]) is None                # 여러분 … 싶어요 would be 34.5 characters
+    assert seg.pieces_from_breaks(tokens, [9]) is None                # 가고 | 싶어요 cuts off the auxiliary verb
+    cues = seg.group_korean_with_ai([segment(1, 0.0, 6.0, text)], complete=fake("[6]"))
+    assert [cue.text for cue in cues] == [" ".join(tokens[a:b]) for a, b in ((0, 7), (7, len(tokens)))]
+    # 2026-10-21: four pieces where the rules need two fall back to the rules.
+    cues = seg.group_korean_with_ai([segment(1, 0.0, 6.0, text)], complete=fake("[1, 5, 7]"))
+    assert [cue.text for cue in cues] == [" ".join(tokens[a:b]) for a, b in seg.split_tokens(tokens)]
     cues = seg.group_korean_with_ai([segment(1, 0.0, 6.0, text)], complete=lambda _m: "not json")
     assert " ".join(cue.text for cue in cues) == text
-    assert all(ko.display_length(cue.text) <= ko.RULES.max_chars for cue in cues)
+    assert all(ko.display_length(cue.text) <= ko.RULES.cue_max_chars for cue in cues)
 
 
 def test_cleanup_inside_a_korean_task_keeps_spaces_chinese_unchanged():
@@ -250,7 +256,8 @@ def test_home_menu_offers_korean_with_korean_chinese_bilingual(home):
     assert (options["recognition_language"], options["chinese_script"]) == ("ko", "zh-Hans")
     output = home.subtitle_output
     # 2026-10-21: the output choices name no language; the line under the row says it.
-    assert output.itemText(output.findData("bilingual")) == "原文 + 翻译（双语）"
+    # 2026-10-22: without a connected AI the item also says "（需要 API Key）" (and is greyed out).
+    assert output.itemText(output.findData("bilingual")).startswith("原文 + 翻译（双语）")
     output.setCurrentIndex(output.findData("bilingual"))
     assert home.subtitle_language_summary.text() == "字幕会显示：韩语原文 + 简体中文翻译"
     output.setCurrentIndex(output.findData("original"))

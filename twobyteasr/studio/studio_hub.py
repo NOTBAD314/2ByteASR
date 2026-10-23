@@ -15,7 +15,7 @@ from time import perf_counter
 from pathlib import Path
 
 import qtawesome as qta
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -155,6 +155,11 @@ class _ProjectCard(QToolButton):
         return self._project_text
 
 
+class _NameRelay(QObject):
+    """Carries names read on the library-names thread to the GUI thread."""
+    ready = Signal(str, str)
+
+
 class StudioHubMixin:
     _LIBRARY_BUILD_BATCH = 8
     # Cards / rows built when the library opens; more are built as the user
@@ -162,6 +167,10 @@ class StudioHubMixin:
     # page janky for seconds after it appeared).
     _LIBRARY_INITIAL_CARD_ROWS = 4
     _LIBRARY_INITIAL_LIST_ROWS = 24
+    # 2026-10-22 (user, 132 projects, crashes entering Studio): build only the
+    # first 10 projects; 10 more each time the user scrolls near the end.
+    # Card rows are always completed.
+    _LIBRARY_PAGE = 10
 
     def _apply_hub_paper_texture(self, widget: QWidget) -> None:
         """Create one deterministic warm paper tile; never repaint it per frame."""
@@ -522,8 +531,7 @@ class StudioHubMixin:
             except (RuntimeError, TypeError):
                 pass
         restored = [saved_scroll is None]
-        target = [max(16, columns * self._LIBRARY_INITIAL_CARD_ROWS) if view == "card"
-                  else self._LIBRARY_INITIAL_LIST_ROWS]
+        target = [self._LIBRARY_PAGE]
         waiting = getattr(self, "_library_build_more", None)
         if waiting is None:
             waiting = self._library_build_more = {}
@@ -556,8 +564,10 @@ class StudioHubMixin:
         def build_batch() -> None:
             if generation != getattr(self, "_library_build_generation", 0):
                 return  # 新一次重建/筛选已接管，本批作废
-            batch = pending_records[:self._LIBRARY_BUILD_BATCH]
-            del pending_records[:self._LIBRARY_BUILD_BATCH]
+            # No more than the page still needs (a started row is completed).
+            size = max(1, min(self._LIBRARY_BUILD_BATCH, target[0] - built_count()))
+            batch = pending_records[:size]
+            del pending_records[:size]
             for record in batch:
                 if view == "card":
                     card = self._build_project_card(record, card_width)
@@ -631,13 +641,58 @@ class StudioHubMixin:
             return
         scroll = self.project_library_scroll
         bar = scroll.verticalScrollBar()
-        if bar.maximum() - bar.value() > scroll.viewport().height():
+        # 2026-10-22: one viewport of look-ahead built two extra pages on every
+        # open. Build more only when the user scrolled close to the end, or when
+        # the built cards do not fill the view (nothing to scroll yet).
+        if bar.maximum() > 0 and (bar.value() == 0 or bar.maximum() - bar.value() > scroll.viewport().height() // 3):
             return
         waiting.pop(view, None)
-        columns = (getattr(self, "_hub_grid_metrics", None) or (1,))[0]
-        target[0] += max(16, columns * self._LIBRARY_INITIAL_CARD_ROWS) if view == "card" \
-            else self._LIBRARY_INITIAL_LIST_ROWS
+        target[0] += self._LIBRARY_PAGE
         timer.start(0)
+
+    def _queue_display_name(self, record: dict[str, object], widget, show) -> None:
+        """Read a built card's exact name off the GUI thread, then ``show`` it.
+
+        2026-10-22: the name needs a few fields of the project file, and the
+        library parsed each whole file (up to tens of MB) on the GUI thread.
+        Until it is read the card shows the library index's name."""
+        from ..projects.project_display_name import name_needs_read
+        path = str(record.get("path", "") or "")
+        if not path or not name_needs_read(record):
+            return
+        waiting = self.__dict__.setdefault("_hub_name_waiting", {})
+        entries = waiting.setdefault(path, [])
+        entries.append((widget, show))
+        if len(entries) > 1:
+            return  # already queued; the result updates every widget for it
+        work = self.__dict__.get("_hub_name_queue")
+        if work is None:
+            import queue
+            work = self._hub_name_queue = queue.SimpleQueue()
+            relay = self._hub_name_relay = _NameRelay(self)
+            relay.ready.connect(self._display_name_ready)
+
+            def read_names():
+                while True:
+                    item = work.get()
+                    if item is None:
+                        return
+                    try:
+                        value = display_project_name(item[1])
+                    except Exception:  # noqa: BLE001 - keep the provisional name
+                        value = None
+                    try:
+                        relay.ready.emit(item[0], value if value is not None else "")
+                    except RuntimeError:
+                        return  # the window is gone
+            threading.Thread(target=read_names, name="library-names", daemon=True).start()
+        work.put((path, dict(record)))
+
+    def _display_name_ready(self, path: str, value: str) -> None:
+        from shiboken6 import isValid
+        for widget, show in (self.__dict__.get("_hub_name_waiting") or {}).pop(path, ()):
+            if value and isValid(widget):
+                show(value)
 
     def _queue_library_maintenance(self, record: dict[str, object], auto_cover: bool) -> None:
         """Metadata repair / cover backfill, decided without touching media drives."""
@@ -699,7 +754,7 @@ class StudioHubMixin:
                 else:
                     widget.setText(status_text)
                     if extra is not None and isValid(extra):
-                        name = display_project_name(record)
+                        name = display_project_name(record, read=False)
                         count = int(record.get("cue_count", 0) or 0)
                         duration = max(0, int(record.get("duration_ms", 0) or 0))
                         extra.set_project_text(tr("{name}\n{count} 条字幕 · {duration}\n{status}", name=name,
@@ -890,7 +945,7 @@ class StudioHubMixin:
     def _build_project_card(self, record: dict[str, object], card_width: int) -> QToolButton:
         path = Path(str(record.get("path", "")))
         source_path = Path(str(record.get("source_media") or ""))
-        name = display_project_name(record)
+        name = display_project_name(record, read=False)
         count = int(record.get("cue_count", 0) or 0)
         duration = max(0, int(record.get("duration_ms", 0) or 0))
         status_text, status_key = self._project_status(record)
@@ -938,6 +993,14 @@ class StudioHubMixin:
         title.setWordWrap(True)
         title.setFixedHeight(max(42, metrics.lineSpacing() * 2 + 4))
         layout.addWidget(title)
+
+        def show_name(value: str) -> None:
+            title.setText(metrics.elidedText(value, Qt.TextElideMode.ElideRight, cover_width))
+            card.set_project_text(tr("{name}\n{count} 条字幕 · {duration}\n{status}", name=value, count=count,
+                                     duration=_library_duration(duration), status=status_text))
+            bind_text(card, join_text([value, str(source_path) if source_path.name else tr("无源媒体"), str(path)], "\n"),
+                      property="toolTip")
+        self._queue_display_name(record, card, show_name)
         media_name = metrics.elidedText(source_path.name or tr("无源媒体"), Qt.TextElideMode.ElideRight, cover_width)
         meta = bind_text(QLabel(), '{count} 条字幕 · {value1} · {media_name}', count=count, value1=_library_duration(duration), media_name=media_name)
         meta.setObjectName("projectCardMeta")
@@ -990,7 +1053,7 @@ class StudioHubMixin:
         """整行可打开；信息居左，状态和继续编辑动作在右侧居中对齐。"""
         path = Path(str(record.get("path", "")))
         source_path = Path(str(record.get("source_media") or ""))
-        name = display_project_name(record)
+        name = display_project_name(record, read=False)
         count = int(record.get("cue_count", 0) or 0)
         duration = max(0, int(record.get("duration_ms", 0) or 0))
         status_text, status_key = self._project_status(record)
@@ -1029,6 +1092,12 @@ class StudioHubMixin:
         title.setWordWrap(False)
         title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         title_row.addWidget(title, 1)
+
+        def show_name(value: str) -> None:
+            title.setText(value)
+            bind_text(row, '{name}\n{value1}\n{path}\n点击任意位置继续编辑', property='toolTip', name=value,
+                      value1=source_path if source_path.name else tr("无源媒体"), path=path)
+        self._queue_display_name(record, row, show_name)
         status = QLabel(status_text)
         status.setObjectName("projectRowStatus")
         status.setProperty("status", status_key)

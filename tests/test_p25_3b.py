@@ -66,6 +66,34 @@ def test_inline_editor_enter_commit(tmp_path, monkeypatch):
     page.close_page(); page.deleteLater()
 
 
+def test_inline_editor_window_press_is_not_a_widget_press(tmp_path, monkeypatch):
+    # 2026-10-22 report-eb10: Qt delivers a press to the top-level QWindow
+    # first. isAncestorOf(QWindow) raised TypeError (~2 s each in the frozen
+    # app); the QWindow press must neither raise nor commit the edit.
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    app, page = _studio(tmp_path, monkeypatch)
+    editor = page._canvas_editor
+    editor.setPlainText("窗口按下")
+
+    def press():
+        return QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(2, 2), QPointF(2, 2),
+                           Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier)
+
+    window = page.window().windowHandle()
+    assert window is not None
+    assert not page.eventFilter(window, press())
+    app.processEvents()
+    assert page._canvas_editor is editor
+    assert not page.eventFilter(page.timeline, press())
+    app.processEvents()
+    assert page._canvas_editor is None
+    assert page.project.cues[0].text == "窗口按下"
+    page.close_page(); page.deleteLater()
+
+
 def test_inline_editor_shift_enter_newline(tmp_path, monkeypatch):
     app, page = _studio(tmp_path, monkeypatch)
     editor = page._canvas_editor

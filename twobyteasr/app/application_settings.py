@@ -95,6 +95,7 @@ def save_hub_preferences(
     recovery_policy: str = "ask",
     reduce_motion: bool | None = None,
     startup_page: str | None = None,
+    speaker_main_tracks: int | None = None,
 ) -> None:
     def mutate(payload: dict) -> None:
         previous_preferences = payload.get("studio_preferences", {})
@@ -116,6 +117,8 @@ def save_hub_preferences(
                 previous_reduce_motion if reduce_motion is None else bool(reduce_motion)
             ),
         })
+        if speaker_main_tracks is not None:
+            payload["studio_preferences"]["speaker_main_tracks"] = int(speaker_main_tracks)
         if startup_page is not None:
             payload["studio_preferences"]["startup_page"] = (
                 "project_library" if startup_page == "project_library" else "recognition"
@@ -197,7 +200,9 @@ def open_application_settings(
         str(recovery_policy.currentData() or "ask"),
         bool(reduce_motion_box.isChecked()),
         str(dialog.startup_page.currentData() or "recognition"),
+        speaker_main_tracks=int(dialog.speaker_tracks.currentData() or 2),
     )
+    _apply_speaker_tracks_to_open_project(owner)
     QApplication.instance().setProperty("reduceMotion", bool(reduce_motion_box.isChecked()))
     if advanced_owner is not None:
         from PySide6.QtWidgets import QComboBox
@@ -233,3 +238,21 @@ def _choose_hub_project_root(dialog: QDialog, editor: QLineEdit) -> None:
     chosen = QFileDialog.getExistingDirectory(dialog, tr('选择默认工程目录'), editor.text())
     if chosen:
         editor.setText(chosen)
+
+
+def _apply_speaker_tracks_to_open_project(owner) -> None:
+    """A new 「默认独立字幕轨」 regroups the open project now (one undo step)
+    when its groups are automatic; other projects follow when opened."""
+    page = getattr(owner, "_studio_page_instance", None)
+    project = getattr(page, "project", None)
+    if project is None:
+        return
+    from ..projects.studio_project import speaker_track_preference
+    from ..recognition.speaker_roles import POLICY, state_of
+    state = state_of(project)
+    cap = speaker_track_preference()
+    if (not cap or not state or not state.get("grouped") or state.get("cap_chosen")
+            or (state.get("policy") == POLICY and int(state.get("cap") or 0) == cap)):
+        return
+    from ..studio.studio_speaker_roles import organize
+    organize(page)

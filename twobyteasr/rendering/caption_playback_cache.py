@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, replace
+import os
 import threading
 from PySide6.QtCore import QObject, Signal
 
@@ -27,26 +28,276 @@ class FailedCaption:
 
 
 def materialize_caption_project(revision):
-    """Called on a worker; JSON, font and recipe work never runs in playback GUI."""
-    from ..projects.studio_project import SubtitleProject, StudioCue, SubtitleStyle, StudioSpeaker, StudioMedia
+    """Called on a worker; JSON, font and recipe work never runs in playback GUI.
+
+    The DTOs are already projected (rebuilding runtime indexes with the
+    original edit/recognition metadata would project them a second time).
+    Cues are the display cues the ASS export draws: adjusted originals plus
+    ``<id>#tr`` translation companions."""
+    return materialize_captions(revision)[0].project
+
+
+# studio_state keys no caption reads: the view state written before each
+# autosave (playhead, zoom, panel layout) and per-edit bookkeeping (manual
+# text guard, review marks). A change there must not rebuild every caption.
+VIEW_STATE_KEYS = frozenset({
+    "last_selected_cue", "playhead_ms", "zoom", "scroll_ms", "follow_playhead",
+    "timeline_snap_enabled", "timeline_tool", "timeline_track_heights", "layout",
+    "manual_caption_text", "cue_statuses", "review_risks", "review_confirmations",
+})
+# Per-cue entries some captions read (word timings for word effects): a
+# changed entry rebuilds its cue only.
+CAPTION_TIMELINE_KEY = "caption_timeline"
+TERM_OVERRIDES_KEY = "term_word_overrides"
+
+
+@dataclass
+class MaterializedCaptions:
+    """A materialized caption project and what each source cue became."""
+    revision: object
+    project: object
+    source: object          # same inputs, studio_state without the styled mark
+    context: tuple
+    translations: object
+    entries: dict           # id(cue DTO) -> (DTO, [display cues])
+    per_cue: tuple = ({}, {})   # caption receipts, term word overrides by cue id
+    records: tuple = ({}, {}, {}, {})   # styles, speakers, recipes, effects by id
+
+
+def _caption_context(revision):
+    """(context, per-cue state, records by id).
+
+    Equal contexts let unchanged cues be reused; styles, speakers, recipes
+    and effects are compared per id, so a style edit rebuilds only the cues
+    that use that style.
+    """
+    from ..projects.studio_revisions import FrozenMap
+    state = revision.studio_state
+    receipts, overrides = {}, {}
+    if isinstance(state, FrozenMap):
+        kept = []
+        for key, value in state.items:
+            if key in VIEW_STATE_KEYS:
+                continue
+            if key == CAPTION_TIMELINE_KEY and isinstance(value, FrozenMap):
+                for name, item in value.items:
+                    if name == "instances" and isinstance(item, FrozenMap):
+                        receipts = dict(item.items)
+                value = FrozenMap(tuple(item for item in value.items if item[0] != "instances"))
+            elif key == TERM_OVERRIDES_KEY and isinstance(value, FrozenMap):
+                overrides = dict(value.items)
+                continue
+            kept.append((key, value))
+        state = tuple(kept)
+    recipes, effects = revision.style_recipes, revision.effects
+    records = ({style.id: style for style in revision.styles},
+               {speaker.id: speaker for speaker in revision.speakers},
+               dict(recipes.items) if isinstance(recipes, FrozenMap) else None,
+               dict(effects.items) if isinstance(effects, FrozenMap) else None)
+    context = (revision.project_id, revision.play_res_x, revision.play_res_y, state,
+               None if records[2] is not None else recipes, None if records[3] is not None else effects)
+    return context, (receipts, overrides), records
+
+
+def _context_change(previous, context):
+    names = ("project", "play_res_x", "play_res_y")
+    for name, old, new in zip(names, previous, context):
+        if old != new:
+            return name
+    if previous[4:6] != context[4:6]:
+        return "recipes_or_effects"
+    if previous[3] != context[3]:
+        old_state, new_state = dict(previous[3] or ()), dict(context[3] or ())
+        keys = sorted(key for key in set(old_state) | set(new_state) if old_state.get(key) != new_state.get(key))
+        return "studio_state:" + ",".join(keys[:6])
+    return "records"
+
+
+def _changed_ids(old: dict | None, new: dict | None) -> set:
+    if old is None or new is None:
+        return set()
+    return {key for key in set(old) | set(new)
+            if old.get(key) is not new.get(key) and old.get(key) != new.get(key)}
+
+
+def _recipe_keys(style_id: str) -> tuple:
+    text = str(style_id or "")
+    keys = [text]
+    for token in ("-fill-", "-scope-", "-cue-", "-canvas-"):
+        if token in text:
+            keys.append(text.split(token, 1)[0])
+    return tuple(keys)
+
+
+def materialize_captions(revision, previous: MaterializedCaptions | None = None, *, full_builder=None):
+    """``materialize_caption_project`` that rebuilds only changed source cues.
+
+    2026-10-22 (report-eb10 stage 1): every edit rebuilt all display cues
+    (2090 bilingual cues: 2-3.5 s of Python on the preparing thread, which
+    kept the editor waiting for the GIL). Unchanged cue DTOs are shared
+    between revisions. A cue keeps its display cues when its DTO, translation,
+    caption receipt and word overrides are unchanged and so are the records it
+    resolves through: its style, base preset and derived style, its speaker
+    (and speaker style), the recipe for its style, and the default style.
+    Anything else that differs (caption-relevant studio state) rebuilds
+    everything, as does speaker-name layout, which looks at neighbouring
+    captions.
+
+    ``full_builder(revision)`` may produce the display cues of a full rebuild
+    elsewhere (a worker process); None means build here.
+
+    Returns ``(materialized, reused display cue ids, full-rebuild reason)``;
+    the reason is "" for an incremental update.
+    """
+    from ..projects.studio_project import StudioCue, SubtitleStyle, StudioSpeaker
     from ..projects.studio_revisions import thaw_json
-    # The DTOs are already projected. Rebuilding runtime indexes with the
-    # original edit/recognition metadata projects them a second time.
+    from ..timeline.studio_edit_sequence import source_cue_id_of
+    from ..caption_style.bilingual_layout import (
+        COMPANION_SUFFIX, project_display_cues, translation_for_cue, translations_of)
+    from ..caption_style.speaker_names import enabled as speaker_names_enabled
     cues = revision.timeline_cues if revision.timeline_cues is not None else revision.cues
-    project = SubtitleProject(project_id=revision.project_id,
+    context, per_cue, records = _caption_context(revision)
+    reason = ""
+    if previous is None or not previous.entries:
+        reason = "first"
+    elif speaker_names_enabled(previous.source.studio_state):
+        reason = "speaker_names"
+    elif previous.context != context:
+        reason = _context_change(previous.context, context)
+    if not reason:
+        styles, speakers, recipes, effects = records
+        old_styles, old_speakers, old_recipes, old_effects = previous.records
+        changed_styles = _changed_ids(old_styles, styles)
+        changed_speakers = _changed_ids(old_speakers, speakers)
+        changed_recipes = _changed_ids(old_recipes, recipes)
+        changed_effects = _changed_ids(old_effects, effects)
+        if "default" in changed_styles:
+            reason = "default_style"
+    if not reason:
+        source = previous.source
+        same_metadata = revision.generation_metadata == previous.revision.generation_metadata
+        translations = previous.translations
+        updates = {}
+        if not same_metadata:
+            metadata = thaw_json(revision.generation_metadata) or {}
+            translations = translations_of(metadata)
+            updates["generation_metadata"] = metadata
+        if revision.studio_state is not previous.revision.studio_state:
+            updates["studio_state"] = thaw_json(revision.studio_state) or {}
+        if changed_styles:
+            updates["styles"] = [SubtitleStyle(**asdict(style)) for style in revision.styles]
+        if changed_speakers:
+            updates["speakers"] = [StudioSpeaker(**speaker.to_dict()) for speaker in revision.speakers]
+        if changed_recipes:
+            updates["style_recipes"] = thaw_json(revision.style_recipes)
+        if changed_effects:
+            updates["effects"] = thaw_json(revision.effects)
+        if updates:
+            source = _replace_fields(source, **updates)
+        (old_receipts, old_overrides), (receipts, overrides) = previous.per_cue, per_cue
+
+        def entry_changed(table, old_table, key):
+            new, old = table.get(key), old_table.get(key)
+            return new is not old and new != old
+
+        def records_changed(dto):
+            if not (changed_styles or changed_speakers or changed_recipes):
+                return False
+            speaker = speakers.get(dto.speaker_id)
+            old_speaker = old_speakers.get(dto.speaker_id)
+            style_keys = {dto.base_preset_id, dto.style_id,
+                          getattr(speaker, "style_id", ""), getattr(old_speaker, "style_id", "")}
+            return (bool(changed_styles & style_keys) or dto.speaker_id in changed_speakers
+                    or bool(changed_recipes.intersection(_recipe_keys(dto.style_id))))
+
+        changed, frames_stale = [], set()
+        for dto in cues:
+            hit = previous.entries.get(id(dto))
+            source_id = source_cue_id_of(dto.id)
+            if (hit is None or hit[0] is not dto
+                    or (not same_metadata and translation_for_cue(translations, dto.id)
+                        != translation_for_cue(previous.translations, dto.id))
+                    or entry_changed(receipts, old_receipts, dto.id)
+                    or entry_changed(overrides, old_overrides, dto.id)
+                    or entry_changed(overrides, old_overrides, source_id)
+                    or records_changed(dto)):
+                changed.append(dto)
+            elif dto.effect_id in changed_effects:
+                frames_stale.add(id(dto))   # same display cues, different motion
+        built = [StudioCue(**cue.to_dict()) for cue in changed]
+        groups = _group_display(project_display_cues(source, built) if built else [],
+                                [cue.id for cue in built], COMPANION_SUFFIX)
+        if groups is not None:
+            fresh = {id(dto): (dto, group) for dto, group in zip(changed, groups)}
+            entries, reused = {}, set()
+            for dto in cues:
+                entry = fresh.get(id(dto))
+                if entry is None:
+                    entry = previous.entries[id(dto)]
+                    if id(dto) not in frames_stale:
+                        reused.update(cue.id for cue in entry[1])
+                entries[id(dto)] = entry
+            project = _caption_display_project(source, [cue for dto in cues for cue in entries[id(dto)][1]])
+            return (MaterializedCaptions(revision, project, source, context, translations, entries, per_cue,
+                                         records), reused, "")
+        reason = "ungroupable"
+    source = _caption_source_project(revision)
+    display = full_builder(revision) if full_builder is not None else None
+    if display is None:
+        display = project_display_cues(source, [StudioCue(**cue.to_dict()) for cue in cues])
+    groups = None if speaker_names_enabled(source.studio_state) else _group_display(
+        display, [cue.id for cue in cues], COMPANION_SUFFIX)
+    entries = {} if groups is None else {id(dto): (dto, group) for dto, group in zip(cues, groups)}
+    project = _caption_display_project(source, display)
+    return (MaterializedCaptions(revision, project, source, context, translations_of(source.generation_metadata),
+                                 entries, per_cue, records), set(), reason)
+
+
+def _group_display(display, source_ids, suffix):
+    """Split ``display_cues`` output back into one list per source cue, in order.
+
+    None when a display cue cannot be traced to one source cue, or the output
+    is not in source order (then only a full rebuild is safe)."""
+    groups = {cue_id: [] for cue_id in source_ids}
+    order = {cue_id: index for index, cue_id in enumerate(source_ids)}
+    last = -1
+    for cue in display:
+        base = cue.id[:-len(suffix)] if cue.id.endswith(suffix) else cue.id
+        if base not in groups:
+            base = cue.id
+        if base not in groups or order[base] < last:
+            return None
+        last = order[base]
+        groups[base].append(cue)
+    return [groups[cue_id] for cue_id in source_ids]
+
+
+def _replace_fields(source, **changes):
+    from dataclasses import replace as replace_fields
+    return replace_fields(source, **changes)
+
+
+def _caption_source_project(revision):
+    from ..projects.studio_project import SubtitleProject, SubtitleStyle, StudioSpeaker, StudioMedia
+    from ..projects.studio_revisions import thaw_json
+    return SubtitleProject(project_id=revision.project_id,
         media=StudioMedia('', width=revision.play_res_x, height=revision.play_res_y),
-        cues=[StudioCue(**cue.to_dict()) for cue in cues],
+        cues=[],
         styles=[SubtitleStyle(**asdict(style)) for style in revision.styles],
         speakers=[StudioSpeaker(**speaker.to_dict()) for speaker in revision.speakers],
         effects=thaw_json(revision.effects), style_recipes=thaw_json(revision.style_recipes),
         generation_metadata=thaw_json(revision.generation_metadata) or {},
         studio_state=thaw_json(revision.studio_state) or {},
         render_settings={'play_res_x':revision.play_res_x, 'play_res_y':revision.play_res_y, '_cue_domain':'timeline'})
-    # Original / translation / bilingual: the same display cues the ASS export
-    # draws (adjusted originals plus ``<id>#tr`` translation companions).
-    from ..caption_style.bilingual_layout import project_display_cues
+
+
+def _caption_display_project(source, display):
+    from ..projects.studio_project import SubtitleProject
     from ..subtitle_rules.punctuation_style import mark_cues_styled
-    project.cues = project_display_cues(project)
+    project = SubtitleProject(project_id=source.project_id, media=source.media, cues=display,
+        styles=source.styles, speakers=source.speakers, effects=source.effects,
+        style_recipes=source.style_recipes, generation_metadata=source.generation_metadata,
+        studio_state=dict(source.studio_state), render_settings=source.render_settings)
     mark_cues_styled(project)  # visual snapshots of these cues must not style them again
     return project
 
@@ -81,6 +332,9 @@ class PlaybackCaptionCache(QObject):
         self._closed = False
         self._wake = threading.Event()
         self.prepared_count = 0
+        self.rebuilt_cues = 0
+        self.full_rebuilds = []
+        self.worker_builds = 0
         self._materialized = None
         self._materialized_key = None
 
@@ -115,8 +369,9 @@ class PlaybackCaptionCache(QObject):
         threading.Thread(target=self._work, name='caption-prepare', daemon=True).start()
 
     def _work(self):
-        project = self._materialized
+        materialized = self._materialized
         current = self._materialized_key
+        carried = set()
         while True:
             self._wake.wait()
             with self._lock:
@@ -132,11 +387,28 @@ class PlaybackCaptionCache(QObject):
             ready_ids = []
             try:
                 if current != key:
-                    project = materialize_caption_project(revision)
-                    current = key
+                    materialized, reused, reason = materialize_captions(
+                        revision, materialized, full_builder=self._full_builder(revision))
+                    self.rebuilt_cues += len(materialized.project.cues) - len(reused)
+                    if reason:
+                        self.full_rebuilds.append(reason)
+                        del self.full_rebuilds[:-64]
+                        from ..diagnostics.editor_diagnostics import record
+                        record('CAPTION_REBUILD', reason=reason, cues=len(materialized.project.cues))
+                    carried = set()
                     with self._lock:
                         if not self._closed:
-                            self._materialized, self._materialized_key = project, key
+                            # A caption whose display cue was reused looks the
+                            # same in the new revision: keep its prepared frame.
+                            if current is not None and current[3:] == key[3:]:
+                                for cue_id in reused:
+                                    prepared = self._frames.get((*current, cue_id))
+                                    if prepared is not None and (*key, cue_id) not in self._frames:
+                                        self._frames[(*key, cue_id)] = prepared
+                                        carried.add(cue_id)
+                            self._materialized, self._materialized_key = materialized, key
+                    current = key
+                project = materialized.project
                 from ..caption_style.visual_snapshot import build_visual_cue_snapshot
                 from ..caption_style.bilingual_layout import companion_id
                 present = {cue.id for cue in project.cues}
@@ -145,7 +417,12 @@ class PlaybackCaptionCache(QObject):
                 for cue_id in ids:
                     with self._lock:
                         if self._closed: break
-                        if (*key,cue_id) in self._frames: continue
+                        if (*key,cue_id) in self._frames:
+                            if cue_id in carried:
+                                # Carried over, never announced for this key.
+                                carried.discard(cue_id)
+                                ready_ids.append(cue_id)
+                            continue
                     try:
                         snapshot = build_visual_cue_snapshot(project, cue_id, width=width, height=height, fps=30.)
                         from ..caption_style.style_recipe import route_recipe,recipe_payload_for_style,RecipeRoute
@@ -193,6 +470,19 @@ class PlaybackCaptionCache(QObject):
             except Exception as exc:
                 try: self.failed.emit(f'{type(exc).__name__}: {exc}')
                 except RuntimeError: pass
+
+    # Full rebuilds of projects this large go to a worker process: in process
+    # they hold the GIL for ~1 ms per cue (2-3.5 s on 2090 bilingual cues).
+    DISPLAY_PROCESS_MIN_CUES = 300
+
+    def _full_builder(self, revision):
+        cues = revision.timeline_cues if revision.timeline_cues is not None else revision.cues
+        if (len(cues) < self.DISPLAY_PROCESS_MIN_CUES
+                or os.environ.get("TWOBYTEASR_CAPTION_DISPLAY_PROCESS", "1") == "0"):
+            return None
+        from .caption_display_actor import build_in_worker
+        self.worker_builds += 1
+        return build_in_worker
 
     def close(self):
         with self._lock:

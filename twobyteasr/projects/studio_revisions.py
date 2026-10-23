@@ -30,7 +30,38 @@ class FrozenMap:
     items: tuple[tuple[str, "FrozenJSON"], ...] = ()
 
 
-FrozenJSON = None | bool | int | float | str | tuple["FrozenJSON", ...] | FrozenMap
+@dataclass(frozen=True, slots=True)
+class FrozenBlob:
+    """A large, rarely read JSON value kept as its marshal bytes.
+
+    2026-10-22: recognition evidence frozen as FrozenMap trees was millions
+    of GC-tracked objects (each full collection on the GUI thread took
+    0.3-0.6 s on 2090 cues) and a second in-memory copy of ~50 MB of rows.
+    One bytes object per row is untracked and compact. ``plain`` says the
+    value has only str-keyed dicts and lists, so loading it gives exactly
+    what thawing a FrozenMap tree would; None means not checked yet. Capture
+    does not check: walking 50 MB of rows in Python cost ~0.7 s of GUI time
+    when a project opened. Whoever thaws checks (autosave thread, worker),
+    and a value JSON cannot hold raises TypeError there.
+    """
+    data: bytes
+    plain: bool | None = None
+
+    @classmethod
+    def capture(cls, value, data: bytes | None = None) -> "FrozenBlob":
+        import marshal
+        return cls(marshal.dumps(value, 2) if data is None else data)
+
+
+def _plain_json(value) -> bool:
+    if isinstance(value, dict):
+        return all(type(key) is str and _plain_json(item) for key, item in value.items())
+    if isinstance(value, list):
+        return all(_plain_json(item) for item in value)
+    return value is None or isinstance(value, (str, int, float))
+
+
+FrozenJSON = None | bool | int | float | str | tuple["FrozenJSON", ...] | FrozenMap | FrozenBlob
 
 
 def freeze_json(value: Any) -> FrozenJSON:
@@ -51,6 +82,12 @@ def thaw_json(value: FrozenJSON) -> Any:
         return {key: thaw_json(item) for key, item in value.items}
     if isinstance(value, tuple):
         return [thaw_json(item) for item in value]
+    if isinstance(value, FrozenBlob):
+        import marshal
+        loaded = marshal.loads(value.data)
+        plain = value.plain if value.plain is not None else _plain_json(loaded)
+        # Tuples and non-str keys: the shape a FrozenMap tree would thaw to.
+        return loaded if plain else thaw_json(freeze_json(loaded))
     return value
 
 
@@ -273,7 +310,12 @@ class PersistenceRevision:
     studio_state: FrozenJSON
     edit_sequence: FrozenJSON
 
-    def to_payload(self) -> dict[str, Any]:
+    def to_payload(self, *, skip: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
+        """Thawed project payload; fields in ``skip`` are left empty (the
+        formal writer encodes those straight from their frozen values)."""
+        if skip:
+            payload = replace(self, **{name: FrozenMap() for name in skip}).to_payload()
+            return payload
         return {
             "media": self.media.to_dict(),
             "media_pool": thaw_json(self.media_pool),
@@ -299,6 +341,18 @@ class PersistenceRevision:
             "updated_at": self.updated_at,
             "schema_version": self.schema_version,
         }
+
+
+def _reuse_equal(captured, previous) -> tuple:
+    """``captured`` DTOs, with the previous object kept wherever it is equal.
+
+    Autosave text and caption previews are reused by DTO identity."""
+    by_id = {item.id: item for item in previous or ()}
+    result = []
+    for dto in captured:
+        old = by_id.get(dto.id)
+        result.append(old if old is not None and old == dto else dto)
+    return tuple(result)
 
 
 _CUE_DIRTY = (
@@ -353,16 +407,16 @@ class StudioRevisionStore:
             return ()
         if sequence_of(self.project).is_identity():
             return tuple(self._cues)
-        return tuple(
-            RenderCueDTO.capture(cue)
-            for cue in projected_cues(self.project, domain="source")
-        )
+        return _reuse_equal(
+            (RenderCueDTO.capture(cue) for cue in projected_cues(self.project, domain="source")),
+            getattr(self, "_render_cues", ()))
 
     def _capture_timeline_cues(self) -> tuple:
         from ..timeline.studio_edit_sequence import projected_cues, sequence_of
         if sequence_of(self.project).is_identity():
             return self._cues
-        return tuple(RenderCueDTO.capture(c) for c in projected_cues(self.project, domain='timeline'))
+        return _reuse_equal((RenderCueDTO.capture(c) for c in projected_cues(self.project, domain='timeline')),
+                            getattr(self, "_timeline_cues", ()))
 
     def _frozen_studio_state(self) -> FrozenJSON:
         """studio_state is ~280 KB on a long project (caption timeline) and
@@ -481,6 +535,70 @@ class StudioRevisionStore:
             word_animations=freeze_json(word_plans),
         )
 
+    def _frozen_evidence(self, *, deep: bool = False) -> FrozenJSON:
+        """``freeze_json(project.asr_evidence)`` without re-reading unchanged rows.
+
+        Recognition evidence is most of a large project (about 50 MB of word
+        rows in report-eb10) and editing does not change it, yet marshalling
+        all of it to notice that took ~80 ms of every autosave snapshot on the
+        GUI thread (2026-10-22). A row object seen before is reused as it is;
+        a new object is compared by its marshal bytes, so an equal copy (undo
+        restores a deepcopy) keeps sharing the frozen row. Editing code only
+        adds or replaces rows; ``deep`` compares every row's bytes anyway
+        (formal saves and the idle check), which also catches a row changed in
+        place.
+        """
+        import marshal
+        evidence = self.project.asr_evidence
+        if not isinstance(evidence, dict) or any(type(key) is not str for key in evidence):
+            return self._frozen_metadata("asr_evidence")
+        previous = getattr(self, "_evidence_rows", None) or {}
+        rows = {}
+        changed = len(previous) != len(evidence) or getattr(self, "_evidence_frozen", None) is None
+        for key, row in evidence.items():
+            hit = previous.get(key)
+            if hit is not None and hit[0] is row and not deep:
+                rows[key] = hit
+                continue
+            try:
+                data = marshal.dumps(row, 2)
+            except ValueError:
+                self._evidence_rows = self._evidence_frozen = None
+                return self._frozen_metadata("asr_evidence")
+            if hit is not None and hit[1] == data:
+                rows[key] = (row, data, hit[2])
+                continue
+            rows[key] = (row, data, FrozenBlob.capture(row, data))
+            changed = True
+        self._evidence_rows = rows
+        if changed:
+            self._evidence_frozen = FrozenMap(tuple((key, rows[key][2]) for key in sorted(rows)))
+        return self._evidence_frozen
+
+    def evidence_rows_changed_in_place(self, keys) -> list[str]:
+        """Rows among ``keys`` whose content no longer matches their frozen copy.
+
+        The idle check walks the evidence a slice at a time; a mismatch drops
+        the row from the memo so the next snapshot freezes it again.
+        """
+        import marshal
+        rows = getattr(self, "_evidence_rows", None) or {}
+        evidence = self.project.asr_evidence if isinstance(self.project.asr_evidence, dict) else {}
+        stale = []
+        for key in keys:
+            hit = rows.get(key)
+            row = evidence.get(key)
+            if hit is None or row is None or hit[0] is not row:
+                continue
+            try:
+                same = marshal.dumps(row, 2) == hit[1]
+            except ValueError:
+                same = False
+            if not same:
+                stale.append(key)
+                rows[key] = (None, hit[1], hit[2])
+        return stale
+
     def _frozen_metadata(self, name):
         import marshal
         value = getattr(self.project, name)
@@ -494,11 +612,11 @@ class StudioRevisionStore:
         previous = memo.get(name)
         if previous is not None and previous[0] == signature:
             return previous[1]
-        frozen = freeze_json(value)
+        frozen = FrozenBlob.capture(value, signature)
         memo[name] = (signature, frozen)
         return frozen
 
-    def _capture_persistence(self, generation: int) -> PersistenceRevision:
+    def _capture_persistence(self, generation: int, *, deep: bool = False) -> PersistenceRevision:
         project = self.project
         state = getattr(project, '_studio_state_runtime', None)
         if state is not None and state._active is not None:
@@ -517,13 +635,15 @@ class StudioRevisionStore:
             av_track_groups=freeze_json([asdict(group) for group in project.av_track_groups]),
             cues=self._cues, speakers=self._speakers, styles=self._styles,
             effects=self._effects, style_recipes=self._recipes,
-            generation_metadata=freeze_json(project.generation_metadata),
-            asr_evidence=self._frozen_metadata("asr_evidence"),
+            # Marshal bytes decide reuse: ~10x cheaper than freezing again
+            # (generation metadata: 2 ms instead of 21 ms on 2090 cues).
+            generation_metadata=self._frozen_metadata("generation_metadata"),
+            asr_evidence=self._frozen_evidence(deep=deep),
             glossary_ids=tuple(str(item) for item in project.glossary_ids),
-            edit_history=freeze_json(project.edit_history),
+            edit_history=self._frozen_metadata("edit_history"),
             render_settings=freeze_json(project.render_settings),
             report_path=str(project.report_path),
-            original_outputs=freeze_json(project.original_outputs),
+            original_outputs=self._frozen_metadata("original_outputs"),
             # Same content as the render revision's copy; usually a memo hit.
             studio_state=(self._frozen_studio_state() if project.studio_state is not None
                           else freeze_json(None)),
@@ -547,7 +667,8 @@ class StudioRevisionStore:
         if dirty & _CUE_DIRTY:
             current = {cue.id: cue for cue in project.cues}
             if dirty & DirtyDomain.CUE_MODEL or not delta.affected_cue_ids:
-                self._cues = tuple(RenderCueDTO.capture(cue) for cue in project.cues)
+                # A split or delete keeps every unchanged cue's DTO object.
+                self._cues = _reuse_equal((RenderCueDTO.capture(cue) for cue in project.cues), self._cues)
             else:
                 affected = delta.affected_cue_ids
                 self._cues = tuple(
@@ -581,10 +702,12 @@ class StudioRevisionStore:
             # release/keystroke stalls the GUI and is discarded at that boundary.
             self._persistence_pending = delta.revision
 
-    def refresh_persistence(self, generation: int) -> PersistenceRevision:
+    def refresh_persistence(self, generation: int, *, deep: bool = False) -> PersistenceRevision:
         # Studio viewport/layout fields are captured immediately before the
         # debounced autosave. Heavy cue/style tuples remain structurally shared.
-        self._persistence = self._capture_persistence(generation)
+        # ``deep`` re-reads every evidence row (formal saves).
+        self._persistence = (self._capture_persistence(generation, deep=True) if deep
+                             else self._capture_persistence(generation))
         self._persistence_pending = None
         return self._persistence
 
@@ -604,6 +727,21 @@ def preview_render_revision(
         for key, value in (transform_overrides or {}).items()
     }
     hidden = set(hidden_cue_ids or ())
+    if not texts and not transforms:
+        # Every edit takes this path (2026-10-22): no live override, so the
+        # recipes need no thaw and re-freeze; only hidden cues drop out.
+        def visible(cues):
+            return cues if not hidden else tuple(cue for cue in cues if cue.id not in hidden)
+        preview_key = ""
+        if hidden:
+            encoded = json.dumps({"hidden": sorted(hidden), "texts": [], "transforms": []},
+                                 ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            preview_key = hashlib.sha256(encoded).hexdigest()
+        return replace(
+            revision, cues=visible(revision.cues),
+            timeline_cues=visible(revision.timeline_cues) if revision.timeline_cues is not None else None,
+            preview_key=preview_key,
+        )
     styles = list(revision.styles)
     recipes = thaw_json(revision.style_recipes)
     if not isinstance(recipes, dict):

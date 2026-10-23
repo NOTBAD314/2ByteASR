@@ -421,6 +421,20 @@ def _visible_characters(value: str) -> int:
     return len(re.sub(r"\s+", "", _visible_text(value)))
 
 
+def _wrapped_line_count(line: str, width: float, measure=len) -> int:
+    """Lines a player needs for one line of spaced words wrapped at ``width`` (``measure`` counts a piece)."""
+    count, current, space = 0, 0.0, measure(" ")
+    for word in line.split():
+        size = measure(word)
+        if current and current + space + size <= width:
+            current += space + size
+            continue
+        count += 1 if current else 0
+        extra, current = divmod(size, width) if size > width else (0, size)
+        count += int(extra)
+    return max(1, count + (1 if current else 0))
+
+
 def _model_name(row: Mapping[str, Any], key: str) -> str:
     if key in _EVIDENCE_LABELS:
         return _EVIDENCE_LABELS[key]
@@ -921,6 +935,7 @@ class ReadabilityRule:
             characters = english_length(_visible_text(cue.text))
             warning, critical = english_rules.warning_cps, english_rules.critical_cps
             max_line, unit = english_rules.max_chars, "字符"
+            max_lines = english_rules.max_lines
         elif language in ("es", "de", "fr", "pt", "it", "ru"):
             # 2026-10-19: European languages read like English (42 per line, Russian 39).
             from .english_text import RULES as english_rules
@@ -928,16 +943,25 @@ class ReadabilityRule:
             characters = european_length(_visible_text(cue.text))
             warning, critical = english_rules.warning_cps, english_rules.critical_cps
             max_line, unit = lexicon(language).rules.max_chars, "字符"
+            max_lines = lexicon(language).rules.max_lines
         elif language == "ko":
             # 2026-10-19: Korean (Netflix guide): 16 per line, a space/Latin/mark counts half, ~12/s.
             from .korean_text import RULES as korean_rules, display_length as korean_length
             characters = korean_length(_visible_text(cue.text))
             warning, critical = korean_rules.warning_cps, korean_rules.critical_cps
             max_line, unit = korean_rules.max_chars, "字"
+            max_lines, measure = korean_rules.max_lines, korean_length
+        elif language == "ja":
+            # 2026-10-21: a Japanese subtitle holds two lines (26 content characters, see
+            # language_rules.JAPANESE_CUE_MAX_CHARS); a line fits 14 with its punctuation.
+            characters = _visible_characters(cue.text)
+            warning, critical = context.config.max_cps_warning, context.config.max_cps_critical
+            max_line, unit, max_lines = 14, "字", 2
         else:
             characters = _visible_characters(cue.text)
             warning, critical = context.config.max_cps_warning, context.config.max_cps_critical
             max_line, unit = context.config.max_line_length, "字"
+            max_lines = 0
         cps = characters / (duration / 1000)
         if cps > critical:
             severity = QCSeverity.CRITICAL
@@ -953,7 +977,17 @@ class ReadabilityRule:
             )
         lines = _visible_text(cue.text).splitlines() or [""]
         longest = max((len(line) for line in lines), default=0)
-        if longest > max_line:
+        if max_lines:
+            # 2026-10-21: a word-language subtitle holds up to two lines and players wrap
+            # between words, so only one that needs a third line is too long.
+            needed = sum(_wrapped_line_count(line, max_line, measure if language == "ko" else len) for line in lines)
+            if needed > max_lines:
+                yield QCIssue(
+                    "line_too_long", QCSeverity.WARNING, QCCategory.READABILITY, cue.id,
+                    "字幕过长", f"按每行 {max_line} {unit}自动换行约需 {needed} 行，建议拆成两条。",
+                    source="readability_rule",
+                )
+        elif longest > max_line:
             yield QCIssue(
                 "line_too_long", QCSeverity.WARNING, QCCategory.READABILITY, cue.id,
                 "单行过长", f"最长一行 {longest} {unit}，建议重新断行。",

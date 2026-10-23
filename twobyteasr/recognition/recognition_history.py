@@ -1016,6 +1016,8 @@ def _elide_pill(pill: QLabel, available: int) -> None:
 
 
 _RAW_HIGHLIGHT_MAX_LINES = 20000
+# Above this the details page suggests saving the JSON as a file instead of pasting it.
+LARGE_RAW_JSON_BYTES = 1024 * 1024
 
 
 class _JsonHighlighter(QSyntaxHighlighter):
@@ -1146,6 +1148,7 @@ class RecognitionHistoryDetail(QWidget):
     """Product summary with the complete report isolated in a developer view."""
 
     result_requested = Signal(object)
+    diagnose_requested = Signal(object)
 
     def __init__(self, record: RecognitionRecord, parent=None):
         super().__init__(parent)
@@ -1199,7 +1202,19 @@ class RecognitionHistoryDetail(QWidget):
             self.open_result_button.setObjectName("historyPrimary")
             self.open_result_button.setToolTip(str(result["outputs"]["project"]))
             self.open_result_button.clicked.connect(lambda: self.result_requested.emit(record))
-            outcome_box.addWidget(self.open_result_button, 0, Qt.AlignmentFlag.AlignLeft)
+        # 2026-10-23 (user): why this task failed or came out poorly — the
+        # local check of this report, plus an optional AI analysis.
+        self.diagnose_button = QPushButton()
+        bind_text(self.diagnose_button, "排查原因")
+        self.diagnose_button.setObjectName("historySecondary" if hasattr(self, "open_result_button") else "historyPrimary")
+        self.diagnose_button.clicked.connect(lambda: self.diagnose_requested.emit(record))
+        result_actions = QHBoxLayout()
+        result_actions.setSpacing(8)
+        if hasattr(self, "open_result_button"):
+            result_actions.addWidget(self.open_result_button)
+        result_actions.addWidget(self.diagnose_button)
+        result_actions.addStretch(1)
+        outcome_box.addLayout(result_actions)
         layout.addWidget(outcome_section)
 
         stages = _list(record.payload.get("stages"))
@@ -1336,10 +1351,21 @@ class RecognitionHistoryDetail(QWidget):
         self.copy_button = QPushButton("复制 JSON")
         self.copy_button.setObjectName("historySecondary")
         self.copy_button.hide()
+        # 2026-10-22: a 24-minute task's JSON is ~3.4 MB; pasted into a chat
+        # window it froze Claude for 68 s. A file is the way to share it.
+        self.save_button = QPushButton("另存为…")
+        self.save_button.setObjectName("historySecondary")
+        self.save_button.hide()
         raw_actions.addWidget(self.raw_button)
         raw_actions.addWidget(self.copy_button)
+        raw_actions.addWidget(self.save_button)
         raw_actions.addStretch(1)
         layout.addLayout(raw_actions)
+        self.raw_note = QLabel()
+        self.raw_note.setObjectName("settingsDescription")
+        self.raw_note.setWordWrap(True)
+        self.raw_note.hide()
+        layout.addWidget(self.raw_note)
 
         # The redacted JSON text, its editor and the highlighter are built on
         # the first "查看原始 JSON" (a 3 MB report is ~110k lines to format,
@@ -1349,6 +1375,7 @@ class RecognitionHistoryDetail(QWidget):
         self.summary_ready = True
         self.raw_button.clicked.connect(self._toggle_raw)
         self.copy_button.clicked.connect(self._copy_raw)
+        self.save_button.clicked.connect(self._save_raw)
 
     @property
     def raw_text(self) -> str:
@@ -1383,11 +1410,33 @@ class RecognitionHistoryDetail(QWidget):
         visible = not view.isVisible()
         view.setVisible(visible)
         self.copy_button.setVisible(visible)
+        self.save_button.setVisible(visible)
+        size = len(self.raw_text.encode("utf-8"))
+        if size >= LARGE_RAW_JSON_BYTES:
+            bind_text(self.raw_note, 'JSON 有 {size} MB，粘贴到聊天或 AI 窗口可能让它卡住很久；要分享时请点“另存为…”保存成文件再附上。',
+                      size=f"{size / 1024 / 1024:.1f}")
+        self.raw_note.setVisible(visible and size >= LARGE_RAW_JSON_BYTES)
         (bind_text(self.raw_button, '</> 收起原始 JSON') if visible else bind_text(self.raw_button, '</> 查看原始 JSON'))
 
     def _copy_raw(self):
         from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText(self.raw_text)
+
+    def _save_raw(self):
+        from PySide6.QtCore import QStandardPaths
+        from PySide6.QtWidgets import QFileDialog
+        folder = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation) or str(Path.home())
+        stem = re.sub(r'[\\/:*?"<>|]+', "_", Path(str(self.record.media_name or "recognition")).stem)[:80] or "recognition"
+        path, _filter = QFileDialog.getSaveFileName(self, tr("另存为…"), str(Path(folder) / f"{stem}.json"), "JSON (*.json)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(self.raw_text, encoding="utf-8")
+        except OSError as exc:
+            bind_text(self.raw_note, '保存失败：{error}', error=str(exc))
+        else:
+            bind_text(self.raw_note, '已保存')
+        self.raw_note.show()
 
 
 class RecognitionHistoryPage(QWidget):
@@ -1395,6 +1444,7 @@ class RecognitionHistoryPage(QWidget):
     workshop_requested = Signal()
     terms_requested = Signal()
     result_requested = Signal(object)
+    diagnose_requested = Signal(object)
     # (generation, payload) from the background report reader.
     _parsed = Signal(int, object)
     _repaired = Signal(object)
@@ -1978,6 +2028,9 @@ class RecognitionHistoryPage(QWidget):
                 return
             detail = RecognitionHistoryDetail(full)
             detail.result_requested.connect(lambda selected: (dialog.accept(), self.result_requested.emit(selected)))
+            # The 排查原因 window opens after this one has closed (no nested modal loops).
+            detail.diagnose_requested.connect(lambda selected: (dialog.accept(), QTimer.singleShot(
+                0, lambda: self.diagnose_requested.emit(selected))))
             scroll.setWidget(detail)
             if dialog.property("_uiZoomApplied") is not None:
                 from ..app.ui_zoom import apply_to

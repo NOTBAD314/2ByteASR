@@ -112,7 +112,9 @@ def open_translation_settings(dialog):
     if settings is None:
         dialog.show()
         return
-    editor = getattr(owner, 'polish_editor', None)
+    # The top form serves translation: the shared service, or 校对 when line
+    # breaking has its own (2026-10-22, one-page AI settings).
+    editor = owner.__dict__.get('_ai_main_editor') or getattr(owner, 'polish_editor', None)
     if editor is not None:
         editor.show()
         editor.key.setFocus()

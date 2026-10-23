@@ -16,17 +16,25 @@ when it fits; a longer one is split at the best places, chosen by these rules
 3. Never split a name (Capitalised words in a row), a number from its unit or
    noun (10 minutes, 3 kills, 50%), "not"/"n't" from its verb, or a word from
    the possessive or particle that completes it.
-4. Lines up to 42 characters (spaces included), preferably about 32; at most
-   6 seconds; avoid a piece of one or two short words when a balanced split
-   exists.
+4. A subtitle shows up to two lines of 42 characters (spaces included), so an
+   utterance of up to 84 characters and 7 seconds stays whole (2026-10-21; it
+   was one line of 42 before, which chopped sentences into scraps); a longer
+   one is split into pieces of about 60; avoid a piece of one or two short
+   words when a balanced split exists.
 
 Timing comes from the aligner's words when they can be matched to the text
 (Qwen3-ForcedAligner in English); otherwise it is shared out by characters
-inside the utterance and the final per-caption alignment measures it.
+inside the utterance and the final per-caption alignment measures it. An
+aligner word timed outside its own utterance is not used (2026-10-21, real
+Russian clip: one word stretched 0.2 s past the sentence end, the cut landed
+outside the sentence and the whole grouping stage failed its source check).
 
 The optional AI pass sends numbered words and gets back only the indexes after
-which to break, so it can never change a word; anything invalid falls back to
-these local rules.
+which to break, so it can never change a word; anything invalid, a break after
+a word that must not end a line, or more pieces than these local rules need,
+falls back to the local rules. Every utterance's pieces are checked against
+the source contract before they are returned; one that fails stays a single
+subtitle with a review note instead of failing the whole stage.
 
 2026-10-19: Spanish, German, French, Portuguese, Italian and Russian use the
 same breaker with their own word lists (european_text.Lexicon, passed as
@@ -41,6 +49,9 @@ import re
 from . import european_text
 from .english_text import RULES, display_length, join, normalize_spaces, word_core, words as split_words
 from .european_text import Lexicon
+from .grouping_request import (
+    ENGLISH_GROUPING_PROMPT_VERSION, compose_grouping_prompt, english_grouping_system_prompt, grouping_prompt_key,
+)
 from ..recognition.transcript_data import SubtitleCue
 
 SENTENCE_END = re.compile(r"[.!?…]+[\"'”’)\]]*$")
@@ -109,7 +120,9 @@ def break_scores(tokens: list[str], gaps: list[float] | None = None, lexicon=Non
                 score -= 90
             elif left_core in lex.prepositions or left_core in lex.conjunctions:
                 score -= 45
-            elif left_core in lex.auxiliaries or left_core in lex.negations:
+            elif left_core in lex.negations or (left_core in lex.auxiliaries and not (
+                    # German closes a clause on its auxiliary: "… geschafft haben | und ehrlich gesagt …".
+                    lex.clause_final_auxiliaries and right_core in lex.conjunctions)):
                 score -= 40
             elif left_core in lex.subjects:
                 score -= 35
@@ -137,18 +150,19 @@ def split_tokens(tokens: list[str], gaps: list[float] | None = None, *, duration
     count = len(tokens)
     if count == 0:
         return []
-    if length_of(" ".join(tokens)) <= rules.max_chars and (durations is None or sum(durations) <= rules.max_seconds):
+    if length_of(" ".join(tokens)) <= rules.cue_max_chars and (durations is None or sum(durations) <= rules.max_seconds):
         return [(0, count)]
     scores = break_scores(tokens, gaps, lex)
     lengths = [len(token) for token in tokens]
 
     def piece_cost(start, end):
         length = sum(lengths[start:end]) + (end - start - 1)
-        if length > rules.max_chars and end - start > 1:
+        if length > rules.cue_max_chars and end - start > 1:
             return None
         seconds = sum(durations[start:end]) if durations else 0.0
-        # Every extra line costs a little (fewer, fuller lines read better); short scraps cost more.
-        cost = 18 + abs(length - rules.preferred_chars) * 0.5
+        # Every extra subtitle costs about what a conjunction break earns, so only a sentence end, a
+        # comma or a real pause pays for one (2026-10-21: whole sentences, not scraps); short scraps cost more.
+        cost = 40 + abs(length - rules.cue_preferred_chars) * 0.5
         if length < max(rules.min_chars, 12) or end - start <= 2:
             cost += 45
         if end - start == 1 and not SENTENCE_END.search(tokens[start]):
@@ -178,6 +192,8 @@ def split_tokens(tokens: list[str], gaps: list[float] | None = None, *, duration
 
 # ---------------------------------------------------------------- timing
 MIN_SECONDS_PER_LETTER = 0.02
+# The grouping source contract lets a cue start or end this far outside its utterance.
+SOURCE_TIME_TOLERANCE = 0.05
 
 
 def _word_times(segment, tokens: list[str], aligned: list[dict], core=word_core) -> list[tuple[float, float] | None]:
@@ -189,6 +205,7 @@ def _word_times(segment, tokens: list[str], aligned: list[dict], core=word_core)
     left = [core(token) for token in tokens]
     right = [core(row.get("text", "")) for row in pool]
     times: list[tuple[float, float] | None] = [None] * len(tokens)
+    first, last = float(segment.start), float(segment.end)
     matcher = difflib.SequenceMatcher(a=left, b=right, autojunk=False)
     for block in matcher.get_matching_blocks():
         for offset in range(block.size):
@@ -197,13 +214,20 @@ def _word_times(segment, tokens: list[str], aligned: list[dict], core=word_core)
             # 2026-10-19 (real Russian clip): on garbled text the aligner can squeeze
             # several words into a few milliseconds, which left a one-frame subtitle.
             # Faster than 20 ms a letter is not speech: share it out like unmeasured words.
-            if end - start >= MIN_SECONDS_PER_LETTER * max(1, len(left[block.a + offset])):
-                times[block.a + offset] = (start, end)
+            if end - start < MIN_SECONDS_PER_LETTER * max(1, len(left[block.a + offset])):
+                continue
+            # 2026-10-21 (real Russian clip): the aligner hears 0.3 s on either side of the
+            # utterance and stretched "дом" 0.2 s past its end; a cut placed from it left the
+            # sentence. Word evidence cannot widen the sentence: such a word is unmeasured.
+            if start < first - SOURCE_TIME_TOLERANCE or end > last + SOURCE_TIME_TOLERANCE:
+                continue
+            start = min(max(start, first), last)
+            times[block.a + offset] = (start, max(start, min(end, last)))
     return times
 
 
 def _fill_times(segment, tokens: list[str], times):
-    """Measured times kept; the rest shared out by characters between their neighbours."""
+    """Measured times kept; the rest shared out by characters between their neighbours, inside the utterance."""
     start, end = float(segment.start), max(float(segment.end), float(segment.start) + 0.05)
     filled = list(times)
     weights = [max(1, len(token)) for token in tokens]
@@ -217,7 +241,7 @@ def _fill_times(segment, tokens: list[str], times):
             run_end += 1
         low = filled[index - 1][1] if index > 0 else start
         high = filled[run_end][0] if run_end < len(tokens) else end
-        high = max(high, low + 0.02 * (run_end - index))
+        high = min(max(high, low + 0.02 * (run_end - index)), max(low, end))
         total = sum(weights[index:run_end])
         cursor = low
         for position in range(index, run_end):
@@ -246,24 +270,73 @@ def group_english(segments, firered_tokens=(), *, breaks_for=None, lexicon=None)
         times = _fill_times(segment, tokens, _word_times(segment, tokens, aligned, core_of))
         gaps = [max(0.0, times[i + 1][0] - times[i][1]) for i in range(len(tokens) - 1)]
         durations = [max(0.0, end - start) for start, end in times]
-        pieces = None
-        if breaks_for is not None and length_of(segment.text) > lex.rules.max_chars:
+        pieces = split_tokens(tokens, gaps, durations=durations, lexicon=lex)
+        if breaks_for is not None and length_of(segment.text) > lex.rules.cue_max_chars:
             try:
-                pieces = pieces_from_breaks(tokens, breaks_for(segment, tokens), lexicon=lex)
+                answer = pieces_from_breaks(tokens, breaks_for(segment, tokens), lexicon=lex, gaps=gaps)
             except Exception:
-                pieces = None
-        pieces = pieces or split_tokens(tokens, gaps, durations=durations, lexicon=lex)
+                answer = None
+            # 2026-10-21 (real Italian clip): the AI cut 58 characters into three pieces where
+            # the rules need two. It chooses among sound splits; it may not chop finer.
+            if answer and len(answer) <= len(pieces):
+                pieces = answer
+        locked, speaker = bool(getattr(segment, "timing_locked", False)), segment.speaker or "S00"
+        own = []
         for first, last in pieces:
             cue_start = times[first][0] if first else float(segment.start)
             cue_end = times[last - 1][1] if last < len(tokens) else float(segment.end)
-            cues.append(SubtitleCue(len(cues) + 1, round(cue_start, 3), round(max(cue_end, cue_start + 0.2), 3),
-                                    join_of(tokens[first:last]), bool(getattr(segment, "timing_locked", False)),
-                                    segment.speaker or "S00"))
+            own.append(SubtitleCue(0, round(cue_start, 3), round(max(cue_end, cue_start + 0.2), 3),
+                                   join_of(tokens[first:last]), locked, speaker))
+        problem = _source_problem(segment, own)
+        if problem:
+            own = [SubtitleCue(0, round(float(segment.start), 3),
+                               round(max(float(segment.end), float(segment.start) + 0.2), 3),
+                               segment.text, locked, speaker)]
+            _note_sentence_kept(segment, problem)
+        for cue in own:
+            cue.cue_id = len(cues) + 1
+            cues.append(cue)
     return cues
 
 
-def pieces_from_breaks(tokens: list[str], breaks, lexicon=None) -> list[tuple[int, int]] | None:
-    """Ranges from 'break after word i' indexes; None when they are not valid or a piece is too long."""
+def _source_problem(segment, cues) -> str:
+    """Why these pieces of one utterance would fail the grouping source contract ('' when they pass)."""
+    from .grouping_contract import GroupingContractError, validate_grouping_result
+    row = {"segment_id": 0, "start": segment.start, "end": segment.end, "text": segment.text,
+           "speaker": segment.speaker or "S00"}
+    try:
+        # The undecorated check: the stage validates the whole result once and records it.
+        validate_grouping_result.__wrapped__([row], cues)
+    except GroupingContractError as error:
+        return error.category
+    except (TypeError, ValueError, AttributeError, KeyError) as error:
+        return type(error).__name__
+    return ""
+
+
+def _note_sentence_kept(segment, problem: str) -> None:
+    """One utterance stays a single subtitle: tell the user instead of failing the whole stage."""
+    from subtitle_core import add_review_item
+    from ..recognition.cache import record_run_event
+    record_run_event("word_grouping_sentence_kept", segment_id=getattr(segment, "segment_id", None),
+                     start=round(float(segment.start), 3), end=round(float(segment.end), 3), reason=problem)
+    add_review_item(segment.start, "断句回退",
+                    "这一句按单词切开后，文字或时间对不上原句，已保留为一整条字幕（原文和时间不变）；需要时可在这里手动拆开。",
+                    segment.text, priority=3, severity="warning", reason=problem)
+
+
+# A break scoring this low leaves a line hanging on a word that needs the next one
+# (a subject pronoun waiting for its verb scores -35, a preposition -45, an article -90).
+FORBIDDEN_BREAK = -30
+
+
+def pieces_from_breaks(tokens: list[str], breaks, lexicon=None, gaps=None) -> list[tuple[int, int]] | None:
+    """Ranges from 'break after word i' indexes.
+
+    None when they are not valid, a piece is longer than one subtitle, or a
+    break comes after a word that must not end a line (2026-10-21, real Italian
+    clip: "per un piano con | due fessure", "delle due non | osservandole").
+    """
     try:
         cuts = sorted({int(value) for value in breaks})
     except (TypeError, ValueError):
@@ -273,23 +346,19 @@ def pieces_from_breaks(tokens: list[str], breaks, lexicon=None) -> list[tuple[in
     lex = lexicon or ENGLISH
     edges = [0] + [cut + 1 for cut in cuts] + [len(tokens)]
     pieces = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
-    if any(_tools(lex)[1](" ".join(tokens[a:b])) > lex.rules.max_chars and b - a > 1 for a, b in pieces):
+    if any(_tools(lex)[1](" ".join(tokens[a:b])) > lex.rules.cue_max_chars and b - a > 1 for a, b in pieces):
+        return None
+    scores = break_scores(tokens, gaps, lex)
+    if any(scores[cut] <= FORBIDDEN_BREAK for cut in cuts):
         return None
     return pieces
 
 
 # ---------------------------------------------------------------- the AI pass
-ENGLISH_GROUPING_PROMPT_VERSION = "english-word-breaks-v1"
-ENGLISH_GROUPING_SYSTEM_PROMPT = f"""You split English game-stream subtitles into readable lines.
-You receive utterances as numbered words. Return ONLY JSON: {{"breaks": {{"<utterance id>": [word numbers]}}}}
-where each number n means "a new subtitle starts after word n". Never change, add or remove words.
-Rules:
-1. Each subtitle at most {RULES.max_chars} characters including spaces, ideally about {RULES.preferred_chars}; at most {RULES.max_seconds:g} seconds.
-2. Prefer breaking after . ! ? first, then after , ; : — , then before and/but/or/so/because/when/which/who, then before a preposition.
-3. Never end a subtitle with an article or determiner (a, an, the, this, my, your…), a preposition, a conjunction, an auxiliary verb (is, was, can, will, have…) or a subject pronoun waiting for its verb.
-4. Never split a name, a number from its unit (10 minutes, 50%), "not" from its verb, or a phrasal verb (pick up, log in).
-5. Keep a short utterance whole; avoid one- or two-word pieces when a balanced split exists.
-Utterances that already fit need no breaks: return [] for them."""
+# 2026-10-18: the prompt text lives in grouping_request (the rules part can be
+# replaced by the user); this name keeps the built-in prompt. 2026-10-21: one
+# subtitle holds two lines (cue_max_chars).
+ENGLISH_GROUPING_SYSTEM_PROMPT = compose_grouping_prompt("en", RULES.cue_max_chars, RULES.max_seconds)
 
 
 def _examples(words, count=8) -> str:
@@ -297,15 +366,17 @@ def _examples(words, count=8) -> str:
 
 
 def grouping_system_prompt(lexicon=None) -> str:
-    """The English prompt, or the same rules with another language's word lists (2026-10-19)."""
+    """The English prompt (with the user's rules, 2026-10-18), or the same rules with
+    another language's word lists (2026-10-19; not editable)."""
     lex = lexicon or ENGLISH
     if lex.code == "en":
-        return ENGLISH_GROUPING_SYSTEM_PROMPT
+        return english_grouping_system_prompt()
     return f"""You split {lex.name} game-stream subtitles into readable lines.
 You receive utterances as numbered words. Return ONLY JSON: {{"breaks": {{"<utterance id>": [word numbers]}}}}
 where each number n means "a new subtitle starts after word n". Never change, add or remove words.
 Rules:
-1. Each subtitle at most {lex.rules.max_chars} characters including spaces, ideally about {lex.rules.preferred_chars}; at most {lex.rules.max_seconds:g} seconds.
+1. A subtitle shows up to two lines: at most {lex.rules.cue_max_chars} characters including spaces, ideally about {lex.rules.cue_preferred_chars}; at most {lex.rules.max_seconds:g} seconds.
+   Keep a whole sentence or clause in one subtitle whenever it fits; use as few subtitles as these limits allow.
 2. Prefer breaking after . ! ? first, then after , ; : — , then before a conjunction or relative word ({_examples(lex.conjunctions)}), then before a preposition.
 3. Never end a subtitle with an article or determiner ({_examples(lex.determiners)}), a preposition ({_examples(lex.prepositions)}), a conjunction, an auxiliary verb ({_examples(lex.auxiliaries)}), a subject pronoun waiting for its verb ({_examples(lex.subjects)}) or a negation ({_examples(lex.negations)}).
 4. Never split a name, a number from its unit, or a negation from its verb.
@@ -315,8 +386,10 @@ Utterances that already fit need no breaks: return [] for them."""
 
 def grouping_prompt_version(lexicon=None) -> str:
     lex = lexicon or ENGLISH
-    # v2: squeezed aligner words are shared out; v3: number words never end a line (2026-10-19).
-    return ENGLISH_GROUPING_PROMPT_VERSION if lex.code == "en" else f"{lex.code}-word-breaks-v3"
+    # v2: squeezed aligner words are shared out; v3: number words never end a line (2026-10-19);
+    # v4 (English v2): two-line subtitles, checked AI breaks, word times kept inside the utterance (2026-10-21).
+    # English: the built-in prompt keeps its version; the user's rules add a digest (2026-10-18).
+    return grouping_prompt_key("en") if lex.code == "en" else f"{lex.code}-word-breaks-v4"
 
 
 def build_ai_messages(batch: list[tuple[str, list[str]]], lexicon=None) -> list[dict]:
@@ -352,7 +425,7 @@ def ai_breaks(segments, provider_snapshot, *, complete=None, lexicon=None) -> di
     lex = lexicon or ENGLISH
     _core, length_of, split_of, _join = _tools(lex)
     long = [(str(segment.segment_id), split_of(segment.text)) for segment in segments
-            if length_of(segment.text) > lex.rules.max_chars]
+            if length_of(segment.text) > lex.rules.cue_max_chars]
     found: dict = {}
     for offset in range(0, len(long), 40):
         batch = long[offset:offset + 40]

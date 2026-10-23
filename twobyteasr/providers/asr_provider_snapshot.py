@@ -168,6 +168,21 @@ def resolve_provider_snapshot(settings, *, timeout_policy=None, stage="group") -
         _endpoint=tuple((str(k), str(v)) for k, v in endpoint.items()))
 
 
+def task_role_enabled(stage) -> bool:
+    """False only when this task's frozen settings turned ``stage`` off.
+
+    Optional work that borrows a role's provider (online term search uses the
+    polish provider) asks this first instead of letting
+    :func:`task_provider_snapshot` raise and fail the whole task.
+    """
+    from ..recognition.run_context import get_runtime_context
+    context = get_runtime_context()
+    if stage in context.provider_snapshots or not context.asr_settings_snapshot:
+        return True
+    from ..recognition.text_ai_plan import text_ai_plan
+    return stage in text_ai_plan(context.asr_settings_snapshot, purpose=context.recognition_purpose).roles
+
+
 def task_provider_snapshot(stage="group") -> ProviderSnapshot:
     from ..recognition.run_context import get_runtime_context
     context = get_runtime_context()

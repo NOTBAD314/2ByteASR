@@ -279,6 +279,30 @@ def test_history_detail_uses_product_summary_and_developer_json_view(tmp_path):
     detail.deleteLater()
 
 
+def test_large_history_json_can_be_saved_as_a_file(tmp_path, monkeypatch):
+    # 2026-10-22: a 3.4 MB report pasted into a chat window froze it for 68 s.
+    from PySide6.QtWidgets import QFileDialog
+    from twobyteasr.recognition import recognition_history as history
+    app = _app()
+    path = tmp_path / "large_字幕任务报告.json"
+    path.write_text(json.dumps(_report_payload(), ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(history, "LARGE_RAW_JSON_BYTES", 10)
+    target = tmp_path / "saved.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "JSON (*.json)")))
+    detail = RecognitionHistoryDetail(parse_recognition_report(path))
+    detail.show()
+    detail.raw_button.click()
+    app.processEvents()
+    assert detail.save_button.isVisible() and detail.raw_note.isVisible()
+    assert "MB" in detail.raw_note.text()
+    detail.save_button.click()
+    assert target.read_text("utf-8") == detail.raw_text
+    detail.raw_button.click()
+    assert detail.save_button.isHidden() and detail.raw_note.isHidden()
+    detail.close()
+    detail.deleteLater()
+
+
 def test_history_stage_table_fits_eleven_rows_without_nested_scroll(tmp_path):
     app = _app()
     payload = _report_payload()

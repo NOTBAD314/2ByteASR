@@ -64,6 +64,17 @@ CLOUD_PRESET = 'mosi_moss_pro'
 CLOUD_CPU_TIMELINE = ('qwen_aligner', 'Qwen3 对齐')
 RECOMMENDED = 'cloud'
 
+# 2026-10-22 (user): the tutorial asks for the plan right after the video and says what
+# each one is good for and what to watch out for. ``{size}``: the plan's download in GB.
+POINTS = {
+    'cloud': (('电脑配置一般也能用', '速度快', '注册、每天签到都送免费额度'),
+              ('音频要上传到 MOSS Pro', '要注册并填 API Key', '免费额度用完要付费')),
+    'local': (('免费，不限时长', '影音不离开这台电脑', '三个模型互相核对，更准'),
+              ('需要 NVIDIA 显卡', '第一次要下载模型（约 {size} GB）', '速度看电脑配置')),
+    'apple': (('免费，不限时长', '影音不离开这台电脑', '用 Apple 芯片加速'),
+              ('第一次要下载模型（约 {size} GB）', '速度看电脑配置')),
+}
+
 # Captions of the demonstrations (what the picture is showing right now).
 LOCAL_DEMOS = ('分说话人', '三路审核', '字级时间')
 REVIEW_ROWS = (('MOSS', '今天来玩新版本', -1), ('FireRed', '今天来玩新版本', -1), ('Qwen3', '今天来完新版本', 3))
@@ -483,6 +494,25 @@ class PlanCard(QFrame):
         self.status.setObjectName('quickPlanStatus')
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.points = []
+
+    def add_points(self, good, care, size: float = 0.0) -> None:
+        """What the plan is good for (✓) and what to watch out for (!), one short line each (2026-10-22)."""
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+        import html
+        theme = theme_definition(theme_key())
+        layout = self.layout()
+        for lines, mark, color in ((good, '✓', theme.success), (care, '!', theme.warning)):
+            for line in lines:
+                words = str(tr(line)).replace('{size}', f'{size:.1f}')
+                label = QLabel(f'<span style="color:{color}; font-weight:800;">{mark}</span>&nbsp;&nbsp;'
+                               + html.escape(words))
+                label.setObjectName('quickPlanPoint')
+                label.setTextFormat(Qt.TextFormat.RichText)
+                label.setWordWrap(True)
+                layout.insertWidget(layout.indexOf(self.status), label)
+                self.points.append(label)
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty('selected', bool(selected))
@@ -524,6 +554,7 @@ def card_qss(theme) -> str:
         f"QLabel#quickSetupSubtitle {{ color: {theme.text_muted}; font-size: 14px; }}",
         f"QLabel#quickPlanTitle {{ color: {theme.text}; font-size: 17px; font-weight: 700; }}",
         f"QLabel#quickPlanLine {{ color: {theme.text_secondary}; font-size: 13px; }}",
+        f"QLabel#quickPlanPoint {{ color: {theme.text}; font-size: 13px; }}",
         f"QLabel#quickPlanModels {{ color: {theme.text_secondary}; font-size: 12px; font-weight: 600; }}",
         f"QLabel#quickPlanBadge {{ background: {theme.accent}; color: {theme.text_on_accent}; border-radius: 9px;"
         f" padding: 2px 9px; font-size: 12px; font-weight: 800; }}",
@@ -576,8 +607,14 @@ class QuickSetupDialog(SpringDialog):
 
     cuda_ready = Signal(object)
 
-    def __init__(self, parent=None, *, plan_keys: list[str] | None = None, size_of=None):
+    def __init__(self, parent=None, *, plan_keys: list[str] | None = None, size_of=None, compare: bool = False,
+                 current: str = ''):
         super().__init__(parent)
+        # 2026-10-22: ``compare`` is the tutorial's plan step: cloud and local side by side with
+        # what each is good for, the saved plan (``current``) chosen; no tutorial box, no language.
+        self.compare = bool(compare)
+        if self.compare and plan_keys is None:
+            plan_keys = [key for key in plans_for_this_computer() if key != 'light']
         from ..design.presentation import button_role
         from ..design.main_ui_popup import FramelessPopupCombo
         from ..design.theme_manager import theme_key
@@ -602,11 +639,13 @@ class QuickSetupDialog(SpringDialog):
         words = QVBoxLayout()
         words.setSpacing(6)
         title = QLabel()
-        bind_text(title, '选一种方式开始')
+        bind_text(title, '识别方案：用云端还是本机？' if self.compare else '选一种方式开始')
         title.setObjectName('quickSetupTitle')
         words.addWidget(title)
         subtitle = QLabel()
-        bind_text(subtitle, '选好就能用；之后随时可以在模型工坊更换')
+        bind_text(subtitle, '两种都能做字幕。看看好处和要注意的，选一个；以后在模型工坊随时能换' if self.compare
+                  else '选好就能用；之后随时可以在模型工坊更换')
+        subtitle.setWordWrap(True)
         subtitle.setObjectName('quickSetupSubtitle')
         words.addWidget(subtitle)
         header.addLayout(words, 1)
@@ -627,6 +666,8 @@ class QuickSetupDialog(SpringDialog):
             card.clicked.connect(self.select)
             row.addWidget(card, 1, Qt.AlignmentFlag.AlignTop)
             self.cards[key] = card
+            if self.compare and key in POINTS:
+                card.add_points(*POINTS[key], size=self._size_of(PLANS[key].backends))
         outer.addLayout(row)
         source_row = QHBoxLayout()
         source_label = QLabel()
@@ -648,11 +689,15 @@ class QuickSetupDialog(SpringDialog):
         outer.addStretch(1)
         from PySide6.QtWidgets import QCheckBox
         self.tour_check = QCheckBox()
-        bind_text(self.tour_check, '选好后带我走一遍新手教学（推荐，约 3 分钟）')
+        bind_text(self.tour_check, '选好后带我走一遍新手教学（推荐，约 6 分钟）')
         self.tour_check.setObjectName('quickSetupTour')
         self.tour_check.setChecked(True)
         self.tour_check.setCursor(Qt.CursorShape.PointingHandCursor)
         outer.addWidget(self.tour_check)
+        if self.compare:   # inside the tutorial: no second tutorial, no language switch
+            self.tour_check.setChecked(False)
+            self.tour_check.hide()
+            self.lang_combo.hide()
         footer = QHBoxLayout()
         custom = QPushButton()
         bind_text(custom, '自己选择模型…')
@@ -660,6 +705,7 @@ class QuickSetupDialog(SpringDialog):
         custom.setCursor(Qt.CursorShape.PointingHandCursor)
         custom.clicked.connect(self._choose_custom)
         footer.addWidget(custom)
+        custom.setVisible(not self.compare)
         # 2026-10-15: many people have never heard of an API key (or that it needs credit).
         key_help = QPushButton()
         bind_text(key_help, 'API Key 是什么？')
@@ -669,7 +715,7 @@ class QuickSetupDialog(SpringDialog):
         footer.addWidget(key_help)
         footer.addStretch(1)
         self.later_button = button_role(QPushButton(), 'secondary')
-        bind_text(self.later_button, '稍后再说')
+        bind_text(self.later_button, '先不换' if self.compare else '稍后再说')
         self.later_button.clicked.connect(self.reject)
         footer.addWidget(self.later_button)
         self.go_button = button_role(QPushButton(), 'primary', size='large')
@@ -693,7 +739,8 @@ class QuickSetupDialog(SpringDialog):
             relay = _CudaRelay(self)   # dies with the dialog; a late result is simply dropped
             relay.finished.connect(self._cuda_checked)
             threading.Thread(target=_probe_cuda, args=(relay,), name='quick-setup-cuda', daemon=True).start()
-        self.select(RECOMMENDED if RECOMMENDED in self.cards else next(iter(self.cards)))
+        start = current if self.compare and current in self.cards else RECOMMENDED
+        self.select(start if start in self.cards else next(iter(self.cards)))
         self.resize(940, self.sizeHint().height())
 
     # ------------------------------------------------------------- choice
@@ -707,7 +754,9 @@ class QuickSetupDialog(SpringDialog):
         self.runtime_note.setVisible(downloads)
         for name, card in self.cards.items():
             card.set_selected(name == key)
-        if key == 'cloud':
+        if self.compare:
+            bind_text(self.go_button, '用这个方案')
+        elif key == 'cloud':
             bind_text(self.go_button, '选好了，开始')
         else:
             bind_text(self.go_button, '准备并开始（模型约 {size:.1f} GB）', size=self._size_of(PLANS[key].backends))
@@ -733,10 +782,12 @@ class QuickSetupDialog(SpringDialog):
         if card.models is not None:
             card.models.setText(' · '.join(str(tr(name)) for name in models))
         bind_text(card.line, line)
-        status = str(tr('注册、每天签到都送免费额度 · 会上传音频'))
+        # 2026-10-22: in the comparison the card's points already say it; only the download is left.
+        status = '' if self.compare else str(tr('注册、每天签到都送免费额度 · 会上传音频'))
         size = self._size_of(self.cloud_backends())
         if size:
-            status += '\n' + str(tr('本机时间轴模型约 {size:.1f} GB，稍后自动下载', size=size))
+            download = str(tr('本机时间轴模型约 {size:.1f} GB，稍后自动下载', size=size))
+            status = status + '\n' + download if status else download
         card.set_status(status, 'good')
 
     def _cuda_checked(self, status) -> None:

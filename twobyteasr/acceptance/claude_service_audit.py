@@ -253,14 +253,15 @@ def start(window, output):
             self.check("the home AI card names the service model, no retired id and no phantom draft",
                        retired not in texts["tile"] and retired not in texts["panel_summary"]
                        and expected in texts["panel_summary"] and "未保存草稿" not in texts["panel_summary"]
-                       and texts["chips"].get("saved") != "有未保存的修改", texts)
+                       and "有未保存" not in texts["save_status"], texts)
             yield .2
 
         def home_texts(self):
-            chips = getattr(window, "_ai_state_chips", {}) or {}
-            return {"tile": window.setting_tiles["ai"].summary_label.text(),
+            # 2026-10-22: the home AI card shows the saved state; a draft shows in the dialog's save line.
+            card = window.setting_tiles["ai"]
+            return {"tile": card.title_label.text() + " · " + card.summary_label.text() + " · " + card.toolTip(),
                     "panel_summary": window.ai_panel.summary_label.text(),
-                    "chips": {name: chip.text() for name, chip in chips.items() if not chip.isHidden()}}
+                    "save_status": window.ai_save_status.text()}
 
         def retired_typed(self, dialog, editor, retired):
             """The retired id typed into the editable 模型 box, then 保存设置."""
@@ -290,7 +291,7 @@ def start(window, output):
             self.check("a typed retired id raises nothing from the summary preview", not hooked and not raised, entry)
             self.check("the draft is reported as 配置未通过保存校验",
                        "配置未通过保存校验" in texts["panel_summary"] and entry["has_draft"] is True
-                       and texts["chips"].get("saved") == "有未保存的修改", entry)
+                       and "有未保存" in texts["save_status"], entry)
             refused = {}
 
             def answer():

@@ -6,12 +6,14 @@ breaking cut 一万｜金币 or 第｜二阶段, the check saw a number disappea
 rebuild made the same cut and the whole file failed. The cases below are the
 sentences a fuzz of the rebuild caught (tmp/fidelity-ja-probe/fuzz_recover.py).
 """
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import subtitle_core as legacy  # noqa: F401  (loads the core before the timing helpers)
-from twobyteasr.recognition.transcript_data import SpeechSegment
+from twobyteasr.recognition.transcript_data import SpeechSegment, SubtitleCue
 from twobyteasr.subtitle_rules.language_rules import language_scope
 from twobyteasr.subtitle_rules.number_fidelity import numeric_event_values, numeric_unsafe_cut_offsets
 from twobyteasr.subtitle_rules.segmentation import locally_repair_resegmented_cue
@@ -100,6 +102,76 @@ def test_number_formatted_without_word_timing_uses_character_tokens():
     assert content_exact(''.join(cue.text for cue in cues)) == content_exact(segment.text)
     assert all(0 < cue.end - cue.start <= 5.05 for cue in cues) and len(cues) <= 4
     assert tuple(v for cue in cues for v in numeric_event_values(cue.text)) == numeric_event_values(segment.text)
+
+
+@pytest.mark.parametrize('language', ['zh', 'ja'])
+@pytest.mark.parametrize('text,start,end', [
+    ('两波大人还是太了', 1167.88, 1191.56),
+    ('这把我们两波就打完了', 300.0, 332.0),
+])
+def test_sparse_segment_keeps_a_lone_numeral_with_the_next_character(text, start, end, language):
+    """2026-10-23 user log (SenseVoice alone, no word timing; the task was set to
+    Japanese): 8 characters over 23.7 s gave each one 2.96 s, so only one fit a
+    line. The lone 两 read as 2, every rebuild cut it the same way and the whole
+    file failed with 「字幕保真检查未通过：S00 1167.880s」."""
+    segment = SpeechSegment(segment_id=30, start=start, end=end, text=text, confidence=0.9,
+                            words=[], speaker='S00')
+    with language_scope(language):
+        cues = recover_final_content([], [], [segment], [], legacy)
+    cues.sort(key=lambda cue: cue.start)
+    assert content_exact(''.join(cue.text for cue in cues)) == content_exact(text)
+    assert tuple(v for cue in cues for v in numeric_event_values(cue.text)) == numeric_event_values(text) == ()
+    assert '两波' in [content_exact(cue.text)[:2] for cue in cues]
+    assert all(0 < cue.end - cue.start <= 5.05 and start - 0.15 <= cue.start and cue.end <= end + 0.05
+               for cue in cues)
+    assert all(b.start >= a.end - 0.001 for a, b in zip(cues, cues[1:]))
+
+
+USER_REPORT = Path(__file__).parent / 'data' / 'sensevoice_zh_sparse_fidelity_20261023.json'
+
+
+def _user_report_segments(rows):
+    return [SpeechSegment(segment_id=row['id'], start=row['start'], end=row['end'], text=row['text'],
+                          confidence=0.9, words=[], speaker=row['speaker']) for row in rows]
+
+
+def _assert_kept(cues, segments):
+    cues = sorted(cues, key=lambda cue: cue.start)
+    assert content_exact(''.join(cue.text for cue in cues)) == content_exact(''.join(s.text for s in segments))
+    assert (tuple(v for cue in cues for v in numeric_event_values(cue.text))
+            == tuple(v for s in segments for v in numeric_event_values(s.text)))
+    assert max(cue.end - cue.start for cue in cues) <= 5.05
+    assert all(b.start >= a.end - 0.001 for a, b in zip(cues, cues[1:]))
+    return cues
+
+
+@pytest.mark.parametrize('language', ['ja', 'zh'])
+def test_user_report_final_check_passes(language):
+    """The 2026-10-23 log replayed: the check's own input (175 cues) failed at S00 1167.880s."""
+    if not USER_REPORT.is_file():
+        pytest.skip('private user-report data (tests/data is not part of the public source)')
+    report = json.loads(USER_REPORT.read_text(encoding='utf-8'))
+    segments = _user_report_segments(report['segments'])
+    finalized = [SubtitleCue(0, c['start'], c['end'], c['text'], speaker=c['speaker']) for c in report['final']]
+    grouped = [SubtitleCue(0, r['start'], r['end'], r['text']) for r in report['grouped']]
+    with language_scope(language):
+        cues = _assert_kept(recover_final_content(finalized, grouped, segments, [], legacy), segments)
+    assert [(round(c.start, 2), round(c.end, 2), c.text) for c in cues if 1167 < c.start < 1173] == [
+        (1167.88, 1172.88, '两波')]
+
+
+@pytest.mark.parametrize('language', ['ja', 'zh'])
+def test_user_report_rebuilds_from_source_after_the_whole_file_overlap_split(language):
+    """Rebuilding every turn needs the whole-file rows apart first: 46.92 s overlapped 0.13 s."""
+    if not USER_REPORT.is_file():
+        pytest.skip('private user-report data (tests/data is not part of the public source)')
+    from twobyteasr.recognition.incremental_asr import split_chunk_overlaps
+    report = json.loads(USER_REPORT.read_text(encoding='utf-8'))
+    rows, seams = split_chunk_overlaps(report['segments'], keys=('start', 'end'), margin=0.02)
+    assert seams == 1
+    segments = _user_report_segments(rows)
+    with language_scope(language):
+        _assert_kept(recover_final_content([], [], segments, [], legacy), segments)
 
 
 @pytest.mark.parametrize('text,language', [(text, 'zh') for text in CHINESE] + [(text, 'ja') for text in JAPANESE])

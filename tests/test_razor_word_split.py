@@ -82,20 +82,22 @@ def test_filler_removal_keeps_every_measured_word(independent):
     assert [(w.start_ms, w.end_ms) for w in words] == [(a, b) for _t, a, b in HEARD[1:]]
 
 
-@pytest.mark.parametrize('cut, left, right, straddled', [
-    (5300, '主播投的是', '对面的没挡眼睛的哥哥', '是'),     # inside 是 (5180–5513): it stays left
-    (5513, '主播投的是', '对面的没挡眼睛的哥哥', None),     # exactly at 对's onset
-    (6448, '主播投的是对面的', '没挡眼睛的哥哥', '的'),     # the screenshot position
-    (6593, '主播投的是对面的', '没挡眼睛的哥哥', None),
-    (7150, '主播投的是对面的没挡眼', '睛的哥哥', '眼'),
+@pytest.mark.parametrize('cut, left, right, straddled, committed', [
+    (5300, '主播投的是', '对面的没挡眼睛的哥哥', '是', 5513),     # inside 是 (5180–5513): it stays left
+    (5513, '主播投的是', '对面的没挡眼睛的哥哥', None, 5513),     # exactly at 对's onset
+    (6448, '主播投的是对面的', '没挡眼睛的哥哥', '的', 6593),     # the screenshot position
+    (6593, '主播投的是对面的', '没挡眼睛的哥哥', None, 6593),
+    (7150, '主播投的是对面的没挡眼', '睛的哥哥', '眼', 7220),
 ])
-def test_text_follows_measured_onsets_not_character_count(cut, left, right, straddled):
+def test_text_follows_measured_onsets_not_character_count(cut, left, right, straddled, committed):
     p = make_project()
     target = cue(p, '2')
     result = describe_split(target, cut, project=p)
     assert (result.left_text, result.right_text) == (left, right)
-    assert result.split_ms == cut and result.measured
+    # 2026-10-22: a cut through a sounding word moves to the boundary after it.
+    assert result.split_ms == committed and result.measured
     assert (result.straddled.text if result.straddled else None) == straddled
+    assert describe_split(target, committed, project=p).split_ms == committed  # the commit re-resolves to itself
     # The old estimate (share of duration × character count) differs here.
     estimate = round(len(TEXT) * (cut - target.start_ms) / (target.end_ms - target.start_ms))
     if cut == 6448:
@@ -108,7 +110,9 @@ def test_pause_keeps_the_boundary_still_and_edges_are_refused():
     inside_pause = {describe_split(target, ms, project=p).left_text for ms in range(9360, 10050, 37)}
     assert inside_pause == {'好吧，'}
     started = describe_split(target, 9100, project=p)  # “好” is sounding: it stays left
-    assert (started.left_text, started.straddled.text) == ('好', '好')
+    assert (started.left_text, started.straddled.text, started.split_ms) == ('好', '好', 9200)
+    sounding = describe_split(target, 9300, project=p)  # inside “吧”, then a 700 ms pause: cut in its middle
+    assert (sounding.left_text, sounding.split_ms) == ('好吧，', (9350 + 10050) // 2)
     early = copy.copy(target)
     early.start_ms = 8800  # display envelope opens before the first word
     assert describe_split(early, 8900, project=p).reason == 'before_first_word'
