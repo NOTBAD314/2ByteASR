@@ -100,3 +100,13 @@ Windows 做純版本、架構、Mach-O 解析及下載契約測試。GUI、Metal
 - CI 39973611420：真正 DMG 為 574556314 bytes，SHA `5290c7c08917d4c40a9a653a924c1785a32ec480381e5a580ed8c5d60a478765`；389 個實體 Mach-O 全部符合 arm64／14.0，325 項平台測試通過／2 跳過／1 既有排除。14.8.9 與 15.7.9 的同包 DMG 安裝、正常啟動／重啟、工程、真識別、中文／雙語編輯剪切保存、四種字幕與 12 秒成片、透明字效執行均通過。14 的雙語與重開畫布有 6200／6335 個真實字幕像素差，已檢視整窗與輸出 PNG。較新系統的 Gatekeeper 評估 exit 3，Developer ID／公證仍未取得，瀏覽器隔離下載未驗。
 - CI 39977625974 是同包額外模型驗收，不重建 App。14.8.9 的 MLX 在權重下載前，被既有隔離保護擋住驗收器錯放的 `out/models`（隔離邊界為 `out/profile`）。只修外部驗收器到 `profile/models`，新增生產路徑守門回歸；不放寬 App 的保護。額外支援只補測 MLX，避免將未請求的 MPS 寫為通過。
 - 同場 14.8.9 的 8 GB runner，MPS float16 小張量僅配置 256 bytes 即回報 backend out of memory；權重下載與模型初始化未開始。保留 stderr，不依第三方提示取消記憶體上限，也不改為靜默 CPU。此為該 CI 環境失敗，不推廣成 36 GB M3 Max 或所有 macOS 14 不支援。
+- 同場 15.7.9 的 **MPS 後端獨立 passed=true**：工坊首次準備 MOSS、FireRed、VAD、說話人模型成功；正常 Home 真識別、4 條字幕全部有 measured words、可見雙語、剪切／保存重開、字幕及 12 秒成片、重啟第二項任務通過。MOSS 回執為 bfloat16／mps，FireRed worker 明確回報 float16／mps:0。已看實際雙語與成片 PNG。整個 job 因獨立 MLX 驗收器路徑問題為 failure，不能忽略它，也不能抹掉獨立 MPS 的完整證據。
+- 外部 checker 4446e4f2 的工作流步驟縮進錯誤使派送被拒，未消耗 Mac 模型執行；修正為 4f4e3163 並完成 YAML 解析後，派送 39979414374，只補測同一 ba23be11 DMG 的 MLX。驗收器的 15 項邊界測試通過；不重打 App，不改模型流程或隔離保護。
+
+## 已安裝 MLX 的隔離初始化修正
+
+- 補測 39979414374 在兩個系統都正確進入鎖定下載，卻在 Python 原生層 abort：`test_isolation.install()` 主動匯入 QtCore。MLX 獨立環境沒有 Qt，但打包 App 的 resource path 可見不完整的 PySide6 namespace；Shiboken bootstrap 因 None 路徑中止，無法用捕捉 ImportError 處理。這解釋來源入口通過、已安裝且隔離的入口失敗，不能冒充 Metal／模型不支援。
+- 保留全部隔離資料／快取／token 路徑與下載守門；QSettings 改在 Qt 真正被匯入時才套用。新子程序反例故意放入一匯入就退出的 PySide6 namespace，證明 headless 入口不載入它；另用真正 QtCore 確認延後匯入後 QSettings 仍只寫隔離目錄。沒有關掉測試隔離或將開發來源注入安裝包。
+- 同輪修正既有診斷誤標：SenseVoice readiness 不再把主機 MPS 能力當作實際裝置；PROCESS 只採 worker 回報的 CPU／MPS／CUDA，沒有回報就是 unknown；建置套件清單改名 build_python_packages，與 GUI 實際套件 metadata 分開。識別結果、工程、設定格式不變。
+- 聚焦 61 項通過。擴展檢查另外發現兩個既有問題：Windows 沙箱讀不到真實 LocalAppData，該環境探測斷言未通過；舊 Qwen UTF-8 fixture 缺目前必需的 context／evidence_root 與 PCM policy 回執，已對照 ba23be11 確認原本即過時並修正 fixture。沒有修改或放寬生產 Qwen 校驗。
+- 下一份候選重新打包。工作流在產生 DMG 後自動用該 run 的相同 artifact，在 14／15 啟動已安裝 MLX／MPS 補測；App／checker 身分繼續分開記錄。

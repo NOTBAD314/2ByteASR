@@ -28,7 +28,7 @@ _DEVICE_PROBE = r'''
 import json, os, sys, torch
 cuda = torch.cuda.is_available() and not os.environ.get('2BYTEASR_CPU_ONLY')
 mps = getattr(torch.backends, 'mps', None)
-apple_gpu = sys.platform == 'darwin' and not cuda and mps is not None and mps.is_available()
+apple_gpu = sys.platform == 'darwin' and not os.environ.get('2BYTEASR_CPU_ONLY') and not cuda and mps is not None and mps.is_available()
 print(json.dumps(dict(cuda=bool(cuda), apple_gpu=bool(apple_gpu),
                       device=torch.cuda.get_device_name(0) if cuda else ('Apple GPU (MPS)' if apple_gpu else 'cpu'))))
 '''
@@ -101,6 +101,10 @@ def main():
     # 2026-10-14: on an Apple Silicon Mac MOSS and FireRed AED run on the Apple GPU (MPS).
     hardware=probe_device()
     cuda=hardware['cuda'];device=hardware['device']
+    if sys.platform=='darwin' and model in {'sensevoice','paraformer','funasr_nano'}:
+        # These workers select CUDA or CPU, never MPS. A host capability label
+        # must not claim that the model executed on an unused GPU backend.
+        cuda=False;device='cpu'
     code_hash=hashlib.sha256()
     for path in [Path(__file__),root/'twobyteasr/recognition/asr.py',
                  root/'twobyteasr/recognition/qwen_runtime_compat.py',

@@ -92,7 +92,7 @@ def write_startup_diagnostics(root: Path, destination: Path, *, stage: str, erro
         build = json.loads((root/'native-build-inputs.json').read_text('utf8'))
         payload['build_host_macos'] = build.get('macos')
         payload['bundled_tool_versions'] = {name:value.get('version') for name,value in build.get('native_tools',{}).items()}
-        payload['bundled_python_packages'] = build.get('resolved_python_packages',[])
+        payload['build_python_packages'] = build.get('resolved_python_packages',[])
     except (OSError,ValueError,AttributeError):
         pass
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -139,3 +139,14 @@ def test_optional_mlx_variant_is_checked_against_host_not_base_app_floor(tmp_pat
     assert not prepare.mlx_binary_contract_matches(runtime/'bin/python',release='')
     with pytest.raises(RuntimeError,match='系统或架构要求'):
         prepare.verify_runtime_binaries(runtime,target='14.4.1')
+
+
+def test_startup_versions_distinguish_build_packages_from_bundled_gui(tmp_path,monkeypatch):
+    monkeypatch.setattr(mc,'host_diagnostics',lambda:{'packages':{'PySide6':'6.9.2','torch':None}})
+    packages=[{'name':'torch','version':'2.11.0'}]
+    (tmp_path/'native-build-inputs.json').write_text(json.dumps({'resolved_python_packages':packages}),'utf8')
+    output=tmp_path/'startup.json'
+    mc.write_startup_diagnostics(tmp_path,output,stage='before_qt')
+    d=json.loads(output.read_text('utf8'))
+    assert d['build_python_packages']==packages and d['packages']['torch'] is None
+    assert 'bundled_python_packages' not in d

@@ -2734,6 +2734,22 @@ def write_pcm16_wav(path, audio):
         wav_file.writeframes(pcm.tobytes())
 
 
+def _reported_worker_device(stdout):
+    """Device actually reported by a worker; never infer CUDA from success."""
+    device='unknown'
+    prefixes=('[2BYTEASR_FUNASR] ', '[2BYTEASR_FIRERED_AED] ', '[2BYTEASR_QWEN] ')
+    for line in stdout.splitlines():
+        if not line.startswith(prefixes):
+            continue
+        try:event=json.loads(line.partition(' ')[2])
+        except (ValueError,TypeError):continue
+        if not isinstance(event,dict):continue
+        value=event.get('device') or (event.get('kind') if event.get('event')=='device' else None)
+        if isinstance(value,str) and (value=='cpu' or value.split(':')[0] in ('cuda','mps')):
+            device=value
+    return device
+
+
 def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, model_path, entrypoint,
                              input_text=None, event_handler=None, cancel_handler=None, timeout_seconds=None):
     """Run a model worker and return parsed JSON plus process telemetry."""
@@ -2839,6 +2855,8 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
         record_run_event('asr_worker_exited',model_id=canonical_model_id(model_id),backend=model_id.lower(),pid=process.pid,
             returncode=process.poll(),readers_stopped=not any(t.is_alive() for t in readers))
     stdout,stderr=''.join(captured['stdout']),''.join(captured['stderr'])
+    worker_device=_reported_worker_device(stdout)
+    worker_cuda=None if worker_device=='unknown' else worker_device.startswith('cuda')
     elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
     if process.returncode != 0:
         log = f"{model_id} worker failed (exit {process.returncode}):\nstdout:\n{stdout[-4500:]}\nstderr:\n{stderr[-1500:]}"
@@ -2886,8 +2904,8 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             "FIRERED_PYTHON_EXECUTABLE": command[0],
             "FIRERED_ENTRYPOINT": entrypoint,
             "FIRERED_MODEL_PATH": model_path,
-            "FIRERED_DEVICE": "cuda:0",
-            "FIRERED_CUDA_AVAILABLE": True,
+            "FIRERED_DEVICE": worker_device,
+            "FIRERED_CUDA_AVAILABLE": worker_cuda,
             "FIRERED_GPU_NAME": "",
             "FIRERED_AUDIO_INPUT": audio_input,
             "FIRERED_AUDIO_DURATION": 0.0,
@@ -2906,8 +2924,8 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             "QWEN_PYTHON_EXECUTABLE": command[0],
             "QWEN_WORKER_ENTRYPOINT": entrypoint,
             "QWEN_MODEL_PATH": model_path,
-            "QWEN_DEVICE": "cuda:0",
-            "QWEN_CUDA_AVAILABLE": True,
+            "QWEN_DEVICE": worker_device,
+            "QWEN_CUDA_AVAILABLE": worker_cuda,
             "QWEN_GPU_NAME": "",
             "QWEN_INPUT_CHUNK_COUNT": count,
             "QWEN_PROCESS_PID": process.pid,

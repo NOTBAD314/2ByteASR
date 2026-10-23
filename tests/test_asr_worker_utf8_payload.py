@@ -9,12 +9,13 @@ import pytest
 
 SAMPLE='中文字幕要枪全也日本語'
 WORKER='''
-import argparse,json,sys
+import argparse,hashlib,json,sys
 from pathlib import Path
 p=argparse.ArgumentParser()
 p.add_argument('--manifest');p.add_argument('--output');p.add_argument('--model-dir')
 a=p.parse_args()
-jobs=json.loads(Path(a.manifest).read_text(encoding='utf8'))['jobs']
+manifest=json.loads(Path(a.manifest).read_text(encoding='utf8'))
+jobs=manifest['jobs']
 sample=SAMPLE_LITERAL
 probe={'isolated':sys.flags.isolated,'utf8_mode':sys.flags.utf8_mode,
        'stdout_encoding':sys.stdout.encoding,'stderr_encoding':sys.stderr.encoding,
@@ -24,7 +25,11 @@ print('CHILD_PROBE='+json.dumps(probe,ensure_ascii=False),file=sys.stderr,flush=
 print('STDERR_SAMPLE='+sample,file=sys.stderr,flush=True)
 rows=[{'segment_id':job.get('segment_id',i),'text':sample,'confidence':0.9,
        'timestamp':[{'text':sample,'start':0.01,'end':0.09}]} for i,job in enumerate(jobs,1)]
-Path(a.output).write_text(json.dumps({'results':rows,'child_probe':probe},ensure_ascii=False),encoding='utf8')
+if 'policy' in manifest:
+    for row,job in zip(rows,jobs):
+        row.update({k:job[k] for k in ('samples','pcm_sha256','start','end')})
+        row['context_sha256']=hashlib.sha256(job['context'].encode('utf8')).hexdigest()
+Path(a.output).write_text(json.dumps({'results':rows,'child_probe':probe,'policy':manifest.get('policy')},ensure_ascii=False),encoding='utf8')
 '''.replace('SAMPLE_LITERAL',repr(SAMPLE))
 
 
@@ -52,7 +57,8 @@ def test_actual_production_launcher_keeps_child_streams_and_json_utf8(tmp_path,m
         event=next(row for row in events if row['event']=='FIRERED_PROCESS')
         stdout,stderr=event['FIRERED_STDOUT'],event['FIRERED_STDERR']
     else:
-        result=asr._transcribe_qwen_worker(audio,[{'start':0.,'end':.1,'audio':[audio]}],str(tmp_path/'no-model'))
+        result=asr._transcribe_qwen_worker(audio,[{'start':0.,'end':.1,'audio':[audio]}],str(tmp_path/'no-model'),
+                                          context='',evidence_root=tmp_path/'qwen-evidence')
         assert result[0]['text']==SAMPLE
         event=next(row for row in events if row['event']=='QWEN3-ASR_PROCESS')
         # Qwen deliberately stores stderr only in its process receipt. The
@@ -60,6 +66,9 @@ def test_actual_production_launcher_keeps_child_streams_and_json_utf8(tmp_path,m
         # decoded stdout plus stderr. No production telemetry fields added.
         stdout,stderr='',event['QWEN_STDERR']
     assert SAMPLE in stderr and (stage=='qwen' or SAMPLE in stdout)
+    # This fake worker reports no device. Successful text must not fabricate CUDA.
+    prefix='FIRERED' if stage=='firered' else 'QWEN'
+    assert event[prefix+'_DEVICE']=='unknown' and event[prefix+'_CUDA_AVAILABLE'] is None
     assert '\ufffd' not in stdout+stderr
     probe=json.loads(next(line.removeprefix('CHILD_PROBE=') for line in stderr.splitlines() if line.startswith('CHILD_PROBE=')))
     assert probe['isolated']==1 and probe['utf8_mode']==1
