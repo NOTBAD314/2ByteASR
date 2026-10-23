@@ -51,8 +51,7 @@ def main(argv=None):
         identity=json.loads((root/'2byteasr_build.json').read_text('utf8'))
         if identity['git_sha']!=args.app_source_sha:raise RuntimeError('Installed app identity differs')
         for label,flag,keys,timeout in (
-            ('mlx','--macos-prepare-mlx',['mlx_qwen_aligner','mlx_qwen3_asr_0_6b'],1200),
-            ('mps','--macos-prepare-local',['moss','firered_aed'],2400)):
+            ('mlx','--macos-prepare-mlx',['mlx_qwen_aligner','mlx_qwen3_asr_0_6b'],1200),):
             entry=dict(passed=False,keys=keys,entry='installed frozen app')
             result['backends'][label]=entry
             try:
@@ -74,6 +73,22 @@ def main(argv=None):
                     entry['device_probe']=json.loads((out/'mlx-probe.json').read_text('utf8')) if probe.returncode==0 else {}
                     entry['passed']=probe.returncode==0 and entry['device_probe'].get('metal_available') is True
             except Exception:entry['error']=traceback.format_exc()
+        # MOSS / FireRed use the actual workshop and Home/Studio workflow,
+        # including measured word times, bilingual editing and video export.
+        mps=dict(passed=False,entry='installed frozen GUI',keys=['moss','firered_aed'])
+        result['backends']['mps']=mps
+        try:
+            audio=out/'mps-speech.wav'
+            subprocess.run(['/usr/bin/say','-v','Tingting','--data-format=LEI16@16000','-o',str(audio),
+                '今天测试兔白字幕。我们使用本地模型识别中文。字幕可以编辑，剪切后保存工程，最后导出视频。'],check=True,timeout=60)
+            completed=run([sys.executable,ROOT/'scripts/macos_desktop_smoke.py','--app',app,'--runtime',out/'unused-build-runtime',
+                '--fresh-runtime','--audio',audio,'--output',out/'mps-desktop','--model-set','mac-gpu'],'mps-flow.log',3000)
+            mps['exit_code']=completed.returncode
+            for name in ('workshop-result','result','export-validation','restart-summary'):
+                path=out/'mps-desktop'/(name+'.json')
+                mps[name]=json.loads(path.read_text('utf8')) if path.is_file() else {}
+            mps['passed']=completed.returncode==0 and all(mps[name].get('passed') is True for name in ('workshop-result','result','export-validation','restart-summary'))
+        except Exception:mps['error']=traceback.format_exc()
         result['passed']=all(entry['passed'] for entry in result['backends'].values())
     except Exception:result['error']=traceback.format_exc()
     finally:

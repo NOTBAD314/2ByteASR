@@ -436,6 +436,13 @@ jobs:
           path: |
             ${{ runner.temp }}/tmp/installed-model-check/*.json
             ${{ runner.temp }}/tmp/installed-model-check/*.log
+            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.json
+            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.log
+            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/*.png
+            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/exports/*
+            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/runtime-evidence/*.json
+            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.json
+            ${{ runner.temp }}/tmp/installed-model-check/mps-desktop/restart/*.log
 
   local-models:
     # 2026-10-14: MOSS-Transcribe-Diarize and FireRedASR2-AED with PyTorch on
