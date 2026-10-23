@@ -273,7 +273,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     requirements = root / 'packaging/macos/requirements-cpu.txt'
     identity = dict(target=lock['target'], python=lock['python'], uv=lock['uv'],
                     pip=lock['pip'], requirements={path.name: sha256(path) for path in (
-                        requirements, root / 'packaging/macos/requirements-gui.txt', root / 'packaging/macos/constraints-cpu.txt',
+                        requirements, root / 'packaging/macos/requirements-gui.txt', root / 'packaging/macos/constraints-cpu.txt', root / 'packaging/macos/source-wheels.lock.json',
                         root / 'packaging/macos/native-dependencies.lock.json')})
     signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
     runtime = managed / 'main' / ('macos-cpu-' + signature)
@@ -288,6 +288,8 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
         print('[运行库] 复用已核对的原生 CPU 环境', flush=True)
         return Path(previous)
     state['phase'] = 'tools_preparing'
+    from ..system.macos_wheels import verify_wheelhouse
+    wheelhouse = verify_wheelhouse(root)
     uv, base = _bootstrap_interpreter(managed, lock, environment)
     state['phase'] = 'dependencies_installing'
     emit(state['phase'])
@@ -300,6 +302,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     # Fresh reports include the critical wheels on retries too;
     # pip's verified cache can reuse completed downloads.
     run([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install', '--force-reinstall', '--report', report,
+         '--only-binary=:all:', '--find-links', wheelhouse,
          '--index-url', 'https://pypi.org/simple', '-r', requirements.name], cwd=requirements.parent, environment=environment)
     from scripts.macos_dependency_contract import verify_native_wheels
     native_lock = root / 'packaging/macos/native-dependencies.lock.json'

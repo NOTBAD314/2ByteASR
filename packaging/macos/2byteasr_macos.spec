@@ -28,6 +28,9 @@ factory.mkdir()
 datas=collect_data_files('certifi')+collect_data_files('qtawesome')
 datas.extend([(os.environ['TWOBYTEASR_BUILD_METADATA'],'.'),(str(factory/'2byteasr_settings.json'),'.'),
               (os.environ['TWOBYTEASR_MAC_NATIVE_INPUTS'],'.')])
+for path in Path(native['cpu_wheelhouse']).iterdir():
+    if path.suffix=='.whl' or path.name=='manifest.json':
+        datas.append((str(path),'wheels/macos-arm64-cp310'))
 binaries=[(native['native_tools']['node']['path'],'tools/node'),
           (native['native_tools']['mpv']['path'],'tools/mpv'),
           (native['native_tools']['ffmpeg']['path'],'tools/ffmpeg/bin'),

@@ -104,6 +104,13 @@ def build_tesseract(work, spec, *, environment):
     from scripts.macos_build import unpack_verified_node
     unpack_verified_node(archive,source)
     source=source/spec['source_directory']
+    # Homebrew builds this same source with autotools (ABI name .5), while
+    # upstream CMake names it .5.5. Match the consumer's ABI name at build time.
+    cmake_source=source/'CMakeLists.txt'
+    before=cmake_source.read_text('utf8')
+    marker='libtesseract PROPERTIES SOVERSION\n                          ${VERSION_MAJOR}.${VERSION_MINOR}'
+    if before.count(marker)!=1:raise RuntimeError('Reviewed Tesseract CMake ABI declaration changed')
+    cmake_source.write_text(before.replace(marker,'libtesseract PROPERTIES SOVERSION\n                          ${VERSION_MAJOR}'),'utf8')
     prefix=work/'install';build=work/'build'
     env=dict(environment,MACOSX_DEPLOYMENT_TARGET='14.0')
     cmake=shutil.which('cmake')
@@ -125,4 +132,6 @@ def build_tesseract(work, spec, *, environment):
     libraries=[dict(path=str(p),sha256=sha256(p)) for p in sorted((prefix/'lib').glob('libtesseract*.dylib'))]
     if not any(Path(p['path']).name=='libtesseract.5.dylib' for p in libraries):
         raise RuntimeError('Tesseract ABI 5 output missing')
-    return dict(source=spec,libraries=libraries,minimum_macos='14.0',compiled=True,commands=[list(map(str,c)) for c in commands])
+    return dict(source=spec,libraries=libraries,minimum_macos='14.0',compiled=True,
+                source_adjustment='CMake SOVERSION major.minor -> major, matching the same source autotools ABI name',
+                commands=[list(map(str,c)) for c in commands])

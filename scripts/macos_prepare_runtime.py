@@ -32,7 +32,9 @@ def main(argv=None):
     interpreter=target/"bin/python"
     report=args.receipt.with_suffix(".pip-install.json")
     report.parent.mkdir(parents=True,exist_ok=True)
-    subprocess.run([str(interpreter),"-m","pip","install","--report",str(report),"-r",str(ROOT/"packaging/macos/requirements-cpu.txt")],check=True)
+    from scripts.macos_build_wheels import build_wheelhouse
+    wheelhouse=build_wheelhouse(interpreter,args.receipt.parent/'cpu-wheelhouse')
+    subprocess.run([str(interpreter),"-m","pip","install","--only-binary=:all:","--find-links",str(wheelhouse),"--report",str(report),"-r",str(ROOT/"packaging/macos/requirements-cpu.txt")],check=True)
     subprocess.run([str(interpreter),'-m','pip','check'],check=True)
     from scripts.macos_binary_audit import audit_tree
     native_audit=audit_tree(target,arch='arm64',target=MINIMUM_MACOS,allow_external=True)

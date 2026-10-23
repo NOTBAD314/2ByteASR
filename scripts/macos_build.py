@@ -243,6 +243,10 @@ def main(argv=None):
         raise RuntimeError('Compiled compatibility library changed')
     receipt['compatibility_libraries']=compatibility_libraries
     receipt['compatibility_rebuilds']=media_record['compatibility_rebuilds']
+    from twobyteasr.system.macos_wheels import verify_wheelhouse
+    wheelhouse=verify_wheelhouse(ROOT,directory=(args.runtime or Path(sys.prefix)).parent/'cpu-wheelhouse')
+    receipt['cpu_wheelhouse']=str(wheelhouse)
+    receipt['cpu_wheelhouse_manifest_sha256']=sha256(wheelhouse/'manifest.json')
     receipt.update(stage="native_media_verified",native_tools=tools,
                    media_install_receipt_sha256=sha256(args.media_receipt))
     receipt['selected_media_libraries']=[dict(path=str(path),sha256=sha256(path))

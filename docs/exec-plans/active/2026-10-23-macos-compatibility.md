@@ -76,3 +76,6 @@ Windows 做純版本、架構、Mach-O 解析及下載契約測試。GUI、Metal
 - 原生輸入修正：Tesseract 5.5.3 從同版官方雜湊鎖來源以 deployment target 14.0 編譯；Remotion JS / Rust 仍為 4.0.513。官方 4.0.400 中的 FFmpeg 仍為 n7.1，九件 minos 13.0；全部 dylib ABI 版本與目前套件相同，現行 Rust compositor 對 FFmpeg 的 63 個符號全在相容媒體中。已用實際原版檔案執行置換工具的靜態驗證（10 個 native objects 通過），還需原生渲染驗收。
 - 新增候選的 12 秒透明動效驗證：使用包內的原始 SubtitleOverlay 元件、Node、Chrome、Rust compositor、FFmpeg，檢查 360 幀、Alpha 與入退場；另讓正常 Studio 流程手動編輯雙語、保存重開、匯出雙語 SRT。這些是驗收，不改使用者字幕或工程格式。
 - 補上 MOSS / FireRed 下載權重前的子程序 MPS 實際精度配置探測；前置原生載入錯誤分類與回報問題附件。最新相關 87 項及 Qt 預覽 12 項測試通過；沒有把合成 host 判斷當作 Mac 實測。
+
+- CI 39949667020：Tesseract 5.5.3 已真正編譯，CLI / dylib 的 minos 都是 14.0.0、SDK 14.5.0；封裝守門發現 upstream CMake 命名為 ABI 5.5，而 Homebrew autotools 消費端需要 ABI 5。現以已核對的原始碼一處 CMake SOVERSION 設定對齊 major 命名，仍重新編譯，不修改已編譯版本標記。
+- 首次安裝額外缺口：原 CPU runtime 解析了 jieba / oss2 / TextGrid / crcmod / antlr4-python3-runtime 五份 sdist，其中 crcmod 含 C 擴充。新增官方來源 SHA 鎖、CI 預編譯與隨包 wheelhouse（逐 wheel／原生檔案驗證）；終端使用者的 pip 僅接受 binary wheels，禁止現場編譯。模型、工程、設定的 schema 不變。
