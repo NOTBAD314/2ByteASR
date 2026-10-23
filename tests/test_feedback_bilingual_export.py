@@ -27,6 +27,19 @@ def bilingual_project():
     return project
 
 
+@pytest.mark.parametrize('format_name',['srt','txt'])
+def test_native_acceptance_checks_the_expected_bilingual_text_and_rejects_corruption(tmp_path,format_name):
+    from twobyteasr.acceptance.home_release_flow_audit import expected_plain_bilingual_project
+    from twobyteasr.exports.studio_subtitle_export import verify_subtitle_artifact
+    project=bilingual_project()
+    artifact=export_subtitle_artifacts(project,tmp_path,'native-bilingual',SubtitleExportOptions(frozenset({format_name}),'combined'))[0]
+    expected=expected_plain_bilingual_project(project,format_name)
+    assert verify_subtitle_artifact(artifact,expected).valid
+    assert project.cues[0].text=='ALPHA'
+    artifact.path.write_text(artifact.path.read_text('utf-8-sig').replace('第一句','错误译文'),encoding='utf8')
+    assert not verify_subtitle_artifact(artifact,expected).valid
+
+
 def test_projected_burnin_keeps_both_speakers_translations():
     project = bilingual_project()
     store_sequence(project, EditSequence(source_path=project.media.path, source_duration_ms=8000,

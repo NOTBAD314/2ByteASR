@@ -102,11 +102,11 @@ def write_startup_diagnostics(root: Path, destination: Path, *, stage: str, erro
 def failure_category(error: str) -> str:
     text = error.lower()
     for category, markers in (
-        ('architecture',('incompatible architecture','bad cpu type','rosetta','arm64')),
+        ('architecture',('incompatible architecture','bad cpu type','rosetta','原生 arm64','missing_architecture')),
         ('missing_library',('library not loaded','image not found','no module named','cannot load library')),
         ('missing_symbol',('symbol not found','undefined symbol')),
         ('signature_or_notarization',('code signature','notariz','gatekeeper','quarantine')),
-        ('backend_initialization',('metal','mps','mlx')),
-        ('minimum_system',('macos','deployment target'))):
+        ('minimum_system',('requires macos','built for macos','需要 macos','无法确认 macos','deployment target','minimum_macos')),
+        ('backend_initialization',('metal','mps','mlx'))):
         if any(marker in text for marker in markers):return category
     return 'python_startup'

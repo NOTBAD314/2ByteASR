@@ -79,3 +79,8 @@ Windows 做純版本、架構、Mach-O 解析及下載契約測試。GUI、Metal
 
 - CI 39949667020：Tesseract 5.5.3 已真正編譯，CLI / dylib 的 minos 都是 14.0.0、SDK 14.5.0；封裝守門發現 upstream CMake 命名為 ABI 5.5，而 Homebrew autotools 消費端需要 ABI 5。現以已核對的原始碼一處 CMake SOVERSION 設定對齊 major 命名，仍重新編譯，不修改已編譯版本標記。
 - 首次安裝額外缺口：原 CPU runtime 解析了 jieba / oss2 / TextGrid / crcmod / antlr4-python3-runtime 五份 sdist，其中 crcmod 含 C 擴充。新增官方來源 SHA 鎖、CI 預編譯與隨包 wheelhouse（逐 wheel／原生檔案驗證）；終端使用者的 pip 僅接受 binary wheels，禁止現場編譯。模型、工程、設定的 schema 不變。
+
+- CI 39951540153 / app f16ca986：已產生真正 DMG（574676443 bytes，SHA f0b17ef7e00485f40ed4a7d6cfa9e01a232336e43ef13ab3f1803aef283bd860）。最終原生門檻、歸檔搬移、/Applications 安裝、正常啟動、空工程、CPU 首次準備、播放像素、雙語保存重開、第二次真實識別、雲端 loopback、Keychain、MLX 及雲端+MLX對齊、12 秒透明動效均通過。VideoToolbox 硬體編碼未通過，保留硬體限制。
+- 未宣稱完整流程通過：Studio 驗收在字幕檔案回讀停下，實際 SRT/TXT 正確含兩行，舊驗收 oracle 卻期望原文一行；現在依已明確選定的 translation-first 模式計算獨立期待值，新增實際輸出及故意破壞譯文的回歸，文字與時間檢查不放寬。影片 GUI 匯出因前一斷言停止而未執行，必須重跑。
+- 同 DMG 在較新 Mac 正常啟動與靜態檢查通過；外部空工程 fixture checker 缺 PySide6 而停止，並非 App 缺依賴。驗證器新增獨立 venv，只供建立 fixture；App 仍用不含該 venv 的最小 PATH。
+- 加入只測既有候選的 frozen MLX/MPS 準備入口（checker 1a46ad77）；App 來源與驗收器來源分開記錄。新增對診斷分類的窄修正，含 arm64 的檔案路徑不再被誤判為架構問題。

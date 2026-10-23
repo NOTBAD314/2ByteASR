@@ -8,6 +8,24 @@ from dataclasses import asdict
 from pathlib import Path
 
 
+def expected_plain_bilingual_project(project, format_name):
+    """Independent expected text for the explicit translation-first audit.
+
+    JSON keeps source cues; ASS has separate display rows. SRT/TXT put the two
+    known texts in one cue. Do not loosen text/timing checks for bilingual QA.
+    """
+    if format_name not in ('srt','txt'):
+        return project
+    import copy
+    from ..caption_style.bilingual_layout import translation_for_cue
+    expected=copy.deepcopy(project)
+    translations=project.generation_metadata.get('translations',{})
+    for cue in expected.cues:
+        text=translation_for_cue(translations,cue.id)
+        if text:cue.text=str(text)+'\n'+cue.text
+    return expected
+
+
 def start(window, out):
     from PySide6.QtCore import QTimer, Qt
     from PySide6.QtGui import QInputMethodEvent
@@ -246,7 +264,7 @@ def start(window, out):
                 from ..caption_style.bilingual_layout import translation_for_cue, settings_from_state
                 translation = 'Mac bilingual subtitle verification.'
                 check('manual translation enters normal undoable edit', set_manual_translation(page, cue.id, translation))
-                apply_display(page, mode='bilingual')
+                apply_display(page, mode='bilingual', order='translation_first')
                 pump(.5)
                 check('bilingual display mode selected', settings_from_state(page.project.studio_state).mode == 'bilingual')
                 window.grab().save(str(out/'01-bilingual-preview.png'))
@@ -321,7 +339,8 @@ def start(window, out):
             from ..exports.studio_subtitle_export import verify_subtitle_artifact
             expected_project=copy.copy(page.project)
             expected_project.cues=projected_cues(page.project, domain='timeline')
-            verification=[verify_subtitle_artifact(a,expected_project) for a in artifacts]
+            verification=[verify_subtitle_artifact(a,expected_plain_bilingual_project(expected_project,a.format)
+                          if config.get('bilingual') else expected_project) for a in artifacts]
             result['subtitle_verification']=[asdict(row) for row in verification]
             check('GUI subtitle files parse with expected text and timing',all(row.valid for row in verification))
             if config.get('bilingual'):

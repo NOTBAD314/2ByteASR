@@ -168,7 +168,7 @@ jobs:
         run: |
           set -euo pipefail
           "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_doctor.py --require-host --probe-torch --output "$MAC_QA_ROOT/doctor.json"
-          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_macos_platform.py tests/test_macos_build_contract.py tests/test_macos_gui_prepare.py tests/test_macos_delivery_boundary.py tests/test_macos_media_installation.py tests/test_studio_qt_preview.py tests/test_python_runtime_identity.py tests/test_macos_desktop_evidence.py tests/test_macos_setup_delivery.py tests/test_blank_project_projection.py tests/test_razor_caption_conservation.py tests/test_playhead_edit_target.py tests/test_static_caption_long_command.py::test_file_graph_keeps_external_relative_inputs_and_callbacks tests/test_no_cuda_cloud_asr.py tests/test_api_setup_guide.py tests/test_macos_keychain_store.py tests/test_mlx_backend.py tests/test_mac_gpu_workshop.py --deselect tests/test_playhead_edit_target.py::test_overlap_priority_stable_with_reorder_visibility_locks_and_track_choice --basetemp "$MAC_QA_ROOT/pytest" --junitxml "$MAC_QA_ROOT/tests.xml"
+          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_macos_binary_audit.py tests/test_macos_compatibility.py tests/test_macos_compat_native.py tests/test_macos_wheels.py tests/test_macos_platform.py tests/test_macos_build_contract.py tests/test_macos_gui_prepare.py tests/test_macos_delivery_boundary.py tests/test_macos_media_installation.py tests/test_studio_qt_preview.py tests/test_python_runtime_identity.py tests/test_macos_desktop_evidence.py tests/test_macos_setup_delivery.py tests/test_blank_project_projection.py tests/test_razor_caption_conservation.py tests/test_playhead_edit_target.py tests/test_static_caption_long_command.py::test_file_graph_keeps_external_relative_inputs_and_callbacks tests/test_no_cuda_cloud_asr.py tests/test_api_setup_guide.py tests/test_macos_keychain_store.py tests/test_mlx_backend.py tests/test_mac_gpu_workshop.py --deselect tests/test_playhead_edit_target.py::test_overlap_priority_stable_with_reorder_visibility_locks_and_track_choice --basetemp "$MAC_QA_ROOT/pytest" --junitxml "$MAC_QA_ROOT/tests.xml"
       - name: Build real DMG and verify drag-install Unicode copy
         if: ${{ always() && steps.build.outcome == 'success' }}
         id: dmg
@@ -358,9 +358,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          # Only the external checker needs QColor to create its empty-project
+          # fixture. App launch environments deliberately omit this venv.
+          python -m venv "$RUNNER_TEMP/tmp/checker-runtime"
+          "$RUNNER_TEMP/tmp/checker-runtime/bin/python" -m pip install --only-binary=:all: PySide6==6.9.2
           dmg=$(find "$RUNNER_TEMP/tmp/candidate-input" -name '*.dmg' -type f)
           test -f "$dmg"
-          python scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/newer-macos-candidate"
+          "$RUNNER_TEMP/tmp/checker-runtime/bin/python" scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/newer-macos-candidate"
       - name: Select bounded regression receipts
         if: always()
         run: |

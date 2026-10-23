@@ -117,6 +117,7 @@ def test_build_bootstrap_and_runtime_minimums_agree():
 
 @pytest.mark.parametrize('error,category',[
     ('Library not loaded: libmpv.2.dylib','missing_library'),
+    ('Library not loaded: /tmp/mac-arm64/libavcodec.dylib','missing_library'),
     ('Symbol not found: _new_api','missing_symbol'),
     ('mach-o, but wrong incompatible architecture','architecture'),
     ('code signature invalid','signature_or_notarization'),
