@@ -205,15 +205,31 @@ def _child_environment() -> dict:
     return environment
 
 
-def verify_runtime_binaries(directory: Path) -> None:
+def verify_runtime_binaries(directory: Path, *, target: str | None = None) -> None:
     """Check downloaded bytes before executing Python/uv or loading a backend."""
     from scripts.macos_binary_audit import audit_tree
     from ..system.macos_compatibility import MINIMUM_MACOS
-    audit = audit_tree(directory, arch='arm64', target=MINIMUM_MACOS, allow_external=True)
+    audit = audit_tree(directory, arch='arm64', target=target or MINIMUM_MACOS, allow_external=True)
     (directory/'binary-compatibility.json').write_text(json.dumps(audit,ensure_ascii=False,indent=2)+'\n','utf8')
     if not audit['passed']:
         first = audit['errors'][0]
         raise RuntimeError('运行环境不符合 macOS 系统或架构要求：' + json.dumps(first,ensure_ascii=False))
+
+
+def mlx_binary_contract_matches(python: Path, *, release: str | None = None) -> bool:
+    """Do not reuse a newer-OS MLX variant after a system downgrade/copy."""
+    from ..system.macos_compatibility import parse_macos_version
+    try:
+        host=parse_macos_version(platform.mac_ver()[0] if release is None else release)
+        audit=json.loads((python.parent.parent/'binary-compatibility.json').read_text('utf8'))
+        if not audit.get('passed') or audit.get('architecture')!='arm64' or not audit.get('objects'):
+            return False
+        for item in audit['objects']:
+            native=[s for s in item['slices'] if s['architecture']=='arm64']
+            if not native or any(parse_macos_version(s['minimum_macos'])>host for s in native):return False
+        return True
+    except (OSError,ValueError,KeyError,TypeError):
+        return False
 
 
 def require_mps_runtime(python: Path, root: Path, *, dtype: str) -> None:
@@ -635,7 +651,7 @@ def _mlx_worker(root: Path) -> Path:
 
 def check_mlx_runtime(python: Path, root: Path) -> bool:
     """Torch-free MLX runtime: the worker's own import/device probe."""
-    if not python.is_file():
+    if not python.is_file() or not mlx_binary_contract_matches(python):
         return False
     try:
         result = subprocess.run([str(python), '-I', str(_mlx_worker(root)), '--mode', 'probe'], cwd=root,
@@ -706,7 +722,7 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
     lock = json.loads((root / 'packaging/macos/bootstrap.lock.json').read_text('utf8'))
     requirements = root / 'packaging/macos/requirements-mlx.txt'
     identity = dict(target=lock['target'], python=lock['python'], uv=lock['uv'], pip=lock['pip'],
-                    requirements={requirements.name: sha256(requirements)})
+                    host_macos=platform.mac_ver()[0],requirements={requirements.name: sha256(requirements)})
     signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
     runtime = managed / 'mlx' / ('macos-mlx-' + signature)
     runtime_python = runtime / 'bin/python'
@@ -738,7 +754,9 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
                                         'install', '--require-hashes', '--only-binary', ':all:', '--report', report,
                                         '-r', requirements.name], cwd=requirements.parent, environment=environment)
                 run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
-                verify_runtime_binaries(runtime)
+                # MLX publishes distinct 14/15/26 wheels. The base App remains
+                # 14-compatible; this optional runtime must fit its real host.
+                verify_runtime_binaries(runtime,target=platform.mac_ver()[0])
                 if not check_mlx_runtime(runtime_python, root):
                     raise RuntimeError('MLX 运行库探测失败（需要 Apple Silicon 与 Metal）；之前的登记保持不变')
                 receipt = runtime / 'managed-runtime.json'

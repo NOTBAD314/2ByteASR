@@ -125,3 +125,17 @@ def test_build_bootstrap_and_runtime_minimums_agree():
     ('requires macOS 15.0','minimum_system')])
 def test_diagnostics_separates_actionable_failures(error,category):
     assert mc.failure_category(error)==category
+
+
+def test_optional_mlx_variant_is_checked_against_host_not_base_app_floor(tmp_path):
+    import struct
+    from twobyteasr.local_models import macos_model_prepare as prepare
+    runtime=tmp_path/'runtime';runtime.mkdir()
+    # The real MLX 0.32.3 macosx_15_0 wheel has this minos. No code is executed.
+    (runtime/'libmlx.dylib').write_bytes(struct.pack('<8I',0xfeedfacf,0x100000c,0,6,1,24,0,0)+struct.pack('<6I',0x32,24,1,0xf0000,0x1a0500,0))
+    prepare.verify_runtime_binaries(runtime,target='15.7.9')
+    assert prepare.mlx_binary_contract_matches(runtime/'bin/python',release='15.7.9')
+    assert not prepare.mlx_binary_contract_matches(runtime/'bin/python',release='14.4.1')
+    assert not prepare.mlx_binary_contract_matches(runtime/'bin/python',release='')
+    with pytest.raises(RuntimeError,match='系统或架构要求'):
+        prepare.verify_runtime_binaries(runtime,target='14.4.1')
