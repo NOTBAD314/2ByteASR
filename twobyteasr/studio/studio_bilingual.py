@@ -111,6 +111,12 @@ def apply_display(page, **changes) -> bool:
     refresh = getattr(page, "_refresh_ass_preview", None)
     if callable(refresh):
         refresh()
+    # Refresh captures the final display revision. A paused raster-only
+    # player does not get a native ASS redraw or a later transport tick to
+    # request that revision; explicitly present it without moving the clock.
+    present = getattr(page, "_present_caption_scene", None)
+    if callable(present):
+        present()
     return True
 
 

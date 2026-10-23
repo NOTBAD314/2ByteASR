@@ -172,6 +172,23 @@ def test_first_bilingual_choice_is_compact_and_the_compact_command_is_one_undo_s
     assert old.project.studio_state["bilingual"] == before
 
 
+def test_paused_raster_display_uses_the_final_bilingual_snapshot_without_seek():
+    import copy
+    from PySide6.QtGui import QUndoStack
+    from PySide6.QtWidgets import QLabel
+    from twobyteasr.studio.studio_bilingual import apply_display
+    project=_project()
+    label=QLabel(project.cues[0].text)
+    snapshot={'project':copy.deepcopy(project)}
+    page=SimpleNamespace(project=project,undo_stack=QUndoStack(),playhead_ms=500)
+    page._refresh_ass_preview=lambda:snapshot.update(project=copy.deepcopy(project))
+    page._present_caption_scene=lambda:label.setText('\n'.join(c.text for c in project_display_cues(snapshot['project'])))
+    assert apply_display(page,mode='bilingual')
+    assert '好可怕啊' in label.text() and '恐ろしいわ' in label.text()
+    assert page.playhead_ms==500 and project.cues[0].text=='恐ろしいわ すえ恐ろしいわ'
+    label.close()
+
+
 def test_overlapping_speakers_reserve_the_whole_bilingual_group():
     from twobyteasr.caption_style.bilingual_layout import group_extra_for
     from twobyteasr.caption_style.subtitle_stacking import initialize_project_layout
