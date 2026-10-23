@@ -11,6 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 
+@pytest.fixture(autouse=True)
+def simulated_supported_macos_version(monkeypatch):
+    # Host-routing tests only; never presented as real 14.4.1 execution evidence.
+    monkeypatch.setattr('platform.mac_ver', lambda: ('14.4.1', ('', '', ''), ''))
+
+
 from twobyteasr.system import hardware
 from twobyteasr.recognition import recognition_choices as choices
 from twobyteasr.local_models import macos_model_prepare as prepare

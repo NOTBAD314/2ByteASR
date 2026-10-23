@@ -35,9 +35,9 @@ on:
       app_runner:
         description: 'Runner for the app checks (xlarge = paid larger runner)'
         required: false
-        default: macos-15
+        default: macos-14
         type: choice
-        options: [macos-15, macos-15-xlarge, macos-14-xlarge]
+        options: [macos-14, macos-14-xlarge]
       mlx_keys:
         description: 'MLX models for the timed MLX check'
         required: false
@@ -80,7 +80,7 @@ jobs:
     # existing stop-usage budgets were checked. No automatic retry or cache.
     # 2026-10-14: the runner is selectable; the job can be switched off.
     if: ${{ inputs.run_app_checks }}
-    runs-on: ${{ inputs.app_runner || 'macos-15' }}
+    runs-on: ${{ inputs.app_runner || 'macos-14' }}
     # 24 before 2026-10-13; the optional cloud/MLX checks need up to ~20 more,
     # the optional Studio performance check up to ~35 (2026-10-14).
     # Runs without them finish as before; this only caps a hung run.
@@ -91,6 +91,7 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       PYTHONUTF8: '1'
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
       MAXIMUM_ARTIFACT_BYTES: ${{ inputs.maximum_artifact_bytes }}
     steps:
@@ -162,7 +163,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_package_dmg.py --app "$MAC_QA_ROOT/build/dist/2ByteASR.app" --output "$MAC_QA_ROOT/dmg"
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_package_dmg.py --app "$MAC_QA_ROOT/build/dist/2ByteASR.app" --output "$MAC_QA_ROOT/dmg" --install-to-applications
       - name: Installed app normal new blank project, save and reopen
         if: ${{ always() && steps.dmg.outcome == 'success' }}
         id: blank_project
@@ -258,7 +259,8 @@ jobs:
             origin='repository assets/diagnostics/speech_en.wav (no Chinese voice on this runner)'
           fi
           python -c 'import json,sys,hashlib; p=sys.argv[1]; json.dump(dict(audio=p,origin=sys.argv[2],text=sys.argv[3],sha256=hashlib.sha256(open(p,"rb").read()).hexdigest()),open(sys.argv[4],"w",encoding="utf8"),ensure_ascii=False,indent=2)' "$audio" "$origin" "$text" "$MAC_QA_ROOT/fixture-origin.json"
-          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$MAC_QA_ROOT/build/relocated/兔白 字幕・移動テスト/2ByteASR.app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio "$audio" --output "$MAC_QA_ROOT/desktop-flow" --model-set "$DESKTOP_MODEL_SET"
+          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/macos_desktop_smoke.py --app "$app" --runtime "$MAC_QA_ROOT/runtime" --fresh-runtime --audio "$audio" --output "$MAC_QA_ROOT/desktop-flow" --model-set "$DESKTOP_MODEL_SET"
       - name: Studio editing smoothness and export speed (installed app, synthetic project)
         if: ${{ always() && inputs.run_studio_perf && steps.dmg.outcome == 'success' }}
         id: studio_perf
@@ -303,6 +305,55 @@ jobs:
       - name: Enforce installer, blank project and requested desktop results
         if: always()
         run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT" --enforce
+
+  same-candidate-newer-macos:
+    needs: native-arm64
+    if: ${{ always() && inputs.run_app_checks }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.10.11'
+          architecture: arm64
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: macos-arm64-setup-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/tmp/candidate-input
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: macos-arm64-receipts-${{ inputs.source_sha }}
+          path: ${{ runner.temp }}/tmp/candidate-receipts
+      - name: Verify the unchanged DMG on the newer OS
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          dmg=$(find "$RUNNER_TEMP/tmp/candidate-input" -name '*.dmg' -type f)
+          test -f "$dmg"
+          python scripts/macos_verify_candidate.py --dmg "$dmg" --receipt "$RUNNER_TEMP/tmp/candidate-receipts/dmg/dmg-result.json" --source-sha "$SOURCE_SHA" --output "$RUNNER_TEMP/tmp/newer-macos-candidate"
+      - name: Select bounded regression receipts
+        if: always()
+        run: |
+          if test -d "$RUNNER_TEMP/tmp/newer-macos-candidate"; then
+            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/newer-macos-candidate" --maximum-bytes 67108864
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: macos-newer-receipts-${{ inputs.source_sha }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/tmp/newer-macos-candidate/artifacts/receipts/
 
   local-models:
     # 2026-10-14: MOSS-Transcribe-Diarize and FireRedASR2-AED with PyTorch on

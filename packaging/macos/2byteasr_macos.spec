@@ -13,6 +13,7 @@ ROOT=Path(os.environ['TWOBYTEASR_MAC_SOURCE']).resolve()
 WORK=Path(os.environ['TWOBYTEASR_MAC_BUILD_ROOT']).resolve()
 sys.path.insert(0,str(ROOT))
 from twobyteasr.system.platform_macos import cpu_factory_settings
+from twobyteasr.system.macos_compatibility import MINIMUM_MACOS
 from twobyteasr.storage.settings import DEFAULT_SETTINGS
 from scripts.macos_build import is_macho, selected_media_libraries
 native=json.loads(Path(os.environ['TWOBYTEASR_MAC_NATIVE_INPUTS']).read_text(encoding='utf8'))
@@ -59,4 +60,4 @@ coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='2ByteASR')
 app=BUNDLE(coll,name='2ByteASR.app',icon=native['app_icon']['path'],bundle_identifier='org.2byteasr.desktop.experimental',
            info_plist={'CFBundleName':'2ByteASR','CFBundleDisplayName':'兔白字幕 / 2ByteASR',
                        'CFBundleShortVersionString':VERSION,'CFBundleVersion':VERSION,
-                       'LSMinimumSystemVersion':'15.0','NSHighResolutionCapable':True})
+                       'LSMinimumSystemVersion':MINIMUM_MACOS,'NSHighResolutionCapable':True})

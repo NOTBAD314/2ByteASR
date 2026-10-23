@@ -36,7 +36,9 @@ def is_macho(path: Path) -> bool:
 def native_host_problem() -> str:
     if sys.platform!="darwin" or platform.machine()!="arm64": return "Native Apple Silicon macOS is required; Windows cannot cross-build this .app."
     if sys.version_info[:2]!=(3,10): return "Use the locked Python 3.10 runtime."
-    if tuple(int(x) for x in platform.mac_ver()[0].split(".")[:2]) < (15,0): return "The selected native media bottles require macOS 15 or newer."
+    from twobyteasr.system.macos_compatibility import compatibility_problem
+    problem = compatibility_problem()
+    if problem: return problem
     return ""
 
 
@@ -284,6 +286,15 @@ def main(argv=None):
                 raise RuntimeError("Unrelocated Homebrew dependency in bundle: "+str(path))
             native_objects.append({"path":path.relative_to(app).as_posix(),"architecture":architectures,"sha256":sha256(path)})
     receipt["native_objects"]=native_objects
+    # A lowered plist cannot make precompiled media, Qt or Python extensions
+    # compatible. Check every final Mach-O before any deliverable is archived.
+    from scripts.macos_binary_audit import audit_tree
+    from twobyteasr.system.macos_compatibility import MINIMUM_MACOS
+    compatibility=audit_tree(app,arch='arm64',target=MINIMUM_MACOS)
+    (output/'binary-compatibility.json').write_text(json.dumps(compatibility,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+    if not compatibility['passed']:
+        raise RuntimeError('Final app has incompatible native dependencies; see binary-compatibility.json')
+    receipt['native_validation']['binary_compatibility']={'passed':True,'minimum_macos':MINIMUM_MACOS,'execution_verified':False}
     receipt["native_validation"].update(app_built=True,architecture_and_external_linkage_checked=True)
     # Preserve a real built .app before later model/desktop QA. A failed smoke
     # must not discard a usable artifact or turn it into an empty placeholder.

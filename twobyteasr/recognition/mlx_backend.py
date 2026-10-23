@@ -37,8 +37,8 @@ class MlxUnavailableError(RuntimeError):
 
 
 def platform_supported() -> bool:
-    import platform
-    return sys.platform == 'darwin' and platform.machine().lower() in {'arm64', 'aarch64'}
+    from ..system.macos_compatibility import compatibility_problem
+    return not compatibility_problem('mlx')
 
 
 def asr_key(backend: str) -> str:
@@ -76,7 +76,8 @@ def _run(mode: str, key: str, audio, jobs: list, policy: dict) -> dict:
     import numpy as np
     from .asr import _run_isolated_asr_worker
     if not platform_supported():
-        raise MlxUnavailableError('MLX 只能在 Apple Silicon（M 系列芯片）的 Mac 上运行。')
+        from ..system.macos_compatibility import compatibility_problem
+        raise MlxUnavailableError(compatibility_problem('mlx'))
     python = runtime_python()
     if not python:
         raise MlxUnavailableError('还没有准备 MLX 运行环境；请在模型工坊下载 MLX 模型（会同时准备运行环境）。')

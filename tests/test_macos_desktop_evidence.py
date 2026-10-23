@@ -196,6 +196,8 @@ def test_frozen_native_worker_dispatch_precedes_inherited_gui_audit(monkeypatch,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, 'platform', 'darwin')
     monkeypatch.setattr(sys, 'argv', ['App', '--studio-'+role+'-worker', 'owned-argument'])
+    monkeypatch.setattr('platform.machine', lambda: 'arm64')
+    monkeypatch.setattr('platform.mac_ver', lambda: ('14.4.1', ('', '', ''), ''))
     monkeypatch.setenv('TWOBYTEASR_ACCEPTANCE_SCENARIO', 'macos-desktop')
     monkeypatch.setattr(platform_macos, 'configure_macos_paths', lambda root: seen.append('resources'))
     monkeypatch.setattr(runtime_paths, 'user_data_root', lambda: tmp_path/'tmp/profile')

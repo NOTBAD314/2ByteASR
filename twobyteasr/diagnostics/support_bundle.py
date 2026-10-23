@@ -192,6 +192,10 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
            "readable.log":"".join(readable(r) for r in data["events"]).encode("utf8"),
            "environment.json":json.dumps(dict(sessions=data["sessions"],settings=sanitizer.clean(settings or {}),
                environment_events=[r for r in data["events"] if r.get("event_name") in {"host","qt","screens","graphics","media","modules","player.modules"}]),ensure_ascii=False,indent=2).encode("utf8")}
+    import sys
+    if sys.platform == 'darwin':
+        from ..system.macos_compatibility import host_diagnostics
+        files['macos-compatibility.json'] = json.dumps(sanitizer.clean(host_diagnostics()),ensure_ascii=False,indent=2).encode('utf8')
     if content:
         # Only explicitly previewed/selected rows. Never read the project file here.
         selected=[{k:sanitizer.string(v) if isinstance(v,str) else sanitizer.clean(v,k) for k,v in row.items() if k in {"subtitle_id","text","translation","start_ms","end_ms"}} for row in content[:50]]

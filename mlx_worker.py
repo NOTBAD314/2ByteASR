@@ -50,10 +50,9 @@ def _device_info() -> dict:
         info["metal_available"] = None
         info["metal_error"] = exc.__class__.__name__
     if not info.get("metal_available"):
-        # No Metal device (e.g. a virtual machine): run on the MLX CPU backend
-        # and say so in every receipt.
-        mx.set_default_device(mx.cpu)
-        info["default_device"] = str(mx.default_device())
+        # The product advertises Metal, not an unverified automatic CPU route.
+        # This worker is isolated so even a native Metal abort cannot kill Qt.
+        raise RuntimeError('MLX Metal 不可用；没有切换到未验证的 CPU 后端，也没有上传音频。其他功能仍可使用。')
     return info
 
 

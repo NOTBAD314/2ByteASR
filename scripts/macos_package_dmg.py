@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import plistlib
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -56,6 +57,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--app', type=Path, required=True, help='Real builder-produced 2ByteASR.app')
     parser.add_argument('--output', type=Path, required=True, help='New absolute tmp directory')
+    parser.add_argument('--install-to-applications', action='store_true', help='Disposable GitHub runner only; refuses an existing app')
     args = parser.parse_args(argv)
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise SystemExit('Native Apple Silicon macOS is required; no placeholder DMG is created')
@@ -64,12 +66,20 @@ def main(argv=None) -> int:
     if app.name != '2ByteASR.app' or not (app/'Contents/MacOS/2ByteASR').is_file():
         raise ValueError('--app must identify the actual builder-produced 2ByteASR.app')
     identity = app_identity(app)
+    from scripts.macos_binary_audit import audit_tree
+    from twobyteasr.system.macos_compatibility import MINIMUM_MACOS
+    compatibility = audit_tree(app, arch='arm64', target=MINIMUM_MACOS)
+    if not compatibility['passed']:
+        raise RuntimeError('Cannot package incompatible native binaries as a supported DMG')
     expected = inventory(app)
     output.mkdir(parents=True)
     saved = output/'dmg-result.json'
     receipt = dict(passed=False, source_app=str(app), source_identity=identity,
                    target='darwin-arm64', developer_id_signed=False, notarized=False,
                    real_applications_modified=False, validation={})
+    receipt['compatibility'] = dict(architecture='arm64', minimum_macos=MINIMUM_MACOS,
+        runtime_contract='macos-arm64-sonoma-v1', static_binary_check_passed=True,
+        execution_os=platform.mac_ver()[0], execution_verified=False)
     log = output/'dmg.log'
     mount = output/'mounted'
     mounted = False
@@ -103,10 +113,15 @@ def main(argv=None) -> int:
         execute(['/usr/bin/ditto', app, staging/app.name])
         match(staging/app.name, 'staging')
         os.symlink('/Applications', staging/'Applications')
+        diagnostic = staging/'启动失败诊断.command'
+        shutil.copy2(ROOT/'packaging/macos/diagnose-launch.command', diagnostic)
+        diagnostic.chmod(0o755)
         (staging/'安装说明.txt').write_text(
             f'兔白字幕 / 2ByteASR {product_version()}\n\n'
             '将 2ByteASR.app 拖到 Applications（应用程序）即可安装。\n'
-            '适用于 macOS 15 或更新版本的 Apple Silicon Mac。\n'
+            f'目标为 macOS {MINIMUM_MACOS} 或更新版本的 Apple Silicon 原生 arm64 Mac；macOS 14.4.1 实体机仍待验证。\n'
+            '无需自行安装 Python、Homebrew 或 FFmpeg。本地模型首次使用会准备独立环境。\n'
+            'Intel、Rosetta、macOS 12 / 13 不适用此包；不要只修改系统版本宣告。\n'
             '本包使用 ad hoc 签名，尚未 Developer ID 签名或公证。\n', 'utf8')
         manifest = output/'dmg-bundle-inventory.json'
         manifest.write_text(json.dumps(expected, ensure_ascii=False, indent=2)+'\n', 'utf8')
@@ -144,11 +159,19 @@ def main(argv=None) -> int:
             raise RuntimeError('DMG is missing the exact Applications drag-install link')
         receipt['validation']['applications_link'] = '/Applications'
         match(mount/app.name, 'mounted_read_only')
-        installed_parent = output/'installed'/'兔白 字幕・安裝測試'
-        installed_parent.mkdir(parents=True)
+        if args.install_to_applications:
+            if os.environ.get('GITHUB_ACTIONS') != 'true' or not os.environ.get('RUNNER_TEMP'):
+                raise RuntimeError('Applications installation is only allowed on the disposable CI runner')
+            installed_parent = Path('/Applications')
+            if (installed_parent/app.name).exists():
+                raise RuntimeError('An existing /Applications app will not be replaced')
+            receipt['real_applications_modified'] = True
+        else:
+            installed_parent = output/'installed'/'兔白 字幕・安裝測試'
+            installed_parent.mkdir(parents=True)
         installed = installed_parent/app.name
         execute(['/usr/bin/ditto', mount/app.name, installed])
-        match(installed, 'installed_unicode_copy')
+        match(installed, 'installed_applications_copy' if args.install_to_applications else 'installed_unicode_copy')
         receipt['installed_app'] = str(installed)
         receipt['installed_executable'] = str(installed/'Contents/MacOS/2ByteASR')
         if app_identity(installed) != identity or inventory(app) != expected:

@@ -1022,6 +1022,11 @@ def _host_platform_tag() -> str:
 
 def model_platform_available(model: WorkshopModel) -> bool:
     """Keep platform-only builds out of the host's model choices."""
+    if sys.platform == 'darwin' and model.download_key in (MLX_DOWNLOAD_KEYS | MAC_GPU_INSTALL_KEYS | {'sensevoice'}):
+        from ..system.macos_compatibility import compatibility_problem
+        role = 'mlx' if model.download_key in MLX_DOWNLOAD_KEYS else 'moss' if model.download_key == 'moss' else 'main'
+        if compatibility_problem(role, system=sys.platform):
+            return False
     return not model.platforms or _host_platform_tag() in model.platforms
 
 
@@ -3531,6 +3536,12 @@ class ModelDownloadDialog(QDialog):
             self._finish_with_error(tr('MLX 模型只能在 Apple Silicon（M 系列芯片）的 Mac 上使用；没有开始下载。'))
             return
         if sys.platform == 'darwin':
+            from ..system.macos_compatibility import compatibility_problem
+            role = 'mlx' if set(self.download_keys) & MLX_DOWNLOAD_KEYS else 'moss' if 'moss' in self.download_keys else 'main'
+            problem = compatibility_problem(role, system=sys.platform)
+            if problem:
+                self._finish_with_error(problem)
+                return
             mac_gpu = bool(self.download_keys) and set(self.download_keys) <= MAC_GPU_INSTALL_KEYS
             if mac_gpu and _host_platform_tag() != 'darwin-arm64':
                 self._finish_with_error(tr('MOSS 与 FireRed 需要 Apple 芯片（M 系列）Mac 的 GPU；这台 Mac 没有，没有开始下载。'))
@@ -6474,6 +6485,10 @@ class ModelWorkshopPage(QWidget):
         if state=='platform_unverified':return '当前平台未验证',False
         if model.key in self._removing: return '正在永久删除…', False
         if state == 'platform_unavailable':
+            if sys.platform == 'darwin' and _host_platform_tag() == 'darwin-arm64':
+                from ..system.macos_compatibility import compatibility_problem, MINIMUM_MACOS
+                if compatibility_problem('app', system=sys.platform):
+                    return f'需要 macOS {MINIMUM_MACOS} 或更新版本', False
             if model.platforms or model.download_key in MAC_GPU_DOWNLOAD_KEYS:
                 return '仅限 Apple Silicon Mac', False
             from ..system.platform_macos import macos_copy

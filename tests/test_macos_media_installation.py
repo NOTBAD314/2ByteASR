@@ -84,11 +84,11 @@ def test_packaged_media_checks_the_relocated_tool_with_no_homebrew_path(tmp_path
 def formula(name,installed):
     e=LOCK['media'][name]
     return dict(name=formula_name(name,e),versions=dict(stable=e['version']),revision=e['revision'],
-                bottle=dict(stable=dict(files=dict(arm64_sequoia=e['arm64_sequoia_bottle']))),
+                bottle=dict(stable=dict(files={e['bottle_tag']:e['bottle']})),
                 installed=[dict(version=v) for v in installed])
 
 
-@pytest.mark.parametrize('name,old',[('ffmpeg','9.0.1_1'),('mpv','0.41.0_9')])
+@pytest.mark.parametrize('name,old',[('ffmpeg','9.0.2'),('mpv','0.41.0_10')])
 def test_updated_formula_never_proves_an_old_installed_revision(name,old):
     f=formula(name,[old])
     assert verify_media_formula(f,name,LOCK['media'][name],require_installed=False)['installed_checked'] is False
@@ -114,7 +114,7 @@ def sealed(tmp_path):
         keg=tmp_path/formula_name(name,e)/keg_version(e);(keg/'bin').mkdir(parents=True)
         tab=dict(arch='arm64',poured_from_bottle=True,source=dict(versions=dict(stable=e['version']),tap_git_head=LOCK['homebrew_core']['commit']))
         rp=keg/'INSTALL_RECEIPT.json';rp.write_text(json.dumps(tab),'utf8')
-        entry=dict(keg=str(keg),receipt_sha256=digest(rp),archive=dict(sha256=e['arm64_sequoia_bottle']['sha256'],url=e['arm64_sequoia_bottle']['url']),tools={})
+        entry=dict(keg=str(keg),receipt_sha256=digest(rp),archive=dict(sha256=e['bottle']['sha256'],url=e['bottle']['url']),tools={})
         for binary in (['ffmpeg','ffprobe'] if name=='ffmpeg' else ['mpv']):
             p=keg/'bin'/binary;p.write_bytes(b'owned fixture executable')
             entry['tools'][binary]=dict(path=str(p),path_selected=str(p),sha256=digest(p),architecture='arm64',exit_code=0,version=binary+' '+e['version'])
@@ -145,7 +145,7 @@ def test_acquisition_installation_and_execution_are_separate_checks(tmp_path,cas
     lp,rp,record=sealed(tmp_path);e=record['media']['mpv'];tool=e['tools']['mpv']
     if case=='archive':e['archive']['sha256']='0'*64
     elif case=='architecture':tool['architecture']='x86_64'
-    elif case=='old_keg':e['keg']=str(tmp_path/'mpv/0.41.0_9')
+    elif case=='old_keg':e['keg']=str(tmp_path/'mpv/0.41.0_10')
     elif case=='path':tool['path_selected']=str(tmp_path/'other/mpv')
     else:Path(e['keg'],'INSTALL_RECEIPT.json').write_text('{}','utf8')
     rp.write_text(json.dumps(record),'utf8')
@@ -158,10 +158,10 @@ def test_acquisition_installation_and_execution_are_separate_checks(tmp_path,cas
 
 
 def test_receipt_revision_and_bottle_architecture_are_required(tmp_path):
-    e=LOCK['media']['mpv'];keg=tmp_path/'mpv/0.41.0_10'
-    tab=dict(arch='arm64',poured_from_bottle=True,source=dict(versions=dict(stable='0.41.0'),revision=9))
+    e=LOCK['media']['mpv'];keg=tmp_path/'mpv'/keg_version(e)
+    tab=dict(arch='arm64',poured_from_bottle=True,source=dict(versions=dict(stable='0.41.0'),revision=e['revision']+1))
     with pytest.raises(RuntimeError,match='revision differs'):verify_keg_receipt(tab,keg,'mpv',e)
-    tab['source']['revision']=10;verify_keg_receipt(tab,keg,'mpv',e)
+    tab['source']['revision']=e['revision'];verify_keg_receipt(tab,keg,'mpv',e)
     tab['poured_from_bottle']=False
     with pytest.raises(RuntimeError,match='poured bottle'):verify_keg_receipt(tab,keg,'mpv',e)
 

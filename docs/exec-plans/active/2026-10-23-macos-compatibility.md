@@ -57,3 +57,14 @@ Windows 做純版本、架構、Mach-O 解析及下載契約測試。GUI、Metal
 - 無 Developer ID / 公證身分。
 
 - M1：純 Python Mach-O 掃描器 8 項測試通過（SDK/target、fat slices、損壞資料、架構與外部依賴）；實際原包掃描為靜態證據。Windows 解開 DMG 跳過符號連結，不宣稱可在此重包或安裝。
+
+## M2 程式與建置修正（2026-10-23）
+
+- 最低版本與架構共用純標準庫判斷（保留 patch，比較數字 tuple）；候選目標 14.0 / 原生 arm64，沒有宣稱 Intel / Universal 2。MLX 缺 Metal 不再靜默切 CPU。
+- GUI / CPU 固定原版實際解析的 121 個依賴；Python / uv 下載後、各模型 runtime 安裝後、最終 app 及 DMG 打包前都讀取原生二進位，超門檻或錯誤架構即停止。目標設定只用於本輪從原始碼編譯的部分，不覆寫預編譯版本標記。
+- 媒體整個 runtime dependency closure 取自同一官方 core 快照，不能沿用 runner 預裝高門檻函式庫；macOS 14 建置，15 用同一 DMG 做回歸。
+- 模型選擇／下載先檢查條件；原生探測仍在 worker。啟動前留 host / 架構 / Rosetta / 套件 / build 診斷，回報問題包加入同一資訊。DMG 附啟動失敗診斷 command，不修改隔離屬性或信任設定。
+- 更新沿用 Ed25519 簽章清單，增加 macos_installers；Mac 只選符合完整系統版本、架構及 runtime contract 的完整 DMG，不使用 Windows 元件更新。舊客戶端不理解新欄位，仍會指向 Windows Setup；需手動安裝此次候選遷移，不能聲稱改新欄位能修好舊客戶端。
+- 本機純契約與更新回歸 118 項、媒體 worker / desktop 邊界 10 項、診斷整合 10 項通過。模型工坊 31、GUI 準備 11、MLX 13 項逐檔通過；更新視窗 5 項、平台 16 項通過／1 平台跳過。均非 Mac 執行證據。
+- 已拆開官方 mlx 0.32.3 / mlx-metal 0.32.3 的 macosx_14_0_arm64 wheels，3 個 Mach-O 下限都是 14.0.0，SDK 26.5.0；mlx-audio 0.5.8 為純 Python。完整模型流程仍需原生執行。
+- 使用者已確認目前沒有可測 Mac；14.4.1 實機驗收繼續標為尚未測試。CI 的 14.x 不冒充 14.4.1。

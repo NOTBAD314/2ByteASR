@@ -103,6 +103,17 @@ def main() -> int:
     data_root = user_data_root()
     data_root.mkdir(parents=True, exist_ok=True)
     os.chdir(data_root)
+    from twobyteasr.system.macos_compatibility import require_compatible, write_startup_diagnostics
+    # Before Qt / AV / GPU imports. Worker diagnostics have independent names
+    # so a media child cannot overwrite the main process's startup evidence.
+    worker = len(sys.argv) > 1 and sys.argv[1] not in ('--macos-startup-smoke',)
+    diagnostic = data_root/'logs'/('macos-worker-'+str(os.getpid())+'.json' if worker else 'macos-startup.json')
+    write_startup_diagnostics(ROOT, diagnostic, stage='before_native_imports')
+    try:
+        require_compatible('app')
+    except RuntimeError as exc:
+        write_startup_diagnostics(ROOT, diagnostic, stage='incompatible_host', error=str(exc))
+        raise
     # Frozen media children inherit the parent's guarded audit environment.
     # Dispatch them before creating QApplication, first-run dialogs or settings;
     # they own their native decoder/audio event loop and never enter GUI audit.

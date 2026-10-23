@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from scripts.macos_media_contract import digest,keg_version,formula_name,verify_media_formula,verify_keg_receipt,verify_binary_evidence,verify_required_filters
+from scripts.macos_media_contract import digest,keg_version,formula_name,bottle_spec,verify_media_formula,verify_keg_receipt,verify_binary_evidence,verify_required_filters
 
 
 def install_action(formula: dict) -> str:
@@ -57,8 +57,8 @@ def main(argv=None):
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--lock',type=Path,default=ROOT/'packaging/macos/native-dependencies.lock.json')
     args=parser.parse_args(argv)
-    if sys.platform!='darwin' or platform.machine()!='arm64' or platform.mac_ver()[0].split('.')[0]!='15':
-        raise SystemExit('The locked arm64_sequoia bottles require a native macOS 15 arm64 host')
+    if sys.platform!='darwin' or platform.machine()!='arm64' or platform.mac_ver()[0].split('.')[0]!='14':
+        raise SystemExit('Build the locked Sonoma dependency closure on native macOS 14 arm64; newer-OS execution checks reuse that same DMG')
     out=args.output.resolve()
     if 'tmp' not in {p.lower() for p in out.parts} or out.exists():raise SystemExit('Use a fresh isolated tmp media directory')
     out.mkdir(parents=True)
@@ -105,16 +105,33 @@ def main(argv=None):
                 declaration=verify_media_formula(formula,name,expected,require_installed=False)
                 record['media'][name]=dict(declaration=declaration,installed_before=formula.get('installed',[]),action=install_action(formula))
             if set(record['media'])!=set(lock['media']):raise RuntimeError('Incomplete selected formula identities')
+            # The old builder kept preinstalled transitive libraries. One such
+            # tesseract library raised v0.8.3 to macOS 15.7.9 despite a 15.0 plist.
+            # A fresh CI host is disposable; replace only the media dependency
+            # closure, using the same official core snapshot and Sonoma bottles.
+            dependencies=command([brew,'deps','--topological','--formula',*selected_names]).splitlines()
+            dependencies=list(dict.fromkeys(name.strip() for name in dependencies if name.strip() and name.strip() not in selected_names))
+            dependency_info=json.loads(command([brew,'info','--json=v2',*dependencies])) if dependencies else {'formulae':[]}
+            by_name={formula['name']:formula for formula in dependency_info['formulae']}
+            record['dependency_bottles']=[]
+            for name in dependencies:
+                formula=by_name[name]
+                bottle=formula.get('bottle',{}).get('stable',{}).get('files',{}).get(core['bottle_tag'])
+                if not bottle:raise RuntimeError('No locked Sonoma dependency bottle: '+name)
+                record['dependency_bottles'].append(dict(name=name,version=formula['versions']['stable'],revision=formula['revision'],bottle=bottle))
+            save()
+            for name in dependencies:
+                command([brew,install_action(by_name[name]),'--force-bottle',name])
             record['stage']='fetch_selected_bottles';save()
             command([brew,'fetch','--bottle-tag='+core['bottle_tag'],*selected_names])
             for name,expected in lock['media'].items():
                 selected_name=formula_name(name,expected)
                 archive=Path(command([brew,'--cache','--bottle-tag='+core['bottle_tag'],selected_name]))
-                if digest(archive)!=expected['arm64_sequoia_bottle']['sha256']:raise RuntimeError('Downloaded bottle digest differs: '+name)
+                if digest(archive)!=bottle_spec(expected)['sha256']:raise RuntimeError('Downloaded bottle digest differs: '+name)
                 with tarfile.open(archive) as bundle:
                     roots={m.name.split('/')[1] for m in bundle if len(m.name.split('/'))>=2 and m.name.split('/')[0]==selected_name}
                     if roots!={keg_version(expected)}:raise RuntimeError('Bottle pkg_version differs: '+name)
-                record['media'][name]['archive']=dict(path=str(archive),bytes=archive.stat().st_size,sha256=digest(archive),url=expected['arm64_sequoia_bottle']['url'],tag=core['bottle_tag'])
+                record['media'][name]['archive']=dict(path=str(archive),bytes=archive.stat().st_size,sha256=digest(archive),url=bottle_spec(expected)['url'],tag=core['bottle_tag'])
             record['stage']='homebrew_pour_and_relocate';save()
             for name,expected in lock['media'].items():command([brew,record['media'][name]['action'],'--force-bottle',formula_name(name,expected)])
             after=json.loads(command([brew,'info','--json=v2',*selected_names]))

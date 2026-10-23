@@ -11,18 +11,15 @@ import hashlib
 import json
 import plistlib
 import struct
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from twobyteasr.system.macos_compatibility import parse_macos_version as version
 
 MAGICS = {bytes.fromhex(x) for x in (
     'feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca')}
 CPU = {7: 'i386', 0x1000007: 'x86_64', 12: 'arm', 0x100000C: 'arm64'}
-
-
-def version(value: str) -> tuple[int, int, int]:
-    parts = str(value).split('.')
-    if not 1 <= len(parts) <= 3 or any(not p.isascii() or not p.isdecimal() for p in parts):
-        raise ValueError('Invalid macOS version: ' + repr(value))
-    return tuple([int(p) for p in parts] + [0] * (3 - len(parts)))
 
 
 def packed_version(value: int) -> str:

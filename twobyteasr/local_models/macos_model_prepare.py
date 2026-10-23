@@ -199,17 +199,35 @@ def _child_environment() -> dict:
     from twobyteasr.system.processes import external_python_environment
     environment = external_python_environment()
     environment.update(PYTHONUTF8='1', PYTHONIOENCODING='utf-8', **{'2BYTEASR_CPU_ONLY': '1'})
+    from ..system.macos_compatibility import MINIMUM_MACOS
+    environment['MACOSX_DEPLOYMENT_TARGET'] = MINIMUM_MACOS
     return environment
+
+
+def verify_runtime_binaries(directory: Path) -> None:
+    """Check downloaded bytes before executing Python/uv or loading a backend."""
+    from scripts.macos_binary_audit import audit_tree
+    from ..system.macos_compatibility import MINIMUM_MACOS
+    audit = audit_tree(directory, arch='arm64', target=MINIMUM_MACOS, allow_external=True)
+    (directory/'binary-compatibility.json').write_text(json.dumps(audit,ensure_ascii=False,indent=2)+'\n','utf8')
+    if not audit['passed']:
+        first = audit['errors'][0]
+        raise RuntimeError('运行环境不符合 macOS 系统或架构要求：' + json.dumps(first,ensure_ascii=False))
 
 
 def _bootstrap_interpreter(managed: Path, lock: dict, environment: dict, *, python: str = 'python') -> tuple[Path, Path]:
     """Verified uv and CPython arm64 from the bootstrap lock (``python``: 3.10, ``python312``: MOSS)."""
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('moss' if python == 'python312' else 'main', system=sys.platform)
+    if lock.get('target') != 'darwin-arm64':
+        raise RuntimeError('Bootstrap architecture does not match the native Apple Silicon package')
     emit('tools_preparing')
     uv_root = managed / 'tools' / ('uv-' + lock['uv']['version'])
     # Re-extract from the verified cache before executing a tool;
     # an executable left by a failed attempt is not trusted alone.
     extract_archive(download_archive(lock['uv'], managed / 'bootstrap-cache'), uv_root)
     uv = uv_root / lock['uv']['member']
+    verify_runtime_binaries(uv_root)
     uv.chmod(uv.stat().st_mode | 0o700)
     emit('interpreter_preparing')
     spec = lock[python]
@@ -218,6 +236,7 @@ def _bootstrap_interpreter(managed: Path, lock: dict, environment: dict, *, pyth
     base = python_root / ('python/bin/python' + '.'.join(spec['version'].split('.')[:2]))
     if not base.is_file():
         raise RuntimeError('Verified Python archive has no native interpreter')
+    verify_runtime_binaries(python_root)
     run([base, '-I', '-c', 'import sys,platform; assert platform.machine()=="arm64"; assert platform.python_version()=="' + spec['version'] + '"'], cwd=managed, environment=environment)
     return uv, base
 
@@ -234,7 +253,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     requirements = root / 'packaging/macos/requirements-cpu.txt'
     identity = dict(target=lock['target'], python=lock['python'], uv=lock['uv'],
                     pip=lock['pip'], requirements={path.name: sha256(path) for path in (
-                        requirements, root / 'packaging/macos/requirements-gui.txt',
+                        requirements, root / 'packaging/macos/requirements-gui.txt', root / 'packaging/macos/constraints-cpu.txt',
                         root / 'packaging/macos/native-dependencies.lock.json')})
     signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
     runtime = managed / 'main' / ('macos-cpu-' + signature)
@@ -271,6 +290,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     pending_proof = proof_path.with_suffix('.pending')
     pending_proof.write_text(json.dumps(proof, indent=2), encoding='utf8')
     os.replace(pending_proof, proof_path)
+    verify_runtime_binaries(runtime)
     if not check_runtime(runtime_python, root, exact_python=lock['python']['version']):
         raise RuntimeError('Native CPU runtime probe failed; previous registration was preserved')
     payload = dict(identity, signature=signature, role='main', models=list(models),
@@ -284,6 +304,8 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
 def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> Path:
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise RuntimeError('SenseVoice CPU preparation requires native Apple Silicon macOS')
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('main', system=sys.platform)
     from twobyteasr.runtime_paths import user_data_root
     from twobyteasr.system.runtime_registry import register_runtime, resolve_runtime_python
     from twobyteasr.repository_download import preparation_lock
@@ -473,6 +495,7 @@ def ensure_moss_runtime(root: Path, managed: Path, lock: dict, environment: dict
                            cwd=requirements.parent, environment=environment)
     run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
     source_digest = install_moss_source(root, runtime)
+    verify_runtime_binaries(runtime)
     if not check_moss_runtime(runtime_python, root):
         raise RuntimeError('MOSS 运行库检查失败；之前的登记保持不变')
     receipt = runtime / 'managed-runtime.json'
@@ -507,6 +530,8 @@ def prepare_local(root: Path, *, models: Path, source: str, keys, register: bool
         keys = tuple(dict.fromkeys(keys + ('firered_vad', 'speaker_embedding')))
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise RuntimeError('MOSS 与 FireRed 只能在 Apple 芯片（M 系列）的 Mac 上运行')
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('moss', system=sys.platform)
     from twobyteasr.runtime_paths import MODEL_ROOT_ENV, user_data_root
     from twobyteasr.system.runtime_registry import register_runtime
     from twobyteasr.repository_download import preparation_lock
@@ -590,7 +615,9 @@ def check_mlx_runtime(python: Path, root: Path) -> bool:
         if result.returncode:
             return False
         payload = json.loads(result.stdout.strip().splitlines()[-1])
-        return bool(payload.get('ok')) and payload.get('machine') == 'arm64'
+        return (bool(payload.get('ok')) and payload.get('machine') == 'arm64'
+                and payload.get('metal_available') is True and payload.get('mlx_version') == '0.32.3'
+                and payload.get('mlx_audio_version') == '0.5.8')
     except (OSError, ValueError, IndexError, RuntimeError, subprocess.TimeoutExpired):
         return False
 
@@ -640,11 +667,8 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
     keys = tuple(dict.fromkeys(keys))
     if not keys or not set(keys) <= set(MLX_MODEL_KEYS):
         raise ValueError('unknown MLX model keys: ' + ','.join(keys))
-    if sys.platform != 'darwin' or platform.machine() != 'arm64':
-        raise RuntimeError('MLX 只能在 Apple Silicon（M 系列芯片）的 Mac 上运行')
-    release = tuple(int(part) for part in (platform.mac_ver()[0] or '0').split('.')[:2] if part.isdigit())
-    if release and release < (14,):
-        raise RuntimeError('MLX 运行库需要 macOS 14 或更新版本（当前 ' + platform.mac_ver()[0] + '）')
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('mlx', system=sys.platform)
     from twobyteasr.runtime_paths import user_data_root
     from twobyteasr.system.runtime_registry import register_runtime, resolve_runtime_python
     from twobyteasr.repository_download import preparation_lock
@@ -685,6 +709,7 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
                                         'install', '--require-hashes', '--only-binary', ':all:', '--report', report,
                                         '-r', requirements.name], cwd=requirements.parent, environment=environment)
                 run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
+                verify_runtime_binaries(runtime)
                 if not check_mlx_runtime(runtime_python, root):
                     raise RuntimeError('MLX 运行库探测失败（需要 Apple Silicon 与 Metal）；之前的登记保持不变')
                 receipt = runtime / 'managed-runtime.json'
