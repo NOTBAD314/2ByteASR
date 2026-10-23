@@ -27,6 +27,16 @@ def install_action(formula: dict) -> str:
     return 'reinstall' if formula.get('installed') else 'install'
 
 
+def dependency_bottle(formula: dict, tag: str) -> dict:
+    # Data-only formulae such as ca-certificates ship an architecture-neutral
+    # "all" bottle. Never substitute a bottle for a different OS or CPU.
+    bottles=formula.get('bottle',{}).get('stable',{}).get('files',{})
+    selected=bottles.get(tag) or bottles.get('all')
+    if not selected:
+        raise RuntimeError('No locked '+tag+' dependency bottle: '+formula['name'])
+    return selected
+
+
 @contextlib.contextmanager
 def isolated_core_checkout(core_path: Path,selected: Path,boundary: Path):
     """Keep the runner's entire tap, including deliberate image modifications.
@@ -116,8 +126,7 @@ def main(argv=None):
             record['dependency_bottles']=[]
             for name in dependencies:
                 formula=by_name[name]
-                bottle=formula.get('bottle',{}).get('stable',{}).get('files',{}).get(core['bottle_tag'])
-                if not bottle:raise RuntimeError('No locked Sonoma dependency bottle: '+name)
+                bottle=dependency_bottle(formula,core['bottle_tag'])
                 record['dependency_bottles'].append(dict(name=name,version=formula['versions']['stable'],revision=formula['revision'],bottle=bottle))
             save()
             for name in dependencies:

@@ -80,6 +80,8 @@ jobs:
     # existing stop-usage budgets were checked. No automatic retry or cache.
     # 2026-10-14: the runner is selectable; the job can be switched off.
     if: ${{ inputs.run_app_checks }}
+    outputs:
+      has_installer: ${{ steps.dmg.outcome == 'success' }}
     runs-on: ${{ inputs.app_runner || 'macos-14' }}
     # 24 before 2026-10-13; the optional cloud/MLX checks need up to ~20 more,
     # the optional Studio performance check up to ~35 (2026-10-14).
@@ -308,7 +310,7 @@ jobs:
 
   same-candidate-newer-macos:
     needs: native-arm64
-    if: ${{ always() && inputs.run_app_checks }}
+    if: ${{ always() && inputs.run_app_checks && needs.native-arm64.outputs.has_installer == 'true' }}
     runs-on: macos-15
     timeout-minutes: 45
     defaults:

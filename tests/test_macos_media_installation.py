@@ -11,6 +11,15 @@ from scripts.macos_install_media import install_action,isolated_core_checkout
 LOCK=json.loads((Path(__file__).resolve().parents[1]/'packaging/macos/native-dependencies.lock.json').read_text('utf8'))
 
 
+def test_dependency_closure_accepts_data_only_all_bottle_but_not_other_os():
+    from scripts.macos_install_media import dependency_bottle
+    formula={'name':'ca-certificates','bottle':{'stable':{'files':{'all':{'sha256':'a'*64}}}}}
+    assert dependency_bottle(formula,'arm64_sonoma')['sha256']=='a'*64
+    formula['bottle']['stable']['files']={'arm64_sequoia':{'sha256':'b'*64}}
+    with pytest.raises(RuntimeError,match='No locked'):
+        dependency_bottle(formula,'arm64_sonoma')
+
+
 def test_full_formula_identity_and_keg_only_tools_cannot_be_replaced_by_plain_ffmpeg(tmp_path):
     expected=LOCK['media']['ffmpeg']
     selected=formula('ffmpeg',[keg_version(expected)])
