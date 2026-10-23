@@ -1,6 +1,6 @@
 # 0146：Mac 支援範圍由最終原生檔案與獨立執行證據決定
 
-日期：2026-10-23。狀態：採用；候選執行驗收未完成。
+日期：2026-10-23。狀態：採用；候選基礎流程已在 14.8.9／15.7.9 驗證，精確 14.4.1 與實機條件仍待驗。
 
 ## 問題
 
@@ -28,3 +28,9 @@ QtEmbeddedVideoSurface 按 slot 0（影片）、1（字幕）、2 / 3（變換�
 
 
 MLX 的 14 / 15 / 26 wheels 是選用執行庫的主機變體。App 本體仍以 14.0 守門，下載後的 MLX 變體則以使用者目前的完整 OS 版本驗證；執行庫目錄身分包含該版本，重用前查其原生下限，避免降級系統後保留不相容的 wheel。已有較低下限、版本正確且探測成功的執行庫可繼續使用。
+
+## 隔離驗收也不得替 headless worker 載入 GUI
+
+2026-10-24：`TWOBYTEASR_TEST_ROOT` 的初始化立即設定資料、模型、快取與 token 隔離，但不得主動匯入 Qt。外部模型環境可能看見 App resource path 中不完整的 PySide6 namespace；即使沒有安裝 Qt，主動匯入也可能在 Shiboken 原生層中止，而不是拋出可捕捉的 ImportError。QSettings 隔離改由延後載入鉤子在 QtCore 真正被程式使用時套用，已載入 Qt 時則直接套用；保留資料與下載目標守門。
+
+診斷同樣區分能力和執行：主機支援 MPS 不等於 SenseVoice 使用 MPS；worker 未回報裝置時記 unknown，不因成功返回字幕就填 CUDA。建置環境套件版本記在 `build_python_packages`，GUI 實際 distribution metadata 另記，排除的 AI 套件不冒充 GUI 隨包模組。

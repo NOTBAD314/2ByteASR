@@ -1,5 +1,7 @@
 # macOS Apple Silicon 实验版（0.7.1）
 
+2026-10-23：以下是 0.7.1 发布时的历史说明。当前公开 0.8.3 的完整媒体依赖门槛为至少 15.7.9；另有原生 arm64／14.0 静态门槛的 Sonoma 候选，已在 14.8.9 与 15.7.9 验证基础流程，精确 14.4.1 尚待实机。请以[当前版本与功能矩阵](macos-compatibility.zh-TW.md)选包，不将历史的模型结果移植为本轮结论。
+
 0.7.1 起 GitHub Release 提供 Mac 安装包 `2ByteASR-0.7.1-macos-arm64-Setup.dmg`。它和 Windows 安装包出自同一个发布提交（tag `v0.7.1`）。**这是实验版**：只在 GitHub 提供的 macOS 15 虚拟 Mac 上用安装版检查过，没有在实体 Mac 上测过。
 
 ## 适用范围

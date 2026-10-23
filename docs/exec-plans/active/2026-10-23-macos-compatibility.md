@@ -16,12 +16,15 @@
 - [x] 修正實際依賴，最終 app / runtime 的 Mach-O 掃描守門。
 - [x] 選擇與下載前檢查模型條件，原生探測隔離。
 - [x] 更新不選錯系統或架構，核對舊客戶端。
-- [ ] 候選 DMG 與安裝說明、真實回執；缺少的真機測試具體列明。
-- [ ] 聚焦回歸通過；支援文件、矩陣與現狀符合證據。
+- [x] 候選 DMG 與安裝說明、真實回執；缺少的真機測試具體列明。
+- [x] 聚焦回歸通過；支援文件、矩陣與現狀符合證據。
+- [ ] 精確 macOS 14.4.1／M3 Max 真機驗收，以及 Developer ID／公證；目前沒有可用條件，保留 active。
 
 ## Current state
 
-候選 ba23be11 已在 14.8.9 與 15.7.9 用同一 DMG 完成基礎流程與像素驗收；325 項原生測試通過。公開 v0.8.3 的真實完整媒體下限為至少 15.7.9，詳細身分與靜態檔案見 Findings。精確 14.4.1 / 13 / 12 / Intel Mac、Developer ID / 公證仍不可取得，不能宣稱完成這些驗收。已安裝版 MLX／MPS 補測與本地交付進行中；計畫保留 active。
+2026-10-24：候選來源 `0ba0b48dd5b3a7017e1f9c77bfbe5512d0536379`，run 39982963356。同一 DMG 已在 14.8.9／15.7.9 完成基礎與真識別／編輯輸出；MLX 的已安裝下載／載入／樣本與 Metal probe 兩系統均通過，MOSS＋FireRed MPS 全流程在 15.7.9 通過。14 的 8 GB runner 仍在 MPS 小張量回報記憶體不足，未開始下載大型權重，因此整個 run 保留 failure。
+
+本地交付 `releases/0.8.3-macos14-candidate-20261024/`，包含 DMG、同來源 ZIP、SHA256SUMS、安裝回退說明、完整矩陣與原生回執。349 項原生聚焦測試通過；389 個 Mach-O 符合 arm64／14.0 靜態條件。精確 14.4.1／36 GB M3 Max、Developer ID／公證、實體輸入法／聽審／長任務仍未完成。12／13／Intel 不支援本輪包，沒有虛構舊系統通過。共享開發樹的程式與 Windows 日常未由本輪替換。
 
 ## Tasks
 
@@ -85,7 +88,7 @@ Windows 做純版本、架構、Mach-O 解析及下載契約測試。GUI、Metal
 - 同 DMG 在較新 Mac 正常啟動與靜態檢查通過；外部空工程 fixture checker 缺 PySide6 而停止，並非 App 缺依賴。驗證器新增獨立 venv，只供建立 fixture；App 仍用不含該 venv 的最小 PATH。
 - 加入只測既有候選的 frozen MLX/MPS 準備入口（checker 1a46ad77）；App 來源與驗收器來源分開記錄。新增對診斷分類的窄修正，含 arm64 的檔案路徑不再被誤判為架構問題。
 
-- CI 39956542749：自動化基礎流程與較新系統回歸均為 success，但人工檢視上一候選原生截圖發現預覽沒有字幕。原始畫素資料／發布回執都有字幕，整個可見畫布卻被另一 QWidget 的影片重繪蓋住；不能把 CI success 當作完整視覺驗收。
+- CI 39956542749：自動化基礎流程與較新系統回歸均為 success，但逐張檢視上一候選原生截圖發現預覽沒有字幕。原始畫素資料／發布回執都有字幕，整個可見畫布卻被另一 QWidget 的影片重繪蓋住；不能把 CI success 當作完整視覺驗收。
 - 已以 Windows 上強制相同 Qt 路徑的完整隔離 Studio 重現：surface 截圖有雙語、canvas 截圖沒有；專項真實 QWidget 畫素測試改前失敗（應為白色字幕，實際被綠色影片蓋住），改後通過。VideoCompositionScene 在 Qt surface 已擁有影像堆疊時只生成／發布與接收互動，不再重畫影片覆蓋字幕；Windows mpv 分支不變。
 - 增加實際 canvas 暫隱／恢復現有字幕 slot 的同步像素差檢查，暫停畫面必須穩定且真的有可見字幕；同時保留當下字幕圖像與幾何。雙語階段還必須等到翻譯 companion 準備好。這不是注入畫面，也沒有改工程或播放時間。Windows Qt 完整預覽對照有 13,606 個字幕差異像素；該臨時診斷腳本退場碼 1，不當作正常入口流程通過。
 - Qt 預覽與像素回歸 13 項、桌面證據 10 項、影片合成 worker 2 項通過；待下一份 Mac 包取得真正可見的雙語畫面。
@@ -110,3 +113,15 @@ Windows 做純版本、架構、Mach-O 解析及下載契約測試。GUI、Metal
 - 同輪修正既有診斷誤標：SenseVoice readiness 不再把主機 MPS 能力當作實際裝置；PROCESS 只採 worker 回報的 CPU／MPS／CUDA，沒有回報就是 unknown；建置套件清單改名 build_python_packages，與 GUI 實際套件 metadata 分開。識別結果、工程、設定格式不變。
 - 聚焦 61 項通過。擴展檢查另外發現兩個既有問題：Windows 沙箱讀不到真實 LocalAppData，該環境探測斷言未通過；舊 Qwen UTF-8 fixture 缺目前必需的 context／evidence_root 與 PCM policy 回執，已對照 ba23be11 確認原本即過時並修正 fixture。沒有修改或放寬生產 Qwen 校驗。
 - 下一份候選重新打包。工作流在產生 DMG 後自動用該 run 的相同 artifact，在 14／15 啟動已安裝 MLX／MPS 補測；App／checker 身分繼續分開記錄。
+
+- 2026-10-24：新來源 `0ba0b48dd5b3a7017e1f9c77bfbe5512d0536379` 已派送 run `39982963356`，只用標準 Mac runner；建置完成後以同一 artifact 自動補驗基礎、MLX／MPS。前一份 ba23be11 安裝包與回執保存在本機交付目錄並標示為前候選，沒有用它代替新來源驗收。
+
+- 新候選實體 DMG：574734802 bytes，SHA `5f78bb4ba86be0016b8458a826d61427bfb07c1552e0f691781b875a70edd05f`，來源摘要 `cc5ba8b868abe7f6b4e27b5dda6dc964a7d7114348b9c6652df144327b23df02`。389 個原生檔案通過；349 項原生聚焦測試通過／4 平台跳過／1 既有排除。14.8.9 與同包 15.7.9 的安裝、正常啟動、工程、SenseVoice、可見雙語、剪切保存、四種字幕、12 秒成片與透明動效全部通過。新包的 SenseVoice readiness 與實際 PROCESS 都回報 CPU／CUDA false；雙語 PNG 與成片已逐張檢視。
+- 新包在 14.8.9 的 frozen MLX 獨立項目 **passed=true**：正式下載流程、0.6B 真實樣本識別、ForcedAligner 13 個樣本單位與 GPU／Metal worker probe 通過，不再觸發 Qt abort。此 job 因獨立 MPS 小張量仍回報同樣記憶體不足而為 failure；MPS 權重未下載，不取消限制、不重試相同硬體失敗。15.7.9 的新包 MLX／MPS 結果等待該 job 完成。
+
+## 本輪可交付結果（2026-10-24）
+
+- 最後 15.7.9 的新包 MLX／MPS job 為 success，兩後端獨立 passed=true；MPS 正常 GUI 流程含 4 條 measured-words 字幕、保存重開、雙語畫面、字幕與成片、第二項真識別，退出碼 0。原生雙語及成片 PNG 已逐張檢視，並非真人在 M3 Max 操作過。
+- 新 DMG 已下載到交付目錄，SHA 與 producer 完全一致；基礎 14／15 的 162＋115 份回執檔案逐一校驗。新來源 ZIP 174617247 bytes，SHA `39549b994c665bb07f981424edcaab3c2ceda9eb84b875200800cd9edd05013e`。前候選與全部失敗保留，不用新資料覆寫舊包。
+- GitHub Latest 在交付前再次確認仍為 v0.8.3。沒有建立正式 Release、更新公開附件、合入 main 或替換日常。修正在隔離分支分段提交；共享工作區只更新本輪擁有的文件段落與新文件。
+- 文件索引在完整共享工作區執行 build/check；公開來源快照缺少原本的 document-library-overrides.json，不把該快照的缺項冒充驗證通過。精確 14.4.1 的未驗條件仍在，因此不把計畫移入 completed。

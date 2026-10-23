@@ -1,4 +1,20 @@
-# 0.8.1 Docker 版当前状态
+# macOS 相容候選與目前驗證邊界
+
+更新：2026-10-24。
+
+本分支以公開 0.8.3 為底，進行 Mac 相容性修正，Windows 日常與正式 Release 未替換。公開 DMG 僅 arm64，雖宣告 15.0，實際完整媒體最高要求 15.7.9，另有原生預覽字幕被影片重畫覆蓋的缺陷。
+
+候選將實際原生輸入調整為 App 14.0；保留主要依賴版本，真正編譯 Tesseract、選用 ABI 相符的 Remotion 媒體，隨包附五份預編譯 wheels。模型準備、更新選包與早期診斷使用明確系統／架構條件。可選 MLX 按實際主機選取 14 / 15 / 26 wheel，不把後端主機變體混同 App 下限。
+
+同一份 0ba0b48d 候選已在 14.8.9／15.7.9 完成 DMG 安裝、正常啟動、SenseVoice CPU 真識別、實際可見的雙語編輯、保存重開、字幕與 12 秒成片／透明動效。389 個原生檔案通過 14.0 靜態門檻，349 項原生聚焦測試通過。MLX 已安裝入口兩系統通過；15.7.9 的 MOSS＋FireRed MPS 全流程通過。14 的 8 GB CI 在 MPS 小張量回報記憶體不足，整個 run 保留 failure；不能把它當全部功能通過。
+
+本機交付在 `releases/0.8.3-macos14-candidate-20261024/`，包含安裝包、來源與校驗值、矩陣及原生回執。精確 14.4.1／36 GB M3 Max 尚無實機，12／13／Intel 不適用本輪包；實體輸入法／聽審／長任務及 Developer ID／公證仍待驗。
+
+[相容性矩陣與安裝說明](deployment/macos-compatibility.zh-TW.md) · [任務與原始失敗保留](exec-plans/active/2026-10-23-macos-compatibility.md) · [架構決定](adr/0146-macos-native-compatibility-contract.md)。
+
+以下是原有 Docker 歷史記錄，保留日期與驗證邊界。
+
+# 0.8.1 Docker 版历史记录
 
 2026-10-19：本分支将公开 v0.8.1 做成 Linux amd64 / CPU 的浏览器桌面版，镜像已在本机构建并通过真实识别与导出检查。默认推荐 MOSS Pro 云端转写 + Qwen3 本地字级对齐；设置、工程和模型分卷保存。此分支仍使用 0.8.1 发布时的平铺模块，不包含之后的日常版功能。
 

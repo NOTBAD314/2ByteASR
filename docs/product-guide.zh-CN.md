@@ -11,7 +11,7 @@
 | 你的电脑 | 下载这个文件 | 状态 |
 | --- | --- | --- |
 | Windows 10 22H2（19045）或更新，64 位 | [`2ByteASR-Setup-0.7.2.exe`](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.2/2ByteASR-Setup-0.7.2.exe)（约 1 GB） | 正式版 |
-| Mac：Apple 芯片（M1 及以后），macOS 15 或更新 | [`2ByteASR-0.7.2-macos-arm64-Setup.dmg`](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.7.2/2ByteASR-0.7.2-macos-arm64-Setup.dmg)（约 0.5 GB） | 实验版，不支持 Intel Mac |
+| Mac：Apple 芯片（M1 及以后），公开 0.8.3 完整媒体依赖最低 15.7.9 | [`2ByteASR-0.8.3-macos-arm64-Setup.dmg`](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.3/2ByteASR-0.8.3-macos-arm64-Setup.dmg)（约 0.5 GB） | 实验版，不支持 Intel Mac |
 
 [Release 页面](https://github.com/NOTBAD314/2ByteASR/releases/latest)里其他附件的用途：
 
@@ -35,9 +35,9 @@
 
 ## Mac 安装（实验版）
 
-**适用范围：** Apple 芯片（M 系列）、macOS 15 或更新。**不支持 Intel Mac**。建议 16 GB 以上内存，8 GB 的 Mac 没有测过。这个版本只在 GitHub 提供的虚拟 Mac（虚拟 M1、7 GB 内存）上检查过，没有在实体 Mac 上测过。
+**适用范围：** 公开 0.8.3 是原生 Apple 芯片（M 系列）包，plist 要求 15.0，但实际完整媒体依赖最高要求 15.7.9，不能据此承诺 15.0–15.7.8 完整可用。macOS 14.4.1 请使用本轮另行验证的 Sonoma 候选，不能修改版本宣告来运行原包；具体证据见[Mac 相容性说明](deployment/macos-compatibility.zh-TW.md)。**不支持 Intel Mac**。基础流程已在 GitHub 虚拟 Mac 验证，不能当作实体 8 GB Mac 的完整模型承诺；8 GB runner 的 MPS 小张量探测曾因内存不足失败。36 GB M3 Max 的实际性能和长任务仍须本人设备验证。
 
-1. 下载 DMG，可以在“终端”运行 `shasum -a 256 2ByteASR-0.7.2-macos-arm64-Setup.dmg`，和 `SHA256SUMS.txt` 比对。
+1. 下载 DMG，可以在“终端”运行 `shasum -a 256 2ByteASR-0.8.3-macos-arm64-Setup.dmg`，和 `SHA256SUMS.txt` 比对。
 2. 打开 DMG，把 `2ByteASR` 拖进“应用程序”。
 3. 安装包**没有 Developer ID 签名，也没有经过 Apple 公证**。第一次打开时，在 Finder 里按住 Control 点按 App，选“打开”，再在提示里选“打开”。如果仍被拦下，到“系统设置 → 隐私与安全性”，在下方点“仍要打开”。**不需要、也不应该关闭 Gatekeeper 等系统安全设置。**
 4. 以后直接打开即可。

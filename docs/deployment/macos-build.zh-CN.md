@@ -1,13 +1,17 @@
 # macOS 原生开发构建
 
-此页与[普通用户实验版说明](macos-experimental.zh-CN.md)分开。在 macOS 15 Apple Silicon arm64 使用完整可信源码，构建 Python 3.10.11；不是 Windows 交叉构建，不复制宿主 node_modules/EXE/DLL/wheel。
+2026-10-23：当前候选使用固定 Sonoma 媒体闭包、真正重编译的 Tesseract、兼容的完整 Remotion FFmpeg 7.1 媒体组和随包预编译 wheels。普通用户不需要 Homebrew / CMake / 编译器。构建命令沿用下方入口，必须查看新的 `binary-compatibility.json` 和候选执行回执；历史 run 记录不代表本轮完成。[相容性说明](macos-compatibility.zh-TW.md) · [输入来源](../../packaging/macos/MEDIA_INPUTS.md)。
 
-最新私有run36893768101固定source/workflow `61ccea07e22ba8434030a2561779da801b4ad7c4`，真实arm64 `.app.zip` 已生成。媒体/架构/动态库/签名/Unicode解压搬移通过；搬移后二进制和LaunchServices均使用独立profile与 `/usr/bin:/bin:/usr/sbin:/sbin`，应用实际MainWindow/资源回执及退出0通过。GUI SenseVoice文件校验完成但加载worker失败，Home/Studio未执行，真实ZIP保持。
+此页与[普通用户实验版说明](macos-experimental.zh-CN.md)分开。在 macOS 14 Apple Silicon arm64 使用完整可信源码，构建 Python 3.10.11；不是 Windows 交叉构建，不复制宿主 node_modules/EXE/DLL/wheel。
 
-固定输入见 `packaging/macos/native-dependencies.lock.json`、GUI/CPU requirements 和 `bootstrap.lock.json`。关键 wheel 对实际 pip install report 校验版本/SHA；FFmpeg 9.0.2、mpv 0.41.0/revision 10、Node 22.16.0 及 Remotion lock 绑定准确原生输入，漂移即失败。实际 Qt、PyAV、模型运行库和 Chromium 的架构/动态库关系在回执中记录。
+历史私有run36893768101固定source/workflow `61ccea07e22ba8434030a2561779da801b4ad7c4`，真实arm64 `.app.zip` 已生成。媒体/架构/动态库/签名/Unicode解压搬移通过；搬移后二进制和LaunchServices均使用独立profile与 `/usr/bin:/bin:/usr/sbin:/sbin`，应用实际MainWindow/资源回执及退出0通过。GUI SenseVoice文件校验完成但加载worker失败，Home/Studio未执行，真实ZIP保持。
+
+固定输入见 `packaging/macos/native-dependencies.lock.json`、GUI/CPU requirements 和 `bootstrap.lock.json`。关键 wheel 对实际 pip install report 校验版本/SHA；本轮 FFmpeg-full 9.0.1_1、mpv 0.41.0_9、Node 22.16.0、重编译的 Tesseract，以及 Remotion JS / Rust 4.0.513 与同 ABI 的 FFmpeg 7.1 兼容媒体组都绑定准确原生输入，漂移即失败。实际 Qt、PyAV、模型运行库和 Chromium 的架构/动态库关系在回执中记录。
 
 ```bash
-QA_ROOT="$PWD/tmp/macos-native-0.5.0"
+QA_ROOT="$PWD/tmp/macos-native-sonoma"
+export MACOSX_DEPLOYMENT_TARGET=14.0
+export TWOBYTEASR_TEST_ROOT="$QA_ROOT"
 python3.10 scripts/macos_install_media.py --output "$QA_ROOT/media"
 python3.10 scripts/macos_prepare_runtime.py \
   --runtime "$QA_ROOT/runtime" --receipt "$QA_ROOT/runtime.json"
@@ -24,7 +28,7 @@ CI 要求干净40位源码 SHA；`--allow-dirty` 仅显式本地实验并保留�
 
 `macos_desktop_smoke.py` 从普通 GUI 工坊准备单一 SenseVoice，再由首页真实 Start 识别中文，进入 Studio 编辑/剪切/撤销重做/保存重开/四格式及短视频验收。它需要有权使用的短中文输入，不注入识别结果。内部 CI 样本只进入专用私有构建分支，不自动纳入有限公开源码 C。
 
-手动工作流只有 `workflow_dispatch`：一个标准 `macos-15` arm64 job、60分钟、完整 Action revision、`contents: read`、不留 Git 凭据，无生产 Secrets、云端LLM、Release 或缓存发布。只选真实应用 ZIP 和必要浅层回执，不上传模型/runtime/用户缓存；诊断先单独上传，应用超出本次额度仍保留诊断、记录大小和SHA。`maximum_artifact_bytes` 必须来自当次免费计算/存储和零付费预算观察，脚本2GiB防护上限不代表账户额度；保留1天，不调整预算或购买runner。新增提交、分支与运行登记在私有 HANDOFF，不能扩大公开范围。
+手动工作流仅由 `workflow_dispatch` 启动。当前默认在标准 `macos-14` arm64 runner 建置，同一个 DMG 再交给标准 `macos-15` 验证；应用任务最多 100 分钟，较新系统回归 45 分钟，独立已安装模型任务 65 分钟。所有 Action 固定完整 revision，默认只读权限、不保存 Git 凭据、无生产 Secrets 或正式 Release 发布。`candidate_run_id` / `candidate_source_sha` 可复用已有 DMG；`candidate_mlx_only` 仅补测 MLX，结果明确记录请求范围。App 与外部验收器的提交分开记录。只上传有上限的必要回执及 DMG，保留 1 天；不上传模型、运行库与用户缓存。标准公开仓库 runner 与付费 xlarge 要分开，不能自动升级到付费 runner。
 
 MPS 可用性、小 tensor、具体模型、VideoToolbox实际硬件编码和预览后端分别记录。`macos_hardware_probe.py` 真正尝试25帧编码且禁用软件 fallback；失败表明当次 runner 未通过硬件检查，CPU与模型正确性另验。
 

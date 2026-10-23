@@ -20,11 +20,13 @@
 | 你的电脑 | 下载 |
 | --- | --- |
 | **Windows 10 1809 或更新（64 位）**<br>正式版 | **[2ByteASR-Setup-0.8.2.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.2/2ByteASR-Setup-0.8.2.exe)**（约 1 GB）<br>安装程序没有代码签名，Windows 可能提示“未知发布者”，见 [Windows 安装](docs/product-guide.zh-CN.md#windows-安装)。 |
-| **Mac：Apple 芯片（M1 及以后），macOS 15 或更新**<br>**实验版** | **[2ByteASR-0.8.2-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.2/2ByteASR-0.8.2-macos-arm64-Setup.dmg)**（约 0.5 GB）<br>只在 GitHub 的虚拟 Mac 上验证过，**不支持 Intel Mac**；没有经过 Apple 公证，第一次打开见 [Mac 安装](docs/product-guide.zh-CN.md#mac-安装实验版)。 |
+| **Mac：Apple 芯片（M1 及以后）；公开 0.8.3 完整媒体依赖最低 15.7.9**<br>**实验版** | **[2ByteASR-0.8.3-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.3/2ByteASR-0.8.3-macos-arm64-Setup.dmg)**（约 0.5 GB）<br>只在 GitHub 的虚拟 Mac 上验证过，**不支持 Intel Mac**；没有经过 Apple 公证，第一次打开见 [Mac 安装](docs/product-guide.zh-CN.md#mac-安装实验版)。 |
 
-- **中国大陆下载慢或打不开：** 先从 GitCode 国内镜像下载 [Windows 安装程序](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.2/2ByteASR-Setup-0.8.2.exe) · [Mac 安装包](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.2/2ByteASR-0.8.2-macos-arm64-Setup.dmg)；还不行再用第三方加速站 gh-proxy：[Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.2/2ByteASR-Setup-0.8.2.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.2/2ByteASR-0.8.2-macos-arm64-Setup.dmg)。各来源的文件完全相同，可用 `SHA256SUMS.txt` 核对。
+- **中国大陆下载慢或打不开：** Windows 仍可使用 [GitCode 国内镜像](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.2/2ByteASR-Setup-0.8.2.exe)或 [gh-proxy](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.2/2ByteASR-Setup-0.8.2.exe)。本轮 Mac 0.8.3 仅核对了上述 GitHub 官方附件；镜像是否已同步需另验。下载后与对应版本的 `SHA256SUMS.txt` 比对。
 - **已经装了 0.6.5、0.7.x、0.8.0 或 0.8.1：** 在程序右上角“检查更新”，只下载有变化的部分。0.6.0 及更早版本：直接运行新的安装程序覆盖安装，不要先卸载。
 - **其他附件不用下载。** [Releases 页面](https://github.com/NOTBAD314/2ByteASR/releases/latest)里的 `Source`、`ThirdParty`、`update`、`.sig` 等文件是给源码、许可材料和程序内更新用的。下载后可用 `SHA256SUMS.txt` 核对文件是否完整。
+
+**macOS 14.4.1（包括 M3 Max）**：公开 0.8.3 安装包不符合要求。本轮 Sonoma 相容候选以 macOS 14.0 / 原生 arm64 为目标，尚未取代公开下载；精确 14.4.1 实机仍待验证。见[实际二进位门槛、候选与功能矩阵](docs/deployment/macos-compatibility.zh-TW.md)。
 
 ### Docker（Linux amd64 / CPU）
 
