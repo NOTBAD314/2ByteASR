@@ -169,6 +169,9 @@ def main(argv=None):
                         required=expected.get('required_filters',[])
                         verify_required_filters(filters,required)
                         entry['verified_filters']=required
+        from scripts.macos_compat_native import build_tesseract
+        record.update(stage='rebuild_tesseract_for_target');save()
+        record['compatibility_rebuilds']={'tesseract':build_tesseract(out/'tesseract-compat',lock['compatibility_rebuilds']['tesseract'],environment=env)}
         record.update(stage='verified',passed=True,runner_core_restored=True,selected_core_snapshot=str(selected),environment_used={k:env[k] for k in ('HOMEBREW_NO_AUTO_UPDATE','HOMEBREW_NO_INSTALL_FROM_API','HOMEBREW_NO_INSTALL_CLEANUP','HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK','HOMEBREW_NO_ANALYTICS')})
         (out/'brew-installed.txt').write_text(command([brew,'list','--versions'])+'\n','utf8')
         save();print(json.dumps(dict(passed=True,receipt=str(receipt),core_commit=core['commit'])))

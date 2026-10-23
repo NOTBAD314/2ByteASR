@@ -234,6 +234,15 @@ def main(argv=None):
     if not args.media_receipt:raise RuntimeError("A verified media installation receipt is required")
     from scripts.macos_media_contract import load_verified_tools
     tools=load_verified_tools(args.media_receipt,LOCK)
+    media_record=json.loads(args.media_receipt.read_text('utf8'))
+    rebuild=media_record.get('compatibility_rebuilds',{}).get('tesseract',{})
+    if rebuild.get('source')!=lock['compatibility_rebuilds']['tesseract'] or not rebuild.get('compiled'):
+        raise RuntimeError('The source-built Tesseract compatibility receipt is missing or stale')
+    compatibility_libraries=rebuild.get('libraries',[])
+    if not compatibility_libraries or any(sha256(Path(item['path']))!=item['sha256'] for item in compatibility_libraries):
+        raise RuntimeError('Compiled compatibility library changed')
+    receipt['compatibility_libraries']=compatibility_libraries
+    receipt['compatibility_rebuilds']=media_record['compatibility_rebuilds']
     receipt.update(stage="native_media_verified",native_tools=tools,
                    media_install_receipt_sha256=sha256(args.media_receipt))
     receipt['selected_media_libraries']=[dict(path=str(path),sha256=sha256(path))
@@ -262,6 +271,8 @@ def main(argv=None):
     browser=bundled_browser(source/"renderer",platform="darwin",machine="arm64")
     if not browser.is_file() or "arm64" not in subprocess.check_output(["/usr/bin/lipo","-archs",str(browser)],text=True).split(): raise RuntimeError("Native arm64 Chromium was not prepared")
     tools["browser"]={"path":str(browser),"sha256":sha256(browser),"version":subprocess.check_output([str(browser),"--version"],text=True).strip(),"origin":"locked Remotion ensureBrowser"}
+    from scripts.macos_compat_native import install_renderer_media
+    receipt['renderer_media_compatibility']=install_renderer_media(source/'renderer',output,lock['renderer_media_compatibility'])
     tools["node"]={"path":str(node),"sha256":sha256(node),"version":lock["node"]["version"]}
     receipt["native_tools"]=tools
     receipt["app_icon"]=native_brand_icon(source,output)

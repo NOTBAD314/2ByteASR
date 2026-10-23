@@ -88,5 +88,25 @@ def write_startup_diagnostics(root: Path, destination: Path, *, stage: str, erro
             payload[name] = {k:data[k] for k in ('version','app_version','git_sha','git_dirty','build_channel','source_sha256') if k in data}
         except (OSError, ValueError):
             pass
+    try:
+        build = json.loads((root/'native-build-inputs.json').read_text('utf8'))
+        payload['build_host_macos'] = build.get('macos')
+        payload['bundled_tool_versions'] = {name:value.get('version') for name,value in build.get('native_tools',{}).items()}
+        payload['bundled_python_packages'] = build.get('resolved_python_packages',[])
+    except (OSError,ValueError,AttributeError):
+        pass
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2)+'\n', encoding='utf8')
+
+
+def failure_category(error: str) -> str:
+    text = error.lower()
+    for category, markers in (
+        ('architecture',('incompatible architecture','bad cpu type','rosetta','arm64')),
+        ('missing_library',('library not loaded','image not found','no module named','cannot load library')),
+        ('missing_symbol',('symbol not found','undefined symbol')),
+        ('signature_or_notarization',('code signature','notariz','gatekeeper','quarantine')),
+        ('backend_initialization',('metal','mps','mlx')),
+        ('minimum_system',('macos','deployment target'))):
+        if any(marker in text for marker in markers):return category
+    return 'python_startup'

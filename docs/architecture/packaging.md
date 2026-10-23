@@ -34,3 +34,10 @@ Linux 模型工坊的下载对话框启动 QProcess，执行 container.models，
 固定标签 [v0.8.1-docker.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) 提供源码构建入口；main 首页链接同一使用说明。预构建镜像归档分为 1,500,000,000 与 1,163,312,896 字节两段，每段低于 GitHub 单附件限制。启动包导入器先验证两段与合并归档 SHA-256，再执行 docker load；损坏分片不会被导入。另附对应源码 ZIP、启动 ZIP 和 SHA256SUMS。公开源码 a2a7e2b4 与镜像 76e9bdb7 的 821 项运行源码逐项一致。
 
 这个 Release 不改变桌面版 v0.8.1 的 Latest 标记；不依赖 GHCR / Docker Hub，也没有把模型权重写进镜像。Windows / Linux 重组验证与五个远端附件摘要、匿名下载已通过；仓库原有全量 CI 收集失败仍单列保留。
+
+
+## macOS 14 相容候選（2026-10-23）
+
+Mac build 將原生依賴與功能測試分開守門。打包、DMG 封裝與首次模型環境安裝都檢查實際 Mach-O；`system/macos_compatibility.py` 供選擇、下載與啟動共用系統／架構判斷。高門檻模型維持隔離 worker，不在 GUI 初始化時載入。原生輸入包含目標化編譯的 Tesseract 與 ABI / 符號核對過的 Remotion FFmpeg 媒體組，Windows 輸入保持原樣。
+
+macOS 14 runner 建置出的同一個 DMG 再在 macOS 15 安裝驗證；精確 14.4.1 與實體機仍須獨立證據。Mac 更新只從既有簽章清單的 macos_installers 選完整 DMG，不使用 Windows 元件 ZIP；舊客戶端需要手動遷移。新增決定見 [ADR 0146](../adr/0146-macos-native-compatibility-contract.md)，目前證據與限制見[相容性頁](../deployment/macos-compatibility.zh-TW.md)。

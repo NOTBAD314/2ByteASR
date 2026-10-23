@@ -144,10 +144,14 @@ def mlx_host(worker, monkeypatch, tmp_path):
 
 def test_probe_reports_device_and_versions(worker, monkeypatch, capsys):
     monkeypatch.setattr(sys, 'argv', ['mlx_worker.py', '--mode', 'probe'])
+    # The real mlx-audio 0.5.8 module has no __version__; query wheel metadata.
+    monkeypatch.delattr(sys.modules['mlx_audio'], '__version__', raising=False)
+    monkeypatch.setattr('importlib.metadata.version', lambda name: {'mlx':'0.32.3','mlx-metal':'0.32.3','mlx-audio':'0.5.8'}[name])
     worker.main()
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload['ok'] is True and payload['protocol'] == 'mlx-probe-v1'
     assert payload['metal_available'] is True and payload['mlx_audio_version'] == '0.5.8'
+    assert payload['mlx_metal_version'] == payload['mlx_version'] == '0.32.3'
 
 
 def test_aligner_receipt_has_the_pytorch_contract(mlx_host):

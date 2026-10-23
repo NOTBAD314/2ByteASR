@@ -232,10 +232,14 @@ def main() -> None:
     sys.path.append(str(root))
     if args.mode == "probe":
         import platform
+        import importlib.metadata
         info = _device_info()
         import mlx_audio
         import mlx_audio.stt  # noqa: F401  (the loader both modes use)
-        info["mlx_audio_version"] = getattr(mlx_audio, "__version__", "")
+        # mlx-audio 0.5.8 does not define __version__ in its module.
+        info["mlx_audio_version"] = importlib.metadata.version('mlx-audio')
+        info["mlx_version"] = importlib.metadata.version('mlx')
+        info["mlx_metal_version"] = importlib.metadata.version('mlx-metal')
         payload = {"protocol": "mlx-probe-v1", "ok": True, "python": sys.executable,
                    "machine": platform.machine(), **info}
         if args.output:

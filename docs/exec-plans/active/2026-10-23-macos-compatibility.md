@@ -68,4 +68,11 @@ Windows 做純版本、架構、Mach-O 解析及下載契約測試。GUI、Metal
 - 本機純契約與更新回歸 118 項、媒體 worker / desktop 邊界 10 項、診斷整合 10 項通過。模型工坊 31、GUI 準備 11、MLX 13 項逐檔通過；更新視窗 5 項、平台 16 項通過／1 平台跳過。均非 Mac 執行證據。
 - 已拆開官方 mlx 0.32.3 / mlx-metal 0.32.3 的 macosx_14_0_arm64 wheels，3 個 Mach-O 下限都是 14.0.0，SDK 26.5.0；mlx-audio 0.5.8 為純 Python。完整模型流程仍需原生執行。
 - 使用者已確認目前沒有可測 Mac；14.4.1 實機驗收繼續標為尚未測試。CI 的 14.x 不冒充 14.4.1。
-`n- CI 39944894726 在媒体准备前停下：ca-certificates 使用不分架构的 all 瓶，第一版闭包检查只允许 arm64_sonoma。现已明确允许 all 数据瓶（仍拒绝其他 OS / CPU），新增回归；没有生成候选。未重复相同失败做法。
+
+- CI 39944894726 在媒体准备前停下：ca-certificates 使用不分架构的 all 瓶，第一版闭包检查只允许 arm64_sonoma。现已明确允许 all 数据瓶（仍拒绝其他 OS / CPU），新增回归；没有生成候选。未重复相同失败做法。
+
+- CI 39945165855：macOS **14.8.9** / arm64 的完整媒體安裝與 Python runtime 通過；最終 App 掃描攔下 Tesseract minos 14.8.5、Remotion 的九個 FFmpeg 媒體檔 minos 15.0。沒有生成 DMG；未降低守門條件。實際 261 個平台測試通過，2 個過時 Qt 測試 fixture、1 個被替身強制拒絕平台卻取回空錯誤的測試失敗；已針對 fixture / 訊息修正。Keychain 真實回合通過，VideoToolbox 硬體編碼未通過，保留獨立限制。
+- MLX 新探測誤拒絕：0.5.8 的 mlx_audio 模組沒有 __version__；改為使用實際 distribution metadata，並保留 native stderr / exit code。沒有把失敗改記成成功。
+- 原生輸入修正：Tesseract 5.5.3 從同版官方雜湊鎖來源以 deployment target 14.0 編譯；Remotion JS / Rust 仍為 4.0.513。官方 4.0.400 中的 FFmpeg 仍為 n7.1，九件 minos 13.0；全部 dylib ABI 版本與目前套件相同，現行 Rust compositor 對 FFmpeg 的 63 個符號全在相容媒體中。已用實際原版檔案執行置換工具的靜態驗證（10 個 native objects 通過），還需原生渲染驗收。
+- 新增候選的 12 秒透明動效驗證：使用包內的原始 SubtitleOverlay 元件、Node、Chrome、Rust compositor、FFmpeg，檢查 360 幀、Alpha 與入退場；另讓正常 Studio 流程手動編輯雙語、保存重開、匯出雙語 SRT。這些是驗收，不改使用者字幕或工程格式。
+- 補上 MOSS / FireRed 下載權重前的子程序 MPS 實際精度配置探測；前置原生載入錯誤分類與回報問題附件。最新相關 87 項及 Qt 預覽 12 項測試通過；沒有把合成 host 判斷當作 Mac 實測。

@@ -60,6 +60,7 @@ def main(argv=None):
             raise RuntimeError('Normal installed startup failed')
         run([sys.executable,ROOT/'scripts/verify_blank_project_macos.py','--app',app,'--output',out/'blank-project'],timeout=240)
         run([app/'Contents/MacOS/2ByteASR','--macos-media-smoke',out/'native-media-smoke'],timeout=120)
+        run([sys.executable,ROOT/'scripts/macos_renderer_smoke.py','--app',app,'--output',out/'renderer-smoke'],timeout=660)
         audio=out/'speech.wav'
         run(['/usr/bin/say','-v','Tingting','--data-format=LEI16@16000','-o',audio,
              '今天测试兔白字幕。字幕可以编辑，剪切后保存工程，最后导出视频。'])

@@ -232,6 +232,14 @@ jobs:
         run: |
           set -euo pipefail
           "$MAC_QA_ROOT/build/dist/2ByteASR.app/Contents/MacOS/2ByteASR" --macos-media-smoke "$MAC_QA_ROOT/native-media-smoke"
+      - name: Packaged compositor and transparent 12 second animation
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: renderer_smoke
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; print(json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json"))["installed_app"])')
+          python scripts/macos_renderer_smoke.py --app "$app" --output "$MAC_QA_ROOT/renderer-smoke"
       - name: Actual native video hardware probe with no software fallback
         if: ${{ always() && steps.media.outcome == 'success' && steps.runtime.outcome == 'success' }}
         id: hardware

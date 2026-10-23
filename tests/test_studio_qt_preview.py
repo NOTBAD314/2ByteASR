@@ -173,7 +173,7 @@ def test_windows_shortcut_defaults_are_unchanged(app,monkeypatch):
 def test_single_cue_uses_scene_only_for_raster_only_backend(app,native_supported,expected):
     from twobyteasr.rendering.caption_scene import CaptionScene
     page = QWidget()
-    page.project = SimpleNamespace(render_settings={})
+    page.project = SimpleNamespace(render_settings={},effects={})
     calls = []
     page.video = SimpleNamespace(controller=SimpleNamespace(supports_native_subtitles=native_supported),
                                 clear_caption_boundaries=lambda:calls.append('clear'))
@@ -182,7 +182,7 @@ def test_single_cue_uses_scene_only_for_raster_only_backend(app,native_supported
     page._revision_store = SimpleNamespace(render=None)
     page.position_overlay = SimpleNamespace(_content_rect=lambda:QRectF())
     scene = CaptionScene(page)
-    assert scene.present([SimpleNamespace(id='ordinary')],500) is expected
+    assert scene.present([SimpleNamespace(id='ordinary',effect_id='none')],500) is expected
     assert scene.active is expected
     assert bool(calls) is expected
     scene.close()

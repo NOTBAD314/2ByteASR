@@ -29,6 +29,7 @@ def summarize(root: Path) -> dict:
         export_decode=status(read('desktop-flow/export-validation.json')),
         runtime_identity=status(read('runtime-identity.json')),
         embedded_preview=status(read('native-media-smoke/result.json')),
+        renderer=status(read('renderer-smoke/result.json')),
         hardware=status(read('hardware-probe/result.json'),'hardware_encode_passed'),
         cloud_only=status(read('cloud-only/result.json')),
         keychain=status(read('keychain/result.json')),
@@ -50,6 +51,7 @@ def main(argv=None):
     print(json.dumps(record,ensure_ascii=False))
     if args.enforce:
         required=['runtime_identity','media','app','relocation','startup','dmg','blank_project']+(['model_preparation','home_studio','restart_reuse','export_decode'] if record['model_requested'] else [])+(['cloud_only','keychain','mlx','cloud_mlx'] if record.get('cloud_mlx_requested') else [])
+        if 'renderer' in record:required.append('renderer')
         selection_path=args.qa_root/'artifacts/receipts/artifact-selection.json'
         selection=json.loads(selection_path.read_text('utf8')) if selection_path.is_file() else {}
         delivered=any(row['path'].endswith('.dmg') for row in selection.get('files',[]))

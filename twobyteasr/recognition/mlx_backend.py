@@ -77,7 +77,7 @@ def _run(mode: str, key: str, audio, jobs: list, policy: dict) -> dict:
     from .asr import _run_isolated_asr_worker
     if not platform_supported():
         from ..system.macos_compatibility import compatibility_problem
-        raise MlxUnavailableError(compatibility_problem('mlx'))
+        raise MlxUnavailableError(compatibility_problem('mlx') or 'MLX 需要 Apple Silicon 与可用的原生后端。')
     python = runtime_python()
     if not python:
         raise MlxUnavailableError('还没有准备 MLX 运行环境；请在模型工坊下载 MLX 模型（会同时准备运行环境）。')

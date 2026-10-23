@@ -210,4 +210,17 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        # A missing Qt plugin / dylib may fail before the regular GUI logger.
+        # Keep the existing sanitizer and do not dump environment variables.
+        try:
+            from twobyteasr.diagnostics.event_log import Sanitizer
+            from twobyteasr.system.macos_compatibility import write_startup_diagnostics, failure_category
+            from twobyteasr.runtime_paths import user_data_root
+            write_startup_diagnostics(ROOT,user_data_root()/'logs/macos-startup-failure.json',
+                stage=failure_category(str(exc)),error=type(exc).__name__+': '+Sanitizer().string(str(exc)))
+        except Exception:
+            pass
+        raise

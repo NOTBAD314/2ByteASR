@@ -231,6 +231,7 @@ def mac_prepare(tmp_path, monkeypatch):
     monkeypatch.setattr(prepare, 'physical_memory_bytes', lambda: 16 * 10**9)
     monkeypatch.setattr(runtime_paths, 'user_data_root', lambda: tmp_path / 'profile')
     events = []
+    monkeypatch.setattr(prepare, 'require_mps_runtime', lambda *a, **k: events.append(('mps_probe',k['dtype'])))
     monkeypatch.setattr(runtime_registry, 'register_runtime', lambda role, python, **k: events.append(('register', role)))
     monkeypatch.setattr(prepare, 'ensure_main_runtime', lambda *a, **k: (events.append(('main', k.get('models'))),
                                                                           tmp_path / 'main/bin/python')[1])

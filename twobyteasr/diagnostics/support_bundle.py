@@ -196,6 +196,14 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
     if sys.platform == 'darwin':
         from ..system.macos_compatibility import host_diagnostics
         files['macos-compatibility.json'] = json.dumps(sanitizer.clean(host_diagnostics()),ensure_ascii=False,indent=2).encode('utf8')
+        from ..runtime_paths import user_data_root
+        for name in ('macos-startup.json','macos-startup-failure.json'):
+            path=user_data_root()/'logs'/name
+            try:
+                if path.is_file() and path.stat().st_size <= MAX_ATTACHMENT_BYTES:
+                    files[name]=json.dumps(sanitizer.clean(json.loads(path.read_text('utf8'))),ensure_ascii=False,indent=2).encode('utf8')
+            except (OSError,ValueError):
+                pass
     if content:
         # Only explicitly previewed/selected rows. Never read the project file here.
         selected=[{k:sanitizer.string(v) if isinstance(v,str) else sanitizer.clean(v,k) for k,v in row.items() if k in {"subtitle_id","text","translation","start_ms","end_ms"}} for row in content[:50]]

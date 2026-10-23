@@ -155,5 +155,33 @@
     }
   },
   "platform_materials_complete": false,
-  "native_validation_executed": false
+  "native_validation_executed": false,
+  "compatibility_rebuilds": {
+    "tesseract": {
+      "version": "5.5.3",
+      "url": "https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.3.tar.gz",
+      "sha256": "9218e62793116d42a9f6d14cd9348518b27f382096eea3d0f2d1a24616bb5884",
+      "source_directory": "tesseract-5.5.3",
+      "minimum_macos": "14.0"
+    }
+  },
+  "renderer_media_compatibility": {
+    "consumer_version": "4.0.513",
+    "source_package_version": "4.0.400",
+    "ffmpeg_version": "7.1",
+    "url": "https://registry.npmjs.org/@remotion/compositor-darwin-arm64/-/compositor-darwin-arm64-4.0.400.tgz",
+    "sha256": "133b34eb45ae8bb5e505be4d349fe6ce41db6e51b8729529bf210139a09bf469",
+    "npm_integrity": "sha512-Vq7fcrVvq+2VAnXUoRKdHfMdYSUyH5WEA3XqFtg2qTEfBCeffbL/XCXUumtcexeNWNJszu52V4XyBusFKtGo5w==",
+    "files": {
+      "ffmpeg": "bdab41e23ecd1c16ce3330318993c633ed6a52a1cf489e589866937e776be319",
+      "ffprobe": "1da19b94c960aa3f14ca5f0b2dfa599cde2f94298a68a1a26c6e593b6e92d132",
+      "libavcodec.dylib": "084202ac6475d6fc18549cbbff1d984d69253ba0463b03c9f5d0ef34db514d48",
+      "libavdevice.dylib": "35be5fa688e36457ddb49412d9e816a4fb26b125baa43d54d9deb6e4da599685",
+      "libavfilter.dylib": "1f5e84444fee4b8467c92f61fbe587854256647da345e52d0a327b907e521146",
+      "libavformat.dylib": "9d14e3e4f4800181454174954b69ae88c269ffa0b2aff60ea2e3a5b6c7d118aa",
+      "libavutil.dylib": "bba2b19a01b2ca9d74a2573ec7d329f9e7c655c6e85e4dcd74d422b7f8cda66e",
+      "libswresample.dylib": "cbb334ff7bfdeaa239e99f7d58100648ef670e7c988cdbf5066350130293f3d7",
+      "libswscale.dylib": "d198d1fe653e2ad49b020372bdbecca9ad52db565902ba72033946ff05a154b6"
+    }
+  }
 }

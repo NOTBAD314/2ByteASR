@@ -35,6 +35,7 @@ binaries=[(native['native_tools']['node']['path'],'tools/node'),
 # mpv's standard FFmpeg dependency shares these basenames. Explicit selected
 # full-build libraries precede discovered dependencies in Analysis's TOC.
 binaries.extend((str(path),'.') for path in selected_media_libraries(Path(native['native_tools']['ffmpeg']['path'])))
+binaries.extend((item['path'],'.') for item in native['compatibility_libraries'])
 # QVideoSink uses Qt's native multimedia decoder plugin. Collect the precise
 # plugin class explicitly, while Analysis handles its linked libraries.
 binaries.extend(get_qt_library_info('PySide6').collect_plugins('multimedia'))

@@ -1,4 +1,13 @@
-# macOS 媒体输入：2026-10-02 功能修订
+# macOS 媒體輸入：2026-10-23 Sonoma 相容候選
+
+本輪固定來源為 core `252c29dbece147fa170e1755c0d68c18ffe3d651` 的 arm64_sonoma 瓶，FFmpeg-full 9.0.1_1、mpv 0.41.0_9；整個 runtime dependency closure 重裝，資料型 `all` 瓶另行允許。原有 full 濾鏡、動態連結重定位與歸檔驗證保留。
+
+實際 minos 掃描發現 Sonoma Tesseract 瓶仍需 14.8.5，故以官方 5.5.3 原始碼和固定 SHA-256 編譯到 14.0，ABI 5 函式庫由 spec 明確選入。Remotion JS / Rust 4.0.513 保持；其配套 FFmpeg 7.1 的九檔原生媒體取自官方 4.0.400 壓縮包，minos 13.0，所有檔案 SHA、dylib ABI 版本與 63 個現行 Rust 匯入符號都需吻合。只在隔離建置快照套用，沒有改寫 Mach-O 最低版本標記。
+
+來源、雜湊與成員檔案見 `native-dependencies.lock.json`；建置工具 `macos_compat_native.py`；最終 App 和 12 秒透明動效另有靜態與執行守門。[本輪支援範圍](../../docs/deployment/macos-compatibility.zh-TW.md)。以下保留歷史輸入與證據，不能當成本輪已驗收。
+
+## 2026-10-02 功能修訂（歷史）
+
 
 原锁标准 ffmpeg9.0.2_0 的实际搬移包在 run36969434185 压制时报告 No such filter: ass。Studio编辑保存与四格式字幕回读均通过，这个失败属于媒体功能输入，不是模型或字幕文件失败。
 

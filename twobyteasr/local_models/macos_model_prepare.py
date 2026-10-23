@@ -179,6 +179,7 @@ def check_runtime(python: Path, root: Path, *, exact_python: str | None = None) 
         result = subprocess.run([str(python), '-I', '-c', probe], cwd=root, capture_output=True,
                                 text=True, timeout=120, env=_child_environment())
         if result.returncode:
+            print('[运行库探测] 子程序退出码 ' + str(result.returncode) + '：' + (result.stderr or result.stdout)[-600:],flush=True)
             return False
         if exact_python and json.loads(result.stdout.splitlines()[-1])['python'] != exact_python:
             return False
@@ -213,6 +214,25 @@ def verify_runtime_binaries(directory: Path) -> None:
     if not audit['passed']:
         first = audit['errors'][0]
         raise RuntimeError('运行环境不符合 macOS 系统或架构要求：' + json.dumps(first,ensure_ascii=False))
+
+
+def require_mps_runtime(python: Path, root: Path, *, dtype: str) -> None:
+    """Probe actual Metal allocation in a child before downloading GPU weights."""
+    if dtype not in ('float16','bfloat16'):
+        raise ValueError('Unsupported MPS probe dtype')
+    script = ('import torch,json; assert torch.backends.mps.is_available(), "MPS unavailable"; '
+              f'x=torch.ones(1,device="mps",dtype=torch.{dtype}); '
+              'y=x+x; torch.mps.synchronize(); assert y.cpu().item()==2; '
+              f'print(json.dumps(dict(ok=True,device="mps",dtype="{dtype}",torch=torch.__version__)))')
+    try:
+        result = subprocess.run([str(python),'-I','-c',script],cwd=root,env=_child_environment(),
+                                capture_output=True,text=True,timeout=180)
+    except (OSError,subprocess.TimeoutExpired) as exc:
+        raise RuntimeError('Apple GPU 探测无法完成；尚未下载模型权重，CPU / 云端没有自动启用。') from exc
+    if result.returncode:
+        raise RuntimeError(f'Apple GPU（MPS {dtype}）不可用，探测退出码 {result.returncode}；尚未下载模型权重。'
+                           + (result.stderr or result.stdout)[-500:])
+    print('[后端探测] '+result.stdout.strip(),flush=True)
 
 
 def _bootstrap_interpreter(managed: Path, lock: dict, environment: dict, *, python: str = 'python') -> tuple[Path, Path]:
@@ -447,7 +467,7 @@ def check_moss_runtime(python: Path, root: Path) -> bool:
             return False
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         print('[运行库] MOSS 运行库：Python ' + payload['python'] + '，Apple GPU（MPS）'
-              + ('可用' if payload['mps'] else '不可用，将用 CPU'), flush=True)
+              + ('可用' if payload['mps'] else '不可用，尚未下载模型权重'), flush=True)
         return True
     except (OSError, ValueError, IndexError, KeyError, subprocess.TimeoutExpired):
         return False
@@ -556,6 +576,11 @@ def prepare_local(root: Path, *, models: Path, source: str, keys, register: bool
                 state['phase'] = 'runtime_installing'
                 emit(state['phase'], device='mps', model='moss')
                 moss_python = ensure_moss_runtime(root, managed, lock, environment, state)
+        state['phase'] = 'backend_checking'
+        if 'firered_aed' in keys:
+            require_mps_runtime(main_python, root, dtype='float16')
+        if moss_python is not None:
+            require_mps_runtime(moss_python, root, dtype='bfloat16')
         state['phase'] = 'weights_downloading'
         from twobyteasr.model_integrity import locked_model, verify_model_files
         from twobyteasr.repository_download import download_model
@@ -613,11 +638,12 @@ def check_mlx_runtime(python: Path, root: Path) -> bool:
         result = subprocess.run([str(python), '-I', str(_mlx_worker(root)), '--mode', 'probe'], cwd=root,
                                 capture_output=True, text=True, timeout=180, env=_child_environment())
         if result.returncode:
+            print('[MLX 探测] 子程序退出码 ' + str(result.returncode) + '：' + (result.stderr or result.stdout)[-600:],flush=True)
             return False
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         return (bool(payload.get('ok')) and payload.get('machine') == 'arm64'
                 and payload.get('metal_available') is True and payload.get('mlx_version') == '0.32.3'
-                and payload.get('mlx_audio_version') == '0.5.8')
+                and payload.get('mlx_audio_version') == '0.5.8' and payload.get('mlx_metal_version') == '0.32.3')
     except (OSError, ValueError, IndexError, RuntimeError, subprocess.TimeoutExpired):
         return False
 

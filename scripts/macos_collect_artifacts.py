@@ -10,7 +10,7 @@ from pathlib import Path
 
 def selected_files(root: Path) -> list[Path]:
     selected=[]
-    for folder in ("media","build","dmg","blank-project","native-media-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
+    for folder in ("media","media/tesseract-compat","build","dmg","blank-project","native-media-smoke","renderer-smoke","embedded-preview","hardware-probe","desktop-flow","desktop-flow/restart","desktop-flow/runtime-evidence","relocated-startup-profile/startup-smoke","finder-startup-profile/startup-smoke","cloud-only","keychain","mlx","cloud-mlx","studio-perf","studio-perf/export"):
         directory=root/folder
         if not directory.is_dir():continue
         # Build/source, node_modules, PyInstaller output, runtime and model
@@ -18,6 +18,7 @@ def selected_files(root: Path) -> list[Path]:
         for path in directory.iterdir():
             if path.is_file() and (path.name.endswith(".app.zip") or path.suffix.lower() in {".dmg",".json",".log",".txt",".png",".xml"}
                                   or (folder=='desktop-flow/runtime-evidence' and (path.name.endswith('pyvenv.cfg') or path.name=='subtitle-render-diagnostics.jsonl'))
+                                  or (folder=='renderer-smoke' and path.suffix.lower()=='.mov')
                                   or (folder=='desktop-flow' and path.name in {'中文 字幕・日本語.mp4','再起動・第二任务.mp4'})):
                 selected.append(path)
         if folder=="desktop-flow":

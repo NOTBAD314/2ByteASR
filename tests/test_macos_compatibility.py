@@ -92,3 +92,35 @@ def test_mlx_without_metal_does_not_silently_switch_to_cpu(monkeypatch):
     monkeypatch.setitem(__import__('sys').modules,'mlx.core',core)
     with pytest.raises(RuntimeError,match='Metal'):
         mlx_worker._device_info()
+
+
+def test_failed_mps_probe_is_isolated_and_stops_preparation(tmp_path,monkeypatch):
+    from twobyteasr.local_models import macos_model_prepare as prepare
+    seen=[]
+    def failed(command,**kwargs):
+        seen.append((command,kwargs))
+        return SimpleNamespace(returncode=-6,stdout='',stderr='Metal initialization aborted')
+    monkeypatch.setattr(prepare.subprocess,'run',failed)
+    with pytest.raises(RuntimeError,match='尚未下载模型权重'):
+        prepare.require_mps_runtime(tmp_path/'runtime/bin/python',tmp_path,dtype='bfloat16')
+    assert seen[0][0][1:3]==['-I','-c'] and seen[0][1]['timeout']==180
+
+
+def test_build_bootstrap_and_runtime_minimums_agree():
+    from pathlib import Path
+    root=Path(__file__).resolve().parents[1]/'packaging/macos'
+    native=json.loads((root/'native-dependencies.lock.json').read_text('utf8'))
+    bootstrap=json.loads((root/'bootstrap.lock.json').read_text('utf8'))
+    assert native['minimum_macos']==bootstrap['compatibility']['minimum_macos']==mc.MINIMUM_MACOS
+    assert bootstrap['compatibility']['architectures']==list(mc.ARCHITECTURES)
+
+
+@pytest.mark.parametrize('error,category',[
+    ('Library not loaded: libmpv.2.dylib','missing_library'),
+    ('Symbol not found: _new_api','missing_symbol'),
+    ('mach-o, but wrong incompatible architecture','architecture'),
+    ('code signature invalid','signature_or_notarization'),
+    ('MPS allocation failed','backend_initialization'),
+    ('requires macOS 15.0','minimum_system')])
+def test_diagnostics_separates_actionable_failures(error,category):
+    assert mc.failure_category(error)==category
