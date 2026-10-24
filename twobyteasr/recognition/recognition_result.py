@@ -33,6 +33,11 @@ def media_identity_for_task(media_path, context=None, *, selection=None):
     """Hash each source once per queue; stat checks catch later normal writes."""
     path = Path(media_path).resolve()
     canonical = os.path.normcase(str(path))
+    if selection is None and context is not None:
+        # The audio stream a home-page entry recognizes (2026-10-24): each
+        # picked track of one file is its own input with its own caches.
+        from .audio_stream_choice import active_choice, selection as stream_selection
+        selection = stream_selection(active_choice(path, context))
     selected = dict(selection or {})
     key = canonical
     cache = getattr(context, "media_identities", None)

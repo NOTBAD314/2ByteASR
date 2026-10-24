@@ -515,7 +515,8 @@ def update_video_clip_transform(
     """Update composition only; source timing is intentionally untouched."""
 
     track = track_by_id(project, track_id)
-    if track.locked:
+    from .studio_clip_edit import video_track_locked
+    if video_track_locked(project, track):
         raise ValueError(f"track {track_id} is locked")
     clip = next((item for item in track.clips if item.id == clip_id), None)
     if clip is None:
@@ -524,6 +525,10 @@ def update_video_clip_transform(
         "position_x", "position_y", "scale_x", "scale_y", "rotation",
         "opacity", "anchor_x", "anchor_y", "fit_mode",
     }
+    import math
+    for name, value in values.items():
+        if name in allowed and name != 'fit_mode' and not math.isfinite(float(value)):
+            raise ValueError(f'{name} must be finite')
     for name, value in values.items():
         if name in allowed:
             setattr(clip.transform, name, value)

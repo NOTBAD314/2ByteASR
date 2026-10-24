@@ -29,7 +29,20 @@ def cue_placement(project,cue):
     current=resolve_cue_visual(project,cue).style
     x,y,_,_=_anchor(current,w,h)
     stored=cue.transform.get('web_placement')
-    if isinstance(stored,Mapping):return normalize_placement(stored)
+    if isinstance(stored,Mapping):
+        value=normalize_placement(stored)
+        basis=cue.transform.get('_geometry_base')
+        if isinstance(basis,Mapping):
+            from .caption_layer_transform import GEOMETRY
+            before=deepcopy(cue)
+            for key in GEOMETRY:before.transform.pop(key,None)
+            before.transform.update(basis)
+            style=resolve_cue_visual(project,before).style
+            bx,by,_,_=_anchor(style,w,h)
+            value.update(x=value['x']+(x-bx)/w,y=value['y']+(y-by)/h,
+                scaleX=value['scaleX']*current.scale_x/max(.01,style.scale_x),
+                scaleY=value['scaleY']*current.scale_y/max(.01,style.scale_y))
+        return normalize_placement(value)
     return normalize_placement(dict(x=x/w,y=y/h,originX=ox/w,originY=oy/h,
         scaleX=current.scale_x/max(.01,original.scale_x),scaleY=current.scale_y/max(.01,original.scale_y),
         rotation=cue.transform.get('rotation',0)))

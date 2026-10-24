@@ -33,6 +33,12 @@ class MediaIndex:
     fps: Fraction
     probe_json: str
     elapsed: float
+    # Packets the decoder rejected (PTS of the packet that reported it) and
+    # pictures it marked corrupt; neither is in pts. damaged_head: the damage
+    # came before the first decodable picture.
+    rejected_packets: tuple = ()
+    corrupt_frames: int = 0
+    damaged_head: bool = False
 
     @property
     def last(self): return self.pts[-1] * self.time_base - self.origin
@@ -43,7 +49,9 @@ class MediaIndex:
     def target(self, seconds):
         value = Fraction(seconds)
         first = self.pts[0]*self.time_base-self.origin
-        if value < first-self.interval or value > self.last+self.interval:
+        # A damaged start holds the first decodable picture, as players do.
+        low = min(first, Fraction(0)) if self.damaged_head else first
+        if value < low-self.interval or value > self.last+self.interval:
             raise ValueError(f'target {float(value):.9f}s outside decodable interval ending {float(self.last):.9f}s')
         return min(self.last, max(first, value))
 
@@ -96,12 +104,13 @@ def _probe(ffmpeg, path, size, modified, cancelled):
 
 def _build_probe(ffmpeg, path, cancelled):
     import av
+    from ..playback.video_decode_worker import decode_skipping_damaged
     started = time.perf_counter()
     result = run_hidden_subprocess([str(Path(ffmpeg).with_name('ffprobe.exe' if os.name=='nt' else 'ffprobe')),
         '-v','error','-show_streams','-show_format','-of','json',path], purpose='export media preflight',
         capture_output=True, check=True, timeout=15)
     probe = json.loads(result.stdout)
-    points=[]
+    points=[];rejected=[];corrupt=0;damaged_head=False
     try:
         with av.open(path) as container:
             stream = container.streams.video[0]
@@ -109,20 +118,28 @@ def _build_probe(ffmpeg, path, cancelled):
             origin = Fraction(container.start_time or 0, 1_000_000)
             time_base = Fraction(stream.time_base)
             fps = Fraction(stream.average_rate or stream.base_rate or 30)
-            for frame in container.decode(stream):
+            for frame in decode_skipping_damaged(container, stream, rejected):
                 if cancelled and cancelled(): raise InterruptedError('render cancelled')
                 if frame.pts is None: raise ValueError('frame without PTS')
-                if getattr(frame,'is_corrupt',False): raise ValueError(f'corrupt frame PTS={frame.pts}')
+                # The export decoder skips the same picture and holds the
+                # previous one, so the index stays the source of truth.
+                if getattr(frame,'is_corrupt',False):
+                    corrupt+=1;continue
                 if points and frame.pts <= points[-1]: raise ValueError('non-monotonic decoded PTS')
+                if not points and (rejected or corrupt): damaged_head=True
                 points.append(frame.pts)
     except InterruptedError: raise
     except Exception as exc:
         raise ExportMediaError('MEDIA_DECODE', {'path':path, 'source_ms':''}, exc) from exc
-    if not points: raise ExportMediaError('NO_VIDEO_FRAMES',{'path':path},'no decodable video')
+    if not points:
+        raise ExportMediaError('NO_VIDEO_FRAMES',{'path':path},'no decodable video'
+            + (f' ({len(rejected)} damaged packets, {corrupt} corrupt pictures)' if rejected or corrupt else ''))
     declared = next(s for s in probe['streams'] if s['codec_type']=='video').get('nb_frames')
-    if declared not in (None, 'N/A') and int(declared) != len(points):
+    # Skipped packets and pictures are why fewer frames decode than declared.
+    if declared not in (None, 'N/A') and int(declared) != len(points) and not (rejected or corrupt):
         raise ExportMediaError('FRAME_COUNT',{'path':path},f'declared {declared}, decoded {len(points)}')
-    return MediaIndex(path,origin,time_base,tuple(points),fps,json.dumps(probe),time.perf_counter()-started)
+    return MediaIndex(path,origin,time_base,tuple(points),fps,json.dumps(probe),time.perf_counter()-started,
+                      tuple(rejected),corrupt,damaged_head)
 
 
 class SequentialExportDecoder:
@@ -133,7 +150,7 @@ class SequentialExportDecoder:
         _check_cancel(cancelled)
         self.container,self.stream,self.backend=open_decoder(index.path,backend)
         self.last_target=None;self.request_id=0;self.generation=uuid.uuid4().hex
-        self.cached=None;self.cached_pts=None;self.decoded_frames=0
+        self.cached=None;self.cached_pts=None;self.decoded_frames=0;self.rejected=[]
         try:
             self._seek(0)
         except BaseException:
@@ -141,10 +158,12 @@ class SequentialExportDecoder:
             raise
 
     def _seek(self, pts):
+        from ..playback.video_decode_worker import decode_skipping_damaged
         _check_cancel(self.cancelled)
         self.container.seek(pts,stream=self.stream,backward=True)
         _check_cancel(self.cancelled)
-        self.frames=iter(self.container.decode(self.stream))
+        # Same skipping rule as the full index (_build_probe).
+        self.frames=decode_skipping_damaged(self.container,self.stream,self.rejected)
         self.current=self.future=None;self.eof=False
 
     def _advance(self, target):
@@ -158,17 +177,41 @@ class SequentialExportDecoder:
                     break
                 self.decoded_frames+=1
                 _check_cancel(self.cancelled)
-                if self.future.pts is None or getattr(self.future,'is_corrupt',False):
+                if self.future.pts is None:
                     raise ValueError('invalid frame after seek')
+                if getattr(self.future,'is_corrupt',False):
+                    self.future=None  # left out of the index as well
+                    continue
             if self.future.pts*self.future.time_base>target:
                 if self.current is None:self.current=self.future
                 break
             self.current,self.future=self.future,None
 
+    def _restart(self, target, expected):
+        """Decode again from an earlier start; returns the start PTS used."""
+        starts=[0]
+        if self.index.rejected_packets or self.index.corrupt_frames:
+            # Pictures after a damaged keyframe lean on the group before it.
+            # Half a minute back is enough there; the head of a long recording
+            # could outlast the compose watchdog.
+            earlier=expected-round(30/self.index.time_base)
+            if earlier>self.index.pts[0]:starts.insert(0,earlier)
+        for start in starts:
+            try:
+                self._seek(start)
+                self._advance(target)
+            except InterruptedError:
+                raise
+            except Exception:
+                if start==starts[-1]:raise
+                continue
+            if self.current is not None and self.current.pts==expected:break
+        return start
+
     def read(self, seconds, *, context=None):
         from ..playback.video_decode_worker import display_bgra
         self.request_id+=1;started=time.perf_counter()
-        decoded_before=self.decoded_frames
+        decoded_before,rejected_before=self.decoded_frames,len(self.rejected)
         receipt=dict(context or {}, request_id=self.request_id, generation=self.generation,
             decoder_pid=os.getpid(), command_type='export_frame', source_ms=float(seconds)*1000,
             time_base=str(self.index.time_base), source_duration=float(self.index.last+self.index.interval),
@@ -190,16 +233,15 @@ class SequentialExportDecoder:
             except Exception:
                 if not seek_needed:raise
                 receipt['seek_fallback']=True
-                self._seek(0)
-                self._advance(target)
+                receipt['restart_pts']=self._restart(target,expected)
             # Some FLV/container indexes seek past the desired boundary. The
             # successful full decode index, not a plausible nearby frame,
-            # decides correctness. Retry from the head once, then fail closed.
+            # decides correctness. Retry from an earlier start (the head last),
+            # then fail closed.
             if self.current is None or self.current.pts!=expected:
                 if not receipt['seek_fallback']:
                     receipt['seek_fallback']=True
-                    self._seek(0)
-                    self._advance(target)
+                    receipt['restart_pts']=self._restart(target,expected)
                 if self.current is None or self.current.pts!=expected:
                     raise ValueError(f'decoded frame does not match full index PTS {expected}')
             self.last_target=target
@@ -211,6 +253,7 @@ class SequentialExportDecoder:
             receipt.update(frame_pts=pts,frame_seconds=float(pts*self.current.time_base-self.index.origin),
                 next_pts=self.future.pts if self.future else None, state='FRAME', eof=self.eof,
                 decoded_frames=self.decoded_frames-decoded_before,
+                rejected_packets=len(self.rejected)-rejected_before,
                 elapsed_ms=(time.perf_counter()-started)*1000)
             return self.cached,receipt
         except InterruptedError:

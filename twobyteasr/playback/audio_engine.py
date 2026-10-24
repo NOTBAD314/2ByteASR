@@ -170,7 +170,8 @@ def _decode_input(source, seek_ms, stream_index, decode_source):
     seek on an hour-long recording); the copy seeks in ~20 ms. Positions below
     the head threshold decode from the first sample in both files.
     """
-    if not isinstance(decode_source, Mapping):
+    if not isinstance(decode_source, Mapping) or int(stream_index or 0) != 0:
+        # The seek copy holds the first audio stream only (2026-10-24).
         return source, seek_ms, stream_index
     path = str(decode_source.get("path") or "")
     if not path or not os.path.isfile(path):
@@ -178,6 +179,19 @@ def _decode_input(source, seek_ms, stream_index, decode_source):
     if seek_ms >= 250:
         seek_ms = max(0, int(seek_ms) + int(decode_source.get("offset_ms") or 0))
     return path, seek_ms, 0
+
+
+def stream_lead_filter(stream_start_ms, source_ms) -> str:
+    """Silence a late-starting stream keeps before its first sample (2026-10-24).
+
+    FFmpeg starts a decoded stream at its first sample, so a dub track that
+    begins 3 s into the file would play 3 s early from any position before
+    that. ``stream_start_ms`` is the stream start relative to the container
+    (0 = nothing to add, which is every first audio stream: they keep their
+    earlier behaviour). Placed right after ``asetpts=PTS-STARTPTS``.
+    """
+    lead = float(stream_start_ms or 0.0) - max(0.0, float(source_ms or 0.0))
+    return f"adelay={round(lead)}:all=1," if lead >= 1.0 else ""
 
 
 def _with_decode_source(layer: dict) -> dict:
@@ -207,7 +221,7 @@ def build_audio_decode_command(
     source_out_ms: int | None = None,
     av_sync_map=None,
     audio_envelopes=(), project_ms=0, transport_rate=1., stream_index=0,
-    decode_source=None,
+    decode_source=None, stream_start_ms=0.,
 ) -> list[str]:
     from ..timeline.studio_track_gain import gain_amplitude
     # Window positions are audio-content ms; a gappy recording's file
@@ -223,6 +237,9 @@ def build_audio_decode_command(
     head_ms = max(0, int(source_ms)) if source_ms < 250 else 0
     if head_ms:
         filters.extend((f"atrim=start={head_ms/1000:.6f}", "asetpts=PTS-STARTPTS"))
+    lead = stream_lead_filter(stream_start_ms, source_ms)
+    if lead:
+        filters.extend(([] if head_ms else ["asetpts=PTS-STARTPTS"]) + [lead.rstrip(",")])
     if source_out_ms is not None:
         filters.append(f"atrim=duration={max(0, source_out_ms-source_ms)/1000.0:.6f}")
     if source_out_ms is not None and abs(rate-1.) > .000001:
@@ -290,7 +307,8 @@ def build_audio_mix_command(ffmpeg, layers, *, transport_rate=1.0,
         clip_rate = max(.01,float(layer.get('playback_rate') or 1.))
         envelope = envelope_filter(layer.get('audio_envelopes',()), origin_ms=layer.get('project_ms',0),
             clock_rate=lane_rate/clip_rate, channels=channels)
-        filters.append(f"[{index}:a:{int(layer.get('stream_index',0))}]{head}{limit}asetpts=PTS-STARTPTS,{pad}{_atempo_chain(lane_rate)},{tail}"
+        lead = stream_lead_filter(layer.get('stream_start_ms', 0.), source_ms)
+        filters.append(f"[{index}:a:{int(layer.get('stream_index',0))}]{head}{limit}asetpts=PTS-STARTPTS,{lead}{pad}{_atempo_chain(lane_rate)},{tail}"
                        f"{envelope}volume={1. if separate else gain_amplitude(layer.get('gain_db', 0.)):.9f},"
                        f"aresample={sample_rate},aformat=sample_fmts=flt:channel_layouts={channels}c,"
                        +(f"apad=whole_dur={pad_duration:.6f}" if (separate or joint_rate is not None) and pad_duration is not None else "apad=pad_dur=0.1")+f"[a{index}]")
@@ -983,6 +1001,7 @@ class _AudioEngineWorker(QObject):
             av_sync_map=self._av_sync_map,
             audio_envelopes=getattr(self,'_audio_envelopes',()), project_ms=getattr(self,'_project_start_ms',0),
             transport_rate=self._transport_rate, stream_index=getattr(self,'_stream_index',0),
+            stream_start_ms=getattr(self, '_stream_start_ms', 0.),
             decode_source=getattr(self, '_decode_source', None),
         )
         self._decode_input_path = command[command.index('-i') + 1] if '-i' in command else self._source_path
@@ -1181,6 +1200,7 @@ class _AudioEngineWorker(QObject):
             self._audio_envelopes = request.get('audio_envelopes',())
             self._project_start_ms = request.get('project_ms',0)
             self._stream_index = int(request.get('stream_index',0))
+            self._stream_start_ms = float(request.get('stream_start_ms', 0.) or 0.)
             # Indexed audio-only copy for fast seeks; it only changes how the
             # next decoder reads the same source, never restarts the current one.
             self._decode_source = request.get('decode_source') if isinstance(request.get('decode_source'), Mapping) else None

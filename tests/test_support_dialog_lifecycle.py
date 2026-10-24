@@ -114,6 +114,8 @@ def test_failed_worker_start_does_not_keep_closed_dialog_alive(environment,monke
         return original(thread)
     monkeypatch.setattr(threading.Thread,"start",failed)
     dialog=open_support_dialog(owner)
+    # Loading starts one event-loop turn after the form is shown.
+    pump_until(lambda:"读取诊断记录失败" in dialog.note.text())
     assert "读取诊断记录失败" in dialog.note.text()
     dialog.close()
     pump_until(lambda:not isValid(dialog))

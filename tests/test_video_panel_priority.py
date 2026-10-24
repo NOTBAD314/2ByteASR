@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication, QGroupBox, QScrollArea, QWidget
 
+from twobyteasr.design.soft_widgets import FoldCard
 from twobyteasr.studio.studio_ui import SubtitleStudioPage
 from twobyteasr.studio.studio_video_flow import StudioVideoFlowMixin
 
@@ -27,7 +28,16 @@ def _order(panel):
         widget = layout.itemAt(index).widget()
         if widget is None:
             continue
-        names.append(widget.title() if isinstance(widget, QGroupBox) else widget.objectName())
+        if widget.objectName() == "videoClipControls":
+            # 2026-10-24: the clip cards share one host, swapped with the
+            # caption card when a caption is selected.
+            names.extend(_order(widget))
+        elif isinstance(widget, QGroupBox):
+            names.append(widget.title())
+        elif isinstance(widget, FoldCard) and widget.objectName() != "videoDefaultsSection":
+            names.append(widget.title.text())
+        else:
+            names.append(widget.objectName())
     return names
 
 
@@ -41,7 +51,8 @@ def test_motion_controls_come_first_and_defaults_are_collapsed_last():
         assert motion < blend < chroma < defaults
         assert "默认转场时长" not in names  # no longer a group above 运动
         assert page.default_transition_content.isHidden()
-        assert "500 ms" in page.default_transition_toggle.text() and "300 ms" in page.default_transition_toggle.text()
+        summary = page.default_transition_card.summary.text()
+        assert "500 ms" in summary and "300 ms" in summary
         page.default_transition_toggle.setChecked(True)
         assert not page.default_transition_content.isHidden()
     finally:
@@ -96,28 +107,25 @@ def test_focus_out_without_edit_pushes_no_undo_step():
     assert len(committed) == 1 and committed[0][2]["scale_x"] == 1.5
 
 
-def test_narrow_drawer_stacks_y_under_x():
+def test_narrow_drawer_keeps_x_and_y_side_by_side():
+    """2026-10-23 (design C): the value boxes shrink with the drawer instead
+    of stacking Y under X; at the narrowest drawer each still shows 100.00."""
     app = _app()
     page = SubtitleStudioPage()
     try:
         page.resize(1600, 900)
         page.show()
         page.context_drawer.setCurrentIndex(page.video_transform_tab_index)
-        for _ in range(5):
-            app.processEvents()
         panel = _panel(page)
-        fields, group_x, group_y = page._video_axis_pairs[1]  # scale X/Y (+ link)
-        assert fields.getItemPosition(fields.indexOf(group_y))[:2] == (0, 1)
-        panel.setFixedWidth(240)
+        panel.setFixedWidth(360)
         for _ in range(5):
             app.processEvents()
-        assert fields.getItemPosition(fields.indexOf(group_y))[:2] == (1, 0)
-        panel.setMinimumWidth(0)
-        panel.setMaximumWidth(16777215)
-        panel.setFixedWidth(600)
-        for _ in range(5):
-            app.processEvents()
-        assert fields.getItemPosition(fields.indexOf(group_y))[:2] == (0, 1)
+        x_box, y_box = page.video_scale_x.parentWidget(), page.video_scale_y.parentWidget()
+        x_top = x_box.mapTo(panel, x_box.rect().topLeft())
+        y_top = y_box.mapTo(panel, y_box.rect().topLeft())
+        assert x_top.y() == y_top.y() and y_top.x() > x_top.x()
+        metrics = page.video_scale_x.fontMetrics()
+        assert page.video_scale_x.width() >= metrics.horizontalAdvance("100.00")
     finally:
         page.close_page()
         page.deleteLater()

@@ -9,7 +9,7 @@ def start(window, output):
     from PySide6.QtWidgets import QApplication, QMessageBox
     from .blank_project_audit import _capture
     from ..diagnostics.build_identity import load_build_identity
-    from ..studio.studio_find_replace import FindReplaceDialog
+    from ..studio.studio_find_replace import GlossaryReviewDialog
     from ..projects.studio_project import load_project, save_project
     from ..exports.studio_subtitle_export import export_subtitle_artifacts, SubtitleExportOptions, verify_subtitle_artifact
     from ..projects.studio_runtime_state import state_for
@@ -71,9 +71,9 @@ def start(window, output):
             yield self.ready
             yield .4
             p=self.page; original=[(c.text,c.start_ms,c.end_ms,c.speaker_id) for c in p.project.cues]
-            QTimer.singleShot(0,lambda:QTest.mouseClick(p.studio_find_replace_button,Qt.LeftButton))
-            yield lambda:isinstance(QApplication.activeModalWidget(),FindReplaceDialog)
-            dialog=QApplication.activeModalWidget();dialog.tabs.setCurrentIndex(3)
+            QTimer.singleShot(0,lambda:GlossaryReviewDialog(p,p).exec())
+            yield lambda:isinstance(QApplication.activeModalWidget(),GlossaryReviewDialog)
+            dialog=QApplication.activeModalWidget()
             QTest.mouseClick(dialog.preview_button,Qt.LeftButton)
             yield .2
             self.check('terms preview real matches',dialog.preview.count()==3,dialog.preview.count())

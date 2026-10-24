@@ -11,6 +11,11 @@ class PrimaryProgress:
         self.context = get_runtime_context()
         self.source_path = str(source_path)
         identity = os.path.normcase(os.path.abspath(self.source_path)) + self.context.job_id + backend
+        from .audio_stream_choice import active_choice
+        stream = active_choice(self.source_path, self.context)
+        if stream:
+            # Two picked tracks of one file in one job keep apart rows (2026-10-24).
+            identity += f"|a{stream['ordinal']}"
         self.key = hashlib.sha256(identity.encode('utf8')).hexdigest()[:20]
         self.backend, self.total = backend, total
         self.publish_primary = publish_primary

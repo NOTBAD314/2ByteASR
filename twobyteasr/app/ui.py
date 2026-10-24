@@ -819,6 +819,29 @@ def persist_ai_configuration(
     return {"models": models, "missing_keys": tuple(missing_keys), "local_roles": tuple(local_roles)}
 
 
+def text_ai_roles_without_key(legacy, polish: dict, group: dict, *, unified: bool, share_key: bool) -> tuple:
+    """The text-AI steps that cannot run because no API key is filled in (2026-10-21).
+
+    Asked as if each step were switched on, so the answer does not depend on
+    the switches it is used to show. A key typed into the form counts, as do
+    CLI logins and endpoints that need no key. Any other configuration error
+    is not "no key" (saving reports it), so that step is left out.
+    """
+    missing = []
+    for role in ("polish", "group"):
+        try:
+            result = persist_ai_configuration(
+                legacy, polish, group, unified=unified, share_key=share_key, require_ready=False,
+                use_ai_grouping=bool(unified) or role == "group",
+                enable_ai_polish=bool(unified) or role == "polish",
+                dry_run=True, local_without_key=True)
+        except (RuntimeError, ValueError, KeyError, TypeError, OSError):
+            continue
+        if role in result["local_roles"]:
+            missing.append(role)
+    return tuple(missing)
+
+
 def persist_asr_configuration(
     legacy,
     values: dict,
@@ -1462,7 +1485,7 @@ class MainWindow(QWidget):
         self.support_button = button_role(QPushButton(), "secondary", size="compact")
         self.support_button.setObjectName("supportEntry")
         bind_text(self.support_button, "支持我！")
-        install_themed_icon(self.support_button, "fa5s.heart", "primary")
+        install_themed_icon(self.support_button, "fa5s.heart", "zone_studio")
         self.support_button.clicked.connect(self._open_support)
         row.addWidget(self.support_button)
         # After adoption: showing a parentless button made it a native
@@ -1504,11 +1527,17 @@ class MainWindow(QWidget):
         self.help_button.clicked.connect(self._show_help_menu)
         row.addWidget(self.help_button)
         from ..design.presentation import button_role
-        for button in (self.subtitle_studio_button, self.model_workshop_button, self.app_settings_button,
-                       self.help_button):
+        for button in (self.update_button, self.subtitle_studio_button, self.model_workshop_button,
+                       self.app_settings_button, self.help_button):
             button_role(button, "secondary", size="default")
             button.setProperty("homeNavigation", True)
             button.setIconSize(QSize(18, 18))
+        # 2026-10-23 (home design A): the two places you go to carry the accent
+        # tint; update, settings and help a quiet neutral one.
+        for button, icon in ((self.update_button, "fa5s.sync-alt"), (self.app_settings_button, "fa5s.cog"),
+                             (self.help_button, "fa5s.question-circle")):
+            button.setProperty("homeTone", "quiet")
+            install_themed_icon(button, icon, "secondary")
         # Keyboard users still Tab to every header command; a mouse click or
         # window activation no longer leaves a focus ring on the support button.
         for button in (self.support_button, self.update_button, self.subtitle_studio_button,
@@ -1516,6 +1545,7 @@ class MainWindow(QWidget):
                        self.help_button):
             button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.language_combo = user_text(FramelessPopupCombo())
+        self.language_combo.setObjectName("headerLanguage")
         self.language_combo.setMinimumWidth(100)
         self.language_combo.setMaximumWidth(160)  # soft for CN labels
         from twobyteasr.i18n import LANGUAGE_NATIVE_NAMES
@@ -1962,8 +1992,16 @@ class MainWindow(QWidget):
             "translation_script": str(request_options.get("translation_script") or ""),
         }
         from ..recognition.recognition_input import capture_recognition_snapshot
+        # 2026-10-24: audio tracks picked in Studio, each recognized on its own
+        # input (a fast analysis reads the one picked track).
+        lanes = [dict(row) for row in request_options.get("audio_lanes") or ()]
+        self._studio_recognition_context["audio_lanes"] = lanes
         try:
-            snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()))
+            if lanes and str(action) == "start_analysis":
+                snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()), lane=lanes[0])
+            else:
+                snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()),
+                                                        lanes=lanes or None)
         except (OSError, ValueError, RuntimeError) as exc:
             self._studio_recognition_context = None
             self.studio_page.fail_recognition_runtime(str(exc))
@@ -2960,6 +2998,9 @@ class MainWindow(QWidget):
         layout.setSpacing(10)
         page_heading = QHBoxLayout()
         page_heading.setSpacing(12)
+        # 2026-10-23 (user: the plan toolbar sat on the page's top edge): the
+        # same room above the heading row as below it, so the row sits midway.
+        page_heading.setContentsMargins(0, 10, 0, 0)
         title = QLabel("本批字幕")
         title.setObjectName("sectionTitle")
         # P0: allow natural width; CN text must not truncate. Max was causing squeeze on some locales.
@@ -3251,9 +3292,10 @@ class MainWindow(QWidget):
         terms_row.addWidget(terms_help)
         manage = AnimatedButton("管理术语库")
         manage.setObjectName("homeHeaderAction")
-        install_themed_icon(manage, "fa5s.book-open")
+        manage.setProperty("homeZone", "content")
+        install_themed_icon(manage, "fa5s.book-open", "zone_content")
         manage.clicked.connect(self._manage_terms)
-        manage.setMaximumWidth(175)  # soft; EN/JA label must not truncate
+        manage.setMaximumWidth(260)  # soft; EN/JA/RU labels must not truncate (bolder since 10-23)
         content_head.addWidget(manage)
         self.add_glossary_button = manage
         batch_layout.addLayout(terms_row)
@@ -3340,7 +3382,8 @@ class MainWindow(QWidget):
         self.home_process_card = QFrame()
         self.home_process_card.setObjectName("homeProcessCard")
         process_layout = QVBoxLayout(self.home_process_card)
-        process_layout.setContentsMargins(16, 10, 16, 10)
+        # The AI card fills its band edge to edge (2026-10-23: no frame in a frame).
+        process_layout.setContentsMargins(0, 0, 0, 0)
         self._home_ai_layout = process_layout
         process_layout.setSpacing(0)
 
@@ -3379,9 +3422,10 @@ class MainWindow(QWidget):
         profile_row.addWidget(self.project_profile_combo, 1)
         self.project_profile_manage = AnimatedButton("")
         self.project_profile_manage.setObjectName("softAction")
+        self.project_profile_manage.setProperty("homeTool", True)
         install_themed_icon(self.project_profile_manage, "fa5s.ellipsis-h")
         bind_text(self.project_profile_manage, '管理 Project / Game Profile', property='toolTip')
-        self.project_profile_manage.setFixedSize(36, 36)
+        self.project_profile_manage.setFixedSize(38, 38)
         self.project_profile_manage.clicked.connect(self._show_project_profile_menu)
         profile_row.addWidget(self.project_profile_manage)
         self.profile_recommendation = QLabel("")
@@ -3652,6 +3696,12 @@ class MainWindow(QWidget):
             settings["switches"].get("use_ai_grouping", True)
         )
         bind_text(self.ai_grouping, '关闭后不请求断句模型，也不需要断句 API Key；将使用 MOSS 自然语句、FireRed 停顿与本地护栏断句。', property='toolTip')
+        # 2026-10-21: why 按意思断句 / 字幕校对 are off and locked (no key yet);
+        # shown under them in 「让 AI 负责」.
+        self.ai_key_off_note = QLabel()
+        self.ai_key_off_note.setObjectName("statusWarn")
+        self.ai_key_off_note.setWordWrap(True)
+        self.ai_key_off_note.hide()
         self.prefer_arabic_numbers = SwitchControl('数字规范化')
         self.prefer_arabic_numbers.setChecked(settings['switches'].get('prefer_arabic_numbers', True))
         bind_text(self.prefer_arabic_numbers, '只影响之后生成的字幕；普通整数1～9保留原文，明确数值从10开始转为阿拉伯数字；小数、百分比和比例除外。保留约数、成语和已确认术语，不求和或去重，不改已保存工程。', property='toolTip')
@@ -3740,6 +3790,7 @@ class MainWindow(QWidget):
             self._ai_duty_notes[name] = line
             switch.toggled.connect(self._refresh_ai_advanced_summary)
             switch.toggled.connect(self._refresh_ai_dialog_state)
+        duties.addWidget(self.ai_key_off_note)
         duties.addStretch(1)
         options_row.addLayout(duties, 2)
         self.ai_advanced_editor_slot = QVBoxLayout()
@@ -3825,6 +3876,12 @@ class MainWindow(QWidget):
         # 变更同样进入方案脏标，切换方案前给出保存/放弃提示。
         self.ai_grouping.toggled.connect(self._mark_profile_configuration_dirty)
         self.group_editor.model.currentTextChanged.connect(self._mark_profile_configuration_dirty)
+        # A key typed in, or a service that already has one, unlocks its switch.
+        for editor in (self.polish_editor, self.group_editor):
+            editor.key.textChanged.connect(self._sync_ai_switches_with_keys)
+            editor.base_url.textChanged.connect(self._sync_ai_switches_with_keys)
+        for control in (self.ai_polish, self.ai_grouping, self.unified_glm, self.share_key):
+            control.toggled.connect(self._sync_ai_switches_with_keys)
         self._apply_ai_grouping_mode(self.ai_grouping.isChecked())
         # AI 智能断句留在主要工作区；任务/缓存设置收敛到模型工坊。
 
@@ -4039,7 +4096,7 @@ class MainWindow(QWidget):
         # Everything added outside the drop zone (its own extra is in drop_now).
         self._home_room_px = ui_zoom.px(round(step * 4.5) + self._home_plan_extra + middle)
         ui_zoom.set_layout(self._home_studio_layout, (20, 18 + step, 20, 18 + step), 12)
-        ui_zoom.set_layout(self._home_ai_layout, (16, 10 + step // 2, 16, 10 + step // 2), 0)
+        ui_zoom.set_layout(self._home_ai_layout, (0, step // 2, 0, step // 2), 0)
         ui_zoom.set_layout(self._home_content_layout, (22, 16 + step, 22, 18 + step), 12 + step // 2)
         self._sync_home_plan(getattr(self, "_home_tier", (1,))[0])
         if not getattr(self, "media_paths", None):
@@ -4316,10 +4373,16 @@ class MainWindow(QWidget):
         if caption is not None:
             bind_text(caption, '字幕显示' if ready else '字幕显示 · 连上 AI 才能翻译')
             caption.setProperty("aiLock", not ready)
-        for widget in (combo, caption):
+        field = combo.parentWidget()
+        field = field if hasattr(field, "refresh_theme") else None
+        if field is not None:
+            field.setProperty("aiLock", not ready)   # the whole field takes the lock look (design A)
+        for widget in (field, combo, caption, getattr(field, "chevron", None)):
             if widget is not None:
                 widget.style().unpolish(widget)
                 widget.style().polish(widget)
+        if field is not None:
+            field.refresh_theme()
 
     def _ai_settings_snapshot(self) -> dict:
         names = ("ai_polish", "ai_grouping", "prefer_arabic_numbers", "unified_glm", "share_key")
@@ -4571,6 +4634,18 @@ class MainWindow(QWidget):
         tile = getattr(self, "setting_tiles", {}).get("ai")
         if tile is not None:
             tile.refresh_theme()
+        # 2026-10-23 (home design A): the language row's chevrons and arrow chip.
+        arrow = self.__dict__.get("home_language_arrow")
+        if arrow is not None:
+            side = ui_zoom.px(14)
+            arrow.setPixmap(qta.icon("fa5s.arrow-right", color=zones["content"]).pixmap(QSize(side, side)))
+        for name in ("spoken_language_field", "translation_field", "punctuation_field"):
+            field = self.__dict__.get(name)
+            if field is not None and hasattr(field, "refresh_theme"):
+                field.refresh_theme()
+        output = self.__dict__.get("subtitle_output")
+        if output is not None and hasattr(output.parentWidget(), "refresh_theme"):
+            output.parentWidget().refresh_theme()
 
 
     def _action_bar(self):
@@ -5079,6 +5154,88 @@ class MainWindow(QWidget):
             store.setValue(f"cloud_upload_ack/{signature}", True)
         return True
 
+    def _run_limit_lines(self) -> list:
+        """What this run cannot do, one sentence each (2026-10-21); [] when nothing.
+
+        A text-AI step without its key (``_text_ai_local_roles``, set by the
+        run-start save) and a run without measured word times (the primary's
+        sentence times only).
+        """
+        roles = frozenset(getattr(self, "_text_ai_local_roles", ()) or ())
+        lines = []
+        key_line = {
+            frozenset({"polish", "group"}): "没填 API Key，无法启用 AI 断句和 AI 校对：这次用本地规则断句，不做 AI 校对。",
+            frozenset({"group"}): "全文断句模型没填 API Key，无法启用 AI 断句：这次用本地规则断句。",
+            frozenset({"polish"}): "字幕校对模型没填 API Key，无法启用 AI 校对：这次不做 AI 校对。",
+        }.get(roles)
+        if key_line:
+            lines.append(tr(key_line))
+        try:
+            from ..recognition.recognition_choices import run_disclosure
+            settings = self._run_settings_snapshot()
+            settings.setdefault("models", {}).update(self._asr_values())
+            word_timing = bool(run_disclosure(settings).get("word_timing", True))
+        except Exception:  # noqa: BLE001 - an unreadable plan is reported by the run itself
+            word_timing = True
+        if not word_timing:
+            lines.append(tr("只有主力转写，没有字级时间戳：字幕时间只能按整句估算，长句切开处的时间可能不准。"
+                            "要更准，请在首页「字幕时间轴」选 FireRed 或 Qwen3 对齐模型。"))
+        return lines
+
+    def _confirm_run_limits(self) -> bool:
+        """Ask “确定要继续吗” when this run cannot use AI 断句 / 校对 or word times (2026-10-21).
+
+        User: many people do not fill in a key, and some setups have only the
+        primary transcript without word-level times; say so before the run
+        starts. 继续生成 starts, 去填 API Key opens the AI settings, 取消 stops;
+        the same situation can be remembered. Logged, but not asked, under a
+        test root (offscreen tests would block on the box).
+        """
+        if (getattr(self, "_studio_recognition_context", None) or {}).get("recognition_purpose") == "analysis":
+            return True
+        lines = self._run_limit_lines()
+        if not lines:
+            return True
+        for line in lines:
+            self._append_console_line("[开始前提醒] " + line)
+        if os.environ.get("TWOBYTEASR_TEST_ROOT"):
+            return True
+        import hashlib
+        roles = sorted(getattr(self, "_text_ai_local_roles", ()) or ())
+        word_line = len(lines) > (1 if roles else 0)
+        signature = hashlib.sha256(f"{','.join(roles)}|{int(word_line)}".encode("utf-8")).hexdigest()[:16]
+        store = self._progress_settings()
+        if store.value(f"run_limits_ack/{signature}", False, type=bool):
+            return True
+        box = QMessageBox(self)
+        box.setObjectName("runLimitsBox")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(tr("开始前请确认"))
+        box.setText(tr("这次生成字幕有以下限制："))
+        box.setInformativeText("\n\n".join("• " + line for line in lines)
+                               + "\n\n" + tr("字幕照常生成，之后可以在工作台修改。确定要继续吗？"))
+        remember = QCheckBox(tr("同样的情况以后不再提醒"))
+        box.setCheckBox(remember)
+        go = box.addButton(tr("继续生成"), QMessageBox.ButtonRole.AcceptRole)
+        fill = box.addButton(tr("去填 API Key"), QMessageBox.ButtonRole.ActionRole) if roles else None
+        box.addButton(tr("取消"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(go)
+        grid = box.layout()
+        if isinstance(grid, QGridLayout):   # two sentences read better on wider lines
+            grid.addItem(QSpacerItem(520, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding),
+                         grid.rowCount(), 0, 1, grid.columnCount())
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is go:
+            if remember.isChecked():
+                store.setValue(f"run_limits_ack/{signature}", True)
+            return True
+        if fill is not None and clicked is fill:
+            QTimer.singleShot(0, self, self._open_ai_settings_dialog)
+        self._run_block_reason = "开始前提醒：已取消，没有开始识别。"
+        self._append_console_line("[开始前提醒] 已取消，没有开始识别。")
+        return False
+
     def _restore_progress_layout(self):
         settings = self._progress_settings()
         sizes = settings.value("progress/splitterSizes")
@@ -5394,7 +5551,9 @@ class MainWindow(QWidget):
     @staticmethod
     def _completion_task_key(item):
         path = str(getattr(item, 'report_json_path', '') or getattr(item, 'project_path', '') or item.media_path)
-        return str(getattr(item, 'job_id', '') or '') + ':' + path
+        stream = int(getattr(item, 'audio_stream', -1))
+        # One picked audio track of a multi-track file is a result of its own.
+        return str(getattr(item, 'job_id', '') or '') + ':' + path + (f'#a{stream}' if stream >= 0 else '')
 
     def _select_completion_task(self, index):
         tasks = getattr(self, '_completion_tasks', [])
@@ -5867,10 +6026,8 @@ class MainWindow(QWidget):
         if not self._prepare_glossary_for_task():
             return
         def preview(studio):
-            from ..studio.studio_find_replace import FindReplaceDialog
-            dialog = FindReplaceDialog(studio, studio)
-            dialog.tabs.setCurrentIndex(3)
-            dialog.exec()
+            from ..studio.studio_find_replace import GlossaryReviewDialog
+            GlossaryReviewDialog(studio, studio).exec()
         self._open_completion_project(project, mode='edit', source='completion_current_glossary', on_ready=preview)
 
     def _open_completion_report_directory(self):
@@ -6094,12 +6251,39 @@ class MainWindow(QWidget):
         self._retry_cached_failed=True
         self._retry_run_options = replace(snapshot, force_refresh_polish=False,
                                           force_refresh_group=False, overwrite_policy='error',
-                                          settings_snapshot_json=settings_json)
+                                          settings_snapshot_json=settings_json,
+                                          audio_streams_json=self._retry_audio_streams(snapshot, failed))
         self.retry_failed_button.setEnabled(False)
         self._switch_page(0)
         self._refresh_media_summary()
         # 已完成阶段会命中阶段缓存，重试只重跑失败部分
         QTimer.singleShot(0, self, self._start_run)
+
+    def _retry_audio_streams(self, snapshot, failed):
+        """重试失败项 of a multi-track file reruns only the tracks that failed.
+
+        The tracks that finished last time keep their captions: the retry adds
+        to that run's combined result (2026-10-24).
+        """
+        from ..recognition.audio_stream_choice import base_projects, parse_request, request_json
+        request = parse_request(getattr(snapshot, 'audio_streams_json', '') or '')
+        if not request:
+            return ''
+        failed_tracks = {}
+        for item in failed:
+            key = str(Path(item.media_path).resolve())
+            if int(getattr(item, 'audio_stream', -1)) >= 0:
+                failed_tracks.setdefault(key, set()).add(int(item.audio_stream))
+            elif key in request:
+                failed_tracks.setdefault(key, set()).update(pick['ordinal'] for pick in request[key])
+        picks = {key: [pick for pick in request[key] if pick['ordinal'] in ordinals]
+                 for key, ordinals in failed_tracks.items() if key in request}
+        bases = dict(base_projects(snapshot.audio_streams_json))
+        for item in getattr(self, '_last_queue_results', ()) or ():
+            if (item.status in {'success', 'degraded_success'} and item.project_path
+                    and int(getattr(item, 'audio_stream', -1)) < 0):
+                bases[str(Path(item.media_path).resolve())] = str(item.project_path)
+        return request_json(picks, bases)
 
     @staticmethod
     def _supported_paths(paths):
@@ -6483,6 +6667,9 @@ class MainWindow(QWidget):
         # 避免切页重选素材等路径重新启用它。
         self.start_button.setEnabled(ready and not self._run_in_progress)
         if ready:
+            # Which files carry several audio tracks is known before 开始识别.
+            from .home_audio_tracks import warm_up
+            warm_up(self.media_paths)
             preview = "、".join(Path(path).name for path in self.media_paths[:2])
             if len(self.media_paths) > 2:
                 preview += f" 等 {len(self.media_paths)} 个文件"
@@ -7295,32 +7482,26 @@ class MainWindow(QWidget):
         caption — 视频里说的话 → 字幕显示 (翻译成 only while translating), 标点 —
         the output choices name no language, and one line under the row says
         what the subtitles will show.
+
+        2026-10-23 (home design A): each dropdown is a filled field with its
+        caption inside and a round chevron; an arrow chip joins the spoken
+        language to the subtitles, and the summary is a pill with an eye.
         """
+        from .home_widgets import LanguageField
         label = QLabel("字幕语言与输出")
         label.setObjectName("homeLanguageTitle")
-        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         row = QHBoxLayout()
         row.setSpacing(10)
 
         def column(caption, widget, stretch=0, into=None):
-            """A caption over its control; an empty caption keeps the control on the dropdowns' line."""
-            box = QWidget()
-            box.setObjectName("homeLanguageField")
-            lines = QVBoxLayout(box)
-            lines.setContentsMargins(0, 0, 0, 0)
-            lines.setSpacing(4)
-            words = QLabel(" ")
-            if caption:
-                bind_text(words, caption)
-            words.setObjectName("homeLanguageCaption")
-            lines.addWidget(words)
-            lines.addWidget(widget, 1)
+            """One filled field: the caption inside, over its dropdown."""
+            box = LanguageField(caption, widget)
             (into if into is not None else row).addWidget(box, stretch)
             return box
 
         # One row with its own title (home C′, 2026-10-17).
-        column("", label)
+        row.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addSpacing(6)
         saved = dict((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {})
         self.recognition_language = FramelessPopupCombo()
@@ -7347,19 +7528,20 @@ class MainWindow(QWidget):
             combo.setCurrentIndex(max(0, combo.findData(saved.get(key, default))))
             combo.setObjectName("homeLanguageCombo")
         self.spoken_language_field = column("视频里说的话", self.recognition_language, 1)
-        arrow = QLabel("→")
+        arrow = QLabel()
         arrow.setObjectName("homeLanguageArrow")
-        arrow.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        column("", arrow)
+        ui_zoom.set_size(arrow, fixed_w=30, fixed_h=30)
+        self.home_language_arrow = arrow
+        row.addWidget(arrow, 0, Qt.AlignmentFlag.AlignVCenter)
         # 字幕显示 and 翻译成 in one box (the tutorial points at both at once).
         self.subtitle_output_fields = QWidget()
-        self.subtitle_output_fields.setObjectName("homeLanguageField")
+        self.subtitle_output_fields.setObjectName("homeLanguageGroup")
         output_row = QHBoxLayout(self.subtitle_output_fields)
         output_row.setContentsMargins(0, 0, 0, 0)
         output_row.setSpacing(10)
         output_box = column("字幕显示", self.subtitle_output, 1, output_row)
-        self.subtitle_output_caption = output_box.findChild(QLabel, "homeLanguageCaption")
+        self.subtitle_output_caption = output_box.caption
         self.translation_field = column("翻译成", self.translation_script, 1, output_row)
         row.addWidget(self.subtitle_output_fields, 2)
         self._subtitle_language_row = row
@@ -7382,10 +7564,10 @@ class MainWindow(QWidget):
             combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(6)
         layout.addLayout(row)
-        self.subtitle_language_summary = QLabel("")
+        from .home_widgets import MarkedPill
+        self.subtitle_language_summary = MarkedPill(mark="fa5s.eye")
         self.subtitle_language_summary.setObjectName("homeLanguageSummary")
-        self.subtitle_language_summary.setWordWrap(True)
-        layout.addWidget(self.subtitle_language_summary)
+        layout.addWidget(self.subtitle_language_summary, 0, Qt.AlignmentFlag.AlignLeft)
         self.subtitle_language_hint = QLabel("")
         self.subtitle_language_hint.setObjectName("homeTermState")
         self.subtitle_language_hint.setWordWrap(True)
@@ -8906,6 +9088,9 @@ class MainWindow(QWidget):
     def _refresh_ai_summary(self):
         if getattr(self, '_recognition_page_deferred', False):
             return
+        sync_switches = getattr(self, "_sync_ai_switches_with_keys", None)
+        if callable(sync_switches):
+            sync_switches()
         language = getattr(self, "_ui_language", current_language())
         from ..providers.llm_config import effective_ai_identity
         saved = self.legacy.RUNTIME_SETTINGS
@@ -9145,8 +9330,9 @@ class MainWindow(QWidget):
         if label is None or main is None:
             return
         values = main.values()
+        # A step shown off for lack of a key (_sync_ai_switches_with_keys) is not listed.
         duties = [str(tr(name)) for name, switch in (("断句", self.ai_grouping), ("校对", self.ai_polish),
-                                                     ("数字", self.prefer_arabic_numbers)) if switch.isChecked()]
+                                                     ("数字", self.prefer_arabic_numbers)) if switch.is_shown_on()]
         parts = [str(tr("AI 负责：{duties}", duties=" · ".join(duties))) if duties else str(tr("AI 负责的事都关着"))]
         parts.append(str(tr("模型 {model}", model=values.get("model") or tr("默认模型"))))
         if self.separate_group_service.isChecked() and self.separate_group_service.isEnabled():
@@ -9241,6 +9427,34 @@ class MainWindow(QWidget):
         label.setProperty("state", tone)
         label.style().unpolish(label)
         label.style().polish(label)
+
+    def _sync_ai_switches_with_keys(self, *_args) -> tuple:
+        """Show a text-AI step switched off while its key is missing (2026-10-21).
+
+        User: many people do not want to fill in a key, so without one AI
+        校对 / AI 断句 are off by default. The switch keeps the saved choice
+        (``isChecked()``) and is only shown off and locked; a key typed in or
+        saved for that service shows the choice again. Returns the steps that
+        are shown off.
+        """
+        if not all(hasattr(self, name) for name in ("polish_editor", "group_editor", "ai_key_off_note")):
+            return ()
+        missing = text_ai_roles_without_key(
+            self.legacy, self.polish_editor.values(), self.group_editor.values(),
+            unified=self.unified_glm.isChecked(), share_key=self.share_key.isChecked())
+        forced = tuple(role for role, switch in (("polish", self.ai_polish), ("group", self.ai_grouping))
+                       if role in missing and switch.isChecked())
+        self.ai_polish.set_forced_off("polish" in forced)
+        self.ai_grouping.set_forced_off("group" in forced)
+        note = {
+            ("polish", "group"): "没填 API Key：AI 校对和 AI 断句先关闭，这时用本地规则断句。在下面填好 Key 就会自动打开。",
+            ("group",): "全文断句模型没填 API Key：AI 断句先关闭，这时用本地规则断句。填好 Key 就会自动打开。",
+            ("polish",): "字幕校对模型没填 API Key：AI 校对先关闭（字幕照常生成）。填好 Key 就会自动打开。",
+        }.get(forced, "")
+        if note:
+            bind_text(self.ai_key_off_note, note)
+        self.ai_key_off_note.setVisible(bool(note))
+        return forced
 
     def _apply_ai_grouping_mode(self, enabled: bool):
         enabled = bool(enabled)
@@ -9475,6 +9689,18 @@ class MainWindow(QWidget):
                 if message.clickedButton() is open_workshop:
                     self._open_model_workshop()
                 return
+            home_audio_streams = ''
+            if not getattr(self, '_studio_recognition_context', None):
+                # 2026-10-24: a file with several audio tracks first asks which
+                # ones to recognize (home_audio_tracks); its 开始识别 resumes here.
+                choice = self.__dict__.pop('_home_audio_track_choice', None)
+                if choice is not None and choice[0] == tuple(self.media_paths):
+                    home_audio_streams = choice[1]
+                else:
+                    from .home_audio_tracks import begin as ask_audio_tracks
+                    if ask_audio_tracks(self, self._resume_with_audio_tracks):
+                        self._run_block_reason = '正在选择要识别的音轨。'
+                        return
             if not self._save_asr_configuration(show_feedback=True, require_ready=True):
                 return
             # 方案身份 + 脱敏生效参数留痕：验证"用 A/B 启动识别实际参数不同"。
@@ -9544,6 +9770,8 @@ class MainWindow(QWidget):
                 return
             if local_analysis:
                 self._text_ai_local_roles = ()   # an analysis run has no text-AI steps at all
+            if not self._confirm_run_limits():
+                return
             if not self._confirm_run_disclosure():
                 return
             game_name = self.legacy.canonicalize_runtime_game_name(self.game_box.currentText())
@@ -9613,6 +9841,7 @@ class MainWindow(QWidget):
                 ),
                 speaker_source=__import__('twobyteasr.recognition.speaker_strategy',fromlist=['resolve']).resolve(
                     self.legacy.RUNTIME_SETTINGS,(getattr(self, "_studio_recognition_context", None) or {}).get("speaker_source")),
+                audio_streams_json=home_audio_streams,
             )
             self._last_run_options = options
             self._launch_pipeline_worker(options)
@@ -9631,6 +9860,11 @@ class MainWindow(QWidget):
         finally:
             if not launched:
                 self._release_run_state()
+
+    def _resume_with_audio_tracks(self, paths, request):
+        """The home track picker's 开始识别: start the run with these picks."""
+        self._home_audio_track_choice = (tuple(paths), str(request or ''))
+        QTimer.singleShot(0, self, self._start_run)
 
     def _dispatch_recognition_job(self, job_id, callback, *args, allow_committed=False):
         """Queued signals belong to the launching job, never the current title."""
@@ -9983,7 +10217,7 @@ class MainWindow(QWidget):
         self.running_indicator.set_status('运行中', 'accent')
         bind_text(self.stage_step_label, '第 {step} / {total} 步', step=focus_id, total=total)
         bind_text(self.progress_stage, moss_action(payload.get('phase')) if moss else stage_action(item.get('label')))
-        metrics, quiet = [], None
+        metrics, quiet, wait = [], None, None
         if started:
             metrics.append((tr('已运行'), clock(now_perf - started)))
         if moss:
@@ -10019,7 +10253,7 @@ class MainWindow(QWidget):
             metrics.append((tr('已完成批次'), f"{payload.get('completed_chunks', 0)} / {payload.get('total_chunks', 0)}"))
             metrics.append((tr('已处理音频'), clock(payload.get('processed_end', 0))))
         elif kind == 'asr_progress':
-            from .progress_model import cloud_job_phase, upload_progress
+            from .progress_model import cloud_job_phase, cloud_wait, upload_progress
             phase = cloud_job_phase(payload)
             if phase is not None:
                 # Async cloud recognition: upload, queue and processing states (2026-10-15).
@@ -10027,8 +10261,20 @@ class MainWindow(QWidget):
                 sent = upload_progress(payload)
                 if sent is not None:
                     metrics.append((tr('已上传'), tr(sent[0], **sent[1])))
-            if phase is None or int(payload.get('total_batches') or 0) > 1:
+            # While the provider has the request: which one and how long it has
+            # waited (2026-10-23: "1 / 2 · 0 秒前" for 24 minutes read as frozen).
+            wait = cloud_wait(payload, since(live['at']) if live.get('at') else 0.0)
+            batches = int(payload.get('total_batches') or 0)
+            if phase is None or batches > 1:
                 metrics.append((tr('已返回批次'), f"{payload.get('completed_batches', 0)} / {payload.get('total_batches', 0)}"))
+            # Several MOSI requests can be in the cloud at once (2026-10-23);
+            # the wait shown is the longest one's.
+            active = [int(index) for index in payload.get('active_requests') or ()]
+            if batches > 1 and (active or wait is not None):
+                current = ', '.join(map(str, active)) or str(int(payload.get('completed_batches') or 0) + 1)
+                metrics.append((tr('当前分段'), f"{current} / {batches}"))
+            if wait is not None:
+                metrics.append((tr('本段已等') if batches > 1 and len(active) <= 1 else tr('云端已等'), clock(wait[0])))
             if phase is None or 'cue_count' in payload:
                 metrics.append((tr('临时转写'), tr('{count} 条', count=payload.get('cue_count', 0))))
             if live.get('at'):
@@ -10078,6 +10324,11 @@ class MainWindow(QWidget):
             else:
                 note = tr('已有 {seconds} 秒未收到新数据，请求还没有结束。', seconds=int(quiet))
                 detail = tr('云端模型生成较长内容时，可能较长时间没有返回。可以继续等待，也可以安全取消。')
+        elif wait is not None and wait[1]:
+            note = tr('这一段在云端已等 {minutes} 分钟，比平常久很多。', minutes=int(wait[0] // 60))
+            detail = tr('约 {audio} 分钟的音频平常几分钟内就会识别完，服务商那边可能在排队或卡住了。'
+                        '可以继续等待，也可以安全取消：任务编号已保存，下次开始会接着查询原来的任务，不会重新上传或重复计费。',
+                        audio=max(1, round(float(payload.get('request_audio_seconds') or 0) / 60)))
         self._set_stage_note(note, detail)
 
     def _api_step_metrics(self, step):
@@ -10411,8 +10662,23 @@ class MainWindow(QWidget):
             self._append_feed('交付', label, BLUE)
             if getattr(self, '_studio_recognition_context', None):
                 self.studio_page.set_recognition_runtime_stage(label, str(event.payload.get('project_path','')))
+        elif event.kind == "audio_lane_started":
+            payload = event.payload
+            label = tr('音轨 {index}/{total} · {label}', index=payload.get('lane_index', 1),
+                       total=payload.get('lane_total', 1), label=payload.get('label', ''))
+            self._append_feed('音轨', label, BLUE)
+            if getattr(self, '_studio_recognition_context', None):
+                self.studio_page.set_recognition_lane_note(label)
+        elif event.kind in {"audio_lane_failed", "audio_lane_finished"}:
+            payload = event.payload
+            if event.kind == "audio_lane_failed" or payload.get('status') not in {'success', 'degraded_success'}:
+                self._append_feed('音轨', tr('{lane} 未完成：{reason}', lane=payload.get('label') or payload.get('audio_lane', ''),
+                                            reason=payload.get('error') or payload.get('status', '')), BLUE)
         elif event.kind == "cue_delta":
-            if getattr(self, "_studio_recognition_context", None):
+            context = getattr(self, "_studio_recognition_context", None)
+            # Picked tracks are combined at the end; one track's live rows
+            # must not stand in for the captions of the others meanwhile.
+            if context and not context.get("audio_lanes"):
                 self.studio_page.apply_recognition_cue_delta(event.payload)
             cue_count = len(event.payload.get("cues", ()) or ())
             label = "最终字幕" if event.payload.get("state") == "final" else "临时转写（待校对）"
@@ -10735,6 +11001,7 @@ class MainWindow(QWidget):
         self._last_recognition_report = ''
         self._last_srt_dir = ''
         self._last_failed_items = []
+        self._last_queue_results = list(result.results)
         outcomes = []
         self.result_task_selector.blockSignals(True)
         self.result_task_selector.clear()
@@ -10784,8 +11051,11 @@ class MainWindow(QWidget):
             self._completion_task_evidence[self._completion_task_key(item)] = dict(outcome=outcome,
                 project_error=project_error, review_count=outcome.review_issue_count, output_paths=output_paths, details_html=content, display_payload=report, path_entries=[(label, target) for label, target in (('工程', item.project_path), ('字幕', item.srt_path), ('JSON 报告', item.report_json_path), ('报告', item.report_text_path)) if target], path_lines=[f'{label}：{target}' for label, target in (('工程', item.project_path), ('字幕', item.srt_path), ('JSON 报告', item.report_json_path), ('报告', item.report_text_path)) if target])
             self._completion_tasks.append((item, project))
-            self.result_task_selector.addItem(Path(item.media_path).name)
-            self.result_task_selector.setItemData(self.result_task_selector.count()-1, Path(item.media_path).name, Qt.ItemDataRole.ToolTipRole)
+            task_name = Path(item.media_path).name
+            if int(getattr(item, 'audio_stream', -1)) >= 0:
+                task_name = str(join_text((task_name, tr('音轨 {number}', number=int(item.audio_stream) + 1)), ' · '))
+            self.result_task_selector.addItem(task_name)
+            self.result_task_selector.setItemData(self.result_task_selector.count()-1, task_name, Qt.ItemDataRole.ToolTipRole)
             if outcome.polish_retryable or outcome.search_retryable or outcome.core_status == 'failed':
                 self._last_failed_items.append(item)
         self.result_task_selector.blockSignals(False)

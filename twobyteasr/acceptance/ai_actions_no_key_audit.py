@@ -455,7 +455,7 @@ def start(window, out):
             capture('studio-after-no-key')
 
             # ---- the other Studio AI actions without a key ----------------------------
-            from ..studio.studio_find_replace import FindReplaceDialog
+            from ..studio.studio_find_replace import AiCleanupDialog, GlossaryReviewDialog
             from ..studio.studio_translation_dialog import SubtitleTranslationDialog
             before = len(_submits)
             page._toggle_drawer(0)   # AI 设计
@@ -470,22 +470,23 @@ def start(window, out):
                   and len(_submits) == before and not _blocked, page.ai_generate.text())
             found = {}
 
-            def cleanup_and_terms(dialog):
-                dialog.tabs.setCurrentIndex(2)   # AI 清理
-                pump(.4)
+            def cleanup(dialog):
                 plan.update(note='cancel', label='cleanup')
                 press(dialog.ai_run_button)
                 pump(.3)
                 found['cleanup'] = dialog.status_label.text()
-                dialog.tabs.setCurrentIndex(3)   # 应用术语库
-                pump(.4)
+
+            def terms(dialog):
                 plan.update(note='cancel', label='terms-preview')
                 press(dialog.terms_ai_button)
                 pump(.3)
                 found['terms'] = dialog.status_label.text()
                 found['worker'] = dialog._glossary_review_worker is not None
 
-            outcome = with_dialog(FindReplaceDialog, cleanup_and_terms, page._open_find_replace)
+            # 2026-10-21: AI 清理 opens from the cue list; 应用术语库 is its own window.
+            outcome = with_dialog(AiCleanupDialog, cleanup, lambda: press(page.cue_cleanup_button))
+            terms_outcome = with_dialog(GlossaryReviewDialog, terms, lambda: GlossaryReviewDialog(page, page).exec())
+            outcome = outcome if outcome.get('error') else terms_outcome
             check('查找替换「生成 AI 预览」 without a key: the note, nothing sent',
                   len(notes_at('cleanup')) == 1 and found.get('cleanup') == 'AI 清理没有运行：还没填 API Key'
                   and len(_submits) == before and not _blocked, dict(found=found, error=outcome.get('error')))
@@ -559,14 +560,12 @@ def start(window, out):
                   dict(seen=seen, error=outcome.get('error')))
 
             def cleanup_with_key(dialog):
-                dialog.tabs.setCurrentIndex(2)
-                pump(.4)
                 plan.update(note='cancel', label='cleanup-with-key')
                 press(dialog.ai_run_button)
                 pump(.6)
                 seen.update(cleanup=dialog.status_label.text())
 
-            outcome = with_dialog(FindReplaceDialog, cleanup_with_key, page._open_find_replace)
+            outcome = with_dialog(AiCleanupDialog, cleanup_with_key, lambda: press(page.cue_cleanup_button))
             check('with a key AI 清理 runs as before (no note, request sent)',
                   not notes_at('cleanup-with-key') and any(row['kind'] == 'cleanup' for row in requests) and not _blocked,
                   dict(status=seen.get('cleanup'), error=outcome.get('error')))

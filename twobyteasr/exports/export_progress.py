@@ -13,7 +13,7 @@ class ExportProgress:
         if advanced:
             self.weights.append(('advanced_render', 2 if static_advanced else 35))
         used = sum(w for _, w in self.weights)
-        self.weights.extend([('encode', 96-used), ('mux', 4)])
+        self.weights.extend([('encode', 96-used), ('mux', 1), ('validate', 3)])
         self.percent = 0.
         self.started = time.monotonic()
         self.stage = ''
@@ -37,6 +37,6 @@ class ExportProgress:
                 self.percent = max(self.percent, min(99., base + weight*fraction))
                 break
             base += weight
-        if stage == 'mux' and raw not in (None, '') and float(raw) >= 100:
+        if stage in {'mux', 'validate'} and raw not in (None, '') and float(raw) >= 100:
             self.percent = 100.
         return self.percent, fraction*100 if raw not in (None, '') or media_time is not None else None

@@ -26,6 +26,7 @@ from .studio_reasr import (LocalReASRResult, run_local_reasr)
 from ..design.presentation import field_width
 from ..design.studio_theme import studio_message_box
 from ..playback.waveform_cache import (WaveformCache, generate_progressive_waveform_cache)
+from ..timeline.audio_stream_lanes import (split_waveform_job, stream_time_mapping, waveform_job, waveform_streams_for)
 
 from ..i18n import bind_text
 
@@ -237,6 +238,8 @@ class StudioMediaFlowMixin:
         identity = data.get("identity")
         media_path = str(self.project.media.path or "")
         if not isinstance(identity, Mapping):
+            # Kept apart from "no audio": recognition says which one it is.
+            self._media_probe_error = str(data.get("error") or "unable to probe media")
             self._studio_trace(
                 "P74C_MEDIA_CONTRACT_PROBE_FAILED",
                 project_id=str(project_id),
@@ -251,13 +254,20 @@ class StudioMediaFlowMixin:
             from ..projects.studio_project import hydrate_media_contract
 
             started = perf_counter()
+            lanes_before = {track.id for track in self.project.audio_tracks}
             asset = hydrate_media_contract(
                 self.project,
                 identity,
                 source_path=media_path,
             )
+            self._media_probe_error = ""
             self.timeline.refresh_media_graph()
             self._refresh_edit_playback_state()
+            if {track.id for track in self.project.audio_tracks} - lanes_before:
+                # A project saved before multi-track import gained the
+                # source's further audio streams: draw their waveforms too.
+                self.timeline._sync_track_minimum_height()
+                self._generate_project_waveforms()
             self._sync_multitrack_preview_at(int(self.timeline.playhead_ms))
             self._studio_trace(
                 "MEDIA_CONTRACT_PROBE_READY",
@@ -533,6 +543,7 @@ class StudioMediaFlowMixin:
                         "video_best_effort_timestamp_ms": result.video_best_effort_timestamp_ms,
                         "audio_best_effort_timestamp_ms": result.audio_best_effort_timestamp_ms,
                         "sample_timeline_origin_ms": result.sample_timeline_origin_ms,
+                        "audio_streams": result.audio_streams,
                     },
                     source_path=result.source_path,
                 )
@@ -573,6 +584,7 @@ class StudioMediaFlowMixin:
                         "best_effort_timestamp_ms": result.audio_best_effort_timestamp_ms,
                         "sample_timeline_origin_ms": result.sample_timeline_origin_ms,
                         "source_start_ms": result.source_start_ms,
+                        "streams": [dict(row) for row in result.audio_streams],
                     },
                 )
                 if pending_mode == "timeline":
@@ -746,6 +758,11 @@ class StudioMediaFlowMixin:
                 tr('请先保存工程'),
                 tr('保存工程后才能把识别结果写回同一个工程。'),
             )
+            return
+        audio_problem = self._recognition_audio_problem(project)
+        if audio_problem is not None:
+            title, message = audio_problem
+            studio_message_box(self, QMessageBox.Icon.Information, title, message)
             return
 
         host = self.window()
@@ -1352,7 +1369,7 @@ class StudioMediaFlowMixin:
                 "translation_script": str(translation_target.currentData() or "zh-Hans"),
             }
 
-        def dispatch(action: str) -> None:
+        def dispatch(action: str, lanes=None) -> None:
             modal = getattr(host, "_modal_host", None)
             if action == "configure":
                 if modal is not None:
@@ -1367,6 +1384,9 @@ class StudioMediaFlowMixin:
                     return
                 action='start_analysis'
             self._recognition_request_options = request_options()
+            if lanes:
+                # 2026-10-24: the picked audio tracks, each recognized on its own.
+                self._recognition_request_options["audio_lanes"] = [dict(row) for row in lanes]
             self._recognition_started_at = perf_counter()
             # 四十二轮：识别转后台。①弹窗立即关闭（状态进左侧字幕列表芯片），
             # 否则 _start_run 预检分支的 QMessageBox 会被 ModalHost 盖住形成
@@ -1386,6 +1406,7 @@ class StudioMediaFlowMixin:
                 modal.hide_content()
             self._recognition_running = True
             self._recognition_cancelling = False
+            self._recognition_lane_note = None
             self._recognition_status_sticky = ""
             self._recognition_show_status("准备模型", "")
             if getattr(self, "_recognition_runtime_timer", None) is not None:
@@ -1395,7 +1416,39 @@ class StudioMediaFlowMixin:
             self._recognition_runtime_timer.start(250)
             self.recognition_requested.emit(action, media_path, project_path)
 
+        def open_track_picker() -> None:
+            analysis = local_analysis.isChecked()
+
+            def restore_sheet() -> None:
+                host_modal = getattr(host, "_modal_host", None)
+                if host_modal is not None:
+                    host_modal.show_content(sheet, title="识别字幕", size=sheet_size(),
+                                            min_size=(760, 420), retain_content=True)
+                    QTimer.singleShot(0, fit_card)
+
+            def start_with(lanes) -> None:
+                self._finish_track_picker(picker)
+                self._remember_track_choice(lanes)
+                dispatch("start_final", lanes=lanes)
+
+            def cancel() -> None:
+                self._finish_track_picker(picker)
+                restore_sheet()
+
+            picker = self._open_audio_track_picker(on_closed=lambda: self._finish_track_picker(picker),
+                                                    single=analysis)
+            if picker is None:
+                dispatch("start_final")
+                return
+            picker.accepted.connect(start_with)
+            picker.cancelled.connect(cancel)
+
         def start_clicked() -> None:
+            if self._recognition_needs_track_picker(project):
+                # Several audio tracks: which ones is the user's call. The
+                # picker also shows what happens to existing captions.
+                open_track_picker()
+                return
             if project.cues:
                 # The second press confirms; the button's place keeps the panel's height.
                 start.hide()
@@ -1454,6 +1507,95 @@ class StudioMediaFlowMixin:
         else:
             self.recognition_requested.emit("configure", media_path, project_path)
 
+    def _recognition_audio_problem(self, project):
+        """(title, message) when there is nothing to recognize, else None.
+
+        2026-10-24: a source probed without any audio stream says so, and a
+        source whose probe failed says that instead; both used to start a
+        run on silence.
+        """
+        from ..timeline.audio_stream_lanes import recognizable_lanes
+        if recognizable_lanes(project):
+            return None
+        used = {clip.asset_id for track in (*project.video_tracks, *project.audio_tracks) for clip in track.clips}
+        assets = [asset for asset in project.media_pool if asset.asset_id in used]
+        probe_error = str(getattr(self, "_media_probe_error", "") or "")
+        if probe_error:
+            return tr('无法读取音轨信息'), tr('读取素材的音轨信息失败：{error}', error=probe_error)
+        if assets and all((asset.audio_metadata or {}).get("has_audio") is False for asset in assets):
+            return tr('没有可识别的音轨'), tr('此素材没有可识别的音轨。请导入带声音的视频或音频。')
+        return None
+
+    def _recognition_needs_track_picker(self, project) -> bool:
+        """A multi-track source on the timeline and more than one audio lane."""
+        from ..timeline.audio_stream_lanes import has_multitrack_source, recognizable_lanes
+        return has_multitrack_source(project) and len(recognizable_lanes(project)) >= 2
+
+    def _open_audio_track_picker(self, *, on_closed=None, single=False):
+        project = self.project
+        host = self.window()
+        modal = getattr(host, "_modal_host", None)
+        if project is None or modal is None:
+            return None
+        from ..recognition.audio_lane_results import CHOICE_KEY, SUMMARY_KEY
+        from ..timeline.audio_stream_lanes import recognizable_lanes
+        from .audio_track_picker import AudioTrackPicker, default_choice
+        rows = recognizable_lanes(project)
+        timeline = getattr(self, "timeline", None)
+        selected = []
+        if timeline is not None:
+            explicit = {str(getattr(timeline, "selected_audio_track_id", "") or "")}
+            clip_ids = set(getattr(timeline, "selected_audio_clip_ids", ()) or ())
+            explicit |= {track.id for track in project.audio_tracks if any(c.id in clip_ids for c in track.clips)}
+            selected = [lane for lane in explicit if lane]
+        checked = default_choice(rows, selected_lanes=selected,
+                                 remembered=project.studio_state.get(CHOICE_KEY) or ())
+        if single:
+            checked = checked[:1]
+        picker = AudioTrackPicker(project, rows, checked, start_ms=int(timeline.playhead_ms) if timeline else 0,
+                                  previous=project.generation_metadata.get(SUMMARY_KEY) or {}, single=single)
+        picker.preview_started.connect(self._pause_for_track_preview)
+        self._studio_trace("AUDIO_TRACK_PICKER_OPEN", lanes=[row["lane_id"] for row in rows], checked=checked,
+                           streams=[[row["ordinal"], row["stream_index"]] for row in rows])
+        # Intro, source header, a ~70 px row per track, count, note, impact, buttons.
+        height = min(max(420, host.height() - 48), 380 + 72 * len(rows))
+        modal.show_content(picker, title="选择要识别的音轨", size=(660, height), min_size=(520, 360),
+                           on_closed=on_closed)
+        return picker
+
+    def _pause_for_track_preview(self) -> None:
+        """A preview never plays over the timeline; resume when the picker closes."""
+        video = getattr(self, "video", None)
+        try:
+            playing = bool(video is not None and video.controller
+                           and not video.playback_position_snapshot().paused)
+        except (RuntimeError, AttributeError):
+            playing = False
+        self._track_preview_resume = playing
+        if playing:
+            video.set_paused(True)
+            self._sync_play_button(True)
+
+    def _finish_track_picker(self, picker) -> None:
+        if picker is not None:
+            picker.shutdown()
+        if getattr(self, "_track_preview_resume", False):
+            self._track_preview_resume = False
+            try:
+                self.video.set_paused(False)
+                self._sync_play_button(False)
+            except (RuntimeError, AttributeError):
+                pass
+
+    def _remember_track_choice(self, lanes) -> None:
+        """This project's track choice, bound to the source file and stream."""
+        from ..recognition.audio_lane_results import CHOICE_KEY
+        from ..timeline.audio_stream_lanes import source_key
+        if self.project is not None:
+            self.project.studio_state[CHOICE_KEY] = [source_key(row) for row in lanes]
+            self._studio_trace("AUDIO_TRACK_PICKER_START", lanes=[row["lane_id"] for row in lanes],
+                               streams=[[row["ordinal"], row["stream_index"]] for row in lanes])
+
     def recognition_request_options(self) -> dict:
         return copy.deepcopy(getattr(self, "_recognition_request_options", {}))
 
@@ -1464,14 +1606,21 @@ class StudioMediaFlowMixin:
             return None
         return frame, label
 
+    def set_recognition_lane_note(self, note) -> None:
+        """'音轨 1/2 · 中文配音': which picked track is being recognized."""
+        self._recognition_lane_note = note
+        self._update_recognition_elapsed(force=True)
+
     def _recognition_status_text(self) -> str:
         running = bool(getattr(self, "_recognition_running", False))
         started = float(getattr(self, "_recognition_started_at", 0.0) or 0.0)
         label = getattr(self, "recognition_chip_label", None)
         stage = getattr(self, "_recognition_stage_message", None) or ((label.property("recognitionStage") if label is not None else "") or "识别中")
+        lane = getattr(self, "_recognition_lane_note", None) if running else None
         if running and started:
             elapsed = max(0, int(perf_counter() - started))
-            return tr('识别中 · {stage} · {minutes:02d}:{seconds:02d}', stage=stage if hasattr(stage, "source") else tr(stage), minutes=elapsed//60, seconds=elapsed%60)
+            text = tr('识别中 · {stage} · {minutes:02d}:{seconds:02d}', stage=stage if hasattr(stage, "source") else tr(stage), minutes=elapsed//60, seconds=elapsed%60)
+            return tr('{lane} · {status}', lane=lane, status=text) if lane else text
         return stage if hasattr(stage, "source") else tr(stage)
 
     def _sync_recognition_zero_state(self) -> None:
@@ -1727,13 +1876,17 @@ class StudioMediaFlowMixin:
             studio_message_box(self, QMessageBox.Icon.Critical, tr('导入字幕失败'), str(exc))
 
     def _generate_waveform(self, media_path: str) -> None:
-        media_key = str(Path(media_path).resolve())
+        # ``media_path`` is a waveform job: a path, or ``path|aN`` for audio
+        # stream N of a multi-track source (2026-10-24).
+        media_path, audio_stream = split_waveform_job(media_path)
+        media_key = waveform_job(str(Path(media_path).resolve()), audio_stream)
+        source_key = str(Path(media_path).resolve())
         self._studio_mark_startup_milestone("WAVEFORM_REQUESTED", media_path=media_key)
         self._studio_mark_startup_milestone("WAVEFORM_CACHE_LOOKUP", media_path=media_key)
-        cache = self.timeline.waveform_cache_for_source(media_key)
+        cache = self.timeline.waveform_cache_for_source(source_key, audio_stream)
         if (
             cache is not None
-            and str(Path(cache.metadata.source_path).resolve()) == media_key
+            and str(Path(cache.metadata.source_path).resolve()) == source_key
         ):
             self._waveform_last_ready_media = media_key
             self.timeline.set_waveform_state("READY")
@@ -1765,10 +1918,10 @@ class StudioMediaFlowMixin:
         def resolve_duration_ms() -> int:
             duration = 0
             if self.project is not None:
-                if str(Path(self.project.media.path).resolve()) == media_key:
+                if str(Path(self.project.media.path).resolve()) == source_key:
                     duration = int(self.project.media.duration_ms or 0)
                 for asset in self.project.media_pool:
-                    if str(Path(asset.canonical_source).resolve()) == media_key:
+                    if str(Path(asset.canonical_source).resolve()) == source_key:
                         duration = max(duration, int(asset.duration_ms or 0))
             if not duration and self.project is not None:
                 mapping = getattr(self.project, "studio_state", {}).get("media_time_mapping", {})
@@ -1805,10 +1958,8 @@ class StudioMediaFlowMixin:
                     media_path,
                     ffmpeg,
                     cancelled=cancel_event.is_set,
-                    time_mapping=(
-                        dict(getattr(self.project, "studio_state", {}).get("media_time_mapping", {}))
-                        if self.project is not None else None
-                    ),
+                    time_mapping=stream_time_mapping(self.project, source_key, audio_stream),
+                    audio_stream=audio_stream,
                     on_ready=publish,
                     before_refine=lambda: self._resource_governor.wait_until_allowed(
                         ResourceKind.WAVEFORM,
@@ -1861,11 +2012,12 @@ class StudioMediaFlowMixin:
             self._studio_mark_startup_milestone("WAVEFORM_VISIBLE", media_path=media_key, stage=stage)
             if stage == "partial":
                 duration = 0
+                source_key = split_waveform_job(media_key)[0]
                 if self.project is not None:
-                    if str(Path(self.project.media.path).resolve()) == media_key:
+                    if str(Path(self.project.media.path).resolve()) == source_key:
                         duration = int(self.project.media.duration_ms or 0)
                     for asset in self.project.media_pool:
-                        if str(Path(asset.canonical_source).resolve()) == media_key:
+                        if str(Path(asset.canonical_source).resolve()) == source_key:
                             duration = max(duration, int(asset.duration_ms or 0))
                 coverage = int(cache.metadata.coverage_end_ms or 0)
                 if duration > 0 and coverage < duration:
@@ -1892,7 +2044,7 @@ class StudioMediaFlowMixin:
             ]
         while self._waveform_pending_media:
             media_path = self._waveform_pending_media[0]
-            if self.timeline.waveform_cache_for_source(media_path) is not None:
+            if self.timeline.waveform_cache_for_source(*split_waveform_job(media_path)) is not None:
                 self._waveform_pending_media.pop(0)
                 continue
             self._generate_waveform(media_path)
@@ -1904,14 +2056,23 @@ class StudioMediaFlowMixin:
         from ..projects.studio_project import _asset_has_audio
 
         pending: list[str] = []
+        later: list[str] = []
         for asset in self.project.media_pool:
             if not _asset_has_audio(asset):
                 continue
             source = str(asset.canonical_source or "").strip()
             if source and Path(source).is_file():
                 resolved = str(Path(source).resolve())
-                if resolved not in pending:
-                    pending.append(resolved)
+                # The audible lanes' streams first; further streams of a
+                # multi-track source follow in the background.
+                lead, rest = waveform_streams_for(self.project, asset.asset_id)
+                for stream in lead:
+                    if waveform_job(resolved, stream) not in pending:
+                        pending.append(waveform_job(resolved, stream))
+                for stream in rest:
+                    if waveform_job(resolved, stream) not in later:
+                        later.append(waveform_job(resolved, stream))
+        pending += [job for job in later if job not in pending]
         self._waveform_pending_media = pending
         for source in pending:
             self._studio_mark_startup_milestone("WAVEFORM_REQUESTED", media_path=source)

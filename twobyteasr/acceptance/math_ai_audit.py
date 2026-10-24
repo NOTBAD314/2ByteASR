@@ -285,11 +285,10 @@ def start(window, out):
                 studio._toggle_playback()
                 pump(.3)
             before = [cue.text for cue in studio.project.cues]
-            from ..studio.studio_find_replace import FindReplaceDialog
+            from ..studio.studio_find_replace import AiCleanupDialog, GlossaryReviewDialog
             seen = {}
 
-            def terms_and_cleanup(dialog):
-                dialog.tabs.setCurrentIndex(3)
+            def terms(dialog):
                 pump(.5)
                 seen['libraries'] = dialog._selected_library_ids()
                 QTest.mouseClick(dialog.terms_ai_button, Qt.MouseButton.LeftButton)
@@ -297,7 +296,8 @@ def start(window, out):
                 pump(.8)
                 seen['terms_status'] = dialog.status_label.text()
                 capture('find-replace-terms', dialog)
-                dialog.tabs.setCurrentIndex(2)
+
+            def cleanup(dialog):
                 pump(.4)
                 QTest.mouseClick(dialog.ai_run_button, Qt.MouseButton.LeftButton)
                 wait(lambda: any(r['kind'] == 'cleanup' for r in requests), 60)
@@ -305,7 +305,9 @@ def start(window, out):
                 seen['cleanup_status'] = dialog.status_label.text()
                 capture('find-replace-cleanup', dialog)
 
-            outcome = with_dialog(FindReplaceDialog, terms_and_cleanup, studio._open_find_replace)
+            outcome = with_dialog(GlossaryReviewDialog, terms, lambda: GlossaryReviewDialog(studio, studio).exec())
+            cleanup_outcome = with_dialog(AiCleanupDialog, cleanup, studio._open_ai_cleanup)
+            outcome = outcome if outcome.get('error') else cleanup_outcome
             check('查找替换 ran AI 校对预览 and AI 清理 with the project library',
                   library in seen.get('libraries', ()) and any(r['kind'] == 'polish' for r in requests)
                   and any(r['kind'] == 'cleanup' for r in requests), dict(seen=seen, error=outcome.get('error')))

@@ -1141,7 +1141,7 @@ class AdvancedRendererBackend:
         if job.video_graph:
             from dataclasses import replace
             from ..exports.timeline_media import resolve_video_graph
-            job = replace(job, video_graph=resolve_video_graph(job.video_graph, ffmpeg_path, cancelled=cancelled))
+            job = replace(job, video_graph=resolve_video_graph(job.video_graph, ffmpeg_path, cancelled=cancelled, seekable=True))
         if static_graph_project(project) and job.video_graph and simple_video_clips(job.video_graph) is not None:
             from dataclasses import replace
             source_fps=job.settings.fps or job.video_graph.get('fps')

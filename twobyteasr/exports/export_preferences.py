@@ -11,7 +11,7 @@ def clean_affix(value):
 
 def output_basename(base, prefix='', suffix=''):
     base = str(base or '').strip()
-    while re.search(r'\.(mp4|mkv|mov|webm|flv)$', base, re.I):
+    while re.search(r'\.(mp4|mkv|mov|webm|flv|mp3|wav|m4a|flac|ogg|opus)$', base, re.I):
         base = base.rsplit('.', 1)[0]
     name = f'{prefix}{base}{suffix}'
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip(' .') or '字幕视频'

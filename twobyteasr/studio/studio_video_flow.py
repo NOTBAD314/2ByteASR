@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QCursor, QPixmap
 from PySide6.QtWidgets import (QInputDialog)
 from ..playback.audio_playback_graph import solo_track_ids
 from ..timeline.studio_edit_commands import (delete_video_segments_command, razor_video_command, set_video_lock_command)
+from ..timeline.studio_clip_edit import video_track_locked
 from ..timeline.studio_edit_sequence import (sequence_of, timeline_duration_ms)
 from ..projects.studio_project import SubtitleProject
 from ..timeline.studio_sequence_mapper import timeline_to_source
@@ -241,6 +242,16 @@ class StudioVideoFlowMixin:
         )
         return track, clip
 
+    def _unlock_selected_video_track(self):
+        track, clip = self._selected_video_clip()
+        if track is None or clip is None:
+            return
+        from ..timeline.studio_media_commands import media_graph_command
+        from ..timeline.studio_media_pool import set_video_track_state
+        self.undo_stack.push(media_graph_command(self.project, '解锁视频轨',
+            lambda working: set_video_track_state(working, track.id, locked=False)))
+        self._refresh_video_transform_panel()
+
     def _video_clip_move_committed(self, track_id: str, clip_id: str, timeline_in_ms: int) -> None:
         self._commit_clip_edit(track_id, 'move', clip_id=clip_id, start=int(timeline_in_ms),
                                clip_ids=self.timeline.selected_segment_ids)
@@ -447,6 +458,7 @@ class StudioVideoFlowMixin:
             for control in controls:
                 control.blockSignals(False)
             self._updating_video_transform_ui = False
+        self._video_scale_previous = (self.video_scale_x.value(), self.video_scale_y.value())
 
     # ------------------------------------- 素材效果（ADR-0005，四十五轮）
 
@@ -483,7 +495,7 @@ class StudioVideoFlowMixin:
                 color = QColor("#00FF00")
             self.video_key_color_hex.setText(color.name().upper())
             self.video_key_color.setStyleSheet(
-                f"background: {color.name()}; border: 1px solid rgba(255,255,255,0.35); border-radius: 4px;"
+                f"background: {color.name()}; border: 0; border-radius: 9px;"
             )
             self.video_key_similarity.setValue(round(float(chroma.get("similarity", 0.32) or 0.0) * 100))
             self.video_key_smoothness.setValue(round(float(chroma.get("smoothness", 0.10) or 0.0) * 100))
@@ -497,7 +509,9 @@ class StudioVideoFlowMixin:
         if getattr(self, "_updating_video_transform_ui", False):
             return
         _track, clip = self._selected_video_clip()
-        if clip is None or _track.locked:
+        if clip is None or video_track_locked(self.project, _track):
+            self._video_effects_preview_overrides.clear()
+            self._refresh_video_transform_panel()
             return
         self._video_effects_preview_overrides[clip.id] = self._video_effects_values_from_controls()
         self._sync_video_compositor(int(self.timeline.playhead_ms))
@@ -508,7 +522,7 @@ class StudioVideoFlowMixin:
         track, clip = self._selected_video_clip()
         if track is None or clip is None:
             return
-        if track.locked:
+        if video_track_locked(self.project, track):
             bind_text(self.save_state, '轨道已锁定，请先解锁')
             return
         effects = self._video_effects_values_from_controls()
@@ -550,16 +564,22 @@ class StudioVideoFlowMixin:
                     spin.setValue(int(self.project.studio_state.get("default_"+media+"_transition_ms",fallback)) if self.project else fallback)
             from .studio_transition_ui import refresh_defaults
             refresh_defaults(self)
-        if not hasattr(self, "video_transform_controls"):
+        if not hasattr(self, "video_audio_enabled"):
             return
         track, clip = self._selected_video_clip()
-        enabled = clip is not None and not track.locked
+        locked = bool(track is not None and video_track_locked(self.project, track))
+        enabled = clip is not None and not locked
         for control in [
             *self.video_transform_controls, self.video_fit_mode, self.video_audio_enabled,
             self.video_blend_mode, self.video_key_enabled, self.video_key_color,
             self.video_key_similarity, self.video_key_smoothness, self.video_key_spill,
         ]:
-            control.setEnabled(enabled and not bool(track.locked if track else False))
+            control.setEnabled(enabled)
+            control.setToolTip(tr('轨道已锁定，点击上方「解锁轨道」后可调整。') if locked else '')
+        self.video_scale_link.setEnabled(enabled)
+        self.video_transform_reset.setEnabled(enabled)
+        self.video_unlock_button.setVisible(locked)
+        self.video_lock_notice.setVisible(locked)
         self.video_audio_solo.setEnabled(track is not None)
         # 四十五轮（agy 评审）：选中标签显示素材文件名与时间范围，不裸露
         # 内部 clip hash（用户无从核对）。
@@ -575,7 +595,7 @@ class StudioVideoFlowMixin:
                     asset_name = ""
             bind_text(self.video_transform_selection_label, f"{track.id} · {asset_name or '素材'} · {clip.timeline_in_ms / 1000:.1f}s–{clip.timeline_out_ms / 1000:.1f}s")
         else:
-            bind_text(self.video_transform_selection_label, '在时间线选择一个视频片段')
+            bind_text(self.video_transform_selection_label, '在时间线选择视频片段或字幕')
         self._show_video_transform_placeholders(clip is None)
         if clip is not None:
             values = dict(vars(clip.transform))
@@ -622,13 +642,74 @@ class StudioVideoFlowMixin:
             self.video_audio_mode.setEnabled(False)
         self.video_audio_master.blockSignals(False)
         self.video_audio_mode.blockSignals(False)
+        refresh_summaries = getattr(self, "_refresh_video_summaries", None)
+        if callable(refresh_summaries):
+            refresh_summaries()  # the fold cards' one-line summaries (2026-10-23)
+        self._sync_video_tab_selection()
+
+    def _sync_video_tab_selection(self) -> None:
+        """The 视频 tab edits what the timeline selected (2026-10-24, user).
+
+        A video clip shows the clip cards; otherwise a selected caption shows
+        its 位置与变换 card (``caption_transform_panel``) and the chip names
+        the caption; with neither, the clip cards' empty state stays.
+        """
+        panel = getattr(self, "caption_transform_panel", None)
+        host = getattr(self, "video_clip_controls", None)
+        if panel is None or host is None:
+            return
+        _track, clip = self._selected_video_clip()
+        caption = clip is None and bool(self.project and self.selected_cue_id)
+        if panel.isHidden() == caption:
+            panel.setVisible(caption)
+            host.setVisible(not caption)
+            if not caption:
+                # Back to the clip side: its chip text and fields come from
+                # the clip refresh (which calls this again, now settled).
+                self._refresh_video_transform_panel()
+        icon = "fa5s.closed-captioning" if caption else "fa5s.film"
+        if getattr(self, "_video_chip_icon", "") != icon:
+            self._video_chip_icon = icon
+            self.video_clip_icon.setPixmap(_icon(icon, "#ffffff").pixmap(15, 15))
+        if not caption:
+            return
+        targets = panel.targets()
+        layer = tr("译文" if panel.language.currentData() == "translation" else "原文")
+        if len(targets) > 1:
+            bind_text(self.video_transform_selection_label, '{layer} · {count} 条字幕', layer=layer, count=len(targets))
+            return
+        cue = targets[0] if targets else getattr(self, "_cue_lookup", {}).get(self.selected_cue_id)
+        shown = cue
+        if cue is not None and panel.language.currentData() == "translation":
+            # Only the translation needs the bilingual layout (refresh runs
+            # on every drag step; the original is the cue itself).
+            from ..caption_style.caption_layer_transform import displayed_layer
+            shown = displayed_layer(self.project, cue, "translation") or cue
+        text = " ".join(str(getattr(shown, "text", "") or "").split())
+        if len(text) > 18:
+            text = text[:17] + "…"
+        # layer stays a tr() value, so a language switch re-renders it.
+        bind_text(self.video_transform_selection_label, '{layer} · {text}' if text else '{layer}', layer=layer, text=text)
 
     def _video_transform_control_preview(self, *_args) -> None:
         if getattr(self, "_updating_video_transform_ui", False):
             return
         _track, clip = self._selected_video_clip()
-        if clip is None or _track.locked:
+        if clip is None or video_track_locked(self.project, _track):
+            self._video_transform_preview_overrides.clear()
+            self._refresh_video_transform_panel()
             return
+        # Synchronize both axes before publishing the preview. The old second
+        # valueChanged slot updated Y only after a frame with stale Y was sent.
+        sender = self.sender()
+        previous = getattr(self, '_video_scale_previous', (100., 100.))
+        if self.video_scale_link.isChecked() and sender in (self.video_scale_x, self.video_scale_y):
+            index = 0 if sender is self.video_scale_x else 1
+            target = self.video_scale_y if index == 0 else self.video_scale_x
+            target.blockSignals(True)
+            target.setValue(previous[1-index] * sender.value() / max(.01, previous[index]))
+            target.blockSignals(False)
+        self._video_scale_previous = (self.video_scale_x.value(), self.video_scale_y.value())
         self._video_transform_preview_overrides[clip.id] = self._video_transform_values_from_controls()
         self._sync_video_compositor(int(self.timeline.playhead_ms))
 
@@ -691,7 +772,7 @@ class StudioVideoFlowMixin:
         if getattr(self, "_updating_video_transform_ui", False):
             return
         track, clip = self._selected_video_clip()
-        if track is None or clip is None or track.locked:
+        if track is None or clip is None or video_track_locked(self.project, track):
             return
         values = self._video_transform_values_from_controls()
         values.update(position_x=.5, position_y=.5, scale_x=1., scale_y=1.,
@@ -702,7 +783,7 @@ class StudioVideoFlowMixin:
     def _video_transform_previewed(
         self, track_id: str, clip_id: str, values: Mapping[str, object]
     ) -> None:
-        if self.project is None or any(t.locked for t in self.project.video_tracks if t.id == track_id):
+        if self.project is None or any(video_track_locked(self.project,t) for t in self.project.video_tracks if t.id == track_id):
             return
         self._video_transform_preview_overrides[str(clip_id)] = dict(values)
         if str(clip_id) == str(self.timeline.selected_video_clip_id):
@@ -717,8 +798,10 @@ class StudioVideoFlowMixin:
         from ..timeline.studio_media_commands import media_graph_command
         from ..timeline.studio_media_pool import update_video_clip_transform
 
-        if any(t.locked for t in project.video_tracks if t.id == track_id):
+        if any(video_track_locked(project,t) for t in project.video_tracks if t.id == track_id):
             bind_text(self.save_state, '轨道已锁定，请先解锁')
+            self._video_transform_preview_overrides.pop(str(clip_id), None)
+            self._refresh_video_transform_panel()
             return
 
         self._video_transform_preview_overrides.pop(str(clip_id), None)
@@ -1497,7 +1580,7 @@ class StudioVideoFlowMixin:
                 "key": "primary" if primary_route else f"{track.id}:{clip.id}",
                 "track_id": track.id,
                 "track_name": track.name,
-                "track_locked": bool(getattr(track, "locked", False)),
+                "track_locked": video_track_locked(project, track),
                 "clip_id": clip.id,
                 # The playback path may be a continuous proxy, so it cannot
                 # identify the original asset or restore its source duration.

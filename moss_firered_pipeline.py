@@ -3931,6 +3931,10 @@ def process_media(
     started = time.perf_counter()
     base_name = os.path.splitext(os.path.basename(media_path))[0]
     txt_path, srt_path = legacy.output_paths_for_media(media_path)
+    # 2026-10-24: one picked track of a multi-track file (home page) is heard
+    # on its own (audio_stream_choice); {} for a whole file, as before.
+    from twobyteasr.recognition.audio_stream_choice import active_choice, choice_label
+    audio_stream = active_choice(media_path, runtime_context)
     timeline_fps = legacy.detect_timeline_fps(media_path)
     if getattr(runtime_context, "recognition_snapshot", None):
         media_assets = runtime_context.recognition_snapshot["project"].get("media_pool", [])
@@ -3949,6 +3953,14 @@ def process_media(
 
     print("\n" + "=" * 72)
     print(f"[文件 {file_index}/{file_total}] {os.path.basename(media_path)}")
+    if audio_stream:
+        print(f"   识别音轨：{choice_label(audio_stream)}（0:a:{audio_stream['ordinal']}，"
+              f"串流 {audio_stream['stream_index']}，起点 {audio_stream['offset_ms']:.0f} ms）")
+        legacy.record_run_event("audio_stream_selected", media_path=media_path, label=choice_label(audio_stream),
+                                audio_stream_ordinal=audio_stream["ordinal"],
+                                audio_stream_index=audio_stream["stream_index"],
+                                offset_ms=audio_stream["offset_ms"], lead_ms=audio_stream["lead_ms"],
+                                cache_dir=cache_context["cache_dir"])
     print(f"   缓存目录：{cache_context['cache_dir']}")
     if analysis_transcript:
         print("   [分析稿] 仅运行主力 ASR、必要时间轴与本地断句；跳过复核和云端校对。")
@@ -4004,6 +4016,7 @@ def process_media(
                 recognize_chunk=recognize_incremental,
                 event_sink=lambda delta: legacy.record_run_event("cue_delta", **delta.to_payload()),
                 cancelled=cancelled,
+                audio_stream=audio_stream or None,
             )
             incremental_primary_rows = list(incremental_pipeline.run())
             runtime_context.asr_provisional_cues = [dict(item) for item in incremental_primary_rows]

@@ -234,8 +234,7 @@ def start(window, out):
             def replace(dialog):
                 dialog.find_edit.setFocus(); QTest.keyClicks(dialog.find_edit,'alpha')
                 dialog.replace_edit.setFocus(); QTest.keyClicks(dialog.replace_edit,'beta')
-                QTest.mouseClick(dialog.preview_button,Qt.MouseButton.LeftButton)
-                QTest.mouseClick(dialog.all_button,Qt.MouseButton.LeftButton)
+                QTest.keyClick(dialog.replace_edit,Qt.Key.Key_Return)  # 2026-10-21: Enter applies
                 check('existing batch replacement works', page.project.cues[0].text=='beta 回归字幕')
                 dialog.grab().save(str(out/'batch-replace.png'))
             dialog_action(page.studio_find_replace_button,FindReplaceDialog,replace)

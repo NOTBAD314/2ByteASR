@@ -80,6 +80,9 @@ class RunOptions:
     translation_script: str = "zh-Hans"
     # Script of Chinese subtitles: zh-Hant converts them after recognition (2026-10-19).
     chinese_script: str = "zh-Hans"
+    # Audio tracks the home page picked per multi-track file
+    # (``audio_stream_choice.request_json``, 2026-10-24); '' = FFmpeg's pick as before.
+    audio_streams_json: str = ""
 
     def __post_init__(self) -> None:
         if self.job_id:
@@ -272,6 +275,9 @@ class MediaResult:
     result_revision: str = ""
     media_fingerprint: str = ""
     result_ref_json: str = ""
+    # The picked audio track (relative ordinal) a home-page entry recognized
+    # on its own, -1 for a whole file or a combined result (2026-10-24).
+    audio_stream: int = -1
 
 
 @dataclass(frozen=True)
@@ -358,6 +364,178 @@ def _result_output_details(media_path: str, srt_path: str, review_enabled: bool)
     return speaker_paths, review_path
 
 
+def audio_lane_label(lane: dict[str, Any]) -> str:
+    """'音轨 2｜中文配音' of a picked lane for logs and progress (plain text)."""
+    from ..media.audio_streams import stream_label
+    record = lane.get("record") or {}
+    if record:
+        return str(stream_label(record, with_channels=False))
+    return f"{lane.get('lane_id', '')}"
+
+
+def _deliver_audio_lanes(legacy, runtime_context, snapshot, lane_runs, results, result_root, normalized_paths):
+    """Combine the picked tracks' results into one project (2026-10-24).
+
+    Each track was recognized on its own input. Successful tracks become one
+    result project with their captions kept apart by source; a failed or
+    cancelled track is reported with its name and reason, and the captions
+    the project already had for it stay untouched.
+    """
+    media_path = str((snapshot.get("project") or {}).get("media", {}).get("path") or "")
+    by_input = dict(zip(normalized_paths, results[:len(normalized_paths)]))
+    finished, problems = [], []
+    for run in lane_runs:
+        lane = run["audio_source"]
+        label = audio_lane_label(lane)
+        outcome = by_input.get(run.get("input_path") or "")
+        if run.get("prepare_error"):
+            problems.append((run, "failed", run["prepare_error"]))
+        elif outcome is None:
+            problems.append((run, "cancelled", "队列已取消。"))
+        elif outcome.status in {"success", "degraded_success"} and outcome.project_path:
+            finished.append((run, outcome))
+        else:
+            problems.append((run, outcome.status if outcome.status != "success" else "failed",
+                             outcome.error or "没有生成工程"))
+        legacy.record_run_event("audio_lane_finished", audio_lane=lane["lane_id"], label=label,
+                                status=(outcome.status if outcome else "failed"))
+    delivered = []
+    if finished:
+        from .audio_lane_results import combine_lane_results
+        target = Path(result_root) / "识别结果.2byteproj"
+        try:
+            reference = combine_lane_results(snapshot, [(run, Path(outcome.project_path)) for run, outcome in finished],
+                                             target, job_id=runtime_context.job_id,
+                                             problems=[(run, status, error) for run, status, error in problems])
+        except Exception as exc:
+            error = _exception_message(exc, "合并各音轨结果失败")
+            legacy.record_run_event("audio_lanes_combine_failed", error=error,
+                                    traceback=__import__("traceback").format_exc())
+            delivered = [MediaResult(media_path, "failed", error=f"合并各音轨结果失败：{error}")]
+        else:
+            first = finished[0][1]
+            status = "success" if not problems and all(o.status == "success" for _r, o in finished) else "degraded_success"
+            note = "；".join(f"{audio_lane_label(run['audio_source'])}：{error}" for run, _status, error in problems)
+            delivered = [replace(first, media_path=media_path, status=status, project_path=reference["path"],
+                                 project_id=reference["project_id"], result_revision=reference["result_revision"],
+                                 media_fingerprint=reference["media_fingerprint"],
+                                 result_ref_json=json.dumps(reference, ensure_ascii=False),
+                                 elapsed_seconds=sum(o.elapsed_seconds for _r, o in finished),
+                                 error=note)]
+            legacy.record_run_event("audio_lanes_combined", project_path=reference["path"],
+                                    lanes=[run["audio_source"]["lane_id"] for run, _o in finished],
+                                    problems=[run["audio_source"]["lane_id"] for run, _s, _e in problems])
+    for run, status, error in problems:
+        delivered.append(MediaResult(media_path, status if status in {"failed", "cancelled"} else "failed",
+                                     error=f"{audio_lane_label(run['audio_source'])}：{error}"))
+    return delivered
+
+
+def _same_media(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def _stream_entries(entries, entry_streams, media_path) -> list[int]:
+    """1-based queue positions of one file's picked tracks."""
+    return [index for index, (path, choice) in enumerate(zip(entries, entry_streams), 1)
+            if choice and _same_media(path, media_path)]
+
+
+def _stream_position(entries, entry_streams, index) -> int:
+    return _stream_entries(entries, entry_streams, entries[index - 1]).index(index) + 1
+
+
+def _stream_count(entries, entry_streams, media_path) -> int:
+    return len(_stream_entries(entries, entry_streams, media_path))
+
+
+def _stream_result_path(entries, entry_streams, media_path, job_id) -> Path:
+    """The combined result project of one file's picked tracks."""
+    from .recognition_result import recognition_project_path
+    first = _stream_entries(entries, entry_streams, media_path)[0]
+    return recognition_project_path(media_path, job_id, media_index=first)
+
+
+def _stream_project_path(entries, entry_streams, index, job_id) -> Path:
+    """One picked track's own working project, inside its file's combined result."""
+    media_path = entries[index - 1]
+    target = _stream_result_path(entries, entry_streams, media_path, job_id)
+    ordinal = int(entry_streams[index - 1]["ordinal"])
+    folder = f"{_stream_position(entries, entry_streams, index):02d}-track{ordinal + 1}"
+    return target.parent / "audio-tracks" / folder / target.name
+
+
+def _deliver_audio_streams(legacy, runtime_context, run_options, results, entries, entry_streams):
+    """Combine each multi-track file's picked tracks into one result (2026-10-24).
+
+    Every picked track ran as its own entry. Per file, the tracks that finished
+    become one project whose captions keep their track as speaker source (the
+    same merge as the Studio track picker, ``audio_lane_results``). A track
+    that failed or was cancelled stays a result of its own, named with its
+    track, so the completion page and 重试失败项 know exactly which one.
+    """
+    from .audio_stream_choice import base_projects, choice_label
+    tagged = [replace(item, audio_stream=int(choice["ordinal"])) if choice else item
+              for item, choice in zip(results, entry_streams)]
+    tagged.extend(results[len(entry_streams):])
+    bases = base_projects(run_options.audio_streams_json)
+    delivered: list[MediaResult] = []
+    done: set[str] = set()
+    for index, (item, choice) in enumerate(zip(tagged, entry_streams), 1):
+        if not choice:
+            delivered.append(item)
+            continue
+        media_path = entries[index - 1]
+        key = os.path.normcase(os.path.abspath(media_path))
+        if key in done:
+            continue
+        done.add(key)
+        rows = [(tagged[position - 1], entry_streams[position - 1])
+                for position in _stream_entries(entries, entry_streams, media_path)]
+        finished = [(row, pick) for row, pick in rows
+                    if row.status in {"success", "degraded_success"} and row.project_path]
+        problems = [(row, pick) for row, pick in rows if all(row is not done_row for done_row, _p in finished)]
+        labelled = [replace(row, status=row.status if row.status in {"failed", "cancelled", "skipped"} else "failed",
+                            error=f"{choice_label(pick)}：{row.error or ('没有生成工程' if row.status != 'cancelled' else '队列已取消。')}")
+                    for row, pick in problems]
+        for row, pick in problems:
+            legacy.record_run_event("audio_lane_finished", audio_lane=f"a{pick['ordinal']}", label=choice_label(pick),
+                                    status=row.status, error=row.error)
+        if not finished:
+            delivered.extend(labelled)
+            continue
+        target = _stream_result_path(entries, entry_streams, media_path, runtime_context.job_id)
+        base = bases.get(str(Path(media_path).resolve()), "")
+        try:
+            from .audio_lane_results import combine_stream_results
+            reference = combine_stream_results(media_path, finished, problems, target,
+                                               job_id=runtime_context.job_id, base_project=base)
+        except Exception as exc:
+            error = _exception_message(exc, "合并各音轨结果失败")
+            legacy.record_run_event("audio_streams_combine_failed", media_path=media_path, error=error,
+                                    traceback=__import__("traceback").format_exc())
+            # Each finished track still has its own usable project.
+            delivered.extend(replace(row, error=f"{choice_label(pick)}：合并各音轨结果失败：{error}")
+                             for row, pick in finished)
+            delivered.extend(labelled)
+            continue
+        first = finished[0][0]
+        status = ("success" if not problems and all(row.status == "success" for row, _pick in finished)
+                  else "degraded_success")
+        note = "；".join(error.error for error in labelled)
+        delivered.append(replace(first, status=status, project_path=reference["path"],
+                                 project_id=reference["project_id"], result_revision=reference["result_revision"],
+                                 media_fingerprint=reference["media_fingerprint"],
+                                 result_ref_json=json.dumps(reference, ensure_ascii=False),
+                                 elapsed_seconds=sum(row.elapsed_seconds for row, _pick in finished),
+                                 error=note or first.error, audio_stream=-1))
+        delivered.extend(labelled)
+        legacy.record_run_event("audio_streams_combined", media_path=media_path, project_path=reference["path"],
+                                tracks=[pick["ordinal"] for _row, pick in finished],
+                                problems=[pick["ordinal"] for _row, pick in problems])
+    return delivered
+
+
 def run_media_queue(
     media_paths: list[str] | tuple[str, ...],
     options: RunOptions | None = None,
@@ -406,6 +584,11 @@ def run_media_queue(
     except (TypeError, ValueError):
         process_media_supports_context = False
     normalized_paths = [os.path.abspath(os.fspath(path)) for path in media_paths]
+    # Picked audio tracks of a Studio run (one snapshot each), 2026-10-24.
+    lane_runs: list[dict[str, Any]] = []
+    # Picked audio tracks of home-page files: one choice per queue entry
+    # ({} for a whole file), 2026-10-24.
+    entry_streams: list[dict[str, Any]] = []
     state: dict[str, Any] = {"media_path": "", "media_index": 0, "media_total": len(normalized_paths), "job_id": runtime_context.job_id}
 
     def forward_event(kind: str, payload: dict[str, Any]) -> None:
@@ -486,28 +669,70 @@ def run_media_queue(
                         ensure_environment_ready(runtime_settings)
                 pipeline.check_runtime(legacy)
                 if runtime_context.recognition_snapshot:
-                    from .recognition_input import prepare_recognition_input
+                    from .recognition_input import lane_snapshots, prepare_recognition_input
                     from ..media.media_service import GLOBAL_MEDIA_SERVICE
                     snapshot = runtime_context.recognition_snapshot
                     from .recognition_result import media_identity_for_task, digest_payload
-                    # Source hashes are computed by this worker once per job;
-                    # mapping/range/audio graph stay part of the input identity.
-                    for source, source_identity in snapshot["sources"].items():
-                        current = media_identity_for_task(source, runtime_context)
-                        if (current["size"], current["mtime_ns"]) != (source_identity["size"], source_identity["mtime_ns"]):
-                            raise RuntimeError(f"识别启动后素材已改变：{source}")
-                        source_identity["sha256"] = current["sha256"]
-                    snapshot["fingerprint"] = digest_payload({k: snapshot[k] for k in
-                        ("version", "duration_ms", "audio_graph", "sequence", "sources")})
-                    legacy.record_run_event("timeline_input_preparing", fingerprint=snapshot["fingerprint"],
-                                            duration_ms=snapshot["duration_ms"])
-                    prepared = prepare_recognition_input(snapshot, legacy.CACHE_ROOT, GLOBAL_MEDIA_SERVICE.ffmpeg_path, token=token)
-                    normalized_paths = [prepared]
+                    # 2026-10-24: picked audio tracks of a multi-track source
+                    # each get their own input; otherwise one timeline mix.
+                    lane_runs = lane_snapshots(snapshot) if snapshot.get("audio_lanes") else []
+                    normalized_paths = []
+                    for target in lane_runs or [snapshot]:
+                        # Source hashes are computed by this worker once per job;
+                        # mapping/range/audio graph stay part of the input identity.
+                        for source, source_identity in target["sources"].items():
+                            current = media_identity_for_task(source, runtime_context)
+                            if (current["size"], current["mtime_ns"]) != (source_identity["size"], source_identity["mtime_ns"]):
+                                raise RuntimeError(f"识别启动后素材已改变：{source}")
+                            source_identity["sha256"] = current["sha256"]
+                        target["fingerprint"] = digest_payload({k: target[k] for k in
+                            ("version", "duration_ms", "audio_graph", "sequence", "sources")
+                            + (("audio_source",) if target.get("audio_source") else ())})
+                        lane = target.get("audio_source") or {}
+                        legacy.record_run_event("timeline_input_preparing", fingerprint=target["fingerprint"],
+                                                duration_ms=target["duration_ms"], audio_lane=lane.get("lane_id", ""),
+                                                audio_stream_ordinal=lane.get("ordinal"),
+                                                audio_stream_index=lane.get("stream_index"))
+                        try:
+                            prepared = prepare_recognition_input(target, legacy.CACHE_ROOT, GLOBAL_MEDIA_SERVICE.ffmpeg_path, token=token)
+                        except CancelledError:
+                            raise
+                        except Exception as exc:
+                            if not lane_runs:
+                                raise
+                            # One track that cannot be prepared never stops the others.
+                            target["prepare_error"] = _exception_message(exc, "时间轴音频准备失败")
+                            legacy.record_run_event("audio_lane_failed", audio_lane=lane.get("lane_id", ""),
+                                                    stage="prepare", error=target["prepare_error"])
+                            continue
+                        target["input_path"] = prepared
+                        normalized_paths.append(prepared)
+                        legacy.record_run_event("timeline_input_ready", input_path=prepared,
+                            fingerprint=target["fingerprint"], duration_ms=target["duration_ms"],
+                            time_domain="timeline", audio_graph=target["audio_graph"],
+                            audio_lane=lane.get("lane_id", ""), audio_stream_ordinal=lane.get("ordinal"),
+                            audio_stream_index=lane.get("stream_index"))
                     result_root = Path(run_options.studio_project_path).parent / "recognition-results" / runtime_context.job_id
                     runtime_context.studio_project_path = str(result_root / "识别结果.2byteproj")
-                    legacy.record_run_event("timeline_input_ready", input_path=prepared,
-                        fingerprint=snapshot["fingerprint"], duration_ms=snapshot["duration_ms"],
-                        time_domain="timeline", audio_graph=snapshot["audio_graph"])
+                    if lane_runs and not normalized_paths:
+                        raise RuntimeError("所选音轨都无法准备识别音频：" + "；".join(
+                            str(run.get("prepare_error") or "") for run in lane_runs))
+                    state["media_total"] = len(normalized_paths)
+                elif run_options.audio_streams_json:
+                    from .audio_stream_choice import expand_queue, parse_request
+                    from ..media.media_service import GLOBAL_MEDIA_SERVICE
+                    # Each audio track the home page picked of a multi-track
+                    # file is one entry that hears only that track.
+                    normalized_paths, entry_streams = expand_queue(
+                        normalized_paths, parse_request(run_options.audio_streams_json),
+                        lambda path: GLOBAL_MEDIA_SERVICE.metadata(path).audio_streams)
+                    if not any(entry_streams):
+                        entry_streams = []
+                    state["media_total"] = len(normalized_paths)
+                    legacy.record_run_event("audio_streams_planned", entries=[
+                        {"media_path": path, "audio_stream_ordinal": choice.get("ordinal"),
+                         "audio_stream_index": choice.get("stream_index"), "offset_ms": choice.get("offset_ms")}
+                        for path, choice in zip(normalized_paths, entry_streams)])
                 from .recognition_result import media_identity_for_task
                 for path in normalized_paths:
                     media_identity_for_task(path, runtime_context)
@@ -555,6 +780,28 @@ def run_media_queue(
                 state.update(media_path=media_path, media_index=index)
                 runtime_context.media_path = media_path
                 runtime_context.media_index = index
+                stream_choice = entry_streams[index - 1] if entry_streams else {}
+                runtime_context.audio_stream = dict(stream_choice)
+                if stream_choice:
+                    from .audio_stream_choice import choice_label
+                    legacy.record_run_event("audio_lane_started", audio_lane=f"a{stream_choice['ordinal']}",
+                                            lane_index=_stream_position(normalized_paths, entry_streams, index),
+                                            lane_total=_stream_count(normalized_paths, entry_streams, media_path),
+                                            label=choice_label(stream_choice),
+                                            audio_stream_ordinal=stream_choice["ordinal"],
+                                            audio_stream_index=stream_choice["stream_index"], input_path=media_path)
+                lane_run = next((run for run in lane_runs if run.get("input_path") == media_path), None)
+                if lane_run is not None:
+                    # This input is one picked audio track: its own snapshot,
+                    # its own result project, combined after the last one.
+                    lane = lane_run["audio_source"]
+                    runtime_context.recognition_snapshot = lane_run
+                    runtime_context.studio_project_path = str(
+                        result_root / "lanes" / f"{lane_run['lane_index']:02d}-{lane['lane_id']}" / "识别结果.2byteproj")
+                    legacy.record_run_event("audio_lane_started", audio_lane=lane["lane_id"],
+                                            lane_index=lane_run["lane_index"], lane_total=lane_run["lane_total"],
+                                            label=audio_lane_label(lane), audio_stream_ordinal=lane.get("ordinal"),
+                                            audio_stream_index=lane.get("stream_index"), input_path=media_path)
                 if token.is_cancelled:
                     results.extend(
                         MediaResult(path, "cancelled", error="队列已取消。")
@@ -587,6 +834,9 @@ def run_media_queue(
                     runtime_context.media_identity = media_identity_for_task(media_path, runtime_context)
                     if runtime_context.recognition_snapshot:
                         runtime_context.media_identity["fingerprint"] = runtime_context.recognition_snapshot["fingerprint"]
+                    elif stream_choice:
+                        runtime_context.studio_project_path = str(
+                            _stream_project_path(normalized_paths, entry_streams, index, runtime_context.job_id))
                     elif not run_options.studio_project_path:
                         runtime_context.studio_project_path = str(recognition_project_path(media_path, runtime_context.job_id, media_index=index))
                     runtime_context.committed_result_ref.clear()
@@ -699,6 +949,14 @@ def run_media_queue(
                         f"预计剩余 {legacy.format_elapsed(average * remaining)}。"
                     )
 
+            if lane_runs:
+                runtime_context.recognition_snapshot = snapshot
+                results = _deliver_audio_lanes(legacy, runtime_context, snapshot, lane_runs, results,
+                                               result_root, normalized_paths)
+            if entry_streams:
+                runtime_context.audio_stream = {}
+                results = _deliver_audio_streams(legacy, runtime_context, run_options, results,
+                                                 normalized_paths, entry_streams)
             total_elapsed = time.perf_counter() - queue_started
             legacy.record_run_event(
                 "run_completed",

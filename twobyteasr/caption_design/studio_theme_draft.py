@@ -108,6 +108,7 @@ class StudioThemeDraftController(QObject):
         self.phase = 'PROVIDER'
         self.evidence = None
         self.error = self.category = ''
+        self.failure_diagnostics = {}
         self.events = []
         self.animation_error = ''
         self.animation_metrics = {}
@@ -715,6 +716,13 @@ class StudioThemeDraftController(QObject):
 
     def _set_phase(self, phase, detail):
         self.phase, self.detail = phase, detail
+        title = getattr(self.page, 'ai_suggestion_title', None)
+        titles = {'PROVIDER':'正在生成视觉方案', 'RENDERING':'正在验证预览',
+                  'FAILED':'设计未完成', 'CANCELLED':'生成已取消',
+                  'READY':'设计已验证，待应用', 'APPLIED':'设计已应用',
+                  'EXPORTED':'设计档案已导出', 'CHOOSING':'请选择设计方向'}
+        if title is not None and phase in titles:
+            bind_text(title, titles[phase])
         self.started = time.monotonic()
         self.last_output = self.started
         self.events.append(dict(phase=phase,at=time.time(),detail=detail,
@@ -741,6 +749,8 @@ class StudioThemeDraftController(QObject):
             retry_code.setEnabled((only_brief or hero_pending or bool(self.design.get('concepts')) and (self.design.get('schema_version')!=2 or bool(self.design.get('selected_concept_id')))) and self.phase not in {'PROVIDER','RENDERING','EXPORTING','CONCEPT_PREVIEW'})
             if self.phase=='FAILED' and not self.design and (getattr(self,'root',Path())/'creative'/'provider-original.txt').is_file():
                 bind_text(retry_code, '继续修复已保存的三稿');retry_code.setEnabled(True)
+            if self.phase=='FAILED' and not self.design and (getattr(self,'root',Path())/'creative'/'directions'/'provider-original.txt').is_file():
+                bind_text(retry_code, '重试设计方向');retry_code.setEnabled(True)
         combo=getattr(self.page,'ai_concept_choice',None)
         if combo is not None:combo.setEnabled(self.phase not in {'PROVIDER','RENDERING','EXPORTING','CONCEPT_PREVIEW'})
         if self.phase=='VISUAL_REVIEW':
@@ -1056,11 +1066,37 @@ class StudioThemeDraftController(QObject):
         bind_text(self.page.ai_generate, '重新生成')
         self.page._set_ai_input_sections_visible(True)
         self.page._show_ai_progress_bar(False)
-        self._set_phase('CANCELLED' if category=='cancelled' else 'FAILED',tr('{value0}；已应用主题保留', value0=message))
+        self.failure_diagnostics = {}
+        try:
+            ledger=json.loads((self.root/'creative'/'ledger.json').read_text('utf8'))
+            self.failure_diagnostics=dict(ledger.get('last_failure') or {})
+        except (OSError, ValueError, AttributeError):
+            pass
+        stage = self.failure_diagnostics.get('stage', '')
+        stage_names = {'json_syntax':'JSON 格式解析', 'schema':'设计结构校验',
+                       'request_receive':'请求接收', 'resource_resolution':'资源解析'}
+        if category in {'structured_output_invalid_json','structured_output_truncated'}:
+            summary=tr('AI 返回的设计格式不完整或有语法错误，可重试设计方向。')
+        elif category=='structured_output_schema':
+            summary=tr('AI 返回的设计缺少必要内容或字段不符合要求，可重试设计方向。')
+        elif category=='cancelled':
+            summary=tr('生成已取消。')
+        else:
+            summary=message
+        if stage:
+            summary=tr('失败阶段：{stage}。{message}',stage=stage_names.get(stage,stage),message=summary)
+        self._set_phase('CANCELLED' if category=='cancelled' else 'FAILED',
+            summary+tr(' 当前工程保持原有设计。'))
         demo = getattr(self.page,'ai_web_theme_demo_label',None)
-        if demo is not None: bind_text(demo, '{value0}\n可重试预览或复制诊断', value0=message)
+        if demo is not None: bind_text(demo, '{value0}\n可重试对应阶段或复制诊断', value0=summary)
         recovery = '\n候选方案已保留，可点击“重试主题代码”。' if self.design.get('concepts') else ''
-        self.page.ai_preview.setPlainText(message+'\n请求：'+self.current.request_id+recovery)
+        self.page.ai_preview.setPlainText(summary+'\n请求：'+self.current.request_id+recovery)
+        if not self.current.theme_json:
+            storyboard=getattr(self.page,'ai_web_theme_storyboard_wrap',None)
+            if storyboard is not None:storyboard.hide()
+        quality = getattr(self.page,'ai_quality_details',None)
+        if quality is not None:
+            bind_text(quality, '本次结果未通过完整验证，未应用。详细错误可在诊断中查看。')
         self._save_state()
 
     def _recoverable_failure(self, operation, theme, message, category):
@@ -1112,6 +1148,7 @@ class StudioThemeDraftController(QObject):
             provider=self.current.provider if self.current else '',model=self.current.model if self.current else '',
             scope=self.current.scope if self.current else '',content_hash=self.current.content_hash if self.current else '',
             error=self.error,category=self.category,events=self.events,evidence=self.evidence,
+            failure_diagnostics=getattr(self,'failure_diagnostics',{}),
             animation_error=self.animation_error,animation_metrics=self.animation_metrics,
             design=self.design,compiler_phases=list(self.compiler_phases.values()),
             operation_id=self.operation,started_monotonic=self.started,last_output_monotonic=self.last_output,

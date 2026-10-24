@@ -18,13 +18,13 @@ from ..design.presentation import button_role, field_width
 
 from ..i18n import current_language, bind_text
 
-from ..i18n import tr
+from ..i18n import join_text, tr
 
 _ASSETS_ROOT = Path(__file__).resolve().parents[2] / "assets"
 _EXPORT_CHECK_ICON = (_ASSETS_ROOT / "check-dark.png").as_posix()
 _EXPORT_DOT_ICON = (_ASSETS_ROOT / "dot-dark.png").as_posix()
 
-from PySide6.QtCore import QSettings, QUrl, Qt, Signal, QTimer, QSize, QRectF
+from PySide6.QtCore import QEvent, QSettings, QUrl, Qt, Signal, QTimer, QSize, QRectF
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
@@ -83,7 +83,7 @@ from ..timeline.studio_edit_sequence import sequence_of, timeline_duration_ms
 from ..timeline.studio_sequence_mapper import export_source_slices
 from ..rendering.advanced_renderer import AdvancedRendererBackend, project_requires_advanced
 from .studio_render import (
-    RenderJob, RenderSettings, STAGE_ADVANCED_RENDER, STAGE_ENCODE, STAGE_MUX,
+    RenderJob, RenderSettings, STAGE_ADVANCED_RENDER, STAGE_ENCODE, STAGE_MUX, STAGE_VALIDATE,
     STAGE_ORDER, STAGE_PREPARE_PROJECT, STAGE_PREPARE_SUBTITLES, STAGE_COMPOSE_VIDEO,
     SVT_AV1_SPEED_PRESETS, cached_encoder_choices, export_progress, load_encoder_capabilities,
     parse_ffmpeg_out_time_seconds, run_render_job, validate_export_config,
@@ -93,6 +93,12 @@ from .export_presets import (
 )
 from .studio_render_queue import get_render_queue
 from ..design.studio_theme import StudioComboBox, apply_secondary_surface_theme, build_secondary_surface_qss
+from ..design.soft_widgets import FoldCard, SegmentedControl, WrapLayout
+from ..design.themed_icons import install_themed_icon
+from .export_setup_widgets import (
+    FIELD_HEIGHT, PresetChips, captioned, export_setup_qss, fill_pills, fit_affix, name_well, show_field,
+    source_is_audio_only,
+)
 from ..design.theme_manager import theme_key
 from ..design.ui_theme import ThemeDefinition, theme_definition
 
@@ -162,7 +168,6 @@ def _export_workspace_qss(theme: ThemeDefinition) -> str:
             border-top: 1px solid {theme.hairline}; border-radius: 0; }}
         QFrame#exportPreviewCard, QFrame#exportRangeCard, QFrame#exportFooter {{
             background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 12px; }}
-        QWidget#exportCardHeader {{ background: transparent; }}
         QLabel#exportCardTitle {{ color: {theme.text}; font-size: 15px; font-weight: 600; background: transparent; }}
         QLabel#exportCardIcon {{ background: {theme.accent_tint}; border-radius: 8px; }}
         QLabel#exportFieldLabel {{ color: {theme.text_secondary}; font-size: 13px; font-weight: 500; background: transparent; }}
@@ -183,12 +188,6 @@ def _export_workspace_qss(theme: ThemeDefinition) -> str:
         QLabel#exportRendererBadge[rendererKind="advanced"] {{
             background: {theme.info_soft}; color: {theme.info};
         }}
-        QToolButton#exportAdvancedToggle {{
-            background: transparent; color: {theme.text_secondary};
-            border: 1px solid {theme.border}; border-radius: 6px; padding: 8px 11px; text-align: left;
-        }}
-        QToolButton#exportAdvancedToggle:hover {{ background: {theme.selected}; border-color: {theme.accent}; }}
-        QToolButton#exportAdvancedToggle:checked {{ color: {theme.text}; border-color: {theme.accent}; }}
         QPushButton#exportQueueButton {{ font-size: 14px; font-weight: {WEIGHT_SCALE['medium']}; }}
         QPushButton#exportStartButton {{ font-size: 16px; font-weight: {WEIGHT_SCALE['bold']}; color: {theme.text_on_accent}; }}
         QFrame#exportPreviewHost, QFrame#renderPreviewHost {{
@@ -747,7 +746,8 @@ class ExportTimelineSlider(QSlider):
         self.update()
 
     def _value_at(self, x: float) -> int:
-        ratio = max(0.0, min(1.0, float(x) / max(1, self.width() - 1)))
+        # The painted track leaves 7 px at each end for the range handles.
+        ratio = max(0.0, min(1.0, (float(x) - 7) / max(1, self.width() - 15)))
         return self.minimum() + round(ratio * (self.maximum() - self.minimum()))
 
     def _seek_mouse(self, event: QMouseEvent) -> None:
@@ -770,15 +770,56 @@ class ExportTimelineSlider(QSlider):
             return
         super().mouseMoveEvent(event)
 
+    def set_theme(self, theme: ThemeDefinition) -> None:
+        """Colours of the soft track (design A): a filled groove, the export
+        range as an accent wash with end handles, the playhead in ink."""
+        from ..design.ui_theme import blend_hex
+        light = theme.is_light
+        self._colors = {
+            "track": QColor(blend_hex(theme.surface, theme.text, 0.13 if light else 0.2)),
+            "range": QColor(blend_hex(theme.surface, theme.accent, 0.26 if light else 0.38)),
+            "accent": QColor(theme.accent),
+            "edge": QColor(theme.surface),
+            "head": QColor(theme.text),
+        }
+        self.update()
+
     def paintEvent(self, event) -> None:
-        super().paintEvent(event)
+        colors = getattr(self, "_colors", None)
+        if colors is None:
+            self.set_theme(_workspace_theme())
+            colors = self._colors
         span = max(1, self.maximum() - self.minimum())
-        left = round((self._range_start - self.minimum()) / span * max(1, self.width() - 1))
-        right = round((self._range_end - self.minimum()) / span * max(1, self.width() - 1))
+        inset = 7
+        usable = max(1, self.width() - 1 - inset * 2)
+        x_of = lambda value: inset + round((value - self.minimum()) / span * usable)
+        middle = self.height() / 2
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(79, 130, 93, 90))
-        painter.drawRoundedRect(left, max(0, self.height() // 2 - 5), max(2, right - left), 10, 4, 4)
+        painter.setBrush(colors["track"])
+        painter.drawRoundedRect(QRectF(inset, middle - 3, usable, 6), 3, 3)
+        whole = self._range_start <= self.minimum() and self._range_end >= self.maximum()
+        if not whole:
+            left, right = x_of(self._range_start), x_of(self._range_end)
+            painter.setBrush(colors["range"])
+            painter.setPen(colors["accent"])
+            painter.drawRoundedRect(QRectF(left, middle - 7, max(2, right - left), 14), 5, 5)
+            painter.setPen(colors["edge"])
+            painter.setBrush(colors["accent"])
+            for x in (left, right):
+                painter.drawRoundedRect(QRectF(x - 5, middle - 12, 10, 24), 4, 4)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(colors["head"])
+        head = x_of(self.value())
+        painter.drawRoundedRect(QRectF(head - 1.5, middle - 14, 3, 28), 1.5, 1.5)
+        painter.end()
+
+    def sizeHint(self) -> QSize:
+        return QSize(super().sizeHint().width(), 36)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(super().minimumSizeHint().width(), 36)
 
 
 class StudioExportWorkspace(QWidget):
@@ -849,7 +890,9 @@ class StudioExportWorkspace(QWidget):
     def _apply_workspace_theme(self) -> None:
         """One token-driven sheet for the whole export surface (never warm)."""
         theme = _workspace_theme()
-        local = build_secondary_surface_qss(theme) + _export_workspace_qss(theme)
+        local = build_secondary_surface_qss(theme) + _export_workspace_qss(theme) + export_setup_qss(theme)
+        if hasattr(self, "preview_scrub"):
+            self.preview_scrub.set_theme(theme)
         app = QApplication.instance()
         # A detached workspace inherits the application root typography on
         # first Show. Keep that same base when its palette is refreshed.
@@ -884,8 +927,7 @@ class StudioExportWorkspace(QWidget):
             self.preview_scroll.setMinimumWidth(380)
             self.preview_host.setMinimumSize(360, 203)
             self.preview_host.setMaximumSize(640, 360)
-            self.queue_button.setFixedSize(130, 48)
-            self.export_button.setFixedSize(170, 48)
+            self._size_actions(130, 170)
             self.splitter.setSizes([400, max(420, self.width() - 408)])
         else:
             self.settings_scroll.setMinimumWidth(480)
@@ -893,9 +935,42 @@ class StudioExportWorkspace(QWidget):
             self.preview_scroll.setMinimumWidth(520)
             self.preview_host.setMinimumSize(520, 292)
             self.preview_host.setMaximumSize(820, 410)
-            self.queue_button.setFixedSize(170, 50)
-            self.export_button.setFixedSize(220, 50)
+            self._size_actions(170, 220)
             self.splitter.setSizes([560, 980])
+
+    def _size_actions(self, queue: int, export: int) -> None:
+        """At least these widths; a longer language (Russian) widens them."""
+        for button, width in ((self.queue_button, queue), (self.export_button, export)):
+            button.setFixedHeight(46)
+            button.setMinimumWidth(width)
+            button.setMaximumWidth(16777215)
+            button.resize(max(width, button.sizeHint().width()), 46)
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is getattr(self, "preview_scroll", None) and event.type() == QEvent.Type.Resize:
+            self._fit_range_row(watched.width())
+        return super().eventFilter(watched, event)
+
+    def _fit_range_row(self, width: int) -> None:
+        """Range choice and in / out points share a row only when both fit."""
+        grid = getattr(self, "_range_grid", None)
+        if grid is None:
+            return
+        margins = self.preview_panel.layout().contentsMargins()
+        needed = (self.export_range_choice.minimumWidth() + grid.horizontalSpacing()
+                  + self.project_range_bar.minimumSizeHint().width() + margins.left() + margins.right() + 12)
+        stacked = width < needed
+        if getattr(self, "_range_stacked", None) is stacked:
+            return
+        self._range_stacked = stacked
+        for widget in (self.export_range_choice, self.project_range_bar):
+            grid.removeWidget(widget)
+        if stacked:
+            grid.addWidget(self.export_range_choice, 0, 0, 1, 2, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(self.project_range_bar, 1, 0, 1, 2)
+        else:
+            grid.addWidget(self.export_range_choice, 0, 0, Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(self.project_range_bar, 0, 1)
 
     def _export_trace(self, event: str, value: object = None, **fields: object) -> None:
         record = {
@@ -939,52 +1014,66 @@ class StudioExportWorkspace(QWidget):
         shortcut_registry.keep_keys({"mark_in": self._shortcut_mark_in, "mark_out": self._shortcut_mark_out})
 
     def _setup_page(self) -> QWidget:
+        # 2026-10-23 design A (user-picked): output file / picture and encoding
+        # cards, advanced encoding and subtitle-file export as fold rows, the
+        # range on the preview's timeline, facts as pills under the preview.
         page = QWidget()
         page.setObjectName("exportSetupPage")
         root = QVBoxLayout(page)
-        root.setContentsMargins(24, 28, 24, 20)
+        root.setContentsMargins(22, 16, 22, 16)
         root.setSpacing(12)
         header = QHBoxLayout()
-        back = QPushButton("← 返回兔白字幕")
+        header.setSpacing(14)
+        back = QPushButton()
+        bind_text(back, "返回字幕工作台")
         back.setObjectName("exportBackButton")
-        back.setMinimumHeight(34)
+        install_themed_icon(back, "fa5s.arrow-left", "secondary")
         back.clicked.connect(self._back)
         header.addWidget(back)
-        title = QLabel("导出字幕视频")
+        heading = QVBoxLayout()
+        heading.setSpacing(0)
+        title = self.setup_title = QLabel("导出字幕视频")
         title.setObjectName("exportPageTitle")
         title.setStyleSheet(f"font-size:23px;font-weight:{WEIGHT_SCALE['heavy']}")
-        header.addSpacing(6)
-        header.addWidget(title)
+        heading.addWidget(title)
         from ..design.elided_label import ElidedLabel
-        self.export_context = ElidedLabel(
-            f"{Path(self.project.media.path).name} · {_clock(self._duration_ms(), True)}", minimum=60)
+        self.export_context = ElidedLabel("", minimum=60, mode=Qt.TextElideMode.ElideRight)
         self.export_context.setObjectName("exportPageContext")
-        header.addSpacing(12)
-        header.addWidget(self.export_context, 1, Qt.AlignmentFlag.AlignVCenter)
+        heading.addWidget(self.export_context)
+        header.addLayout(heading, 1)
+        self.renderer_badge = QLabel()
+        self.renderer_badge.setObjectName("exportRendererBadge")
+        self.renderer_badge.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        header.addWidget(self.renderer_badge, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(header)
+        self._refresh_context()
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
-        self.splitter.setHandleWidth(8)
+        self.splitter.setHandleWidth(16)
         scroll = QScrollArea()
         self.settings_scroll = scroll
         scroll.setObjectName("exportSettingsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setMinimumWidth(480)
         scroll.setMaximumWidth(680)
         settings = QWidget()
         settings.setObjectName("exportSettingsPage")
         scroll.viewport().setObjectName("exportSettingsViewport")
         column = QVBoxLayout(settings)
-        column.setContentsMargins(0, 0, 12, 8)
-        column.setSpacing(11)
+        column.setContentsMargins(0, 0, 8, 4)
+        column.setSpacing(12)
         scroll.setWidget(settings)
         self._file_settings(column)
-        self._subtitle_settings(column)
         self._video_settings(column)
         self._audio_settings(column)
+        from .audio_export_ui import AudioExportControls
+        self.audio_delivery = AudioExportControls(self)
+        column.addWidget(self.audio_delivery)
         self._advanced_settings(column)
+        self._subtitle_settings(column)
         column.addStretch(1)
         self.splitter.addWidget(scroll)
         self._preview_panel(self.splitter)
@@ -995,8 +1084,14 @@ class StudioExportWorkspace(QWidget):
         footer_bar = QFrame()
         footer_bar.setObjectName("exportFooter")
         footer = QHBoxLayout(footer_bar)
-        footer.setContentsMargins(18, 10, 12, 10)
+        footer.setContentsMargins(14, 9, 10, 9)
         footer.setSpacing(12)
+        output_icon = QLabel()
+        output_icon.setObjectName("exportOutputIcon")
+        output_icon.setFixedSize(30, 30)
+        output_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        output_icon.setProperty("iconName", "fa5s.folder")
+        footer.addWidget(output_icon)
         self.status = QLabel()
         self.status.setObjectName("exportOutputPath")
         self.status.setWordWrap(True)
@@ -1005,75 +1100,75 @@ class StudioExportWorkspace(QWidget):
         # Export actions stay reachable even when either column must scroll.
         footer.addLayout(self._export_actions)
         root.addWidget(footer_bar)
-        self._polish_export_cards(settings)
+        self._refresh_card_icons(page)
         QTimer.singleShot(0, self._restore_export_preferences)
         return page
 
-    # Section icon per settings card (titles stay the translated group titles).
+    # Icon per settings card (titles stay the translated card titles).
     _CARD_ICONS = {
-        "文件": "fa5s.file-video", "字幕文件": "fa5s.closed-captioning", "视频": "fa5s.film",
-        "音频": "fa5s.volume-up", "质量控制": "fa5s.sliders-h", "兼容性与关键帧": "fa5s.microchip",
-        "输出摘要": "fa5s.clipboard-list",
+        "输出文件": "fa5s.file-video", "画面与编码": "fa5s.film",
     }
 
-    def _polish_export_cards(self, settings: QWidget) -> None:
-        """Group boxes become titled cards: icon + title inside, aligned field labels."""
-        groups = [*settings.findChildren(QGroupBox), *self.preview_panel.findChildren(QGroupBox)]
-        for group in groups:
-            title = group.title()
-            if not title or group.property("exportCard"):
-                continue
-            group.setTitle("")
-            group.setProperty("exportCard", True)
-            nested = group is getattr(self, "expert_panel", None) or self.preview_panel.isAncestorOf(group)
-            group.setProperty("nested", nested)
-            header = QWidget(group)
-            header.setObjectName("exportCardHeader")
-            row = QHBoxLayout(header)
-            row.setContentsMargins(0, 0, 0, 2)
-            row.setSpacing(10)
-            icon = QLabel(header)
-            icon.setObjectName("exportCardIcon")
-            icon.setFixedSize(28, 28)
-            icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icon.setProperty("iconName", self._CARD_ICONS.get(title, "fa5s.circle"))
-            caption = QLabel(title, header)
-            caption.setObjectName("exportCardTitle")
-            row.addWidget(icon)
-            row.addWidget(caption)
-            row.addStretch(1)
-            layout = group.layout()
-            if isinstance(layout, QFormLayout):
-                layout.insertRow(0, header)
-                layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-                layout.setHorizontalSpacing(16)
-                layout.setVerticalSpacing(10)
-                for index in range(layout.rowCount()):
-                    item = layout.itemAt(index, QFormLayout.ItemRole.LabelRole)
-                    label = item.widget() if item is not None else None
-                    if isinstance(label, QLabel) and not label.objectName():
-                        label.setObjectName("exportFieldLabel")
-            elif layout is not None:
-                layout.insertWidget(0, header)
-                layout.setSpacing(max(layout.spacing(), 10))
-                for label in group.findChildren(QLabel):
-                    if label.parentWidget() is group and not label.objectName() and label.text() in {"格式", "说话人"}:
-                        label.setObjectName("exportFieldLabel")
-            if layout is not None:
-                layout.setContentsMargins(*((0, 10, 0, 0) if nested else (18, 16, 18, 18)))
-        # The setup page is not parented to the workspace yet; paint from it.
-        self._refresh_card_icons(self.splitter)
+    def _card(self, title: str, meta: str = "") -> tuple[QFrame, QVBoxLayout, QLabel]:
+        """A settings card: icon, title and a quiet note on the right."""
+        from ..design.elided_label import ElidedLabel
+        card = QFrame()
+        card.setProperty("exportCard", True)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(12)
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        icon = QLabel()
+        icon.setObjectName("exportCardIcon")
+        icon.setFixedSize(28, 28)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setProperty("iconName", self._CARD_ICONS.get(title, "fa5s.circle"))
+        caption = QLabel()
+        caption.setObjectName("exportCardTitle")
+        bind_text(caption, title)
+        note = ElidedLabel("", minimum=40, mode=Qt.TextElideMode.ElideRight)
+        note.setObjectName("exportCardMeta")
+        note.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if meta:
+            bind_text(note, meta)
+        head.addWidget(icon)
+        head.addWidget(caption)
+        head.addSpacing(8)
+        head.addWidget(note, 1)
+        layout.addLayout(head)
+        return card, layout, note
+
+    def _refresh_context(self) -> None:
+        media = self.project.media
+        name = Path(media.path).name if media.path else str(media.display_name or "")
+        bind_text(self.export_context, join_text([name, _clock(self._duration_ms(), True),
+                                                  tr("{count} 条字幕", count=len(self.project.cues))]))
 
     def _refresh_card_icons(self, root: QWidget | None = None) -> None:
         import qtawesome as qta
         theme = _workspace_theme()
-        for icon in (root or self).findChildren(QLabel, "exportCardIcon"):
-            icon.setPixmap(qta.icon(str(icon.property("iconName") or "fa5s.circle"),
-                                    color=theme.accent_text).pixmap(QSize(15, 15)))
+        root = root or self
+        for name in ("exportCardIcon", "exportOutputIcon"):
+            for icon in root.findChildren(QLabel, name):
+                icon.setPixmap(qta.icon(str(icon.property("iconName") or "fa5s.circle"),
+                                        color=theme.accent_text).pixmap(QSize(15, 15)))
 
     def _file_settings(self, layout: QVBoxLayout) -> None:
-        group, form = QGroupBox("文件"), QFormLayout()
-        group.setLayout(form)
+        group, form, _note = self._card("输出文件", "前缀、后缀和位置会记住")
+        self.file_card = group
+        self.output_kind = self._combo((("影片", "video"), ("音频", "audio")))
+        from .audio_export_ui import change_mode
+        self.output_kind.currentIndexChanged.connect(lambda: change_mode(self))
+        # 影片 / 音频 sits in the card's title row: a row of its own pushed the
+        # left column past the window, and design A keeps it without scrolling.
+        self.output_kind_choice = SegmentedControl(self.output_kind)
+        self.output_kind_choice.setProperty("tone", "soft")
+        self.output_kind_choice.setMinimumWidth(120)
+        self.output_kind_choice.setMaximumWidth(170)
+        bind_text(self.output_kind_choice, "导出类型", property='toolTip')
+        bind_text(self.output_kind_choice, "导出类型", property='accessibleName')
+        form.itemAt(0).layout().addWidget(self.output_kind_choice, 0, Qt.AlignmentFlag.AlignVCenter)
         from .export_preferences import clean_affix
         assets = {a.canonical_source for a in self.project.media_pool}
         stem = str(self.project.studio_state.get('project_name') or (self.project_path.stem if self.project_path else '字幕视频')) if len(assets) > 1 else Path(self.project.media.path).stem
@@ -1090,22 +1185,26 @@ class StudioExportWorkspace(QWidget):
         self.filename = field_width(QLineEdit(stem), "expanding", size="compact")
         self.filename.textChanged.connect(self._target_changed)
         self.filename.editingFinished.connect(self._save_affix_preferences)
-        form.addRow("文件名", self.filename)
-        affixes = QHBoxLayout()
         from .export_affix import ExportAffixCombo
         self.filename_prefix = ExportAffixCombo(
             str(affix_values.get('prefix', self._saved_export_preferences.get('prefix', ''))),
-            affix_values.get('prefix_history', []), '前缀，可留空')
+            affix_values.get('prefix_history', []), '前缀')
         self.filename_suffix = ExportAffixCombo(
-            str(affix_values.get('suffix', suffix)), affix_values.get('suffix_history', []), '后缀，可留空')
-        for widget in (self.filename_prefix, self.filename_suffix):
+            str(affix_values.get('suffix', suffix)), affix_values.get('suffix_history', []), '后缀')
+        for widget, short, hint in ((self.filename_prefix, '前缀', '前缀，可留空'),
+                                    (self.filename_suffix, '后缀', '后缀，可留空')):
+            # Short words inside the chip; the whole hint on hover.
+            bind_text(widget.lineEdit(), short, property='placeholderText')
+            bind_text(widget, hint, property='toolTip')
             widget.currentTextChanged.connect(self._target_changed)
             widget.confirmed.connect(self._save_affix_preferences)
-        affixes.addWidget(self.filename_prefix); affixes.addWidget(self.filename_suffix)
-        form.addRow('前后缀', affixes)
+        self.filename_extension = QLabel(".mp4")
+        form.addWidget(name_well(self.filename_prefix, self.filename, self.filename_suffix, self.filename_extension))
+        # The whole name stays readable for checks; the well and the footer show it.
         self.complete_name_preview = QLabel()
         self.complete_name_preview.setWordWrap(True)
-        form.addRow('完整文件名', self.complete_name_preview)
+        self.complete_name_preview.hide()
+        form.addWidget(self.complete_name_preview)
         fallback = self.project_path.parent / "exports" if self.project_path else Path(self.project.media.path).parent
         saved = str(self._saved_export_preferences.get('directory') or self._settings.value("render/last_export_directory", "") or "")
         valid_saved = bool(saved and Path(saved).is_dir() and _directory_is_writable(Path(saved)))
@@ -1113,27 +1212,52 @@ class StudioExportWorkspace(QWidget):
         if saved and not valid_saved:
             bind_text(self.directory, '上次保存目录不存在或不可写，已回退到工程导出目录。', property='toolTip')
         self.directory.textChanged.connect(self._target_changed)
-        choose = QPushButton("选择")
+        choose = QPushButton()
+        choose.setObjectName("exportChooseFolder")
+        choose.setFixedSize(46, 46)
+        install_themed_icon(choose, "fa5s.folder-open", "secondary")
+        bind_text(choose, "选择…", property='toolTip')
+        bind_text(choose, "选择…", property='accessibleName')
         choose.clicked.connect(self._choose_directory)
-        row = QHBoxLayout(); row.addWidget(self.directory, 1); row.addWidget(choose)
-        form.addRow("保存位置", row)
-        self.extension = self._combo((("MP4", "mp4"), ("MKV", "mkv"), ("MOV", "mov")))
+        self.extension = self._combo((("MP4", "mp4"), ("MKV", "mkv"), ("MOV", "mov"), ("WebM / AV1", "webm")))
         self.extension.currentIndexChanged.connect(self._container_changed)
-        form.addRow("格式", self.extension)
+        # Segments while they fit; the same dropdown in a narrow column.
+        self.extension_choice = SegmentedControl(self.extension)
+        self.extension_choice.setProperty("tone", "soft")
+        self.extension_choice.setMaximumWidth(230)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(captioned("保存位置", self.directory, role="expanding"), 3)
+        row.addWidget(choose)
+        row.addWidget(self.extension_choice, 2, Qt.AlignmentFlag.AlignVCenter)
+        form.addLayout(row)
         layout.addWidget(group)
 
     def _subtitle_settings(self, layout: QVBoxLayout) -> None:
-        group = QGroupBox("字幕文件")
-        column = QVBoxLayout(group)
-        column.setSpacing(8)
+        self.subtitle_export_button = QPushButton()
+        bind_text(self.subtitle_export_button, "导出字幕")
+        self.subtitle_export_button.setObjectName("studioButton")
+        self.subtitle_export_button.setProperty("exportTone", "tint")
+        self.subtitle_export_button.setProperty("exportSize", "sm")
+        install_themed_icon(self.subtitle_export_button, "fa5s.closed-captioning", "accent")
+        self.subtitle_export_button.clicked.connect(self._export_subtitles)
+        # Folded unless it was left open last time.
+        opened = str(self._settings.value("subtitle/export_fold_open", "false")).lower() == "true"
+        group = self.subtitle_file_group = self.subtitle_card = FoldCard("只导出字幕文件", expanded=opened,
+                                              trailing=self.subtitle_export_button)
+        group.toggled.connect(lambda shown: self._settings.setValue("subtitle/export_fold_open", bool(shown)))
+        group.layout().setContentsMargins(16, 10, 12, 10)
+        column = group.body_layout
+        column.setSpacing(10)
         hint = QLabel("独立导出字幕文件，不会同时启动视频压制。")
         hint.setObjectName("cardMeta")
         hint.setWordWrap(True)
         column.addWidget(hint)
 
-        format_row = QHBoxLayout()
-        format_row.addWidget(QLabel("格式"))
+        # Each choice under a small label; its items wrap in a narrow column
+        # or a longer interface language instead of widening the page.
         self.subtitle_format_checks = {}
+        format_flow = self._subtitle_group(column, "格式")
         for label, format_name, checked in (
             ("SRT", "srt", True),
             ("ASS", "ass", False),
@@ -1147,16 +1271,22 @@ class StudioExportWorkspace(QWidget):
             # drawing an extra Unicode box in the label creates a double
             # indicator on Windows themes.
             check.setText(label)
+            check.toggled.connect(self._refresh_subtitle_summary)
             self.subtitle_format_checks[format_name] = check
-            format_row.addWidget(check)
-        format_row.addStretch(1)
-        column.addLayout(format_row)
+            format_flow.addWidget(check)
 
         # Language layers (shown when the project has translations): original,
         # translation (any target language), and both in one cue (two lines).
-        language_row = QHBoxLayout()
+        self.subtitle_language_row = QWidget()
+        language_column = QVBoxLayout(self.subtitle_language_row)
+        language_column.setContentsMargins(0, 0, 0, 0)
+        language_column.setSpacing(6)
         self.subtitle_language_label = QLabel("语言")
-        language_row.addWidget(self.subtitle_language_label)
+        self.subtitle_language_label.setObjectName("exportFieldLabel")
+        language_column.addWidget(self.subtitle_language_label)
+        language_host = QWidget()
+        language_flow = WrapLayout(language_host, spacing=12, fill=False)
+        language_column.addWidget(language_host)
         self.subtitle_language_checks = {}
         for label, layer, checked in (("原文", "original", True), ("译文", "translation", True),
                                       ("双语（同一条两行）", "bilingual", True)):
@@ -1164,22 +1294,20 @@ class StudioExportWorkspace(QWidget):
             check.setChecked(checked)
             bind_text(check, label)
             self.subtitle_language_checks[layer] = check
-            language_row.addWidget(check)
+            language_flow.addWidget(check)
         self.subtitle_translation_first = QCheckBox()
         bind_text(self.subtitle_translation_first, "双语译文在上")
+        self.subtitle_translation_first.setProperty("softSwitch", True)
         self.subtitle_translation_first.setChecked(True)
-        language_row.addWidget(self.subtitle_translation_first)
-        language_row.addStretch(1)
-        self.subtitle_language_row = QWidget()
-        self.subtitle_language_row.setLayout(language_row)
+        language_flow.addWidget(self.subtitle_translation_first)
         has_translations = bool((getattr(self.project, "generation_metadata", None) or {}).get("translations"))
         self.subtitle_language_row.setVisible(has_translations)
         column.addWidget(self.subtitle_language_row)
 
-        speaker_row = QHBoxLayout()
-        speaker_row.addWidget(QLabel("说话人"))
         self.subtitle_speaker_group = QButtonGroup(self)
         self.subtitle_speaker_modes = {}
+        speaker_track = self._choice_track()
+        self._subtitle_group(column, "说话人", speaker_track)
         for label, mode, checked in (
             ("合并", "combined", True),
             ("分别导出", "per_speaker", False),
@@ -1189,28 +1317,25 @@ class StudioExportWorkspace(QWidget):
             radio.setChecked(checked)
             radio.setProperty("modeLabel", label)
             radio.setText(label)
+            radio.toggled.connect(self._refresh_subtitle_summary)
             self.subtitle_speaker_group.addButton(radio)
             self.subtitle_speaker_modes[mode] = radio
-            speaker_row.addWidget(radio)
-        speaker_row.addStretch(1)
-        column.addLayout(speaker_row)
+            speaker_track.layout().addWidget(radio)
 
-        destination_label = QLabel("保存位置")
-        destination_label.setObjectName("cardMeta")
-        column.addWidget(destination_label)
         self.subtitle_destination_group = QButtonGroup(self)
         self.subtitle_destination_modes = {}
-        destination_row = QGridLayout()
         saved_mode = str(
             self._settings.value("subtitle/export_destination", "source") or "source"
         )
         if saved_mode not in {"source", "project", "custom"}:
             saved_mode = "source"
-        for index, (label, mode) in enumerate((
+        destination_track = self._choice_track()
+        self._subtitle_group(column, "保存位置", destination_track)
+        for label, mode in (
             ("与源媒体同目录", "source"),
             ("工程 exports", "project"),
             ("自定义位置", "custom"),
-        )):
+        ):
             radio = QRadioButton(label)
             radio.setChecked(mode == saved_mode)
             radio.toggled.connect(
@@ -1220,8 +1345,7 @@ class StudioExportWorkspace(QWidget):
             )
             self.subtitle_destination_group.addButton(radio)
             self.subtitle_destination_modes[mode] = radio
-            destination_row.addWidget(radio, index // 2, index % 2)
-        column.addLayout(destination_row)
+            destination_track.layout().addWidget(radio)
 
         self.subtitle_custom_directory = field_width(QLineEdit(
             str(self._settings.value("subtitle/custom_directory", "") or "")
@@ -1229,10 +1353,11 @@ class StudioExportWorkspace(QWidget):
         self.subtitle_custom_directory.setReadOnly(True)
         bind_text(self.subtitle_custom_directory, '尚未选择自定义文件夹', property='placeholderText')
         self.subtitle_custom_choose = QPushButton("选择文件夹")
+        self.subtitle_custom_choose.setFixedHeight(46)
         self.subtitle_custom_choose.clicked.connect(self._choose_subtitle_custom_directory)
         custom_row = QHBoxLayout()
         custom_row.setContentsMargins(0, 0, 0, 0)
-        custom_row.addWidget(self.subtitle_custom_directory, 1)
+        custom_row.addWidget(captioned("自定义位置", self.subtitle_custom_directory, role="expanding"), 1)
         custom_row.addWidget(self.subtitle_custom_choose)
         self.subtitle_custom_host = QWidget()
         self.subtitle_custom_host.setLayout(custom_row)
@@ -1245,21 +1370,60 @@ class StudioExportWorkspace(QWidget):
         column.addWidget(self.subtitle_export_status)
         action_row.addStretch(1)
         self.subtitle_open_folder = QPushButton("打开所在文件夹")
+        self.subtitle_open_folder.setProperty("exportSize", "sm")
         self.subtitle_open_folder.clicked.connect(self._open_subtitle_export_folder)
         self.subtitle_open_folder.hide()
         action_row.addWidget(self.subtitle_open_folder)
         self.subtitle_copy_path = QPushButton("复制路径")
+        self.subtitle_copy_path.setProperty("exportSize", "sm")
         self.subtitle_copy_path.clicked.connect(self._copy_subtitle_export_paths)
         self.subtitle_copy_path.hide()
         action_row.addWidget(self.subtitle_copy_path)
-        self.subtitle_export_button = QPushButton("导出字幕")
-        self.subtitle_export_button.setObjectName("studioButton")
-        self.subtitle_export_button.clicked.connect(self._export_subtitles)
-        action_row.addWidget(self.subtitle_export_button)
         column.addLayout(action_row)
         layout.addWidget(group)
         self._last_subtitle_artifacts = ()
         self._subtitle_destination_changed(saved_mode, persist=False)
+
+    def _choice_track(self) -> QFrame:
+        """A filled track whose radio buttons read as segments (they wrap
+        onto a second line rather than widen a narrow column)."""
+        track = QFrame()
+        track.setObjectName("exportChoiceTrack")
+        track.setContentsMargins(3, 3, 3, 3)
+        WrapLayout(track, spacing=2, fill=True)
+        return track
+
+    def _subtitle_group(self, column: QVBoxLayout, title: str, content: QWidget | None = None):
+        """A small label above one choice; returns the flow for loose items."""
+        label = QLabel()
+        label.setObjectName("exportFieldLabel")
+        bind_text(label, title)
+        column.addWidget(label)
+        if content is not None:
+            column.addWidget(content)
+            return content.layout()
+        host = QWidget()
+        flow = WrapLayout(host, spacing=14, fill=False)
+        column.addWidget(host)
+        return flow
+
+    def _refresh_subtitle_summary(self, *_args) -> None:
+        if not hasattr(self, "subtitle_card") or not hasattr(self, "subtitle_destination_modes"):
+            return
+        formats = [control.property("formatLabel") for control in self.subtitle_format_checks.values()
+                   if control.isChecked()]
+        speaker = next((control for control in self.subtitle_speaker_modes.values() if control.isChecked()), None)
+        destination = next((control for control in self.subtitle_destination_modes.values()
+                            if control.isChecked()), None)
+        parts = [" / ".join(formats) if formats else tr("至少选择一种字幕格式")]
+        parts += [tr(str(control.property("modeLabel") or control.text())) for control in (speaker,) if control]
+        parts += [tr(self._destination_source(control)) for control in (destination,) if control]
+        self.subtitle_card.set_summary(join_text(parts))
+
+    def _destination_source(self, control: QRadioButton) -> str:
+        return next((label for mode, label in (("source", "与源媒体同目录"), ("project", "工程 exports"),
+                                                ("custom", "自定义位置"))
+                     if self.subtitle_destination_modes.get(mode) is control), control.text())
 
     def _selected_subtitle_destination_mode(self) -> str:
         return next(
@@ -1288,6 +1452,7 @@ class StudioExportWorkspace(QWidget):
             self.subtitle_export_status.setText(str(exc))
         else:
             bind_text(self.subtitle_export_status, '{reason} · {destination}', reason=tr(reason), destination=destination)
+        self._refresh_subtitle_summary()
 
     def _choose_subtitle_custom_directory(self) -> None:
         initial = self.subtitle_custom_directory.text().strip()
@@ -1302,6 +1467,9 @@ class StudioExportWorkspace(QWidget):
         self._subtitle_destination_changed("custom")
 
     def _export_subtitles(self) -> None:
+        # The header button works while the card is folded: open it so the
+        # result or the problem (and 打开所在文件夹 / 复制路径) is in view.
+        self.subtitle_card.set_expanded(True)
         formats = frozenset(
             format_name
             for format_name, control in self.subtitle_format_checks.items()
@@ -1385,19 +1553,20 @@ class StudioExportWorkspace(QWidget):
         bind_text(self.subtitle_export_status, '已复制 {value0} 个字幕路径', value0=len(self._last_subtitle_artifacts))
 
     def _video_settings(self, layout: QVBoxLayout) -> None:
-        group, form = QGroupBox("视频"), QFormLayout()
-        group.setLayout(form)
+        group, form, self.picture_note = self._card("画面与编码")
+        self.video_group = self.picture_card = group
         self.preset = field_width(StudioComboBox(), "preferred", size="compact")
         self._reload_preset_combo()
         persisted = str(self._settings.value("render/preset", "recommended") or "recommended")
         index = self.preset.findData(persisted)
         self.preset.setCurrentIndex(max(0, index))
         self.preset.currentIndexChanged.connect(self._preset_changed)
-        preset_row = QHBoxLayout()
-        preset_row.addWidget(self.preset, 1)
+        self.preset_chips = PresetChips(self.preset)
+        self.preset.setParent(self.preset_chips)
+        self.preset.hide()
         self.preset_menu_button = QToolButton()
-        self.preset_menu_button.setText("⋯")
-        button_role(self.preset_menu_button, "secondary", size="compact")
+        self.preset_menu_button.setObjectName("exportPresetMenu")
+        install_themed_icon(self.preset_menu_button, "fa5s.ellipsis-h", "secondary")
         bind_text(self.preset_menu_button, '管理导出预设', property='accessibleName')
         bind_text(self.preset_menu_button, '管理预设：保存、另存为、删除', property='toolTip')
         self.preset_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -1407,20 +1576,17 @@ class StudioExportWorkspace(QWidget):
         preset_menu.addSeparator()
         preset_menu.addAction("删除自定义预设", self._delete_user_preset)
         self.preset_menu_button.setMenu(preset_menu)
-        preset_row.addWidget(self.preset_menu_button)
-        form.addRow("导出预设", preset_row)
+        # The menu rides at the end of the chips and wraps with them.
+        self.preset_chips.set_trailing(self.preset_menu_button)
+        form.addWidget(self.preset_chips)
         self.codec = self._combo((("H.264", "h264"), ("HEVC / H.265", "hevc"), ("AV1", "av1")))
         self._apply_codec_capabilities()
         self.codec.currentIndexChanged.connect(self._codec_changed)
-        form.addRow("编码", self.codec)
         self.quality = self._combo((("推荐", "recommended"), ("高质量", "high"), ("极高质量", "very_high"),
                                    ("体积优先", "size"), ("自定义", "custom")))
         self.quality.currentIndexChanged.connect(self._quality_changed)
-        form.addRow("质量", self.quality)
-        self.quality_hint = QLabel("推荐：适合普通上传")
-        self.quality_hint.setObjectName("cardMeta")
-        self.quality_hint.setWordWrap(True)
-        form.addRow("", self.quality_hint)
+        # The quality hint is the note on the right of the card title.
+        self.quality_hint = self.picture_note
         resolutions = [("跟随源视频", (0, 0))]
         source_h = int(self.project.media.height or 0)
         for width, height in ((3840, 2160), (2560, 1440), (1920, 1080), (1280, 720)):
@@ -1429,137 +1595,210 @@ class StudioExportWorkspace(QWidget):
         resolutions.append(("自定义", (-1, -1)))
         self.resolution = self._combo(resolutions)
         self.resolution.currentIndexChanged.connect(self._resolution_changed)
-        form.addRow("分辨率", self.resolution)
-        self.custom_resolution_width = QSpinBox(); self.custom_resolution_width.setRange(160, 7680); self.custom_resolution_width.setValue(max(1920, int(self.project.media.width or 0)))
-        self.custom_resolution_height = QSpinBox(); self.custom_resolution_height.setRange(90, 4320); self.custom_resolution_height.setValue(max(1080, int(self.project.media.height or 0)))
-        field_width(self.custom_resolution_width, "numeric", size="compact")
-        field_width(self.custom_resolution_height, "numeric", size="compact")
-        custom_resolution_row = QHBoxLayout(); custom_resolution_row.addWidget(self.custom_resolution_width)
-        self.custom_resolution_separator = QLabel("×"); custom_resolution_row.addWidget(self.custom_resolution_separator); custom_resolution_row.addWidget(self.custom_resolution_height)
-        self.custom_resolution_label = QLabel("自定义尺寸")
-        form.addRow(self.custom_resolution_label, custom_resolution_row)
-        self.custom_resolution_width.hide(); self.custom_resolution_height.hide(); self.custom_resolution_separator.hide(); self.custom_resolution_label.hide()
-        self.custom_resolution_width.valueChanged.connect(self._target_changed); self.custom_resolution_height.valueChanged.connect(self._target_changed)
         self.fps = self._combo((("源帧率", 0.0), ("60 fps", 60.0), ("30 fps", 30.0), ("24 fps", 24.0), ("自定义", -1.0)))
         self.fps.currentIndexChanged.connect(self._fps_changed)
-        form.addRow("帧率", self.fps)
+        grid = self._picture_grid = QGridLayout()
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        grid.addWidget(captioned("编码", self.codec), 0, 0)
+        grid.addWidget(captioned("分辨率", self.resolution), 0, 1)
+        grid.addWidget(captioned("帧率", self.fps), 0, 2)
+        grid.addWidget(captioned("质量", self.quality), 1, 0, 1, 2)
+        for column_index in range(3):
+            grid.setColumnStretch(column_index, 1)
+        form.addLayout(grid)
+        self.custom_resolution_width = QSpinBox(); self.custom_resolution_width.setRange(160, 7680); self.custom_resolution_width.setValue(max(1920, int(self.project.media.width or 0)))
+        self.custom_resolution_height = QSpinBox(); self.custom_resolution_height.setRange(90, 4320); self.custom_resolution_height.setValue(max(1080, int(self.project.media.height or 0)))
+        for spin in (self.custom_resolution_width, self.custom_resolution_height):
+            field_width(spin, "numeric", size="compact")
+            spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.custom_resolution_separator = QLabel("×")
+        self.custom_resolution_separator.setObjectName("exportFieldLabel")
+        self.custom_resolution_label = QLabel("自定义尺寸")
+        size_pair = QWidget()
+        size_row = QHBoxLayout(size_pair)
+        size_row.setContentsMargins(0, 0, 0, 0)
+        size_row.setSpacing(6)
+        size_row.addWidget(self.custom_resolution_width, 1)
+        size_row.addWidget(self.custom_resolution_separator)
+        size_row.addWidget(self.custom_resolution_height, 1)
+        self.custom_resolution_host = captioned("", size_pair, label=self.custom_resolution_label)
+        for spin in (self.custom_resolution_width, self.custom_resolution_height):
+            spin.setMinimumWidth(0)
+            spin.setMinimumHeight(FIELD_HEIGHT)
+            spin.setMaximumHeight(FIELD_HEIGHT)
+        self.custom_resolution_width.hide(); self.custom_resolution_height.hide(); self.custom_resolution_separator.hide(); self.custom_resolution_label.hide()
+        self.custom_resolution_host.hide()
+        self.custom_resolution_width.valueChanged.connect(self._target_changed); self.custom_resolution_height.valueChanged.connect(self._target_changed)
         self.custom_fps = QSpinBox(); self.custom_fps.setRange(1, 240); self.custom_fps.setValue(30); self.custom_fps.setSuffix(" fps")
         field_width(self.custom_fps, "numeric", size="compact")
-        self.custom_fps_label = QLabel("自定义帧率"); form.addRow(self.custom_fps_label, self.custom_fps)
-        self.custom_fps.hide(); self.custom_fps_label.hide(); self.custom_fps.valueChanged.connect(self._target_changed)
+        self.custom_fps.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.custom_fps_label = QLabel("自定义帧率")
+        self.custom_fps_host = captioned("", self.custom_fps, label=self.custom_fps_label, role="numeric")
+        self.custom_fps.hide(); self.custom_fps_label.hide(); self.custom_fps_host.hide(); self.custom_fps.valueChanged.connect(self._target_changed)
+        extras = self._picture_extras = QHBoxLayout()
+        extras.setSpacing(8)
+        extras.addWidget(self.custom_resolution_host, 2)
+        extras.addWidget(self.custom_fps_host, 1)
+        form.addLayout(extras)
+        # The range choice lives under the preview, beside the in / out points.
         self.export_range = self._combo((("整个视频", "all"), ("入点到出点", "in_out")))
         self.export_range.currentIndexChanged.connect(self._range_mode_changed)
-        form.addRow("导出范围", self.export_range)
         layout.addWidget(group)
 
     def _audio_settings(self, layout: QVBoxLayout) -> None:
-        group, form = QGroupBox("音频"), QFormLayout()
-        group.setLayout(form)
+        # Audio shares the picture card: one field in its grid, the AAC rate
+        # beside the custom size / frame rate when AAC is chosen.
+        self.video_audio_group = self.picture_card
         self.audio = self._combo((("直接复制", "copy"), ("AAC", "aac"), ("无音频", "none")))
         self.audio.currentIndexChanged.connect(self._audio_changed)
-        form.addRow("音频", self.audio)
+        self._picture_grid.addWidget(captioned("音频", self.audio), 1, 2)
         self.audio_bitrate = self._combo(tuple((f"{value} kbps", value) for value in (128, 192, 256, 320)))
         self.audio_bitrate.setCurrentIndex(1)
         self.audio_bitrate.currentIndexChanged.connect(self._target_changed)
         self.audio_bitrate_label = QLabel("AAC 码率")
-        form.addRow(self.audio_bitrate_label, self.audio_bitrate)
-        self.audio_bitrate.hide(); self.audio_bitrate_label.hide()
-        layout.addWidget(group)
+        self.audio_bitrate_host = captioned("", self.audio_bitrate, label=self.audio_bitrate_label)
+        self._picture_extras.addWidget(self.audio_bitrate_host, 1)
+        self.audio_bitrate.hide(); self.audio_bitrate_label.hide(); self.audio_bitrate_host.hide()
 
     def _advanced_settings(self, layout: QVBoxLayout) -> None:
-        self.advanced_button = QToolButton()
-        bind_text(self.advanced_button, '高级设置')
-        self.advanced_button.setCheckable(True)
-        self.advanced_button.setArrowType(Qt.ArrowType.RightArrow)
-        self.advanced_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.advanced_button.setObjectName("exportAdvancedToggle")
-        self.advanced_button.toggled.connect(self._toggle_advanced)
-        layout.addWidget(self.advanced_button)
-        self.advanced_panel, form = QGroupBox("质量控制"), QFormLayout()
-        self.advanced_panel.setLayout(form)
-        self.encoder = field_width(StudioComboBox(), "preferred", size="compact"); self._populate_encoders()
-        form.addRow("编码器", self.encoder)
-        self.encoder.currentIndexChanged.connect(self._encoder_changed)
+        self.advanced_card = FoldCard("高级编码", expanded=False)
+        self.advanced_card.layout().setContentsMargins(16, 10, 16, 10)
+        # The fold header is the old 高级设置 toggle and its body the old panel.
+        self.advanced_button = self.advanced_card.header
+        self.advanced_panel = self.advanced_card.body
+        body = self.advanced_card.body_layout
+        body.setSpacing(10)
         self.actual_encoder_hint = QLabel()
         self.actual_encoder_hint.setObjectName("cardMeta")
         self.actual_encoder_hint.setWordWrap(True)
-        form.addRow("", self.actual_encoder_hint)
-        self.rate_control = field_width(StudioComboBox(), "compact", size="compact")
-        self.rate_control.currentIndexChanged.connect(self._rate_control_changed)
-        form.addRow("质量控制方式", self.rate_control)
-        self.quality_value = QSpinBox(); self.quality_value.setRange(0, 63); self.quality_value.setValue(20)
-        field_width(self.quality_value, "numeric", size="compact")
-        self.quality_value_label = QLabel("质量")
-        form.addRow(self.quality_value_label, self.quality_value)
-        self.bitrate = QSpinBox(); self.bitrate.setRange(100, 200_000); self.bitrate.setValue(8000); self.bitrate.setSuffix(" kbps")
-        field_width(self.bitrate, "numeric", size="compact")
-        self.bitrate_label = QLabel("目标码率")
-        form.addRow(self.bitrate_label, self.bitrate)
-        self.max_bitrate = QSpinBox(); self.max_bitrate.setRange(100, 300_000); self.max_bitrate.setValue(12000); self.max_bitrate.setSuffix(" kbps")
-        field_width(self.max_bitrate, "numeric", size="compact")
-        self.max_bitrate_label = QLabel("最大码率")
-        form.addRow(self.max_bitrate_label, self.max_bitrate)
-        for widget in (self.quality_value, self.bitrate, self.max_bitrate):
-            widget.valueChanged.connect(self._manual_encoding_changed)
+        body.addWidget(self.actual_encoder_hint)
+        self.encoder = field_width(StudioComboBox(), "preferred", size="compact"); self._populate_encoders()
+        self.encoder.currentIndexChanged.connect(self._encoder_changed)
         self.encoder_preset = self._combo((("最快", "fastest"), ("快速", "fast"), ("均衡（推荐）", "balanced"),
                                            ("高质量", "quality"), ("最高质量", "best")))
         self.encoder_preset.setCurrentIndex(self.encoder_preset.findData("balanced"))
-        form.addRow("编码速度", self.encoder_preset)
+        self.encoder_preset.currentIndexChanged.connect(self._refresh_advanced_summary)
+        pair = QHBoxLayout()
+        pair.setSpacing(8)
+        pair.addWidget(captioned("编码器", self.encoder, role="preferred"), 1)
+        pair.addWidget(captioned("编码速度", self.encoder_preset), 1)
+        body.addLayout(pair)
+        self.rate_control = field_width(StudioComboBox(), "compact", size="compact")
+        self.rate_control.currentIndexChanged.connect(self._rate_control_changed)
+        self.rate_control_choice = SegmentedControl(self.rate_control)
+        self.rate_control_choice.setProperty("tone", "soft")
+        rate_row = QHBoxLayout()
+        rate_row.setSpacing(10)
+        rate_label = QLabel("质量控制方式")
+        rate_label.setObjectName("exportFieldLabel")
+        rate_row.addWidget(rate_label)
+        rate_row.addWidget(self.rate_control_choice, 1)
+        body.addLayout(rate_row)
+        self.quality_value = QSpinBox(); self.quality_value.setRange(0, 63); self.quality_value.setValue(20)
+        field_width(self.quality_value, "numeric", size="compact")
+        self.quality_value_label = QLabel("质量")
+        self.bitrate = QSpinBox(); self.bitrate.setRange(100, 200_000); self.bitrate.setValue(8000); self.bitrate.setSuffix(" kbps")
+        field_width(self.bitrate, "numeric", size="compact")
+        self.bitrate_label = QLabel("目标码率")
+        self.max_bitrate = QSpinBox(); self.max_bitrate.setRange(100, 300_000); self.max_bitrate.setValue(12000); self.max_bitrate.setSuffix(" kbps")
+        field_width(self.max_bitrate, "numeric", size="compact")
+        self.max_bitrate_label = QLabel("最大码率")
+        numbers = QHBoxLayout()
+        numbers.setSpacing(8)
+        for spin, label in ((self.quality_value, self.quality_value_label), (self.bitrate, self.bitrate_label),
+                            (self.max_bitrate, self.max_bitrate_label)):
+            spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+            spin.valueChanged.connect(self._manual_encoding_changed)
+            numbers.addWidget(captioned("", spin, label=label, role="numeric"), 1)
+        body.addLayout(numbers)
 
-        self.expert_button = QToolButton()
-        bind_text(self.expert_button, '专家编码设置')
-        self.expert_button.setCheckable(True)
-        self.expert_button.setArrowType(Qt.ArrowType.RightArrow)
-        self.expert_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.expert_button.toggled.connect(self._toggle_expert)
-        form.addRow("", self.expert_button)
-        self.expert_panel, expert_form = QGroupBox("兼容性与关键帧"), QFormLayout()
-        self.expert_panel.setLayout(expert_form)
+        self.expert_card = FoldCard("专家编码设置", expanded=False)
+        self.expert_card.layout().setContentsMargins(0, 2, 0, 0)
+        self.expert_card.title.setProperty("nested", True)
+        self.expert_button = self.expert_card.header
+        self.expert_panel = self.expert_card.body
         self.profile = self._combo((("自动", ""), ("High", "high"), ("Main", "main")))
         bind_text(self.profile, '控制编码兼容性。通常保持自动即可。', property='toolTip')
-        expert_form.addRow("Profile", self.profile)
         self.level = self._combo((("自动", ""), ("4.1", "4.1"), ("5.1", "5.1")))
         bind_text(self.level, '限制解码复杂度。除特殊播放设备外建议自动。', property='toolTip')
-        expert_form.addRow("Level", self.level)
         self.pixel_format = self._combo((("yuv420p", "yuv420p"), ("yuv420p10le", "yuv420p10le")))
         bind_text(self.pixel_format, '影响颜色格式和兼容性。yuv420p 兼容性最好。', property='toolTip')
-        expert_form.addRow("Pixel Format", self.pixel_format)
-        self.gop = QSpinBox(); self.gop.setRange(0, 600); self.gop.setSpecialValueText("自动")
+        self.gop = QSpinBox(); self.gop.setRange(0, 600); bind_text(self.gop, "自动", property='specialValueText')
         field_width(self.gop, "numeric", size="compact")
+        self.gop.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         bind_text(self.gop, '关键帧间隔。一般无需手动修改。', property='toolTip')
-        expert_form.addRow("GOP", self.gop)
-        self.expert_panel.hide()
-        form.addRow(self.expert_panel)
-        self.advanced_panel.hide()
-        layout.addWidget(self.advanced_panel)
+        expert_grid = QGridLayout()
+        expert_grid.setHorizontalSpacing(8)
+        expert_grid.setVerticalSpacing(8)
+        for index, (caption, field) in enumerate((("Profile", self.profile), ("Level", self.level),
+                                                   ("Pixel Format", self.pixel_format), ("GOP", self.gop))):
+            expert_grid.addWidget(captioned(caption, field), index // 2, index % 2)
+        expert_grid.setColumnStretch(0, 1)
+        expert_grid.setColumnStretch(1, 1)
+        self.expert_card.body_layout.addLayout(expert_grid)
+        for widget in (self.profile, self.level, self.pixel_format):
+            widget.currentIndexChanged.connect(self._refresh_advanced_summary)
+        self.gop.valueChanged.connect(self._refresh_advanced_summary)
+        body.addWidget(self.expert_card)
+        layout.addWidget(self.advanced_card)
         self._encoder_changed()
 
+    def _refresh_advanced_summary(self, *_args) -> None:
+        if not hasattr(self, "expert_card"):
+            return
+        encoder = self._resolved_encoder()
+        mode = str(self.rate_control.currentData() or "crf")
+        if mode in {"crf", "cq"}:
+            control = f"{'CRF' if mode == 'crf' else 'CQ'} {self.quality_value.value()}"
+        else:
+            control = f"{mode.upper()} {self.bitrate.value()} kbps"
+        if str(self.encoder.currentData() or "auto") == "auto":
+            pattern = "{}（{}）" if current_language().startswith("zh") else "{} ({})"
+            encoder = pattern.format(tr("自动"), encoder)
+        self.advanced_card.set_summary(join_text([encoder, control, tr(self.encoder_preset.currentText())]))
+        self.expert_card.set_summary(join_text([
+            f"Profile {self.profile.currentText()}", f"Level {self.level.currentText()}",
+            self.pixel_format.currentText(), f"GOP {self.gop.text()}"]))
+
     def _summary_box(self, layout: QVBoxLayout) -> None:
-        group, box = QGroupBox("输出摘要"), QVBoxLayout()
-        group.setLayout(box)
-        box.setSpacing(8)
-        group.setMinimumHeight(132)
-        self.renderer_badge = QLabel()
-        self.renderer_badge.setObjectName("exportRendererBadge")
-        self.renderer_badge.setMaximumWidth(190)
+        group = QWidget()
+        group.setObjectName("exportSummaryBox")
+        box = QVBoxLayout(group)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(6)
+        self.summary_chip_host = QWidget(group)
+        self.summary_chips = WrapLayout(self.summary_chip_host, spacing=6, fill=False)
+        box.addWidget(self.summary_chip_host)
+        # The joined text stays the page's readable summary (checks read it).
         self.summary = QLabel(); self.summary.setWordWrap(True)
         self.summary.setObjectName("exportSummaryBody")
-        self.estimated_size = QLabel(); self.estimated_size.setObjectName("cardMeta")
+        self.summary.hide()
+        box.addWidget(self.summary)
+        self.estimated_size = QLabel(); self.estimated_size.setObjectName("exportEstimate")
         self.estimated_size.setWordWrap(True)
-        box.addWidget(self.renderer_badge); box.addWidget(self.summary); box.addWidget(self.estimated_size)
+        box.addWidget(self.estimated_size)
         layout.addWidget(group)
 
     def _preview_panel(self, splitter: QSplitter) -> None:
         panel, layout = QFrame(), QVBoxLayout()
         self.preview_panel = panel
         panel.setObjectName("exportPreviewPanel")
-        panel.setLayout(layout); layout.setContentsMargins(20, 18, 20, 18); layout.setSpacing(10)
-        panel.setMinimumHeight(620)
-        title = QLabel("导出预览"); title.setObjectName("exportCardTitle"); layout.addWidget(title)
+        panel.setLayout(layout); layout.setContentsMargins(20, 16, 20, 18); layout.setSpacing(12)
+        panel.setMinimumHeight(560)
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        title = self.preview_title = QLabel("导出预览"); title.setObjectName("exportCardTitle"); head.addWidget(title)
+        head.addStretch(1)
+        self.source_pill = QLabel()
+        self.source_pill.setObjectName("exportSourcePill")
+        bind_text(self.source_pill, "源是音频 · 黑色画面")
+        self.source_pill.setVisible(source_is_audio_only(self.project))
+        head.addWidget(self.source_pill)
+        layout.addLayout(head)
         self.preview_host = QFrame(); self.preview_host.setObjectName("exportPreviewHost")
         self.preview_host.setMinimumSize(520, 292); self.preview_host.setMaximumSize(820, 410)
         self.preview_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        pass  # exportPreviewHost styling lives in _export_workspace_qss
         self.preview_host_layout = QVBoxLayout(self.preview_host); self.preview_host_layout.setContentsMargins(0, 0, 0, 0)
         if self._preview_widget:
             self.preview_host_layout.addWidget(self._preview_widget); self._preview_widget.show()
@@ -1571,45 +1810,82 @@ class StudioExportWorkspace(QWidget):
             self.preview.setStyleSheet("color:#f8f5ee;padding:20px"); self.preview_host_layout.addWidget(self.preview); self._load_cover()
         layout.addWidget(self.preview_host, 0, Qt.AlignmentFlag.AlignHCenter)
         controls = QHBoxLayout()
-        self.preview_play_button = QPushButton("▶ 播放"); self.preview_play_button.clicked.connect(self._toggle_preview)
+        controls.setSpacing(12)
+        self.preview_play_button = QPushButton(); self.preview_play_button.clicked.connect(self._toggle_preview)
         self.preview_play_button.setObjectName("exportPlayButton")
+        self.preview_play_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._preview_state_changed(True)
         self.preview_time = QLabel(_clock(0, True)); self.preview_time.setObjectName("exportPreviewTime")
         self.preview_scrub = ExportTimelineSlider(); self.preview_scrub.setRange(0, self._duration_ms())
         self.preview_scrub.seek_requested.connect(self._seek_preview)
         self.preview_scrub.valueChanged.connect(lambda value: self.preview_time.setText(_clock(value, True)))
         for widget in (self.preview_play_button, self.preview_time): controls.addWidget(widget)
         controls.addWidget(self.preview_scrub, 1)
-        self.duration_label = QLabel(_clock(self._duration_ms(), True)); controls.addWidget(self.duration_label)
+        self.duration_label = QLabel(_clock(self._duration_ms(), True)); self.duration_label.setObjectName("exportPreviewTime")
+        controls.addWidget(self.duration_label)
         layout.addLayout(controls)
-        actions = QHBoxLayout()
-        set_in, set_out, clear = QPushButton("设置入点  I"), QPushButton("设置出点  O"), QPushButton("清除范围")
-        set_in.clicked.connect(self._set_in); set_out.clicked.connect(self._set_out); clear.clicked.connect(self._clear_range)
-        actions.addWidget(set_in); actions.addWidget(set_out); actions.addStretch(1); actions.addWidget(clear); layout.addLayout(actions)
-        # The shared project range bar below already offers mark in/out, jump
-        # and clear (I/O shortcuts stay bound); keep one visible range control.
-        for duplicate in (set_in, set_out, clear):
-            duplicate.hide()
-        self.range_label = QLabel(); self.range_label.setObjectName("exportRangeLabel")
-        self.range_label.setWordWrap(True)
-        layout.addWidget(self.range_label)
+        # One row when wide; the choice above the points when narrow
+        # (_apply_responsive_layout).
+        range_row = self._range_grid = QGridLayout()
+        range_row.setHorizontalSpacing(10)
+        range_row.setVerticalSpacing(8)
+        self.export_range_choice = SegmentedControl(self.export_range)
+        self.export_range_choice.setProperty("tone", "soft")
+        self.export_range_choice.setMinimumWidth(170)
+        self.export_range_choice.setMaximumWidth(240)
+        range_row.addWidget(self.export_range_choice, 0, 0, Qt.AlignmentFlag.AlignVCenter)
         from ..studio.project_range_ui import ProjectRangeBar
         self.project_range_bar = ProjectRangeBar(lambda:self.project,
             lambda:self.preview_scrub.value(), self._seek_preview,
             getattr(self.parentWidget(),'undo_stack',None), self)
+        self.project_range_bar.layout().setContentsMargins(0, 0, 0, 0)
+        self.project_range_bar.layout().setSpacing(6)
+        for field in self.project_range_bar.fields:
+            field.setMinimumWidth(80)
+        # Each point keeps its own width; spare room stays at the row's end.
+        for segment in self.project_range_bar.findChildren(QFrame, "rangeSegment"):
+            segment.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.project_range_bar.layout().addStretch(1)
         self.project_range_bar.changed.connect(self._update_range)
-        layout.addWidget(self.project_range_bar)
+        range_row.addWidget(self.project_range_bar, 0, 1)
+        range_row.setColumnStretch(1, 1)
+        layout.addLayout(range_row)
+        # The bar keeps writing its duration / problem line and owns 清除范围;
+        # both sit on their own line here so the two points fit a narrow column.
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        for name in ("rangeStatus", "rangeClear"):
+            widget = self.project_range_bar.findChild(QWidget, name)
+            self.project_range_bar.layout().removeWidget(widget)
+            widget.setParent(panel)
+            status_row.addWidget(widget, 1 if name == "rangeStatus" else 0)
+        layout.addLayout(status_row)
+        # The bar's line already names a range problem; this one stays for
+        # code that reads it.
+        self.range_label = QLabel(); self.range_label.setObjectName("exportRangeLabel")
+        self.range_label.setWordWrap(True)
+        self.range_label.hide()
+        layout.addWidget(self.range_label)
+        rule = QFrame(); rule.setObjectName("exportRule"); rule.setFixedHeight(1)
+        layout.addWidget(rule)
         self._summary_box(layout)
-        cta = QHBoxLayout(); cta.addStretch(1)
+        layout.addStretch(1)
+        cta = QHBoxLayout(); cta.setSpacing(10)
         self.queue_button = QPushButton("加入队列")
         self.queue_button.setObjectName("exportQueueButton")
-        self.queue_button.setFixedSize(170, 50)
+        self.queue_button.setFixedHeight(46)
+        self.queue_button.setMinimumWidth(170)
+        self.queue_button.resize(170, 46)
         self.queue_button.clicked.connect(self._enqueue)
         cta.addWidget(self.queue_button)
         self.export_button = QPushButton("开始导出")
         self.export_button.setObjectName("exportStartButton")
-        self.export_button.setFixedSize(220, 50)
+        self.export_button.setFixedHeight(46)
+        self.export_button.setMinimumWidth(220)
+        self.export_button.resize(220, 46)
         self.export_button.setProperty("studioPrimary", True)
         button_role(self.export_button, "primary", size="large")
+        install_themed_icon(self.export_button, "fa5s.file-export", "on_accent")
         self.export_button.clicked.connect(self._start)
         cta.addWidget(self.export_button)
         self._export_actions = cta
@@ -1620,6 +1896,7 @@ class StudioExportWorkspace(QWidget):
         self.preview_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.preview_scroll.setWidget(panel)
+        self.preview_scroll.installEventFilter(self)
         splitter.addWidget(self.preview_scroll)
 
     def _exporting_page(self) -> QWidget:
@@ -1629,7 +1906,7 @@ class StudioExportWorkspace(QWidget):
         header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         header_layout = QHBoxLayout(header); header_layout.setContentsMargins(12, 8, 12, 8)
         header_copy = QHBoxLayout()
-        title = QLabel("正在压制字幕视频"); title.setStyleSheet('font-size:16px;font-weight:700')
+        title = self.processing_title = QLabel("正在压制字幕视频"); title.setStyleSheet('font-size:16px;font-weight:700')
         header_copy.addWidget(title)
         self.elapsed_label = QLabel("已用时 00:00")
         header_copy.addWidget(self.elapsed_label)
@@ -1645,7 +1922,8 @@ class StudioExportWorkspace(QWidget):
             (STAGE_PREPARE_SUBTITLES, "准备字幕"),
             (STAGE_ADVANCED_RENDER, "高级样式"),
             (STAGE_ENCODE, "视频编码"),
-            (STAGE_MUX, "封装文件"),
+            (STAGE_MUX, "封装收尾"),
+            (STAGE_VALIDATE, "验证与发布"),
         ]
         for _key, label in self._stage_specs:
             card = QLabel(f"○  {label}")
@@ -1724,6 +2002,8 @@ class StudioExportWorkspace(QWidget):
         return max(0, timeline_duration_ms(self.project))
 
     def _load_cover(self) -> None:
+        from .audio_export_ui import is_audio
+        if is_audio(self): return
         if self.project_path:
             cover = self.project_path.parent / "preview" / "project-cover.jpg"
             if cover.is_file(): self.preview.setPixmap(QPixmap(str(cover)).scaled(960, 540, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
@@ -1742,7 +2022,12 @@ class StudioExportWorkspace(QWidget):
         self.preview_scrub.setValue(value); self.preview_time.setText(_clock(value, True))
 
     def _preview_state_changed(self, paused: bool) -> None:
-        (bind_text(self.preview_play_button, '▶ 播放') if paused else bind_text(self.preview_play_button, 'Ⅱ 暂停'))
+        # A round accent button: the icon shows the action, the name says it.
+        install_themed_icon(self.preview_play_button, "fa5s.play" if paused else "fa5s.pause", "on_accent")
+        self.preview_play_button.setIconSize(QSize(14, 14))
+        label = '播放' if paused else '暂停'
+        bind_text(self.preview_play_button, label, property='accessibleName')
+        bind_text(self.preview_play_button, label, property='toolTip')
 
     def _toggle_preview(self) -> None:
         callback = getattr(self.parentWidget(), "_toggle_playback", None)
@@ -1796,6 +2081,9 @@ class StudioExportWorkspace(QWidget):
             bind_text(self.range_label, error)
         else:
             bind_text(self.range_label, '入点 {start}  →  出点 {end} · 时长 {duration}', start=_clock(start, True), end=_clock(end, True), duration=_clock(end-start, True))
+        choice = getattr(self, "export_range_choice", None)
+        if choice is not None:
+            choice.sync()
         for name in ('queue_button','export_button'):
             button=getattr(self,name,None)
             if button is not None:button.setEnabled(not error)
@@ -1870,10 +2158,13 @@ class StudioExportWorkspace(QWidget):
         bitrate_visible = mode in {"target", "limited", "vbr", "cbr"}
         max_visible = mode in {"limited", "vbr"}
         self.quality_value_label.setText("CRF" if mode == "crf" else "CQ / CQP")
-        self.quality_value_label.setVisible(quality_visible); self.quality_value.setVisible(quality_visible)
+        self.quality_value_label.setVisible(quality_visible); show_field(self.quality_value, quality_visible)
         (bind_text(self.bitrate_label, '码率') if mode == 'cbr' else bind_text(self.bitrate_label, '目标码率'))
-        self.bitrate_label.setVisible(bitrate_visible); self.bitrate.setVisible(bitrate_visible)
-        self.max_bitrate_label.setVisible(max_visible); self.max_bitrate.setVisible(max_visible)
+        self.bitrate_label.setVisible(bitrate_visible); show_field(self.bitrate, bitrate_visible)
+        self.max_bitrate_label.setVisible(max_visible); show_field(self.max_bitrate, max_visible)
+        # The mode list is refilled with signals blocked: show the pick.
+        if hasattr(self, "rate_control_choice"):
+            self.rate_control_choice.sync()
         self._target_changed()
 
     def _mark_custom_export(self) -> None:
@@ -1885,6 +2176,8 @@ class StudioExportWorkspace(QWidget):
             previous = self.preset.blockSignals(True)
             self.preset.setCurrentIndex(max(0, self.preset.findData('custom')))
             self.preset.blockSignals(previous)
+            if hasattr(self, 'preset_chips'):
+                self.preset_chips.sync()
 
     def _manual_encoding_changed(self, *_args) -> None:
         self._mark_custom_export()
@@ -1911,24 +2204,33 @@ class StudioExportWorkspace(QWidget):
                 bind_text(item, '当前 FFmpeg / GPU 不支持', property='toolTip')
 
     def _codec_changed(self, *_args) -> None:
+        if self.extension.currentData() == "webm" and self.codec.currentData() != "av1":
+            self.codec.setCurrentIndex(self.codec.findData("av1")); return
         if self.extension.currentData() == "mov" and self.codec.currentData() == "av1": self.codec.setCurrentIndex(self.codec.findData("h264")); return
         self._populate_encoders(); self._encoder_changed(); self._target_changed()
 
     def _container_changed(self, *_args) -> None:
+        from .audio_export_ui import is_audio
+        if is_audio(self):
+            self.audio_delivery.update_settings(); return
+        if self.extension.currentData() == "webm":
+            self.codec.setCurrentIndex(self.codec.findData("av1"))
+            self.audio.setCurrentIndex(self.audio.findData("aac"))
         if self.extension.currentData() == "mov" and self.codec.currentData() == "av1": self.codec.setCurrentIndex(self.codec.findData("h264"))
         self._target_changed()
 
     def _audio_changed(self, *_args) -> None:
-        visible = self.audio.currentData() == "aac"; self.audio_bitrate.setVisible(visible); self.audio_bitrate_label.setVisible(visible); self._target_changed()
+        visible = self.audio.currentData() == "aac"; show_field(self.audio_bitrate, visible); self.audio_bitrate_label.setVisible(visible); self._target_changed()
 
     def _resolution_changed(self, *_args) -> None:
         custom = (self.resolution.currentData() or (0, 0))[0] < 0
         self.custom_resolution_width.setVisible(custom); self.custom_resolution_height.setVisible(custom); self.custom_resolution_separator.setVisible(custom); self.custom_resolution_label.setVisible(custom)
+        self.custom_resolution_host.setVisible(custom)
         self._target_changed()
 
     def _fps_changed(self, *_args) -> None:
         custom = float(self.fps.currentData() or 0.0) < 0
-        self.custom_fps.setVisible(custom); self.custom_fps_label.setVisible(custom); self._target_changed()
+        show_field(self.custom_fps, custom); self.custom_fps_label.setVisible(custom); self._target_changed()
 
     def _preset_catalog(self) -> list[dict]:
         catalog = visible_product_presets(self.ffmpeg)
@@ -1944,6 +2246,8 @@ class StudioExportWorkspace(QWidget):
         index = self.preset.findData(current)
         self.preset.setCurrentIndex(max(0, index))
         self.preset.blockSignals(False)
+        if hasattr(self, "preset_chips"):
+            self.preset_chips.sync()
 
     def _preset_payload(self, preset_id: str) -> dict | None:
         return next((item for item in self._preset_catalog() if str(item.get("id")) == preset_id), None)
@@ -2089,6 +2393,19 @@ class StudioExportWorkspace(QWidget):
         if not hasattr(self, "status"): return
         bind_text(self.status, '输出：{value0}', value0=self.export_target().full_path)
         duration = self.out_ms - self.in_ms if self.export_range.currentData() == "in_out" else self._duration_ms()
+        from .audio_export_ui import is_audio
+        if is_audio(self):
+            settings = self.audio_delivery.settings()
+            self._effective_export_settings = settings
+            self.renderer_badge.setText(tr('工程音频'))
+            self.summary.setText(f"{self.extension.currentText()} · {self.audio_delivery.rate.currentText()} · {self.audio_delivery.channels.currentText()}\n{tr('范围')} {_clock(duration)}")
+            if hasattr(self, 'summary_chips'):
+                fill_pills(self.summary_chips, self.summary_chip_host, [self.extension.currentText(),
+                    self.audio_delivery.rate.currentText(), self.audio_delivery.channels.currentText(),
+                    tr('工程音频'), tr('时长 {duration}', duration=_clock(duration))])
+            if hasattr(self, 'filename_extension'): self.filename_extension.setText('.'+str(self.extension.currentData()))
+            self.estimated_size.setText(tr('只处理工程音轨，不渲染影片与字幕'))
+            return
         resolution = self.resolution.currentData() or (0, 0)
         if resolution[0] < 0: resolution = (self.custom_resolution_width.value(), self.custom_resolution_height.value())
         resolution_text = f"{resolution[0]} × {resolution[1]}" if resolution[0] > 0 else (f"{self.project.media.width} × {self.project.media.height}" if self.project.media.width else "跟随源视频")
@@ -2096,16 +2413,24 @@ class StudioExportWorkspace(QWidget):
         effective = self._render_settings(commit=False)
         self._effective_export_settings = effective
         from .export_timeline import export_project_snapshot
-        advanced = project_requires_advanced(export_project_snapshot(self.project),
-            start_ms=self.in_ms, end_ms=self.out_ms)
-        route = "⚡ Advanced Visual" if advanced else "● Native Subtitle"
+        frozen = export_project_snapshot(self.project, start_ms=self.in_ms, end_ms=self.out_ms)
+        advanced = project_requires_advanced(frozen)
+        subtitle_text = tr('跟随工程可见性：烧录 {count} 条字幕', count=len(frozen.cues)) if frozen.cues else tr('跟随工程可见性：不烧录字幕')
+        route = ("字幕样式：合成烧录" if advanced else "普通字幕：直接烧录") if frozen.cues else tr('无字幕处理')
         self.renderer_badge.setProperty("rendererKind", "advanced" if advanced else "native")
         self.renderer_badge.style().unpolish(self.renderer_badge)
         self.renderer_badge.style().polish(self.renderer_badge)
-        self.renderer_badge.setText(route)
+        bind_text(self.renderer_badge, route)
         mode_text = (f'{effective.quality_mode.upper()} {effective.quality}' if effective.quality_mode in {'crf', 'cq'}
                      else f'{tr(self.rate_control.currentText())} {effective.bitrate_kbps} kbps')
-        bind_text(self.summary, '{resolution_text} · {fps_text}\n{value2} · {value3} · {value4}\n{value5} · 字幕烧录 · 范围 {value6}', resolution_text=tr(resolution_text), fps_text=tr(fps_text), value2=self.codec.currentText(), value3=effective.encoder, value4=mode_text, value5=tr(self.audio.currentText()), value6=_clock(duration))
+        bind_text(self.summary, '{resolution_text} · {fps_text}\n{value2} · {value3} · {value4}\n{value5} · {subtitles} · 范围 {value6}', resolution_text=tr(resolution_text), fps_text=tr(fps_text), value2=self.codec.currentText(), value3=effective.encoder, value4=mode_text, value5=tr(self.audio.currentText()), subtitles=subtitle_text, value6=_clock(duration))
+        fill_pills(self.summary_chips, self.summary_chip_host, [
+            tr(resolution_text), tr(fps_text), self.codec.currentText(), effective.encoder, mode_text,
+            tr('音频：{audio}', audio=tr(self.audio.currentText())), subtitle_text,
+            tr('时长 {duration}', duration=_clock(duration))])
+        if hasattr(self, "filename_extension"):
+            self.filename_extension.setText("." + str(self.extension.currentData() or "mp4"))
+        self._refresh_advanced_summary()
         audio_rate = int(self.audio_bitrate.currentData() or 0) if self.audio.currentData() == "aac" else 0
         if effective.quality_mode in {'crf', 'cq'}:
             bind_text(self.estimated_size, '恒定质量模式：文件大小随画面复杂度变化')
@@ -2160,6 +2485,8 @@ class StudioExportWorkspace(QWidget):
         self._target_changed()
 
     def _confirm_export_preferences(self):
+        from .audio_export_ui import is_audio
+        if is_audio(self): return
         self._commit_export_fields()
         self._confirm_affixes()
         values = {name: getattr(self,name).currentData() for name in (
@@ -2194,6 +2521,8 @@ class StudioExportWorkspace(QWidget):
         if path: self.directory.setText(path)
 
     def _render_settings(self, *, commit=True) -> RenderSettings:
+        from .audio_export_ui import is_audio
+        if is_audio(self): return self.audio_delivery.settings()
         if commit:
             self._commit_export_fields()
         codec, encoder = str(self.codec.currentData() or "h264"), self._resolved_encoder()
@@ -2218,7 +2547,7 @@ class StudioExportWorkspace(QWidget):
             quality_mode=rate_mode, quality=quality,
             bitrate_kbps=self.bitrate.value(), max_bitrate_kbps=self.max_bitrate.value(),
             width=int(width), height=int(height), fps=max(0.0, fps_value),
-            audio_codec=str(self.audio.currentData()), audio_bitrate_kbps=int(self.audio_bitrate.currentData() or 192),
+            audio_codec=("opus" if self.extension.currentData()=="webm" and self.audio.currentData()!="none" else str(self.audio.currentData())), audio_bitrate_kbps=int(self.audio_bitrate.currentData() or 192),
             preset=encoder_preset, profile=str(self.profile.currentData()), level=str(self.level.currentData()),
             pixel_format=str(self.pixel_format.currentData()), gop=self.gop.value())
 
@@ -2229,6 +2558,8 @@ class StudioExportWorkspace(QWidget):
         return start/1000.0,duration,duration
 
     def _job(self, output: Path, settings=None) -> RenderJob:
+        from .audio_export_ui import is_audio, audio_job
+        if is_audio(self): return audio_job(self, output, settings)
         from .video_export import capture_video_graph
         start, duration, effective = self._range_seconds()
         sequence = sequence_of(self.project)
@@ -2246,14 +2577,15 @@ class StudioExportWorkspace(QWidget):
         import hashlib
         settings = replace(settings or self._render_settings())
         export_ass = cover_dir / (uuid.uuid4().hex + '.ass')
-        self._export_project = write_export_ass(self.project, export_ass, fps=settings.fps or None)
+        self._export_project = write_export_ass(self.project, export_ass, fps=settings.fps or None,
+            skip_empty=True, start_ms=round((start or 0)*1000), end_ms=round(((start or 0)+effective)*1000))
         project_data = self._export_project.to_dict()
         revision = hashlib.sha256(json.dumps(project_data, ensure_ascii=False, sort_keys=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
         return RenderJob(
-            self.project.media.path, str(export_ass), str(output), settings,
+            self._export_project.media.path, str(export_ass) if self._export_project.cues else '', str(output), settings,
             start_seconds=start, duration_seconds=effective, edit_segments=slices,
-            video_graph=capture_video_graph(self.project),
+            video_graph=capture_video_graph(self._export_project),
             export_project_data=project_data,
             export_context=dict(job_id=uuid.uuid4().hex, project_revision='sha256:' + revision,
                 project_path=str(self.project_path or ''), requested_encoder=str(self.encoder.currentData() or 'auto'),
@@ -2263,6 +2595,8 @@ class StudioExportWorkspace(QWidget):
         )
 
     def _start(self) -> None:
+        from .audio_export_ui import is_audio, start_audio
+        if is_audio(self): return start_audio(self)
         self._export_trace("button_clicked")
         self._export_trace("EXPORT_CLICK")
         if self._running:
@@ -2375,8 +2709,11 @@ class StudioExportWorkspace(QWidget):
         self._worker.start()
 
     def _visible_stage_specs(self) -> list[tuple[str, str]]:
+        from .audio_export_ui import is_audio
+        if is_audio(self): return [(STAGE_PREPARE_PROJECT, "准备工程音轨"), (STAGE_ENCODE, "音频编码"), (STAGE_MUX, "验证与发布")]
         return [item for item in self._stage_specs
                 if (item[0] != STAGE_ADVANCED_RENDER or self._advanced_route)
+                and (item[0] != STAGE_PREPARE_SUBTITLES or bool(getattr(self._last_job, 'ass_path', True)))
                 and (item[0] != STAGE_COMPOSE_VIDEO or getattr(self,'_has_composition_stage',False))]
 
     def _show_advanced_stage(self, visible: bool) -> None:
@@ -2393,7 +2730,7 @@ class StudioExportWorkspace(QWidget):
             except (TypeError, ValueError):
                 percent = None
         elapsed = parse_ffmpeg_out_time_seconds(data)
-        if percent is None and elapsed is not None and stage in {STAGE_ENCODE, STAGE_MUX, ""}:
+        if percent is None and elapsed is not None and stage in {STAGE_ENCODE, STAGE_MUX, STAGE_VALIDATE, ""}:
             percent = elapsed / max(0.05, self._range_seconds()[2]) * 100.0
         if percent is not None:
             self.progress_updated.emit(max(0, min(100, round(percent))), data)
@@ -2440,6 +2777,10 @@ class StudioExportWorkspace(QWidget):
             self._pending_export_preview = (image, milliseconds, phase)
 
     def retranslate_ui(self):
+        self._refresh_context()
+        self._refresh_subtitle_summary()
+        for affix in (self.filename_prefix, self.filename_suffix):
+            fit_affix(affix)
         self._target_changed()
         self._update_range()
         if self._running and self._progress_payload:
@@ -2456,7 +2797,7 @@ class StudioExportWorkspace(QWidget):
             STAGE_PREPARE_SUBTITLES: "准备字幕",
             STAGE_ADVANCED_RENDER: "高级样式渲染",
             STAGE_ENCODE: "视频编码",
-            STAGE_MUX: "封装文件",
+            STAGE_MUX: "封装收尾", STAGE_VALIDATE: "验证与发布",
         }.get(stage, "准备工程"))
         label = tr(label)
         message = tr(str(payload.get("message") or ""))
@@ -2468,10 +2809,10 @@ class StudioExportWorkspace(QWidget):
             if index < active_index:
                 states.append("complete")
             elif index == active_index:
-                states.append("running" if stage != STAGE_MUX or str(payload.get("percent")) != "100.000" else "complete")
+                states.append("running" if stage not in {STAGE_MUX, STAGE_VALIDATE} or str(payload.get("percent")) != "100.000" else "complete")
             else:
                 states.append("waiting")
-        if stage == STAGE_MUX and str(payload.get("indeterminate")) != "1":
+        if stage in {STAGE_MUX, STAGE_VALIDATE} and str(payload.get("indeterminate")) != "1":
             states = ["complete"] * len(keys)
             states[-1] = "running" if str(payload.get("percent")) != "100.000" else "complete"
         self._set_pipeline_stage_state(tuple(states), label, specs)
@@ -2540,6 +2881,14 @@ class StudioExportWorkspace(QWidget):
     def _show_success(self, path: str) -> None:
         self._running = False; self._move_preview_to_setup(); output = Path(path); self._settings.setValue("render/last_export_directory", str(output.parent))
         self.success_name.setText(output.name)
+        audio_output = getattr(getattr(self._last_job,"settings",None),"output_kind", "video") == "audio"
+        bind_text(self.success_page.title,"音频导出完成" if audio_output else "压制完成")
+        self.success_page.preview_host.setVisible(not audio_output)
+        bind_text(self.success_page.section_label,"音频信息" if audio_output else "成片信息")
+        for key,audio_label in (("分辨率","采样率"),("帧率","声道")):
+            bind_text(self.success_page.metric_labels[key],audio_label if audio_output else key)
+        self.success_page._fit()
+        bind_text(self.success_page.play, "播放音频" if audio_output else "播放成片")
         panel=self.success_page
         panel.path.setText(str(output.parent))
         job=getattr(self,'_last_job',None)
@@ -2571,6 +2920,12 @@ class StudioExportWorkspace(QWidget):
                           '大小':f'{size / 1_000_000:.1f} MB' if size is not None else '—',
                           '平均码率':f'{bitrate / 1_000_000:.1f} Mb/s' if bitrate else '—'}.items():
             panel.values[key].setText(value)
+        if audio_output:
+            audio = next((s for s in receipt.get('streams', []) if s.get('codec_type') == 'audio'), {})
+            panel.values['格式'].setText(audio.get('codec_name', '').upper())
+            panel.values['分辨率'].setText(str(audio.get('sample_rate', '—'))+' Hz')
+            panel.values['帧率'].setText(str(audio.get('channels', '—'))+' '+tr('声道'))
+            bind_text(self.success_meta, '导出耗时  {value0}', value0=elapsed_display)
         panel.preview.image=QPixmap()
         thumbnail=getattr(job,'completion_preview_path','')
         if receipt and thumbnail and Path(thumbnail).is_file():
@@ -2679,11 +3034,10 @@ class StudioExportWorkspace(QWidget):
         self.details.setVisible(expanded); self.details_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
 
     def _toggle_advanced(self, expanded: bool) -> None:
-        self.advanced_panel.setVisible(expanded); self.advanced_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.advanced_card.set_expanded(expanded)
 
     def _toggle_expert(self, expanded: bool) -> None:
-        self.expert_panel.setVisible(expanded)
-        self.expert_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.expert_card.set_expanded(expanded)
 
     def _move_preview_to_render(self) -> None:
         if not self._preview_widget or self.render_preview_layout.indexOf(self._preview_widget) >= 0: return

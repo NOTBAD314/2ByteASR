@@ -35,15 +35,15 @@ def close(page):
     QApplication.instance().processEvents()
 
 
-def test_draft_scope_apply_undo_and_hydration(tmp_path):
+def test_immediate_scope_apply_undo_and_hydration(tmp_path):
     app, page = make_page(tmp_path)
     try:
         page.motion_scope.setCurrentIndex(page.motion_scope.findData('speaker'))
         page.effect_preset.setCurrentIndex(page.effect_preset.findData('float_up'))
         page.motion_word_mode.setCurrentIndex(page.motion_word_mode.findData('word_reveal'))
-        assert all(c.effect_id == 'none' for c in page.project.cues)
+        assert page.project.cues[0].effect_id != 'none'
         assert '2' in page.motion_apply.text()
-        QTest.mouseClick(page.motion_apply, Qt.LeftButton)
+        assert page.motion_apply.isHidden()
         assert page.project.cues[0].effect_id != 'none'
         assert page.project.cues[1].effect_id == 'none'
         assert page.project.cues[2].effect_id == page.project.cues[0].effect_id
@@ -52,6 +52,8 @@ def test_draft_scope_apply_undo_and_hydration(tmp_path):
         assert page.motion_word_mode.currentData() == 'none'
         page.select_cue('a')
         assert page.motion_word_mode.currentData() == 'word_reveal'
+        page.undo_stack.undo()
+        assert page.project.effects[page.project.cues[0].effect_id]['entry']['type'] == 'float_up'
         page.undo_stack.undo()
         assert all(c.effect_id == 'none' for c in page.project.cues)
         page.undo_stack.redo()

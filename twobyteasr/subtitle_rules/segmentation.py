@@ -1810,6 +1810,9 @@ def locally_repair_resegmented_cue(
     count = len(units)
     if count <= 0 or display_length(text) != count:
         raise ValueError("本地修复的文字与时间单元不一致。")
+    # 2026-10-21: sentence ends and the words around a cut weigh in (就凭你还想阻止｜我？).
+    from .line_break_cohesion import line_break_cut_costs
+    cut_costs = line_break_cut_costs(text)
 
     # 2026-10-23 (user: 「字幕保真检查未通过：S00 1167.880s」): numeric_unsafe
     # judges one cut at a time, so 我们｜两｜波 passed both cuts and left a
@@ -1867,6 +1870,7 @@ def locally_repair_resegmented_cue(
                 cost -= min(10.0, gap * 20.0)
                 if end_index in preferred_boundaries:
                     cost -= 8.0
+                cost += cut_costs.get(end_index, 0.0)
                 if semantically_awkward_boundary(text, end_index):
                     cost += 48.0
                 # A run of one repeated call (影袭影袭|影袭) is one unit.

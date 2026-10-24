@@ -222,7 +222,6 @@ def _worker_crashed(facts: RunFacts):
 # ---- 在线识别 -----------------------------------------------------------------
 
 _CLOUD_WORDS = re.compile(r"云端识别服务|在线 ?ASR|MOSI|MOSS Pro|百炼|Qwen Cloud|Filetrans|录音文件识别|DashScope|短块", re.I)
-_API_MARKER = re.compile(r"\[2BYTEASR_API_ERROR\]\s*(\{.*?\})(?=\s|$)", re.S)
 
 
 def _cloud_errors(facts: RunFacts) -> list[str]:
@@ -237,15 +236,14 @@ def _cloud_errors(facts: RunFacts) -> list[str]:
 
 
 def _marker_category(error: str) -> str:
-    """``category`` of the cloud worker's machine-readable failure line."""
-    import json
-    match = _API_MARKER.search(error)
-    if not match:
-        return ""
-    try:
-        return str(json.loads(match.group(1)).get("category") or "").lower()
-    except (ValueError, AttributeError):
-        return ""
+    """``category`` of the cloud worker's machine-readable failure line.
+
+    Decoded like the retry button does: since 2026-10-23 the message can quote
+    the provider's reason, braces included, which the old pattern cut short.
+    """
+    from ..providers.cloud_api_worker import failure_from_text
+    problem = failure_from_text(error)
+    return str((problem or {}).get("category") or "").lower()
 
 
 def _cloud_check(issue_id: str, categories: set[str], pattern: str):

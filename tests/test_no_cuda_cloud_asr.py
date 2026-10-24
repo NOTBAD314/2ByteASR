@@ -528,11 +528,101 @@ def test_mosi_failed_task_and_local_cancel_are_reported_honestly(tmp_path):
     assert state['remote_cancel_supported'] is False and state['task_id'] == 'task-1'
 
 
+@pytest.mark.parametrize('error, reason', [
+    ({'code': 'audio_decode_failed', 'message': 'audio stream ended early'}, 'audio stream ended early（audio_decode_failed）'),
+    ('internal timeout', 'internal timeout'),
+    ({}, ''),
+])
+def test_mosi_failed_segment_names_itself_its_task_and_mosi_reason(tmp_path, monkeypatch, capsys, error, reason):
+    """2026-10-23 user report: the 2nd of 2 MOSI requests failed after a long
+    wait. The error only said "已结束但没有成功"; MOSI's ``error`` stayed in
+    task.json (a string one was dropped), and retrying from the start failed
+    in 3 seconds with the same sentence."""
+    import io
+    from twobyteasr.providers import cloud_api_worker, mosi_asr
+    monkeypatch.setattr(mosi_asr, 'plan_ranges', lambda a: [(0, 32000), (32000, 64000)])
+
+    class SecondFails(MosiClient):
+        # Both requests are with MOSI at once since 2026-10-23: one task id per upload.
+        def post(self, url, **kw):
+            super().post(url, **kw)
+            task = f'task-{len(self.posts)}'
+            return Response({'id': task, 'task_id': task, 'status': 'PENDING', 'retry_after': 2})
+
+        def get(self, url, **kw):
+            self.gets += 1
+            task = url.rsplit('/', 1)[-1]
+            if task == 'task-1':
+                return Response({'id': task, 'status': 'SUCCESS', 'text': '你好。',
+                                 'segments': [{'speaker': 'S01', 'text': '你好。', 'start': 0.2, 'end': 1.1}]})
+            return Response({'id': task, 'status': 'FAILED', 'error': error})
+
+    client, states = SecondFails(), []
+    audio = np.zeros(64000, dtype=np.float32)
+    with pytest.raises(ASRProtocolError) as failure:
+        mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None,
+                            progress=lambda *a: states.append(a))
+    text = str(failure.value)
+    detail = failure.value.remote_detail
+    assert failure.value.category == 'remote_terminal' and detail in text and '积分账单' in text
+    assert detail.startswith('第 2 / 2 段（0:02–0:04）的 MOSI 任务（任务编号 task-2）执行失败')
+    assert (f'MOSI 返回的原因：{reason}。' if reason else 'MOSI 没有说明原因。') in detail
+    assert [a[3].get('remote_reason') for a in states if a[0] == 'FAILED'] == [reason]
+    saved = json.loads(next(tmp_path.rglob('request-001-*/task.json')).read_text('utf8'))
+    assert saved['remote_reason'] == reason and saved['status'] == 'FAILED'
+
+    # Starting again without confirming: the saved state answers at once, with the same facts.
+    with pytest.raises(ASRProtocolError) as again:
+        mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None)
+    assert len(client.posts) == 2 and str(again.value).startswith('已保存远端终态 FAILED：' + detail)
+    assert again.value.remote_detail == detail
+
+    # The worker's machine-readable line (retry dialog, completion page, report) carries it too.
+    monkeypatch.setattr(cloud_api_worker, '_ensure_stdio', lambda: None)
+    monkeypatch.setattr(cloud_api_worker.sys, 'stdin', io.StringIO('{}'))
+    monkeypatch.setattr(cloud_api_worker, 'run', lambda _request: (_ for _ in ()).throw(again.value))
+    assert cloud_api_worker.main() == 1
+    problem = cloud_api_worker.failure_from_text(capsys.readouterr().err)
+    assert problem['resubmit'] is True and problem['message'] == (
+        cloud_api_worker.RESUBMIT_CATEGORIES['remote_terminal'] + ' ' + detail)
+
+
+def test_mosi_failure_detail_reads_tasks_saved_before_the_reason_was_kept():
+    from twobyteasr.providers.mosi_asr import failure_detail
+    old = {'task_id': 't-9', 'status': 'FAILED', 'remote_error': '{"message": "quota window closed"}'}
+    assert failure_detail(old) == 'MOSI 任务（任务编号 t-9）执行失败，MOSI 返回的原因：quota window closed。'
+    assert 'MOSI 没有说明原因' in failure_detail({'task_id': 't-9', 'status': 'FAILED', 'remote_error': '{}'})
+    assert failure_detail({'task_id': 't-9', 'status': 'UNKNOWN'}, (2, 2, 3359.4, 5764.6)) == (
+        '第 2 / 2 段（55:59–1:36:05）的 MOSI 任务（任务编号 t-9）在 MOSI 查不到（不存在或已超过保留期）。')
+
+
+def test_mosi_progress_reports_how_long_mosi_has_had_the_request(tmp_path, monkeypatch):
+    """The window shows the wait and warns when it is far beyond the usual (2026-10-23)."""
+    import time as real_time
+    from twobyteasr.providers import mosi_asr
+    now = [1000.0]
+
+    def sleep(_):
+        now[0] += 30.0
+    monkeypatch.setattr(mosi_asr, 'time', SimpleNamespace(time=lambda: now[0], monotonic=real_time.monotonic,
+                                                          sleep=sleep))
+    states = []
+    mosi_asr.transcribe(np.zeros(32000, dtype=np.float32), mosi_endpoint(), tmp_path,
+                        client=MosiClient(statuses=['PENDING', 'PROCESSING']), sleep=sleep,
+                        progress=lambda *a: states.append(a))
+    waits = {a[0]: a[3] for a in states if len(a) > 3}
+    # retry_after=2: each poll waits 20 x 0.1 s, here 20 x 30 s of clock.
+    assert waits['PENDING']['remote_waited_seconds'] == pytest.approx(0.0, abs=.5)
+    assert waits['PENDING']['request_audio_seconds'] == 2.0 and waits['PENDING']['active_requests'] == [1]
+    assert waits['PROCESSING']['remote_waited_seconds'] == pytest.approx(600.0, abs=.5)
+    assert waits['SUCCESS']['remote_waited_seconds'] == 1200.0 and waits['SUCCESS']['active_requests'] == []
+
+
 def test_mosi_long_audio_split_offsets_once_and_speakers_stay_request_local(tmp_path, monkeypatch):
     from twobyteasr.providers import mosi_asr
-    monkeypatch.setattr(mosi_asr, 'MAX_AUDIO_SECONDS', 2)
     audio = np.zeros(16000 * 5, dtype=np.float32)
-    ranges = mosi_asr.plan_ranges(audio, chunk_seconds=2)
+    ranges = mosi_asr.plan_ranges(audio, single_seconds=2, max_seconds=2)
+    assert len(ranges) == 3
     assert ranges[0][0] == 0 and ranges[-1][1] == len(audio)
     assert all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))
     monkeypatch.setattr(mosi_asr, 'plan_ranges', lambda a: ranges)
@@ -859,3 +949,41 @@ def test_real_worker_process_reaches_cloud_without_model_runtime(monkeypatch, tm
     assert [row['text'].rstrip('。') for row in rows] == ['一二三', '四五']
     assert [row['speaker'] for row in rows] == ['API_S01', 'API_S02']
     assert _FakeMosi.tasks['loop-1'] == 32000 * 2 + 44
+
+
+class _FailingMosi(_FakeMosi):
+    def do_GET(self):
+        assert self.path == '/v1/audio/tasks/loop-1'
+        self._send(200, {'id': 'loop-1', 'status': 'FAILED', 'error': 'decoder stalled'})
+
+
+def test_real_worker_failure_shows_mosi_reason_not_forwarded_progress_lines(monkeypatch, tmp_path):
+    """2026-10-23: the error's stdout part was 4,500 characters of progress
+    events the window already had (whole result batches), and MOSI's reason
+    was nowhere."""
+    from twobyteasr.recognition import asr
+    from twobyteasr.providers import asr_api_process
+    from twobyteasr.providers.cloud_api_worker import failure_from_text
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    from twobyteasr.recognition.service import _exception_message
+    server = ThreadingHTTPServer(('127.0.0.1', 0), _FailingMosi)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        endpoint = mosi_endpoint(url=f'http://127.0.0.1:{server.server_port}/v1', api_key='sk-loopback')
+        context = RuntimeContext(job_id='job-loop', asr_endpoint_snapshot=endpoint,
+                                 asr_settings_snapshot={'models': {}}, speaker_source='native')
+        monkeypatch.setattr(asr, 'build_qwen_asr_context', lambda *a: '')
+        monkeypatch.setattr('twobyteasr.glossary.terminology.runtime_snapshot', lambda: SimpleNamespace(canonical_terms=[]))
+        with activate_runtime_context(context), pytest.raises(RuntimeError) as failure:
+            asr_api_process.transcribe('fixture.wav', [dict(start=0, end=2, audio=(np.zeros(32000, np.float32), 16000))],
+                                       cache_root=tmp_path / 'jobs')
+    finally:
+        server.shutdown()
+    text = str(failure.value)
+    head, log = text.split('\n\n', 1)
+    assert head.startswith('上次提交的云端识别任务已结束但没有成功')
+    assert 'MOSI 任务（任务编号 loop-1）执行失败，MOSI 返回的原因：decoder stalled。' in head
+    stdout = log.split('\nstderr:\n')[0]
+    assert '[2BYTEASR_API] ' not in stdout and 'asr_progress' not in stdout
+    problem = failure_from_text(_exception_message(failure.value, ''))   # as the completion page stores it
+    assert problem['resubmit'] is True and 'decoder stalled' in problem['message']

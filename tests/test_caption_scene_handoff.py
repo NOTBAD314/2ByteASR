@@ -155,6 +155,28 @@ def _slow_frames(monkeypatch, seconds):
     monkeypatch.setattr(scene_module.SceneRasterizer, "frame", frame)
 
 
+def test_pending_html_never_replaces_complete_scene_with_blank(app,monkeypatch):
+    page=_page();page.video._paused=True
+    scene=CaptionScene(page)
+    try:
+        _present(scene,page,100)
+        assert _until(lambda:('publish',('a',)) in page.video.calls)
+        original=scene_module.SceneRasterizer.frame
+        def pending(self,*args,**kwargs):
+            image,rows=original(self,*args,**kwargs)
+            rows[0]['status']='pending'
+            return image,rows
+        monkeypatch.setattr(scene_module.SceneRasterizer,'frame',pending)
+        page.video.calls.clear();page._revision_store.render.visual_revision+=1
+        _present(scene,page,100);_spin(.15)
+        assert not any(call[0]=='publish' for call in page.video.calls)
+        assert not any(call[0]=='remove' for call in page.video.calls)
+        monkeypatch.setattr(scene_module.SceneRasterizer,'frame',original)
+        scene.last_request=None;_present(scene,page,100)
+        assert _until(lambda:('publish',('a',)) in page.video.calls)
+    finally:scene.close()
+
+
 def test_playing_handoff_replaces_previous_raster_without_blank(app, monkeypatch):
     monkeypatch.setattr(scene_module, "PREHEAT_MIN_BOUNDARIES", 0)  # force a cache miss
     page = _page()

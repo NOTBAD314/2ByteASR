@@ -54,7 +54,7 @@ def resolve_audio_layers(layers, ffmpeg, *, cancelled=None, cache=None):
     return resolved, receipts
 
 
-def resolve_video_graph(graph, ffmpeg, *, cancelled=None, cache=None):
+def resolve_video_graph(graph, ffmpeg, *, cancelled=None, cache=None, seekable=False):
     if graph.get('media_time_contract') == TIME_CONTRACT:
         return graph
     if cache is None:
@@ -72,5 +72,29 @@ def resolve_video_graph(graph, ffmpeg, *, cancelled=None, cache=None):
         if source not in receipts:
             receipts[source] = cache.prepare_timeline_source(source, ffmpeg=ffmpeg, cancelled=cancelled)
         asset.update(original_source_path=source, canonical_source=receipts[source]['path'])
+    if seekable:
+        # The FLV demuxer's keyframe index can seek past the requested picture.
+        # A packet-copy container with a rebuilt index retains the content clock,
+        # and allows bounded preroll instead of decoding the prefix per clip.
+        from .export_run_log import note_export
+        replacements = {}
+        for asset in graph.get('media_pool', []):
+            if asset['asset_id'] not in active_assets: continue
+            path = asset['canonical_source']
+            if not path.lower().endswith('.flv'): continue
+            if path not in replacements:
+                optimized = cache.wait_optimized(path, cancelled=cancelled)
+                if cancelled and cancelled(): raise InterruptedError('render cancelled')
+                if optimized == path:
+                    raise RuntimeError('无法建立保留时间轴的快速定位副本：' + cache.errors.get(path, path))
+                replacements[path] = optimized
+                note_export('seekable_source', dict(source=path, path=optimized,
+                    method='validated packet stream copy; bounded video preroll', reencoded=False))
+            asset['canonical_source'] = replacements[path]
+        for layer in audio:
+            layer['source_path'] = replacements.get(layer['source_path'], layer['source_path'])
+        for receipt in receipts.values():
+            if receipt['path'] in replacements:
+                receipt.update(path=replacements[receipt['path']], seekable_copy=True)
     graph.update(audio_mix=audio, media_time_contract=TIME_CONTRACT, media_timebases=receipts)
     return graph

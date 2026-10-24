@@ -38,6 +38,8 @@ class MediaIngestResult:
     sample_timeline_origin_ms: float = 0.0
     sample_rate: int = 0
     channels: int = 0
+    # Every audio stream (media.audio_streams records), in file order.
+    audio_streams: tuple = ()
     rotation: int = 0
     size: int = 0
     mtime_ns: int = 0
@@ -110,6 +112,7 @@ def ingest_media(
             sample_timeline_origin_ms=float(identity.get("sample_timeline_origin_ms", identity.get("audio_start_ms", 0.0)) or 0.0),
             sample_rate=max(0, int(identity.get("sample_rate") or 0)),
             channels=max(0, int(identity.get("channels") or 0)),
+            audio_streams=tuple(dict(row) for row in identity.get("audio_streams") or ()),
             rotation=int(identity.get("rotation") or 0),
             size=int(identity.get("size") or stat.st_size),
             mtime_ns=int(stat.st_mtime_ns),

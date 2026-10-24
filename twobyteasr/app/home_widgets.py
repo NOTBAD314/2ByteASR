@@ -3,10 +3,13 @@
 ``QuickPickRow`` came with the 2026-10-08 home redesign.  The workflow strip,
 media pick card and name label, collapsible panels and the drag-and-drop
 overlay moved here from ``app/ui.py`` on 2026-10-15 (``ui`` still exports them).
+``MarkedPill`` and ``LanguageField`` belong to the 2026-10-23 widget redesign
+(design A: tonal fills, no hairlines; facts are pills, actions rounded squares).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QSize, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
@@ -476,3 +479,107 @@ class DropOverlay(QFrame):
     def _finish_animation(self):
         if not self._requested_visible:
             self.hide()
+
+
+class MarkedPill(QLabel):
+    """A pill label with a mark before its text: a status dot (``mark="dot"``)
+    or a qtawesome glyph (``mark="fa5s.check"``), both in the label's own text
+    colour, which the stylesheet sets (2026-10-23, design A).
+
+    The mark sits in a left contents margin, so the stylesheet keeps the
+    plain ``padding`` of a text-only pill and ``text()`` stays the words."""
+
+    def __init__(self, text: str = "", mark: str = "dot", parent=None):
+        super().__init__(text, parent)
+        self._mark = ""
+        self._pixmaps: dict[tuple, object] = {}
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.set_mark(mark)
+
+    def set_mark(self, mark: str) -> None:
+        mark = str(mark or "")
+        if mark == self._mark:
+            return
+        self._mark = mark
+        from . import ui_zoom
+        self.setContentsMargins(ui_zoom.px(0 if not mark else 22 if mark == "dot" else 26), 0, 0, 0)
+        self.update()
+
+    def mark(self) -> str:
+        return self._mark
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._mark:
+            return
+        from . import ui_zoom
+        color = self.palette().color(QPalette.ColorRole.WindowText)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        middle = self.height() / 2
+        left = ui_zoom.px(10)
+        if self._mark == "dot":
+            side = ui_zoom.px(7)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QRectF(left, middle - side / 2, side, side))
+        else:
+            side = ui_zoom.px(12)
+            key = (self._mark, color.name(), side, self.devicePixelRatioF())
+            pixmap = self._pixmaps.get(key)
+            if pixmap is None:
+                import qtawesome as qta
+                self._pixmaps.clear()
+                pixmap = self._pixmaps[key] = qta.icon(self._mark, color=QColor(color)).pixmap(QSize(side, side))
+            painter.drawPixmap(round(left - 1), round(middle - side / 2), pixmap)
+        painter.end()
+
+
+class LanguageField(QFrame):
+    """One filled 字幕语言与输出 field: its caption inside, over the dropdown,
+    and a round chevron; a click anywhere opens the dropdown (2026-10-23)."""
+
+    def __init__(self, caption: str, combo, parent=None):
+        super().__init__(parent)
+        self.setObjectName("homeLanguageField")
+        self.combo = combo
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 5, 8, 5)
+        row.setSpacing(8)
+        lines = QVBoxLayout()
+        lines.setContentsMargins(0, 0, 0, 0)
+        lines.setSpacing(0)
+        self.caption = QLabel(" ")
+        if caption:
+            bind_text(self.caption, caption)
+        self.caption.setObjectName("homeLanguageCaption")
+        # A long caption (other interface languages) may clip; it never widens the row.
+        self.caption.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lines.addWidget(self.caption)
+        lines.addWidget(combo)
+        row.addLayout(lines, 1)
+        self.chevron = QLabel()
+        self.chevron.setObjectName("homeLanguageChevron")
+        self.chevron.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        from . import ui_zoom
+        ui_zoom.set_size(self.chevron, fixed_w=26, fixed_h=26)
+        self.chevron.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        row.addWidget(self.chevron, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.caption.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        from . import ui_zoom
+        theme = theme_definition(theme_key())
+        locked = bool(self.combo.property("aiLock"))
+        color = theme.text_muted if locked or not self.combo.isEnabled() else theme.accent_text
+        side = ui_zoom.px(11)
+        self.chevron.setPixmap(_icon("fa5s.chevron-down", color).pixmap(QSize(side, side)))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.combo.isEnabled():
+            self.combo.showPopup()
+            event.accept()
+            return
+        super().mousePressEvent(event)

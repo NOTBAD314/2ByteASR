@@ -463,6 +463,10 @@ def test_export_symbols_and_preset_batch_ctrl_a_current_filter(tmp_path, monkeyp
     assert workspace.subtitle_format_checks["srt"].text() == "SRT"
     assert workspace.subtitle_format_checks["srt"].isChecked()
     assert not workspace.subtitle_format_checks["ass"].isChecked()
+    # Since the export page redesign (2026-10-23) these choices sit in the
+    # 只导出字幕文件 fold; a user opens it first.
+    workspace.subtitle_card.set_expanded(True)
+    APP.processEvents()
     QTest.mouseClick(workspace.subtitle_format_checks["ass"], Qt.MouseButton.LeftButton)
     QTest.mouseClick(workspace.subtitle_speaker_modes["both"], Qt.MouseButton.LeftButton)
     assert workspace.subtitle_format_checks["ass"].isChecked()

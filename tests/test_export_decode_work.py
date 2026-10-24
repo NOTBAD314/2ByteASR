@@ -83,15 +83,25 @@ def _count_decoder(monkeypatch, *, wrong_seek=False, cancel_after=None):
                 offset += int(Fraction(4) / kwargs['stream'].time_base)
             return self.container.seek(offset, **kwargs)
 
-        def decode(self, stream):
-            for frame in self.container.decode(stream):
-                counts['frames'] += 1
-                if cancel_after and counts['frames'] >= 10:
-                    cancel_after.set()
-                yield frame
+        def demux(self, stream):
+            for packet in self.container.demux(stream):
+                yield CountedPacket(packet)
 
         def close(self):
             self.container.close()
+
+    class CountedPacket:
+        def __init__(self, packet):
+            self.packet = packet
+            self.pts = packet.pts
+
+        def decode(self):
+            frames = self.packet.decode()
+            for frame in frames:
+                counts['frames'] += 1
+                if cancel_after and counts['frames'] >= 10:
+                    cancel_after.set()
+            return frames
 
     def open_counted(*args, **kwargs):
         container, stream, backend = original(*args, **kwargs)

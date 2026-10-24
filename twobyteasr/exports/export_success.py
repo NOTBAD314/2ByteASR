@@ -164,7 +164,7 @@ class ExportSuccessPanel(QWidget):
         heading = QVBoxLayout(); heading.setSpacing(2)
         status = QHBoxLayout(); status.setSpacing(10)
         icon = QLabel('✓'); icon.setObjectName('exportSuccessIcon'); icon.setFixedSize(30, 30); icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title = QLabel('压制完成'); title.setObjectName('exportSuccessTitle')
+        title = self.title = QLabel('压制完成'); title.setObjectName('exportSuccessTitle')
         status.addWidget(icon); status.addWidget(title); status.addStretch(); heading.addLayout(status)
         self.name = ElidedLabel(); self.name.setObjectName('exportSuccessName'); heading.addWidget(self.name)
         header.addLayout(heading, 1)
@@ -190,12 +190,13 @@ class ExportSuccessPanel(QWidget):
 
         self.info = QWidget(); self.info.setObjectName('exportResultInfo')
         detail = QVBoxLayout(self.info); detail.setContentsMargins(0, 0, 0, 0); detail.setSpacing(12)
-        section = QLabel('成片信息'); section.setObjectName('exportSectionLabel'); detail.addWidget(section)
+        section = self.section_label = QLabel('成片信息'); section.setObjectName('exportSectionLabel'); detail.addWidget(section)
         self.metrics = QGridLayout(); self.metrics.setHorizontalSpacing(24); self.metrics.setVerticalSpacing(22)
-        self.values = {}
+        self.values = {};self.metric_labels={}
         for index, key in enumerate(('格式', '分辨率', '帧率', '时长', '大小', '平均码率')):
             field = QVBoxLayout(); field.setSpacing(3)
             label = QLabel(key); label.setObjectName('exportSuccessMeta')
+            self.metric_labels[key]=label
             value = QLabel('—'); value.setObjectName('exportResultValue'); self.values[key] = value
             field.addWidget(label); field.addWidget(value); self.metrics.addLayout(field, index // 2, index % 2)
             self.metrics.setColumnStretch(index % 2, 1)
@@ -239,6 +240,10 @@ class ExportSuccessPanel(QWidget):
         self.setTabOrder(self.copy, self.back); self.setTabOrder(self.back, self.again)
 
     def _fit(self):
+        if self.preview_host.isHidden():
+            self.content.setDirection(QBoxLayout.Direction.TopToBottom)
+            self.info.setMinimumSize(0,0);self.info.setMaximumSize(16777215,16777215)
+            return
         narrow = self.width() < 1000
         self.content.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
         margins = self.card.layout().contentsMargins()

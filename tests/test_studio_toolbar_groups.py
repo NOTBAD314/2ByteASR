@@ -51,7 +51,7 @@ def toolbar(app, width=2048, theme="grape"):
     old.addWidget(duration)
     speed = QComboBox()
     speed.addItem("1x")
-    speed.setFixedWidth(68)
+    speed.setFixedWidth(80)
     old.addWidget(speed)
     old.addWidget(QLabel("音量"))
     volume = QSlider(Qt.Orientation.Horizontal)

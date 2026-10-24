@@ -12,6 +12,7 @@ from pathlib import Path
 import threading
 import uuid
 import weakref
+import time
 
 
 def settings_summary(window):
@@ -77,6 +78,7 @@ def open_support_dialog(owner, page=None):
             self.setMinimumWidth(760)
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose,False)
             self._closed=False;self._jobs=0;self._loading=False;self._reload_requested=False
+            self._collect_cancel=threading.Event()
             self._exporting=False;self._cleaning=False;self._owners=[]
             self.finished.connect(self._retire)
             self._signals=Signals(self)
@@ -108,7 +110,9 @@ def open_support_dialog(owner, page=None):
             apply_secondary_surface_theme(self)
             self._apply_theme()
             self._timer=QTimer(self);self._timer.setInterval(1000);self._timer.timeout.connect(self._tick);self._timer.start()
-            self._load()
+            # The complete form paints and accepts text before any diagnostic
+            # worker starts competing for the GIL with the first layout.
+            QTimer.singleShot(0,self._load)
 
         # ---- layout ----------------------------------------------------
         def _build_header(self):
@@ -291,7 +295,7 @@ def open_support_dialog(owner, page=None):
             button_role(self.more,"secondary",icon="fa5s.ellipsis-h")
             self.more.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
             self.more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-            menu=create_studio_menu(self);self.more.setMenu(menu)
+            menu=create_studio_menu(self,theme_on_show=True);self.more.setMenu(menu)
             holder=QWidget();holder_layout=QHBoxLayout(holder);holder_layout.setContentsMargins(10,4,10,4)
             self.details_mode=QCheckBox("详细记录 10 分钟（不收集全文，到时自动关闭）")
             self.details_mode.setObjectName("diagnosticDetailedMode");self.details_mode.setChecked(bool(instance and instance.detailed))
@@ -310,6 +314,7 @@ def open_support_dialog(owner, page=None):
             self.export=QPushButton("导出诊断包…");self.export.setObjectName("diagnosticExportButton")
             button_role(self.export,"primary");self.export.setDefault(True)
             self.export.clicked.connect(self._choose_export);row.addWidget(self.export)
+            self.export.setEnabled(False);self.copy.setEnabled(False)
             layout.addLayout(row)
             status=QHBoxLayout();status.setSpacing(12)
             status.addWidget(self.content,0,Qt.AlignmentFlag.AlignTop)
@@ -348,6 +353,7 @@ def open_support_dialog(owner, page=None):
         def _retire(self,*_args):
             if self._closed:return
             self._closed=True
+            self._collect_cancel.set()
             self._timer.stop();self._filter_timer.stop()
             self._reload_requested=False
             for ref in self._owners:
@@ -398,12 +404,23 @@ def open_support_dialog(owner, page=None):
             self.refresh.setEnabled(False)
             if self._analysis is None:self.timeline.set_message(tr("正在读取记录…"))
             def work():
+                began=time.perf_counter();timings={}
                 try:
-                    answer=collect(editor_diagnostics.root_dir() if instance is None else instance.root,instance=instance,**options)
+                    answer=collect(editor_diagnostics.root_dir() if instance is None else instance.root,instance=instance,
+                        cancelled=self._collect_cancel.is_set,deadline=time.monotonic()+30,**options)
+                    timings['collect_ms']=(time.perf_counter()-began)*1000
+                    if self._collect_cancel.is_set():raise InterruptedError('closed')
+                    phase=time.perf_counter()
                     answer['analysis']=analyze(answer,marked)
+                    timings['analyze_ms']=(time.perf_counter()-phase)*1000
+                    if self._collect_cancel.is_set():raise InterruptedError('closed')
+                    phase=time.perf_counter()
                     answer['summary']=summary(answer,report_id,description,marked)
                     answer['search_rows']=[json.dumps(r,ensure_ascii=False).casefold() for r in answer['events']]
                     answer['event_bytes']=sum(len(s.encode('utf8')) for s in answer['search_rows'])
+                    timings['summary_index_ms']=(time.perf_counter()-phase)*1000
+                    timings['total_ms']=(time.perf_counter()-began)*1000
+                    answer['collection_timings']=timings
                 except Exception as exc:answer={"error":type(exc).__name__}
                 try:self._signals.loaded.emit((generation,answer))
                 except RuntimeError:pass
@@ -425,10 +442,15 @@ def open_support_dialog(owner, page=None):
                 self.timeline.set_message(tr("读取诊断记录失败"))
                 return
             self._data=data;self._rows=data["events"];self._search_rows=data['search_rows']
+            self.export.setEnabled(True);self.copy.setEnabled(True)
+            emit('report.collection',result='completed',report_id=report_id,
+                timings=data.get('collection_timings',{}),event_count=len(self._rows))
             self._analysis=data["analysis"]
             self.summary.setPlainText(data['summary'])
             self._render()
-            self._filter()
+            # Populate the 600-cell log table only when its page is requested.
+            self._log_pending=True
+            if self.views.currentIndex()==1:self._filter()
             size=data['event_bytes']
             bind_text(self.note,tr("{count} 笔记录（约 {size} KiB）。诊断包只在本机生成，不含字幕全文、媒体、提示词与 AI 回复，由你自己发送。",
                                    count=f"{len(self._rows):,}",size=f"{size/1024:.0f}"))
@@ -479,6 +501,7 @@ def open_support_dialog(owner, page=None):
         def show_view(self,name):
             index={"timeline":0,"log":1,"summary":2}[name]
             if name=="summary":self._refresh_summary()
+            if name=="log" and getattr(self,'_log_pending',False):self._filter()
             self.views.setCurrentIndex(index)
             button=self._view_buttons[name]
             if not button.isChecked():button.setChecked(True)
@@ -504,6 +527,7 @@ def open_support_dialog(owner, page=None):
 
         def _filter(self):
             if self._closed:return
+            self._log_pending=False
             analysis=self._analysis
             if analysis is None:return
             problems=sum(analysis.event_problem)

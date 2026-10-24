@@ -185,7 +185,10 @@ def finalize_cues(    cues,
         )
         finalized = legacy.normalize_cue_times(finalized, timeline_fps)
     finalized = legacy.validate_final_cues(finalized, segments, audio_seconds)
-    finalized = legacy.apply_isolated_single_character_rules_safely(finalized)
+    # Fillers this pass drops on purpose; the final content check below must
+    # not count them as lost text (2026-10-23).
+    omitted_fillers = []
+    finalized = legacy.apply_isolated_single_character_rules_safely(finalized, omitted=omitted_fillers)
     # 2026-09-20：句内空格排版（用户既定规则）——独立语气词/重复应答/整句
     # 重复用 U+0020 分隔。幂等；守恒校验走 content_only（忽略空白）不受影响；
     # 无词级证据时只拆纯语气词（嗯/啊…），"好像还不错"等实词开头不拆。
@@ -235,7 +238,8 @@ def finalize_cues(    cues,
     )
     from ..subtitle_rules.display_timing import protect_runtime_display_tails
     from ..subtitle_rules.subtitle_fidelity import recover_final_content
-    finalized = recover_final_content(finalized, grouped_cues, segments, firered_tokens, legacy)
+    finalized = recover_final_content(finalized, grouped_cues, segments, firered_tokens, legacy,
+                                      omitted=omitted_fillers)
     boundary_phase('validated_and_content_recovered', finalized)
     overlap_audit = protect_runtime_display_tails(finalized, segments)
     legacy.record_run_event('display_overlap_protection', policy_version=4, pairs=overlap_audit)

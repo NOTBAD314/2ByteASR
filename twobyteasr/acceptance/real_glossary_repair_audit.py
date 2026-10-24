@@ -93,7 +93,7 @@ def start(window,output):
     from PySide6.QtWidgets import QApplication
     from .blank_project_audit import _capture
     from ..diagnostics.build_identity import load_build_identity
-    from ..studio.studio_find_replace import FindReplaceDialog
+    from ..studio.studio_find_replace import GlossaryReviewDialog
     from ..projects.studio_project import load_project
     from ..exports.studio_subtitle_export import SubtitleExportOptions,export_subtitle_artifacts,verify_subtitle_artifact
     from ..timeline.studio_edit_sequence import projected_cues
@@ -242,11 +242,10 @@ def start(window,output):
             yield from self.sample_frame('real48-before')
             self.shot('real48-original')
             self.phase='opening normal text tools'
-            # The production toolbar owns entry placement and can move this
-            # command into More at narrow widths. Invoke its normal public entry.
-            QTimer.singleShot(0,self.page._open_find_replace)
-            yield lambda:isinstance(QApplication.activeModalWidget(),FindReplaceDialog)
-            dialog=QApplication.activeModalWidget();dialog.tabs.setCurrentIndex(3)
+            # 2026-10-21: 应用术语库 left 批量替换; the review is its own window.
+            QTimer.singleShot(0,lambda:GlossaryReviewDialog(self.page,self.page).exec())
+            yield lambda:isinstance(QApplication.activeModalWidget(),GlossaryReviewDialog)
+            dialog=QApplication.activeModalWidget()
             self.check('selected real library active',plan['approved']['library_id'] in dialog._selected_library_ids())
             QTest.mouseClick(dialog.preview_button,Qt.LeftButton)
             yield .2

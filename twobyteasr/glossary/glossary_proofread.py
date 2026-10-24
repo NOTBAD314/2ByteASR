@@ -38,9 +38,10 @@ from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QPolygonF, QUndoStack
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer,
+                            Signal)
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPen, QPolygonF, QUndoStack
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton,
                                QScrollArea, QScrollBar, QSizePolicy, QVBoxLayout, QWidget)
 
@@ -50,7 +51,9 @@ from ..i18n import bind_text, tr
 from ..design.typography import MONO_FONT_STACK
 from ..studio.studio_find_replace import PreviewBinding
 from ..design.theme_manager import theme_key
+from ..design.themed_icons import paint_cached_icon
 from ..design.ui_theme import blend_hex, theme_definition
+from ..design.ui_widgets import SwitchControl
 from ..app.lazy_pages import existing_page
 
 # 2026-10-10: no imports inside paint/scroll paths. PySide's import hook
@@ -465,8 +468,17 @@ class CuePlayer(QObject):
         except Exception as exc:
             self.failed.emit(tr("这一句的音频无法读取：{reason}", reason=str(exc)[:160]))
             return
+        self.play_plan(plan, str(cue_id))
+
+    def play_plan(self, plan, key):
+        """Play a resolved preview plan; ``key`` names it in state_changed.
+
+        2026-10-24: the recognition track picker auditions one audio lane
+        through the same decoder and sink.
+        """
+        self.stop()
         self.last_plan = plan
-        self.request_id, self.cue_id = plan.request_id, str(cue_id)
+        self.request_id, self.cue_id = plan.request_id, str(key)
         self.state_changed.emit(self.cue_id, "loading")
         thread = _PreviewThread(plan.request_id, plan, self)
         thread.decoded.connect(self._start)
@@ -1119,7 +1131,11 @@ class CaptionReviewList(QWidget):
     reasons open under 详情. The caption text can be selected with the
     mouse (2026-10-10, user: select 布克 in a search result and batch
     replace it); search hits are highlighted, and while replacing each hit
-    shows its replacement and can be excluded with a click."""
+    shows its replacement and can be excluded with a click.
+
+    2026-10-23 (redesign A): number · time · play · speaker share one line
+    left of the caption, and captions of hidden speakers leave a thin band
+    ("旁白 2 条已隐藏 · 显示") where they would be (``gaps``)."""
 
     BODY_PX = 19
     BELOW_PX = 16
@@ -1136,6 +1152,7 @@ class CaptionReviewList(QWidget):
     group_dismissed = Signal(str, int)  # cue_id, a proposal index of the group
     group_manual = Signal(str, int)
     hit_toggled = Signal(str, int)  # cue_id, start of the search hit
+    reveal_requested = Signal(object)  # speaker keys of a hidden band
     selection_changed = Signal()
 
     def __init__(self, parent=None):
@@ -1143,6 +1160,10 @@ class CaptionReviewList(QWidget):
         self.setObjectName("proofreadSuggestions")
         self.rows = []
         self.visible = []
+        # Hidden-speaker bands: slot -> dict(count, names, speakers) for the
+        # captions hidden right before that listed row; len(visible) = after
+        # the last one.
+        self.gaps = {}
         self.heights = []
         self.offsets = [0]
         self.stutter = True
@@ -1214,15 +1235,16 @@ class CaptionReviewList(QWidget):
         self.ACTION = z(36)
         self.MARK_PAD = z(3)
         self.time_w = self.mono_metrics.horizontalAdvance("00:00:00.0") + z(8)
-        self.play_d = z(28)
+        self.play_d = z(26)
         self.number_w = self.small_metrics.horizontalAdvance("#0000") + z(6)
-        self.speaker_w = z(70)
+        self.speaker_w = z(80)
         self.META_LINE = int(max(self.small_metrics.height(), self.mono_metrics.height()) + z(10))
-        # time · play on the first line, number · speaker under it, the
-        # caption's state under that: the caption itself gets the full width.
-        self.META_W = int(max(self.time_w + self.play_d + z(6), self.number_w + self.speaker_w,
-                              self.small_metrics.horizontalAdvance(tr("还原这句")) + z(4)))
-        self.TEXT_X = int(z(14) + self.META_W + z(18))
+        self.GAP = z(30)
+        # 2026-10-23: number · time · play · speaker on one line, the
+        # caption's state (已写回 · 还原这句) under it only when there is one.
+        self.META_W = int(max(self.number_w + self.time_w + self.play_d + z(8) + self.speaker_w,
+                              self.small_metrics.horizontalAdvance("✓ " + tr("已写回") + "  " + tr("还原这句")) + z(8)))
+        self.TEXT_X = int(z(14) + self.META_W + z(16))
         self.EDIT_W = int(self.label_metrics.horizontalAdvance(tr("修改")) + z(34))
         self.editor.setFont(self.body)
         self._layout_cache.clear()
@@ -1268,9 +1290,16 @@ class CaptionReviewList(QWidget):
             advance.cache_clear()
         self.set_visible(list(range(len(rows))) if visible is None else visible)
 
-    def set_visible(self, visible):
+    def set_visible(self, visible, gaps=None):
         self.visible = list(visible)
+        self.gaps = dict(gaps or {})
         self._layout_rows()
+
+    def _gap_before(self, slot):
+        return self.GAP if slot in self.gaps else 0
+
+    def _gap_after(self, slot):
+        return self.GAP if slot == len(self.visible) - 1 and len(self.visible) in self.gaps else 0
 
     def row_by_id(self, cue_id):
         return next((row for row in self.rows if row["cue_id"] == cue_id), None)
@@ -1417,9 +1446,9 @@ class CaptionReviewList(QWidget):
         return lines
 
     def _meta_lines(self, row):
-        lines = 2
+        lines = 1
         if row["base"] != row.get("origin", row["base"]):
-            lines += 2  # 已写回 · 还原这句
+            lines += 1  # 已写回 · 还原这句
         if any(issue["stale"] for issue in row["issues"]):
             lines += 1
         return lines
@@ -1439,9 +1468,12 @@ class CaptionReviewList(QWidget):
             return None
         return pair
 
+    def _slot_height(self, slot):
+        return self._gap_before(slot) + self._row_height(self.rows[self.visible[slot]]) + self._gap_after(slot)
+
     def _layout_rows(self):
         self._metrics()
-        self.heights = [self._row_height(self.rows[index]) for index in self.visible]
+        self.heights = [self._slot_height(slot) for slot in range(len(self.visible))]
         self.offsets = [0]
         for height in self.heights:
             self.offsets.append(self.offsets[-1] + height)
@@ -1457,7 +1489,7 @@ class CaptionReviewList(QWidget):
         if slot < 0:
             self.update()
             return
-        height = self._row_height(self.rows[self.visible[slot]])
+        height = self._slot_height(slot)
         delta = height - self.heights[slot]
         if delta:
             self.heights[slot] = height
@@ -1526,7 +1558,7 @@ class CaptionReviewList(QWidget):
         return self.width() - round(16 * (self._zoom or 1))
 
     def _text_rect(self, slot):
-        y = self.offsets[slot] - self._offset + self.PAD
+        y = self.offsets[slot] - self._offset + self._gap_before(slot) + self.PAD
         return QRectF(self.TEXT_X, y, self._text_width(), self.LINE)
 
     # editing ----------------------------------------------------------
@@ -1716,6 +1748,8 @@ class CaptionReviewList(QWidget):
             tip = tr("不采用这组建议（不改字幕，只把它标为已看过）")
         elif target and target[0] == "detail":
             tip = tr("展开或收起这组建议的来源和理由")
+        elif target and target[0] == "reveal":
+            tip = tr("重新显示这些说话人的字幕")
         if self.toolTip() != tip:
             self.setToolTip(tip)
 
@@ -1727,15 +1761,25 @@ class CaptionReviewList(QWidget):
     # a text selection, so they act on release (a click), never on press.
     TEXT_TARGETS = frozenset({"text", "mark", "find"})
 
+    def _in_band(self, slot, y):
+        """True when ``y`` (widget coordinates) is on a hidden-speaker band of ``slot``."""
+        top = self.offsets[slot] - self._offset
+        bottom = self.offsets[slot + 1] - self._offset
+        return y < top + self._gap_before(slot) or y >= bottom - self._gap_after(slot)
+
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         slot = self._slot_at(event.position().y())
         if slot < 0:
             return
+        target = self._target_at(event.position())
+        if self._in_band(slot, event.position().y()):
+            if target is not None and target[0] == "reveal":
+                self.reveal_requested.emit(tuple(self.gaps.get(target[2], {}).get("speakers", ())))
+            return
         row = self.rows[self.visible[slot]]
         self.current = row["cue_id"]
-        target = self._target_at(event.position())
         self._press = None
         if target is not None and target[0] not in self.TEXT_TARGETS:
             action, cue_id, index = target
@@ -1810,6 +1854,8 @@ class CaptionReviewList(QWidget):
     def mouseDoubleClickEvent(self, event):
         target = self._target_at(event.position())
         slot = self._slot_at(event.position().y())
+        if slot >= 0 and self._in_band(slot, event.position().y()):
+            return
         if slot >= 0 and (target is None or target[0] in {"text", "kind", "find"}):
             cue_id = self.rows[self.visible[slot]]["cue_id"]
             char = self._char_at(cue_id, event.position())
@@ -1819,7 +1865,7 @@ class CaptionReviewList(QWidget):
 
     def contextMenuEvent(self, event):
         slot = self._slot_at(event.pos().y())
-        if slot < 0:
+        if slot < 0 or self._in_band(slot, event.pos().y()):
             return
         row = self.rows[self.visible[slot]]
         self.current = row["cue_id"]
@@ -1870,41 +1916,60 @@ class CaptionReviewList(QWidget):
         if self._press is None or not self._press.get("dragging"):
             self._chars = {}  # a drag keeps measuring against the row it started in
         self._painted_serial = self._serial
+        z = lambda value: max(1, round(value * (self._zoom or 1)))
+        right = self._right()
         if not self.visible:
+            top = 0
+            if 0 in self.gaps:
+                self._paint_band(painter, QRectF(0, 0, right, self.GAP), 0, theme)
+                top = self.GAP
             painter.setFont(self.body)
             painter.setPen(QColor(theme.text_muted))
-            painter.drawText(QRectF(24, 24, self.width() - 48, self.height() - 24),
+            painter.drawText(QRectF(24, top + 24, self.width() - 48, self.height() - top - 24),
                              int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
                              self.empty_text)
             painter.end()
             return
-        right = self._right()
-        z = lambda value: max(1, round(value * (self._zoom or 1)))
         first = max(0, self._slot_at(0))
+        is_hot = lambda slot: slot == self._hover or self.rows[self.visible[slot]]["cue_id"] == self.current
         for slot in range(first, len(self.visible)):
             top = self.offsets[slot] - self._offset
             if top > self.height():
                 break
             row = self.rows[self.visible[slot]]
-            height = self.heights[slot]
+            band = self._gap_before(slot)
+            if band:
+                self._paint_band(painter, QRectF(0, top, right, band), slot, theme)
+            after = self._gap_after(slot)
+            if after:
+                self._paint_band(painter, QRectF(0, top + self.heights[slot] - after, right, after),
+                                 len(self.visible), theme)
+            top += band
+            height = self.heights[slot] - band - after
             rect = QRectF(0, top, right, height)
-            if row["cue_id"] == self.current:
-                painter.fillRect(rect, QColor(blend_hex(theme.surface, theme.accent, 0.10)))
-            elif slot == self._hover:
-                painter.fillRect(rect, QColor(theme.selected))
-            if slot:
-                painter.fillRect(QRectF(8, top, right - 16, 1), QColor(theme.border))
+            # Soft fills, no frames (2026-10-23): the current caption is tinted,
+            # the hovered one lifted; a hairline only between plain rows.
+            if row["cue_id"] == self.current or slot == self._hover:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.08) if row["cue_id"] == self.current
+                                        else blend_hex(theme.surface, theme.text, 0.035)))
+                painter.drawRoundedRect(rect.adjusted(z(2), 0, -z(2), 0), z(10), z(10))
+            elif slot and not band and not is_hot(slot - 1):
+                painter.fillRect(QRectF(z(10), top, right - z(20), 1), QColor(blend_hex(theme.surface, theme.text, 0.08)))
             y = top + self.PAD
             line_h = self.LINE
-            # meta column: time · play / number · speaker / state
-            painter.setFont(self.mono)
-            painter.setPen(QColor(theme.text_muted))
+            # meta: number · time · play · speaker on the caption's first line
             x = z(14)
-            painter.drawText(QRectF(x, y, self.time_w, line_h), int(Qt.AlignmentFlag.AlignVCenter), row["time"])
-            play = QRectF(x + self.time_w, y + (line_h - self.play_d) / 2, self.play_d, self.play_d)
+            painter.setFont(self.small)
+            painter.setPen(QColor(theme.text_muted))
+            painter.drawText(QRectF(x, y, self.number_w, line_h), int(Qt.AlignmentFlag.AlignVCenter), row["number"])
+            painter.setFont(self.mono)
+            painter.drawText(QRectF(x + self.number_w, y, self.time_w, line_h), int(Qt.AlignmentFlag.AlignVCenter),
+                             row["time"])
+            play = QRectF(x + self.number_w + self.time_w, y + (line_h - self.play_d) / 2, self.play_d, self.play_d)
             state = self.playing[1] if self.playing[0] == row["cue_id"] else ""
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(theme.accent if state else blend_hex(theme.surface, theme.accent_text, 0.18)))
+            painter.setBrush(QColor(theme.accent if state else blend_hex(theme.surface, theme.accent_text, 0.16)))
             painter.drawEllipse(play)
             painter.setBrush(QColor(theme.text_on_accent if state else theme.accent_text))
             c = play.center()
@@ -1918,40 +1983,24 @@ class CaptionReviewList(QWidget):
                 painter.drawPolygon(QPolygonF([QPointF(c.x() - 4 * s, c.y() - 6 * s), QPointF(c.x() - 4 * s, c.y() + 6 * s),
                                                QPointF(c.x() + 6 * s, c.y())]))
             self._hit_boxes.append((play.adjusted(-4, -4, 4, 4), "play", row["cue_id"], -1))
-            meta_y = y + line_h
-            painter.setFont(self.small)
-            painter.setPen(QColor(theme.text_muted))
-            painter.drawText(QRectF(x, meta_y, self.number_w, self.META_LINE), int(Qt.AlignmentFlag.AlignVCenter),
-                             row["number"])
             name, color = row["speaker"]
             if name:
-                chip_font = QFont(self.mono); chip_font.setWeight(QFont.Weight.DemiBold)
-                painter.setFont(chip_font)
-                chip_metrics = QFontMetricsF(chip_font)
-                shown_name = chip_metrics.elidedText(name, Qt.TextElideMode.ElideRight, self.speaker_w - z(14))
-                chip_h = min(z(22), self.META_LINE - z(4))
-                chip = QRectF(x + self.number_w, meta_y + (self.META_LINE - chip_h) / 2,
-                              chip_metrics.horizontalAdvance(shown_name) + z(14), chip_h)
-                tint = QColor(color) if QColor(color).isValid() else QColor(theme.text_secondary)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(blend_hex(theme.surface, tint.name(), 0.26)))
-                painter.drawRoundedRect(chip, 5, 5)
-                painter.setPen(QColor(legible(blend_hex(tint.name(), theme.text, 0.35),
-                                              blend_hex(theme.surface, tint.name(), 0.26), theme)))
-                painter.drawText(chip, int(Qt.AlignmentFlag.AlignCenter), shown_name)
-            meta_y += self.META_LINE
+                self._speaker_pill(painter, QPointF(play.right() + z(8), y + line_h / 2), name, color, theme)
+            meta_y = y + line_h
             painter.setFont(self.small)
             if row["base"] != row.get("origin", row["base"]):
+                written = "✓ " + tr("已写回")
                 painter.setPen(QColor(colors["applied_line"]))
-                painter.drawText(QRectF(x, meta_y, self.META_W, self.META_LINE), int(Qt.AlignmentFlag.AlignVCenter),
-                                 "✓ " + tr("已写回"))
-                meta_y += self.META_LINE
+                written_w = self.small_metrics.horizontalAdvance(written) + z(10)
+                painter.drawText(QRectF(x, meta_y, written_w, self.META_LINE), int(Qt.AlignmentFlag.AlignVCenter), written)
                 revert = tr("还原这句")
-                box = QRectF(x, meta_y, self.small_metrics.horizontalAdvance(revert) + z(4), self.META_LINE)
+                box = QRectF(x + written_w, meta_y + z(3), self.small_metrics.horizontalAdvance(revert) + z(14),
+                             self.META_LINE - z(6))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.06)))
+                painter.drawRoundedRect(box, z(7), z(7))
                 painter.setPen(QColor(theme.text_secondary))
-                painter.drawText(box, int(Qt.AlignmentFlag.AlignVCenter), revert)
-                underline = box.bottom() - z(6)
-                painter.drawLine(QPointF(box.left(), underline), QPointF(box.right() - z(4), underline))
+                painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), revert)
                 self._hit_boxes.append((box, "revert", row["cue_id"], -1))
                 meta_y += self.META_LINE
             stale = sum(issue["stale"] for issue in row["issues"])
@@ -2011,12 +2060,13 @@ class CaptionReviewList(QWidget):
                 edit_x = self.TEXT_X + layout["last_end"] + z(12)
                 edit_y = line_y - last_height + (self.LINE - edit_h) / 2
             edit = QRectF(edit_x, edit_y, self.EDIT_W, edit_h)
-            hot = row["cue_id"] == self.current or slot == self._hover
+            hot = is_hot(slot)
             painter.setFont(self.label_font)
-            painter.setPen(QColor(theme.accent if hot else theme.border_strong))
-            painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.12)) if hot else Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(edit.adjusted(.5, .5, -.5, -.5), 7, 7)
-            painter.setPen(QColor(theme.accent_text if hot else theme.text_secondary))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.14) if hot
+                                    else blend_hex(theme.surface, theme.text, 0.05)))
+            painter.drawRoundedRect(edit, z(8), z(8))
+            painter.setPen(QColor(theme.accent_text if hot else theme.text_muted))
             painter.drawText(edit.adjusted(z(8), 0, 0, 0), int(Qt.AlignmentFlag.AlignVCenter), "✎")
             painter.drawText(edit.adjusted(z(24), 0, 0, 0), int(Qt.AlignmentFlag.AlignVCenter), edit_text)
             self._hit_boxes.append((edit, "edit", row["cue_id"], -1))
@@ -2038,15 +2088,69 @@ class CaptionReviewList(QWidget):
                         if target else tr("＋ 记住「{old} → {new}」到词库…", old=pair[0], new=pair[1]))
                 width = self.label_metrics.horizontalAdvance(text) + z(24)
                 box = QRectF(self.TEXT_X, y + z(4), min(width, right - self.TEXT_X - z(16)), z(28))
-                painter.setPen(QColor(theme.accent))
-                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.10)))
-                painter.drawRoundedRect(box, 7, 7)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.14)))
+                painter.drawRoundedRect(box, z(9), z(9))
                 painter.setFont(self.label_font)
                 painter.setPen(QColor(theme.accent_text))
                 painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter),
                                  self.label_metrics.elidedText(text, Qt.TextElideMode.ElideMiddle, box.width() - z(12)))
                 self._hit_boxes.append((box, "remember", row["cue_id"], -1))
         painter.end()
+
+    def _speaker_pill(self, painter, anchor, name, color, theme):
+        """A soft pill with the speaker's colour dot, vertically centred on ``anchor``."""
+        z = lambda value: max(1, round(value * (self._zoom or 1)))
+        tint = QColor(color).name() if QColor(color).isValid() else theme.text_secondary
+        font = QFont(self.small); font.setWeight(QFont.Weight.DemiBold)
+        metrics = QFontMetricsF(font)
+        dot = z(7)
+        shown = metrics.elidedText(name, Qt.TextElideMode.ElideRight, self.speaker_w - dot - z(20))
+        height = min(z(22), self.LINE - z(6))
+        pill = QRectF(anchor.x(), anchor.y() - height / 2, metrics.horizontalAdvance(shown) + dot + z(19), height)
+        fill = blend_hex(theme.surface, tint, 0.18)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(fill))
+        painter.drawRoundedRect(pill, height / 2 - 1, height / 2 - 1)
+        painter.setBrush(QColor(tint))
+        painter.drawEllipse(QRectF(pill.left() + z(8), anchor.y() - dot / 2, dot, dot))
+        painter.setFont(font)
+        painter.setPen(QColor(legible(blend_hex(tint, theme.text, 0.30), fill, theme)))
+        painter.drawText(pill.adjusted(dot + z(12), 0, 0, 0), int(Qt.AlignmentFlag.AlignVCenter), shown)
+
+    def _paint_band(self, painter, rect, key, theme):
+        """「旁白 2 条已隐藏 · 显示」where captions of hidden speakers would be."""
+        gap = self.gaps.get(key)
+        if not gap:
+            return
+        z = lambda value: max(1, round(value * (self._zoom or 1)))
+        muted = legible(theme.text_muted, theme.surface, theme, 4.5)
+        icon = z(14)
+        x = rect.left() + z(14)
+        cy = rect.center().y()
+        paint_cached_icon(painter, "fa5s.eye-slash", muted, QRect(int(x), int(cy - icon / 2), icon, icon))
+        x += icon + z(8)
+        label = (tr("{names} {count} 条有命中，已隐藏", names="、".join(gap["names"]), count=gap["count"])
+                 if gap.get("search") else
+                 tr("{names} {count} 条已隐藏", names="、".join(gap["names"]), count=gap["count"]))
+        painter.setFont(self.small)
+        painter.setPen(QColor(muted))
+        label_w = self.small_metrics.horizontalAdvance(label) + z(10)
+        painter.drawText(QRectF(x, rect.top(), label_w, rect.height()), int(Qt.AlignmentFlag.AlignVCenter), label)
+        action = tr("显示")
+        action_w = self.small_metrics.horizontalAdvance(action) + z(18)
+        button = QRectF(rect.right() - z(12) - action_w, cy - z(11), action_w, z(22))
+        dash = QPen(QColor(blend_hex(theme.surface, theme.text, 0.16)), max(1.0, 1.5 * (self._zoom or 1)))
+        dash.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(dash)
+        if button.left() - z(10) > x + label_w:
+            painter.drawLine(QPointF(x + label_w, cy), QPointF(button.left() - z(10), cy))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(blend_hex(theme.surface, theme.text, 0.06)))
+        painter.drawRoundedRect(button, z(10), z(10))
+        painter.setPen(QColor(theme.text_secondary))
+        painter.drawText(button, int(Qt.AlignmentFlag.AlignCenter), action)
+        self._hit_boxes.append((button.adjusted(-4, -4, 4, 4), "reveal", "", key))
 
     def _paint_unit(self, painter, unit, x, y, theme, colors, row):
         mark = unit["mark"]
@@ -2167,12 +2271,17 @@ class CaptionReviewList(QWidget):
         z = lambda value: max(1, round(value * (self._zoom or 1)))
         excluded = style == "find_excluded"
         hit_fill = blend_hex(theme.surface, theme.info, 0.34)
+        current = self.find.get("current") == (row["cue_id"], mark["ref"])
         if unit["top"]:
             if excluded:
                 pen = QPen(QColor(theme.text_muted), 1.0)
                 pen.setStyle(Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
+            elif current:
+                # The hit 上一处 / 下一处 and 替换 act on.
+                painter.setPen(QPen(QColor(theme.accent), max(2.0, 2.0 * (self._zoom or 1))))
+                painter.setBrush(QColor(hit_fill))
             else:
                 painter.setPen(QPen(QColor(legible(theme.info, theme.surface, theme, 3.0)), 1.0))
                 painter.setBrush(QColor(hit_fill))
@@ -2209,12 +2318,12 @@ class CaptionReviewList(QWidget):
     def _chip(self, painter, x, rect, label, color, theme):
         z = lambda value: max(1, round(value * (self._zoom or 1)))
         painter.setFont(self.label_font)
-        chip_w = self.label_metrics.horizontalAdvance(label) + z(16)
+        chip_w = self.label_metrics.horizontalAdvance(label) + z(18)
         chip_h = z(22)
         chip = QRectF(x, rect.top() + (rect.height() - chip_h) / 2, chip_w, chip_h)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(blend_hex(theme.surface, color.name(), 0.20)))
-        painter.drawRoundedRect(chip, 6, 6)
+        painter.drawRoundedRect(chip, chip_h / 2 - 1, chip_h / 2 - 1)
         painter.setPen(QColor(legible(blend_hex(color.name(), theme.text, 0.25), blend_hex(theme.surface, color.name(), 0.20), theme)))
         painter.drawText(chip, int(Qt.AlignmentFlag.AlignCenter), label)
         return chip
@@ -2225,9 +2334,9 @@ class CaptionReviewList(QWidget):
         box_d = z(18)
         box = QRectF(x, rect.top() + (rect.height() - box_d) / 2, box_d, box_d)
         filled = state in {"adopted", "partial"}
-        painter.setPen(QColor(theme.accent if filled else theme.border_strong))
-        painter.setBrush(QColor(theme.accent) if filled else Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(box, 4, 4)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.accent if filled else blend_hex(theme.surface, theme.text, 0.13)))
+        painter.drawRoundedRect(box, z(5), z(5))
         pen = QPen(QColor(theme.text_on_accent)); pen.setWidthF(2.0 * (self._zoom or 1)); painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         k = box_d / 18
@@ -2241,18 +2350,18 @@ class CaptionReviewList(QWidget):
     def _text_button(self, painter, x, rect, text, action, row, index, theme, *, accent=False):
         z = lambda value: max(1, round(value * (self._zoom or 1)))
         painter.setFont(self.small)
-        width = self.small_metrics.horizontalAdvance(text) + z(14)
+        width = self.small_metrics.horizontalAdvance(text) + z(18)
         if x + width > rect.right():
             return x
-        box = QRectF(x, rect.top() + z(4), width, rect.height() - z(8))
+        box = QRectF(x, rect.top() + z(5), width, rect.height() - z(10))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.14) if accent
+                                else blend_hex(theme.surface, theme.text, 0.06)))
+        painter.drawRoundedRect(box, box.height() / 2 - 1, box.height() / 2 - 1)
         painter.setPen(QColor(theme.accent_text if accent else theme.text_secondary))
         painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), text)
-        underline = box.center().y() + self.small_metrics.height() / 2
-        pen = QPen(QColor(theme.border_strong)); pen.setStyle(Qt.PenStyle.DotLine)
-        painter.setPen(pen)
-        painter.drawLine(QPointF(box.left() + z(7), underline), QPointF(box.right() - z(7), underline))
         self._hit_boxes.append((box, action, row["cue_id"], index))
-        return x + width + z(4)
+        return x + width + z(6)
 
     def _draw_group(self, painter, row, group, rect, theme, colors):
         """One line per decision: box, compact source, the real change, state,
@@ -2288,9 +2397,10 @@ class CaptionReviewList(QWidget):
                 if x + pill_w > rect.right():
                     break
                 pill = QRectF(x, rect.top() + z(4), pill_w, rect.height() - z(8))
-                painter.setPen(QColor(theme.accent if issue["checked"] else theme.border_strong))
-                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.22)) if issue["checked"] else Qt.BrushStyle.NoBrush)
-                painter.drawRoundedRect(pill, z(6), z(6))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(blend_hex(theme.surface, theme.accent, 0.24) if issue["checked"]
+                                        else blend_hex(theme.surface, theme.text, 0.07)))
+                painter.drawRoundedRect(pill, pill.height() / 2 - 1, pill.height() / 2 - 1)
                 painter.setPen(QColor(theme.accent_text if issue["checked"] else theme.text))
                 painter.drawText(pill, int(Qt.AlignmentFlag.AlignCenter), text)
                 self._hit_boxes.append((pill, "option", row["cue_id"], index))
@@ -2690,6 +2800,40 @@ def _time_label(ms):
 FILTERS = (("all", "全部字幕"), ("suggested", "有修改建议"), ("pending", "待确认"), ("changed", "已修改"))
 
 
+class _CompactSwitch(SwitchControl):
+    """The app's switch, as wide as its label (the toolbar has no room for
+    the form layout's 155 px)."""
+
+    def sizeHint(self):
+        return QSize(62 + self.fontMetrics().horizontalAdvance(self.text()) + 6, 36)
+
+
+class _SpeakerDot(QWidget):
+    """A speaker's colour: filled when shown, a ring when hidden."""
+
+    def __init__(self, color, parent=None):
+        super().__init__(parent)
+        self.color = color
+        self.hollow = False
+        self.setFixedSize(12, 12)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor(self.color) if QColor(self.color).isValid() else QColor(_theme().text_muted)
+        size = min(self.width(), self.height())
+        rect = QRectF((self.width() - size) / 2 + 1, (self.height() - size) / 2 + 1, size - 2, size - 2)
+        if self.hollow:
+            painter.setPen(QPen(color, max(1.5, size / 6)))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            rect = rect.adjusted(1, 1, -1, -1)
+        else:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+        painter.drawEllipse(rect)
+        painter.end()
+
+
 def _map_position(opcodes, position, *, end=False, before_insert=False):
     """Index in the new text for ``position`` of the old text.
 
@@ -2907,6 +3051,8 @@ class GlossaryProofreadPage(QWidget):
         self._terms = TermIndex()
         self._excluded = set()  # search hits the user excluded: {(cue_id, start)}
         self._sticky = ("", set())  # (needle, captions just replaced): kept listed
+        self._hits = []  # listed search hits in list order: [(cue_id, start, end)]
+        self._hidden_speakers = set()  # speaker ids whose captions this page hides (per project)
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(700)
@@ -2966,44 +3112,79 @@ class GlossaryProofreadPage(QWidget):
         label.setWordWrap(True)
         return label
 
+    def _card(self):
+        """A soft-filled section of the side column (no frame, 2026-10-23)."""
+        card = QFrame()
+        card.setObjectName("proofreadCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(6)
+        return card, layout
+
+    def _section_header(self, title, extra=None):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(self._caption(title))
+        row.addStretch(1)
+        if extra is not None:
+            row.addWidget(extra)
+        return row
+
     def _build(self):
+        """2026-10-23 redesign A (user picked it on the canvas): a narrower
+        side column of soft cards (词库 / 说话人 / 规范词), one resident
+        find-and-replace bar, captions one line high, undo/redo in the title
+        row and the bulk actions under the list."""
+        from ..design.themed_icons import install_themed_icon
         root = QVBoxLayout(self)
-        root.setContentsMargins(28, 18, 28, 14)
-        root.setSpacing(14)
+        root.setContentsMargins(20, 12, 20, 16)
+        root.setSpacing(12)
         header = QHBoxLayout()
-        header.setSpacing(16)
+        header.setSpacing(14)
         self.back_button = QPushButton("返回结果")
         self.back_button.setObjectName("proofreadNav")
-        self.back_button.setFixedHeight(44)
+        self.back_button.setFixedHeight(40)
         self.back_button.clicked.connect(self._back)
-        from ..design.themed_icons import install_themed_icon
         install_themed_icon(self.back_button, "fa5s.arrow-left", "secondary")
         header.addWidget(self.back_button, 0, Qt.AlignmentFlag.AlignVCenter)
         heading = QVBoxLayout()
-        heading.setSpacing(2)
+        heading.setSpacing(0)
         title = QLabel("AI 词库校对")
         title.setObjectName("proofreadTitle")
         heading.addWidget(title)
         self.file_label = QLabel()
         self.file_label.setObjectName("proofreadFile")
         heading.addWidget(self.file_label)
-        header.addLayout(heading, 1)
+        header.addLayout(heading)
+        header.addStretch(1)
         self.status_label = QLabel()
         self.status_label.setObjectName("proofreadStatus")
         self.status_label.setWordWrap(True)
-        self.status_label.setMinimumWidth(420)
+        self.status_label.setMinimumWidth(260)
         self.status_label.setMaximumWidth(720)
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         header.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.undo_button = QPushButton()
+        self.redo_button = QPushButton()
+        for button, icon, name, handler in ((self.undo_button, "fa5s.undo", "撤销（Ctrl+Z）", self._undo),
+                                            (self.redo_button, "fa5s.redo", "重做（Ctrl+Y）", self._redo)):
+            button.setObjectName("proofreadIcon")
+            button.setFixedSize(40, 40)
+            button.setAccessibleName(tr(name))
+            button.setToolTip(tr(name))
+            install_themed_icon(button, icon, "secondary")
+            button.clicked.connect(handler)
+            button.setEnabled(False)
+            header.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addLayout(header)
 
         body = QHBoxLayout()
         body.setSpacing(16)
         # ---------------------------------------------------------- left
         left = QFrame()
-        left.setObjectName("proofreadPanel")
+        left.setObjectName("proofreadSide")
         # Sized by _fit_left_panel: grows with the interface zoom but never
-        # takes the captions' room (at most ~1/3 of the page).
+        # takes the captions' room (at most ~0.3 of the page).
         left.setProperty("uiZoomOwnSize", True)
         self.left_panel = left
         left_outer = QVBoxLayout(left)
@@ -3018,36 +3199,42 @@ class GlossaryProofreadPage(QWidget):
         left_scroll.setWidget(left_body)
         left_outer.addWidget(left_scroll)
         left_layout = QVBoxLayout(left_body)
-        left_layout.setContentsMargins(18, 16, 18, 16)
-        left_layout.setSpacing(8)
-        left_layout.addWidget(self._caption("使用的词库"))
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(12)
+        # 词库: which libraries check this project, and adding names to one.
+        card, layout = self._card()
+        # 2026-10-23 (user): the count sits beside the title (the whole
+        # sentence is its tooltip); only what needs attention goes below.
+        self.library_summary = QLabel()
+        self.library_summary.setObjectName("proofreadHeadNote")
+        layout.addLayout(self._section_header("词库", self.library_summary))
         self.library_list = QListWidget()
-        self.library_list.setObjectName("proofreadList")
-        self.library_list.setFixedHeight(128)
+        self.library_list.setObjectName("proofreadLibraries")
+        self.library_list.setProperty("uiZoomOwnSize", True)  # whole rows: _fit_library_list
+        self.library_list.setFixedHeight(110)
         self.library_list.itemChanged.connect(self._libraries_changed)
-        left_layout.addWidget(self.library_list)
-        self.library_summary = self._note()
-        left_layout.addWidget(self.library_summary)
-        rule = QFrame(); rule.setObjectName("proofreadRule"); rule.setFixedHeight(1)
-        left_layout.addSpacing(4); left_layout.addWidget(rule); left_layout.addSpacing(4)
-        left_layout.addWidget(self._caption("添加专有名词"))
-        left_layout.addWidget(self._note(tr("只想改一句字幕，在右侧双击修改即可；这里把写法存进词库。每行一个：左边写常被听错的写法，"
-                                            "右边写正确写法，用空格、“-”或 Tab 隔开（可直接从表格粘贴）；只写一个词就是标准写法。")))
+        layout.addWidget(self.library_list)
+        self.library_note = self._note()
+        self.library_note.hide()
+        layout.addWidget(self.library_note)
+        layout.addSpacing(4)
         self.term_input = QPlainTextEdit()
         self.term_input.setObjectName("proofreadInput")
-        self.term_input.setFixedHeight(104)
-        bind_text(self.term_input, 'CHICHOO\n球球 CHICHOO\n古龙 - 骨龙', property='placeholderText')
+        self.term_input.setFixedHeight(64)
+        bind_text(self.term_input, '添加专有名词：风丹 → 枫丹，每行一个', property='placeholderText')
+        self.term_input.setToolTip(tr("只想改一句字幕，在右侧双击修改即可；这里把写法存进词库。每行一个：左边写常被听错的写法，"
+                                      "右边写正确写法，用空格、“-”或 Tab 隔开（可直接从表格粘贴）；只写一个词就是标准写法。"))
         self.term_input.textChanged.connect(self._preview_terms)
-        left_layout.addWidget(self.term_input)
+        layout.addWidget(self.term_input)
         self.term_preview = QLabel()
         self.term_preview.setObjectName("proofreadTermPreview")
         self.term_preview.setWordWrap(True)
         self.term_preview.setTextFormat(Qt.TextFormat.RichText)
         self.term_preview.linkActivated.connect(self._flip_term)
         self.term_preview.hide()
-        left_layout.addWidget(self.term_preview)
+        layout.addWidget(self.term_preview)
         target_row = QHBoxLayout()
-        target_row.setSpacing(8)
+        target_row.setSpacing(6)
         self.target_combo = QComboBox()
         self.target_combo.setEditable(True)
         self.target_combo.setObjectName("proofreadCombo")
@@ -3061,88 +3248,77 @@ class GlossaryProofreadPage(QWidget):
             self.category_combo.addItem(category, category)
         self.category_combo.setCurrentIndex(self.category_combo.findData("其他"))
         target_row.addWidget(self.category_combo)
-        left_layout.addLayout(target_row)
-        self.target_note = self._note()
-        left_layout.addWidget(self.target_note)
+        # The narrow column decides their width, not their longest entry.
+        for combo, letters in ((self.target_combo, 4), (self.category_combo, 5)):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(letters)
+        layout.addLayout(target_row)
         add_row = QHBoxLayout()
-        self.add_button = QPushButton("加入词库")
-        self.add_button.setObjectName("proofreadSecondary")
-        self.add_button.setFixedHeight(40)
+        add_row.setSpacing(8)
+        self.target_note = self._note()
+        add_row.addWidget(self.target_note, 1)
+        self.add_button = QPushButton("加入")
+        self.add_button.setObjectName("proofreadTint")
+        self.add_button.setFixedHeight(34)
+        bind_text(self.add_button, '把上面的专有名词加入所选词库', property='toolTip')
         self.add_button.clicked.connect(self._add_terms)
-        add_row.addWidget(self.add_button)
-        add_row.addStretch(1)
-        left_layout.addLayout(add_row)
+        add_row.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(add_row)
         self.add_status = self._note()
         self.add_status.hide()
-        left_layout.addWidget(self.add_status)
-        rule = QFrame(); rule.setObjectName("proofreadRule"); rule.setFixedHeight(1)
-        left_layout.addSpacing(4); left_layout.addWidget(rule); left_layout.addSpacing(4)
-        terms_header = QHBoxLayout()
-        terms_header.addWidget(self._caption("词库中的规范词"))
-        terms_header.addStretch(1)
+        layout.addWidget(self.add_status)
+        left_layout.addWidget(card)
+        # 说话人 (2026-10-23, user): hide narration and the like.
+        card, layout = self._card()
+        self.speaker_card = card
+        self.speaker_badge = QLabel()
+        self.speaker_badge.setObjectName("proofreadBadge")
+        self.speaker_badge.hide()
+        layout.addLayout(self._section_header("说话人", self.speaker_badge))
+        self.speaker_rows = QVBoxLayout()
+        self.speaker_rows.setSpacing(2)
+        layout.addLayout(self.speaker_rows)
+        self.speaker_note = self._note(tr("隐藏的说话人不列出；采用全部、AI 校对和「当前列表」的替换都会跳过它"))
+        layout.addWidget(self.speaker_note)
+        self.speaker_card.hide()
+        left_layout.addWidget(card)
+        self._speaker_widgets = {}
+        # 规范词 of the chosen libraries.
+        card, layout = self._card()
         self.term_count = self._note()
-        terms_header.addWidget(self.term_count)
-        left_layout.addLayout(terms_header)
+        layout.addLayout(self._section_header("规范词", self.term_count))
         self.term_filter = QLineEdit()
         self.term_filter.setObjectName("proofreadSearch")
         self.term_filter.setPlaceholderText(tr("筛选规范词或别名"))
         self.term_filter.textChanged.connect(self._fill_terms)
-        left_layout.addWidget(self.term_filter)
+        layout.addWidget(self.term_filter)
         self.term_list = QListWidget()
-        self.term_list.setObjectName("proofreadList")
+        self.term_list.setObjectName("proofreadTerms")
         self.term_list.setMinimumHeight(170)
         self.term_list.itemClicked.connect(self._term_clicked)
-        left_layout.addWidget(self.term_list, 1)
+        layout.addWidget(self.term_list, 1)
+        left_layout.addWidget(card, 1)
         body.addWidget(left, 0)
 
         # ---------------------------------------------------------- right
         right = QFrame()
         right.setObjectName("proofreadPanel")
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(18, 16, 18, 12)
+        right_layout.setContentsMargins(16, 14, 16, 14)
         right_layout.setSpacing(10)
-        top = QHBoxLayout()
-        top.setSpacing(10)
-        top.addWidget(self._caption("字幕"))
-        self.count_label = self._note()
-        # Wraps instead of forcing the page wider at large interface zoom.
-        self.count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        top.addWidget(self.count_label, 1)
-        self.stutter_toggle = QCheckBox(tr("口吃整理"))
-        self.stutter_toggle.setObjectName("proofreadToggle")
-        self.stutter_toggle.setToolTip(tr("列出同一人卡顿、起句重来的重复字（只改显示文字，不删音频）；"
-                                          "采用后才写回"))
-        self.stutter_toggle.setChecked(self._stored_stutter())
-        self.stutter_toggle.toggled.connect(self._stutter_toggled)
-        top.addWidget(self.stutter_toggle)
-        self.local_button = QPushButton("按词库匹配")
-        self.local_button.setObjectName("proofreadSecondary")
-        self.local_button.setFixedHeight(40)
-        bind_text(self.local_button, '只用所选词库里已确认的写法在本机匹配，不调用 AI', property='toolTip')
-        self.local_button.clicked.connect(lambda: self._run(False))
-        top.addWidget(self.local_button)
-        self.ai_button = QPushButton("AI 校对")
-        self.ai_button.setObjectName("proofreadAccent")
-        self.ai_button.setFixedHeight(40)
-        bind_text(self.ai_button, '用已配置的校对模型结合所选词库和上下文生成建议（会调用付费模型）；不会直接修改字幕',
-                  property='toolTip')
-        self.ai_button.clicked.connect(self._run_ai)
-        top.addWidget(self.ai_button)
-        self.cancel_button = QPushButton("取消")
-        self.cancel_button.setObjectName("proofreadGhost")
-        self.cancel_button.setFixedHeight(40)
-        self.cancel_button.clicked.connect(self._cancel_run)
-        self.cancel_button.hide()
-        top.addWidget(self.cancel_button)
-        right_layout.addLayout(top)
         from ..studio.studio_toolbar_layout import CommandBar, CommandFlowLayout
-        filter_bar = CommandBar()
-        filter_bar.setObjectName("proofreadFilterBar")
-        filters = CommandFlowLayout(filter_bar)
-        filters.setContentsMargins(0, 0, 0, 0)
-        filters.setSpacing(6)
-        # Filters left, bulk actions right; whole buttons wrap when narrow.
-        filters.stretch_after = {len(FILTERS) - 1}
+        tools = CommandBar()
+        tools.setObjectName("proofreadFilterBar")
+        flow = CommandFlowLayout(tools)
+        flow.setContentsMargins(0, 0, 0, 0)
+        flow.setSpacing(10)
+        # Filters left, the checks right; whole groups wrap when narrow.
+        flow.stretch_after = {0}
+        segment = QFrame()
+        segment.setObjectName("proofreadSeg")
+        segment_layout = QHBoxLayout(segment)
+        segment_layout.setContentsMargins(3, 3, 3, 3)
+        segment_layout.setSpacing(2)
         self.filter_group = QButtonGroup(self)
         self.filter_group.setExclusive(True)
         self.filter_buttons = {}
@@ -3150,7 +3326,7 @@ class GlossaryProofreadPage(QWidget):
             button = QPushButton(tr(label))
             button.setObjectName("proofreadFilter")
             button.setCheckable(True)
-            button.setFixedHeight(36)
+            button.setFixedHeight(32)
             button.setProperty("filterKey", key)
             button.setToolTip(tr({"all": "本工程全部字幕（条）",
                                   "suggested": "有修改建议的字幕条数；一条字幕可以有几处建议",
@@ -3158,80 +3334,133 @@ class GlossaryProofreadPage(QWidget):
                                   "changed": "打开本页以来改过的字幕条数"}[key]))
             self.filter_group.addButton(button)
             self.filter_buttons[key] = button
-            filters.addWidget(button)
+            segment_layout.addWidget(button)
         self.filter_buttons["all"].setChecked(True)
         self.filter_group.buttonClicked.connect(lambda *_: self._apply_filter())
-        search_row = QHBoxLayout()
-        search_row.setSpacing(6)
-        self.search = QLineEdit()
-        self.search.setObjectName("proofreadSearch")
-        self.search.setPlaceholderText(tr("查找字幕或词条（Ctrl+F）"))
-        self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self._search_changed)
-        self.search.installEventFilter(self)
-        search_row.addWidget(self.search, 1)
-        self.replace_toggle = QPushButton(tr("替换…"))
-        self.replace_toggle.setObjectName("proofreadGhost")
-        self.replace_toggle.setFixedHeight(36)
-        self.replace_toggle.setCheckable(True)
-        bind_text(self.replace_toggle, '在这里展开替换（Ctrl+H）：沿用上面的查找文字，只需输入新写法；也可以在字幕里选字后右键批量替换',
+        flow.addWidget(segment)
+        checks = QWidget()
+        checks.setObjectName("proofreadChecks")
+        checks_layout = QHBoxLayout(checks)
+        checks_layout.setContentsMargins(0, 0, 0, 0)
+        checks_layout.setSpacing(8)
+        self.stutter_toggle = _CompactSwitch(tr("口吃整理"))
+        self.stutter_toggle.setObjectName("proofreadToggle")
+        self.stutter_toggle.setToolTip(tr("列出同一人卡顿、起句重来的重复字（只改显示文字，不删音频）；"
+                                          "采用后才写回"))
+        self.stutter_toggle.setChecked(self._stored_stutter())
+        self.stutter_toggle.toggled.connect(self._stutter_toggled)
+        checks_layout.addWidget(self.stutter_toggle)
+        checks_layout.addSpacing(4)
+        self.local_button = QPushButton("按词库匹配")
+        self.local_button.setObjectName("proofreadContent")
+        self.local_button.setFixedHeight(38)
+        install_themed_icon(self.local_button, "fa5s.book", "zone_content")
+        bind_text(self.local_button, '只用所选词库里已确认的写法在本机匹配，不调用 AI', property='toolTip')
+        self.local_button.clicked.connect(lambda: self._run(False))
+        checks_layout.addWidget(self.local_button)
+        self.ai_button = QPushButton("AI 校对")
+        self.ai_button.setObjectName("proofreadAccent")
+        self.ai_button.setFixedHeight(38)
+        install_themed_icon(self.ai_button, "fa5s.magic", "on_accent")
+        bind_text(self.ai_button, '用已配置的校对模型结合所选词库和上下文生成建议（会调用付费模型）；不会直接修改字幕',
                   property='toolTip')
-        self.replace_toggle.toggled.connect(self._show_replace_bar)
-        search_row.addWidget(self.replace_toggle)
-        self.select_all = QPushButton("采用全部建议")
-        self.select_none = QPushButton("全部不采用")
-        bind_text(self.select_all, '把列表中显示的建议全部写回工程（一步，可撤销）', property='toolTip')
-        bind_text(self.select_none, '列表中显示的、已采用的建议改回原文；其余建议标为不采用（一步，可撤销）', property='toolTip')
-        for button, state in ((self.select_all, True), (self.select_none, False)):
-            button.setObjectName("proofreadGhost")
-            button.setFixedHeight(36)
-            button.clicked.connect(lambda _=False, value=state: self._set_all(value))
-            filters.addWidget(button)
-        right_layout.addWidget(filter_bar)
-        right_layout.addLayout(search_row)
-        # find / replace bar (Ctrl+H, or 替换…)
+        self.ai_button.clicked.connect(self._run_ai)
+        checks_layout.addWidget(self.ai_button)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("proofreadGhost")
+        self.cancel_button.setFixedHeight(38)
+        self.cancel_button.clicked.connect(self._cancel_run)
+        self.cancel_button.hide()
+        checks_layout.addWidget(self.cancel_button)
+        flow.addWidget(checks)
+        right_layout.addWidget(tools)
+        # One resident find-and-replace bar (2026-10-23, user: replacing
+        # needed Ctrl+H first). An empty 替换为 only searches.
         self.replace_bar = QFrame()
         self.replace_bar.setObjectName("proofreadReplaceBar")
+        self.replace_bar.installEventFilter(self)  # resizes fit the bar (_fit_find_bar)
         bar = QHBoxLayout(self.replace_bar)
-        bar.setContentsMargins(10, 6, 6, 6)
-        bar.setSpacing(8)
-        replace_caption = QLabel(tr("替换为"))
-        replace_caption.setObjectName("proofreadNote")
-        bar.addWidget(replace_caption)
+        bar.setContentsMargins(5, 5, 5, 5)
+        bar.setSpacing(6)
+        self.find_field = QFrame()
+        self.find_field.setObjectName("proofreadField")
+        find_layout = QHBoxLayout(self.find_field)
+        find_layout.setContentsMargins(4, 0, 4, 0)
+        find_layout.setSpacing(2)
+        self.search = QLineEdit()
+        self.search.setObjectName("proofreadFieldEdit")
+        self.search.setPlaceholderText(tr("查找字幕或词条（Ctrl+F）"))
+        self.search.setClearButtonEnabled(True)
+        install_themed_icon(self.search.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition),
+                            "fa5s.search", "muted")
+        self.search.textChanged.connect(self._search_changed)
+        self.search.installEventFilter(self)
+        find_layout.addWidget(self.search, 1)
+        self.hit_label = QLabel()
+        self.hit_label.setObjectName("proofreadHitCount")
+        find_layout.addWidget(self.hit_label)
+        self.hit_prev = QPushButton()
+        self.hit_next = QPushButton()
+        for button, icon, tip, delta in ((self.hit_prev, "fa5s.chevron-up", "上一处（Shift+Enter）", -1),
+                                         (self.hit_next, "fa5s.chevron-down", "下一处（Enter）", 1)):
+            button.setObjectName("proofreadMini")
+            button.setFixedSize(28, 28)
+            button.setToolTip(tr(tip))
+            button.setAccessibleName(tr(tip))
+            install_themed_icon(button, icon, "secondary")
+            button.clicked.connect(lambda _=False, step=delta: self._step_hit(step))
+            button.setEnabled(False)
+            find_layout.addWidget(button)
+        bar.addWidget(self.find_field, 1)
+        self.replace_field = QFrame()
+        self.replace_field.setObjectName("proofreadField")
+        replace_layout = QHBoxLayout(self.replace_field)
+        replace_layout.setContentsMargins(4, 0, 8, 0)
+        replace_layout.setSpacing(4)
         self.replace_input = QLineEdit()
-        self.replace_input.setObjectName("proofreadSearch")
-        self.replace_input.setPlaceholderText(tr("新写法（Enter 替换）"))
+        self.replace_input.setObjectName("proofreadFieldEdit")
+        self.replace_input.setPlaceholderText(tr("替换为（留空只查找）"))
+        install_themed_icon(self.replace_input.addAction(QIcon(), QLineEdit.ActionPosition.LeadingPosition),
+                            "fa5s.exchange-alt", "muted")
         self.replace_input.installEventFilter(self)
         self.replace_input.textChanged.connect(lambda *_: self._replace_input_changed())
-        bar.addWidget(self.replace_input, 2)
+        replace_layout.addWidget(self.replace_input, 1)
+        self.replace_key = QLabel("Ctrl+H")
+        self.replace_key.setObjectName("proofreadKey")
+        replace_layout.addWidget(self.replace_key)
+        bar.addWidget(self.replace_field, 1)
         # 2026-10-10 (user): replacing in a filtered list never quietly grows
         # to captions that are not listed; the whole project is a choice.
         self.replace_scope = QComboBox()
-        self.replace_scope.setObjectName("proofreadCombo")
-        self.replace_scope.addItem(tr("范围：当前列表"), "list")
-        self.replace_scope.addItem(tr("范围：整个工程"), "project")
-        bind_text(self.replace_scope, '当前列表＝上面的筛选和查找结果（包括还没滚动到的字幕）；整个工程＝全部字幕',
+        self.replace_scope.setObjectName("proofreadScopeCombo")
+        self.replace_scope.addItem(tr("在当前列表里"), "list")
+        self.replace_scope.addItem(tr("在整个工程里"), "project")
+        # Follows its words when the interface language changes.
+        self.replace_scope.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        bind_text(self.replace_scope, '替换范围：当前列表＝上面的筛选、查找结果和显示的说话人（包括还没滚动到的字幕）；整个工程＝全部字幕',
                   property='toolTip')
         self.replace_scope.currentIndexChanged.connect(lambda *_: self._refresh_replace_count())
         bar.addWidget(self.replace_scope)
-        self.replace_go = QPushButton(tr("替换"))
-        self.replace_go.setObjectName("proofreadSecondary")
-        self.replace_go.setFixedHeight(32)
+        self.replace_one = QPushButton(tr("替换"))
+        self.replace_one.setObjectName("proofreadBarButton")
+        self.replace_one.setFixedHeight(38)
+        bind_text(self.replace_one, '替换带框的这一处，然后跳到下一处；可撤销', property='toolTip')
+        self.replace_one.clicked.connect(self._replace_current)
+        self.replace_one.setEnabled(False)
+        bar.addWidget(self.replace_one)
+        self.replace_go = QPushButton(tr("全部替换"))
+        self.replace_go.setObjectName("proofreadAccent")
+        self.replace_go.setFixedHeight(38)
         bind_text(self.replace_go, '按范围替换列出的命中（排除的不改）；一步完成，可撤销', property='toolTip')
         self.replace_go.clicked.connect(self._replace_enter)
+        self.replace_go.setEnabled(False)
         bar.addWidget(self.replace_go)
+        right_layout.addWidget(self.replace_bar)
         self.replace_count = QLabel()
         self.replace_count.setObjectName("proofreadReplaceCount")
         self.replace_count.setWordWrap(True)
-        bar.addWidget(self.replace_count, 3)
-        close = QPushButton("×")
-        close.setObjectName("proofreadGhost")
-        close.setFixedSize(32, 32)
-        bind_text(close, '关闭查找替换（Esc）', property='toolTip')
-        close.clicked.connect(lambda: self.replace_toggle.setChecked(False))
-        bar.addWidget(close)
-        self.replace_bar.hide()
-        right_layout.addWidget(self.replace_bar)
+        self.replace_count.hide()
+        right_layout.addWidget(self.replace_count)
         from PySide6.QtGui import QKeySequence, QShortcut
         # Keys come from the shared shortcut registry (customizable, 2026-10-13).
         page_shortcuts = {}
@@ -3256,7 +3485,7 @@ class GlossaryProofreadPage(QWidget):
         self.scope_banner = QFrame()
         self.scope_banner.setObjectName("proofreadScope")
         scope_row = QHBoxLayout(self.scope_banner)
-        scope_row.setContentsMargins(10, 6, 6, 6)
+        scope_row.setContentsMargins(12, 4, 6, 4)
         self.scope_text = QLabel()
         self.scope_text.setObjectName("proofreadScopeText")
         self.scope_text.setWordWrap(True)
@@ -3289,132 +3518,210 @@ class GlossaryProofreadPage(QWidget):
         self.list.group_dismissed.connect(self._dismiss_group)
         self.list.group_manual.connect(self._manual_group)
         self.list.hit_toggled.connect(self._toggle_hit)
+        self.list.reveal_requested.connect(self._reveal_speakers)
         right_layout.addWidget(self.list, 1)
+        # Bulk actions and what the list holds, under the list.
+        self.bulk_bar = QFrame()
+        self.bulk_bar.setObjectName("proofreadBulkBar")
+        self.bulk_bar.setToolTip(tr("本页的修改会直接写回工程（字幕工作台、预览和导出同时更新）；"
+                                    "建议要点一下或勾选才采用。可撤销 / 重做（Ctrl+Z / Ctrl+Y）。"))
+        bulk = QHBoxLayout(self.bulk_bar)
+        bulk.setContentsMargins(12, 6, 8, 6)
+        bulk.setSpacing(8)
+        self.count_label = self._note()
+        # Wraps instead of forcing the page wider at large interface zoom.
+        self.count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        bulk.addWidget(self.count_label, 1)
+        self.select_all = QPushButton("采用全部建议")
+        self.select_none = QPushButton("全部不采用")
+        bind_text(self.select_all, '把列表中显示的建议全部写回工程（一步，可撤销）', property='toolTip')
+        bind_text(self.select_none, '列表中显示的、已采用的建议改回原文；其余建议标为不采用（一步，可撤销）', property='toolTip')
+        for button, state, name in ((self.select_all, True, "proofreadTint"), (self.select_none, False, "proofreadBarButton")):
+            button.setObjectName(name)
+            button.setFixedHeight(32)
+            button.clicked.connect(lambda _=False, value=state: self._set_all(value))
+            bulk.addWidget(button)
+        self.hidden_note = QLabel()
+        self.hidden_note.setObjectName("proofreadHiddenNote")
+        self.hidden_note.hide()
+        bulk.addWidget(self.hidden_note)
+        self.show_speakers_button = QPushButton(tr("显示全部"))
+        self.show_speakers_button.setObjectName("proofreadBarButton")
+        self.show_speakers_button.setFixedHeight(32)
+        bind_text(self.show_speakers_button, '重新显示所有说话人的字幕', property='toolTip')
+        self.show_speakers_button.clicked.connect(lambda: self._reveal_speakers(None))
+        self.show_speakers_button.hide()
+        bulk.addWidget(self.show_speakers_button)
+        right_layout.addWidget(self.bulk_bar)
         body.addWidget(right, 1)
         root.addLayout(body, 1)
-
-        footer = QHBoxLayout()
-        footer.setSpacing(12)
-        self.footer_note = self._note(tr("本页的修改会直接写回工程（字幕工作台、预览和导出同时更新）；"
-                                         "建议要点一下或勾选才采用。可撤销 / 重做（Ctrl+Z / Ctrl+Y）。"))
-        footer.addWidget(self.footer_note, 1)
-        self.undo_button = QPushButton("撤销")
-        self.undo_button.setObjectName("proofreadGhost")
-        self.undo_button.setFixedHeight(42)
-        self.undo_button.setMinimumWidth(110)
-        self.undo_button.clicked.connect(self._undo)
-        self.undo_button.setEnabled(False)
-        footer.addWidget(self.undo_button)
-        self.redo_button = QPushButton("重做")
-        self.redo_button.setObjectName("proofreadGhost")
-        self.redo_button.setFixedHeight(42)
-        self.redo_button.setMinimumWidth(110)
-        self.redo_button.clicked.connect(self._redo)
-        self.redo_button.setEnabled(False)
-        footer.addWidget(self.redo_button)
         # Kept for audits and old callers: there is nothing left to apply.
         self.apply_button = QPushButton("应用修改")
         self.apply_button.setObjectName("proofreadPrimary")
         self.apply_button.hide()
-        root.addLayout(footer)
         self._fit_left_panel()
 
     def refresh_theme_palette(self):
         t = _theme()
         colors = mark_colors(t)
+        # Soft fills, no hairlines (2026-10-23, the home and Studio redesigns'
+        # 「柔和填色」): fields and buttons are tinted areas on their card.
+        fill = blend_hex(t.surface, t.text, 0.06)
+        fill_hover = blend_hex(t.surface, t.text, 0.10)
+        field = t.surface_elevated if t.is_light else t.input_surface
+        chip = blend_hex(t.surface, t.accent, 0.14)
+        chip_hover = blend_hex(t.surface, t.accent, 0.22)
+        content = t.zone_colors.get("content", t.accent_text)
+        content_fill = blend_hex(t.surface, content, 0.17)
+        warn_fill = blend_hex(t.surface, t.warning, 0.16)
+        info_fill = blend_hex(t.surface, t.info, 0.10)
+        selection = blend_hex(t.surface, t.accent, 0.45)
+        assets = Path(__file__).resolve().parents[2] / "assets" / "controls"
+        check = (assets / f"check-{'light' if t.on_accent_is_light else 'dark'}.svg").as_posix()
+        chevron = (assets / f"chevron-{'dark' if t.is_light else 'light'}.svg").as_posix()
         self.setStyleSheet(f"""
 QWidget#glossaryProofreadPage {{ background: transparent; }}
-QScrollArea#proofreadLeftScroll, QWidget#proofreadLeftBody {{ background: transparent; border: 0; }}
+QScrollArea#proofreadLeftScroll, QWidget#proofreadLeftBody, QFrame#proofreadSide {{ background: transparent; border: 0; }}
 QScrollArea#proofreadLeftScroll > QWidget#qt_scrollarea_viewport {{ background: transparent; }}
-QFrame#proofreadPanel {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 12px; }}
-QLabel#proofreadTitle {{ color: {t.text}; font-size: 26px; font-weight: 800; background: transparent; }}
-QLabel#proofreadFile {{ color: {t.text_secondary}; font-size: 15px; background: transparent; }}
-QLabel#proofreadStatus {{ color: {t.text_secondary}; font-size: 15px; background: transparent; }}
-QLabel#proofreadCaption {{ color: {t.text}; font-size: 17px; font-weight: 700; background: transparent; }}
-QLabel#proofreadNote {{ color: {t.text_muted}; font-size: 14px; background: transparent; }}
-QLabel#proofreadReplaceCount {{ color: {t.text_secondary}; font-size: 14px; background: transparent; }}
+QFrame#proofreadPanel, QFrame#proofreadCard {{ background: {t.surface}; border: 0; border-radius: 16px; }}
+QLabel#proofreadTitle {{ color: {t.text}; font-size: 24px; font-weight: 800; background: transparent; }}
+QLabel#proofreadFile {{ color: {t.text_muted}; font-size: 13px; background: transparent; }}
+QLabel#proofreadStatus {{ color: {t.text_secondary}; font-size: 13px; background: {t.surface}; border-radius: 13px;
+    padding: 5px 12px; }}
+QLabel#proofreadCaption {{ color: {t.text}; font-size: 15px; font-weight: 800; background: transparent; }}
+QLabel#proofreadNote {{ color: {t.text_muted}; font-size: 13px; background: transparent; }}
+QLabel#proofreadHeadNote {{ color: {t.text_muted}; font-size: 12px; font-weight: 600; background: transparent; }}
+QLabel#proofreadBadge {{ color: {legible(t.warning, warn_fill, t)}; background: {warn_fill}; border-radius: 11px;
+    font-size: 12px; font-weight: 700; padding: 2px 10px; }}
+QLabel#proofreadReplaceCount {{ color: {t.text_secondary}; font-size: 13px; background: transparent; padding: 0 4px; }}
 QLabel#proofreadReplaceCount[warn="true"] {{ color: {legible(t.warning, t.surface, t)}; font-weight: 700; }}
-QLabel#proofreadTermPreview {{ color: {t.text}; font-size: 14px; background: {t.panel}; border: 1px solid {t.border};
-    border-radius: 8px; padding: 6px 8px; }}
-QFrame#proofreadReplaceBar {{ background: {blend_hex(t.surface, t.accent, 0.06)}; border: 1px solid {t.border};
-    border-radius: 9px; }}
-QFrame#proofreadRule {{ background: {t.border}; border: 0; }}
-QListWidget#proofreadList {{ background: {t.panel}; border: 1px solid {t.border}; border-radius: 8px; color: {t.text};
-    font-size: 15px; padding: 4px; }}
-QListWidget#proofreadList::item {{ padding: 4px 6px; border-radius: 6px; }}
-QListWidget#proofreadList::item:hover {{ background: {t.selected}; }}
-QPlainTextEdit#proofreadInput, QLineEdit#proofreadSearch {{ background: {t.panel}; border: 1px solid {t.border};
-    border-radius: 8px; color: {t.text}; font-size: 16px; padding: 6px 8px;
-    selection-background-color: {blend_hex(t.surface, t.accent, 0.45)}; selection-color: {t.text}; }}
+QLabel#proofreadHiddenNote {{ color: {legible(t.warning, fill, t)}; font-size: 13px; font-weight: 700; background: transparent; }}
+QLabel#proofreadTermPreview {{ color: {t.text}; font-size: 13px; background: {fill}; border: 0; border-radius: 10px;
+    padding: 6px 10px; }}
+QLabel#proofreadHitCount {{ color: {t.text_muted}; font-size: 12px; font-weight: 700; background: transparent; padding: 0 4px; }}
+QLabel#proofreadKey {{ color: {t.text_muted}; background: {blend_hex(t.surface, t.text, 0.10)}; border-radius: 6px;
+    font-size: 11px; font-weight: 700; padding: 1px 6px; }}
+QFrame#proofreadReplaceBar {{ background: {fill}; border: 0; border-radius: 14px; }}
+QFrame#proofreadField {{ background: {field}; border: 2px solid transparent; border-radius: 11px; min-height: 34px; }}
+QFrame#proofreadField[focused="true"] {{ border-color: {t.accent}; }}
+QLineEdit#proofreadFieldEdit {{ background: transparent; border: 0; color: {t.text}; font-size: 14px; padding: 0 2px;
+    min-height: 32px; selection-background-color: {selection}; selection-color: {t.text}; }}
+QFrame#proofreadSeg {{ background: {fill}; border: 0; border-radius: 12px; }}
+QFrame#proofreadBulkBar {{ background: {fill}; border: 0; border-radius: 14px; }}
+QFrame#proofreadSpeakerRow {{ background: transparent; border-radius: 10px; }}
+QFrame#proofreadSpeakerRow:hover {{ background: {fill}; }}
+QLabel#proofreadSpeakerName {{ color: {t.text}; font-size: 14px; font-weight: 700; background: transparent; }}
+QLabel#proofreadSpeakerName[hiddenSpeaker="true"] {{ color: {t.text_muted}; }}
+QLabel#proofreadSpeakerId, QLabel#proofreadSpeakerCount {{ color: {t.text_muted}; font-size: 12px; background: transparent; }}
+QListWidget#proofreadLibraries, QListWidget#proofreadTerms {{ background: transparent; border: 0; color: {t.text};
+    font-size: 14px; padding: 0; outline: 0; }}
+QListWidget#proofreadLibraries::item {{ padding: 4px 6px; border-radius: 9px; min-height: 24px; }}
+QListWidget#proofreadTerms::item {{ padding: 5px 8px; border-radius: 9px; }}
+QListWidget#proofreadLibraries::item:hover, QListWidget#proofreadTerms::item:hover {{ background: {fill}; }}
+QListWidget#proofreadLibraries::item:selected, QListWidget#proofreadTerms::item:selected {{ background: {fill_hover};
+    color: {t.text}; }}
+QListWidget#proofreadLibraries::indicator {{ width: 18px; height: 18px; border-radius: 6px; border: 0;
+    background: {blend_hex(t.surface, t.text, 0.13)}; }}
+QListWidget#proofreadLibraries::indicator:checked {{ background: {t.accent}; image: url({check}); }}
+QPlainTextEdit#proofreadInput, QLineEdit#proofreadSearch {{ background: {fill}; border: 2px solid transparent;
+    border-radius: 11px; color: {t.text}; font-size: 14px; padding: 4px 8px;
+    selection-background-color: {selection}; selection-color: {t.text}; }}
 QPlainTextEdit#proofreadInput:focus, QLineEdit#proofreadSearch:focus {{ border-color: {t.accent}; }}
-QLineEdit#proofreadInlineEditor {{ background: {t.panel}; border: 2px solid {t.accent}; border-radius: 6px;
-    color: {t.text}; padding: 0 4px; selection-background-color: {blend_hex(t.surface, t.accent, 0.45)};
-    selection-color: {t.text}; }}
-QComboBox#proofreadCombo {{ font-size: 15px; min-height: 34px; background: {t.panel}; color: {t.text};
-    border: 1px solid {t.border}; border-radius: 8px; padding: 0 8px; }}
-QComboBox#proofreadCombo:hover, QComboBox#proofreadCombo:focus {{ border-color: {t.accent}; }}
+QLineEdit#proofreadInlineEditor {{ background: {field}; border: 2px solid {t.accent}; border-radius: 8px;
+    color: {t.text}; padding: 0 4px; selection-background-color: {selection}; selection-color: {t.text}; }}
+QComboBox#proofreadCombo, QComboBox#proofreadScopeCombo {{ font-size: 14px; min-height: 30px; color: {t.text};
+    border: 2px solid transparent; border-radius: 11px; padding: 0 8px 0 10px; }}
+QComboBox#proofreadCombo {{ background: {fill}; }}
+QComboBox#proofreadScopeCombo {{ background: {field}; font-weight: 600; min-height: 34px; }}
+QComboBox#proofreadCombo:hover, QComboBox#proofreadCombo:focus, QComboBox#proofreadScopeCombo:hover,
+QComboBox#proofreadScopeCombo:focus {{ border-color: {chip_hover}; }}
 QComboBox#proofreadCombo:disabled {{ color: {t.disabled}; }}
 QComboBox#proofreadCombo QLineEdit {{ background: transparent; color: {t.text}; border: 0; padding: 0;
     selection-background-color: {blend_hex(t.surface, t.accent, 0.35)}; }}
-QComboBox#proofreadCombo::drop-down {{ border: 0; width: 22px; }}
-QComboBox#proofreadCombo QAbstractItemView {{ background: {t.surface}; color: {t.text}; border: 1px solid {t.border};
-    selection-background-color: {t.selected}; selection-color: {t.text}; outline: 0; }}
-QCheckBox#proofreadToggle {{ color: {t.text}; font-size: 15px; spacing: 6px; background: transparent; }}
-QPushButton#proofreadNav, QPushButton#proofreadSecondary {{ background: {t.surface}; color: {t.text};
-    border: 1px solid {t.border_strong}; border-radius: 8px; font-size: 16px; font-weight: 600; padding: 0 16px; }}
-QPushButton#proofreadNav:hover, QPushButton#proofreadSecondary:hover {{ background: {t.selected}; border-color: {t.accent}; }}
-QPushButton#proofreadAccent {{ background: {blend_hex(t.surface, t.accent, 0.16)}; color: {t.accent_text};
-    border: 1px solid {t.accent}; border-radius: 8px; font-size: 16px; font-weight: 700; padding: 0 16px; }}
-QPushButton#proofreadAccent:hover {{ background: {blend_hex(t.surface, t.accent, 0.26)}; }}
-QPushButton#proofreadGhost {{ background: transparent; color: {t.text_secondary}; border: 1px solid {t.border};
-    border-radius: 8px; font-size: 15px; padding: 0 12px; }}
-QPushButton#proofreadGhost:hover {{ color: {t.text}; background: {t.selected}; }}
-QPushButton#proofreadGhost:checked {{ color: {t.accent_text}; border-color: {t.accent};
-    background: {blend_hex(t.surface, t.accent, 0.12)}; }}
-QPushButton#proofreadGhost:disabled {{ color: {t.disabled}; }}
-QPushButton#proofreadFilter {{ background: transparent; color: {t.text_secondary}; border: 1px solid {t.border};
-    border-radius: 8px; font-size: 15px; padding: 0 12px; }}
-QPushButton#proofreadFilter:hover {{ color: {t.text}; background: {t.selected}; }}
-QPushButton#proofreadFilter:checked {{ background: {blend_hex(t.surface, t.accent, 0.16)}; color: {t.accent_text};
-    border-color: {t.accent}; font-weight: 700; }}
-QPushButton#proofreadPrimary {{ background: {t.accent}; color: {t.text_on_accent}; border: 1px solid {t.accent_pressed};
-    border-radius: 8px; font-size: 17px; font-weight: 700; padding: 0 22px; }}
+QComboBox#proofreadCombo::drop-down, QComboBox#proofreadScopeCombo::drop-down {{ border: 0; width: 22px; }}
+QComboBox#proofreadCombo::down-arrow, QComboBox#proofreadScopeCombo::down-arrow {{ image: url({chevron}); width: 10px;
+    height: 10px; }}
+QComboBox#proofreadCombo QAbstractItemView, QComboBox#proofreadScopeCombo QAbstractItemView {{ background: {t.surface_elevated};
+    color: {t.text}; border: 0; border-radius: 10px; padding: 4px; selection-background-color: {chip};
+    selection-color: {t.accent_text}; outline: 0; }}
+QPushButton#proofreadNav {{ background: {t.surface}; color: {t.text}; border: 0; border-radius: 11px; font-size: 14px;
+    font-weight: 600; padding: 0 14px; }}
+QPushButton#proofreadNav:hover, QPushButton#proofreadIcon:hover {{ background: {t.selected}; }}
+QPushButton#proofreadIcon {{ background: {t.surface}; border: 0; border-radius: 11px; }}
+QPushButton#proofreadIcon:disabled {{ background: {blend_hex(t.app_background, t.surface, 0.5)}; }}
+QPushButton#proofreadSecondary, QPushButton#proofreadBarButton {{ background: {field}; color: {t.text}; border: 0;
+    border-radius: 10px; font-size: 13px; font-weight: 600; padding: 0 12px; }}
+QPushButton#proofreadSecondary:hover, QPushButton#proofreadBarButton:hover {{ background: {t.selected}; }}
+QPushButton#proofreadContent {{ background: {content_fill}; color: {t.text}; border: 0; border-radius: 11px;
+    font-size: 14px; font-weight: 600; padding: 0 14px; }}
+QPushButton#proofreadContent:hover {{ background: {blend_hex(t.surface, content, 0.26)}; }}
+QPushButton#proofreadAccent {{ background: {t.accent}; color: {t.text_on_accent}; border: 0; border-radius: 11px;
+    font-size: 14px; font-weight: 700; padding: 0 16px; }}
+QPushButton#proofreadAccent:hover {{ background: {t.accent_hover}; }}
+QPushButton#proofreadTint {{ background: {chip}; color: {t.accent_text}; border: 0; border-radius: 10px; font-size: 13px;
+    font-weight: 700; padding: 0 12px; }}
+QPushButton#proofreadTint:hover {{ background: {chip_hover}; }}
+QPushButton#proofreadGhost {{ background: {fill}; color: {t.text_secondary}; border: 0; border-radius: 10px;
+    font-size: 13px; font-weight: 600; padding: 0 12px; }}
+QPushButton#proofreadGhost:hover {{ color: {t.text}; background: {fill_hover}; }}
+QPushButton#proofreadMini {{ background: transparent; color: {t.text_secondary}; border: 0; border-radius: 8px;
+    font-size: 12px; font-weight: 600; padding: 0 8px; }}
+QPushButton#proofreadMini:hover {{ background: {fill_hover}; color: {t.text}; }}
+QPushButton#proofreadEye {{ background: transparent; border: 0; border-radius: 9px; }}
+QPushButton#proofreadEye:hover {{ background: {fill_hover}; }}
+QPushButton#proofreadEye:!checked {{ background: {warn_fill}; }}
+QPushButton#proofreadFilter {{ background: transparent; color: {t.text_secondary}; border: 0; border-radius: 9px;
+    font-size: 13px; font-weight: 600; padding: 0 12px; }}
+QPushButton#proofreadFilter:hover {{ color: {t.text}; background: {fill_hover}; }}
+QPushButton#proofreadFilter:checked {{ background: {t.accent}; color: {t.text_on_accent}; }}
+QPushButton#proofreadPrimary {{ background: {t.accent}; color: {t.text_on_accent}; border: 0; border-radius: 11px;
+    font-size: 15px; font-weight: 700; padding: 0 22px; }}
 QPushButton#proofreadPrimary:hover {{ background: {t.accent_hover}; }}
-QPushButton#proofreadPrimary:disabled, QPushButton#proofreadAccent:disabled, QPushButton#proofreadSecondary:disabled {{
-    background: {t.panel}; color: {t.disabled}; border-color: {t.border}; }}
-QLabel#proofreadHint {{ background: {blend_hex(t.surface, t.info, 0.10)}; color: {t.text};
-    border: 1px solid {blend_hex(t.surface, t.info, 0.35)}; border-radius: 8px; font-size: 15px; padding: 8px 12px; }}
-QFrame#proofreadConflicts {{ background: {blend_hex(t.surface, t.warning, 0.08)};
-    border: 1px solid {blend_hex(t.surface, t.warning, 0.40)}; border-radius: 10px; }}
-QPushButton#proofreadConflictHeader {{ background: transparent; border: 0; color: {legible(t.warning, t.surface, t)}; font-size: 16px;
+QPushButton#proofreadPrimary:disabled, QPushButton#proofreadAccent:disabled, QPushButton#proofreadSecondary:disabled,
+QPushButton#proofreadBarButton:disabled, QPushButton#proofreadTint:disabled, QPushButton#proofreadContent:disabled,
+QPushButton#proofreadGhost:disabled, QPushButton#proofreadMini:disabled {{ background: {fill}; color: {t.disabled}; }}
+QLabel#proofreadHint {{ background: {info_fill}; color: {t.text}; border: 0; border-radius: 12px; font-size: 14px;
+    padding: 8px 12px; }}
+QFrame#proofreadScope {{ background: {fill}; border: 0; border-radius: 12px; }}
+QLabel#proofreadScopeText {{ color: {t.text_secondary}; font-size: 13px; background: transparent; }}
+QPushButton#proofreadScopeUseHome {{ background: {chip}; color: {t.accent_text}; border: 0; border-radius: 9px;
+    font-size: 13px; font-weight: 700; padding: 4px 12px; }}
+QPushButton#proofreadScopeUseHome:hover {{ background: {chip_hover}; }}
+QFrame#proofreadConflicts {{ background: {blend_hex(t.surface, t.warning, 0.10)}; border: 0; border-radius: 12px; }}
+QPushButton#proofreadConflictHeader {{ background: transparent; border: 0; color: {legible(t.warning, t.surface, t)}; font-size: 15px;
     font-weight: 700; text-align: left; padding: 4px 2px; }}
 QPushButton#proofreadConflictHeader[resolved="true"] {{ color: {t.text_secondary}; }}
 QPushButton#proofreadConflictHeader:hover {{ color: {t.text}; }}
-QLabel#proofreadConflictExplain {{ color: {t.text_secondary}; font-size: 15px; background: transparent; padding-top: 5px; }}
+QLabel#proofreadConflictExplain {{ color: {t.text_secondary}; font-size: 14px; background: transparent; padding-top: 5px; }}
 QScrollArea#proofreadConflictScroll, QWidget#proofreadConflictBody {{ background: transparent; border: 0; }}
-QFrame#proofreadConflictRow {{ background: {t.surface}; border: 1px solid {t.border}; border-radius: 8px; }}
-QLabel#proofreadConflictTitle {{ color: {t.text}; font-size: 16px; font-weight: 700; background: transparent; }}
-QLabel#proofreadConflictValue {{ color: {t.text}; font-size: 16px; font-weight: 700; background: transparent; }}
-QPushButton#proofreadConflictChoice {{ background: {t.surface}; color: {t.text_secondary}; border: 1px solid {t.border};
-    border-radius: 7px; font-size: 14px; padding: 4px 12px; min-height: 26px; }}
-QPushButton#proofreadConflictChoice:hover {{ border-color: {t.accent}; color: {t.text}; }}
-QPushButton#proofreadConflictChoice:checked {{ background: {blend_hex(t.surface, t.accent, 0.16)}; color: {t.accent_text};
-    border-color: {t.accent}; font-weight: 700; }}
-QMenu#proofreadMenu {{ background: {t.surface_elevated}; color: {t.text}; border: 1px solid {t.border_strong};
-    border-radius: 8px; padding: 6px; font-size: 15px; }}
-QMenu#proofreadMenu::item {{ padding: 7px 18px; border-radius: 6px; }}
-QMenu#proofreadMenu::item:selected {{ background: {t.selected}; color: {t.text}; }}
+QFrame#proofreadConflictRow {{ background: {t.surface}; border: 0; border-radius: 10px; }}
+QLabel#proofreadConflictTitle {{ color: {t.text}; font-size: 15px; font-weight: 700; background: transparent; }}
+QLabel#proofreadConflictValue {{ color: {t.text}; font-size: 15px; font-weight: 700; background: transparent; }}
+QPushButton#proofreadConflictChoice {{ background: {fill}; color: {t.text_secondary}; border: 0;
+    border-radius: 9px; font-size: 13px; padding: 4px 12px; min-height: 26px; }}
+QPushButton#proofreadConflictChoice:hover {{ background: {fill_hover}; color: {t.text}; }}
+QPushButton#proofreadConflictChoice:checked {{ background: {chip}; color: {t.accent_text}; font-weight: 700; }}
+QMenu#proofreadMenu {{ background: {t.surface_elevated}; color: {t.text}; border: 1px solid {t.border};
+    border-radius: 10px; padding: 6px; font-size: 14px; }}
+QMenu#proofreadMenu::item {{ padding: 7px 18px; border-radius: 7px; }}
+QMenu#proofreadMenu::item:selected {{ background: {chip}; color: {t.text}; }}
 QMenu#proofreadMenu::item:disabled {{ color: {t.disabled}; }}
 QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4px 8px; }}
 """)
         self._term_colors = colors
+        self._sync_speaker_rows()
         self.list.update()
 
     def _fit_left_panel(self):
         from ..app.ui_zoom import zoom_factor
-        width = min(round(430 * zoom_factor()), max(300, int(self.width() * 0.34)))
+        width = min(round(316 * zoom_factor()), max(260, int(self.width() * 0.30)))
         if self.left_panel.width() != width or self.left_panel.minimumWidth() != width:
             self.left_panel.setFixedWidth(width)
+
+    def _fit_find_bar(self):
+        """A narrow bar keeps its room for the two fields: the key hint goes first."""
+        from ..app.ui_zoom import zoom_factor
+        self.replace_key.setVisible(self.replace_bar.width() >= round(900 * zoom_factor()))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -3422,6 +3729,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     def apply_ui_zoom(self, _factor):
         self._fit_left_panel()
+        self._fit_find_bar()
+        QTimer.singleShot(0, self._fit_library_list)  # after the zoomed sheet sets the row height
 
     # settings -----------------------------------------------------------
     @staticmethod
@@ -3458,10 +3767,12 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self._standalone = _StandalonePage(live)
         self._bind_stack(getattr(studio_page.session, "undo_stack", None) if studio_page is not None
                          else (self._standalone.session.undo_stack if self._standalone is not None else None))
-        self.file_label.setText(Path(getattr(getattr(live, "media", None), "path", "") or self._project_path).name)
+        name = Path(getattr(getattr(live, "media", None), "path", "") or self._project_path).name
+        self.file_label.setText(name + tr(" · {count} 条字幕", count=len(getattr(live, "cues", ()) or ())))
         self.hint_label.setText(str(hint or ""))
         self.hint_label.setVisible(bool(hint))
         self._conflict_choices = self._load_choices(live)
+        self._hidden_speakers = self._load_hidden_speakers(live)
         inherited, origin = inherited_library_ids(live) if live is not None else ((), "")
         self._inherit_origin = origin
         self._fill_libraries(live, keep=inherited)
@@ -3546,8 +3857,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         can_redo = bool(stack is not None and stack.canRedo())
         self.undo_button.setEnabled(can_undo)
         self.redo_button.setEnabled(can_redo)
-        self.undo_button.setToolTip(tr("撤销：{what}", what=stack.undoText()) if can_undo else "")
-        self.redo_button.setToolTip(tr("重做：{what}", what=stack.redoText()) if can_redo else "")
+        self.undo_button.setToolTip(tr("撤销：{what}", what=stack.undoText()) if can_undo else tr("撤销（Ctrl+Z）"))
+        self.redo_button.setToolTip(tr("重做：{what}", what=stack.redoText()) if can_redo else tr("重做（Ctrl+Y）"))
 
     def _studio_page(self):
         studio = existing_page(self._window, "studio")
@@ -3603,10 +3914,12 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                                  start_ms=cue.start_ms, end_ms=cue.end_ms, base=cue.text, origin=cue.text,
                                  speaker=(_speaker_name(project, cue.speaker_id),
                                           _speaker_color(project, cue.speaker_id).name()),
+                                 speaker_id=str(cue.speaker_id or ""),
                                  issues=[], applied=False, remembered=None))
         self._rows = rows
         self._by_id = {row["cue_id"]: row for row in rows}
         self.list.set_rows(self._rows)
+        self._fill_speakers()
         if project is not None and start_checks:
             self._start_stutter(project)
 
@@ -3766,8 +4079,11 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._excluded = set()
         self._sticky = ("", set())
         self._delete_confirm = None
-        if self.replace_bar.isVisible():
-            self._count_timer.start()
+        self.list.find = dict(self.list.find, current=None)
+        self._count_timer.start()
+
+    def _speaker_hidden(self, row):
+        return row.get("speaker_id", "") in self._hidden_speakers
 
     def _apply_filter(self, *_args):
         self._filter_timer.stop()
@@ -3777,12 +4093,17 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         needle = raw.casefold()
         sticky_needle, sticky = getattr(self, "_sticky", ("", set()))
         visible, counts = [], dict(all=0, suggested=0, pending=0, changed=0)
+        # Captions of hidden speakers that would be listed leave a band where
+        # they are (2026-10-23): slot -> dict(count, names, speakers).
+        gaps = {}
         for index, row in enumerate(self._rows):
             suggested, pending, changed = self._row_state(row)
-            counts["all"] += 1
-            counts["suggested"] += suggested
-            counts["pending"] += pending
-            counts["changed"] += changed
+            hidden = self._speaker_hidden(row)
+            if not hidden:
+                counts["all"] += 1
+                counts["suggested"] += suggested
+                counts["pending"] += pending
+                counts["changed"] += changed
             if key == "suggested" and not suggested or key == "pending" and not pending or key == "changed" and not changed:
                 continue
             if needle and needle not in (row["base"] + " " + row["origin"] + " " + " ".join(
@@ -3791,21 +4112,32 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 # Captions just replaced stay listed (changed) until the
                 # search changes: the result does not vanish under the user.
                 continue
+            if hidden:
+                gap = gaps.setdefault(len(visible), dict(count=0, names=[], speakers=[], search=bool(needle)))
+                gap["count"] += 1
+                if row.get("speaker_id", "") not in gap["speakers"]:
+                    gap["speakers"].append(row.get("speaker_id", ""))
+                    gap["names"].append(row["speaker"][0] or tr("未标说话人"))
+                continue
             visible.append(index)
         for filter_key, label in FILTERS:
             self.filter_buttons[filter_key].setText(tr("{label} {count} 条", label=tr(label), count=counts[filter_key]))
         empty = {"all": tr("这个工程没有字幕"),
                  "suggested": tr("目前没有修改建议") + ("" if self._selected_ids() else tr("（尚未选择词库）")),
                  "pending": tr("没有需要你确认的地方"), "changed": tr("本页还没有修改")}
-        self.list.empty_text = tr("没有符合搜索条件的字幕") if needle else empty.get(key, "")
+        if gaps and not visible:
+            self.list.empty_text = tr("这里的字幕都属于已隐藏的说话人；点上面的「显示」或左侧说话人旁的眼睛重新显示")
+        else:
+            self.list.empty_text = tr("没有符合搜索条件的字幕") if needle else empty.get(key, "")
         anchor = self.list._top_anchor() if self.list.visible else None
-        self.list.find = dict(needle=raw, replace=self.replace_input.text() if self.replace_bar.isVisible() and raw else None,
+        self.list.find = dict(needle=raw, replace=self._replace_preview(), current=self.list.find.get("current"),
                               excluded=frozenset(getattr(self, "_excluded", ())))
-        self.list.set_visible(visible)
+        self.list.set_visible(visible, gaps)
         self.list._restore_anchor(anchor)
+        self._sync_hits()
+        self._sync_hidden_note()
         self._selection_changed()
-        if self.replace_bar.isVisible():
-            self._refresh_replace_count()
+        self._refresh_replace_count()
 
     def checked_hits(self):
         stutter = self.stutter_toggle.isChecked()
@@ -4269,15 +4601,19 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         "list" is every caption the filter and search list (also those not
         scrolled to yet), "project" every caption. Hits are found in the
         caption text itself (never in times, speakers or labels), literally,
-        and replaced right to left; excluded hits stay as they are."""
+        and replaced right to left; excluded hits stay as they are.
+        ``hidden``: hits in captions of hidden speakers (part of ``outside``
+        for the list, replaced with the whole project)."""
         needle, new = self._needle(), self.replace_input.text()
         scope = scope or self.replace_scope.currentData() or "list"
         listed = {self._rows[index]["cue_id"] for index in self.list.visible}
-        values, hits, captions, excluded, outside = {}, 0, 0, 0, 0
+        values, hits, captions, excluded, outside, hidden = {}, 0, 0, 0, 0, 0
         for row in self._rows:
-            spans = find_spans(row["base"], needle)
+            spans = find_spans(row["base"], needle) if needle else []
             if not spans:
                 continue
+            if self._speaker_hidden(row):
+                hidden += len(spans)
             if scope == "list" and row["cue_id"] not in listed:
                 outside += len(spans)
                 continue
@@ -4287,12 +4623,12 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 values[row["cue_id"]] = replace_spans(row["base"], keep, new)
                 hits += len(keep)
                 captions += 1
-        return dict(values=values, hits=hits, captions=captions, excluded=excluded, outside=outside,
+        return dict(values=values, hits=hits, captions=captions, excluded=excluded, outside=outside, hidden=hidden,
                     needle=needle, new=new, scope=scope)
 
     def start_batch_replace(self, old, new=None):
-        """批量替换相同文字: ``old`` becomes the search, the replace box opens
-        with the cursor in 新写法 — the old wording is never typed again."""
+        """批量替换相同文字: ``old`` becomes the search and the cursor goes to
+        替换为 — the old wording is never typed again."""
         old = str(old or "")
         if not old:
             return
@@ -4305,13 +4641,11 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         self._excluded = set()
         self._sticky = ("", set())
         self._delete_confirm = None
+        self.list.find = dict(self.list.find, current=None)
         self.replace_input.blockSignals(True)
         self.replace_input.setText("" if new is None else str(new))
         self.replace_input.blockSignals(False)
-        if self.replace_toggle.isChecked():
-            self._show_replace_bar(True)
-        else:
-            self.replace_toggle.setChecked(True)
+        self._sync_replace_key()
         self._apply_filter()
         if anchor:
             self.list.ensure_visible(anchor)
@@ -4321,7 +4655,7 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         QTimer.singleShot(0, self._focus_replace_input)
 
     def _focus_replace_input(self):
-        if self.replace_bar.isVisible():
+        if self.replace_input.isVisible():
             self.replace_input.setFocus(Qt.FocusReason.OtherFocusReason)
             self.replace_input.selectAll()
 
@@ -4403,14 +4737,14 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     def _open_replace(self):
         """Ctrl+H: the selected characters (in the list or the inline editor)
-        become the search; otherwise the current search is kept."""
+        become the search; otherwise the cursor goes to 替换为 (the bar is
+        always there since 2026-10-23)."""
         selection = self.list.selection()
         chosen = selection[3] if selection is not None else (
             self.list.editor.selectedText() if self.list.editing() else "")
         if chosen:
             self.start_batch_replace(chosen)
             return
-        self.replace_toggle.setChecked(True)
         if not self.search.text():
             self.search.setFocus()
         else:
@@ -4418,25 +4752,25 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             self.replace_input.selectAll()
         self._refresh_replace_count()
 
-    def _show_replace_bar(self, shown):
-        self.replace_bar.setVisible(bool(shown))
-        self._delete_confirm = None
-        if not shown:
-            self._excluded = set()
-        # The list shows each hit's replacement while the bar is open.
-        self.list.find = dict(needle=self._needle(), excluded=frozenset(self._excluded),
-                              replace=self.replace_input.text() if shown and self._needle() else None)
-        self.list._layout_rows()
-        if shown:
-            self._refresh_replace_count()
-        else:
-            self.list.setFocus()
+    def _replace_preview(self):
+        """What each hit shows under it: the replacement, 删去 once an empty
+        replacement was confirmed with Enter, or None (plain search)."""
+        if not self._needle():
+            return None
+        new = self.replace_input.text()
+        return new if new or self._delete_confirm is not None else None
+
+    def _sync_replace_key(self):
+        has_text = bool(self.replace_input.text())
+        self.replace_key.setText(tr("Enter 全部替换") if has_text else "Ctrl+H")
 
     def _replace_input_changed(self):
         self._delete_confirm = None
         self._count_timer.start()
-        if self.replace_bar.isVisible() and self._needle():
-            self.list.find = dict(self.list.find, replace=self.replace_input.text())
+        self._sync_replace_key()
+        replace = self._replace_preview()
+        if self.list.find.get("replace") != replace:
+            self.list.find = dict(self.list.find, replace=replace)
             self._preview_timer().start()
 
     def _preview_timer(self):
@@ -4448,49 +4782,160 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             timer.timeout.connect(self.list._layout_rows)
         return timer
 
+    # hits: 第 N / M 处, 上一处 / 下一处, 替换 one ------------------------------
+    def _listed_hits(self):
+        needle = self._needle()
+        if not needle:
+            return []
+        return [(self._rows[index]["cue_id"], start, end) for index in self.list.visible
+                for start, end in find_spans(self._rows[index]["base"], needle)]
+
+    def _sync_hits(self):
+        """Hits after the list changed; the current one stays when it still exists."""
+        self._hits = self._listed_hits()
+        current = self.list.find.get("current")
+        self._set_current_hit(current if any((c, s) == current for c, s, _e in self._hits) else None, scroll=False)
+
+    def _set_current_hit(self, key, scroll=True):
+        self.list.find = dict(self.list.find, current=key)
+        keys = [(cue_id, start) for cue_id, start, _end in self._hits]
+        if not self._needle():
+            text = ""
+        elif not keys:
+            text = tr("无结果")
+        elif key in keys:
+            text = tr("第 {index} / {total} 处", index=keys.index(key) + 1, total=len(keys))
+        else:
+            text = tr("{total} 处", total=len(keys))
+        self.hit_label.setText(text)
+        self.hit_prev.setEnabled(bool(keys))
+        self.hit_next.setEnabled(bool(keys))
+        if key is not None and scroll:
+            self.list.current = key[0]
+            self.list.ensure_visible(key[0])
+        self.list.update()
+        self._sync_replace_buttons()
+
+    def _step_hit(self, delta):
+        keys = [(cue_id, start) for cue_id, start, _end in self._hits]
+        if not keys:
+            return
+        current = self.list.find.get("current")
+        if current in keys:
+            index = (keys.index(current) + delta) % len(keys)
+        else:
+            # From the caption in focus, else from the top (or the bottom).
+            slot = self.list.slot_of(self.list.current) if self.list.current else -1
+            slots = [self.list.slot_of(cue_id) for cue_id, _start in keys]
+            if slot >= 0 and delta > 0:
+                index = next((i for i, value in enumerate(slots) if value >= slot), 0)
+            elif slot >= 0:
+                index = next((i for i in range(len(slots) - 1, -1, -1) if slots[i] <= slot), len(keys) - 1)
+            else:
+                index = 0 if delta > 0 else len(keys) - 1
+        self._set_current_hit(keys[index])
+
+    def _sync_replace_buttons(self):
+        new, old = self.replace_input.text(), self._needle()
+        self.replace_one.setEnabled(bool(old and new and old != new and self._hits))
+
+    def _replace_current(self):
+        """替换: the framed hit only, then on to the next one (one undo step each).
+        The first press with no framed hit only shows which one it would be."""
+        old, new = self._needle(), self.replace_input.text()
+        if not old or not new or old == new or not self._hits:
+            self._refresh_replace_count()
+            return
+        keys = [(cue_id, start) for cue_id, start, _end in self._hits]
+        current = self.list.find.get("current")
+        if current not in keys or current in self._excluded:
+            following = keys[keys.index(current) + 1:] + keys if current in keys else keys
+            target = next((key for key in following if key not in self._excluded), None)
+            if target is not None:
+                self._set_current_hit(target)
+            return
+        cue_id, start = current
+        row = self._by_id.get(cue_id)
+        if row is None:
+            return
+        end = next(e for c, s, e in self._hits if (c, s) == current)
+        position = (self.list.slot_of(cue_id), start + len(new))
+        self.list.commit_pending_edit()
+        sticky_needle, sticky = self._sticky
+        self._sticky = (old, (set(sticky) if sticky_needle == old else set()) | {cue_id})
+        label = tr("替换「{old}」→「{new}」（{hits} 处）", old=old, new=new, hits=1)
+        if not self._write({cue_id: row["base"][:start] + new + row["base"][end:]}, label=label, manual=True,
+                           operation="find_replace"):
+            self._sticky = (sticky_needle, sticky)
+            return
+        self._apply_filter()
+        following = [(c, s) for c, s, _e in self._hits if (self.list.slot_of(c), s) >= position]
+        target = next((key for key in following + [(c, s) for c, s, _e in self._hits] if key not in self._excluded), None)
+        self._set_current_hit(target)
+        self._set_status(tr("已替换 {number} 的 1 处 · {saved} · 可撤销（Ctrl+Z）", number=row["number"],
+                            saved=self._saved_note()))
+
     def _refresh_replace_count(self):
         self._count_timer.stop()
         self.replace_count.setProperty("warn", False)
+        old, new = self._needle(), self.replace_input.text()
+        if not old:
+            self.replace_go.setEnabled(False)
+            self.replace_go.setText(tr("全部替换"))
+            self.replace_count.setText("")
+            self.replace_count.hide()
+            self._sync_replace_buttons()
+            return
         plan = self.replace_plan()
-        old, new = plan["needle"], plan["new"]
         listed_all = (self.filter_group.checkedButton() is self.filter_buttons["all"]
                       and not plan["outside"])
         self.replace_go.setEnabled(bool(plan["hits"]) and old != new)
-        if not old:
-            text = tr("先在上面的查找框输入要替换的文字，或在字幕里选字后右键「批量替换相同文字…」")
-        elif old == new:
+        self.replace_go.setText(tr("全部替换 {hits} 处", hits=plan["hits"]) if plan["hits"] and new and old != new
+                                else tr("全部替换"))
+        hidden = plan["hidden"] if plan["scope"] == "list" else 0
+        elsewhere = plan["outside"] - hidden
+        if old == new:
             text = tr("查找和替换相同，不会修改")
         elif not plan["hits"]:
             text = tr("没有要替换的「{old}」", old=old)
             if plan["excluded"]:
                 text += tr("（{count} 处已排除）", count=plan["excluded"])
-            if plan["outside"]:
-                text += tr(" · 当前列表以外还有 {count} 处：范围选「整个工程」才会替换", count=plan["outside"])
+            if hidden:
+                text += tr(" · 隐藏的说话人里还有 {count} 处：显示说话人或范围选「整个工程」才会替换", count=hidden)
+            if elsewhere:
+                text += tr(" · 当前列表以外还有 {count} 处：范围选「整个工程」才会替换", count=elsewhere)
         elif self._delete_confirm == (old, new, plan["scope"]):
             text = tr("替换为空会删去 {hits} 处「{old}」（{captions} 条字幕）；再按一次 Enter 确认删除",
                       hits=plan["hits"], old=old, captions=plan["captions"])
             self.replace_count.setProperty("warn", True)
+        elif not new:
+            text = tr("找到 {hits} 处（{captions} 条字幕）· 在「替换为」输入新写法即可替换", hits=plan["hits"],
+                      captions=plan["captions"])
+            if hidden:
+                text += tr(" · 隐藏的说话人里还有 {count} 处", count=hidden)
         else:
             text = tr("将替换 {hits} 处（{captions} 条字幕）", hits=plan["hits"], captions=plan["captions"])
             if plan["scope"] == "project" or listed_all:
                 text += tr("，即全部字幕里的「{old}」", old=old) if not plan["excluded"] else ""
+                if plan["scope"] == "project" and plan["hidden"]:
+                    text += tr("（含隐藏的说话人 {count} 处）", count=plan["hidden"])
             else:
                 text += tr("，只在当前列表里")
             if plan["excluded"]:
                 text += tr(" · 已排除 {count} 处", count=plan["excluded"])
-            if plan["outside"]:
-                text += tr(" · 列表以外的 {count} 处不改", count=plan["outside"])
-            if not new:
-                text += tr(" · 替换框为空：会删去这些文字")
-                self.replace_count.setProperty("warn", True)
-            else:
-                text += tr(" · 点命中可排除 · Enter 替换")
+            if hidden:
+                text += tr(" · 隐藏的说话人里 {count} 处不改", count=hidden)
+            if elsewhere:
+                text += tr(" · 列表以外的 {count} 处不改", count=elsewhere)
+            text += tr(" · 点命中可排除 · Enter 替换")
         self.replace_count.setText(text)
+        self.replace_count.show()
         self.replace_count.style().unpolish(self.replace_count)
         self.replace_count.style().polish(self.replace_count)
+        self._sync_replace_buttons()
 
     def _replace_enter(self):
-        """Enter in the replace box (or 替换): replace the planned hits, one step."""
+        """Enter in the replace box (or 全部替换): replace the planned hits, one step."""
         plan = self.replace_plan()
         old, new = plan["needle"], plan["new"]
         if not old:
@@ -4502,6 +4947,9 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             return
         if not new and self._delete_confirm != (old, new, plan["scope"]):
             self._delete_confirm = (old, new, plan["scope"])
+            # Each hit now shows 删去 under it.
+            self.list.find = dict(self.list.find, replace=self._replace_preview())
+            self.list._layout_rows()
             self._refresh_replace_count()
             return
         self._delete_confirm = None
@@ -4526,11 +4974,21 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
 
     def eventFilter(self, watched, event):
         from PySide6.QtCore import QEvent
+        if watched is getattr(self, "replace_bar", None):
+            if event.type() == QEvent.Type.Resize and hasattr(self, "replace_key"):
+                self._fit_find_bar()
+            return super().eventFilter(watched, event)
         if watched is getattr(self, "replace_input", None) or watched is getattr(self, "search", None):
-            if not hasattr(self, "replace_bar"):
+            if not hasattr(self, "replace_count"):
                 return super().eventFilter(watched, event)
             kind = event.type()
-            if kind == QEvent.Type.InputMethod:
+            if kind in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+                # The field frame carries the focus ring of the borderless edit.
+                field = self.find_field if watched is self.search else self.replace_field
+                field.setProperty("focused", kind == QEvent.Type.FocusIn)
+                field.style().unpolish(field)
+                field.style().polish(field)
+            elif kind == QEvent.Type.InputMethod:
                 # Enter while an input method composes (or the same Enter that
                 # committed the composition) must never replace anything.
                 self._ime_composing = bool(event.preeditString())
@@ -4539,8 +4997,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             elif kind == QEvent.Type.KeyPress:
                 key = event.key()
                 if key == Qt.Key.Key_Escape:
-                    if self.replace_bar.isVisible():
-                        self.replace_toggle.setChecked(False)
+                    if watched is self.replace_input and self.replace_input.text():
+                        self.replace_input.clear()  # back to a plain search
                     elif watched is self.search and self.search.text():
                         self.search.clear()
                     else:
@@ -4552,8 +5010,11 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                     if watched is self.replace_input:
                         self._replace_enter()
                         return True
-                    if watched is self.search and self.replace_bar.isVisible():
-                        self.replace_input.setFocus()
+                    if watched is self.search:
+                        # Enter / Shift+Enter: the next / previous hit.
+                        if self._filter_timer.isActive():
+                            self._apply_filter()
+                        self._step_hit(-1 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1)
                         return True
                     return False
         return super().eventFilter(watched, event)
@@ -4651,6 +5112,158 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 if key in rows and any(value[1] == option["target"] and value[0] in option["library_ids"]
                                        for option in rows[key]["options"])}
 
+    # speakers (2026-10-23, user: narration could not be screened out) ------
+    def _speakers(self):
+        """[(speaker id, name, colour, captions)] in order of first appearance."""
+        found = {}
+        for row in self._rows:
+            key = row.get("speaker_id", "")
+            if key not in found:
+                name, color = row["speaker"]
+                found[key] = [key, name or tr("未标说话人"), color, 0]
+            found[key][3] += 1
+        return [tuple(entry) for entry in found.values()]
+
+    def _speakers_key(self, project):
+        identity = str(getattr(project, "project_id", "") or self._project_path)
+        return "glossary_proofread/hidden_speakers/" + re.sub(r"[^0-9A-Za-z_-]", "_", identity)
+
+    def _load_hidden_speakers(self, project):
+        from PySide6.QtCore import QSettings
+        try:
+            raw = json.loads(str(QSettings("2ByteASR", "2ByteASR").value(self._speakers_key(project), "[]") or "[]"))
+        except (TypeError, ValueError):
+            return set()
+        return {str(key) for key in raw} if isinstance(raw, list) else set()
+
+    def _save_hidden_speakers(self):
+        from PySide6.QtCore import QSettings
+        live, _studio = self._live_project()
+        QSettings("2ByteASR", "2ByteASR").setValue(self._speakers_key(live),
+                                                    json.dumps(sorted(self._hidden_speakers), ensure_ascii=False))
+
+    def _fill_speakers(self):
+        """One row per speaker: colour, name, captions, 只看 and an eye."""
+        from ..design.themed_icons import install_themed_icon
+        while self.speaker_rows.count():
+            item = self.speaker_rows.takeAt(0)
+            if item.widget() is not None:
+                item.widget().hide()  # gone now, not only when the deferred delete runs
+                item.widget().deleteLater()
+        self._speaker_widgets = {}
+        speakers = self._speakers()
+        self._hidden_speakers &= {key for key, *_rest in speakers}
+        for key, name, color, count in speakers:
+            row = QFrame()
+            row.setObjectName("proofreadSpeakerRow")
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(8, 2, 2, 2)
+            layout.setSpacing(8)
+            dot = _SpeakerDot(color)
+            layout.addWidget(dot)
+            label = QLabel(name)
+            label.setObjectName("proofreadSpeakerName")
+            layout.addWidget(label)
+            if key and key != name:
+                identity = QLabel(key)
+                identity.setObjectName("proofreadSpeakerId")
+                identity.setFont(QFont([p.strip().strip("'\"") for p in MONO_FONT_STACK.split(",")]))
+                layout.addWidget(identity)
+            layout.addStretch(1)
+            number = QLabel(tr("{count} 条", count=count))
+            number.setObjectName("proofreadSpeakerCount")
+            layout.addWidget(number)
+            solo = QPushButton(tr("只看"))
+            solo.setObjectName("proofreadMini")
+            solo.setFixedHeight(28)
+            solo.setToolTip(tr("只看「{name}」的字幕；再点一次显示全部", name=name))
+            solo.clicked.connect(lambda _=False, k=key: self._solo_speaker(k))
+            layout.addWidget(solo)
+            eye = QPushButton()
+            eye.setObjectName("proofreadEye")
+            eye.setCheckable(True)
+            eye.setFixedSize(30, 30)
+            eye.setChecked(key not in self._hidden_speakers)
+            install_themed_icon(eye, "fa5s.eye", "secondary")
+            eye.toggled.connect(lambda shown, k=key: self._set_speaker_shown(k, shown))
+            layout.addWidget(eye)
+            self.speaker_rows.addWidget(row)
+            self._speaker_widgets[key] = dict(row=row, dot=dot, label=label, eye=eye, name=name)
+        self.speaker_card.setVisible(bool(speakers))
+        from ..app.ui_zoom import apply_to
+        apply_to(self.speaker_card)
+        self._sync_speaker_rows()
+
+    def _sync_speaker_rows(self):
+        from ..design.themed_icons import install_themed_icon
+        for key, widgets in getattr(self, "_speaker_widgets", {}).items():
+            hidden = key in self._hidden_speakers
+            eye = widgets["eye"]
+            eye.blockSignals(True)
+            eye.setChecked(not hidden)
+            eye.blockSignals(False)
+            install_themed_icon(eye, "fa5s.eye-slash" if hidden else "fa5s.eye", "warning" if hidden else "secondary")
+            eye.setToolTip(tr("显示「{name}」的字幕", name=widgets["name"]) if hidden
+                           else tr("隐藏「{name}」的字幕（例如旁白）", name=widgets["name"]))
+            eye.setAccessibleName(eye.toolTip())
+            widgets["dot"].hollow = hidden
+            widgets["dot"].update()
+            widgets["label"].setProperty("hiddenSpeaker", hidden)
+            widgets["label"].style().unpolish(widgets["label"])
+            widgets["label"].style().polish(widgets["label"])
+        count = len(self._hidden_speakers)
+        self.speaker_badge.setText(tr("隐藏 {count} 位", count=count))
+        self.speaker_badge.setVisible(bool(count))
+
+    def _sync_hidden_note(self):
+        hidden = [row for row in self._rows if self._speaker_hidden(row)]
+        names = [widgets["name"] for key, widgets in getattr(self, "_speaker_widgets", {}).items()
+                 if key in self._hidden_speakers]
+        self.hidden_note.setText(tr("已隐藏 {names} {count} 条", names="、".join(names), count=len(hidden)))
+        self.hidden_note.setVisible(bool(hidden))
+        self.show_speakers_button.setVisible(bool(hidden))
+
+    def _speakers_changed(self, message):
+        self._save_hidden_speakers()
+        self._sync_speaker_rows()
+        self._apply_filter()
+        self._set_status(message)
+
+    def _set_speaker_shown(self, key, shown):
+        widgets = self._speaker_widgets.get(key, {})
+        name = widgets.get("name", key)
+        if shown:
+            self._hidden_speakers.discard(key)
+            message = tr("已显示「{name}」的字幕", name=name)
+        else:
+            self._hidden_speakers.add(key)
+            count = sum(1 for row in self._rows if row.get("speaker_id", "") == key)
+            message = tr("已隐藏「{name}」的 {count} 条字幕：不列出；采用全部、AI 校对和「当前列表」的替换都会跳过",
+                         name=name, count=count)
+        self._speakers_changed(message)
+
+    def _solo_speaker(self, key):
+        others = {other for other, *_rest in self._speakers() if other != key}
+        name = self._speaker_widgets.get(key, {}).get("name", key)
+        if self._hidden_speakers == others:
+            self._hidden_speakers = set()
+            message = tr("已显示全部说话人")
+        else:
+            self._hidden_speakers = others
+            message = tr("只看「{name}」的字幕", name=name)
+        self._speakers_changed(message)
+
+    def _reveal_speakers(self, keys=None):
+        """The band's 显示 (its speakers) or 显示全部 (None)."""
+        if keys is None:
+            self._hidden_speakers = set()
+        else:
+            self._hidden_speakers -= set(keys)
+        self._speakers_changed(tr("已显示全部说话人") if not self._hidden_speakers else tr("已显示这些说话人的字幕"))
+
+    def _shown_cue_ids(self):
+        return [row["cue_id"] for row in self._rows if not self._speaker_hidden(row)]
+
     # libraries --------------------------------------------------------
     def _fill_libraries(self, project, keep=None, target=None):
         import subtitle_core as legacy
@@ -4666,6 +5279,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             item.setCheckState(Qt.CheckState.Checked if str(row["id"]) in chosen else Qt.CheckState.Unchecked)
             self.library_list.addItem(item)
         self.library_list.blockSignals(False)
+        self._fit_library_list()
+        QTimer.singleShot(0, self._fit_library_list)  # again once the rows are polished (first opening)
         missing = [identity for identity in chosen if identity not in self._catalog]
         self._missing_libraries = missing
         self._sync_target(prefer=target)
@@ -4719,7 +5334,9 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
         except (OSError, ValueError) as exc:
             self._snapshot = None
             self._terms = self.list.terms = TermIndex()
-            bind_text(self.library_summary, '词库读取失败：{reason}', reason=str(exc)[:160])
+            getattr(self.library_summary, "_i18n_bindings", {}).pop("text", None)  # not re-rendered later
+            self.library_summary.setText("")
+            self._set_library_note(tr('词库读取失败：{reason}', reason=str(exc)[:160]))
             self._fill_terms()
             return
         # Whole names (confirmed spellings and the libraries' skill, spirit,
@@ -4738,11 +5355,14 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             return
         summary = self._snapshot.summary()
         if not self._selected_ids():
-            bind_text(self.library_summary, '未选择词库：字幕照常可读、可听、可改；勾选后才会匹配专有名词')
+            bind_text(self.library_summary, '未选择词库')
+            bind_text(self.library_summary, '未选择词库：字幕照常可读、可听、可改；勾选后才会匹配专有名词',
+                      property='toolTip')
+            self._set_library_note(tr('未选择词库：字幕照常可读、可听、可改；勾选后才会匹配专有名词'))
             return
         live, _studio = self._live_project()
         recorded = recorded_revisions(live) if live is not None else {}
-        origin = ""
+        origin, changed = "", []
         if self._inherit_origin == "recognition" and set(self._selected_ids()) == set(recorded):
             changed = [library.name for library in self._snapshot.libraries
                        if recorded.get(library.id) and recorded[library.id] != library.revision]
@@ -4752,10 +5372,32 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
             origin = tr(" · 沿用本工程的词库")
         unresolved = len(self._conflict_rows) - len(self._active_choices())
         missing = getattr(self, "_missing_libraries", ())
+        bind_text(self.library_summary, '已选 {count} · {terms} 个规范词', count=len(self._selected_ids()),
+                  terms=summary["effective_terms"])
         bind_text(self.library_summary, '已选 {count} 个词库 · 有效 {terms} 个规范词{origin}{conflicts}{missing}',
                   count=len(self._selected_ids()), terms=summary["effective_terms"], origin=origin,
                   conflicts=tr(' · {count} 项词条冲突待处理（见右侧）', count=unresolved) if unresolved else '',
-                  missing=tr(' · 找不到词库：{names}', names='、'.join(missing)) if missing else '')
+                  missing=tr(' · 找不到词库：{names}', names='、'.join(missing)) if missing else '', property='toolTip')
+        notes = []
+        if changed:
+            notes.append(tr("识别后已更新：{names}", names="、".join(changed)))
+        if unresolved:
+            notes.append(tr("{count} 项词条冲突待处理（见右侧）", count=unresolved))
+        if missing:
+            notes.append(tr("找不到词库：{names}", names="、".join(missing)))
+        self._set_library_note(" · ".join(notes))
+
+    def _set_library_note(self, text):
+        self.library_note.setText(text)
+        self.library_note.setVisible(bool(text))
+
+    def _fit_library_list(self):
+        """Up to four whole rows, never a half-cut one (2026-10-23, user)."""
+        lst = self.library_list
+        rows = min(4, lst.count())
+        height = (sum(lst.sizeHintForRow(row) for row in range(rows)) if rows
+                  else lst.fontMetrics().height() + 12)
+        lst.setFixedHeight(height + 2 * lst.frameWidth())
 
     def _libraries_changed(self, *_args):
         self._sync_target()
@@ -4993,7 +5635,12 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                 from ..app.api_key_explainer import offer_api_key_help
                 offer_api_key_help(self)
                 return
-        self._run(True)
+        # Hidden speakers (narration…) are not sent to the paid model.
+        shown = self._shown_cue_ids() if self._hidden_speakers else None
+        if shown == []:
+            self._set_status(tr("说话人都已隐藏，没有要校对的字幕"))
+            return
+        self._run(True, shown)
 
     def _run(self, use_ai, cue_ids=None):
         """Match (or AI-review) all captions, or only ``cue_ids``."""
@@ -5189,6 +5836,8 @@ QMenu#proofreadMenu::separator {{ height: 1px; background: {t.border}; margin: 4
                             reason="；".join(errors)[:160])
             else:
                 status = tr("AI 校对完成：{ok} 条已核对 · {fallback} 条未完成（保留原文）", ok=ok, fallback=fallback)
+            if scope is not None and self._hidden_speakers:
+                status += tr(" · 隐藏的说话人没有送去校对")
             self._ai_status = status
         elif scope is not None:
             status = tr("已重新匹配改过的 {checked} 条字幕（本地，未使用 AI）", checked=receipt.get("checked_cues", 0))

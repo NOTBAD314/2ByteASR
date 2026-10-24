@@ -439,6 +439,9 @@ def _old_formal_text(revision):
     persist_sequence(detached)
     payload = asdict(detached)
     payload["studio_state"].pop("review_risks", None)
+    for track in payload["audio_tracks"]:
+        if track.get("stream_ordinal", -1) < 0:   # only stream-follower lanes carry it (audio_track_payload)
+            track.pop("stream_ordinal", None)
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

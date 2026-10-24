@@ -38,7 +38,7 @@ def image_bounds(image):
     return [box[0],box[1],box[2]-box[0],box[3]-box[1]] if box else None
 
 
-def measure_native(project, cue_id, width, height):
+def measure_native(project, cue_id, width, height, language=None):
     """Use the real ASS compiler and libass alpha raster, including font metrics."""
     from ..rendering.ass_compiler import compile_ass
     from ..rendering.advanced_renderer import _ffmpeg_filter_path
@@ -48,6 +48,12 @@ def measure_native(project, cue_id, width, height):
     install=detect_install_root()
     root=studio_data_root()/'cache/selection-geometry';root.mkdir(parents=True,exist_ok=True)
     project.cues=[c for c in project.cues if c.id==cue_id]
+    if language:
+        from ..caption_style.caption_layer_transform import displayed_layer
+        shown=displayed_layer(project,project.cues[0],language)
+        if shown is None:return dict(bounds=None,viewport=[width,height],renderer='libass')
+        project.cues=[shown]
+        project.studio_state=dict(project.studio_state,bilingual={'mode':'original'},bilingual_mode=False)
     cue=project.cues[0];cue.start_ms=0;cue.end_ms=1000
     with tempfile.TemporaryDirectory(dir=root) as folder:
         ass=Path(folder)/'selected.ass';ass.write_text(compile_ass(project),encoding='utf-8-sig')
@@ -68,6 +74,7 @@ class SelectionGeometryController(QObject):
         super().__init__(page)
         self.page=page;self.overlay=page.position_overlay
         self.key=None;self.pending=None;self.worker=None;self.measurements=0
+        self._last_data=None
         self.overlay._requires_measured_bounds=True
         self.completed.connect(self._accept)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(90)
@@ -79,7 +86,24 @@ class SelectionGeometryController(QObject):
         if self.overlay._dragging:
             return  # Freeze the measured handle geometry for this transaction.
         p=self.page;content=self.overlay._content_rect()
+        panel=getattr(p,'caption_transform_panel',None)
+        language=panel.language.currentData() if panel is not None else 'original'
         if not cue or p.selected_cue_id!=cue.id or not getattr(p.video,'_paused',True):return
+        scene=getattr(p,'_caption_scene',None)
+        if scene is not None and scene.active:
+            from ..caption_style.bilingual_layout import companion_id
+            target=companion_id(cue.id) if language=='translation' else cue.id
+            trace=scene.trace()
+            row=next((r for r in trace.get('cue_pixels',[]) if r['cue_id']==target),None)
+            if row and row.get('bounds'):
+                self.timer.stop()
+                self.key=(id(p.project),cue.id,row.get('snapshot_hash'),language)
+                self._accept(self.key,dict(bounds=row['bounds'],viewport=row['viewport'],renderer='published-caption-scene'))
+            elif self._last_data is not None and self.key and self.key[1]==cue.id and self.key[-1]==language:
+                self._accept(self.key,self._last_data)
+            else:
+                self.overlay.set_measured_bounds(None)
+            return
         web=getattr(p,'_web_live_worker',None) if recipe.get('webTheme') else None
         canvas=getattr(p,'advanced_cue_overlay',None)
         # Native text is temporarily promoted to the existing live canvas
@@ -89,22 +113,27 @@ class SelectionGeometryController(QObject):
         snap=getattr(canvas,'_snapshot',None)
         # The renderer may normalize newlines in its snapshot. Its visible
         # raster remains authoritative until the next snapshot is published.
-        if image is not None and (snap is None or snap.cue_id!=cue.id):image=None
+        if image is not None and (snap is None or snap.cue_id!=cue.id or language=='translation'):image=None
         signature=(id(p.project),cue.id,repr(cue),repr(p.project.styles),repr(recipe),
                    repr(getattr(p,'_live_transform_overrides',{})),repr(getattr(p,'_live_edit_text_overrides',{})),
-                   tuple(content.getRect()),p.video.devicePixelRatioF(),
+                   language,
                    id(web),getattr(web,'_configuration_generation',0),
                    getattr(getattr(web,'_time_provider',None),'discontinuity_generation',lambda:None)(),
                    image.cacheKey() if image is not None else None)
-        if signature==self.key:return
-        self.key=signature;self.pending=(cue.id,web,QImage(image) if image is not None else None)
+        if signature==self.key:
+            # Measurements are in renderer coordinates. A viewport resize only
+            # remaps these coordinates; it must not clear handles or run ffmpeg.
+            if self._last_data is not None:self._accept(self.key,self._last_data)
+            return
+        self.key=signature;self._last_data=None
+        self.pending=(cue.id,web,QImage(image) if image is not None else None,language)
         self.overlay.set_measured_bounds(None)
         self.timer.start()
 
     def _measure(self):
         p=self.page
         if not self.pending or not self.overlay.isVisible() or not getattr(p.video,'_paused',True):return
-        cue_id,web,image=self.pending;key=self.key
+        cue_id,web,image,language=self.pending;key=self.key
         if p.selected_cue_id!=cue_id:return
         self.measurements+=1
         if web:
@@ -118,10 +147,11 @@ class SelectionGeometryController(QObject):
             return
         project=p._ass_preview_snapshot(p.project)
         if not any(c.id==cue_id for c in project.cues):return
-        content=self.overlay._content_rect();dpr=p.video.devicePixelRatioF()
-        width=max(2,round(content.width()*dpr));height=max(2,round(content.height()*dpr))
+        # Stable project-space sampling is independent of panel size and DPI.
+        width=int(project.render_settings.get('play_res_x',1920))
+        height=int(project.render_settings.get('play_res_y',1080))
         def work():
-            try:data=measure_native(project,cue_id,width,height)
+            try:data=measure_native(project,cue_id,width,height,language)
             except Exception as exc:data=dict(error=str(exc),renderer="libass")
             try:self.completed.emit(key,data)
             except RuntimeError:pass  # The owning page may close during libass measurement.
@@ -134,6 +164,7 @@ class SelectionGeometryController(QObject):
         p=self.page
         if (key!=self.key or p.selected_cue_id!=key[1] or not getattr(p.video,'_paused',True)
                 or not self.overlay.isVisible()):return
+        self._last_data=data
         content=self.overlay._content_rect();box=data.get('bounds')
         if box:
             width,height=data['viewport'];x,y,w,h=box

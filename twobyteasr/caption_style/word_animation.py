@@ -92,7 +92,13 @@ def build_word_animation(project, cue, text=None, *, effect=None):
         import copy
         source_cue = copy.copy(cue)
         source_cue.text = cue._speaker_name_body
-    words, reason = cue_words(project, source_cue, allow_realign=False)
+    from .bilingual_layout import is_companion
+    if is_companion(cue.id) or (cue.transform or {}).get('_language_materialized')=='translation':
+        # A companion ID resembles a projected source ID, but is another
+        # language. Never resolve its word indices through the source cue.
+        words, reason = [], 'translation_no_alignment'
+    else:
+        words, reason = cue_words(project, source_cue, allow_realign=False)
     plan = {'mode': part.get('type', 'line_motion'), 'color': part.get('color', '#4D9FFF' if part.get('type') == 'karaoke_wipe' else '#FFD166') if part else '#FFFFFF',
             'composed_loop': loop,
             'loop_effect': effect.get('loop', {}),

@@ -21,6 +21,7 @@ from .studio_project import (
     StudioSpeaker,
     SubtitleProject,
     SubtitleStyle,
+    audio_track_payload,
 )
 from .studio_runtime_state import DirtyDomain, StateDelta
 
@@ -631,7 +632,7 @@ class StudioRevisionStore:
             media=MediaDTO.capture(project.media),
             media_pool=freeze_json([asdict(asset) for asset in project.media_pool]),
             video_tracks=freeze_json([asdict(track) for track in project.video_tracks]),
-            audio_tracks=freeze_json([asdict(track) for track in project.audio_tracks]),
+            audio_tracks=freeze_json([audio_track_payload(track) for track in project.audio_tracks]),
             av_track_groups=freeze_json([asdict(group) for group in project.av_track_groups]),
             cues=self._cues, speakers=self._speakers, styles=self._styles,
             effects=self._effects, style_recipes=self._recipes,

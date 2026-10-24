@@ -160,7 +160,7 @@ class StudioWorkspaceBuilder:
         toolbar.installEventFilter(page)
         bar = QHBoxLayout(toolbar)
         bar.setContentsMargins(12, 7, 12, 7)
-        bar.setSpacing(5)
+        bar.setSpacing(6)
         page._studio_command_layout = bar
         back = page._tool_button("fa5s.arrow-left", "返回上一层", page._request_back)
         page.studio_back_button = back
@@ -186,27 +186,35 @@ class StudioWorkspaceBuilder:
         bar.addWidget(page.save_state)
         page.save_state.installEventFilter(page)
         bar.addStretch(1)
+        # 2026-10-23 (user's design B): the commands sit in tonal tracks by
+        # kind (navigation / view / tools / export) instead of between
+        # dividers. A track hides itself while all of its commands are hidden.
+        from ..design.soft_widgets import SoftTrack
+        nav_track, view_track, tool_track, export_track = SoftTrack(), SoftTrack(), SoftTrack(), SoftTrack()
+        page._studio_toolbar_tracks = (nav_track, view_track, tool_track, export_track)
+        bar.addWidget(nav_track)
         home = page._tool_button("fa5s.home", "返回字幕识别", page._request_return_home)
         page.studio_home_button = home
-        bar.addWidget(home)
+        nav_track.add(home)
         library = page._tool_button("fa5s.th-large", "兔白字幕工程库", page._request_return_library)
         library.setCheckable(True)
         page.studio_library_button = library
-        bar.addWidget(library)
-        bar.addWidget(page._toolbar_divider())
+        nav_track.add(library)
         open_button = page._tool_button("fa5s.folder-open", "打开已有工程", page.open_project_dialog)
         page.studio_open_button = open_button
-        bar.addWidget(open_button)
+        nav_track.add(open_button)
         import_media = page._tool_button("fa5s.plus", "导入媒体", page.import_media_dialog)
         page.studio_import_media_button = import_media
-        bar.addWidget(import_media)
+        nav_track.add(import_media)
         page.studio_hub_settings_button = page._tool_button(
             "fa5s.cog", "应用设置", page._show_hub_preferences
         )
-        bar.addWidget(page.studio_hub_settings_button)
+        nav_track.add(page.studio_hub_settings_button)
         page.relink_button = page._tool_button("fa5s.link", "重新定位源媒体", page._relink_media)
         page.relink_button.hide()
-        bar.addWidget(page.relink_button)
+        nav_track.add(page.relink_button)
+        for button in nav_track.members:
+            button.setIconSize(QSize(18, 18))
         # 2026-10-21 (user): 保存 / 撤销 / 重做 live in the Tool Panel header
         # (one row, built with the panel below), not on the bar. The keys
         # (Ctrl+S / Ctrl+Z / Ctrl+Y) go through the shortcut registry as before.
@@ -219,7 +227,6 @@ class StudioWorkspaceBuilder:
         redo_button.setEnabled(page.undo_stack.canRedo())
         page.undo_stack.canUndoChanged.connect(undo_button.setEnabled)
         page.undo_stack.canRedoChanged.connect(redo_button.setEnabled)
-        bar.addWidget(page._toolbar_divider())
         page.workspace_actions: dict[str, QAction] = {}
         page.editor_field_actions: dict[str, QAction] = {}
         # Display mode lives in the Tool Panel settings menu, not the removed
@@ -240,7 +247,8 @@ class StudioWorkspaceBuilder:
         page.cue_list_toggle_button.clicked.connect(
             lambda checked: page._set_major_panel_visible("cue_list", checked)
         )
-        bar.addWidget(page.cue_list_toggle_button)
+        bar.addWidget(view_track)
+        view_track.add(page.cue_list_toggle_button)
         page.context_expand_button = QPushButton("工具面板")
         page.context_expand_button.setObjectName("studioButton")
         page.context_expand_button.setIcon(_icon("fa5s.columns", GREEN))
@@ -248,7 +256,7 @@ class StudioWorkspaceBuilder:
         page.context_expand_button.setChecked(True)
         bind_text(page.context_expand_button, '显示或收起右侧工具面板', property='toolTip')
         page.context_expand_button.clicked.connect(page._toggle_context_panel)
-        bar.addWidget(page.context_expand_button)
+        view_track.add(page.context_expand_button)
         page.review_mode_button = QPushButton("进入审核模式")
         page.review_mode_button.setObjectName("studioButton")
         # 2026-09-06（用户四图反馈·图三）：审核模式此前是工具行里唯一无图标的
@@ -267,7 +275,8 @@ class StudioWorkspaceBuilder:
         page._shortcut_tooltip(find_replace, '查找并替换字幕文字 ({find} / {replace})',
                                {'find': 'find', 'replace': 'find_replace'})
         find_replace.clicked.connect(page._open_find_replace)
-        bar.addWidget(find_replace)
+        bar.addWidget(tool_track)
+        tool_track.add(find_replace)
         # 2026-10-14: the user's own line-broken script, timed by the project's
         # word timestamps only (no model, no AI); see studio_script_match.
         script_match = QPushButton("匹配文稿")
@@ -279,8 +288,7 @@ class StudioWorkspaceBuilder:
             from .studio_script_match import open_script_match_dialog
             open_script_match_dialog(page)
         script_match.clicked.connect(open_script_match)
-        bar.addWidget(script_match)
-        bar.addWidget(page._toolbar_divider())
+        tool_track.add(script_match)
         # 2026-09-02（用户指示）：说话人管理改为与其它工具一致的
         # 文本按钮 + 同色图标，不再是无文字的白色纯图标。
         page.speaker_manager_button = QPushButton("说话人管理")
@@ -288,7 +296,7 @@ class StudioWorkspaceBuilder:
         page.speaker_manager_button.setIcon(_icon("fa5s.users", GREEN))
         bind_text(page.speaker_manager_button, '打开 Speaker Manager', property='toolTip')
         page.speaker_manager_button.clicked.connect(page._open_speaker_manager)
-        bar.addWidget(page.speaker_manager_button)
+        tool_track.add(page.speaker_manager_button)
         page.bilingual_toggle_button = QPushButton("双语 / 翻译")
         page.bilingual_toggle_button.setObjectName("studioButton")
         page.bilingual_toggle_button.setIcon(_icon("fa5s.language", GREEN))
@@ -301,7 +309,7 @@ class StudioWorkspaceBuilder:
         from .studio_bilingual import build_menu as build_bilingual_menu
         build_bilingual_menu(page, bilingual_menu)
         page.bilingual_toggle_button.setMenu(bilingual_menu)
-        bar.addWidget(page.bilingual_toggle_button)
+        tool_track.add(page.bilingual_toggle_button)
         page.studio_usage_button = QPushButton(tr('API 用量与费用'))
         page.studio_usage_button.setObjectName('studioButton')
         from .usage_dialog import open_usage
@@ -318,7 +326,7 @@ class StudioWorkspaceBuilder:
         from .studio_punctuation import build_menu as build_punctuation_menu
         build_punctuation_menu(page, punctuation_menu)
         page.punctuation_button.setMenu(punctuation_menu)
-        bar.addWidget(page.punctuation_button)
+        tool_track.add(page.punctuation_button)
         # 字幕简繁转换 (2026-10-19) is a submenu of 双语 / 翻译 since 2026-10-22
         # (user request); it has no toolbar button of its own.
         clip_assistant = QPushButton("剪辑助手")
@@ -339,7 +347,7 @@ class StudioWorkspaceBuilder:
         shortcut_entry.setIcon(_icon("fa5s.keyboard", GREEN))
         bind_text(shortcut_entry, '配置 Studio 快捷键', property='toolTip')
         shortcut_entry.clicked.connect(page._show_shortcut_settings)
-        bar.addWidget(shortcut_entry)
+        tool_track.add(shortcut_entry)
         # Keys come from the shortcut registry (_install_shortcuts re-keys them).
         find_replace_shortcut = QShortcut(QKeySequence(page._shortcut_values.get("find_replace", "Ctrl+H")), page)
         find_replace_shortcut.activated.connect(page._open_find_replace)
@@ -348,28 +356,30 @@ class StudioWorkspaceBuilder:
         find_shortcut = QShortcut(QKeySequence(page._shortcut_values.get("find", "Ctrl+F")), page)
         find_shortcut.activated.connect(page._open_find_replace)
         page._find_shortcut = find_shortcut
-        bar.addWidget(page._toolbar_divider())
         export = QPushButton("导出字幕")
         page.studio_export_button = export
         export.setObjectName("studioButton")
         export.setIcon(_icon("fa5s.file-export"))
         export.clicked.connect(page.export_subtitles)
-        bar.addWidget(export)
-        render = QPushButton("压制成片")
+        bar.addWidget(export_track)
+        export_track.add(export)
+        render = QPushButton("导出音视频")
         page.studio_render_button = render
         render.setObjectName("studioButton")
         render.clicked.connect(page._open_render_dialog)
-        bar.addWidget(render)
-        # 2026-10-21 (user's choice): a flag icon only, so the bar keeps 字幕列表
-        # at the widths 0.8.2 was checked at. The words live in the tooltip and
-        # the accessible name; the acceptance scenario finds it by object name.
+        export_track.add(render)
+        # 2026-10-21 (user, later; ported 2026-10-24): the flag alone was not
+        # recognisable, so the button says 回报问题 again, in the warning colour.
+        # It sits right of 双语 in the tool track, and 压制成片 is always the last
+        # command on the bar (the ••• menu ends the middle commands).
         page.report_problem_button = QPushButton()
         page.report_problem_button.setObjectName("studioReportProblemButton")
-        bind_text(page.report_problem_button, '回报问题', property='toolTip')
+        bind_text(page.report_problem_button, '回报问题')
+        bind_text(page.report_problem_button, '标记出问题的时间，导出诊断包给开发者', property='toolTip')
         bind_text(page.report_problem_button, '回报问题', property='accessibleName')
         from ..diagnostics.support_dialog import open_support_dialog
         page.report_problem_button.clicked.connect(lambda: open_support_dialog(page, page))
-        bar.addWidget(page.report_problem_button)
+        tool_track.insert_after(page.bilingual_toggle_button, page.report_problem_button)
         # Less frequent commands share one menu; their existing buttons retain
         # signal/shortcut ownership and are used by the menu actions.
         page._studio_toolbar_overflow_widgets = (open_button,
@@ -405,7 +415,8 @@ class StudioWorkspaceBuilder:
         overflow_menu.aboutToShow.connect(update_workspace_menu)
         overflow.setMenu(overflow_menu);overflow.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         overflow.setProperty('hideMenuIndicator', True)  # "•••" already says "more"
-        bar.addWidget(overflow)
+        # Ends the middle commands, so 压制成片 stays rightmost (2026-10-21, user).
+        bar.insertWidget(bar.indexOf(export_track), overflow)
         from ..design.presentation import button_role
         for button, role, icon_name in (
             (page.cue_list_toggle_button,'toggle','fa5s.list'),
@@ -423,13 +434,14 @@ class StudioWorkspaceBuilder:
             (page.report_problem_button,'secondary','fa5s.flag')):
             button_role(button,role,icon=icon_name)
         # 2026-10-14 (user screenshot): 「标点」 kept the old outlined combo look
-        # with a green icon and 「压制成片」 was the only filled block with a
-        # film-strip icon. Both now share the toolbar's ghost buttons; render
-        # keeps its emphasis through accent text and icon only.
+        # with a green icon. 2026-10-23 (design B): 「压制成片」 is the one filled
+        # accent command, at the end of the export track.
         for button in (page.punctuation_button, page.bilingual_toggle_button):
             button.setProperty('hasMenu', True)
         render.setProperty('emphasis', 'accent')
-        install_themed_icon(render, 'fa5s.file-video', 'accent')
+        install_themed_icon(render, 'fa5s.file-video', 'on_accent')
+        page.report_problem_button.setProperty('emphasis', 'warning')
+        install_themed_icon(page.report_problem_button, 'fa5s.flag', 'warning')
         # The application header is intentionally removed in Studio focus
         # mode. Keep the expected desktop controls in the Studio toolbar.
         controls = QFrame()
@@ -1095,7 +1107,8 @@ class StudioWorkspaceBuilder:
         bind_text(page.timeline_duration_label, '时间轴总时长（当前时间可编辑跳转）', property='toolTip')
         timeline_toolbar.addWidget(page.timeline_duration_label)
         page.speed_box = StudioComboBox()
-        page.speed_box.setFixedWidth(68)
+        # 80 px: room for 0.75x beside the round arrow chip (68 clipped it).
+        page.speed_box.setFixedWidth(80)
         for value in (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0, 8.0):
             page.speed_box.addItem(f"{value:g}x", value)
         page.speed_box.setCurrentIndex(page.speed_box.findData(1.0))
@@ -1743,6 +1756,13 @@ class StudioWorkspaceBuilder:
         bind_text(page.cue_proofread_button, '打开当前工程的 AI 词库校对，勾选建议后应用', property='toolTip')
         page.cue_proofread_button.clicked.connect(page.glossary_proofread_requested.emit)
         title_row.addWidget(page.cue_proofread_button)
+        # 2026-10-21 (user): AI 清理 left the 批量替换 tabs and sits beside AI 校对.
+        page.cue_cleanup_button = QPushButton("AI 清理")
+        page.cue_cleanup_button.setObjectName("studioButton")
+        install_themed_icon(page.cue_cleanup_button, "fa5s.broom", "secondary")
+        bind_text(page.cue_cleanup_button, '用 AI 清理口癖、重复和标点；逐条确认后应用', property='toolTip')
+        page.cue_cleanup_button.clicked.connect(page._open_ai_cleanup)
+        title_row.addWidget(page.cue_cleanup_button)
         layout.addLayout(title_row)
         # 四十二轮：后台识别状态芯片——识别启动后弹窗关闭，运行/完成/失败
         # 状态与取消按钮都落在这里，用户可以继续看视频编辑工程。
@@ -1976,25 +1996,64 @@ class StudioWorkspaceBuilder:
         panel = QWidget()
         panel.setObjectName("videoInspector")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 16)
-        layout.setSpacing(9)
-        title = QLabel("视频")
-        title.setObjectName("sectionTitle")
-        layout.addWidget(title)
-        page.video_transform_selection_label = QLabel("在时间线选择一个视频片段")
+        layout.setContentsMargins(14, 6, 14, 16)
+        layout.setSpacing(10)
+        # 2026-10-23 (user's design C): the selected clip as a tinted chip, then
+        # fold cards that show a one-line summary (运动 open, the rest folded),
+        # a small canvas picture to drag the clip's position, soft fields.
+        from ..design.soft_widgets import FoldCard, SegmentedControl, UnitField, WrapLayout, flexible_combo
+        from .video_inspector_widgets import SliderValueRow, VideoPositionPad
+        chip = QFrame()
+        chip.setObjectName("videoClipChip")
+        chip_row = QHBoxLayout(chip)
+        chip_row.setContentsMargins(10, 8, 12, 8)
+        chip_row.setSpacing(10)
+        chip_icon = QLabel()
+        chip_icon.setObjectName("videoClipIcon")
+        chip_icon.setFixedSize(30, 30)
+        chip_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chip_icon.setPixmap(self._icon("fa5s.film", "#ffffff").pixmap(15, 15))
+        chip_row.addWidget(chip_icon)
+        page.video_clip_icon = chip_icon
+        page.video_transform_selection_label = QLabel("在时间线选择视频片段或字幕")
         page.video_transform_selection_label.setObjectName("videoSelectionSummary")
         page.video_transform_selection_label.setWordWrap(True)
-        layout.addWidget(page.video_transform_selection_label)
+        chip_row.addWidget(page.video_transform_selection_label, 1)
+        layout.addWidget(chip)
+        # 2026-10-24 (user): captions move here too. A selected caption shows
+        # its 位置与变换 card in place of the clip cards (the two selections
+        # exclude each other); _sync_video_tab_selection picks the side.
+        from ..caption_style.caption_transform_panel import CaptionTransformPanel
+        page.caption_transform_panel = CaptionTransformPanel(page)
+        page.caption_transform_panel.hide()
+        layout.addWidget(page.caption_transform_panel)
+        clip_host = QWidget()
+        clip_host.setObjectName("videoClipControls")
+        page.video_clip_controls = clip_host
+        clip_layout = QVBoxLayout(clip_host)
+        clip_layout.setContentsMargins(0, 0, 0, 0)
+        clip_layout.setSpacing(10)
+        layout.addWidget(clip_host)
+        # A locked track says so under the clip name, with the way out beside it.
+        # Both start hidden; an empty row takes no room.
+        page.video_lock_notice = QLabel('轨道已锁定，位置与外观暂不可编辑。')
+        page.video_lock_notice.setWordWrap(True)
+        page.video_lock_notice.setObjectName('softMeta')
+        page.video_unlock_button = QPushButton('解锁轨道')
+        page.video_unlock_button.setObjectName('studioButton')
+        page.video_unlock_button.setProperty('softRole', 'tint')
+        page.video_unlock_button.setProperty('softSize', 'sm')
+        page.video_unlock_button.setProperty('flexibleWidth', True)
+        page.video_unlock_button.clicked.connect(page._unlock_selected_video_track)
+        page.video_lock_notice.hide()
+        page.video_unlock_button.hide()
+        lock_row = QHBoxLayout()
+        lock_row.setSpacing(8)
+        lock_row.addWidget(page.video_lock_notice, 1)
+        lock_row.addWidget(page.video_unlock_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        clip_layout.addLayout(lock_row)
         from .studio_transition_ui import create_inspector
-        create_inspector(page,layout)
-
-        motion_box = QGroupBox("运动")
-        motion_box.setObjectName("videoInspectorSection")
-        grid = QGridLayout(motion_box)
-        grid.setContentsMargins(10, 6, 10, 8)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-        grid.setColumnStretch(1, 1)
+        create_inspector(page,clip_layout)
 
         def spin(name: str, minimum: float, maximum: float, suffix: str = "") -> ScrubDoubleSpinBox:
             # ADR-0005（四十五轮）：数值行支持按住左右拖拽调值（Premiere 逻辑）。
@@ -2004,11 +2063,9 @@ class StudioWorkspaceBuilder:
             control.setDecimals(2)
             control.setSingleStep(1.0)
             control.setSuffix(suffix)
-            # 五十轮（用户反馈）：XY/缩放/锚点全部数值控件统一宽度——
-            # 按各自数值域自适应 sizeHint 会导致同行控件参差。
-            control.setFixedWidth(96)
             control.valueChanged.connect(page._video_transform_control_preview)
             control.editingFinished.connect(page._video_transform_control_committed)
+            control.scrubFinished.connect(page._video_transform_control_committed)
             return control
 
         controls = (
@@ -2022,141 +2079,107 @@ class StudioWorkspaceBuilder:
             ("锚点 Y", "video_anchor_y", 0.0, 100.0, "%"),
         )
         page.video_transform_controls = []
+        for index in (0, 1, 2, 3, 4, 6, 7):
+            _label, name, minimum, maximum, suffix = controls[index]
+            control = spin(name, minimum, maximum, suffix)
+            setattr(page, name, control)
+            page.video_transform_controls.append(control)
 
-        page._video_axis_pairs = []
+        def field_row(title, *widgets):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            label = QLabel(title)
+            label.setObjectName("softLabel")
+            row.addWidget(label)
+            for widget, stretch in widgets:
+                row.addWidget(widget, stretch)
+            return row
 
-        def add_pair(row: int, first: int, second: int, middle: QWidget | None = None) -> None:
-            """X and Y side by side; a narrow drawer stacks Y under X."""
-            label_a, name_a, min_a, max_a, suffix_a = controls[first]
-            grid.addWidget(QLabel(label_a.split()[0]), row, 0)
-            pair = QWidget()
-            pair.setObjectName("videoAxisPair")
-            fields = QGridLayout(pair)
-            fields.setContentsMargins(0, 0, 0, 0)
-            fields.setHorizontalSpacing(6)
-            fields.setVerticalSpacing(6)
+        motion_card = FoldCard("运动", expanded=True)
+        motion_card.setProperty("summaryWhenOpen", True)
+        motion_card.set_expanded(True, notify=False)
+        page.video_motion_card = motion_card
+        body = motion_card.body_layout
 
-            def axis_group(axis: str, control: QWidget, extra: QWidget | None = None) -> QWidget:
-                group = QWidget()
-                row_layout = QHBoxLayout(group)
-                row_layout.setContentsMargins(0, 0, 0, 0)
-                row_layout.setSpacing(6)
-                label = QLabel(axis); label.setObjectName("videoAxisLabel")
-                row_layout.addWidget(label)
-                row_layout.addWidget(control)
-                if extra is not None:
-                    row_layout.addWidget(extra)
-                group.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-                return group
+        def canvas_aspect():
+            media = getattr(page.project, "media", None) if page.project else None
+            width, height = getattr(media, "width", 0) or 0, getattr(media, "height", 0) or 0
+            return width / height if width and height else 16 / 9
 
-            control_a = spin(name_a, min_a, max_a, suffix_a)
-            setattr(page, name_a, control_a)
-            page.video_transform_controls.append(control_a)
-            label_b, name_b, min_b, max_b, suffix_b = controls[second]
-            control_b = spin(name_b, min_b, max_b, suffix_b)
-            setattr(page, name_b, control_b)
-            page.video_transform_controls.append(control_b)
-            group_x = axis_group("X", control_a)
-            group_y = axis_group("Y", control_b, middle)
-            fields.addWidget(group_x, 0, 0)
-            fields.addWidget(group_y, 0, 1)
-            fields.setColumnStretch(2, 1)
-            grid.addWidget(pair, row, 1)
-            page._video_axis_pairs.append((fields, group_x, group_y))
-
+        page.video_position_pad = VideoPositionPad(page.video_position_x, page.video_position_y,
+                                                   page._video_transform_control_committed, aspect=canvas_aspect)
+        body.addWidget(page.video_position_pad)
+        page.video_canvas_hint = QLabel("拖动小画面里的圆点改位置；数值可左右拖动调节，也可以在画面里直接拖动、缩放片段。")
+        page.video_canvas_hint.setObjectName("softMeta")
+        page.video_canvas_hint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        page.video_canvas_hint.setWordWrap(True)
+        body.addWidget(page.video_canvas_hint)
         # 五十轮（用户反馈）：缩放默认等比（链锁 ON），改 X 自动带 Y；按钮可关闭。
         page.video_scale_link = QToolButton()
         page.video_scale_link.setObjectName("videoScaleLink")
         page.video_scale_link.setCheckable(True)
         page.video_scale_link.setChecked(True)
-        page.video_scale_link.setFixedSize(24, 24)
         bind_text(page.video_scale_link, '等比缩放：锁定时修改 X/Y 任一值，另一值同步', property='toolTip')
-        install_themed_icon(page.video_scale_link, "fa5s.link", "primary")
+        install_themed_icon(page.video_scale_link, "fa5s.link", "accent")
 
         def _scale_link_toggled(checked: bool) -> None:
-            install_themed_icon(page.video_scale_link, "fa5s.link" if checked else "fa5s.unlink", "primary")
+            install_themed_icon(page.video_scale_link, "fa5s.link" if checked else "fa5s.unlink",
+                                "accent" if checked else "secondary")
 
         page.video_scale_link.toggled.connect(_scale_link_toggled)
+        link_room = QWidget()
+        link_room.setFixedWidth(34)
+        body.addLayout(field_row("位置", (UnitField(page.video_position_x, axis="X"), 1),
+                                 (UnitField(page.video_position_y, axis="Y"), 1), (link_room, 0)))
+        body.addLayout(field_row("缩放", (UnitField(page.video_scale_x, axis="X"), 1),
+                                 (UnitField(page.video_scale_y, axis="Y"), 1), (page.video_scale_link, 0)))
 
-        add_pair(0, 0, 1)
-        add_pair(1, 2, 3, middle=page.video_scale_link)
-
-        def _sync_linked_scale(source: ScrubDoubleSpinBox, target: ScrubDoubleSpinBox) -> None:
-            if not page.video_scale_link.isChecked():
-                return
-            if getattr(page, "_updating_video_transform_ui", False):
-                return
-            target.blockSignals(True)
-            target.setValue(source.value())
-            target.blockSignals(False)
-
-        page.video_scale_x.valueChanged.connect(
-            lambda _v: _sync_linked_scale(page.video_scale_x, page.video_scale_y)
-        )
-        page.video_scale_y.valueChanged.connect(
-            lambda _v: _sync_linked_scale(page.video_scale_y, page.video_scale_x)
-        )
-        row = 2
-        for index in (4,):
-            label, name, minimum, maximum, suffix = controls[index]
-            grid.addWidget(QLabel(label), row, 0)
-            control = spin(name, minimum, maximum, suffix)
-            setattr(page, name, control)
-            page.video_transform_controls.append(control)
-            single = QWidget()
-            single_layout = QHBoxLayout(single)
-            single_layout.setContentsMargins(0, 0, 0, 0)
-            single_layout.setSpacing(6)
-            axis_spacer = QLabel("")
-            axis_spacer.setObjectName("videoAxisLabel")
-            single_layout.addWidget(axis_spacer)
-            single_layout.addWidget(control)
-            single_layout.addStretch(1)
-            grid.addWidget(single, row, 1)
-            row += 1
-        # 锚点 X/Y 同行（Premiere 式双值行）。
-        add_pair(row, 6, 7)
-        row += 1
-
-        def reflow_axis_pairs() -> None:
-            """Side by side when the drawer is wide enough; else Y under X.
-
-            Measured from the panel (= drawer viewport) width: the group box
-            itself never shrinks below the side-by-side minimum.
-            """
-            outer = layout.contentsMargins()
-            inner = grid.contentsMargins()
-            label_column = grid.cellRect(0, 0).width() if grid.cellRect(0, 0).isValid() else 48
-            available = (panel.width() - outer.left() - outer.right() - inner.left() - inner.right()
-                         - 4 - label_column - grid.horizontalSpacing())
-            for fields, group_x, group_y in page._video_axis_pairs:
-                needed = group_x.sizeHint().width() + fields.horizontalSpacing() + group_y.sizeHint().width()
-                stacked = needed > available
-                position = fields.getItemPosition(fields.indexOf(group_y))[:2]
-                if stacked and position != (1, 0):
-                    fields.removeWidget(group_y)
-                    fields.addWidget(group_y, 1, 0)
-                elif not stacked and position != (0, 1):
-                    fields.removeWidget(group_y)
-                    fields.addWidget(group_y, 0, 1)
-
-        class _AxisReflow(QObject):
-            def eventFilter(self, watched, event):
-                if event.type() == QEvent.Type.Resize:
-                    QTimer.singleShot(0, reflow_axis_pairs)
-                return False
-
-        page._video_axis_reflow = _AxisReflow(panel)
-        panel.installEventFilter(page._video_axis_reflow)
-        grid.addWidget(QLabel("适配"), row, 0)
-        page.video_fit_mode = QComboBox()
+        # 旋转 and 锚点 share a line; with longer words (Russian) 锚点 moves
+        # under 旋转 instead of squeezing the boxes.
+        rotation_group, anchor_group = QWidget(), QWidget()
+        rotation_box = UnitField(page.video_rotation, sample="-360.00")
+        anchor_boxes = (UnitField(page.video_anchor_x, axis="X", sample="100.00"),
+                        UnitField(page.video_anchor_y, axis="Y", sample="100.00"))
+        rotation_row = field_row("旋转", (rotation_box, 1))
+        rotation_row.setContentsMargins(0, 0, 0, 0)
+        rotation_group.setLayout(rotation_row)
+        anchor_row = field_row("锚点", (anchor_boxes[0], 1), (anchor_boxes[1], 1))
+        anchor_row.setContentsMargins(0, 0, 0, 0)
+        anchor_group.setLayout(anchor_row)
+        rotation_line = WrapLayout(spacing=10, fill=True, by_minimum=True)
+        rotation_line.addWidget(rotation_group)
+        rotation_line.addWidget(anchor_group)
+        body.addLayout(rotation_line)
+        # No more stacking of X under Y (fields shrink with the drawer).
+        page._video_axis_pairs = []
+        page.video_fit_mode = QComboBox(panel)
         page.video_fit_mode.addItem("完整显示", "contain")
         page.video_fit_mode.addItem("填满画布", "cover")
         page.video_fit_mode.addItem("拉伸", "stretch")
         bind_text(page.video_fit_mode, '按所选方式适配整个画布，并重置位置、缩放与旋转；可撤销。', property='toolTip')
         page.video_fit_mode.activated.connect(page._video_fit_mode_committed)
-        grid.addWidget(page.video_fit_mode, row, 1)
-        row += 1
+        page.video_fit_mode.hide()
+        page.video_fit_segments = SegmentedControl(page.video_fit_mode)
+        bind_text(page.video_fit_segments, '按所选方式适配整个画布，并重置位置、缩放与旋转；可撤销。', property='toolTip')
+        body.addLayout(field_row("适配", (page.video_fit_segments, 1)))
+        page.video_transform_reset = QPushButton('重设变换')
+        page.video_transform_reset.setObjectName('studioButton')
+        page.video_transform_reset.setProperty('softRole', 'ghost')
+        page.video_transform_reset.setProperty('softSize', 'sm')
+        page.video_transform_reset.setProperty('flexibleWidth', True)
+
+        def reset_transform():
+            track, clip = page._selected_video_clip()
+            if track is not None and clip is not None:
+                from ..projects.studio_project import VideoTransform
+                page._video_transform_committed(track.id, clip.id, vars(VideoTransform()))
+        page.video_transform_reset.clicked.connect(reset_transform)
+        reset_row = QHBoxLayout()
+        reset_row.addStretch(1)
+        reset_row.addWidget(page.video_transform_reset)
+        body.addLayout(reset_row)
+        clip_layout.addWidget(motion_card)
+
         page.video_blend_mode = QComboBox()
         for blend_label, blend_value in (
             ("正常", "normal"),
@@ -2168,36 +2191,36 @@ class StudioWorkspaceBuilder:
         ):
             page.video_blend_mode.addItem(blend_label, blend_value)
         page.video_blend_mode.activated.connect(page._video_effects_control_committed)
-        blend_box = QGroupBox("透明度与叠加")
-        blend_box.setObjectName("videoInspectorSection")
-        blend_layout = QFormLayout(blend_box)
-        blend_layout.setContentsMargins(10, 6, 10, 8)
+        blend_card = FoldCard("透明度与叠加", expanded=False)
+        page.video_blend_card = blend_card
         page.video_opacity = spin('video_opacity', 0., 100., '%')
         page.video_transform_controls.append(page.video_opacity)
-        blend_layout.addRow('不透明度', page.video_opacity)
-        blend_layout.addRow("混合模式", page.video_blend_mode)
-        layout.addWidget(motion_box)
-        layout.addWidget(blend_box)
+        page._video_slider_rows = [SliderValueRow("不透明度", page.video_opacity,
+                                                  page._video_transform_control_committed)]
+        blend_card.body_layout.addWidget(page._video_slider_rows[0])
+        flexible_combo(page.video_blend_mode)
+        blend_card.body_layout.addLayout(field_row("混合模式", (page.video_blend_mode, 1)))
+        clip_layout.addWidget(blend_card)
 
-        # ADR-0005（四十五轮）：绿幕抠像（Ultra Key）。
-        chroma_box = QGroupBox("绿幕抠像")
-        chroma_box.setObjectName("videoInspectorSection")
-        chroma_form = QFormLayout(chroma_box)
-        chroma_form.setContentsMargins(10, 6, 10, 8)
-        page.video_key_enabled = QCheckBox("启用抠像")
+        # ADR-0005（四十五轮）：绿幕抠像（Ultra Key）。开关在卡片标题右边。
+        page.video_key_enabled = QCheckBox()
+        page.video_key_enabled.setProperty("softSwitch", True)
+        bind_text(page.video_key_enabled, '启用抠像', property='accessibleName')
+        bind_text(page.video_key_enabled, '启用抠像', property='toolTip')
         page.video_key_enabled.toggled.connect(page._video_effects_control_committed)
-        chroma_form.addRow("", page.video_key_enabled)
-        key_color_row = QHBoxLayout()
+        chroma_card = FoldCard("绿幕抠像", expanded=False, trailing=page.video_key_enabled)
+        page.video_chroma_card = chroma_card
+        chroma = chroma_card.body_layout
         page.video_key_color = QPushButton()
-        page.video_key_color.setFixedSize(44, 24)
+        page.video_key_color.setFixedSize(34, 34)
         page.video_key_color.setCursor(Qt.CursorShape.PointingHandCursor)
+        page.video_key_color.setStyleSheet("background: #00ff00; border: 0; border-radius: 9px;")
         bind_text(page.video_key_color, '点击选择键控颜色（默认抠绿）', property='toolTip')
         page.video_key_color.clicked.connect(page._video_key_color_clicked)
         page.video_key_color_hex = QLabel("#00FF00")
-        key_color_row.addWidget(page.video_key_color)
-        key_color_row.addWidget(page.video_key_color_hex)
-        key_color_row.addStretch(1)
-        chroma_form.addRow("键控颜色", key_color_row)
+        page.video_key_color_hex.setObjectName("softLabel")
+        key_color_row = field_row("键控颜色", (page.video_key_color, 0), (page.video_key_color_hex, 1))
+        chroma.addLayout(key_color_row)
 
         def key_spin(name: str, maximum: float) -> ScrubDoubleSpinBox:
             control = ScrubDoubleSpinBox()
@@ -2213,24 +2236,45 @@ class StudioWorkspaceBuilder:
         page.video_key_similarity = key_spin("video_key_similarity", 100.0)
         page.video_key_similarity.setValue(32)
         bind_text(page.video_key_similarity, '颜色距离阈值：越大抠得越狠', property='toolTip')
-        chroma_form.addRow("相似度", page.video_key_similarity)
+        page._video_slider_rows.append(SliderValueRow("相似度", page.video_key_similarity,
+                                                      page._video_effects_control_committed))
+        chroma.addWidget(page._video_slider_rows[-1])
         page.video_key_smoothness = key_spin("video_key_smoothness", 100.0)
         page.video_key_smoothness.setValue(10)
         bind_text(page.video_key_smoothness, '边缘渐变带宽：越大过渡越柔和', property='toolTip')
-        chroma_form.addRow("平滑度", page.video_key_smoothness)
+        page._video_slider_rows.append(SliderValueRow("平滑度", page.video_key_smoothness,
+                                                      page._video_effects_control_committed))
+        chroma.addWidget(page._video_slider_rows[-1])
         page.video_key_spill = QCheckBox("抑制颜色溢出（边缘去绿边）")
+        page.video_key_spill.setProperty("softSwitch", True)
         page.video_key_spill.setChecked(True)
         page.video_key_spill.toggled.connect(page._video_effects_control_committed)
-        chroma_form.addRow("", page.video_key_spill)
-        page.video_canvas_hint = QLabel("拖动数值快速调节；也可在画面中拖动、缩放片段。")
-        page.video_canvas_hint.setObjectName("contextEmpty")
-        page.video_canvas_hint.setWordWrap(True)
-        grid.addWidget(page.video_canvas_hint, row, 0, 1, 2)
+        chroma.addWidget(page.video_key_spill)
         page.video_key_hint = QLabel("对叠加素材抠绿幕：选颜色→调相似度；预览即时生效。")
-        page.video_key_hint.setObjectName("contextEmpty")
+        page.video_key_hint.setObjectName("softMeta")
+        page.video_key_hint.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         page.video_key_hint.setWordWrap(True)
-        chroma_form.addRow("", page.video_key_hint)
-        layout.addWidget(chroma_box)
+        chroma.addWidget(page.video_key_hint)
+        clip_layout.addWidget(chroma_card)
+
+        def refresh_video_summaries(*_args) -> None:
+            def number(control):
+                return "—" if control.specialValueText() else f"{round(control.value(), 1):g}"
+            scale = (number(page.video_scale_x) if page.video_scale_x.value() == page.video_scale_y.value()
+                     else f"{number(page.video_scale_x)}×{number(page.video_scale_y)}")
+            motion_card.set_summary(f"{number(page.video_position_x)}%, {number(page.video_position_y)}% · "
+                                    f"{scale}% · {number(page.video_rotation)}°")
+            blend_card.set_summary(f"{number(page.video_opacity)}% · {page.video_blend_mode.currentText() or '—'}")
+            chroma_card.set_summary('已启用' if page.video_key_enabled.isChecked() else '未启用')
+            for row in page._video_slider_rows:
+                row.sync()
+
+        page._refresh_video_summaries = refresh_video_summaries
+        for control in page.video_transform_controls:
+            control.valueChanged.connect(refresh_video_summaries)
+        page.video_blend_mode.currentIndexChanged.connect(refresh_video_summaries)
+        page.video_key_enabled.toggled.connect(refresh_video_summaries)
+        refresh_video_summaries()
 
         audio_box = QGroupBox("声音与混音")
         audio_box.setObjectName("videoInspectorSection")
@@ -2260,17 +2304,17 @@ class StudioWorkspaceBuilder:
         page.video_audio_owner_label = QLabel("当前声音：-")
         page.video_audio_owner_label.setWordWrap(True)
         audio_layout.addWidget(page.video_audio_owner_label)
-        layout.addWidget(audio_box)
+        clip_layout.addWidget(audio_box)
         # Retain legacy inspector state bindings for old projects, while all
         # user-facing sound operations live on the corresponding A lane.
         audio_box.hide()
         # Defaults for newly applied transitions: secondary, collapsed, last.
         from .studio_transition_ui import create_default_durations
-        create_default_durations(page, layout)
+        create_default_durations(page, clip_layout)
         audio_hint = QLabel('声音开关、Solo 和音量请在对应的 A 波形行调整。')
         audio_hint.setWordWrap(True)
         audio_hint.setObjectName('contextEmpty')
-        layout.addWidget(audio_hint)
+        clip_layout.addWidget(audio_hint)
         layout.addStretch(1)
         for control in [
             *page.video_transform_controls, page.video_fit_mode, page.video_audio_enabled, page.video_audio_solo,
@@ -2334,19 +2378,29 @@ class StudioWorkspaceBuilder:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(14, 14, 14, 14)
-        heading = QLabel("AI 字幕设计")
-        heading.setObjectName("sectionTitle")
-        layout.addWidget(heading)
-        page.ai_empty_state = QLabel("先描述字幕视觉要求，再生成三套可编辑的视觉与动效方案。")
+        # 2026-10-23 (user's design B): three numbered cards — the service,
+        # the style request and generate + apply — with the less used tools
+        # as quiet links under them. Every control and its signals as before.
+        from ..design.soft_widgets import CaptionField, WrapLayout, flexible_combo, soft_card, step_badge
+        layout.setSpacing(12)
+        page.ai_empty_state = QLabel("先描述字幕视觉要求，再生成三套可编辑的视觉与动效方案。", panel)
         page.ai_empty_state.setObjectName("contextEmpty")
         page.ai_empty_state.setWordWrap(True)
-        layout.addWidget(page.ai_empty_state)
+        page.ai_empty_state.hide()
 
-        provider_card, provider_layout = page._style_section("生成服务", expanded=True)
-        provider_grid = QGridLayout()
-        provider_grid.setHorizontalSpacing(8)
-        provider_grid.setVerticalSpacing(6)
-        provider_grid.addWidget(QLabel("服务商"), 0, 0)
+        def step_header(number, title, trailing=None):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.addWidget(step_badge(number))
+            heading = QLabel(title)
+            heading.setObjectName("softCardTitle")
+            row.addWidget(heading)
+            row.addStretch(1)
+            if trailing is not None:
+                row.addWidget(trailing)
+            return row
+
+        provider_card, provider_layout = soft_card()
         page.ai_provider = StudioComboBox()
         models = page.runtime_settings.get("models", {})
         current_service = get_active_service(page.runtime_settings)
@@ -2359,8 +2413,6 @@ class StudioWorkspaceBuilder:
                 continue
             page.ai_provider.addItem(str(spec["label"]), service_id)
         page.ai_provider.setCurrentIndex(max(0, page.ai_provider.findData(current_service)))
-        provider_grid.addWidget(page.ai_provider, 0, 1)
-        provider_grid.addWidget(QLabel("模型"), 1, 0)
         page.ai_model = StudioComboBox()
         page.ai_model.setEditable(True)
         service = AI_SERVICE_SPECS.get(current_service, AI_SERVICE_SPECS["custom"])
@@ -2372,103 +2424,36 @@ class StudioWorkspaceBuilder:
         for model_id in dict.fromkeys(item for item in model_values if item):
             page.ai_model.addItem(model_id, model_id)
         page.ai_model.setCurrentText(configured_model or str(service.get("model") or ""))
-        provider_grid.addWidget(page.ai_model, 1, 1)
-        page.ai_provider_capabilities = QLabel()
-        page.ai_provider_capabilities.setObjectName("contextMeta")
-        page.ai_provider_capabilities.setWordWrap(True)
-        provider_grid.addWidget(page.ai_provider_capabilities, 2, 0, 1, 2)
-        page.ai_provider_health = QLabel("状态：未检测")
-        page.ai_provider_health.setObjectName("contextMeta")
-        page.ai_provider_health.setWordWrap(True)
-        provider_details=QWidget()
-        details_layout=QVBoxLayout(provider_details)
-        details_layout.setContentsMargins(0,0,0,0)
-        details_layout.addWidget(page.ai_provider_health)
-        page.ai_network_detail_toggle=QPushButton("技术详情 / 网络诊断")
-        page.ai_network_detail_toggle.setCheckable(True)
-        details_layout.addWidget(page.ai_network_detail_toggle)
-        page.ai_network_detail=QPlainTextEdit()
-        page.ai_network_detail.setReadOnly(True)
-        page.ai_network_detail.setMaximumHeight(150)
-        page.ai_network_detail.hide()
-        page.ai_network_detail_toggle.toggled.connect(page.ai_network_detail.setVisible)
-        details_layout.addWidget(page.ai_network_detail)
-        provider_grid.addWidget(provider_details, 3, 0, 1, 2)
-        page.ai_provider_credential = QLabel("凭据：正在解析")
-        page.ai_provider_credential.setObjectName("contextMeta")
-        page.ai_provider_settings = QPushButton("前往设置")
-        page.ai_provider_settings.setObjectName("studioButton")
-        page.ai_provider_settings.clicked.connect(page._open_ai_provider_settings)
-        provider_grid.addWidget(page.ai_provider_credential, 4, 0)
-        provider_grid.addWidget(page.ai_provider_settings, 4, 1)
         page.ai_provider_status = StatusBadge("REQUESTING")
         bind_text(page.ai_provider_status, '● 检测中')
-        provider_grid.addWidget(page.ai_provider_status, 5, 0, 1, 2)
-        provider_layout.addLayout(provider_grid)
-        page.ai_provider.currentIndexChanged.connect(page._ai_design_provider_changed)
-        page.ai_model.currentTextChanged.connect(page._ai_design_model_changed)
-        page._refresh_ai_design_provider_summary()
-        layout.addWidget(provider_card)
-        page.ai_provider_section = provider_card
-
-        prompt_card, prompt_layout = page._style_section("视觉设计要求", expanded=True)
-        prompt_hint = QLabel(
-            "在下面输入框里描述你想要的字幕风格，然后点「生成字幕设计」："
-        )
-        prompt_hint.setObjectName("contextMeta")
-        prompt_hint.setWordWrap(True)
-        prompt_layout.addWidget(prompt_hint)
-        page.ai_prompt = QPlainTextEdit()
-        page.ai_prompt.setObjectName("aiPromptInput")
-        bind_text(page.ai_prompt, '输入主题即可，例如：初音未来风格 / Minecraft像素风格。\n也可以补充构图、色彩、动作或参考；系统会展开成完整作品。', property='placeholderText')
-        # 十六轮用户反馈：原框过高且不像输入框——收敛为两行高的明确输入区。
-        page.ai_prompt.setMinimumHeight(58)
-        page.ai_prompt.setMaximumHeight(88)
-        prompt_layout.addWidget(page.ai_prompt)
-        # 二十三轮：效果范围双模式——特效字幕（元素集中字幕带，不碍画面）/
-        # 全画面动效（大出入场+元素遍布画面）。默认特效字幕。
-        scope_row = QHBoxLayout()
-        page.ai_effect_scope = QComboBox()
-        page.ai_effect_scope.addItem("效果范围：特效字幕（元素集中在字幕附近）", "subtitle")
-        page.ai_effect_scope.addItem("效果范围：动效丰富视频画面（全画面大动效）", "fullscreen")
-        scope_row.addWidget(page.ai_effect_scope, 1)
-        prompt_layout.addLayout(scope_row)
-        page.ai_candidate_mode = QComboBox()
-        for label,value in [('先生成1个完整候选','single'),('比较3个组件草案（一次设计请求）','drafts'),('生成3个完整候选','full3')]:
-            page.ai_candidate_mode.addItem(label,value)
-        bind_text(page.ai_candidate_mode, '草案来自可运行定义，可直接采用；后续只按明确选择增补。3个完整候选会增加模型调用与费用。', property='toolTip')
-        prompt_layout.addWidget(page.ai_candidate_mode)
-        page.ai_candidate_concurrency = QComboBox()
-        from ..i18n_widgets import add_combo_item
-        for count in (1,2,3):add_combo_item(page.ai_candidate_concurrency, tr('完整候选并发：{count}', count=count), count)
-        page.ai_candidate_concurrency.setCurrentIndex(1)
-        prompt_layout.addWidget(page.ai_candidate_concurrency)
-        page.ai_wait_mode = QComboBox()
-        for label, value in [('完整设计 · 最长30分钟','long30'),('完整设计 · 最长15分钟','long15'),
-                             ('复杂设计 · 最长60分钟','long60'),('使用设置中的自定义时限','configured')]:
-            page.ai_wait_mode.addItem(label,value)
-        bind_text(page.ai_wait_mode, '总预算包含生成与技术修复。网络活动、收到正文和完成候选分别显示；可随时安全取消并保留草稿。', property='toolTip')
-        page.ai_wait_mode.setCurrentIndex(max(0,page.ai_wait_mode.findData(
-            models.get('ai_design_wait_mode','long30'))))
-        prompt_layout.addWidget(page.ai_wait_mode)
-        layout.addWidget(prompt_card)
-        page.ai_prompt_section = prompt_card
-
-        actions = QVBoxLayout()
-        actions.setSpacing(7)
-        page.ai_design_target_label = QLabel('当前设计对象：未选择字幕')
-        page.ai_design_target_label.setWordWrap(True)
-        actions.addWidget(page.ai_design_target_label)
-        page.ai_generate = QPushButton("生成字幕设计")
-        page.ai_generate.setObjectName("studioPrimary")
-        page.ai_generate.clicked.connect(page._request_ai_suggestion)
-        actions.addWidget(page.ai_generate)
-        page.ai_resume_saved_button=QPushButton('继续已保存的 AI 草稿…')
-        page.ai_resume_saved_button.setObjectName('studioButton')
-        page.ai_resume_saved_button.clicked.connect(lambda:page._theme_drafts().open_saved_response())
-        actions.addWidget(page.ai_resume_saved_button)
-        probe_row = QHBoxLayout()
-        probe_row.setSpacing(7)
+        provider_layout.addLayout(step_header(1, "生成服务", page.ai_provider_status))
+        service_row = QHBoxLayout()
+        service_row.setSpacing(6)
+        service_row.addWidget(CaptionField("服务商", page.ai_provider), 1)
+        service_row.addWidget(CaptionField("模型（可输入）", page.ai_model), 1)
+        provider_layout.addLayout(service_row)
+        page.ai_provider_capabilities = QLabel()
+        page.ai_provider_capabilities.setObjectName("softMeta")
+        page.ai_provider_capabilities.setWordWrap(True)
+        provider_layout.addWidget(page.ai_provider_capabilities)
+        credential_row = QHBoxLayout()
+        credential_row.setSpacing(8)
+        page.ai_provider_credential = QLabel("凭据：正在解析")
+        page.ai_provider_credential.setObjectName("softMeta")
+        page.ai_provider_credential.setWordWrap(True)
+        credential_row.addWidget(page.ai_provider_credential, 1)
+        page.ai_provider_settings = QPushButton("前往设置")
+        page.ai_provider_settings.setObjectName("studioButton")
+        page.ai_provider_settings.setProperty("softRole", "tint")
+        page.ai_provider_settings.setProperty("softSize", "sm")
+        page.ai_provider_settings.clicked.connect(page._open_ai_provider_settings)
+        credential_row.addWidget(page.ai_provider_settings)
+        provider_layout.addLayout(credential_row)
+        page.ai_provider_health = QLabel("状态：未检测")
+        page.ai_provider_health.setObjectName("softMeta")
+        page.ai_provider_health.setWordWrap(True)
+        provider_layout.addWidget(page.ai_provider_health)
+        probe_row = WrapLayout(spacing=6, fill=True)
         page.ai_test_connection = QPushButton("测试连接")
         page.ai_test_connection.setObjectName("studioButton")
         page.ai_test_connection.clicked.connect(
@@ -2476,23 +2461,27 @@ class StudioWorkspaceBuilder:
                 str(page.ai_provider.currentData() or "custom"), force=True
             )
         )
-        probe_row.addWidget(page.ai_test_connection, 1)
+        probe_row.addWidget(page.ai_test_connection)
         page.ai_refresh_models = QPushButton("刷新模型")
         page.ai_refresh_models.setObjectName("studioButton")
         page.ai_refresh_models.clicked.connect(lambda: page._start_ai_provider_probe(
             str(page.ai_provider.currentData() or 'custom'),refresh_models=True))
         probe_row.addWidget(page.ai_refresh_models)
-        page.ai_copy_diagnostics = QPushButton("复制诊断")
-        page.ai_copy_diagnostics.setObjectName("studioButton")
-        page.ai_copy_diagnostics.clicked.connect(page._copy_ai_provider_diagnostics)
-        probe_row.addWidget(page.ai_copy_diagnostics)
-        # 2026-09-02: 「本地备选」按钮移除——旧 ASS 动效回退已被内置网页主题
-        # 兜底取代（生成失败时自动套 fallback_web_theme）。保留兼容属性，
-        # flow 侧的 getattr(...) 引用照常工作但永不显示。
-        page.ai_use_local_fallback = QPushButton("本地备选")
-        page.ai_use_local_fallback.setObjectName("studioButton")
-        page.ai_use_local_fallback.hide()
-        actions.addLayout(probe_row)
+        page.ai_network_detail_toggle=QPushButton("技术详情")
+        bind_text(page.ai_network_detail_toggle, '技术详情 / 网络诊断', property='toolTip')
+        page.ai_network_detail_toggle.setCheckable(True)
+        probe_row.addWidget(page.ai_network_detail_toggle)
+        for button in (page.ai_test_connection, page.ai_refresh_models, page.ai_network_detail_toggle):
+            button.setProperty("softSize", "sm")
+            button.setProperty("flexibleWidth", True)
+            button.setMinimumWidth(0)
+        provider_layout.addLayout(probe_row)
+        page.ai_network_detail=QPlainTextEdit()
+        page.ai_network_detail.setReadOnly(True)
+        page.ai_network_detail.setMaximumHeight(150)
+        page.ai_network_detail.hide()
+        page.ai_network_detail_toggle.toggled.connect(page.ai_network_detail.setVisible)
+        provider_layout.addWidget(page.ai_network_detail)
         account_row=QHBoxLayout()
         page.ai_cli_login=QPushButton("打开官方 Codex 登录")
         page.ai_cli_logout=QPushButton("退出 Codex 登录")
@@ -2502,57 +2491,144 @@ class StudioWorkspaceBuilder:
             button.setObjectName("studioButton")
             button.setVisible(str(page.ai_provider.currentData())=="codex_cli")
             account_row.addWidget(button)
-        actions.addLayout(account_row)
-        page.ai_application_status = QLabel('当前字幕尚未应用方案')
-        page.ai_application_status.setObjectName('cardMeta')
-        page.ai_application_status.setWordWrap(True)
-        actions.addWidget(page.ai_application_status)
+        provider_layout.addLayout(account_row)
+        page.ai_provider.currentIndexChanged.connect(page._ai_design_provider_changed)
+        page.ai_model.currentTextChanged.connect(page._ai_design_model_changed)
+        page._refresh_ai_design_provider_summary()
+        layout.addWidget(provider_card)
+        page.ai_provider_section = provider_card
+
+        prompt_card, prompt_layout = soft_card()
+        prompt_layout.addLayout(step_header(2, "描述字幕风格"))
+        page.ai_prompt = QPlainTextEdit()
+        page.ai_prompt.setObjectName("aiPromptInput")
+        bind_text(page.ai_prompt, '输入主题即可，例如：初音未来风格 / Minecraft像素风格。\n也可以补充构图、色彩、动作或参考；系统会展开成完整作品。', property='placeholderText')
+        # 十六轮用户反馈：原框过高且不像输入框——收敛为两行高的明确输入区。
+        page.ai_prompt.setMinimumHeight(64)
+        page.ai_prompt.setMaximumHeight(96)
+        prompt_layout.addWidget(page.ai_prompt)
+        # 二十三轮：效果范围双模式——特效字幕（元素集中字幕带，不碍画面）/
+        # 全画面动效（大出入场+元素遍布画面）。默认特效字幕。
+        page.ai_effect_scope = QComboBox()
+        page.ai_effect_scope.addItem("特效字幕（元素集中在字幕附近）", "subtitle")
+        page.ai_effect_scope.addItem("动效丰富视频画面（全画面大动效）", "fullscreen")
+        page.ai_candidate_mode = QComboBox()
+        for label,value in [('先生成1个完整候选','single'),('比较3个组件草案（一次设计请求）','drafts'),('生成3个完整候选','full3')]:
+            page.ai_candidate_mode.addItem(label,value)
+        bind_text(page.ai_candidate_mode, '草案来自可运行定义，可直接采用；后续只按明确选择增补。3个完整候选会增加模型调用与费用。', property='toolTip')
+        page.ai_candidate_concurrency = QComboBox()
+        for count in (1,2,3):page.ai_candidate_concurrency.addItem(str(count), count)
+        page.ai_candidate_concurrency.setCurrentIndex(1)
+        page.ai_wait_mode = QComboBox()
+        for label, value in [('完整设计 · 最长30分钟','long30'),('完整设计 · 最长15分钟','long15'),
+                             ('复杂设计 · 最长60分钟','long60'),('使用设置中的自定义时限','configured')]:
+            page.ai_wait_mode.addItem(label,value)
+        bind_text(page.ai_wait_mode, '总预算包含生成与技术修复。网络活动、收到正文和完成候选分别显示；可随时安全取消并保留草稿。', property='toolTip')
+        page.ai_wait_mode.setCurrentIndex(max(0,page.ai_wait_mode.findData(
+            models.get('ai_design_wait_mode','long30'))))
+        options = QGridLayout()
+        options.setHorizontalSpacing(6)
+        options.setVerticalSpacing(6)
+        for index, (caption, combo) in enumerate((
+            ("效果范围", page.ai_effect_scope), ("候选", page.ai_candidate_mode),
+            ("完整候选并发", page.ai_candidate_concurrency), ("时限", page.ai_wait_mode),
+        )):
+            options.addWidget(CaptionField(caption, combo), index // 2, index % 2)
+        options.setColumnStretch(0, 1)
+        options.setColumnStretch(1, 1)
+        prompt_layout.addLayout(options)
+        layout.addWidget(prompt_card)
+        page.ai_prompt_section = prompt_card
+
+        actions_card, actions = soft_card()
+        actions.addLayout(step_header(3, "生成并应用"))
+        page.ai_design_target_label = QLabel('当前设计对象：未选择字幕')
+        page.ai_design_target_label.setObjectName("softMeta")
+        page.ai_design_target_label.setWordWrap(True)
+        actions.addWidget(page.ai_design_target_label)
+        page.ai_generate = QPushButton("生成字幕设计")
+        page.ai_generate.setObjectName("studioPrimary")
+        page.ai_generate.setProperty("softSize", "lg")
+        install_themed_icon(page.ai_generate, "fa5s.magic", "on_accent")
+        page.ai_generate.clicked.connect(page._request_ai_suggestion)
+        actions.addWidget(page.ai_generate)
+        page.ai_resume_saved_button=QPushButton('继续已保存的草稿…')
+        page.ai_resume_saved_button.setObjectName('studioButton')
+        page.ai_resume_saved_button.clicked.connect(lambda:page._theme_drafts().open_saved_response())
+        page.ai_copy_diagnostics = QPushButton("复制诊断")
+        page.ai_copy_diagnostics.setObjectName("studioButton")
+        page.ai_copy_diagnostics.clicked.connect(page._copy_ai_provider_diagnostics)
+        # 2026-09-02: 「本地备选」按钮移除——旧 ASS 动效回退已被内置网页主题
+        # 兜底取代（生成失败时自动套 fallback_web_theme）。保留兼容属性，
+        # flow 侧的 getattr(...) 引用照常工作但永不显示。
+        page.ai_use_local_fallback = QPushButton("本地备选", panel)
+        page.ai_use_local_fallback.setObjectName("studioButton")
+        page.ai_use_local_fallback.hide()
         result_row = QHBoxLayout()
-        result_row.setSpacing(7)
+        result_row.setSpacing(6)
         apply_scope = QComboBox()
         apply_scope.setObjectName("studioCombo")
-        apply_scope.addItem("应用到当前字幕", "current")
-        apply_scope.addItem("应用到该说话人", "speaker")
-        apply_scope.addItem("应用到全部字幕", "all")
+        apply_scope.addItem("当前字幕", "current")
+        apply_scope.addItem("该说话人字幕", "speaker")
+        apply_scope.addItem("全部字幕", "all")
+        flexible_combo(apply_scope)
+        apply_scope.setProperty("softSize", "lg")
         page.ai_apply_scope = apply_scope
-        result_row.addWidget(apply_scope, 1)
-        actions.addLayout(result_row)
+        result_row.addWidget(apply_scope, 2)
         apply_button = QPushButton("应用到当前字幕")
         page.ai_apply_button = apply_button
         apply_button.setEnabled(False)
         apply_button.setObjectName("studioPrimary")
-        apply_button.setMinimumHeight(40)
-        apply_button.setStyleSheet('min-height:40px;')
+        apply_button.setProperty("flexibleWidth", True)
+        apply_button.setProperty("softSize", "lg")  # the step's main action stays 40 px tall
         apply_button.clicked.connect(page._apply_ai_preview)
-        actions.addWidget(apply_button)
-        result_row = QHBoxLayout()
+        result_row.addWidget(apply_button, 3)
+        actions.addLayout(result_row)
+        page.ai_application_status = QLabel('当前字幕尚未应用方案')
+        page.ai_application_status.setObjectName('softMeta')
+        page.ai_application_status.setWordWrap(True)
+        actions.addWidget(page.ai_application_status)
+        result_row = WrapLayout(spacing=6, fill=True)
         save_button = QPushButton("保存样式")
         page.ai_save_style_button = save_button
         save_button.setEnabled(False)
         save_button.setObjectName("studioButton")
         save_button.clicked.connect(page._save_ai_design_presets)
-        result_row.addWidget(save_button, 1)
+        result_row.addWidget(save_button)
         ignore_button = QPushButton("清除")
         ignore_button.setObjectName("studioButton")
         ignore_button.clicked.connect(page._ignore_ai_preview)
-        result_row.addWidget(ignore_button, 1)
-        actions.addLayout(result_row)
-        page.ai_transform_hint = QLabel('可编辑主题 · 拖动字幕移动，拖动角点等比缩放；双击改字。')
-        page.ai_transform_hint.setObjectName('cardMeta')
-        page.ai_transform_hint.setWordWrap(True)
-        page.ai_transform_hint.hide()
-        actions.addWidget(page.ai_transform_hint)
+        result_row.addWidget(ignore_button)
         page.ai_local_polish_button = QPushButton('本地精修文字…')
         page.ai_local_polish_button.setObjectName('studioButton')
         from ..caption_design.theme_local_polish import open_polish_dialog
         page.ai_local_polish_button.clicked.connect(lambda: open_polish_dialog(page))
         page.ai_local_polish_button.setEnabled(False)
-        actions.addWidget(page.ai_local_polish_button)
+        result_row.addWidget(page.ai_local_polish_button)
+        for button in (save_button, ignore_button, page.ai_local_polish_button):
+            button.setProperty("softSize", "sm")
+            button.setProperty("flexibleWidth", True)
+            button.setMinimumWidth(0)
+        actions.addLayout(result_row)
+        page.ai_transform_hint = QLabel('可编辑主题 · 拖动字幕移动，拖动角点等比缩放；双击改字。')
+        page.ai_transform_hint.setObjectName('softMeta')
+        page.ai_transform_hint.setWordWrap(True)
+        page.ai_transform_hint.hide()
+        actions.addWidget(page.ai_transform_hint)
         from ..caption_design.theme_application_ui import install_application_status
         install_application_status(page)
-        layout.addLayout(actions)
+        layout.addWidget(actions_card)
+        # Quiet links for the less used tools (导入档案 joins further below).
+        links = QWidget()
+        page._ai_link_row = WrapLayout(links, spacing=2, fill=False, center=True)
+        for button in (page.ai_resume_saved_button, page.ai_copy_diagnostics):
+            button.setProperty("softRole", "ghost")
+            button.setProperty("softSize", "sm")
+            page._ai_link_row.addWidget(button)
+        layout.addWidget(links)
 
         suggestion_card, suggestion_layout = page._context_card("设计草稿")
+        suggestion_card.setProperty("softCard", True)
         page.ai_suggestion_card = suggestion_card
         page.ai_suggestion_title = QLabel("尚未生成当前视觉方案")
         page.ai_suggestion_title.setObjectName("cardMeta")
@@ -2571,6 +2647,7 @@ class StudioWorkspaceBuilder:
         storyboard_col.setSpacing(2)
         demo = QLabel("渲染中…")
         demo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        demo.setWordWrap(True)
         demo.setMinimumSize(300, 190)
         demo.setStyleSheet("background:#101018; border-radius:6px; color:#7f8aa0;")
         demo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -2686,6 +2763,11 @@ class StudioWorkspaceBuilder:
         page.ai_stream_console.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
+        page.ai_stream_toggle = QPushButton('展开原始输出与技术详情')
+        page.ai_stream_toggle.setObjectName('studioButton')
+        page.ai_stream_toggle.setCheckable(True)
+        page.ai_stream_toggle.toggled.connect(page.ai_stream_console.setVisible)
+        suggestion_layout.addWidget(page.ai_stream_toggle)
         suggestion_layout.addWidget(page.ai_stream_console)
         suggestion_layout.setStretchFactor(page.ai_stream_console, 1)
         page.ai_raw_response_button = QPushButton("查看 AI 原始 JSON")
@@ -2713,7 +2795,9 @@ class StudioWorkspaceBuilder:
         page.ai_import_archive_button.clicked.connect(page._import_ai_theme_archive)
         # Existing archives must be importable before any AI draft exists.
         # The draft card and refinement row are deliberately hidden initially.
-        layout.addWidget(page.ai_import_archive_button)
+        page.ai_import_archive_button.setProperty("softRole", "ghost")
+        page.ai_import_archive_button.setProperty("softSize", "sm")
+        page._ai_link_row.insertWidget(1, page.ai_import_archive_button)
         page.ai_workshop_button = QPushButton("AI 字幕工坊…")
         page.ai_workshop_button.setObjectName("studioButton")
         bind_text(page.ai_workshop_button, '对话式精修已应用的特效字幕：预览真实动画 + 自然语言修改（也可双击视频画面）', property='toolTip')

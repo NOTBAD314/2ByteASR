@@ -45,7 +45,7 @@
 | 影片畫面與字幕疊加 | `studio_video_canvas.py` 的 `MpvCanvas`（也持有播放時鐘） |
 | 快捷鍵 | 定義在 `shortcut_registry.py`，派送在 `studio_ui.py` 的 `_dispatch_shortcut_sequence`，Windows 原生按鍵過濾在 `studio_shortcuts.py` |
 | 工具列排版 | `studio_toolbar_layout.py` |
-| 尋找／取代、文字整理 | `studio_find_replace.py`、`studio_text_tools.py` |
+| 批量替換、AI 清理、應用術語庫（三個視窗共用預覽與套用） | `studio_find_replace.py`、`studio_text_tools.py` |
 | 開啟工程後的「就緒」等待與首幀 | `studio_readiness.py` |
 
 ## 不能破壞的事

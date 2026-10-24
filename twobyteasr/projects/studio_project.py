@@ -340,6 +340,10 @@ class AudioTrack:
     z_index: int = 0
     linked_video_track_id: str = ""
     kind: str = "audio"
+    # 2026-10-24 (multi-track import): >= 0 marks a lane that follows its
+    # video track's clips and plays audio stream N (``0:a:N``) of each clip's
+    # source. -1 = an ordinary lane. Saved only when >= 0 (see to_dict).
+    stream_ordinal: int = -1
 
     def validate(self) -> None:
         self.id = _clean_id(self.id, "audio_track.id")
@@ -350,6 +354,9 @@ class AudioTrack:
         self.locked = bool(self.locked)
         self.z_index = int(self.z_index or 0)
         self.linked_video_track_id = str(self.linked_video_track_id or "").strip()
+        self.stream_ordinal = max(-1, int(self.stream_ordinal if self.stream_ordinal is not None else -1))
+        if self.stream_ordinal >= 0 and not self.linked_video_track_id:
+            self.stream_ordinal = -1
         self.kind = str(self.kind or "audio").strip().lower()
         if self.kind != "audio":
             raise ProjectValidationError(f"audio track {self.id} has invalid kind {self.kind}")
@@ -774,6 +781,8 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
                     asset_id=video_clip.asset_id,
                     linked_video_clip_id=video_clip.id,
                     link_group_id=group.id,
+                    # A fresh import plays the file's default stream.
+                    stream_index=_primary_stream_of(asset),
                 )
                 audio_track.clips.append(audio_clip)
             if group.linked:
@@ -785,6 +794,9 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
                 audio_clip.playback_rate = video_clip.playback_rate
                 audio_clip.link_group_id = group.id
         # enabled belongs to the user; validation must not unmute/reenable it.
+        # So does a clip's stream: validation never picks another one.
+
+    _sync_stream_lanes(project, assets)
 
     # Pure-audio assets receive a standalone compact lane and no fake video lane.
     # Allocation belongs to import/legacy hydration, not graph validation.
@@ -802,16 +814,115 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
             continue
         if has_video:
             continue
-        audio_id = _next_audio_track_id(project)
-        track = AudioTrack(id=audio_id, name=audio_id, z_index=len(project.audio_tracks))
-        if asset.duration_ms:
-            track.clips.append(AudioClip(
-                id=f"audio-{asset.asset_id}",
-                asset_id=asset.asset_id,
-                source_out_ms=asset.duration_ms,
-                timeline_out_ms=asset.duration_ms,
-            ))
-        project.audio_tracks.append(track)
+        # A pure-audio file with several streams gets one lane per stream;
+        # only its default stream is audible at first.
+        from ..media.audio_streams import asset_streams
+        primary = _primary_stream_of(asset)
+        ordinals = [primary] + [row["ordinal"] for row in asset_streams(asset) if row["ordinal"] != primary]
+        for ordinal in ordinals:
+            audio_id = _next_audio_track_id(project)
+            track = AudioTrack(id=audio_id, name=audio_id, z_index=len(project.audio_tracks),
+                               muted=ordinal != primary)
+            if asset.duration_ms:
+                track.clips.append(AudioClip(
+                    id=f"audio-{asset.asset_id}" + (f"-a{ordinal}" if ordinal != primary else ""),
+                    asset_id=asset.asset_id,
+                    source_out_ms=asset.duration_ms,
+                    timeline_out_ms=asset.duration_ms,
+                    stream_index=ordinal,
+                ))
+            project.audio_tracks.append(track)
+
+
+def _primary_stream_of(asset: MediaAsset | None) -> int:
+    """Relative audio ordinal a fresh lane plays: the default stream, else 0."""
+    from ..media.audio_streams import asset_streams, primary_ordinal
+    streams = asset_streams(asset) if asset is not None else []
+    return primary_ordinal(streams) if streams else 0
+
+
+def stream_lane_tracks(project: SubtitleProject, video_track_id: str = "") -> list[AudioTrack]:
+    """Lanes that follow a video track and play its sources' other streams."""
+    return [track for track in project.audio_tracks
+            if track.stream_ordinal >= 0
+            and (not video_track_id or track.linked_video_track_id == video_track_id)]
+
+
+def _sync_stream_lanes(project: SubtitleProject, assets: Mapping[str, MediaAsset]) -> None:
+    """Follower lanes for the further audio streams of each video track's media.
+
+    2026-10-24: a multi-track MP4/MKV used to show (and play, and recognize)
+    only one stream. Each other stream gets its own lane under the video
+    track's A lane, muted at first so playback and export sound as before.
+    Lanes are created once per (source, video track): the source records it
+    in ``audio_metadata["stream_lanes_for"]`` (part of undo snapshots), so a
+    lane the user deletes is not recreated when the project is reopened.
+    Clips mirror the video clips (trim, move, split, speed) like the linked
+    A lane does; their gain and enabled state belong to the user.
+    """
+    from ..media.audio_streams import asset_streams
+    video_ids = {track.id for track in project.video_tracks}
+    project.audio_tracks = [
+        track for track in project.audio_tracks
+        if track.stream_ordinal < 0 or track.linked_video_track_id in video_ids
+    ]
+    groups = {g.video_track_id: g for g in project.av_track_groups if g.video_track_id}
+    by_id = {track.id: track for track in project.audio_tracks}
+    for video in project.video_tracks:
+        group = groups.get(video.id)
+        primary = by_id.get(group.audio_track_id) if group is not None else None
+        played = {clip.linked_video_clip_id: clip.stream_index
+                  for clip in (primary.clips if primary is not None else ())
+                  if clip.linked_video_clip_id}
+        lanes = {track.stream_ordinal: track for track in stream_lane_tracks(project, video.id)}
+        for clip in video.clips:
+            asset = assets.get(clip.asset_id)
+            streams = asset_streams(asset) if asset is not None else []
+            if len(streams) < 2:
+                continue
+            metadata = asset.audio_metadata
+            done = [str(item) for item in metadata.get("stream_lanes_for") or [] if str(item)]
+            if video.id in done:
+                continue
+            playing = played.get(clip.id, _primary_stream_of(asset))
+            for row in streams:
+                ordinal = int(row["ordinal"])
+                if ordinal == playing or ordinal in lanes:
+                    continue
+                lane_id = _next_audio_track_id(project)
+                lane = AudioTrack(id=lane_id, name=lane_id, muted=True,
+                                  linked_video_track_id=video.id, stream_ordinal=ordinal)
+                anchor = max([project.audio_tracks.index(t) for t in (primary, *lanes.values())
+                              if t is not None and t in project.audio_tracks] or [len(project.audio_tracks) - 1])
+                project.audio_tracks.insert(anchor + 1, lane)
+                lane.z_index = anchor + 1
+                lanes[ordinal] = lane
+                by_id[lane_id] = lane
+            metadata["stream_lanes_for"] = done + [video.id]
+        for ordinal, lane in lanes.items():
+            existing = {c.linked_video_clip_id: c for c in lane.clips if c.linked_video_clip_id}
+            mirrored = []
+            for clip in video.clips:
+                asset = assets.get(clip.asset_id)
+                if asset is None or not _asset_has_audio(asset):
+                    continue
+                if not any(row["ordinal"] == ordinal for row in asset_streams(asset)):
+                    continue
+                if played.get(clip.id, -1) == ordinal:
+                    continue  # the A lane already plays this stream of the clip
+                audio_clip = existing.get(clip.id) or AudioClip(
+                    id=f"audio-{clip.id}-a{ordinal}", asset_id=clip.asset_id,
+                    linked_video_clip_id=clip.id)
+                audio_clip.asset_id = clip.asset_id
+                audio_clip.stream_index = ordinal
+                audio_clip.source_in_ms = clip.source_in_ms
+                audio_clip.source_out_ms = clip.source_out_ms
+                audio_clip.timeline_in_ms = clip.timeline_in_ms
+                audio_clip.timeline_out_ms = clip.timeline_out_ms
+                audio_clip.playback_rate = clip.playback_rate
+                audio_clip.link_group_id = ""
+                mirrored.append(audio_clip)
+            lane.clips = mirrored
 
 
 def sync_linked_av_contract(project: SubtitleProject, *, materialize_unreferenced_audio=False) -> None:
@@ -862,6 +973,7 @@ def hydrate_media_contract(
         "best_effort_timestamp_ms": float(identity.get("video_best_effort_timestamp_ms", 0.0) or 0.0),
         "source_start_ms": float(identity.get("source_start_ms", identity.get("container_start_ms", identity.get("format_start_ms", 0.0))) or 0.0),
     }
+    previous_audio = _mapping(target.audio_metadata)
     target.audio_metadata = {
         "has_audio": bool(identity.get("has_audio")),
         "codec": str(identity.get("audio_codec") or ""),
@@ -876,6 +988,15 @@ def hydrate_media_contract(
         "sample_timeline_origin_ms": float(identity.get("sample_timeline_origin_ms", identity.get("audio_start_ms", 0.0)) or 0.0),
         "source_start_ms": float(identity.get("source_start_ms", identity.get("container_start_ms", identity.get("format_start_ms", 0.0))) or 0.0),
     }
+    from ..media.audio_streams import normalize_streams
+    streams = normalize_streams(identity.get("audio_streams"))
+    if streams or "audio_streams" in identity:
+        target.audio_metadata["streams"] = streams
+    elif previous_audio.get("streams"):
+        target.audio_metadata["streams"] = normalize_streams(previous_audio.get("streams"))
+    if previous_audio.get("stream_lanes_for"):
+        # Lanes already made for this source stay as the user left them.
+        target.audio_metadata["stream_lanes_for"] = list(previous_audio["stream_lanes_for"])
     project.studio_state["media_time_mapping"] = {
         "container_start_ms": float(identity.get("container_start_ms", identity.get("format_start_ms", 0.0)) or 0.0),
         "source_start_ms": float(identity.get("source_start_ms", identity.get("container_start_ms", identity.get("format_start_ms", 0.0))) or 0.0),
@@ -1122,6 +1243,9 @@ class SubtitleProject:
         state = payload.get("studio_state", {})
         if isinstance(state, dict):
             state.pop("review_risks", None)
+        # Ordinary lanes are written exactly as before, so projects without
+        # multi-track sources keep opening in earlier builds.
+        payload["audio_tracks"] = [audio_track_payload(track) for track in self.audio_tracks]
         return payload
 
     @classmethod
@@ -1499,6 +1623,15 @@ def _private_project_payload(project: SubtitleProject) -> dict[str, Any]:
             payload[item.name] = [asdict(entry) if is_dataclass(entry) else copy.deepcopy(entry) for entry in value]
         else:
             payload[item.name] = value
+    payload["audio_tracks"] = [audio_track_payload(track) for track in project.audio_tracks]
+    return payload
+
+
+def audio_track_payload(track: AudioTrack) -> dict[str, Any]:
+    """One saved audio lane; ``stream_ordinal`` only on stream-follower lanes."""
+    payload = asdict(track)
+    if int(payload.get("stream_ordinal", -1)) < 0:
+        payload.pop("stream_ordinal", None)
     return payload
 
 

@@ -43,6 +43,12 @@ def language_badge_qss(theme) -> str:
             f'QLabel#languageBadge[tier="{tier}"] {{ background: {blend_hex(theme.surface, hue, fill)}; '
             f"color: {hue}; border: 1px solid {blend_hex(theme.surface, hue, edge)}; font-weight: {weight}; }}"
         )
+        # Home model cards (short labels, 2026-10-23 design A): filled rounded
+        # squares, no outline, a little more fill instead.
+        rules.append(
+            f'QLabel#languageBadge[short="true"][tier="{tier}"] {{ border-color: transparent; '
+            f"background: {blend_hex(theme.surface, hue, fill + (0.04 if theme.is_light else 0.02))}; }}"
+        )
     for color, _meaning in LEGEND:
         rules.append(
             f'QLabel#languageLegendSwatch[color="{color}"] {{ background: {tier_hue(theme, color)}; border-radius: 3px; }}'
@@ -53,10 +59,14 @@ QLabel#languageBadge {{
     border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500;
     border: 1px solid transparent; background: transparent; color: {theme.text_secondary};
 }}
-QLabel#languageBadge[short="true"] {{ padding: 0px 4px; }}
+QLabel#languageBadge[short="true"] {{ padding: 0px 4px; border-radius: 7px; min-width: 14px; min-height: 20px; }}
 {tier_rules}
 QLabel#languageBadge[tier="more"] {{
     background: {theme.surface_elevated}; color: {theme.accent_text}; border: 1px solid {theme.border};
+}}
+QLabel#languageBadge[short="true"][tier="more"] {{
+    background: {blend_hex(theme.surface, theme.text, 0.07 if theme.is_light else 0.1)}; color: {theme.text_secondary};
+    border-color: transparent; padding: 0px 6px;
 }}
 QLabel#languageBadgeCaption {{ color: {theme.text_muted}; font-size: 12px; }}
 """

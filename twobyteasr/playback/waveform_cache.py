@@ -87,6 +87,8 @@ class WaveformMetadata:
     sample_timeline_origin_ms: float = 0.0
     coverage_end_ms: int = 0
     incomplete: bool = False
+    # Relative audio stream (``0:a:N``) this cache describes (2026-10-24).
+    audio_stream: int = 0
 
     @classmethod
     def from_dict(cls, payload: dict) -> "WaveformMetadata":
@@ -106,6 +108,7 @@ class WaveformMetadata:
             sample_timeline_origin_ms=float(payload.get("sample_timeline_origin_ms", payload.get("stream_start_ms", 0.0)) or 0.0),
             coverage_end_ms=int(payload.get("coverage_end_ms", payload.get("duration_ms", 0)) or 0),
             incomplete=bool(payload.get("incomplete", False)),
+            audio_stream=max(0, int(payload.get("audio_stream", 0) or 0)),
         )
 
     def to_dict(self) -> dict:
@@ -125,6 +128,8 @@ class WaveformMetadata:
         }
         if self.incomplete:
             payload["incomplete"] = True
+        if self.audio_stream:
+            payload["audio_stream"] = int(self.audio_stream)
         return payload
 
 
@@ -133,6 +138,24 @@ def media_cache_key(media_path: str | os.PathLike[str]) -> str:
     stat = path.stat()
     identity = f"{path}|{stat.st_size}|{stat.st_mtime_ns}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
+def _stream_origin_ok(metadata: "WaveformMetadata", audio_stream: int, time_mapping) -> bool:
+    """A further stream's cache must start where that stream starts.
+
+    The first stream keeps its earlier reuse rule; a later stream's origin
+    (its late start) is part of what the cache draws, so a different one
+    means the cache was made from another mapping and is rebuilt.
+    """
+    if int(audio_stream or 0) <= 0 or time_mapping is None:
+        return True
+    wanted = float(time_mapping.get("sample_timeline_origin_ms", time_mapping.get("audio_start_ms", 0.0)) or 0.0)
+    return abs(float(metadata.sample_timeline_origin_ms or 0.0) - wanted) <= 1.0
+
+
+def stream_suffix(audio_stream: int = 0) -> str:
+    """Cache folder suffix of one audio stream; the first keeps the old name."""
+    return f"-a{int(audio_stream)}" if int(audio_stream or 0) > 0 else ""
 
 
 def clip_waveform_cache_key(
@@ -375,6 +398,7 @@ def generate_outline_from_media(
     window_seconds: float = 0.5,
     max_windows: int = 96,
     min_windows: int = 8,
+    audio_stream: int = 0,
 ) -> np.ndarray | None:
     """Whole-duration coarse silhouette via bounded strided sampling.
 
@@ -397,8 +421,9 @@ def generate_outline_from_media(
         command = [str(ffmpeg), "-hide_banner", "-loglevel", "error", "-nostdin"]
         for start in starts:
             command += ["-ss", f"{start:.3f}", "-t", f"{window_seconds:.3f}", "-i", str(source)]
+        picks = "".join(f"[{index}:a:{int(audio_stream)}]" for index in range(len(starts)))
         command += [
-            "-filter_complex", f"concat=n={len(starts)}:v=0:a=1[outa]",
+            "-filter_complex", f"{picks}concat=n={len(starts)}:v=0:a=1[outa]",
             "-map", "[outa]", "-vn", "-ac", "1",
             "-ar", str(int(sample_rate)), "-f", "s16le", "pipe:1",
         ]
@@ -464,6 +489,7 @@ def append_outline_level(
         sample_timeline_origin_ms=metadata.sample_timeline_origin_ms,
         coverage_end_ms=metadata.coverage_end_ms,
         incomplete=metadata.incomplete,
+        audio_stream=metadata.audio_stream,
     )
     _write_metadata(metadata_path, updated)
     return outline
@@ -483,6 +509,7 @@ def generate_waveform_cache_incremental(
     snapshot_interval_ms: float = 1500.0,
     snapshot_min_wall_ms: float = 250.0,
     on_snapshot: Callable[[Path, int], None] | None = None,
+    audio_stream: int = 0,
 ) -> Path:
     """Full-resolution waveform with incremental, resumable publishing.
 
@@ -498,7 +525,7 @@ def generate_waveform_cache_incremental(
     if not ffmpeg.is_file():
         raise FileNotFoundError(ffmpeg)
     root = Path(cache_root) if cache_root else waveform_cache_root()
-    target = root / media_cache_key(media)
+    target = root / f"{media_cache_key(media)}{stream_suffix(audio_stream)}"
     metadata_path = target / "metadata.json"
     stat = media.stat()
 
@@ -517,6 +544,7 @@ def generate_waveform_cache_incremental(
                     and existing.sample_rate == SAMPLE_RATE
                     and existing.window_samples == WINDOW_SAMPLES
                     and str(Path(existing.source_path).resolve()) == str(media)
+                    and _stream_origin_ok(existing, audio_stream, time_mapping)
                 )
                 if identity_ok and not existing.incomplete:
                     return target
@@ -569,6 +597,7 @@ def generate_waveform_cache_incremental(
                 _publish_snapshot(
                     pyramid, metadata_path, media, stat, target,
                     coverage_ms, time_mapping, outline, incomplete=True,
+                    audio_stream=audio_stream,
                 )
                 if on_snapshot is not None:
                     on_snapshot(target, int(coverage_ms))
@@ -583,12 +612,14 @@ def generate_waveform_cache_incremental(
             start_seconds=start_seconds,
             cancelled=cancelled,
             on_pairs=on_pairs,
+            audio_stream=audio_stream,
         )
         pyramid.finish()
         coverage_ms = pyramid.frames[0] * milliseconds_per_frame
         _publish_snapshot(
             pyramid, metadata_path, media, stat, target,
             coverage_ms, time_mapping, outline, incomplete=False,
+            audio_stream=audio_stream,
         )
         if on_snapshot is not None:
             on_snapshot(target, int(coverage_ms))
@@ -609,6 +640,7 @@ def _publish_snapshot(
     outline: WaveformLevel | None,
     *,
     incomplete: bool,
+    audio_stream: int = 0,
 ) -> None:
     pyramid.flush()
     metadata = WaveformMetadata(
@@ -625,6 +657,7 @@ def _publish_snapshot(
         sample_timeline_origin_ms=float((time_mapping or {}).get("sample_timeline_origin_ms", (time_mapping or {}).get("audio_start_ms", 0.0)) or 0.0),
         coverage_end_ms=int(round(coverage_ms)),
         incomplete=incomplete,
+        audio_stream=int(audio_stream or 0),
     )
     if not metadata.levels:
         raise WaveformGenerationError("media contains no decodable audio waveform")
@@ -641,6 +674,7 @@ def _decode_audio_buckets(
     max_duration_seconds: float | None = None,
     cancelled: Callable[[], bool] | None = None,
     on_pairs: Callable[[np.ndarray], None] | None = None,
+    audio_stream: int = 0,
 ) -> tuple[int, int]:
     """Sequentially decode mono PCM and reduce it into min/max buckets.
 
@@ -659,7 +693,7 @@ def _decode_audio_buckets(
         "-i",
         str(media_path),
         "-map",
-        "0:a:0",
+        f"0:a:{max(0, int(audio_stream))}",
         "-vn",
         "-ac",
         "1",
@@ -762,6 +796,7 @@ def _decode_level0(
     window_samples: int = WINDOW_SAMPLES,
     start_seconds: float = 0.0,
     max_duration_seconds: float | None = None,
+    audio_stream: int = 0,
 ) -> tuple[int, int]:
     frames = 0
     samples = 0
@@ -778,6 +813,7 @@ def _decode_level0(
             start_seconds=start_seconds,
             max_duration_seconds=max_duration_seconds,
             on_pairs=write_pairs,
+            audio_stream=audio_stream,
         )
     return frames, samples
 
@@ -789,6 +825,7 @@ def generate_waveform_cache(
     cache_root: str | os.PathLike[str] | None = None,
     cancelled: Callable[[], bool] | None = None,
     time_mapping: Mapping[str, object] | None = None,
+    audio_stream: int = 0,
 ) -> Path:
     return _generate_waveform_variant(
         media_path,
@@ -797,8 +834,9 @@ def generate_waveform_cache(
         cancelled=cancelled,
         sample_rate=SAMPLE_RATE,
         window_samples=WINDOW_SAMPLES,
-        key_suffix="",
+        key_suffix=stream_suffix(audio_stream),
         time_mapping=time_mapping,
+        audio_stream=audio_stream,
     )
 
 
@@ -814,6 +852,7 @@ def _generate_waveform_variant(
     time_mapping: Mapping[str, object] | None = None,
     start_seconds: float = 0.0,
     max_duration_seconds: float | None = None,
+    audio_stream: int = 0,
 ) -> Path:
     media = Path(media_path).resolve()
     ffmpeg = Path(ffmpeg_path).resolve()
@@ -838,6 +877,7 @@ def _generate_waveform_variant(
                 and all(key in json.loads(metadata_path.read_text(encoding="utf-8"))
                         for key in ("source_start_ms", "stream_start_ms", "sample_timeline_origin_ms"))
                 and all((target / item.file).is_file() for item in metadata.levels)
+                and _stream_origin_ok(metadata, audio_stream, time_mapping)
             ):
                 return target
         except (OSError, ValueError, KeyError, TypeError, WaveformGenerationError):
@@ -856,6 +896,7 @@ def _generate_waveform_variant(
             window_samples=window_samples,
             start_seconds=start_seconds,
             max_duration_seconds=max_duration_seconds,
+            audio_stream=audio_stream,
         )
         if frames <= 0:
             raise WaveformGenerationError("media contains no decodable audio waveform")
@@ -877,6 +918,7 @@ def _generate_waveform_variant(
             stream_start_ms=float((time_mapping or {}).get("audio_start_ms", (time_mapping or {}).get("stream_start_ms", 0.0)) or 0.0),
             sample_timeline_origin_ms=float((time_mapping or {}).get("sample_timeline_origin_ms", (time_mapping or {}).get("audio_start_ms", 0.0)) or 0.0),
             coverage_end_ms=round(float(start_seconds) * 1000.0 + samples * 1000.0 / sample_rate),
+            audio_stream=int(audio_stream or 0),
         )
         _write_metadata(staging / "metadata.json", metadata)
         if target.exists():
@@ -900,6 +942,7 @@ def generate_progressive_waveform_cache(
     decode_source_resolver: Callable[[], str | os.PathLike[str] | None] | None = None,
     duration_ms: int | None = None,
     log: Callable[[str, Mapping[str, object]], None] | None = None,
+    audio_stream: int = 0,
 ) -> Path:
     """Coarse head -> whole-duration outline -> incrementally published full cache.
 
@@ -908,7 +951,8 @@ def generate_progressive_waveform_cache(
     """
     media = Path(media_path).resolve()
     root = Path(cache_root) if cache_root else waveform_cache_root()
-    final_path = root / media_cache_key(media)
+    suffix = stream_suffix(audio_stream)
+    final_path = root / f"{media_cache_key(media)}{suffix}"
     trace = log or (lambda _event, _fields: None)
     started = perf_counter()
 
@@ -917,7 +961,7 @@ def generate_progressive_waveform_cache(
         try:
             warm = generate_waveform_cache(
                 media, ffmpeg_path, cache_root=root, cancelled=cancelled,
-                time_mapping=time_mapping,
+                time_mapping=time_mapping, audio_stream=audio_stream,
             )
             trace("WAVEFORM", {
                 "cache_hit": True, "stage": "full",
@@ -938,10 +982,11 @@ def generate_progressive_waveform_cache(
         cancelled=cancelled,
         sample_rate=2_000,
         window_samples=1_024,
-        key_suffix="-coarse-v1",
+        key_suffix="-coarse-v1" + suffix,
         time_mapping=time_mapping,
         start_seconds=0.0,
         max_duration_seconds=120.0,
+        audio_stream=audio_stream,
     )
     if on_ready:
         on_ready("coarse", coarse)
@@ -977,6 +1022,7 @@ def generate_progressive_waveform_cache(
         outline_started = perf_counter()
         pairs = generate_outline_from_media(
             decode_path, ffmpeg_path, duration_ms=known_duration_ms, cancelled=cancelled,
+            audio_stream=audio_stream,
         )
         if pairs is not None and len(pairs):
             outline_pairs = pairs
@@ -1024,6 +1070,7 @@ def generate_progressive_waveform_cache(
         outline_ms_per_frame=outline_ms_per_frame,
         min_coverage_ms=min_coverage_ms,
         on_snapshot=on_snapshot,
+        audio_stream=audio_stream,
     )
     if on_ready:
         on_ready("full", final)

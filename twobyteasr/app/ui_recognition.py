@@ -163,8 +163,25 @@ class RecognitionRoleCard(QFrame):
         chips_layout = QHBoxLayout(chips)
         chips_layout.setContentsMargins(0, 0, 0, 0)
         chips_layout.setSpacing(6)
-        chips_layout.addWidget(self.kind_badge)
-        chips_layout.addWidget(self.status_badge)
+        # 2026-10-23 (home design A): local/online and readiness read as one
+        # pill, "● 在线 · 已配置", tinted by the readiness tone.
+        self.status_pill = QFrame()
+        self.status_pill.setObjectName("recognitionStatusPill")
+        self.status_pill.setProperty("tone", "muted")
+        self.status_pill.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+        pill = QHBoxLayout(self.status_pill)
+        pill.setContentsMargins(10, 4, 11, 4)
+        pill.setSpacing(5)
+        self.status_dot = QLabel()
+        self.status_dot.setObjectName("recognitionStatusDot")
+        self.status_dot.setFixedSize(7, 7)
+        self.status_separator = QLabel("·")
+        self.status_separator.setObjectName("recognitionStatusSeparator")
+        pill.addWidget(self.status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        pill.addWidget(self.kind_badge)
+        pill.addWidget(self.status_separator)
+        pill.addWidget(self.status_badge)
+        chips_layout.addWidget(self.status_pill)
         self.recovery = QPushButton("")
         self.recovery.setObjectName("recognitionRecovery")
         self.recovery.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -202,7 +219,7 @@ class RecognitionRoleCard(QFrame):
         identity.addWidget(self.model_label, 1)
         self.change_hint = QLabel()
         self.change_hint.setObjectName("recognitionChangeHint")
-        self.change_hint.setFixedWidth(10)
+        self.change_hint.setFixedSize(26, 26)  # a round chip in the role's hue (home design A)
         self.change_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         identity.addWidget(self.change_hint, 0, Qt.AlignmentFlag.AlignVCenter)
         self.detail_hint = self.change_hint  # one chevron replaces 点击更换 + 详情 ›
@@ -270,7 +287,8 @@ class RecognitionRoleCard(QFrame):
     def _paint_chevron(self) -> None:
         import qtawesome as qta
         from . import ui_zoom
-        color = theme_definition(theme_key()).text_muted
+        theme = theme_definition(theme_key())
+        color = theme.role_colors.get(self.role, theme.text_muted)
         self.change_hint.setPixmap(qta.icon("fa5s.chevron-right", color=color).pixmap(ui_zoom.px(10), ui_zoom.px(12)))
 
     def _paint_icon(self) -> None:
@@ -322,8 +340,10 @@ class RecognitionRoleCard(QFrame):
             self.recovery.show()
         else:
             self.recovery.hide()
-        self.status_badge.style().unpolish(self.status_badge)
-        self.status_badge.style().polish(self.status_badge)
+        self.status_pill.setProperty("tone", tone if tone in ("good", "warn") else "muted")
+        for widget in (self.status_pill, self.status_dot, self.kind_badge, self.status_separator, self.status_badge):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
         self.status_badge.update()
         self._sync_model_slot_height()
         self._layout_status()
@@ -383,8 +403,18 @@ class RecognitionRoleCard(QFrame):
         compact = self._responsive_profile == "compact"
         self._chips.setMinimumHeight(0 if compact else self.recovery.sizeHint().height())
 
-        def needed(*widgets):
-            chips = sum(w.sizeHint().width() + 6 for w in widgets if w is not None)
+        from . import ui_zoom
+
+        def needed(kind, status, recovery):
+            # kind and status share one pill: its dot and padding, a separator between them.
+            words = [w for w in (kind, status) if w is not None]
+            chips = sum(w.sizeHint().width() for w in words)
+            if words:
+                chips += ui_zoom.px(32) + 6
+            if len(words) == 2:
+                chips += self.status_separator.sizeHint().width() + ui_zoom.px(10)
+            if recovery is not None:
+                chips += recovery.sizeHint().width() + 6
             return self.role_label.sizeHint().width() + chips + 12
 
         recovery = None if self.recovery.isHidden() else self.recovery
@@ -396,6 +426,8 @@ class RecognitionRoleCard(QFrame):
             status = None
         self.kind_badge.setVisible(kind is not None)
         self.status_badge.setVisible(status is not None)
+        self.status_separator.setVisible(kind is not None and status is not None)
+        self.status_pill.setVisible(kind is not None or status is not None)
         self.status_badge.setToolTip(self.kind_badge.text() if kind is None and recovery is None else "")
         self.recovery.setToolTip(self.status_badge.text() if status is None else "")
         wrapped = needed(kind, status, recovery) > available

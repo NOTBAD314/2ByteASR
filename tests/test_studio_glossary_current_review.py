@@ -13,7 +13,7 @@ from twobyteasr.glossary.terminology import GlossarySnapshot, GlossaryLibrary, T
 from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
 from twobyteasr.glossary.studio_glossary_review import recover_review_edits, diff_occurrences
 from twobyteasr.studio.studio_text_tools import TextOccurrence, values_from_occurrences
-from twobyteasr.studio.studio_find_replace import FindReplaceDialog, TermAssociationDialog, PreviewBinding, apply_occurrences
+from twobyteasr.studio.studio_find_replace import GlossaryReviewDialog, TermAssociationDialog, PreviewBinding, apply_occurrences
 
 
 def library(*terms):
@@ -167,8 +167,8 @@ def actual_store(monkeypatch,tmp_path):
 
 def test_empty_ui_missing_row_prefills_newcanonical_and_disables_apply(actual_store):
     app=QApplication.instance() or QApplication([])
-    p=project('奥特曼守住');page=Page(p);dialog=FindReplaceDialog(page)
-    dialog.tabs.setCurrentIndex(3);dialog._do_preview()
+    p=project('奥特曼守住');page=Page(p);dialog=GlossaryReviewDialog(page)
+    dialog._do_preview()
     assert not dialog.all_button.isEnabled() and dialog.preview.count()>0
     item=next(dialog.preview.item(i) for i in range(dialog.preview.count())
         if dialog.preview.item(i).data(Qt.UserRole+1)['surface']=='奥特曼')
@@ -201,7 +201,7 @@ def test_association_preserves_distinct_ids_and_revision(actual_store):
 
 def test_unchecked_review_controls_apply_button(actual_store):
     app=QApplication.instance() or QApplication([]);p=project('Borlin守住');page=Page(p)
-    dialog=FindReplaceDialog(page);dialog.tabs.setCurrentIndex(3)
+    dialog=GlossaryReviewDialog(page)
     hits=diff_occurrences(p.cues[0],'BerLIN守住',reason='待确认',source='ai_review',selected=False)
     dialog._fill_preview(hits)
     assert not dialog.all_button.isEnabled()

@@ -28,20 +28,15 @@ class CompletionRetryThread(QThread):
 
 
 def open_completion_retry_review(studio, report, options, *, stage='polish'):
-    from ..studio.studio_find_replace import FindReplaceDialog, PreviewBinding
+    from ..studio.studio_find_replace import GlossaryReviewDialog, PreviewBinding
     from ..projects.studio_project import SubtitleProject
     project = studio.session.project
     if project is None:
         return
     binding = PreviewBinding.capture(project)
     copied = SubtitleProject.from_dict(copy.deepcopy(project.to_dict()))
-    dialog = FindReplaceDialog(studio, studio)
-    dialog.tabs.setCurrentIndex(3)
-    for index in range(dialog.tabs.count()):
-        dialog.tabs.setTabEnabled(index, index == 3)
-    dialog.tabs.tabBar().setEnabled(False)
+    dialog = GlossaryReviewDialog(studio, studio)
     generation = dialog._review_generation
-    dialog.ai_run_button.setEnabled(False)
     bind_text(dialog, '重试未完成 AI 校对' if stage == 'polish' else '重试联网核验', property='windowTitle')
     dialog._preview_library_ids = tuple(project.glossary_ids)
     dialog._preview_snapshot_digest = None
@@ -50,7 +45,6 @@ def open_completion_retry_review(studio, report, options, *, stage='polish'):
     dialog.terms_ai_button.setEnabled(False)
     dialog.project_entities_button.setEnabled(False)
     dialog.preview_button.setEnabled(False)
-    dialog.next_button.setEnabled(False)
     dialog.all_button.setEnabled(False)
     bind_text(dialog.status_label, '只重试原任务未完成范围，完成后显示差异；原字幕尚未修改。')
     worker = CompletionRetryThread(copied, report, options, stage, dialog)
@@ -60,7 +54,7 @@ def open_completion_retry_review(studio, report, options, *, stage='polish'):
     def ready(result):
         if dialog._review_close_pending:
             return
-        if dialog.tabs.currentIndex() != 3 or dialog._review_generation != generation or not binding.matches(studio.session.project):
+        if dialog._review_generation != generation or not binding.matches(studio.session.project):
             bind_text(dialog.status_label, '工程或文字已改变；重试结果未应用，请重新预览。')
             return
         dialog._fill_preview(list(result.hits), binding)
@@ -83,7 +77,7 @@ def open_completion_retry_review(studio, report, options, *, stage='polish'):
         dialog._glossary_review_worker = None
         worker.deleteLater()
         if dialog._review_close_pending:
-            FindReplaceDialog.reject(dialog)
+            GlossaryReviewDialog.reject(dialog)
 
     worker.ready.connect(ready)
     worker.failed.connect(failed)

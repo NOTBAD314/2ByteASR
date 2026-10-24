@@ -5,8 +5,8 @@ import copy
 from dataclasses import replace
 from types import SimpleNamespace
 
-from PySide6.QtCore import Qt, QElapsedTimer, QTimer, QRectF, QPointF
-from PySide6.QtGui import QPixmap, QFont, QFontMetricsF, QPainter, QColor, QPalette
+from PySide6.QtCore import Qt, QElapsedTimer, QTimer, QRectF, QPointF, QSignalBlocker
+from PySide6.QtGui import QIcon, QPixmap, QFont, QFontMetricsF, QPainter, QColor, QPalette
 from PySide6.QtWidgets import QLabel, QPushButton, QHBoxLayout, QSizePolicy
 
 from ..design.studio_theme import StudioComboBox
@@ -37,9 +37,7 @@ class MotionSample(QLabel):
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.setMinimumWidth(0)
         self.setObjectName('motionPreview')
-        # A neutral video stage keeps white caption fills legible in light UI.
-        self.setStyleSheet('QLabel#motionPreview { border-radius: 7px; background: qlineargradient('
-                           'x1:0, y1:0, x2:0, y2:1, stop:0 #283A4F, stop:1 #161F2B); }')
+        self.set_corner_radius(7)
         self.clock = QElapsedTimer()
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
@@ -54,6 +52,21 @@ class MotionSample(QLabel):
         #: (entry_ms, exit_ms) draws a timing strip: entry · hold · exit.
         self.phases = None
         self.font_pixel_size = 22
+
+    def set_corner_radius(self, radius):
+        self._corner_radius = int(radius)
+        self.refresh_theme_palette()
+
+    def refresh_theme_palette(self):
+        # A video stage keeps white caption fills legible; its tone follows
+        # the theme (2026-10-24: one navy clashed with the light themes).
+        # apply_theme calls this for visible previews and on the next show.
+        from ..design.soft_qss import preview_stage
+        from ..design.theme_manager import theme_key
+        from ..design.ui_theme import theme_definition
+        top, bottom = preview_stage(theme_definition(theme_key()))
+        self.setStyleSheet(f'QLabel#motionPreview {{ border-radius: {self._corner_radius}px; background: qlineargradient('
+                           f'x1:0, y1:0, x2:0, y2:1, stop:0 {top}, stop:1 {bottom}); }}')
 
     def set_snapshot(self, snapshot):
         self.snapshot = snapshot
@@ -163,6 +176,9 @@ class MotionWorkflow:
         self.page = page = controller.page
         self.dirty = False
         self.pending_motion = False
+        self._applying = False
+        self._gesture = None
+        self._selection_key = None
         page.motion_word_mode = StudioComboBox()
         for label, value in [('整句显示', 'none'), ('逐词出现', 'word_reveal'),
                              ('蓝白卡拉 OK', 'karaoke_wipe'), ('卡拉 OK · 依次点亮', 'karaoke_highlight'), ('只高亮当前词', 'word_current')]:
@@ -178,16 +194,29 @@ class MotionWorkflow:
                 page.motion_word_color.addItem({'word_mist':'冰蓝','word_sweep':'香槟金','word_pulse':'青瓷','word_echo':'淡紫','word_float':'蔷薇粉','word_dust':'柔金'}[key], color)
         page.motion_word_mode.setParent(page.motion_legacy)
         page.motion_word_mode.hide()
+        # 2026-10-23 (user's design A): a quiet title row with small tonal
+        # buttons, a rounded preview, the parameters in a card and the scope
+        # with 应用 in a raised footer.
+        layout.setContentsMargins(14, 6, 14, 12)
+        layout.setSpacing(10)
         title_row = QHBoxLayout()
-        title = QLabel(tr('本条预览')); title.setObjectName('cardMeta')
+        title_row.setSpacing(6)
+        title = QLabel(tr('本条预览')); title.setObjectName('softLabel')
         title_row.addWidget(title, 1)
         title_row.addWidget(page.motion_replay_button)
         page.motion_replay_button.setText(tr('播放'))
         page.motion_library_button.setText(tr('更多预设…'))
+        page.motion_library_button.setProperty('softRole', 'tint')
+        for button in (page.motion_replay_button, page.motion_library_button):
+            button.setProperty('softSize', 'sm')
+        from ..design.themed_icons import install_themed_icon
+        install_themed_icon(page.motion_replay_button, 'fa5s.play', 'secondary')
+        page.motion_library_button.setIcon(QIcon())
         title_row.addWidget(page.motion_library_button)
         layout.addLayout(title_row)
         page.motion_sample = MotionSample(page)
-        page.motion_sample.setFixedHeight(78)
+        page.motion_sample.set_corner_radius(12)
+        page.motion_sample.setFixedHeight(84)
         page.motion_panel.responsive_preview = page.motion_sample
         layout.addWidget(page.motion_sample)
         layout.addWidget(page.graph_motion_summary)
@@ -195,26 +224,58 @@ class MotionWorkflow:
         for label, value in [('当前字幕', 'current'), ('已选字幕', 'selected'),
                              ('当前说话人', 'speaker'), ('全部字幕', 'all')]:
             page.motion_scope.addItem(tr(label), value)
+        page.motion_language = StudioComboBox()
+        for label,value in [('双语联动','linked'),('仅原文','original'),('仅译文','translation')]:
+            page.motion_language.addItem(tr(label),value)
         page.motion_status = QLabel()
-        page.motion_status.setObjectName('cardMeta')
+        page.motion_status.setObjectName('softMeta')
         page.motion_status.setWordWrap(True)
         page.motion_apply = QPushButton(tr('应用动效'))
         page.motion_apply.setObjectName('studioPrimaryButton')
+        page.motion_apply.setProperty('softSize', 'lg')
         page.motion_apply.clicked.connect(self.apply)
+        # Every pick and value change applies at once (draft_changed), so the
+        # footer holds only the targets: 范围 and 语言层, captions inside.
+        from ..design.soft_widgets import CaptionField, soft_card
+        footer, footer_layout = soft_card(margins=(10, 10, 10, 10), spacing=8)
+        footer.setObjectName('motionFooter')
+        page.motion_apply.setParent(footer)
+        page.motion_apply.hide()
         scope_row = QHBoxLayout()
-        scope_row.addWidget(page.motion_scope, 1)
-        scope_row.addWidget(page.motion_apply, 1)
+        scope_row.setSpacing(8)
+        scope_row.addWidget(CaptionField('范围', page.motion_scope), 1)
+        scope_row.addWidget(CaptionField('语言层', page.motion_language), 1)
         from .motion_inspector_ui import MotionInspector
         page.motion_inspector = MotionInspector(self)
         layout.addWidget(page.motion_inspector, 1)
-        layout.addWidget(page.motion_status)
-        layout.addLayout(scope_row)
+        footer_layout.addWidget(page.motion_status)
+        footer_layout.addLayout(scope_row)
+        layout.addWidget(footer)
         page.motion_word_mode.currentIndexChanged.connect(self.draft_changed)
         page.motion_word_color.currentIndexChanged.connect(self.draft_changed)
         page.motion_scope.currentIndexChanged.connect(self.update_status)
+        page.motion_language.currentIndexChanged.connect(self.language_changed)
+        page.motion_inspector.slider.sliderPressed.connect(self.begin_gesture)
+        page.motion_inspector.slider.sliderReleased.connect(self.end_gesture)
         for name in ('effect_duration', 'effect_out_duration', 'effect_delay', 'effect_scale',
                      'effect_offset_x', 'effect_offset_y', 'effect_blur', 'effect_overshoot', 'effect_accel', 'effect_loop_duration'):
             getattr(page, name).valueChanged.connect(self.motion_changed)
+
+    def begin_gesture(self):
+        self._gesture = object()
+
+    def end_gesture(self):
+        self._gesture = None
+
+    def language_changed(self, *_):
+        # A target change only loads its saved values. It is never an edit.
+        self._gesture = None
+        previous = self.page._updating_style_ui
+        self.page._updating_style_ui = True
+        try:
+            self.load()
+        finally:
+            self.page._updating_style_ui = previous
 
     def targets(self):
         page = self.page
@@ -253,7 +314,7 @@ class MotionWorkflow:
                 'color': str(self.page.motion_word_color.currentData() or '#FFD166')}
 
     def draft_changed(self, *_):
-        if self.page._updating_style_ui:
+        if self.page._updating_style_ui or self._applying:
             return
         self.dirty = True
         self.page._motion_contract_dirty = False
@@ -261,6 +322,7 @@ class MotionWorkflow:
         self.update_status()
         self.page.motion_inspector.sync()
         self.preview()
+        self.apply()
 
     def motion_changed(self, *_):
         if self.page._updating_style_ui:
@@ -284,29 +346,45 @@ class MotionWorkflow:
             message += tr('按已有字词时间同步。')
             if missing:
                 message += tr(' {count} 条缺少字词时间，保持整句。', count=missing)
+            if self.page.motion_language.currentData() in {'linked','translation'}:
+                message += tr(' 译文使用整句淡入，不复制原文的字词时间。')
         self.page.motion_status.setText(message)
         self.page.motion_status.setVisible(bool(message))
         self.page.motion_apply.setEnabled(bool(eligible))
         self.page.motion_apply.setText(tr('应用到 {count} 条字幕', count=len(eligible)))
+        if not message:
+            self.page.motion_status.setText(tr('选择预设或调整参数即生效 · {count} 条字幕',count=len(eligible)))
+            self.page.motion_status.setVisible(True)
 
     def load(self):
         page = self.page
         cue = page.session._cue_lookup.get(page.selected_cue_id)
         if cue is None:
             return
-        effect = validate_effect(page.project.effects.get(cue.effect_id, {}))
+        key=(id(page.project),cue.id)
+        if key != self._selection_key:
+            self._selection_key=key
+            self._gesture=None
+            if page.motion_scope.currentData() in {'all','speaker'}:
+                with QSignalBlocker(page.motion_scope):page.motion_scope.setCurrentIndex(0)
+        language=page.motion_language.currentData()
+        effect_id=(cue.transform.get('language_motion',{}).get('translation_effect_id','none')
+                   if language=='translation' else cue.effect_id)
+        effect = validate_effect(page.project.effects.get(effect_id, {}))
         word = word_part(effect)
         page._set_combo_data(page.motion_word_mode, word.get('type', 'none'))
         page._set_combo_data(page.motion_word_color, word.get('color', '#FFD166'))
         entry = effect['entry']['type']
-        recipe = page.project.style_recipes.get(cue.style_id, {})
+        from .caption_layer_transform import layer_values
+        recipe_id=layer_values(cue,'translation').get('style_id',cue.style_id) if language=='translation' else cue.style_id
+        recipe = page.project.style_recipes.get(recipe_id, {})
         authored = recipe.get('visualGraph', {}).get('motionGraph', {}).get('tracks')
         if authored and not effect.get('motion_override') and entry in WORD_MODES | {'none'}:
             page._set_combo_data(page.effect_preset, 'visual_graph')
         else:
             page._set_combo_data(page.effect_preset, 'none' if entry in WORD_MODES else entry)
             page.graph_motion_summary.hide()
-        page._load_motion_controls(cue.effect_id)
+        page._load_motion_controls(effect_id)
         self.dirty = self.pending_motion = False
         self.update_status()
         self.page.motion_inspector.load_effect(effect)
@@ -347,6 +425,13 @@ class MotionWorkflow:
     def _show(self, project, cue_id):
         from .visual_snapshot import build_visual_cue_snapshot
         cue = next(c for c in project.cues if c.id == cue_id)
+        if self.page.motion_language.currentData()=='translation':
+            from .caption_layer_transform import displayed_layer
+            companion=displayed_layer(project,cue,'translation')
+            if companion is not None:
+                project=copy.copy(project)
+                project.__dict__.pop('_studio_state_runtime',None)
+                project.cues=[companion];cue=companion;cue_id=cue.id
         effect = validate_effect(project.effects.get(cue.effect_id, {}))
         def length(part):
             return part.get('duration', 0)+part.get('delay', 0) if part['type'] not in WORD_MODES | {'none'} else 0
@@ -356,15 +441,22 @@ class MotionWorkflow:
 
     def apply(self):
         page = self.page
+        if self._applying or page._updating_style_ui:
+            return
         targets = [c.id for c in self.targets() if self.supported(c)]
         if not targets:
             self.update_status()
             return
         command = motion_command(page.project, targets,
             motion=self.motion_effect() if self.pending_motion else None,
-            words=self.word_settings(), changed=page._changed)
-        if command:
-            page.session.undo_stack.push(command)
-        page._load_style_inspector()
-        page.motion_status.setText(tr('已应用到 {count} 条字幕，可撤销。点「播放」再看一遍。', count=len(targets)))
+            words=self.word_settings(), changed=page._changed,
+            language=page.motion_language.currentData(),merge_token=self._gesture)
+        self._applying=True
+        try:
+            if command:
+                page.session.undo_stack.push(command)
+            page._load_style_inspector()
+        finally:
+            self._applying=False
+        page.motion_status.setText(tr('已即时应用到 {count} 条字幕，可撤销。', count=len(targets)))
         page._show_studio_hint(tr('字幕动效已应用到 {count} 条', count=len(targets)))

@@ -284,6 +284,7 @@ def run_disclosure(settings: dict) -> dict:
         timeline = 'qwen_aligner'
     review = str(models.get('qwen_asr_backend', 'off'))
     info = {'engine': primary, 'speakers': '', 'timestamps': '', 'uploads': [], 'cost': [], 'local': []}
+    native_words = False
     if primary == 'api':
         from ..providers.api_setup_catalog import guide_for, model_choice
         from urllib.parse import urlsplit
@@ -310,7 +311,8 @@ def run_disclosure(settings: dict) -> dict:
             info['cost'].append(guide.cost)
         if choice is not None:
             info['speakers'] = '云端模型返回的说话人' if choice.speakers else '没有说话人区分（单轨）'
-            native = '云端返回的字/词级时间' if choice.timestamps == 'word' else '云端返回的句段时间（不是逐字时间）'
+            native_words = choice.timestamps == 'word'
+            native = '云端返回的字/词级时间' if native_words else '云端返回的句段时间（不是逐字时间）'
         else:
             info['speakers'] = '取决于服务返回'
             native = '云端返回的时间'
@@ -346,6 +348,10 @@ def run_disclosure(settings: dict) -> dict:
     else:
         info['timestamps'] = f'{timeline} 时间轴'
         info['local'].append(timeline)
+    # 2026-10-21: measured word times exist only with a timeline model or a
+    # cloud model that returns them; otherwise the primary's sentence times
+    # are all there is (the pre-run check warns, ``MainWindow._confirm_run_limits``).
+    info['word_timing'] = timeline != 'off' or native_words
     info['notes'] = []
     if language_stage is not None:
         from ..subtitle_rules.european_text import LABELS as european_labels

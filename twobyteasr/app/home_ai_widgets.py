@@ -27,6 +27,7 @@ from ..design.home_qss import AI_LOCK_HUE, ai_lock_palette
 from ..design.ui_widgets import AnimatedButton
 from ..i18n import bind_text
 from . import ui_zoom
+from .home_widgets import MarkedPill
 from .main_ui_helpers import _active_theme_definition
 
 # feature_gate() answers plus the running test (ai_connection_record).
@@ -98,7 +99,8 @@ class HomeAiCard(QFrame):
         self._detail = ""
 
         outer = self._outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 12, 18, 14)
+        # The band's own margins, like a model card (no inner frame since 10-23).
+        outer.setContentsMargins(18, 14, 18, 16)
         outer.setSpacing(6)
         self.role_label = QLabel("AI 文字处理")
         self.role_label.setObjectName("homeAiRole")
@@ -120,7 +122,7 @@ class HomeAiCard(QFrame):
         self.title_label.setObjectName("homeAiTitle")
         self.title_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         title_row.addWidget(self.title_label)
-        self.state_chip = QLabel()
+        self.state_chip = MarkedPill(mark="dot")   # 2026-10-23 (design A): a pill with a dot
         self.state_chip.setObjectName("homeAiState")
         title_row.addWidget(self.state_chip, 0, Qt.AlignmentFlag.AlignVCenter)
         title_row.addStretch(1)
@@ -137,7 +139,7 @@ class HomeAiCard(QFrame):
         features.setSpacing(6)
         self.features: dict[str, QLabel] = {}
         for key in ("group", "polish", "terms", "translate"):
-            chip = QLabel()
+            chip = MarkedPill(mark="fa5s.check")
             chip.setObjectName("homeAiFeature")
             features.addWidget(chip)
             self.features[key] = chip
@@ -160,6 +162,8 @@ class HomeAiCard(QFrame):
         self.test_button.clicked.connect(self.test_requested.emit)
         self.settings_button = AnimatedButton("AI 设置")
         self.settings_button.setObjectName("homeAiSettings")
+        install_themed_icon(self.settings_button, "fa5s.cog", "zone_ai")
+        self.settings_button.setProperty("flexibleWidth", True)   # its icon and weight decide the width
         self.settings_button.clicked.connect(self.settings_requested.emit)
         for button in (self.connect_button, self.test_button, self.settings_button):
             button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -252,6 +256,7 @@ class HomeAiCard(QFrame):
     def _set_feature(self, key: str, on: bool, on_text: str, off_text: str) -> None:
         chip = self.features[key]
         chip.setProperty("on", bool(on))
+        chip.set_mark("fa5s.check" if on else "fa5s.minus")
         bind_text(chip, on_text if on or not off_text else off_text)
 
     def refresh_theme(self) -> None:

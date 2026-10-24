@@ -31,9 +31,10 @@ def test_stage_cards_keep_independent_choices_and_duration(tmp_path):
         inspector.choose('entry', 'soft_pop')
         inspector.tabs.setCurrentIndex(0); inspector.seconds.setValue(.45)
         inspector.choose('words', 'karaoke_wipe')
+        applied = copy.deepcopy(page.project.to_dict())
         for index in (3, 2, 0, 1, 3): inspector.tabs.setCurrentIndex(index)
-        assert page.project.to_dict() == before
-        page.motion_apply.click()
+        assert page.project.to_dict() == applied
+        assert applied != before
         effect = page.project.effects[page.project.cues[0].effect_id]
         assert (effect['entry']['type'], effect['entry']['duration']) == ('soft_pop', 450)
         assert (effect['exit']['type'], effect['exit']['duration']) == ('scale', 650)
@@ -41,8 +42,10 @@ def test_stage_cards_keep_independent_choices_and_duration(tmp_path):
         assert effect['word_highlight']['type'] == 'karaoke_wipe'
         assert effect['word_highlight']['color'] == '#4D9FFF'
         assert page.project.to_dict()['styles'][0] == before['styles'][0]
-        page.undo_stack.undo(); assert [c.effect_id for c in page.project.cues] == ['none']*3
-        page.undo_stack.redo(); assert page.project.effects[page.project.cues[0].effect_id] == effect
+        while page.undo_stack.canUndo():page.undo_stack.undo()
+        assert [c.effect_id for c in page.project.cues] == ['none']*3
+        while page.undo_stack.canRedo():page.undo_stack.redo()
+        assert page.project.effects[page.project.cues[0].effect_id] == effect
         loaded = load_project(save_project(page.project, tmp_path/'motion.2byteasr'))
         assert loaded.effects[loaded.cues[0].effect_id] == effect
     finally: close(page)

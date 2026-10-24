@@ -87,13 +87,17 @@ class PacketMeasurement:
 
 
 def measure_packets(ffmpeg, path, stream, *, selector='v:0', cancelled=None):
+    return _measure_packet_streams(ffmpeg,path,{0:stream},selector=selector,cancelled=cancelled)[0]
+
+
+def _measure_packet_streams(ffmpeg,path,streams,*,selector=None,cancelled=None):
     from ..system.processes import popen_hidden_subprocess, stop_process_tree
     command = [str(Path(ffmpeg).with_name('ffprobe.exe' if os.name == 'nt' else 'ffprobe')),
-        '-v', 'error', '-select_streams', selector, '-show_packets', '-show_entries',
-        'packet=pts_time,dts_time,duration_time,size', '-of', 'compact=p=0:nk=0', str(path)]
+        '-v', 'error', *(['-select_streams',selector] if selector else []), '-show_packets', '-show_entries',
+        'packet=stream_index,pts_time,dts_time,duration_time,size', '-of', 'compact=p=0:nk=0', str(path)]
     process = popen_hidden_subprocess(command, purpose=f'export {selector} packet bitrate measurement',
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace')
-    result = PacketMeasurement()
+    results = {index:PacketMeasurement() for index in streams}
     errors = []
     stopped = threading.Event()
     state = {'cancelled': False, 'timeout': False}
@@ -102,7 +106,7 @@ def measure_packets(ffmpeg, path, stream, *, selector='v:0', cancelled=None):
             errors.append(line)
             del errors[:-20]
     def watch():
-        deadline = time.monotonic() + max(30, (_number(stream.get('duration'), positive=True) or 0) * 2)
+        deadline = time.monotonic() + max(30, max((_number(s.get('duration'), positive=True) or 0 for s in streams.values()),default=0) * 2)
         while not stopped.wait(.05):
             if cancelled and cancelled():
                 state['cancelled'] = True
@@ -118,7 +122,8 @@ def measure_packets(ffmpeg, path, stream, *, selector='v:0', cancelled=None):
     try:
         for line in process.stdout:
             packet = dict(part.split('=', 1) for part in line.strip().split('|') if '=' in part)
-            result.add(packet)
+            index=0 if selector else int(packet.get('stream_index',-1))
+            if index in results:results[index].add(packet)
         code = process.wait()
         reader.join(timeout=2)
         if state['cancelled'] or (cancelled and cancelled()):
@@ -127,7 +132,7 @@ def measure_packets(ffmpeg, path, stream, *, selector='v:0', cancelled=None):
             raise RuntimeError('export packet measurement timed out')
         if code:
             raise RuntimeError('export packet measurement failed: ' + ''.join(errors)[-1000:])
-        return result.result(stream)
+        return {index:result.result(streams[index]) for index,result in results.items()}
     finally:
         stopped.set()
         if process.poll() is None:
@@ -140,7 +145,15 @@ def export_bitrate_measurements(ffmpeg, path, metadata, *, cancelled=None):
     result = {}
     audio = []
     video_index = audio_index = 0
-    for stream in metadata.get('streams', []):
+    streams={int(s.get('index',i)):s for i,s in enumerate(metadata.get('streams',[]))
+             if s.get('codec_type') in {'video','audio'}}
+    try:
+        scanned=_measure_packet_streams(ffmpeg,path,streams,cancelled=cancelled)
+        scan_error=None
+    except InterruptedError:raise
+    except Exception as exc:
+        scanned={};scan_error=exc
+    for index,stream in streams.items():
         kind = stream.get('codec_type')
         if kind not in {'video', 'audio'}:
             continue
@@ -148,7 +161,8 @@ def export_bitrate_measurements(ffmpeg, path, metadata, *, cancelled=None):
             continue  # The delivered primary video stream is v:0.
         selector = f'v:{video_index}' if kind == 'video' else f'a:{audio_index}'
         try:
-            measurement = measure_packets(ffmpeg, path, stream, selector=selector, cancelled=cancelled)
+            if scan_error is not None:raise scan_error
+            measurement = scanned[index]
         except InterruptedError:
             raise
         except Exception as exc:

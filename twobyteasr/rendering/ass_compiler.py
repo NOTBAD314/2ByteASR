@@ -142,16 +142,35 @@ def _cue_transform_override(cue: Any, effect_override: str, resolved_style=None)
     if x is not None and y is not None and r"\pos" not in effect_override and r"\move" not in effect_override:
         x, y = (resolved_style.position_x, resolved_style.position_y) if resolved_style else (x, y)
         tags.append(rf"\pos({_ass_number(x)},{_ass_number(y)})")
-    if transform.get("scale_x") is not None:
+    if transform.get("scale_x") is not None and not transform.get('_canvas_transform'):
         tags.append(rf"\fscx{_ass_number(float(transform['scale_x']))}")
-    if transform.get("scale_y") is not None:
+    if transform.get("scale_y") is not None and not transform.get('_canvas_transform'):
         tags.append(rf"\fscy{_ass_number(float(transform['scale_y']))}")
     if transform.get("rotation") is not None:
-        tags.append(rf"\frz{_ass_number(float(transform['rotation']))}")
+        sign = -1 if transform.get('_canvas_transform') else 1
+        tags.append(rf"\frz{_ass_number(sign*float(transform['rotation']))}")
     if transform.get("font_size") is not None:
         size = resolved_style.font_size if resolved_style else float(transform['font_size'])
         tags.append(rf"\fs{_ass_number(size)}")
     return "".join(tags)
+
+
+def _base_motion_tags(value, cue, style):
+    """ASS motion uses relative 100% scales; compose with the authored base."""
+    transform=thaw_json(cue.transform) or {}
+    if not transform.get('_canvas_transform'):
+        return value
+    import re
+    def compose(block):
+        text=block.group(0)
+        for axis,scale in (('x',style.scale_x),('y',style.scale_y)):
+            text=re.sub(r'\\fsc'+axis+r'(-?\d+(?:\.\d+)?)',
+                lambda m:r'\fsc'+axis+_ass_number(float(m[1])*scale/100),text)
+        text=re.sub(r'\\frz(-?\d+(?:\.\d+)?)',
+            lambda m:r'\frz'+_ass_number(float(m[1])-float(transform.get('rotation',0))),text)
+        return text
+    # Values passed here are either tag-only strings or ASS text with braces.
+    return re.sub(r'\{[^}]*\}',compose,value) if '{' in value else compose(re.match(r'[\s\S]*',value))
 
 
 def _style_anchor_position(
@@ -202,12 +221,13 @@ def compile_ass(project: SubtitleProject, *, frame_rate=None, cues: Sequence[Any
     from ..timeline.caption_frame_time import project_frame_rate
     if frame_rate is None:frame_rate=project_frame_rate(project)
     from ..caption_style.word_animation import build_word_animation, needs_word_plan
-    word_plans = {c.id: build_word_animation(project, c) for c in (cues if cues is not None else project.cues)
+    shown = project_display_cues(project, cues if cues is not None else project.cues)
+    word_plans = {c.id: build_word_animation(project, c) for c in shown
                   if needs_word_plan(project.effects.get(c.effect_id, {}))}
     word_plans.update(getattr(project, '_word_animation_plans', {}))
     return _compile_ass_records(
         # Original / translation / bilingual: the same layout the live preview draws.
-        cues=project_display_cues(project, cues if cues is not None else project.cues),
+        cues=shown,
         frame_rate=frame_rate,
         styles=project.styles,
         speakers=project.speakers,
@@ -241,7 +261,8 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
         language = normalize_language(language.get("code") if isinstance(language, Mapping) else language)
         cues = style_cues_for_state(state, cues, language=language or "", metadata=metadata)
     from ..caption_style.speaker_names import enabled
-    if (settings.mode != "original" and translations_of(metadata)) or enabled(state):
+    if (settings.group_transform or (settings.mode != "original" and translations_of(metadata)) or enabled(state)
+            or any('language_layers' in (thaw_json(c.transform) or {}) for c in cues)):
         from ..projects.studio_project import StudioCue
         cues = display_cues([StudioCue(**cue.to_dict()) for cue in cues],
                             translations=style_translations(state, translations_of(metadata)),
@@ -306,7 +327,22 @@ def _compile_ass_records(
     for cue in cues:
         caption = resolved_captions[cue.id]
         from .ass_font_units import ass_font_style
-        effective = ass_font_style(caption.style, play_res_x, play_res_y)
+        authored_style = caption.style
+        transform = thaw_json(cue.transform) or {}
+        if transform.get('_canvas_transform') and ('anchor_x' in transform or 'anchor_y' in transform):
+            from math import cos, sin, radians
+            from ..caption_style.resolved_caption_style import visible_glyph_size
+            from ..caption_style.visual_snapshot import _anchor
+            x,y,ax,ay = _anchor(authored_style,play_res_x,play_res_y)
+            width,height = visible_glyph_size(caption.text,authored_style.font_family,authored_style.bold,
+                authored_style.font_size,authored_style.spacing,authored_style.font_weight,
+                authored_style.font_style_name,authored_style.font_file,authored_style.font_face_index)
+            dx=(ax-float(transform.get('anchor_x',ax)))*width*authored_style.scale_x/100
+            dy=(ay-float(transform.get('anchor_y',ay)))*height*authored_style.scale_y/100
+            angle=radians(float(transform.get('rotation',0)))
+            authored_style.position_x=x+cos(angle)*dx-sin(angle)*dy
+            authored_style.position_y=y+sin(angle)*dx+cos(angle)*dy
+        effective = ass_font_style(authored_style, play_res_x, play_res_y)
         effective.id = f"resolved-{caption.style_hash[:20]}"
         cue_styles[cue.id] = effective
     lines.extend(_style_line(style) for style in {style.id:style for style in cue_styles.values()}.values())
@@ -336,6 +372,13 @@ def _compile_ass_records(
         cue_duration = cue.end_ms - cue.start_ms
         from ..caption_style.word_animation import compile_word_ass, word_part
         plan = (word_animations or {}).get(cue.id, {})
+        from ..caption_style.bilingual_layout import is_companion
+        if not plan and (is_companion(cue.id) or (thaw_json(cue.transform) or {}).get('_language_materialized')=='translation'):
+            # Immutable revisions contain source acoustic plans. Rich whole-
+            # line motion must also be expanded for each derived translation.
+            from types import SimpleNamespace
+            from ..caption_style.word_animation import build_word_animation
+            plan=build_word_animation(SimpleNamespace(effects=effects),cue,effect=effect)
         if plan and getattr(cue, '_speaker_name_prefix', ''):
             from ..caption_style.word_animation import remap_word_animation
             plan = remap_word_animation(dict(plan, static_prefix=cue._speaker_name_prefix), caption.text)
@@ -346,7 +389,7 @@ def _compile_ass_records(
         def animated_text(offset=0):
             if word_part(effect):
                 return compile_word_ass(plan, caption.text, cue_styles[cue.id].primary_color, offset_ms=offset)
-            return compile_effect_text(escape_ass_text(caption.text), effect, cue_duration_ms=cue_duration)
+            return _base_motion_tags(compile_effect_text(escape_ass_text(caption.text), effect, cue_duration_ms=cue_duration),cue,cue_styles[cue.id])
         text = animated_text()
         resolved_style = cue_styles[cue.id]
         lines.append(f"; CaptionStyle cue={cue.id} hash={caption.style_hash} lines={caption.line_count} width={caption.measured_width:g}")
@@ -361,6 +404,8 @@ def _compile_ass_records(
         )
         if motion_segments:
             for relative_start, relative_end, segment_override in motion_segments:
+                segment_override=_base_motion_tags(segment_override,cue,resolved_style)
+                segment_override=_cue_transform_override(cue,segment_override,resolved_style)+segment_override
                 segment_text = "{" + ass_override + segment_override + "}" + animated_text(relative_start)
                 lines.append(
                     _dialogue_line(
@@ -388,7 +433,7 @@ def _compile_ass_records(
                     play_res_y=play_res_y,
                     target_position=target_position,
                 )
-                settled_override = ass_override + settled_override
+                settled_override = ass_override + _base_motion_tags(settled_override,cue,resolved_style)
                 settled_override = _cue_transform_override(cue, settled_override, resolved_style) + settled_override
                 settled_override = _style_position_override(resolved_style, settled_override) + settled_override
                 settled_text = ("{" + settled_override + "}" + animated_text(settled_at)) if settled_override else animated_text(settled_at)
@@ -410,7 +455,7 @@ def _compile_ass_records(
             play_res_y=play_res_y,
             target_position=target_position,
         )
-        override = ass_override + override
+        override = ass_override + _base_motion_tags(override,cue,resolved_style)
         override = _cue_transform_override(cue, override, resolved_style) + override
         override = _style_position_override(resolved_style, override) + override
         if override:

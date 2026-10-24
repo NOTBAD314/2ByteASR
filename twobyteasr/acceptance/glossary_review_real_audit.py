@@ -23,7 +23,7 @@ def start(window, output):
     from .blank_project_audit import _capture
     from ..diagnostics.build_identity import load_build_identity
     from ..timeline.studio_commands import MutationOrigin, SetCueFieldsCommand
-    from ..studio.studio_find_replace import FindReplaceDialog
+    from ..studio.studio_find_replace import GlossaryReviewDialog
     from ..projects.studio_project import load_project
     from ..exports.studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts, verify_subtitle_artifact
     from ..timeline.studio_edit_sequence import projected_cues
@@ -127,10 +127,10 @@ def start(window, output):
                 self.busy = False
 
         def dialog_ready(self):
-            return isinstance(QApplication.activeModalWidget(), FindReplaceDialog)
+            return isinstance(QApplication.activeModalWidget(), GlossaryReviewDialog)
 
         def open_dialog(self):
-            QTimer.singleShot(0, lambda: QTest.mouseClick(self.page.studio_find_replace_button, Qt.LeftButton))
+            QTimer.singleShot(0, lambda: GlossaryReviewDialog(self.page, self.page).exec())
 
         def start_preview(self, dialog):
             self.entered.clear()
@@ -154,7 +154,6 @@ def start(window, output):
                 self.open_dialog()
                 yield self.dialog_ready
                 dialog = QApplication.activeModalWidget()
-                dialog.tabs.setCurrentIndex(3)
                 self.start_preview(dialog)
                 yield self.entered.is_set
                 self.check('preview worker leaves UI timer responsive', dialog._glossary_review_worker.isRunning())
@@ -167,7 +166,6 @@ def start(window, output):
                 self.open_dialog()
                 yield self.dialog_ready
                 dialog = QApplication.activeModalWidget()
-                dialog.tabs.setCurrentIndex(3)
                 self.start_preview(dialog)
                 yield self.entered.is_set
                 cue = project.cues[0]
@@ -188,7 +186,6 @@ def start(window, output):
             self.open_dialog()
             yield self.dialog_ready
             dialog = QApplication.activeModalWidget()
-            dialog.tabs.setCurrentIndex(3)
             self.gate.set()
             QTest.mouseClick(dialog.terms_ai_button, Qt.LeftButton)
             if live:

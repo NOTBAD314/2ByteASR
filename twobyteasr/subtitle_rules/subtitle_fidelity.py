@@ -63,7 +63,48 @@ def _spread_on_source(cues, source):
     return None if queue else cues
 
 
-def recover_final_content(finalized, grouped, segments, tokens, legacy):
+def _restores_recorded_omissions(rows, omitted, expected):
+    """True when ``rows`` are the turn's source minus exactly the ``omitted`` cues.
+
+    Each omitted piece goes back once, in time order, between the lines around
+    it in time (0.05 s slack); a different character, one more or one fewer,
+    or a changed number is still lost text.
+    """
+    from .number_fidelity import numeric_event_values
+    from .text_rules import content_exact
+    ordered=sorted(rows,key=lambda r:(r.start,r.end))
+    owner=[r for r in ordered for _ in content_exact(r.text)]
+    actual=''.join(content_exact(r.text) for r in ordered)
+    pieces=sorted(omitted,key=lambda c:(c.start,c.end))
+    texts=[content_exact(c.text) for c in pieces]
+    if (tuple(v for r in ordered for v in numeric_event_values(r.text))!=expected[1] or not all(texts)
+            or len(expected[0])!=len(actual)+sum(map(len,texts))):
+        return False
+    offsets=[0]
+    for text in texts:
+        offsets.append(offsets[-1]+len(text))
+    def fits(k,j):
+        left=owner[j-1] if j else None
+        right=owner[j] if j<len(owner) else None
+        return ((left is None or left.start<=pieces[k].start+.05)
+                and (right is None or right.end>=pieces[k].end-.05))
+    source,seen,stack=expected[0],set(),[(0,0)]
+    while stack:
+        i,k=stack.pop()
+        if (i,k) in seen:continue
+        seen.add((i,k))
+        if i==len(source):
+            if k==len(texts):return True
+            continue
+        j=i-offsets[k]
+        if k<len(texts) and source.startswith(texts[k],i) and fits(k,j):
+            stack.append((i+len(texts[k]),k+1))
+        if j<len(actual) and source[i]==actual[j]:
+            stack.append((i+1,k))
+    return False
+
+
+def recover_final_content(finalized, grouped, segments, tokens, legacy, omitted=()):
     """Bounded recovery per continuous turn; never silently export invalid text.
 
     Numeric events are compared per cue, so a split 20 -> 2 | 0 is rejected
@@ -78,6 +119,12 @@ def recover_final_content(finalized, grouped, segments, tokens, legacy):
     the nearest - decided once, and a rebuilt turn must keep its lines in order
     inside the turn without overlapping; otherwise its pieces are spread over
     their segments by character count.
+
+    2026-10-23 (second user, ``S00 0.000s``): the single-character pass drops
+    lone fillers such as 「哦」 on purpose. This check did not know, rebuilt
+    the whole 425-second turn (bringing the filler back) and failed the job
+    when no rebuild fit. ``omitted`` lists those dropped cues; a turn that
+    differs from its source only by them passes as it is.
     """
     from .number_fidelity import numeric_event_values
     from .text_rules import content_exact
@@ -105,11 +152,17 @@ def recover_final_content(finalized, grouped, segments, tokens, legacy):
                 tuple(v for r in ordered for v in numeric_event_values(r.text)))
     owners=[turn_of(c) for c in finalized]
     grouped_owners=[turn_of(c) for c in grouped]
+    omitted_owners=[turn_of(c) for c in omitted]
     rebuilt={}
     for index,source in enumerate(turns):
         rows=[c for c,owner in zip(finalized,owners) if owner==index]
         expected=signature(source)
         if signature(rows)==expected:continue
+        dropped=[c for c,owner in zip(omitted,omitted_owners) if owner==index]
+        if dropped and _restores_recorded_omissions(rows,dropped,expected):
+            legacy.record_run_event('final_content_recorded_omissions',speaker=source[0].speaker,
+                start=source[0].start,end=source[-1].end,omitted=[c.text for c in dropped])
+            continue
         legacy.record_run_event('final_content_conservation_recovery',speaker=source[0].speaker,
             start=source[0].start,end=source[-1].end,expected_numbers=expected[1],actual_numbers=signature(rows)[1])
         low,high=source[0].start-.15,source[-1].end+.05

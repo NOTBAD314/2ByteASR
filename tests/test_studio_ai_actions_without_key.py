@@ -373,7 +373,7 @@ def test_find_replace_ai_cleanup(monkeypatch, missing):
     monkeypatch.setattr(studio_find_replace, "request_text_cleanup", lambda *a, **kw: calls.append(a) or [])
     monkeypatch.setattr(studio_find_replace, "_scope_cue_ids", lambda page, scope: ["c1"])
     dialog = _find_replace(_project(), _fill_preview=lambda hits, binding: filled.append(hits))
-    studio_find_replace.FindReplaceDialog._do_ai_preview(dialog)
+    studio_find_replace.AiCleanupDialog._do_ai_preview(dialog)
     assert checked == ["polish"]
     if missing:
         assert len(asked) == 1 and calls == [] and filled == []
@@ -389,7 +389,7 @@ def test_find_replace_glossary_ai_preview_without_a_key(monkeypatch):
     monkeypatch.setattr(studio_find_replace, "_GlossaryReviewThread", lambda *a, **kw: started.append(a))
     dialog = _find_replace(_project(), _fill_preview=lambda *a: None,
                            _read_selected_snapshot=lambda: ((), SimpleNamespace(canonical_terms=("芙宁娜",))))
-    studio_find_replace.FindReplaceDialog._do_terms_ai_preview(dialog)
+    studio_find_replace.GlossaryReviewDialog._do_terms_ai_preview(dialog)
     assert len(asked) == 1 and checked == ["polish"] and started == []
     assert dialog.status_label.text() == "AI 校对没有运行：还没填 API Key"
 

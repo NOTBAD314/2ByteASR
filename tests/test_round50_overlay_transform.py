@@ -28,20 +28,28 @@ def _app() -> QApplication:
 
 
 def test_transform_panel_spin_widths_are_uniform():
-    _app()
+    # 2026-10-23（视频面板方案 C）：数值框随抽屉宽度伸缩，不再固定 96 px；
+    # 同一行的 X / Y 两格始终一样宽，且放得下数值。
+    app = _app()
     page = SubtitleStudioPage()
-    controls = [
-        page.video_position_x, page.video_position_y,
-        page.video_scale_x, page.video_scale_y,
-        page.video_rotation, page.video_opacity,
-        page.video_anchor_x, page.video_anchor_y,
-    ]
-    widths = {(c.minimumWidth(), c.maximumWidth()) for c in controls}
-    assert len(widths) == 1, f"数值控件宽度不统一: {widths}"
-    width = controls[0].minimumWidth()
-    assert width > 0
-    page.close_page()
-    page.deleteLater()
+    try:
+        page.resize(1600, 900)
+        page.show()
+        page.context_drawer.setCurrentIndex(page.video_transform_tab_index)
+        for _ in range(5):
+            app.processEvents()
+        pairs = [
+            (page.video_position_x, page.video_position_y),
+            (page.video_scale_x, page.video_scale_y),
+            (page.video_anchor_x, page.video_anchor_y),
+        ]
+        for x_spin, y_spin in pairs:
+            x_box, y_box = x_spin.parentWidget(), y_spin.parentWidget()
+            assert abs(x_box.width() - y_box.width()) <= 1, f"{x_spin.objectName()} 两格宽度不一致"
+            assert x_spin.width() >= x_spin.fontMetrics().horizontalAdvance("100.00")
+    finally:
+        page.close_page()
+        page.deleteLater()
 
 
 def test_scale_link_defaults_on_and_syncs_both_axes():

@@ -307,7 +307,7 @@ class StudioStyleController:
         bind_text(page.style_scope, '选择后，后续样式调整会自动作用于该范围', property='toolTip')
         scope_row.addWidget(page.style_scope, 1)
         scope_layout.addLayout(scope_row)
-        page.style_apply_geometry = QCheckBox("同时应用位置与缩放")
+        page.style_apply_geometry = QCheckBox("套用样式时包含位置与缩放")
         page.style_apply_geometry.setObjectName("styleInlineCheck")
         page.style_apply_geometry.setChecked(True)
         bind_text(page.style_apply_geometry, '勾选后，批量应用样式时同步应用当前的位置、边距与缩放；关闭则保留每条字幕各自的几何。', property='toolTip')
@@ -1102,6 +1102,9 @@ class StudioStyleController:
         page.motion_jump_button.clicked.connect(lambda: page.context_drawer.setCurrentIndex(page.motion_tab_index))
 
         position_card, position_layout = page._style_section("高级位置与对齐", expanded=False)
+        # 2026-10-24 (user): the per-caption 位置与变换 (原文 / 译文 position,
+        # scale, rotation, anchor) lives on the 视频 tab, where clips move;
+        # 应用到 leads this tab again.
         page.style_alignment = StudioComboBox()
         for label, value in (
             ("左下", 1), ("居中下", 2), ("右下", 3),
@@ -1391,7 +1394,8 @@ class StudioStyleController:
             from .motion_application import motion_command
             from .word_animation import word_part
             command = motion_command(self.session.project, targets, motion=effect,
-                words=word_part(effect) or {'type': 'none'}, changed=page._changed)
+                words=word_part(effect) or {'type': 'none'}, changed=page._changed,
+                language=page.motion_language.currentData())
             if command:
                 self.session.undo_stack.push(command)
             page._load_style_inspector()
@@ -1470,11 +1474,32 @@ class StudioStyleController:
                 mapped[cue_id] = target_id
         if not mapped:
             return
+        language=page.motion_language.currentData()
+        transforms={}
+        for cue_id in cue_ids:
+            cue=cue_by_id(self.session.project,cue_id)
+            transform=copy.deepcopy(cue.transform or {})
+            layers=transform.setdefault('language_layers',{})
+            translated=layers.setdefault('translation',{})
+            prior=transform.get('language_motion',{})
+            if language=='original':
+                translated.setdefault('style_id',cue.style_id)
+                translated_effect=prior.get('translation_effect_id','none')
+            else:
+                translated['style_id']=mapped[cue_id]
+                clean=validate_effect({'entry':{'type':'none'},'exit':{'type':'none'}})
+                translated_effect='cue-motion-'+hashlib.sha256(json.dumps(clean,sort_keys=True).encode()).hexdigest()[:16]
+                effects[translated_effect]=clean
+                if language=='translation':
+                    mapped[cue_id]=cue.style_id
+                    effect_ids[cue_id]=cue.effect_id
+            transform['language_motion']={'linked':language=='linked','translation_effect_id':translated_effect,'word_fallback':'whole_sentence'}
+            transforms[cue_id]=transform
         first = cue_by_id(self.session.project, cue_ids[0])
         self.session.undo_stack.push(SetCuesPresentationCommand(
             self.session.project, cue_ids, style_id=mapped[cue_ids[0]], style_ids=mapped,
             effect_id=effect_ids[first.id], effect_ids=effect_ids, styles=styles,
-            effects=effects, style_recipes=recipes,
+            effects=effects, style_recipes=recipes,transform_overrides=transforms,
             text=f"应用 Motion: {preset.name}", changed=page._changed,
         ))
         page.motion_preview.play_motion(builtin_effects()[preset.preview_effect_id])
@@ -2775,7 +2800,7 @@ class StudioStyleController:
             page.style_position_y.setValue(
                 vertical[row] if style.position_y is None else style.position_y
             )
-            if hasattr(page, "position_overlay"):
+            if hasattr(page, "position_overlay") and not page.position_overlay._dragging:
                 page.position_overlay.set_video_position(
                     page.style_position_x.value(),
                     page.style_position_y.value(),
@@ -2850,7 +2875,7 @@ class StudioStyleController:
                 saved_recipe = StylePresetStore().load_recipes().get(style.id)
                 if isinstance(saved_recipe, Mapping):
                     recipe = dict(saved_recipe)
-            if hasattr(page, "position_overlay"):
+            if hasattr(page, "position_overlay") and not page.position_overlay._dragging:
                 graph = recipe.get("visualGraph") if isinstance(recipe, Mapping) else {}
                 if isinstance(graph, Mapping) and graph:
                     from ..caption_design.visual_design_graph import VisualDesignGraph, visual_composition_bounds
@@ -2908,6 +2933,8 @@ class StudioStyleController:
                 blocker.unblock()
             page._updating_style_ui = False
             _refresh_appearance_summaries(page)
+            if hasattr(page,'caption_transform_panel'):
+                page.caption_transform_panel.refresh()
 
     def _apply_mixed_style_display(
         self,
@@ -3587,11 +3614,12 @@ class StudioStyleController:
             styles = [item for item in styles if item.id not in ids or item.id == target_style_id] + additions
         # Copies this apply leaves without any subtitle or speaker go with it;
         # undo restores them with the rest of the previous presentation.
-        from .style_cleanup import without_unused_derived
+        from .style_cleanup import without_unused_derived,layer_style_ids
         targets = set(cue_ids)
         referenced = {cue.style_id for cue in self.session.project.cues if cue.id not in targets}
         referenced.update(speaker.style_id for speaker in self.session.project.speakers)
         referenced.update(batch_style_ids.get(cue_id, target_style_id) for cue_id in cue_ids)
+        referenced.update(layer_style_ids(self.session.project.cues))
         styles, style_recipes, _removed = without_unused_derived(styles, style_recipes, referenced)
         if all(
             cue_by_id(self.session.project, cue_id).style_id == target_style_id

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import copy
 import functools
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 COMPANION_SUFFIX = "#tr"
@@ -39,6 +39,7 @@ class BilingualSettings:
     # of visible space. Never changed on open; set for new bilingual projects
     # and by the explicit "apply compact bilingual layout" command.
     layout: str = ""
+    group_transform: dict = field(default_factory=dict, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         value = {"mode": self.mode, "order": self.order, "original_scale": self.original_scale,
@@ -73,11 +74,13 @@ def settings_from_state(state: Mapping[str, Any] | None) -> BilingualSettings:
         return BilingualSettings(mode, order, number("original_scale", 0.78, 0.4, 1.6),
                                  number("translation_scale", 1.0, 0.4, 1.6), str(raw.get("translation_font") or ""),
                                  number("gap_ratio", 0.18, 0.0, 1.0),
-                                 layout=raw.get("layout") if raw.get("layout") in LAYOUTS else "")
+                                 layout=raw.get("layout") if raw.get("layout") in LAYOUTS else "",
+                                 group_transform=copy.deepcopy(state.get('caption_group_transform') or {}))
     if state.get("bilingual_mode"):
         # Projects from before 2026-10-12: translation above, 0.66 size, original untouched.
-        return BilingualSettings("bilingual", "translation_first", 1.0, 0.66, "", 0.06, legacy=True)
-    return BilingualSettings()
+        return BilingualSettings("bilingual", "translation_first", 1.0, 0.66, "", 0.06, legacy=True,
+            group_transform=copy.deepcopy(state.get('caption_group_transform') or {}))
+    return BilingualSettings(group_transform=copy.deepcopy(state.get('caption_group_transform') or {}))
 
 
 def translations_of(metadata: Mapping[str, Any] | None) -> Mapping[str, str]:
@@ -197,22 +200,23 @@ def _translation_font(settings: BilingualSettings, text: str, style) -> str:
     return ""
 
 
-def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settings: BilingualSettings,
+def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settings: BilingualSettings,
                  styles, speakers, style_recipes, play_res_x: int = 1920, play_res_y: int = 1080,
                  show_speaker_names: bool = False) -> list:
     """Cues to draw for ``settings`` (originals possibly adjusted, plus companions)."""
     cues = list(cues)
+    from .caption_layer_transform import materialize_layer
     from .speaker_names import decorate, constrain_layout
     if show_speaker_names:
         cues=constrain_layout(cues,styles,speakers,play_res_x,play_res_y)
     if settings.mode == "original" or not translations:
-        return [decorate(cue, speakers) for cue in cues] if show_speaker_names else cues
+        return [materialize_layer(decorate(cue, speakers) if show_speaker_names else cue,'original') for cue in cues]
     from .resolved_caption_style import resolve_caption_style
     out = []
     for cue in cues:
         text = str(translation_for_cue(translations, cue.id) or "").strip()
         if not text:
-            out.append(decorate(cue, speakers) if show_speaker_names else cue)
+            out.append(materialize_layer(decorate(cue, speakers) if show_speaker_names else cue,'original'))
             continue
         if show_speaker_names and settings.mode == 'bilingual' and settings.order == 'original_first':
             cue = decorate(cue, speakers)
@@ -227,7 +231,7 @@ def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settin
             font = _translation_font(settings, text, base)
             if font:
                 shown.appearance_override = dict(shown.appearance_override or {}, font_family=font)
-            out.append(shown)
+            out.append(materialize_layer(shown,'translation'))
             continue
         original = cue if settings.legacy else _with_transform(
             cue, font_size=round(base.font_size * settings.original_scale, 2))
@@ -263,7 +267,7 @@ def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settin
             clamp = lambda value: round(max(4.0, min(play_res_y - 4.0, value)))
             companion.transform.update(position_x=round(x), position_y=clamp(companion_y))
             original = _with_transform(original, position_x=round(x), position_y=clamp(original_y))
-            out.extend((original, companion))
+            out.extend((materialize_layer(original,'original'), materialize_layer(companion,'translation')))
             continue
         gap = settings.gap_ratio * float(companion_caption.style.font_size)
         original_h, companion_h = _block_height(original_caption), _block_height(companion_caption)
@@ -284,8 +288,29 @@ def display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settin
         if original_y != y:
             original = _with_transform(original, position_x=round(x),
                                        position_y=round(max(4.0, min(play_res_y - 4.0, original_y))))
-        out.extend((original, companion))
+        out.extend((materialize_layer(original,'original'), materialize_layer(companion,'translation')))
     return out
+
+
+def display_cues(cues, *, translations, settings, styles, speakers, style_recipes,
+                 play_res_x=1920, play_res_y=1080, show_speaker_names=False):
+    source=list(cues)
+    defaults=settings.group_transform.get('defaults',{})
+    if defaults:
+        updated=[]
+        for cue in source:
+            cue=copy.deepcopy(cue)
+            layers=cue.transform.setdefault('language_layers',{})
+            for language,fields in defaults.items():
+                target=layers.setdefault(language,{})
+                for key,value in fields.items():target.setdefault(key,value)
+            updated.append(cue)
+        source=updated
+    rows=_display_cues(source,translations=translations,settings=settings,styles=styles,
+        speakers=speakers,style_recipes=style_recipes,play_res_x=play_res_x,play_res_y=play_res_y,
+        show_speaker_names=show_speaker_names)
+    from .caption_group_transform import apply_display
+    return apply_display(rows,source,settings.group_transform,styles,speakers,style_recipes,play_res_x,play_res_y)
 
 
 def project_display_cues(project, cues=None) -> list:
@@ -314,9 +339,10 @@ def materialize_display_project(project):
     """
     from .speaker_names import enabled
     names = enabled(project.studio_state)
-    if settings_from_state(project.studio_state).mode == "original" and not names:
+    layers = any(c.transform.get('language_layers') or c.transform.get('language_motion') for c in project.cues)
+    if settings_from_state(project.studio_state).mode == "original" and not names and not layers:
         return project
-    if not translations_of(project.generation_metadata) and not names:
+    if not translations_of(project.generation_metadata) and not names and not layers:
         return project
     from ..subtitle_rules.punctuation_style import mark_cues_styled
     result = copy.deepcopy(project)

@@ -174,12 +174,25 @@ class SceneRasterizer:
                     image = self.native_frame(prepared, relative, width, height)
                 if image.isNull():
                     raise ValueError('empty raster')
+                gesture=getattr(prepared,'interaction_transform',None)
+                painter.save()
+                if gesture:
+                    px=width/max(1,snapshot.playres_x);py=height/max(1,snapshot.playres_y)
+                    painter.translate(gesture['position_x']*px,gesture['position_y']*py)
+                    painter.rotate(gesture.get('rotation',snapshot.rotation)-snapshot.rotation)
+                    painter.scale(gesture['scale_x']/100/max(.0001,snapshot.scale_x),
+                                  gesture['scale_y']/100/max(.0001,snapshot.scale_y))
+                    painter.translate(-snapshot.position_x*px,-snapshot.position_y*py)
                 painter.drawImage(output.rect(), image)
+                painter.restore()
                 import numpy as np
                 packed = image.convertToFormat(QImage.Format_RGBA8888)
                 alpha = np.ndarray((packed.height(), packed.width(), 4), dtype=np.uint8,
                     buffer=packed.constBits(), strides=(packed.bytesPerLine(), 4, 1))[:, :, 3]
                 row.update(status='rendered', alpha_nonzero=int(np.count_nonzero(alpha)))
+                ys=np.flatnonzero(np.any(alpha,axis=1));xs=np.flatnonzero(np.any(alpha,axis=0))
+                row.update(bounds=[int(xs[0]),int(ys[0]),int(xs[-1]-xs[0]+1),int(ys[-1]-ys[0]+1)] if len(xs) and len(ys) else None,
+                           viewport=[packed.width(),packed.height()])
                 if prepared.preview_error:
                     row.update(status='fallback', error=prepared.preview_error)
             except Exception as exc:
@@ -290,13 +303,15 @@ class CaptionScene(QObject):
         page = self.page
         if self.closed or page.project is not self.project:
             return False
+        panel=getattr(page,'caption_transform_panel',None)
+        if panel is not None:panel.refresh_gesture_targets(cues)
         raster_only = getattr(getattr(page.video, 'controller', None), 'supports_native_subtitles', True) is False
         audio_tail = getattr(page, '_audio_tail_visual_active', lambda:False)()
         from ..timeline.studio_caption_timeline import independent_captions
         independent = independent_captions(page.project)
         from ..caption_style.word_animation import word_part
         timed = any(word_part(page.project.effects.get(c.effect_id, {})) for c in cues)
-        if not self.active and len(cues) < 2 and not raster_only and not audio_tail and not independent and not timed:
+        if not self.active and len(cues) < 2 and not raster_only and not audio_tail and not independent and not timed and not getattr(page,'_caption_transform_preview',{}):
             return False
         if not self.active:
             self.active = True
@@ -312,6 +327,11 @@ class CaptionScene(QObject):
         if token != self.token:
             previous, self.token = self.token, token
             self.published = None
+            with self.lock:
+                # Preheat is optional. Old visual revisions/viewport sizes can
+                # never be published and must not queue behind an active edit.
+                self.warm_pending = OrderedDict((key,value) for key,value in self.warm_pending.items()
+                    if key[:3]==token[:3] and key[-4:]==token[-4:])
             # A chain of holds (a short cue whose raster was never shown) keeps
             # one deadline: the time the bitmap on screen first went stale.
             stale_since = self._hold[1] if self._hold is not None else None
@@ -481,16 +501,21 @@ class CaptionScene(QObject):
                 if prepared is None and cache is not None:
                     prepared = cache.failure(page._revision_store.render, key, *page._advanced_preview_size())
                 items.append((key, prepared))
-        return tuple(items)
+        preview=getattr(page,'_caption_transform_preview',{})
+        return tuple((key,replace(prepared,interaction_transform=preview[key])
+                      if key in preview and prepared is not None and hasattr(prepared,'snapshot') else prepared)
+                     for key,prepared in items)
 
     def scene_token(self,cues,rect,generation):
         page=self.page;revision=page._revision_store.render
         return (id(self.project),revision.mapping_revision,revision.visual_revision,generation,tuple(c.id for c in cues),
-                repr((getattr(page,'_live_edit_text_overrides',{}),getattr(page,'_live_transform_overrides',{}),
+                repr((getattr(page,'_caption_transform_preview_serial',0),getattr(page,'_live_edit_text_overrides',{}),getattr(page,'_live_transform_overrides',{}),
                       [(c.id,c.start_ms,c.end_ms,c.speaker_id) for c in cues])),*rect.getRect())
 
     def preheat(self,milliseconds,rect,generation,width,height):
         """Prepare upcoming static active sets before their first visible tick."""
+        if getattr(self.page.video,'_paused',True):
+            return
         from bisect import bisect_right
         self._last_preheat=time.perf_counter()
         runtime=self.page.session.runtime
@@ -561,6 +586,12 @@ class CaptionScene(QObject):
                 started = time.perf_counter()
                 try:
                     image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3])
+                    if any(row['status']=='pending' for row in rows):
+                        # A configured HTML page is not yet a rendered frame.
+                        # Keep the last complete foreground until WebSceneCache
+                        # wakes us with both language layers; never publish a
+                        # transparent/half-built replacement as "ready".
+                        continue
                     pixels = prepared_pixels(image, None, started, self.page.video._compositor_overlay_dir/'caption-scenes')
                 except Exception as exc:
                     # A transient raster/upload failure gets one retry, then
@@ -621,6 +652,10 @@ class CaptionScene(QObject):
                                      cue_id=context['cue_id'] if accepted else '')
         self.metrics.append({**trace, 'posted': accepted})
         self.last_result_token = token
+        geometry=getattr(page,'_selection_geometry',None)
+        selected=getattr(page,'_cue_lookup',{}).get(getattr(page,'selected_cue_id',''))
+        if geometry is not None and selected is not None:
+            geometry.sync(selected,page.project.style_recipes.get(selected.style_id,{}))
         failed = [row for row in trace['cue_pixels'] if row['status'] in ('failed', 'fallback')]
         if failed:
             bind_text(page.save_state, '{value0} 条字幕主题异常 · 使用基础预览', value0=len(failed))

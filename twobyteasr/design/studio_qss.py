@@ -143,6 +143,8 @@ QFrame#studioToolbar QPushButton[buttonRole="toggle"]:focus {{ border-color: {th
 QFrame#studioToolbar QPushButton[buttonRole="primary"] {{ min-height: 32px; max-height: 32px; padding: 0 14px; font-size: {t.label_size}px; }}
 QFrame#studioToolbar QPushButton[emphasis="accent"] {{ color: {theme.accent_text}; font-weight: 600; }}
 QFrame#studioToolbar QPushButton[emphasis="accent"]:hover {{ background: {theme.accent_tint}; color: {theme.accent_text}; }}
+QFrame#studioToolbar QPushButton[emphasis="warning"] {{ color: {theme.warning}; border-color: {theme.warning}; }}
+QFrame#studioToolbar QPushButton[emphasis="warning"]:hover {{ background: {theme.warning_soft}; color: {theme.warning}; border-color: {theme.warning}; }}
 QFrame#studioToolbar QPushButton[hasMenu="true"] {{ padding-right: 24px; }}
 QFrame#studioToolbar QPushButton[hasMenu="true"]::menu-indicator {{
     subcontrol-origin: padding; subcontrol-position: right center; right: 8px; width: 8px; height: 8px; }}

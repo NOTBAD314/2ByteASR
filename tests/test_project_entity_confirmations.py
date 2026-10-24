@@ -84,7 +84,7 @@ def test_conflicting_alias_confirmations_are_skipped_with_diagnostic():
 
 def test_entity_review_ui_respects_selected_scope_and_does_not_learn_globally(monkeypatch):
     from PySide6.QtWidgets import QWidget
-    from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+    from twobyteasr.studio.studio_find_replace import FindReplaceDialog, GlossaryReviewDialog
     from twobyteasr.studio.studio_text_tools import SCOPE_SELECTED
     import subtitle_core
     monkeypatch.setattr(subtitle_core,'glossary_catalog',lambda:[])
@@ -106,7 +106,7 @@ def test_entity_review_ui_respects_selected_scope_and_does_not_learn_globally(mo
     d._do_preview();d._do_apply_preview()
     assert a.session.project.cues[0].text=='S0pp还在往里走'
     assert a.session.project.generation_metadata['glossary_review_jobs'][0]['source']=='user_confirmed'
-    a._selected=['b'];d.tabs.setCurrentIndex(3)
+    d.reject();a._selected=['b'];d=GlossaryReviewDialog(a)
     d.terms_scope.setCurrentIndex(d.terms_scope.findData(SCOPE_SELECTED))
     d._do_project_entities_preview()
     assert {hit.cue_id for hit in d._preview_hits}=={'b'}

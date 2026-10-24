@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -44,9 +45,16 @@ GUIDE_PAGE = 'https://platform.mosi.cn/docs/scenarios/transcribe-diarization/'
 
 MAX_AUDIO_SECONDS = 60 * 60
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
-# Longer audio is split below the official 60-minute limit, leaving room to
-# move each cut to a quiet point.
-CHUNK_SECONDS = 55 * 60
+# Requests of about 20 minutes (2026-10-23). A user's 40-minute request took
+# MOSI 864 s every time (and once failed after 24 minutes); the same audio as
+# two halves took 98 s and 168 s. Single requests of 16-24 minutes always came
+# back within 2.5 minutes, so up to 25 minutes stays one request; longer audio
+# is cut into equal parts of at most 22.5 minutes, each cut moved to the
+# quietest second nearby.
+SINGLE_REQUEST_SECONDS = 25 * 60
+REQUEST_MAX_SECONDS = 22.5 * 60
+# Requests MOSI has at the same time; it accepted four at once (2026-10-23).
+PARALLEL_REQUESTS = 3
 MAX_KEYTERMS = 20
 MAX_KEYTERM_CHARS = 30
 PRICE_CNY_PER_HOUR = 2.00
@@ -133,49 +141,56 @@ def estimate_cost_cny(seconds: float) -> float:
 
 
 def worker_timeout_seconds(seconds: float) -> int:
-    chunks = max(1, math.ceil(seconds / CHUNK_SECONDS))
+    chunks = max(1, math.ceil(seconds / REQUEST_MAX_SECONDS))
     return int(min(6 * 3600, max(3600, seconds * 2 + chunks * 1200)))
 
 
-SEAM_SEARCH_SECONDS = 4 * 60
+SEAM_SEARCH_SECONDS = 2 * 60
 SEAM_FRAME = 3200          # 0.2 s at 16 kHz
 SEAM_SMOOTH_FRAMES = 5     # quietest full second, not one quiet blip inside a word
 
 
-def plan_ranges(audio, *, chunk_seconds=CHUNK_SECONDS, search_seconds=SEAM_SEARCH_SECONDS):
-    """Sample ranges for requests. One request up to the 60-minute limit.
-
-    Longer audio is cut at the quietest second found within ``search_seconds``
-    around each target cut (2026-10-14). Game audio rarely has true silence,
-    so the quietest point is chosen relative to its surroundings rather than
-    against a fixed threshold; every request stays below the official limit.
-    Ranges are contiguous: every sample belongs to exactly one request.
-    """
+def _quietest_cut(audio, lo: int, hi: int, default: int) -> int:
+    """Middle of the quietest smoothed second in ``audio[lo:hi]``."""
     import numpy as np
+    frames = (hi - lo) // SEAM_FRAME
+    if frames <= SEAM_SMOOTH_FRAMES:
+        return default
+    window = np.asarray(audio[lo:lo + frames * SEAM_FRAME], dtype=np.float64).reshape(frames, SEAM_FRAME)
+    energy = np.mean(window * window, axis=1)
+    smooth = np.convolve(energy, np.ones(SEAM_SMOOTH_FRAMES) / SEAM_SMOOTH_FRAMES, mode='valid')
+    best = int(np.argmin(smooth)) + SEAM_SMOOTH_FRAMES // 2
+    return lo + best * SEAM_FRAME + SEAM_FRAME // 2
+
+
+def plan_ranges(audio, *, single_seconds=None, max_seconds=None, search_seconds=None):
+    """Sample ranges for requests: one up to ``single_seconds`` (25 minutes),
+    else equal parts of at most ``max_seconds`` (22.5 minutes).
+
+    Each cut is moved to the quietest second within ``search_seconds`` (two
+    minutes, at most a quarter part) of its target, and no request grows past
+    one part plus that margin. Game audio rarely has true silence, so the
+    quietest point is chosen relative to its surroundings rather than against
+    a fixed threshold. Ranges are contiguous: every sample belongs to exactly
+    one request, and every request stays far below the official 60-minute
+    limit.
+    """
     samples = len(audio)
-    limit = MAX_AUDIO_SECONDS * 16000
-    if samples <= limit:
+    single = (SINGLE_REQUEST_SECONDS if single_seconds is None else single_seconds) * 16000
+    if samples <= single:
         return [(0, samples)]
-    target = int(chunk_seconds * 16000)
-    search = int(search_seconds * 16000)
-    ranges, start = [], 0
-    while start < samples:
-        if samples - start <= limit:
-            ranges.append((start, samples))
-            break
-        lo = max(start + 16000, start + target - search)
-        hi = min(samples, start + min(limit - SEAM_FRAME, target + search))
-        frames = (hi - lo) // SEAM_FRAME
-        end = start + target
-        if frames > SEAM_SMOOTH_FRAMES:
-            window = np.asarray(audio[lo:lo + frames * SEAM_FRAME], dtype=np.float64).reshape(frames, SEAM_FRAME)
-            energy = np.mean(window * window, axis=1)
-            smooth = np.convolve(energy, np.ones(SEAM_SMOOTH_FRAMES) / SEAM_SMOOTH_FRAMES, mode='valid')
-            best = int(np.argmin(smooth)) + SEAM_SMOOTH_FRAMES // 2
-            end = lo + best * SEAM_FRAME + SEAM_FRAME // 2
-        ranges.append((start, end))
-        start = end
-    return ranges
+    longest = (REQUEST_MAX_SECONDS if max_seconds is None else max_seconds) * 16000
+    count = math.ceil(samples / longest)
+    part = samples / count
+    search = int(min((SEAM_SEARCH_SECONDS if search_seconds is None else search_seconds) * 16000, part / 4))
+    edges = [0]
+    for k in range(1, count):
+        target = int(round(k * part))
+        lo = max(edges[-1] + 16000, target - search)
+        hi = min(samples - 16000, target + search, int(edges[-1] + part + search))
+        edges.append(_quietest_cut(audio, lo, hi, target))
+    edges.append(samples)
+    return list(zip(edges, edges[1:]))
 
 
 def classify_http_error(status_code: int, body) -> tuple[str, str]:
@@ -237,6 +252,75 @@ def validate_result(payload, duration: float) -> None:
             raise ASRProtocolError('MOSS Pro 句段时间缺失或非法', 'invalid_timing')
         if not 0 <= start <= end <= duration + 1.0:
             raise ASRProtocolError('MOSS Pro 句段时间越出提交的音频', 'invalid_timing')
+
+
+def _clock(seconds: float) -> str:
+    total = int(round(max(0.0, float(seconds))))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f'{hours}:{minutes:02d}:{secs:02d}' if hours else f'{minutes}:{secs:02d}'
+
+
+def segment_label(segment) -> str:
+    """'第 2 / 2 段（55:59–1:36:04）' when the task was split; '' for one request."""
+    if not segment or int(segment[1]) <= 1:
+        return ''
+    index, total, start, end = segment
+    return f'第 {int(index)} / {int(total)} 段（{_clock(start)}–{_clock(end)}）'
+
+
+def remote_reason(body) -> str:
+    """MOSI's own words for a FAILED task; '' when it gave none.
+
+    The task query docs only say ``error`` holds the failure information; the
+    example is an empty object and no codes are listed (checked 2026-10-23).
+    A string ``error`` was dropped before.
+    """
+    from .provider_diagnostics import redact_diagnostics
+    error = body.get('error') if isinstance(body, dict) else None
+    text = ''
+    if isinstance(error, dict):
+        words = [str(error[key]).strip() for key in ('message', 'msg', 'detail', 'reason') if error.get(key) not in (None, '')]
+        codes = [str(error[key]).strip() for key in ('code', 'type') if error.get(key) not in (None, '')]
+        text = '；'.join(dict.fromkeys(words))
+        if codes:
+            code = '，'.join(dict.fromkeys(codes))
+            text = f'{text}（{code}）' if text else code
+        if not text and error:
+            text = json.dumps(error, ensure_ascii=False)
+    elif error not in (None, ''):
+        text = str(error)
+    if not text and isinstance(body, dict):
+        text = str(body.get('message') or '')
+    return str(redact_diagnostics(' '.join(text.split())))[:300]
+
+
+def _saved_reason(state: dict) -> str:
+    if 'remote_reason' in state:
+        return str(state.get('remote_reason') or '')
+    try:
+        # Tasks saved before 2026-10-23 kept only the redacted ``error`` JSON.
+        return remote_reason({'error': json.loads(state.get('remote_error') or '{}')})
+    except ValueError:
+        return str(state.get('remote_error') or '')
+
+
+def failure_detail(state: dict, segment=None) -> str:
+    """Which request failed, its task id and MOSI's reason, in one sentence."""
+    where = segment_label(segment)
+    task = f'（任务编号 {state["task_id"]}）' if state.get('task_id') else ''
+    subject = f'{where}的 MOSI 任务{task}' if where else f'MOSI 任务{task}'
+    if state.get('status') == 'UNKNOWN':
+        return f'{subject}在 MOSI 查不到（不存在或已超过保留期）。'
+    reason = _saved_reason(state)
+    return (f'{subject}执行失败，MOSI 返回的原因：{reason}。' if reason else
+            f'{subject}执行失败，MOSI 没有说明原因。')
+
+
+def _remote_error(message: str, category: str, state: dict, segment) -> ASRProtocolError:
+    error = ASRProtocolError(message, category)
+    error.remote_detail = failure_detail(state, segment)
+    return error
 
 
 def result_rows(payload, *, offset: float, duration: float) -> list:
@@ -330,9 +414,14 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
 
 
 def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, check=lambda: None,
-         progress=lambda *a: None, sleep=time.sleep, max_wait: float = 7200.0) -> dict:
+         progress=lambda *a: None, sleep=time.sleep, max_wait: float = 7200.0, segment=None) -> dict:
+    """Wait for one submitted task. Each state reaches ``progress`` with a
+    fourth argument: how long MOSI has had the task (from the original
+    submission, also across runs) and the request's audio length, so the
+    window can say a wait is unusually long (2026-10-23)."""
     deadline = time.monotonic() + max_wait
     interval = min(10.0, max(2.0, float(state.get('retry_after') or 3)))
+    submitted = float(state.get('submitted_at') or time.time())
     while True:
         check()
         if time.monotonic() >= deadline:
@@ -343,7 +432,7 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
         if response.status_code == 404:
             state.update(status='UNKNOWN', last_poll_at=time.time())
             _save(state_path, state)
-            raise ASRProtocolError('MOSI 查不到这个任务（task_not_found）；未自动重新提交。', 'remote_unknown')
+            raise _remote_error('MOSI 查不到这个任务（task_not_found）；未自动重新提交。', 'remote_unknown', state, segment)
         if response.status_code != 200:
             category, message = classify_http_error(response.status_code, body)
             raise ASRProtocolError(message + '任务编号已保存，未重新提交。', 'poll_failed' if category == 'server_error' else category)
@@ -351,14 +440,19 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
         if status not in STATUSES:
             raise ASRProtocolError(f'MOSI 返回了未知任务状态：{status or "空"}', 'invalid_response')
         state.update(status=status, last_poll_at=time.time())
-        _save(state_path, state)
-        progress(status, 0, 1)
+        details = dict(remote_waited_seconds=round(max(0.0, time.time() - submitted), 1),
+                       request_audio_seconds=round(float(duration), 1))
         if status == 'FAILED':
             from .provider_diagnostics import redact_diagnostics
-            error = body.get('error') if isinstance(body.get('error'), dict) else {}
-            state['remote_error'] = redact_diagnostics(json.dumps(error, ensure_ascii=False))[:500]
-            _save(state_path, state)
-            raise ASRProtocolError('MOSI 任务执行失败。是否扣积分请以 MOSI 控制台的积分账单为准（官方未写明）。', 'remote_terminal')
+            error = body.get('error')
+            state['remote_error'] = redact_diagnostics(json.dumps({} if error is None else error, ensure_ascii=False))[:500]
+            state['remote_reason'] = details['remote_reason'] = remote_reason(body)
+        _save(state_path, state)
+        progress(status, 0, 1, details)
+        if status == 'FAILED':
+            detail = failure_detail(state, segment)
+            raise _remote_error(detail + '是否扣积分请以 MOSI 控制台的积分账单为准（官方未写明）。', 'remote_terminal',
+                                state, segment)
         if status == 'SUCCESS':
             validate_result(body, duration)
             return body
@@ -368,15 +462,19 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
             sleep(.1)
 
 
-def _chunk(audio, endpoint, root: Path, *, client, check, progress, sleep, max_wait, restart_terminal):
+def _load_state(root: Path) -> dict:
+    path = root / 'task.json'
+    try:
+        return json.loads(path.read_text('utf8')) if path.is_file() else {}
+    except ValueError:
+        return {}
+
+
+def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> dict:
+    """The request's saved state, ready to resume or submit. Raises when the
+    request must not be sent again without the user's confirmation."""
     root.mkdir(parents=True, exist_ok=True)
-    state_path, raw_path = root / 'task.json', root / 'result.json'
-    state = json.loads(state_path.read_text('utf8')) if state_path.is_file() else {}
-    duration = len(audio) / 16000
-    check()
-    if raw_path.is_file():
-        progress('cached_result', 0, 1)
-        return json.loads(raw_path.read_text('utf8'))
+    state = _load_state(root)
     if state.get('status') == 'SUBMITTING' and not state.get('task_id'):
         if not restart_terminal:
             raise ASRProtocolError('上次上传是否被 MOSI 受理无法确认；为避免重复收费，需先到 MOSI 控制台核对，'
@@ -394,18 +492,52 @@ def _chunk(audio, endpoint, root: Path, *, client, check, progress, sleep, max_w
         progress('retry_incomplete_upload', 0, 1)
     if state.get('status') in {'FAILED', 'UNKNOWN'}:
         if not restart_terminal:
-            raise ASRProtocolError('已保存远端终态 ' + state['status'] + '；请显式重新开始识别。', 'remote_terminal')
+            raise _remote_error('已保存远端终态 ' + state['status'] + '：' + failure_detail(state, segment)
+                                + '请显式重新开始识别。', 'remote_terminal', state, segment)
         import uuid
         _save(root / ('previous-task-' + uuid.uuid4().hex + '.json'), state)
         state = {}
         progress('explicit_restart_terminal', 0, 1)
-    if not state.get('task_id'):
+    return state
+
+
+# Wait before asking again when MOSI already has as many requests as it takes.
+RATE_LIMIT_RETRY_SECONDS = 20
+
+
+def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait) -> dict:
+    """Upload the request unless MOSI already has it.
+
+    HTTP 429 means MOSI already has as many requests as it takes; nothing was
+    accepted or billed, so it is asked again shortly instead of failing the
+    task (2026-10-23).
+    """
+    if state.get('task_id'):
+        return state
+    deadline = time.monotonic() + max_wait
+    while True:
+        check()
         progress('uploading', 0, 1)
-        state = submit(audio, endpoint, client=client, state_path=state_path, state=state, check=check,
-                       upload_progress=lambda sent, total: progress('upload_bytes', sent, total))
+        try:
+            return submit(audio, endpoint, client=client, state_path=root / 'task.json', state=state, check=check,
+                          upload_progress=lambda sent, total: progress('upload_bytes', sent, total))
+        except ASRProtocolError as exc:
+            if exc.category != 'rate_limited' or time.monotonic() >= deadline:
+                raise
+        progress('waiting_for_slot', 0, 1)
+        for _ in range(int(RATE_LIMIT_RETRY_SECONDS * 10)):
+            check()
+            sleep(.1)
+
+
+def _wait_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait,
+                  segment=None) -> dict:
+    """Wait for a request MOSI has; keep and account its result."""
+    state_path, raw_path = root / 'task.json', root / 'result.json'
+    duration = len(audio) / 16000
     try:
         payload = poll(endpoint, client=client, state_path=state_path, state=state, duration=duration,
-                       check=check, progress=progress, sleep=sleep, max_wait=max_wait)
+                       check=check, progress=progress, sleep=sleep, max_wait=max_wait, segment=segment)
     except BaseException:
         try:
             check()
@@ -424,10 +556,127 @@ def _chunk(audio, endpoint, root: Path, *, client, check, progress, sleep, max_w
     return payload
 
 
+def _chunk(audio, endpoint, root: Path, *, client, check, progress, sleep, max_wait, restart_terminal, segment=None):
+    """One request on its own: cached result, or resume / submit and wait."""
+    check()
+    if (root / 'result.json').is_file():
+        progress('cached_result', 0, 1)
+        return json.loads((root / 'result.json').read_text('utf8'))
+    state = _prepared_state(root, progress=progress, restart_terminal=restart_terminal, segment=segment)
+    state = _submit_request(audio, endpoint, root, state, client=client, check=check, progress=progress, sleep=sleep,
+                            max_wait=max_wait)
+    return _wait_request(audio, endpoint, root, state, client=client, check=check, progress=progress, sleep=sleep,
+                         max_wait=max_wait, segment=segment)
+
+
+def _request_dir(root: Path, index: int, start: int, end: int) -> Path:
+    """A request's folder, found by its sample range: a task planned again
+    numbers its requests differently, and a finished request must still be
+    found (never uploaded and billed twice)."""
+    for found in sorted(root.glob(f'request-*-{start}-{end}')):
+        if found.is_dir():
+            return found
+    return root / f'request-{index:03d}-{start}-{end}'
+
+
+def _request_ranges(samples, root: Path, restart_terminal: bool) -> list:
+    """Requests for this task.
+
+    A task planned before (until 2026-10-23 in pieces of about 55 minutes)
+    keeps every request MOSI has finished or still has, so nothing is
+    uploaded or billed twice, and keeps failed or uncertain ones until the
+    user confirms resubmitting them. Everything else is planned in the
+    current, shorter requests.
+    """
+    fresh = plan_ranges(samples)
+    try:
+        saved = [(int(row['start']), int(row['end']))
+                 for row in json.loads((root / 'plan.json').read_text('utf8'))['requests']]
+    except (OSError, ValueError, KeyError, TypeError):
+        return fresh
+    if (not saved or saved == fresh or saved[0][0] != 0 or saved[-1][1] != len(samples)
+            or any(a[1] != b[0] for a, b in zip(saved, saved[1:]))):
+        return fresh
+    ranges = []
+    for index, (start, end) in enumerate(saved):
+        folder = _request_dir(root, index, start, end)
+        state = _load_state(folder)
+        status = state.get('status')
+        blocked = status in {'FAILED', 'UNKNOWN'} or (status == 'SUBMITTING' and not state.get('task_id'))
+        if ((folder / 'result.json').is_file() or (state.get('task_id') and not blocked)
+                or (blocked and not restart_terminal)):
+            ranges.append((start, end))
+        else:
+            ranges.extend((start + a, start + b) for a, b in plan_ranges(samples[start:end]))
+    return ranges
+
+
+class _Board:
+    """All requests of one task as one picture for the progress card
+    (2026-10-23): which requests MOSI has, how many are done, the longest
+    wait, and the upload in progress. Every report of any request goes out as
+    this picture, so parallel requests do not make the card flicker."""
+    WAITING = {'PENDING', 'PROCESSING'}
+
+    def __init__(self, total, progress):
+        self.total, self.progress = total, progress
+        self.lock = threading.Lock()
+        self.done, self.waits, self.upload = set(), {}, None
+
+    def _summary(self):
+        now = time.monotonic()
+        summary = dict(active_requests=[index + 1 for index in sorted(self.waits)])
+        if self.waits:
+            longest = max(self.waits, key=lambda i: self.waits[i]['waited'] + now - self.waits[i]['at'])
+            row = self.waits[longest]
+            summary.update(remote_waited_seconds=round(row['waited'] + now - row['at'], 1),
+                           request_audio_seconds=row['audio'])
+        return summary
+
+    def report(self, index, state, done=0, total=0, details=None):
+        with self.lock:
+            details = dict(details or {})
+            if state not in {'upload_bytes', 'uploading'} and self.upload is not None and self.upload[0] == index:
+                self.upload = None  # that upload ended (accepted, refused or interrupted)
+            if state == 'upload_bytes':
+                self.upload = (index, done, total)
+            elif state in self.WAITING:
+                self.waits[index] = dict(status=state, at=time.monotonic(),
+                                         waited=float(details.pop('remote_waited_seconds', 0) or 0),
+                                         audio=float(details.pop('request_audio_seconds', 0) or 0))
+            elif state in {'SUCCESS', 'FAILED', 'local_cancel_remote_continues'}:
+                self.waits.pop(index, None)
+            elif state == 'completed':
+                self.done.add(index)
+            summary = dict(details, **self._summary())
+            if self.upload is not None:
+                summary.update(upload_request=self.upload[0] + 1, completed_batches=len(self.done),
+                               total_batches=self.total)
+                self.progress('upload_bytes', self.upload[1], self.upload[2], summary)
+            elif state in self.WAITING or (self.waits and state in {'completed', 'SUCCESS', 'cached_result'}):
+                # While other requests still wait, a finished one shows in 已返回批次;
+                # the card keeps the waiting picture (no "已完成 2 / 3 段" mid-task).
+                waiting = {row['status'] for row in self.waits.values()}
+                self.progress('PROCESSING' if 'PROCESSING' in waiting else 'PENDING', len(self.done), self.total,
+                              summary)
+            else:
+                self.progress(state, len(self.done), self.total, summary)
+
+
 def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, progress=lambda *a: None,
-               sleep=time.sleep, max_wait=7200.0, restart_terminal=False, on_rows=None) -> list:
-    """Run (or resume) all requests for the task audio; rows on the task clock."""
+               sleep=time.sleep, max_wait=7200.0, restart_terminal=False, on_rows=None,
+               parallel=PARALLEL_REQUESTS) -> list:
+    """Run (or resume) all requests for the task audio; rows on the task clock.
+
+    Requests are uploaded in order, one at a time, while at most ``parallel``
+    are with MOSI (2026-10-23); results come back in any order. After an
+    error nothing new is submitted, but every request MOSI already has is
+    waited for, so its result is kept for a retry; then the first error is
+    raised. A request that must not be resent without confirmation stops the
+    task before anything new is uploaded.
+    """
     import numpy as np
+    from concurrent.futures import ThreadPoolExecutor
     from . import network_policy
     from .cloud_asr_jobs import job_root
     from ..recognition.speaker_evidence import scope_request_speakers
@@ -437,32 +686,83 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
         raise ASRProtocolError('MOSS Pro 云端输入必须是有效的 16kHz 单声道音频。', 'input_limit')
     endpoint = dict(endpoint, url=normalize_api_base(endpoint.get('url')))
     root = job_root(audio, endpoint, cache_root)
-    ranges = plan_ranges(audio)
+    ranges = _request_ranges(samples, root, restart_terminal)
+    total = len(ranges)
     _save(root / 'plan.json', dict(model=MODEL, requests=[dict(start=s, end=e) for s, e in ranges],
                                    keyterms=endpoint.get('mosi_keyterms') or [],
                                    keyterms_dropped=endpoint.get('mosi_keyterms_dropped') or [],
                                    price_cny_per_hour=PRICE_CNY_PER_HOUR, price_checked=PRICE_CHECKED))
-    rows = []
-    for index, (start, end) in enumerate(ranges):
-        def chunk_progress(state, _done, _total, index=index):
-            # Upload byte counts pass through; task states carry the request index.
-            progress(state, *((_done, _total) if state == 'upload_bytes' else (index, len(ranges))))
-        payload = _chunk(samples[start:end], endpoint, root / f'request-{index:03d}-{start}-{end}', client=client,
-                         check=check, progress=chunk_progress, sleep=sleep, max_wait=max_wait,
-                         restart_terminal=restart_terminal)
-        converted = result_rows(payload, offset=start / 16000, duration=(end - start) / 16000)
-        if any(row.get('speaker') is not None for row in converted):
+    board = _Board(total, progress)
+    lock = threading.Lock()
+    converted = [None] * total
+
+    def finish(index, payload):
+        start, end = ranges[index]
+        rows = result_rows(payload, offset=start / 16000, duration=(end - start) / 16000)
+        if any(row.get('speaker') is not None for row in rows):
             # Labels are only meaningful inside one request: S01 of request 1
             # and S01 of request 2 are not assumed to be the same person.
-            converted = scope_request_speakers(converted, index, len(ranges))
-        rows.extend(converted)
-        if on_rows is not None:
-            on_rows(index, len(ranges), converted)
-        progress('completed', index + 1, len(ranges))
-    if len(ranges) > 1:
-        _save(root / 'speaker-scope.json', dict(requests=len(ranges), cross_request_identity='unconfirmed',
+            rows = scope_request_speakers(rows, index, total)
+        with lock:
+            converted[index] = rows
+            if on_rows is not None:
+                on_rows(index, total, rows)
+        board.report(index, 'completed')
+
+    jobs = []
+    for index, (start, end) in enumerate(ranges):
+        check()
+        folder = _request_dir(root, index, start, end)
+        segment = (index + 1, total, start / 16000, end / 16000)
+        note = (lambda state, done=0, size=0, details=None, index=index: board.report(index, state, done, size, details))
+        if (folder / 'result.json').is_file():
+            note('cached_result')
+            finish(index, json.loads((folder / 'result.json').read_text('utf8')))
+            continue
+        jobs.append((index, folder, segment, note,
+                     _prepared_state(folder, progress=note, restart_terminal=restart_terminal, segment=segment)))
+    errors, places = [], threading.Semaphore(max(1, int(parallel)))
+
+    def wait(job, state):
+        index, folder, segment, note, _ = job
+        start, end = ranges[index]
+        try:
+            finish(index, _wait_request(samples[start:end], endpoint, folder, state, client=client, check=check,
+                                        progress=note, sleep=sleep, max_wait=max_wait, segment=segment))
+        except BaseException as exc:  # noqa: BLE001 - every request is waited for; the first error is raised
+            with lock:
+                errors.append(exc)
+        finally:
+            places.release()
+
+    with ThreadPoolExecutor(max_workers=max(1, min(int(parallel), len(jobs) or 1)),
+                            thread_name_prefix='mosi-request') as pool:
+        for job in jobs:
+            index, folder, segment, note, state = job
+            start, end = ranges[index]
+            try:
+                while not places.acquire(timeout=.1):  # a free place with MOSI
+                    check()
+                if errors:
+                    places.release()
+                    break
+                try:
+                    state = _submit_request(samples[start:end], endpoint, folder, state, client=client, check=check,
+                                            progress=note, sleep=sleep, max_wait=max_wait)
+                except BaseException:
+                    places.release()
+                    raise
+            except BaseException as exc:  # noqa: BLE001 - recorded; requests MOSI has are still waited for
+                with lock:
+                    errors.append(exc)
+                break
+            pool.submit(wait, job, state)
+    if errors:
+        raise errors[0]
+    if total > 1:
+        _save(root / 'speaker-scope.json', dict(requests=total, cross_request_identity='unconfirmed',
               note='每段请求的说话人编号只在该段内有效；跨段是否同一人需要人工确认。'))
-    return rows
+    return [row for rows in converted for row in rows]
 
 
 # --- Setup-dialog checks (no audio unless explicitly requested) -------------

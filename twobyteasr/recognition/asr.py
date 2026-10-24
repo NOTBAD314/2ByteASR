@@ -2792,6 +2792,11 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             if time.perf_counter()>deadline:raise RuntimeError(f'{model_id} worker timeout')
             try:kind,line=lines.get(timeout=.1)
             except queue.Empty:continue
+            if event_handler is not None and line.startswith('[2BYTEASR_API] '):
+                # Already in the run record; kept out of the failure text, where
+                # whole result batches buried the real error (2026-10-23).
+                event_handler(json.loads(line[len('[2BYTEASR_API] '):]))
+                continue
             captured[kind].append(line)
             if line.startswith('[2BYTEASR_SPEAKER] '):
                 event=json.loads(line[len('[2BYTEASR_SPEAKER] '):])
@@ -2799,9 +2804,6 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
                 if model_id in {'diarizen','vibevoice_1_5b','vibevoice_7b'} and event.get('phase')=='loaded':
                     record_run_event('MODEL_LOADED',model_id=model_id,backend=model_id,loaded=True,pid=process.pid,role=worker_identity['role'])
                 if event_handler is not None:event_handler(event)
-                continue
-            if event_handler is not None and line.startswith('[2BYTEASR_API] '):
-                event_handler(json.loads(line[len('[2BYTEASR_API] '):]))
                 continue
             marker='[2BYTEASR_FIRERED_AED] '
             if line.startswith(marker):

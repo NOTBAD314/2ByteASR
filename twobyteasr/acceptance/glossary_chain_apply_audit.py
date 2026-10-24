@@ -13,11 +13,11 @@ def start(window, profile):
     from PySide6.QtCore import QObject, QTimer, Qt
     from PySide6.QtGui import QInputMethodEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButton, QToolButton
+    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButton
     from ..studio.studio_cards import _SubtitleEditCardEditor
     from .blank_project_audit import _capture
     from ..diagnostics.build_identity import load_build_identity
-    from ..studio.studio_find_replace import FindReplaceDialog
+    from ..studio.studio_find_replace import GlossaryReviewDialog
     from ..exports.studio_export_ui import SubtitleExportDialog
     from ..projects.studio_project import load_project
     from ..exports.studio_subtitle_export import SubtitleExportArtifact, verify_subtitle_artifact
@@ -204,24 +204,10 @@ def start(window, profile):
             self.result['user_authored_baseline'] = {'cue_id': cue_id, 'text': authored.text,
                 'start_ms': authored.start_ms, 'end_ms': authored.end_ms, 'speaker_id': authored.speaker_id}
             self.shot('01-user-authored-third-alias')
-            button = page.studio_find_replace_button
-            if button.isVisible():
-                self.defer(lambda: self.click(button))
-            else:
-                overflow = next(control for control in page.studio_toolbar.findChildren(QToolButton)
-                    if control.property('commandSource') == '更多工作区操作')
-                self.defer(lambda: self.click(overflow))
-                yield lambda: overflow.menu().isVisible()
-                menu = overflow.menu()
-                action = next(action for action in menu.actions() if action.text() == button.text())
-                rect = menu.actionGeometry(action)
-                self.check('visible enabled overflow action opens text tools',
-                    action.isVisible() and action.isEnabled() and not rect.isEmpty(), action.text())
-                self.shot('01b-visible-text-tools-menu', menu)
-                self.defer(lambda: QTest.mouseClick(menu, Qt.LeftButton, pos=rect.center()))
-            yield lambda: isinstance(QApplication.activeModalWidget(), FindReplaceDialog)
+            # 2026-10-21: 应用术语库 left 批量替换; the review is its own window.
+            self.defer(lambda: GlossaryReviewDialog(page, page).exec())
+            yield lambda: isinstance(QApplication.activeModalWidget(), GlossaryReviewDialog)
             dialog = QApplication.activeModalWidget()
-            QTest.mouseClick(dialog.tabs.tabBar(), Qt.LeftButton, pos=dialog.tabs.tabBar().tabRect(3).center())
             for i in range(dialog.terms_libraries.count()):
                 item = dialog.terms_libraries.item(i)
                 desired = Qt.Checked if str(item.data(Qt.UserRole)) in window._enabled_glossary_ids() else Qt.Unchecked

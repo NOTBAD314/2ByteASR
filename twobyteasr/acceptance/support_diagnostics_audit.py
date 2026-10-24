@@ -272,16 +272,17 @@ def run(window, output):
                 wait(lambda:not isValid(reopened),'reopened report disposed')
             check('report_reopen_disposes_and_marks',len(set(markers))==3 and
                   not window.findChildren(QDialog,'diagnosticsDialog'))
-            # 2026-10-21 (user's choice): 回报问题 is a themed flag icon; its words
-            # are the tooltip and accessible name. It leaves a narrow bar before
-            # 字幕列表, and 字幕列表 / 双语 / API 用量 keep their places. Last, so
-            # a layout finding cannot hide the report checks above.
+            # 2026-10-21 (user, later): the flag alone was not recognisable, so
+            # 回报问题 shows its words next to the flag, outlined in the warning
+            # colour. It still leaves a narrow bar before 字幕列表, and 字幕列表 /
+            # 双语 / API 用量 keep their places. Last, so a layout finding cannot
+            # hide the report checks above.
             from PySide6.QtWidgets import QToolTip
             from ..i18n import tr
-            check('report_button_flag_icon',button.text()=='' and not button.icon().isNull()
-                  and button.toolTip()==tr('回报问题')==button.accessibleName()
-                  and button.property('buttonRole')=='secondary',
-                  dict(tooltip=button.toolTip(),accessible=button.accessibleName()))
+            check('report_button_flag_and_words',button.text()==tr('回报问题')==button.accessibleName()
+                  and not button.icon().isNull() and bool(button.toolTip())
+                  and button.property('buttonRole')=='secondary' and button.property('emphasis')=='warning',
+                  dict(text=button.text(),tooltip=button.toolTip(),accessible=button.accessibleName()))
             QToolTip.showText(button.mapToGlobal(button.rect().center()),button.toolTip(),button);QTest.qWait(400)
             tips=[w for w in QApplication.topLevelWidgets() if w.inherits('QTipLabel') and w.isVisible()]
             tip_colour=None

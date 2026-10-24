@@ -79,6 +79,11 @@ def _resolved_source(path: str) -> str:
     return resolved
 
 
+def waveform_cache_slot(asset_id: str, audio_stream: int = 0) -> str:
+    """Key of one stream's waveform; the first stream keeps the asset id."""
+    return str(asset_id) if int(audio_stream or 0) <= 0 else f"{asset_id}#a{int(audio_stream)}"
+
+
 def waveform_db_heights(values, floor_db: float = WAVEFORM_FLOOR_DB):
     """Map bucket min/max amplitudes to display heights in [0, 1].
 
@@ -202,6 +207,8 @@ class WaveformTimeline(QWidget):
     video_track_action_requested = Signal(str, str)
     video_track_reorder_requested = Signal(str, str)
     audio_track_action_requested = Signal(str, str)
+    # A source's further audio streams were folded or unfolded (video track id).
+    stream_lanes_toggled = Signal(str)
     track_delete_requested = Signal(str, str)
     track_menu_requested = Signal(str, str, object)
     video_track_menu_requested = Signal(str, str, object)
@@ -414,7 +421,7 @@ class WaveformTimeline(QWidget):
         speakers, group_fixed = self._row_units()
         audio_rows = 0
         if self.waveform_visible:
-            audio_rows = len(self.project.audio_tracks) if self.project else 1
+            audio_rows = self._visible_audio_lane_count()
         video_rows = len(self.project.video_tracks) if self.project else 1
         fixed = video_rows * self._video_track_height() + group_fixed
         if self._candidate_lane_visible():
@@ -833,7 +840,7 @@ class WaveformTimeline(QWidget):
             # must never ratchet the minimum up with the current size.
             override = self._track_height_overrides.get("audio")
             audio = (int(override) if override else self.AUDIO_TRACK_HEIGHT) if minimum else self._audio_track_height()
-            height += (len(self.project.audio_tracks) if self.project else 1) * audio
+            height += self._visible_audio_lane_count() * audio
         if self._candidate_lane_visible():
             height += CANDIDATE_LANE_HEIGHT
         return height
@@ -884,10 +891,15 @@ class WaveformTimeline(QWidget):
         video_height = self._video_track_height()
         tracks = list(self.project.video_tracks) if self.project and self.project.video_tracks else []
         track_ids = [track.id for track in tracks] if self.project else ["V1"]
-        group_height = video_height + (self._audio_track_height() if self.waveform_visible else 0)
+        audio_height = self._audio_track_height() if self.waveform_visible else 0
         linked_audio = {g.audio_track_id for g in self.project.av_track_groups if g.video_track_id} if self.project else set()
-        standalone = sum(t.id not in linked_audio for t in self.project.audio_tracks) if self.project and self.waveform_visible else 0
-        y = bottom - len(track_ids) * group_height - standalone*self._audio_track_height()
+        standalone = sum(t.id not in linked_audio and getattr(t, 'stream_ordinal', -1) < 0
+                         for t in self.project.audio_tracks) if self.project and self.waveform_visible else 0
+        # 2026-10-24: a video track's further audio streams sit under its A
+        # lane, so each group is V + A + its visible stream lanes.
+        heights = {track_id: video_height + audio_height * (1 + len(self._shown_stream_lanes(track_id)))
+                   for track_id in track_ids}
+        y = bottom - sum(heights.values()) - standalone*self._audio_track_height()
         if y < self.RULER_HEIGHT:
             # Never collapse extra lanes onto V1. Grow downward from the ruler
             # when the widget is still catching up to setMinimumHeight.
@@ -897,15 +909,11 @@ class WaveformTimeline(QWidget):
         # V1 顶/V2 底与"V2 盖在 V1 上"的合成顺序相反，跨轨拖拽的方向
         # 直觉全反（用户实录"想把 V2 的视频移到 V1 上方却没反应"）。
         ordered_ids = list(reversed(track_ids))
-        return {
-            track_id: QRectF(
-                0,
-                y + index * group_height,
-                self.width(),
-                video_height,
-            )
-            for index, track_id in enumerate(ordered_ids)
-        }
+        rects = {}
+        for track_id in ordered_ids:
+            rects[track_id] = QRectF(0, y, self.width(), video_height)
+            y += heights[track_id]
+        return rects
 
     def _audio_track_rects(self) -> dict[str, QRectF]:
         if not self.waveform_visible:
@@ -920,20 +928,64 @@ class WaveformTimeline(QWidget):
             for group in self.project.av_track_groups
             if group.video_track_id and group.audio_track_id
         }
-        result = {
-            audio_by_video.get(video_id, f"A{index + 1}"): QRectF(
-                0,
-                rect.bottom(),
-                self.width(),
-                audio_height,
-            )
-            for index, (video_id, rect) in enumerate(video_rects.items())
-        }
-        standalone = [t for t in self.project.audio_tracks if t.id not in audio_by_video.values()]
+        result = {}
+        for index, (video_id, rect) in enumerate(video_rects.items()):
+            result[audio_by_video.get(video_id, f"A{index + 1}")] = QRectF(
+                0, rect.bottom(), self.width(), audio_height)
+            for lane_index, lane in enumerate(self._shown_stream_lanes(video_id), 1):
+                result[lane.id] = QRectF(0, rect.bottom() + lane_index * audio_height, self.width(), audio_height)
+        standalone = [t for t in self.project.audio_tracks if t.id not in audio_by_video.values()
+                      and getattr(t, 'stream_ordinal', -1) < 0]
         bottom = self._stack_bottom() - (CANDIDATE_LANE_HEIGHT if self._candidate_lane_visible() else 0)
         for index,track in enumerate(standalone):
             result[track.id] = QRectF(0,bottom-(len(standalone)-index)*audio_height,self.width(),audio_height)
         return result
+
+    def _stream_lanes(self, video_track_id: str) -> list:
+        if not self.project:
+            return []
+        return [t for t in self.project.audio_tracks
+                if getattr(t, 'stream_ordinal', -1) >= 0 and t.linked_video_track_id == video_track_id]
+
+    def stream_lanes_collapsed(self, video_track_id: str) -> bool:
+        state = self.project.studio_state if self.project else {}
+        return str(video_track_id) in set(state.get('audio_stream_lanes_collapsed') or ())
+
+    def _shown_stream_lanes(self, video_track_id: str) -> list:
+        """Further-stream lanes of a video track, unless the user folded them."""
+        return [] if self.stream_lanes_collapsed(video_track_id) else self._stream_lanes(video_track_id)
+
+    def _visible_audio_lane_count(self) -> int:
+        if not self.project:
+            return 1
+        hidden = sum(len(self._stream_lanes(t.id)) for t in self.project.video_tracks
+                     if self.stream_lanes_collapsed(t.id))
+        return max(0, len(self.project.audio_tracks) - hidden)
+
+    def set_stream_lanes_collapsed(self, video_track_id: str, collapsed: bool) -> None:
+        """Fold or unfold one source's further audio streams (a view choice)."""
+        if not self.project:
+            return
+        state = self.project.studio_state
+        folded = set(state.get('audio_stream_lanes_collapsed') or ())
+        folded = folded | {str(video_track_id)} if collapsed else folded - {str(video_track_id)}
+        state['audio_stream_lanes_collapsed'] = sorted(folded)
+        if collapsed and self.selected_audio_track_id in {t.id for t in self._stream_lanes(video_track_id)}:
+            self.selected_audio_track_id = ''
+        self._sync_track_minimum_height()
+        self._sync_scrollbars()
+        self.update()
+
+    def _stream_toggle_rect(self, audio_id: str, row: QRectF) -> QRectF:
+        """Fold button of an A lane whose video track has further streams."""
+        if not self.project:
+            return QRectF()
+        video_id = next((g.video_track_id for g in self.project.av_track_groups
+                         if g.audio_track_id == audio_id and g.video_track_id), '')
+        if not video_id or not self._stream_lanes(video_id):
+            return QRectF()
+        from .studio_track_header import CONTROL_LEFT
+        return QRectF(CONTROL_LEFT - 46, row.center().y() - 11, 42, 22)
 
     def _audio_track_at(self, point: QPoint) -> str:
         for track_id, rect in self._audio_track_rects().items():
@@ -1401,7 +1453,8 @@ class WaveformTimeline(QWidget):
                 None,
             )
             if target is not None:
-                self.waveform_caches[target.asset_id] = cache
+                stream = int(getattr(cache.metadata, "audio_stream", 0) or 0)
+                self.waveform_caches[waveform_cache_slot(target.asset_id, stream)] = cache
                 if not target.duration_ms:
                     target.duration_ms = cache.metadata.duration_ms
             if (str(Path(self.project.media.path).resolve()) == source
@@ -1412,7 +1465,8 @@ class WaveformTimeline(QWidget):
                 self.project.media.duration_ms = int(cache.metadata.duration_ms or 0)
         self.update()
 
-    def waveform_cache_for_source(self, source_path: str) -> WaveformCache | None:
+    def waveform_cache_for_source(self, source_path: str, audio_stream: int = 0) -> WaveformCache | None:
+        """Waveform of one audio stream of a source (2026-10-24: per stream)."""
         if not self.project:
             return None
         try:
@@ -1424,14 +1478,15 @@ class WaveformTimeline(QWidget):
                 ),
                 None,
             )
-            cache = self.waveform_caches.get(asset.asset_id) if asset is not None else None
+            slot = waveform_cache_slot(asset.asset_id, audio_stream) if asset is not None else ""
+            cache = self.waveform_caches.get(slot) if asset is not None else None
             cache_source = _resolved_source(str(cache.metadata.source_path)) if cache is not None else ""
         except (OSError, ValueError):
             return None
         # A relink retains the asset ID, but its old waveform belongs to a
         # different source. Never let the queue mistake that cache for ready.
         if cache is not None and cache_source != source:
-            self.waveform_caches.pop(asset.asset_id, None)
+            self.waveform_caches.pop(slot, None)
             self.waveform_clip_keys.clear()
             return None
         return cache
@@ -2005,6 +2060,8 @@ class WaveformTimeline(QWidget):
             track = next((rect for _kind, key, rect in self._row_layout()[3] if key == owner), QRectF())
         if track.isEmpty():
             return QRect()
+        if action == 'streams':
+            return self._stream_toggle_rect(owner.partition(":")[2], track).adjusted(-2, -2, 2, 2).toAlignedRect()
         kind = 'audio' if owner.startswith('audio:') else 'video' if owner.startswith('video') else 'subtitle'
         return button_rect(kind, action, track).adjusted(-2, -2, 2, 2).toAlignedRect()
 
@@ -2384,14 +2441,20 @@ class WaveformTimeline(QWidget):
         amplitude = height * 0.36 if amplitude is None else float(amplitude)
         heights = waveform_db_heights
         stride = max(1, int(np.ceil(len(pairs) / max(1, pixels / 2))))
-        expected_buckets = max(
-            1.0, (float(source_out) - float(source_in)) / _level.milliseconds_per_frame
-        )
+        span = max(1e-6, float(source_out) - float(source_in))
+        expected_buckets = max(1.0, span / _level.milliseconds_per_frame)
         x_scale = max(1.0, width) / expected_buckets
+        # 2026-10-24: a stream that starts after the window start (a dub
+        # track beginning 3 s into the file) has no samples before its
+        # origin; its first bucket belongs at the origin, not at x = 0.
+        origin = float(getattr(getattr(cache, "metadata", None), "sample_timeline_origin_ms", 0.0) or 0.0)
+        lead_px = max(0.0, origin - float(source_in)) * max(1.0, width) / span
+        if lead_px:
+            expected_buckets = max(1.0, (float(source_out) - origin) / _level.milliseconds_per_frame)
         indices = np.arange(0, len(pairs), stride)
         highs = heights(np.maximum.reduceat(pairs[:, 1], indices))
         lows = heights(np.minimum.reduceat(pairs[:, 0], indices))
-        xs = (indices * x_scale).tolist()
+        xs = (lead_px + indices * x_scale).tolist()
         upper = [QPointF(x, -v * amplitude) for x, v in zip(xs, highs.tolist())]
         lower = [QPointF(x, v * amplitude) for x, v in zip(xs, lows.tolist())]
         if not upper:
@@ -2428,6 +2491,105 @@ class WaveformTimeline(QWidget):
         except Exception:
             pass
 
+    def _audio_lane_caption(self, track):
+        """Second header line of a lane playing one stream of a multi-track source."""
+        if track is None or not self.project:
+            return None
+        from ..timeline.audio_stream_lanes import lane_stream_record
+        from ..media.audio_streams import asset_streams, stream_caption
+        asset, record = lane_stream_record(self.project, track)
+        if record is None or (getattr(track, 'stream_ordinal', -1) < 0 and len(asset_streams(asset)) < 2):
+            return None
+        return stream_caption(record)
+
+    def audio_lane_tooltip(self, audio_id: str) -> str:
+        """Full name, language, channels, length and indexes of one lane."""
+        track = next((t for t in self.project.audio_tracks if t.id == audio_id), None) if self.project else None
+        if track is None:
+            return ''
+        from ..timeline.audio_stream_lanes import lane_sources
+        from ..media.audio_streams import stream_by_ordinal, stream_details, stream_label
+        lines = []
+        for asset, ordinal in lane_sources(self.project, track):
+            record = stream_by_ordinal(asset, ordinal)
+            if record is None:
+                continue
+            lines.append(f"{Path(asset.canonical_source).name}\n{stream_label(record)}")
+            lines.extend(str(line) for line in stream_details(record))
+        if not lines:
+            return ''
+        if track.muted:
+            lines.append(str(tr('此音轨已静音：播放和导出听不到它，仍可试听和识别')))
+        return "\n".join(lines)
+
+    def _paint_audio_lane_label(self, painter, palette, audio_id, track, rect) -> None:
+        caption = self._audio_lane_caption(track)
+        follower = getattr(track, 'stream_ordinal', -1) >= 0
+        toggle = self._stream_toggle_rect(audio_id, rect)
+        left = 22 if follower else 12
+        right = (toggle.left() - 4) if not toggle.isNull() else CONTROL_LEFT - 6
+        if follower:
+            # Bracket joining a source's further streams to its A lane.
+            painter.save()
+            painter.setPen(QPen(QColor(palette.waveform_header_text), 1.0))
+            painter.setOpacity(0.35)
+            painter.drawLine(QPointF(10.5, rect.top()), QPointF(10.5, rect.center().y()))
+            painter.drawLine(QPointF(10.5, rect.center().y()), QPointF(16.5, rect.center().y()))
+            painter.restore()
+        header_font = painter.font()
+        header_font.setBold(True)
+        header_font.setPointSize(9)
+        painter.setFont(header_font)
+        painter.setPen(QColor(palette.waveform_header_text))
+        if caption is None:
+            painter.drawText(
+                QRectF(left, rect.top(), max(20, right - left), rect.height()),
+                Qt.AlignmentFlag.AlignVCenter,
+                tr("{track}  波形", track=audio_id),
+            )
+        else:
+            two_lines = rect.height() >= 34
+            top = QRectF(left, rect.top() + (2 if two_lines else 0), max(20, right - left),
+                         rect.height() / 2 - 1 if two_lines else rect.height())
+            painter.drawText(top, Qt.AlignmentFlag.AlignVCenter if not two_lines else
+                             Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft, audio_id)
+            small = QFont(header_font)
+            small.setBold(False)
+            small.setPointSize(8)
+            painter.setFont(small)
+            metrics = QFontMetrics(small)
+            if two_lines:
+                line = QRectF(left, rect.center().y() + 1, max(20, right - left), rect.height() / 2 - 3)
+                align = Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
+            else:
+                offset = QFontMetrics(header_font).horizontalAdvance(audio_id) + 6
+                line = QRectF(left + offset, rect.top(), max(10, right - left - offset), rect.height())
+                align = Qt.AlignmentFlag.AlignVCenter
+            painter.setOpacity(0.78)
+            painter.drawText(line, align, metrics.elidedText(str(caption), Qt.TextElideMode.ElideRight, int(line.width())))
+            painter.setOpacity(1.0)
+        if not toggle.isNull():
+            video_id = next((g.video_track_id for g in self.project.av_track_groups
+                             if g.audio_track_id == audio_id and g.video_track_id), '')
+            collapsed = self.stream_lanes_collapsed(video_id)
+            hovered = self._hover_header_action == (f"audio:{audio_id}", 'streams')
+            painter.save()
+            if hovered:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(palette.header_hover))
+                painter.drawRoundedRect(toggle, 4, 4)
+            icon_box = QRectF(toggle.left() + 3, toggle.center().y() - 6, 12, 12).toRect()
+            paint_cached_icon(painter, 'fa5s.chevron-right' if collapsed else 'fa5s.chevron-down',
+                              palette.header_icon, icon_box, state='hover' if hovered else 'normal')
+            count_font = QFont(painter.font())
+            count_font.setPointSize(8)
+            count_font.setBold(True)
+            painter.setFont(count_font)
+            painter.setPen(QColor(palette.header_icon))
+            painter.drawText(QRectF(toggle.left() + 16, toggle.top(), toggle.width() - 18, toggle.height()),
+                             Qt.AlignmentFlag.AlignVCenter, f"+{len(self._stream_lanes(video_id))}")
+            painter.restore()
+
     def _paint_linked_audio_tracks(
         self,
         painter: QPainter,
@@ -2462,16 +2624,7 @@ class WaveformTimeline(QWidget):
             track = tracks.get(audio_id)
             muted = bool(track and track.muted)
             locked = bool(track and track.locked)
-            header_font = painter.font()
-            header_font.setBold(True)
-            header_font.setPointSize(9)
-            painter.setFont(header_font)
-            painter.setPen(QColor(palette.waveform_header_text))
-            painter.drawText(
-                QRectF(12, rect.top(), 90, rect.height()),
-                Qt.AlignmentFlag.AlignVCenter,
-                tr("{track}  波形", track=audio_id),
-            )
+            self._paint_audio_lane_label(painter, palette, audio_id, track, rect)
             video_id = video_for_audio.get(audio_id, "")
             soloed = bool(track and getattr(track, "soloed", False))
             for action, icon_name in (
@@ -2514,7 +2667,8 @@ class WaveformTimeline(QWidget):
                 if overlap_out <= overlap_in:
                     continue
                 asset = assets.get(clip.asset_id)
-                cache = self.waveform_cache_for_source(asset.canonical_source) if asset else None
+                # Each lane draws its own stream, never another lane's copy.
+                cache = self.waveform_cache_for_source(asset.canonical_source, clip.stream_index) if asset else None
                 if asset is None or cache is None:
                     continue
                 from ..timeline.clip_time_mapper import project_to_source
@@ -3901,6 +4055,13 @@ class WaveformTimeline(QWidget):
         self.selected_audio_track_id = audio_track_id or ""
         if audio_track_id and point.x() < self.TRACK_HEADER_WIDTH:
             self.selected_track_header = ('audio', audio_track_id)
+            row = self._audio_track_rects()[audio_track_id]
+            if self._stream_toggle_rect(audio_track_id, row).contains(point):
+                video_id = next((g.video_track_id for g in self.project.av_track_groups
+                                 if g.audio_track_id == audio_track_id and g.video_track_id), '')
+                self.set_stream_lanes_collapsed(video_id, not self.stream_lanes_collapsed(video_id))
+                self.stream_lanes_toggled.emit(video_id)
+                return
             audio_action = self._audio_header_action_at(point.x(), point.y(), self._audio_track_rects()[audio_track_id])
             if audio_action == 'delete':
                 self.track_delete_requested.emit('audio',audio_track_id)
@@ -4579,6 +4740,16 @@ class WaveformTimeline(QWidget):
             if point.x() < self.TRACK_HEADER_WIDTH:
                 audio_track_id = self._audio_track_at(point)
                 audio_action = self._audio_header_action_at(point.x(), point.y(), self._audio_track_rects()[audio_track_id]) if audio_track_id else ""
+                if audio_track_id and not audio_action and self._stream_toggle_rect(
+                        audio_track_id, self._audio_track_rects()[audio_track_id]).contains(point):
+                    video_id = next((g.video_track_id for g in self.project.av_track_groups
+                                     if g.audio_track_id == audio_track_id and g.video_track_id), '')
+                    hovered = (f"audio:{audio_track_id}", 'streams')
+                    self.setCursor(Qt.CursorShape.PointingHandCursor)
+                    count = len(self._stream_lanes(video_id))
+                    (bind_text(self, '展开这个素材的另外 {count} 条音轨', count=count, property='toolTip')
+                     if self.stream_lanes_collapsed(video_id) else
+                     bind_text(self, '收起这个素材的另外 {count} 条音轨', count=count, property='toolTip'))
                 if audio_track_id and audio_action:
                     from ..timeline.studio_track_delete import delete_label
                     hovered = (f"audio:{audio_track_id}", audio_action)
@@ -4643,7 +4814,12 @@ class WaveformTimeline(QWidget):
                     bind_text(self, '{value0} · 按住上下拖动调整轨道层级', property='toolTip', value0=track.name)
                 elif audio_track_id:
                     track = next(t for t in self.project.audio_tracks if t.id == audio_track_id)
-                    bind_text(self, '{value0} · {audio_track_id} 波形', property='toolTip', value0=track.name, audio_track_id=audio_track_id)
+                    tip = self.audio_lane_tooltip(audio_track_id)
+                    if tip:
+                        # A stream of a multi-track source: say which one.
+                        self.setToolTip(tip)
+                    else:
+                        bind_text(self, '{value0} · {audio_track_id} 波形', property='toolTip', value0=track.name, audio_track_id=audio_track_id)
                 elif self._group_row_at(point) is not None:
                     names = '、'.join(_speaker_name(self.project, key) for key in self._group_members)
                     bind_text(self, '次要角色：{names}（点击展开或收起；右键可整理或调整角色）',

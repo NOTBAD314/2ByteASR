@@ -62,7 +62,7 @@ def page(monkeypatch):
 
 def drive_dialog(monkeypatch, inspect, *, begin=None):
     """Run production queued slots in the GUI loop, without an interactive modal."""
-    from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+    from twobyteasr.studio.studio_find_replace import GlossaryReviewDialog
     observed = {}
     def exec_dialog(dialog):
         loop = QEventLoop()
@@ -97,7 +97,7 @@ def drive_dialog(monkeypatch, inspect, *, begin=None):
         if errors:
             raise errors[0]
         return 0
-    monkeypatch.setattr(FindReplaceDialog, 'exec', exec_dialog)
+    monkeypatch.setattr(GlossaryReviewDialog, 'exec', exec_dialog)
     return observed
 
 
@@ -162,11 +162,11 @@ def test_dialog_binds_copied_project_applies_receipt_once_and_undoes(page, monke
         assert dialog._glossary_review_receipt == result.receipt
         assert dialog.preview.count() == 1 and dialog.all_button.isEnabled()
         assert project.cues[0].text == '原处理文字'
-        # A scoped retry cannot change into a manual learning or unrelated AI
-        # tool while delivering/applying these suggestions.
-        assert dialog.tabs.currentIndex() == 3
-        assert not dialog.tabs.tabBar().isEnabled() or all(not dialog.tabs.isTabEnabled(i) for i in (0, 1, 2))
-        assert not dialog.ai_run_button.isEnabled()
+        # A scoped retry opens the review window alone: no manual find/replace
+        # or AI cleanup there, and the library choice is fixed.
+        from twobyteasr.studio.studio_find_replace import GlossaryReviewDialog
+        assert type(dialog) is GlossaryReviewDialog and not hasattr(dialog, 'find_edit')
+        assert not dialog.terms_libraries.isEnabled() and not dialog.terms_ai_button.isEnabled()
         dialog._do_apply_preview()
         assert project.cues[0].text == '重试建议文字'
         assert project.generation_metadata['glossary_review_jobs'][0]['job_id'] == 'retry-child'

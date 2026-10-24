@@ -303,6 +303,11 @@ class StudioProjectFlowMixin:
 
         def needed():
             tidy_dividers()
+            # 2026-10-23: commands sit in tracks (design B); a track's cached
+            # hint would keep the width of the old texts or of hidden commands.
+            for track in getattr(self, "_studio_toolbar_tracks", ()):
+                track.layout().invalidate()
+                track.updateGeometry()
             layout.invalidate()
             return layout.minimumSize().width()
 

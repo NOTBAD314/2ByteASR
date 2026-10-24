@@ -46,7 +46,7 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
     from PIL import Image
     from ..rendering.advanced_renderer import compile_composition_data, _run_streaming_process, _ffmpeg_filter_path, _native_segment_project
     from ..rendering.ass_compiler import compile_ass
-    from .studio_render import select_encoder, _quality_arguments, encoder_preset, export_progress, STAGE_ADVANCED_RENDER, STAGE_ENCODE, STAGE_MUX
+    from .studio_render import select_encoder, _quality_arguments, encoder_preset, export_progress, STAGE_ADVANCED_RENDER, STAGE_ENCODE, STAGE_MUX, STAGE_VALIDATE
     from .export_validation import validate_output
     output=Path(job.output_path).resolve()
     if output.exists() and not job.overwrite_existing:raise FileExistsError(output)
@@ -130,9 +130,16 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         command+=['-progress','pipe:1','-nostats',str(partial)]
         if trace:trace('static_caption_command',command)
         if progress:progress(export_progress(STAGE_ENCODE,message='连续合成字幕与视频并编码…',duration_seconds=duration))
+        current = {}
         def line(value):
-            if progress and value.startswith('out_time_us='):
-                progress(export_progress(STAGE_ENCODE,message='连续合成字幕与视频并编码…',out_time_us=value.split('=',1)[1],duration_seconds=duration))
+            key, separator, val = value.strip().partition('=')
+            if separator: current[key] = val
+            if progress and key == 'progress':
+                stage = STAGE_MUX if val == 'end' else STAGE_ENCODE
+                progress(export_progress(stage, message='正在封装收尾…' if stage == STAGE_MUX else '连续合成字幕与视频并编码…',
+                    frame=current.get('frame'), video_time_seconds=int(current.get('frame') or 0)/fps,
+                    out_time_us=current.get('out_time_us'), speed=current.get('speed'), duration_seconds=duration))
+                current.clear()
         from .export_preview import run_streaming_with_preview
         encode_start=time.perf_counter()
         def run_static(command, **kwargs):
@@ -140,12 +147,12 @@ def render_static_graph(project, ffmpeg, job, *, progress=None, cancelled=None, 
         code,log=run_streaming_with_preview(command,job,run_static,on_line=line,cancelled=cancelled)
         timings['encode']=time.perf_counter()-encode_start
         if code:raise RuntimeError('静态字幕编码失败：'+log[-3000:])
-        if progress:progress(export_progress(STAGE_MUX,message='完整解码校验后发布成片…'))
+        if progress:progress(export_progress(STAGE_VALIDATE,message='完整解码校验后发布成片…'))
         validate_start=time.perf_counter();metadata=validate_output(ffmpeg,partial,duration=duration,fps=fps,cancelled=cancelled,preview_path=job.completion_preview_path)
         timings['validate']=time.perf_counter()-validate_start
         publish_output(partial, output, job, metadata, cancelled=cancelled)
         timings.update(wall=time.perf_counter()-started,static_images=len(layers),temporary_png_bytes=total_png,encoder=encoder)
         notify_after_publication(job, trace, 'static_caption_timings', timings)
         notify_after_publication(job, trace, 'validated_output', metadata)
-        notify_after_publication(job, progress, export_progress(STAGE_MUX,message='导出完成',percent=100))
+        notify_after_publication(job, progress, export_progress(STAGE_VALIDATE,message='导出完成',percent=100))
     return output

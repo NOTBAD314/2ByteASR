@@ -239,6 +239,29 @@ def test_cloud_recognition_failures():
     assert ids(with_settings(other, models={"primary_asr_backend": "api"}), ai_ready=True)[0] == "cloud_asr_failed"
 
 
+def test_cloud_marker_quoting_the_provider_reason_is_read_whole():
+    """2026-10-23: the worker's line can quote MOSI's own error, braces
+    included; the old pattern stopped at the first "} " and lost the category."""
+    marker = "[2BYTEASR_API_ERROR] " + json.dumps(
+        {"category": "key", "message": 'MOSI 返回 {"code": 7} 后拒绝', "action": "", "link": "", "code": "auth_failed"},
+        ensure_ascii=False)
+    assert ids({"status": "failed", "result": {"error": marker}}, ai_ready=True)[0] == "cloud_asr_auth"
+
+
+def test_resubmit_evidence_names_the_segment_and_mosi_reason():
+    from twobyteasr.providers.cloud_api_worker import ERROR_MARKER, RESUBMIT_CATEGORIES
+    message = (RESUBMIT_CATEGORIES["remote_terminal"] + " 第 2 / 2 段（55:59–1:36:04）的 MOSI 任务（任务编号 t-9）"
+               "执行失败，MOSI 没有说明原因。")
+    marker = ERROR_MARKER + json.dumps({"category": "resubmit_needed", "message": message, "action": "确认后重新提交。",
+                                        "link": None, "code": "remote_terminal", "resubmit": True}, ensure_ascii=False)
+    error = f"{message} 确认后重新提交。 PRIMARY_API worker failed (exit 1): stdout: stderr: {marker} 已保存远端终态 FAILED"
+    data = with_settings(failed(error, stage="在线 ASR API 主力转写（MOSS Pro 云端 · moss-transcribe-diarize-pro）"),
+                         models={"primary_asr_backend": "api"})
+    diagnosis = diagnose_run(DiagnosisInput(report=data, ai_ready=True))
+    finding = next(f for f in diagnosis.findings if f.rule_id == "cloud_asr_resubmit")
+    assert "第 2 / 2 段（55:59–1:36:04）的 MOSI 任务（任务编号 t-9）执行失败，MOSI 没有说明原因" in finding.evidence[0]
+
+
 @pytest.mark.parametrize("error, issue", [
     ('[2BYTEASR_API_ERROR] {"category": "balance", "message": "x"}', "cloud_asr_quota"),
     ('[2BYTEASR_API_ERROR] {"category": "key", "message": "x"}', "cloud_asr_auth"),

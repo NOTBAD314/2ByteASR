@@ -7,7 +7,8 @@ from pathlib import Path
 STAGES=('direction','description','structure','html','css','motion','preview','acceptance')
 RECOVERABLE={'output_truncated','reasoning_only','provider_no_body','structured_output_truncated',
              'structured_output_reasoning_exhausted','provider_total_timeout','provider_idle_timeout',
-             'structured_output_invalid','structured_output_schema','implementation_error'}
+             'structured_output_invalid','structured_output_invalid_json',
+             'structured_output_schema','implementation_error'}
 
 
 def checkpoint(folder,stage,value,*,status='complete',origin='local'):

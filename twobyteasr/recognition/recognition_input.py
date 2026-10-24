@@ -22,25 +22,84 @@ def _digest(value):
                                     separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def capture_recognition_snapshot(project, project_path=""):
-    from ..playback.audio_graph import capture_audio_graph
-    from ..timeline.studio_edit_sequence import sequence_of, timeline_duration_ms
-    project = copy.deepcopy(project)
-    data = project.to_dict()
-    graph = capture_audio_graph(project)
-    duration = timeline_duration_ms(project)
-    if duration <= 0:
-        raise ValueError("当前时间轴为空，无法识别字幕。")
+def _graph_sources(graph):
     sources = {}
     for layer in graph["segments"]:
         path = Path(layer["source_path"]).resolve()
         stat = path.stat()
         sources[str(path)] = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
-    identity = {"version": 2, "duration_ms": duration, "audio_graph": graph,
-                "sequence": sequence_of(project).to_dict(), "sources": sources}
-    return {**identity, "fingerprint": _digest(identity), "project": data,
-            "project_id": project.project_id, "project_path": str(project_path),
-            "project_revision": project_content_revision(data)}
+    return sources
+
+
+def capture_recognition_snapshot(project, project_path="", *, lanes=None, lane=None):
+    """See ``_capture``; ``lane`` alone hears one picked lane in a single run
+    (仅本地识别: its transcript is stored apart, nothing is replaced)."""
+    if lane is None:
+        return _capture(project, project_path, lanes=lanes)
+    snapshot = _capture(project, project_path, lanes=[lane])
+    run = snapshot.pop("audio_lanes")[0]
+    snapshot.pop("audio_lanes_digest", None)
+    snapshot.update(audio_graph=run["audio_graph"], sources=run["sources"], audio_source=run["audio_source"])
+    identity = {k: snapshot[k] for k in ("version", "duration_ms", "audio_graph", "sequence", "sources", "audio_source")}
+    snapshot["fingerprint"] = _digest(identity)
+    return snapshot
+
+
+def _capture(project, project_path="", *, lanes=None):
+    """Freeze what one recognition run hears.
+
+    Without ``lanes`` the input is the timeline mix (as before). With
+    ``lanes`` (rows of ``timeline.audio_stream_lanes.recognizable_lanes``,
+    2026-10-24) every picked audio lane gets its own graph, sources and
+    fingerprint under ``audio_lanes``: one lane, one input, one result, so
+    two dubs are never mixed into one recognition.
+    """
+    from ..playback.audio_graph import capture_audio_graph, capture_lane_audio_graph
+    from ..timeline.studio_edit_sequence import sequence_of, timeline_duration_ms
+    project = copy.deepcopy(project)
+    data = project.to_dict()
+    duration = timeline_duration_ms(project)
+    if duration <= 0:
+        raise ValueError("当前时间轴为空，无法识别字幕。")
+    sequence = sequence_of(project).to_dict()
+    snapshot = {"project": data, "project_id": project.project_id, "project_path": str(project_path),
+                "project_revision": project_content_revision(data)}
+    if not lanes:
+        graph = capture_audio_graph(project)
+        identity = {"version": 2, "duration_ms": duration, "audio_graph": graph,
+                    "sequence": sequence, "sources": _graph_sources(graph)}
+        return {**identity, "fingerprint": _digest(identity), **snapshot}
+    from ..timeline.audio_stream_lanes import source_key
+    runs = []
+    for row in lanes:
+        lane_id = str(row["lane_id"])
+        graph = capture_lane_audio_graph(project, lane_id)
+        if not graph["segments"]:
+            raise ValueError(f"音轨 {lane_id} 在当前时间轴上没有可识别的声音（片段被停用或不在剪辑范围内）。")
+        source = {key: row.get(key) for key in ("lane_id", "route_id", "asset_id", "source_path", "source_name",
+                                                 "fingerprint", "ordinal", "stream_index", "follower")}
+        source["record"] = dict(row.get("record") or {})
+        source["source_key"] = source_key(row)
+        identity = {"version": 2, "duration_ms": duration, "audio_graph": graph,
+                    "sequence": sequence, "sources": _graph_sources(graph), "audio_source": source}
+        runs.append({**identity, "fingerprint": _digest(identity)})
+    sources = {}
+    for run in runs:
+        sources.update(run["sources"])
+    identity = {"version": 2, "duration_ms": duration, "audio_graph": runs[0]["audio_graph"],
+                "sequence": sequence, "sources": sources,
+                "audio_lanes_digest": _digest([run["fingerprint"] for run in runs])}
+    return {**identity, "fingerprint": _digest(identity), "audio_lanes": runs, **snapshot}
+
+
+def lane_snapshots(snapshot):
+    """One self-contained snapshot per picked lane ([snapshot] for a mix run)."""
+    runs = snapshot.get("audio_lanes") or []
+    if not runs:
+        return [snapshot]
+    shared = {k: v for k, v in snapshot.items() if k not in {"audio_lanes", "audio_lanes_digest"}}
+    return [{**shared, **copy.deepcopy(run), "lane_index": index, "lane_total": len(runs)}
+            for index, run in enumerate(runs, 1)]
 
 
 def project_content_revision(data):

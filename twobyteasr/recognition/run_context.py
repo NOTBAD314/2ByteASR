@@ -40,6 +40,9 @@ class RuntimeContext:
     studio_project_path: str = ""
     recognition_purpose: str = "final"
     recognition_snapshot: dict[str, Any] = field(default_factory=dict)
+    # 2026-10-24: the audio stream a home-page run of a multi-track file
+    # recognizes for the current media (``audio_stream_choice``); {} = as before.
+    audio_stream: dict[str, Any] = field(default_factory=dict)
     speaker_source: str = "single"
     asr_provisional_cues: list[dict[str, Any]] = field(default_factory=list)
     asr_manifest_key: str = ""

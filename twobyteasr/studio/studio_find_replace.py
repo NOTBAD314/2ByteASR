@@ -1,30 +1,39 @@
-"""Studio subtitle text toolbox: find/replace, tidy, glossary, AI cleanup."""
+"""Studio subtitle text tools: 批量替换, AI 清理 and the current-glossary review.
+
+2026-10-21 (user): 批量替换 is find/replace only (no tabs); AI 清理 opens from the
+cue list beside AI 校对; 文本整理 is no longer offered, and 应用术语库 only reviews
+the completion page's retries. All three share one checked preview and one undo step.
+"""
 
 from __future__ import annotations
 
 from ..diagnostics.studio_events import observed
 
+from collections import Counter
 from dataclasses import asdict, dataclass, fields, is_dataclass
 import hashlib
 import json
 import copy
+import html
 import weakref
 
-from PySide6.QtCore import Qt, QTimer, QThread, Signal
+from PySide6.QtCore import QEvent, QRect, QSize, Qt, QTimer, QThread, Signal
+from PySide6.QtGui import QAbstractTextDocumentLayout, QColor, QPalette, QTextDocument
 from PySide6.QtWidgets import (
-    QCheckBox,
+    QApplication,
     QComboBox,
     QDialog,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QPushButton,
-    QSizePolicy,
-    QTabWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -33,9 +42,6 @@ from ..i18n import apply_ui_language, current_language
 from ..timeline.studio_commands import BatchReplaceTextCommand, MutationOrigin, SetCueFieldsCommand
 from .studio_text_tools import (
     AI_CLEANUP_OPTIONS,
-    PAUSE_KEEP_LONG,
-    PAUSE_LIGHT_TO_SPACE,
-    PAUSE_SKIP,
     SCOPE_ALL,
     SCOPE_CURRENT,
     SCOPE_RANGE,
@@ -43,12 +49,11 @@ from .studio_text_tools import (
     SCOPE_SPEAKER,
     SCOPE_TRACK,
     TextOccurrence,
+    clock_ms,
     find_occurrences,
     format_preview_row,
-    glossary_occurrences,
     request_text_cleanup,
     scope_cue_ids,
-    tidy_occurrences,
     values_from_occurrences,
     occurrence_conflicts,
 )
@@ -368,16 +373,124 @@ def apply_occurrences(
     return len(hits), len(values)
 
 
-class FindReplaceDialog(QDialog):
-    """Find / replace / tidy / AI cleanup, always previewed, one undo step."""
+PREVIEW_HTML_ROLE = Qt.ItemDataRole.UserRole + 2
+
+
+def _blend(foreground: str, background: str, share: float) -> str:
+    top, base = QColor(foreground), QColor(background)
+    mix = lambda a, b: round(a * share + b * (1 - share))
+    return QColor(mix(top.red(), base.red()), mix(top.green(), base.green()),
+                  mix(top.blue(), base.blue())).name()
+
+
+def _preview_colors() -> dict[str, str]:
+    from ..design.theme_manager import theme_key
+    from ..design.ui_theme import theme_definition
+
+    theme = theme_definition(theme_key())
+    return {
+        "text": theme.text, "secondary": theme.text_secondary, "muted": theme.text_muted,
+        "removed": _blend(theme.danger, theme.input_surface, 0.32),
+        "added": _blend(theme.success, theme.input_surface, 0.30),
+    }
+
+
+def replace_row_html(text: str, hit: TextOccurrence, colors: dict[str, str]) -> str:
+    """Two lines: the cue with the matched words struck out, then with the new words."""
+    start, end = hit.span
+    if text[start:end] != hit.original:
+        text, start, end = hit.original, 0, len(hit.original)
+    clean = lambda part: html.escape(part).replace("\n", " / ")
+    removed = (f'<span style="background-color:{colors["removed"]}; text-decoration:line-through;">'
+               f'{clean(text[start:end])}</span>')
+    added = (f'<span style="background-color:{colors["added"]};">{clean(hit.replacement)}</span>'
+             if hit.replacement else "")
+    return (f'<span style="color:{colors["muted"]};">{clock_ms(hit.start_ms)}</span>&nbsp;&nbsp;'
+            f'<span style="color:{colors["text"]};">{clean(text[:start])}{removed}{clean(text[end:])}</span><br>'
+            f'<span style="color:{colors["muted"]};">→</span>&nbsp;'
+            f'<span style="color:{colors["secondary"]};">{clean(text[:start])}{added}{clean(text[end:])}</span>')
+
+
+class _PreviewRowDelegate(QStyledItemDelegate):
+    """Paints a row's rich text next to the normal check box; plain rows draw as before."""
+
+    def _document(self, font, html_text: str, width: int) -> QTextDocument:
+        document = QTextDocument()
+        document.setDefaultFont(font)
+        document.setDocumentMargin(0)
+        document.setHtml(html_text)
+        document.setTextWidth(max(40, width))
+        return document
+
+    def _option(self, option, index) -> QStyleOptionViewItem:
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        styled.text = ""
+        return styled
+
+    def paint(self, painter, option, index):
+        html_text = index.data(PREVIEW_HTML_ROLE)
+        if not html_text:
+            return super().paint(painter, option, index)
+        styled = self._option(option, index)
+        style = styled.widget.style() if styled.widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, styled, painter, styled.widget)
+        rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, styled, styled.widget)
+        document = self._document(styled.font, html_text, rect.width())
+        painter.save()
+        painter.translate(rect.left(), rect.top() + max(0, (rect.height() - document.size().height()) / 2))
+        context = QAbstractTextDocumentLayout.PaintContext()
+        context.palette.setColor(QPalette.ColorRole.Text, styled.palette.color(QPalette.ColorRole.Text))
+        document.documentLayout().draw(painter, context)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        html_text = index.data(PREVIEW_HTML_ROLE)
+        if not html_text:
+            return super().sizeHint(option, index)
+        styled = self._option(option, index)
+        view = styled.widget
+        width = view.viewport().width() if view is not None else 480
+        # Measure the text area of a tall probe row; the rest is padding and the check box.
+        styled.rect = QRect(0, 0, width, 400)
+        style = view.style() if view is not None else QApplication.style()
+        rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, styled, view)
+        document = self._document(styled.font, html_text, rect.width())
+        return QSize(width, int(document.size().height()) + 400 - rect.height() + 2)
+
+
+def _option_chip(text: str, *, checked: bool = False) -> QPushButton:
+    chip = QPushButton(text)
+    chip.setObjectName("findOptionChip")
+    chip.setCheckable(True)
+    chip.setChecked(checked)
+    chip.setAutoDefault(False)
+    # Clicking an option keeps the caret in the text field being typed into.
+    chip.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+    chip.setCursor(Qt.CursorShape.PointingHandCursor)
+    return chip
+
+
+def _chip_row(chips) -> QWidget:
+    from ..exports.subtitle_export_widgets import ChipFlowLayout
+
+    host = QWidget()
+    flow = ChipFlowLayout(host, spacing=6)
+    for chip in chips:
+        flow.addWidget(chip)
+    return host
+
+
+class _TextPreviewDialog(QDialog):
+    """Preview list, freshness checks and one-step apply shared by the text tools."""
+
+    _title = "字幕文本工具"
 
     def __init__(self, page, parent=None):
         super().__init__(parent or page)
         self._page = page
-        bind_text(self, '字幕文本工具', property='windowTitle')
+        bind_text(self, self._title, property='windowTitle')
         self.setObjectName("toolDialog")
-        self.setMinimumSize(680, 540)
-        self.resize(800, 640)
         self._preview_hits: list[TextOccurrence] = []
         self._preview_binding = None
         self._preview_library_ids = None
@@ -386,72 +499,6 @@ class FindReplaceDialog(QDialog):
         self._glossary_review_worker = None
         self._review_close_pending = False
         self._review_generation = 0
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(8)
-
-        from ..design.studio_theme import apply_secondary_surface_theme
-
-        self.tabs = QTabWidget()
-        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self.tabs.addTab(self._find_tab(), "查找 / 替换")
-        self.tabs.addTab(self._tidy_tab(), "文本整理")
-        self.tabs.addTab(self._ai_tab(), "AI 清理")
-        self.tabs.addTab(self._terms_tab(), "应用术语库")
-        layout.addWidget(self.tabs, 0)
-
-        results = QFrame()
-        results.setObjectName("findResultFrame")
-        results_layout = QVBoxLayout(results)
-        results_layout.setContentsMargins(10, 8, 10, 8)
-        results_layout.setSpacing(6)
-        self.status_label = QLabel("匹配结果")
-        self.status_label.setObjectName("findResultTitle")
-        self.status_label.setWordWrap(True)
-        results_layout.addWidget(self.status_label)
-        self.preview = QListWidget()
-        self.preview.setObjectName("findResultList")
-        self.preview.setMinimumHeight(280)
-        self.preview.setSpacing(4)
-        self.preview.setAlternatingRowColors(True)
-        self.preview.setWordWrap(True)
-        self.preview.itemClicked.connect(self._preview_item_clicked)
-        self.preview.itemChanged.connect(self._refresh_status)
-        self.preview.currentItemChanged.connect(self._update_association_button)
-        results_layout.addWidget(self.preview, 1)
-        layout.addWidget(results, 1)
-
-        self._search_timer = QTimer(self)
-        self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(180)
-        self._search_timer.timeout.connect(self._live_search)
-
-        actions = QHBoxLayout()
-        self.preview_button = QPushButton("预览")
-        self.preview_button.setMinimumHeight(34)
-        self.preview_button.clicked.connect(self._do_preview)
-        self.next_button = QPushButton("替换下一个")
-        self.next_button.setMinimumHeight(34)
-        self.next_button.clicked.connect(self._do_replace_next)
-        self.all_button = QPushButton("应用所选预览")
-        self.all_button.setProperty("studioPrimary", True)
-        bind_text(self.preview_button, '立即刷新预览（输入时会自动搜索）', property='toolTip')
-        self.all_button.setMinimumHeight(34)
-        self.all_button.clicked.connect(self._do_apply_preview)
-        close_button = QPushButton("关闭")
-        close_button.setMinimumHeight(34)
-        close_button.clicked.connect(self.reject)
-        actions.addWidget(self.preview_button)
-        actions.addStretch(1)
-        actions.addWidget(self.next_button)
-        actions.addWidget(self.all_button)
-        actions.addWidget(close_button)
-        layout.addLayout(actions)
-
-        apply_secondary_surface_theme(self)
-        apply_ui_language(self, current_language())
-        self._refresh_status()
-        self.tabs.currentChanged.connect(self._tab_changed)
 
     def _scope_box(self) -> QComboBox:
         combo = QComboBox()
@@ -467,144 +514,590 @@ class FindReplaceDialog(QDialog):
             combo.model().item(combo.findData(SCOPE_SELECTED)).setEnabled(False)
         return combo
 
-    def _find_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(4, 6, 4, 4)
-        layout.setSpacing(6)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(6)
-        grid.addWidget(QLabel("查找"), 0, 0)
+    def _add_results(self, layout: QVBoxLayout) -> None:
+        head = QHBoxLayout()
+        head.setSpacing(4)
+        self.status_label = QLabel("匹配结果")
+        self.status_label.setObjectName("findResultTitle")
+        self.status_label.setWordWrap(True)
+        head.addWidget(self.status_label, 1)
+        self.select_all_button = QPushButton("全选")
+        self.select_none_button = QPushButton("全不选")
+        for button, checked in ((self.select_all_button, True), (self.select_none_button, False)):
+            button.setObjectName("findLinkButton")
+            button.setAutoDefault(False)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, value=checked: self._set_all_preview_checked(value))
+            head.addWidget(button)
+        layout.addLayout(head)
+        self.preview = QListWidget()
+        self.preview.setObjectName("findResultList")
+        self.preview.setMinimumHeight(180)
+        self.preview.setWordWrap(True)
+        self.preview.setResizeMode(QListView.ResizeMode.Adjust)
+        self.preview.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        self.preview.setItemDelegate(_PreviewRowDelegate(self.preview))
+        self.preview.itemClicked.connect(self._preview_item_clicked)
+        self.preview.itemChanged.connect(self._refresh_status)
+        self.preview.currentItemChanged.connect(self._update_association_button)
+        layout.addWidget(self.preview, 1)
+
+    def _add_footer(self, layout: QVBoxLayout, leading=(), trailing=()) -> None:
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+        for widget in leading:
+            footer.addWidget(widget)
+        footer.addStretch(1)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(self.reject)
+        for widget in (*trailing, close_button):
+            footer.addWidget(widget)
+        for button in (*leading, *trailing, close_button):
+            if isinstance(button, QPushButton):
+                button.setMinimumHeight(34)
+        layout.addLayout(footer)
+
+    def _finish_setup(self) -> None:
+        from ..design.studio_theme import apply_secondary_surface_theme
+
+        for button in self.findChildren(QPushButton):
+            # Enter belongs to the text fields; no button is a default button.
+            button.setAutoDefault(False)
+            button.setDefault(False)
+        apply_secondary_surface_theme(self)
+        apply_ui_language(self, current_language())
+        self._refresh_status()
+
+    # ---------------------------------------------------------- hooks
+    def _current_scope(self) -> str:
+        return SCOPE_ALL
+
+    def _empty_message(self) -> str:
+        return '没有匹配的字幕'
+
+    def _row_text(self, hit: TextOccurrence) -> str:
+        return format_preview_row(hit)
+
+    def _row_html(self, hit: TextOccurrence, text: str, colors) -> str:
+        return ""
+
+    def _apply_extras(self, hits) -> dict:
+        """Undo title, learning and receipt for this tool's apply."""
+        return {"title": self._title}
+
+    def _after_apply(self, total: int, cue_count: int) -> None:
+        self._do_preview()
+        self._refresh_status()
+
+    def _update_association_button(self, *_args) -> None:
+        return None
+
+    def _do_preview(self) -> None:
+        return None
+
+    # ---------------------------------------------------------- preview list
+    def _fill_preview(self, hits: list[TextOccurrence], binding=None) -> None:
+        project = self._page.session.project
+        self._preview_hits = list(hits)
+        self._preview_binding = binding or PreviewBinding.capture(project)
+        texts = {cue.id: cue.text for cue in project.cues} if project is not None else {}
+        colors = _preview_colors() if hits else {}
+        self.preview.clear()
+        # Thousands of matches for a first letter: no layout or paint per row (2026-10-22).
+        self.preview.setUpdatesEnabled(False)
+        try:
+            self._add_preview_rows(hits, texts, colors)
+        finally:
+            self.preview.setUpdatesEnabled(True)
+        if hits:
+            bind_text(self.status_label, '找到 {value0} 处', value0=len(hits))
+        else:
+            bind_text(self.status_label, self._empty_message())
+        self._refresh_status()
+
+    def _add_preview_rows(self, hits, texts, colors) -> None:
+        for hit in hits:
+            item = QListWidgetItem(self._row_text(hit))
+            row_html = self._row_html(hit, texts.get(hit.cue_id, ""), colors)
+            if row_html:
+                item.setData(PREVIEW_HTML_ROLE, row_html)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if hit.default_selected else Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, hit.cue_id)
+            item.setData(Qt.ItemDataRole.UserRole+1, {'surface':hit.original,'canonical_options':[hit.replacement],
+                'state':'proposal','cue_id':hit.cue_id})
+            self.preview.addItem(item)
+
+    def _preview_item_clicked(self, item: QListWidgetItem) -> None:
+        cue_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if cue_id and self._page is not None:
+            binding = self._preview_binding
+            project = self._page.session.project
+            was_current = binding is not None and binding.matches(project)
+            self._page.select_cue(cue_id)
+            if not was_current or self._page.session.project is not project:
+                return
+            from ..projects.studio_runtime_state import DirtyDomain, state_for
+            runtime = state_for(project)
+            deltas = [delta for delta in runtime.delta_history if delta.revision > binding.revision]
+            navigation = DirtyDomain.CUE_SELECTION | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.TRANSFORM
+            # The TRANSFORM flag retires selection handles here. It never
+            # permits a manual transform: every editable field must match.
+            if (len(deltas) == runtime.revision - binding.revision
+                    and all(delta.action_id == 'select_cue' and not delta.dirty & ~navigation for delta in deltas)
+                    and PreviewBinding._document_fingerprint(project) == binding.document_fingerprint
+                    and PreviewBinding._fingerprint(project) == binding.fingerprint):
+                # Just verified at this revision: re-capture without hashing again.
+                PreviewBinding.remember_document_fingerprint(project, runtime.revision, binding.document_fingerprint)
+                self._preview_binding = PreviewBinding.capture(project)
+
+    def _checked_hits(self) -> list[TextOccurrence]:
+        hits = []
+        for index, hit in enumerate(self._preview_hits):
+            item = self.preview.item(index)
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
+                hits.append(hit)
+        return hits
+
+    def _set_all_preview_checked(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for index in range(self.preview.count()):
+            item = self.preview.item(index)
+            if item is not None and item.flags() & Qt.ItemIsUserCheckable:
+                item.setCheckState(state)
+
+    def _refresh_status(self, *_args) -> None:
+        running = self._glossary_review_worker is not None and self._glossary_review_worker.isRunning()
+        self.all_button.setEnabled(not running and bool(self._checked_hits()))
+        self._update_association_button()
+
+    # ---------------------------------------------------------- apply
+    @observed('cue.replace_apply')
+    def _do_apply_preview(self) -> None:
+        self._apply_checked()
+
+    def _apply_checked(self) -> None:
+        if self._preview_binding is None or not self._preview_binding.matches(self._page.session.project):
+            self.status_label.setText("工程或文字已改变，请重新预览；本次没有修改字幕。")
+            return
+        if self._preview_snapshot_digest is not None:
+            from ..glossary.terminology import snapshot_glossaries
+            import subtitle_core as legacy
+            if snapshot_glossaries(legacy, self._preview_library_ids or ()).digest != self._preview_snapshot_digest:
+                self.status_label.setText("词库已更新，请按当前词库重新生成预览；本次没有修改字幕。")
+                return
+        hits = self._checked_hits()
+        if not hits:
+            bind_text(self.status_label, '没有可应用的预览')
+            return
+        if occurrence_conflicts(hits):
+            self.status_label.setText('同一位置选中了不同候选，请只保留一个后再应用；本次没有修改字幕。')
+            return
+        extras = self._apply_extras(hits)
+        total, cue_count = apply_occurrences(
+            self._page, hits,
+            title=extras.get("title") or self._title,
+            learn_pair=extras.get("learn_pair"),
+            binding=self._preview_binding,
+            glossary_ids=extras.get("glossary_ids"),
+            review_receipt=extras.get("review_receipt"),
+        )
+        if total:
+            self._page._show_studio_hint(tr('已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）', value0=total, value1=cue_count))
+        self._after_apply(total, cue_count)
+
+    def reject(self) -> None:
+        worker = self._glossary_review_worker
+        if worker is not None and worker.isRunning():
+            self._review_close_pending = True
+            worker.token.cancel()
+            self.status_label.setText("正在取消校对，请稍候…")
+            return
+        super().reject()
+
+
+class FindReplaceDialog(_TextPreviewDialog):
+    """批量替换: find and replace with a checked preview, applied as one undo step."""
+
+    _title = "批量替换"
+
+    def __init__(self, page, parent=None):
+        super().__init__(page, parent)
+        self.setMinimumSize(600, 480)
+        self.resize(760, 620)
+        self._preview_query = None
+        self._skipped = Counter()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 12)
+        layout.setSpacing(10)
+
+        form = QGridLayout()
+        form.setHorizontalSpacing(8)
+        form.setVerticalSpacing(8)
+        find_label = QLabel("查找")
+        replace_label = QLabel("替换")
+        for label in (find_label, replace_label):
+            label.setObjectName("findFieldLabel")
         self.find_edit = QLineEdit()
         bind_text(self.find_edit, '要查找的文字，例如：尼奈', property='placeholderText')
-        self.find_edit.setMinimumHeight(32)
-        self.find_edit.textChanged.connect(self._queue_live_search)
-        grid.addWidget(self.find_edit, 0, 1)
-        grid.addWidget(QLabel("替换"), 1, 0)
         self.replace_edit = QLineEdit()
         bind_text(self.replace_edit, '替换为，例如：她', property='placeholderText')
-        self.replace_edit.setMinimumHeight(32)
-        self.replace_edit.textChanged.connect(self._queue_live_search)
-        grid.addWidget(self.replace_edit, 1, 1)
-        grid.addWidget(QLabel("范围"), 0, 2)
+        for edit in (self.find_edit, self.replace_edit):
+            edit.setMinimumHeight(34)
+            edit.setClearButtonEnabled(True)
+            edit.textChanged.connect(self._queue_live_search)
+            edit.installEventFilter(self)
         self.scope_combo = self._scope_box()
+        bind_text(self.scope_combo, '范围', property='toolTip')
         self.scope_combo.currentIndexChanged.connect(lambda *_args: self._queue_live_search())
-        grid.addWidget(self.scope_combo, 0, 3)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(3, 1)
-        layout.addLayout(grid)
+        self.swap_button = QPushButton()
+        self.swap_button.setObjectName("findSwapButton")
+        bind_text(self.swap_button, '对调查找和替换', property='toolTip')
+        from ..design.themed_icons import install_themed_icon
+        install_themed_icon(self.swap_button, "fa5s.arrows-alt-v", "secondary")
+        self.swap_button.setFixedSize(34, 34)
+        self.swap_button.clicked.connect(self._swap_fields)
+        form.addWidget(find_label, 0, 0)
+        form.addWidget(self.find_edit, 0, 1)
+        form.addWidget(self.scope_combo, 0, 2)
+        form.addWidget(replace_label, 1, 0)
+        form.addWidget(self.replace_edit, 1, 1)
+        form.addWidget(self.swap_button, 1, 2, Qt.AlignmentFlag.AlignLeft)
+        form.setColumnStretch(1, 1)
+        layout.addLayout(form)
 
-        options = QGridLayout()
-        options.setHorizontalSpacing(12)
-        options.setVerticalSpacing(4)
-        self.case_box = QCheckBox("区分大小写")
-        self.word_box = QCheckBox("全词匹配")
-        self.regex_box = QCheckBox("正则表达式")
-        self.body_box = QCheckBox("仅正文")
-        self.lock_box = QCheckBox("不修改锁定字幕")
-        self.lock_box.setChecked(True)
-        for index, box in enumerate(
-            (self.case_box, self.word_box, self.regex_box, self.body_box, self.lock_box)
-        ):
+        self.case_box = _option_chip("区分大小写")
+        self.word_box = _option_chip("全词匹配")
+        self.regex_box = _option_chip("正则表达式")
+        self.body_box = _option_chip("仅正文")
+        self.lock_box = _option_chip("不修改锁定字幕", checked=True)
+        for box in (self.case_box, self.word_box, self.regex_box, self.body_box, self.lock_box):
             box.toggled.connect(self._queue_live_search)
-            options.addWidget(box, index // 3, index % 3)
-        layout.addLayout(options)
-        self.project_entity_box = QCheckBox(tr('记录为本工程已确认实体'))
+        self.project_entity_box = _option_chip(tr('记录为本工程已确认实体'))
         bind_text(self.project_entity_box, '确认只用于本素材；其它出现位置仍需逐项预览，不写入全局词库。', property='toolTip')
-        layout.addWidget(self.project_entity_box)
-        return tab
+        layout.addWidget(_chip_row((self.case_box, self.word_box, self.regex_box, self.body_box,
+                                    self.lock_box, self.project_entity_box)))
 
-    def _tidy_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(4, 8, 4, 4)
-        row_scope = QHBoxLayout()
-        row_scope.addWidget(QLabel("范围"))
-        self.tidy_scope = self._scope_box()
-        row_scope.addWidget(self.tidy_scope, 1)
-        layout.addLayout(row_scope)
-        punct = QHBoxLayout()
-        punct.addWidget(QLabel("标点统一"))
-        self.punct_combo = QComboBox()
-        self.punct_combo.addItem("不处理", "")
-        self.punct_combo.addItem("中文标点", "cn")
-        self.punct_combo.addItem("英文标点", "en")
-        self.punct_combo.addItem("全角 / 半角（半角化）", "halfwidth")
-        punct.addWidget(self.punct_combo, 1)
-        layout.addLayout(punct)
-        self.whitespace_box = QCheckBox("空白整理（去多余空格 / 合并连续空格 / 去首尾空格）")
-        self.whitespace_box.setChecked(True)
-        layout.addWidget(self.whitespace_box)
-        pause = QHBoxLayout()
-        pause.addWidget(QLabel("停顿整理"))
-        self.pause_combo = QComboBox()
-        self.pause_combo.addItem("不处理", PAUSE_SKIP)
-        self.pause_combo.addItem("口语轻停顿 → 空格", PAUSE_LIGHT_TO_SPACE)
-        self.pause_combo.addItem("长停顿 → 保留标点", PAUSE_KEEP_LONG)
-        pause.addWidget(self.pause_combo, 1)
-        layout.addLayout(pause)
-        self.glossary_box = QCheckBox("术语标准化（词库 canonical form）")
-        self.glossary_box.setChecked(True)
-        layout.addWidget(self.glossary_box)
-        return tab
+        self._add_results(layout)
 
-    def _ai_tab(self) -> QWidget:
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(4, 8, 4, 4)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(180)
+        self._search_timer.timeout.connect(self._live_search)
+
+        self.key_hint = QLabel()
+        self.key_hint.setObjectName("findKeyHint")
+        bind_text(self.key_hint, '↓ 切到替换　Enter 替换所选　Esc 关闭')
+        self.next_button = QPushButton("替换下一个")
+        self.next_button.clicked.connect(self._do_replace_next)
+        self.all_button = QPushButton("替换所选")
+        self.all_button.setProperty("studioPrimary", True)
+        self.all_button.clicked.connect(self._do_apply_preview)
+        self._add_footer(layout, leading=(self.key_hint,), trailing=(self.next_button, self.all_button))
+        self._finish_setup()
+        self.find_edit.setFocus()
+
+    # ---------------------------------------------------------- keyboard
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.KeyPress and watched in (self.find_edit, self.replace_edit):
+            key = event.key()
+            if key == Qt.Key.Key_Down and watched is self.find_edit:
+                self.replace_edit.setFocus(Qt.FocusReason.TabFocusReason)
+                self.replace_edit.end(False)
+                return True
+            if key == Qt.Key.Key_Up and watched is self.replace_edit:
+                self.find_edit.setFocus(Qt.FocusReason.BacktabFocusReason)
+                self.find_edit.end(False)
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._apply_from_keyboard()
+                return True
+        return super().eventFilter(watched, event)
+
+    def _query(self) -> tuple:
+        return (self.find_edit.text(), self.replace_edit.text(), self._current_scope(),
+                self.case_box.isChecked(), self.word_box.isChecked(), self.regex_box.isChecked(),
+                self.body_box.isChecked(), self.lock_box.isChecked())
+
+    def _apply_from_keyboard(self) -> None:
+        if not self.find_edit.text():
+            return
+        # Typed faster than the live preview: preview what is in the fields now.
+        if self._search_timer.isActive() or self._preview_query != self._query():
+            self._search_timer.stop()
+            self._do_preview()
+        self._do_apply_preview()
+
+    def _swap_fields(self) -> None:
+        find, replace = self.find_edit.text(), self.replace_edit.text()
+        self.find_edit.setText(replace)
+        self.replace_edit.setText(find)
+        self.find_edit.setFocus()
+
+    # ---------------------------------------------------------- hooks
+    def _current_scope(self) -> str:
+        return str(self.scope_combo.currentData() or SCOPE_ALL)
+
+    def _empty_message(self) -> str:
+        return '没有匹配的字幕' if self.find_edit.text().strip() else '输入查找文字后显示匹配数量'
+
+    def _row_html(self, hit: TextOccurrence, text: str, colors) -> str:
+        return replace_row_html(text, hit, colors)
+
+    def _apply_extras(self, hits) -> dict:
+        extras = {"title": self.find_edit.text() or self._title}
+        if self.regex_box.isChecked():
+            # Regex patterns are not term corrections; nothing is learned.
+            return extras
+        needle = self.find_edit.text().strip()
+        replacement = self.replace_edit.text().strip()
+        if needle and replacement:
+            if self.project_entity_box.isChecked():
+                from ..glossary.project_entity_confirmations import confirmation_receipt
+                project = self._page.session.project
+                extras["review_receipt"] = confirmation_receipt(project, needle, replacement, {h.cue_id for h in hits})
+                extras["glossary_ids"] = project.glossary_ids
+            else:
+                extras["learn_pair"] = (needle, replacement)
+        return extras
+
+    def _apply_checked(self) -> None:
+        # Per cue, how many rows were left unticked: after the apply those are what remains.
+        self._skipped = (Counter(hit.cue_id for hit in self._preview_hits)
+                         - Counter(hit.cue_id for hit in self._checked_hits()))
+        super()._apply_checked()
+
+    def _after_apply(self, total: int, cue_count: int) -> None:
+        self._do_preview()
+        if total and self._skipped and Counter(hit.cue_id for hit in self._preview_hits) == self._skipped:
+            # The rows left are the ones you unticked; a second Enter must not take them.
+            self._set_all_preview_checked(False)
+        self._refresh_status()
+        if total:
+            bind_text(self.status_label, '已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）',
+                      value0=total, value1=cue_count)
+        # Ready for the next pair: the find text is selected, so typing replaces it.
+        self.find_edit.setFocus()
+        self.find_edit.selectAll()
+
+    # ---------------------------------------------------------- search
+    def _queue_live_search(self, *_args) -> None:
+        self._refresh_status()
+        self._search_timer.start()
+
+    def _live_search(self) -> None:
+        self._do_preview()
+
+    def _refresh_status(self, *_args) -> None:
+        super()._refresh_status()
+        needle = self.find_edit.text()
+        enabled = bool(needle) and self._page.session.project is not None
+        self.next_button.setEnabled(enabled)
+        has_rows = self.preview.count() > 0
+        self.select_all_button.setVisible(has_rows)
+        self.select_none_button.setVisible(has_rows)
+        if not enabled:
+            bind_text(self.status_label, '输入查找文字后显示匹配数量')
+            return
+        hits = find_occurrences(
+            self._page.session.project,
+            _scope_cue_ids(self._page, self._current_scope()),
+            needle,
+            self.replace_edit.text(),
+            case_sensitive=self.case_box.isChecked(),
+            whole_word=self.word_box.isChecked(),
+            regex=self.regex_box.isChecked(),
+            body_only=self.body_box.isChecked(),
+            skip_locked=self.lock_box.isChecked(),
+            locked_ids=_locked_ids(self._page),
+        )
+        if not hits:
+            bind_text(self.status_label, '没有匹配的字幕')
+            self.next_button.setEnabled(False)
+            return
+        cues = {hit.cue_id for hit in hits}
+        bind_text(self.status_label, '匹配 {value0} 条字幕 · {value1} 处', value0=len(cues), value1=len(hits))
+
+    @observed('cue.search')
+    def _do_preview(self) -> None:
+        project = self._page.session.project
+        if project is None:
+            return
+        self._preview_snapshot_digest = None
+        self._glossary_review_receipt = None
+        self._preview_query = self._query()
+        if not self.find_edit.text().strip():
+            self._fill_preview([])
+            return
+        binding = PreviewBinding.capture(project)
+        hits = find_occurrences(
+            project, _scope_cue_ids(self._page, self._current_scope()),
+            self.find_edit.text(), self.replace_edit.text(),
+            case_sensitive=self.case_box.isChecked(),
+            whole_word=self.word_box.isChecked(),
+            regex=self.regex_box.isChecked(),
+            body_only=self.body_box.isChecked(),
+            skip_locked=self.lock_box.isChecked(),
+            locked_ids=_locked_ids(self._page),
+        )
+        self._fill_preview(hits, binding)
+
+    @observed('cue.replace_next')
+    def _do_replace_next(self) -> None:
+        needle = self.find_edit.text()
+        if not needle:
+            return
+        ok = replace_next(
+            self._page, needle=needle, replacement=self.replace_edit.text(),
+            scope=self._current_scope(),
+        )
+        if ok:
+            self._page._show_studio_hint(tr('已替换下一条（可 Ctrl+Z 撤销）'))
+        self._do_preview()
+        self._refresh_status()
+
+    @observed('cue.replace_all')
+    def _do_replace_all(self) -> None:
+        self._do_preview()
+        self._do_apply_preview()
+
+
+class AiCleanupDialog(_TextPreviewDialog):
+    """AI 清理: AI-suggested cleanup, each change checked before one undo step."""
+
+    _title = "AI 清理"
+
+    def __init__(self, page, parent=None):
+        super().__init__(page, parent)
+        self.setMinimumSize(560, 460)
+        self.resize(720, 600)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 12)
+        layout.setSpacing(10)
         note = QLabel("AI 只建议文本清理，不会偷偷改字幕意思。每条都可接受或拒绝。")
         note.setWordWrap(True)
         note.setObjectName("cardMeta")
         layout.addWidget(note)
-        row_scope = QHBoxLayout()
-        row_scope.addWidget(QLabel("范围"))
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        scope_label = QLabel("范围")
+        scope_label.setObjectName("findFieldLabel")
+        row.addWidget(scope_label)
         self.ai_scope = self._scope_box()
-        row_scope.addWidget(self.ai_scope, 1)
-        layout.addLayout(row_scope)
-        self.ai_option_boxes: dict[str, QCheckBox] = {}
-        ai_grid = QGridLayout()
-        ai_grid.setHorizontalSpacing(12)
-        ai_grid.setVerticalSpacing(4)
-        for index, (key, label) in enumerate(AI_CLEANUP_OPTIONS):
-            box = QCheckBox(label)
-            box.setChecked(key in {"fillers", "repeats", "punctuation"})
-            self.ai_option_boxes[key] = box
-            ai_grid.addWidget(box, index // 2, index % 2)
-        layout.addLayout(ai_grid)
-        ai_actions = QHBoxLayout()
+        row.addWidget(self.ai_scope)
+        row.addStretch(1)
         self.ai_run_button = QPushButton("生成 AI 预览")
+        self.ai_run_button.setMinimumHeight(34)
         self.ai_run_button.clicked.connect(self._do_ai_preview)
-        self.accept_item_button = QPushButton("接受此条")
-        self.accept_item_button.clicked.connect(self._accept_selected)
-        self.reject_item_button = QPushButton("拒绝此条")
-        self.reject_item_button.clicked.connect(self._reject_selected)
-        self.accept_all_button = QPushButton("全部接受")
-        self.accept_all_button.clicked.connect(lambda: self._set_all_preview_checked(True))
-        self.reject_all_button = QPushButton("全部拒绝")
-        self.reject_all_button.clicked.connect(lambda: self._set_all_preview_checked(False))
-        for button in (
-            self.ai_run_button, self.accept_item_button, self.reject_item_button,
-            self.accept_all_button, self.reject_all_button,
-        ):
-            ai_actions.addWidget(button)
-        layout.addLayout(ai_actions)
-        return tab
+        row.addWidget(self.ai_run_button)
+        layout.addLayout(row)
+        self.ai_option_boxes: dict[str, QPushButton] = {}
+        for key, label in AI_CLEANUP_OPTIONS:
+            self.ai_option_boxes[key] = _option_chip(label, checked=key in {"fillers", "repeats", "punctuation"})
+        layout.addWidget(_chip_row(self.ai_option_boxes.values()))
+        self._add_results(layout)
+        self.all_button = QPushButton("应用所选预览")
+        self.all_button.setProperty("studioPrimary", True)
+        self.all_button.clicked.connect(self._do_apply_preview)
+        self._add_footer(layout, trailing=(self.all_button,))
+        self._finish_setup()
+        bind_text(self.status_label, '选好清理项后点「生成 AI 预览」')
+        self.select_all_button.hide()
+        self.select_none_button.hide()
 
     def _current_scope(self) -> str:
-        tab = self.tabs.currentIndex()
-        combo = (self.scope_combo, self.tidy_scope, self.ai_scope, self.terms_scope)[tab]
-        return str(combo.currentData() or SCOPE_ALL)
+        return str(self.ai_scope.currentData() or SCOPE_ALL)
 
-    def _terms_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+    def _refresh_status(self, *_args) -> None:
+        super()._refresh_status()
+        if hasattr(self, "select_all_button"):
+            has_rows = self.preview.count() > 0
+            self.select_all_button.setVisible(has_rows)
+            self.select_none_button.setVisible(has_rows)
+
+    def _after_apply(self, total: int, cue_count: int) -> None:
+        # The applied rows are done; a new preview asks the AI again.
+        self._preview_hits = []
+        self._preview_binding = None
+        self.preview.clear()
+        self._refresh_status()
+        if total:
+            bind_text(self.status_label, '已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）',
+                      value0=total, value1=cue_count)
+
+    @observed('cue.ai_apply')
+    def _do_apply_preview(self) -> None:
+        self._apply_checked()
+
+    def _do_ai_preview(self) -> None:
+        project = self._page.session.project
+        if project is None:
+            return
+        options = [key for key, box in self.ai_option_boxes.items() if box.isChecked()]
+        from ..app.api_key_explainer import ask_for_key_if_missing
+        from ..storage.settings import load_runtime_settings
+        settings = load_runtime_settings()
+        settings = settings[0] if isinstance(settings, tuple) else settings
+        if ask_for_key_if_missing(self, settings, "polish", status=lambda: bind_text(
+                self.status_label, 'AI 清理没有运行：还没填 API Key')):
+            return
+        binding = PreviewBinding.capture(project)
+        bind_text(self.status_label, '正在调用已配置的 AI…')
+        try:
+            hits = request_text_cleanup(
+                project,
+                _scope_cue_ids(self._page, self._current_scope()),
+                options,
+            )
+        except Exception as exc:
+            bind_text(self.status_label, 'AI 清理无法调用：{exc}', exc=exc)
+            return
+        self._fill_preview(hits, binding)
+
+
+class GlossaryReviewDialog(_TextPreviewDialog):
+    """应用术语库: the selected libraries' local and AI review of existing text.
+
+    No longer offered beside find/replace (AI 校对 covers it); the completion
+    page's retry and 用当前词库重新校对 still review their results here.
+    """
+
+    _title = "应用术语库"
+
+    def __init__(self, page, parent=None):
+        super().__init__(page, parent)
+        self.setMinimumSize(640, 540)
+        self.resize(800, 660)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 12)
+        layout.setSpacing(10)
+        layout.addLayout(self._terms_controls())
+        self._add_results(layout)
+        self.preview_button = QPushButton("预览")
+        bind_text(self.preview_button, '按所选词库重新生成本地预览', property='toolTip')
+        self.preview_button.clicked.connect(self._do_preview)
+        self.all_button = QPushButton("应用所选预览")
+        self.all_button.setProperty("studioPrimary", True)
+        self.all_button.clicked.connect(self._do_apply_preview)
+        self._add_footer(layout, leading=(self.preview_button,), trailing=(self.all_button,))
+        self._finish_setup()
+
+    def _terms_controls(self) -> QVBoxLayout:
+        layout = QVBoxLayout()
+        layout.setSpacing(8)
         note = QLabel("使用当前工程词库；预览后可取消个别修改，确认后可一次撤销。")
         note.setWordWrap(True)
+        note.setObjectName("cardMeta")
         layout.addWidget(note)
         self.terms_scope = self._scope_box()
         self.terms_scope.setCurrentIndex(self.terms_scope.findData(SCOPE_ALL))
-        layout.addWidget(self.terms_scope)
+        scope_row = QHBoxLayout()
+        scope_label = QLabel("范围")
+        scope_label.setObjectName("findFieldLabel")
+        scope_row.addWidget(scope_label)
+        scope_row.addWidget(self.terms_scope)
+        scope_row.addStretch(1)
+        layout.addLayout(scope_row)
         self.terms_libraries = QListWidget()
         self.terms_libraries.setMaximumHeight(100)
         project = self._page.session.project
@@ -623,21 +1116,47 @@ class FindReplaceDialog(QDialog):
         elif project and not project.glossary_ids:
             note.setText("当前工程尚未启用词库。勾选词库并预览，确认应用后保存到本工程。")
         layout.addWidget(self.terms_libraries)
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
         self.terms_ai_button = QPushButton("按当前词库生成 AI 校对预览")
         self.terms_ai_button.setToolTip("复用原始转写，以当前所选词库和已配置校对模型生成差异；确认后应用，可一次撤销。")
         self.terms_ai_button.clicked.connect(self._do_terms_ai_preview)
-        layout.addWidget(self.terms_ai_button)
         self.project_entities_button = QPushButton(tr('复核本工程已确认实体'))
         self.project_entities_button.clicked.connect(self._do_project_entities_preview)
-        layout.addWidget(self.project_entities_button)
         self.associate_button = QPushButton('确认所选名称关联…')
         self.associate_button.setObjectName('glossaryAssociateButton')
         self.associate_button.setEnabled(False)
         self.associate_button.clicked.connect(self._open_term_association)
-        layout.addWidget(self.associate_button)
+        for button in (self.terms_ai_button, self.project_entities_button, self.associate_button):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
         self.terms_libraries.itemChanged.connect(self._invalidate_term_preview)
         self.terms_scope.currentIndexChanged.connect(self._invalidate_term_preview)
-        return tab
+        return layout
+
+    def _current_scope(self) -> str:
+        return str(self.terms_scope.currentData() or SCOPE_ALL)
+
+    def _row_text(self, hit: TextOccurrence) -> str:
+        cue = next((c for c in self._page.session.project.cues if c.id == hit.cue_id), None)
+        if cue is None:
+            return format_preview_row(hit)
+        changed = cue.text[:hit.span[0]] + hit.replacement + cue.text[hit.span[1]:]
+        reason = {'case_normalization':'大小写规范化','confirmed_alias':'已确认别名/纠错',
+                  'user_confirmed':'用户确认（本工程）'}.get(hit.reason, hit.reason)
+        state = ('已确认规范化' if hit.source=='local_confirmed' else 'AI 自动通过（已选）') if hit.default_selected else '待确认（默认未选）'
+        extra = ' · '.join(x for x in (hit.evidence, hit.missing_evidence) if x)
+        return f"{cue.text} → {changed}\n命中：{hit.original} → {hit.replacement} · {reason} · {state}" + ('\n'+extra if extra else '')
+
+    def _apply_extras(self, hits) -> dict:
+        return {"title": self._title, "glossary_ids": self._preview_library_ids,
+                "review_receipt": self._glossary_review_receipt}
+
+    def _refresh_status(self, *_args) -> None:
+        super()._refresh_status()
+        if not (self._glossary_review_worker is not None and self._glossary_review_worker.isRunning()):
+            self._update_terms_status()
 
     def _invalidate_term_preview(self, *_args):
         self._review_generation += 1
@@ -668,45 +1187,6 @@ class FindReplaceDialog(QDialog):
             PreviewBinding.capture(project))
         if conflicts:
             bind_text(self.status_label, '同一实体有不同确认写法，已跳过：{aliases}。请逐条确认。', aliases='、'.join(conflicts))
-
-    def _fill_preview(self, hits: list[TextOccurrence], binding=None) -> None:
-        self._preview_hits = list(hits)
-        self._preview_binding = binding or PreviewBinding.capture(self._page.session.project)
-        self.preview.clear()
-        # Thousands of matches for a first letter: no layout or paint per row.
-        self.preview.setUpdatesEnabled(False)
-        try:
-            self._add_preview_rows(hits)
-        finally:
-            self.preview.setUpdatesEnabled(True)
-        if hits:
-            bind_text(self.status_label, '找到 {value0} 处', value0=len(hits))
-        elif self.tabs.currentIndex() == 0 and not self.find_edit.text().strip():
-            bind_text(self.status_label, '输入查找文字后显示匹配数量')
-        else:
-            bind_text(self.status_label, '没有匹配的字幕')
-        self._refresh_status()
-
-    def _add_preview_rows(self, hits) -> None:
-        detailed = self.tabs.currentIndex() == 3
-        cues = {c.id: c for c in self._page.session.project.cues} if detailed else {}
-        for hit in hits:
-            item = QListWidgetItem(format_preview_row(hit))
-            if detailed:
-                cue = cues.get(hit.cue_id)
-                if cue is not None:
-                    changed = cue.text[:hit.span[0]] + hit.replacement + cue.text[hit.span[1]:]
-                    reason = {'case_normalization':'大小写规范化','confirmed_alias':'已确认别名/纠错',
-                              'user_confirmed':'用户确认（本工程）'}.get(hit.reason, hit.reason)
-                    state = ('已确认规范化' if hit.source=='local_confirmed' else 'AI 自动通过（已选）') if hit.default_selected else '待确认（默认未选）'
-                    extra = ' · '.join(x for x in (hit.evidence, hit.missing_evidence) if x)
-                    item.setText(f"{cue.text} → {changed}\n命中：{hit.original} → {hit.replacement} · {reason} · {state}" + ('\n'+extra if extra else ''))
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if hit.default_selected else Qt.CheckState.Unchecked)
-            item.setData(Qt.ItemDataRole.UserRole, hit.cue_id)
-            item.setData(Qt.ItemDataRole.UserRole+1, {'surface':hit.original,'canonical_options':[hit.replacement],
-                'state':'proposal','cue_id':hit.cue_id})
-            self.preview.addItem(item)
 
     def _show_terms_result(self, result, binding, snapshot, identities):
         self._fill_preview(list(result.hits), binding)
@@ -758,7 +1238,7 @@ class FindReplaceDialog(QDialog):
             return
         item=self.preview.currentItem()
         row=item.data(Qt.ItemDataRole.UserRole+1) if item else None
-        self.associate_button.setEnabled(self.tabs.currentIndex()==3 and bool(row)
+        self.associate_button.setEnabled(bool(row)
             and row.get('state') in {'proposal','missing_alias_or_candidate'}
             and bool(row.get('surface')) and bool(self._selected_library_ids())
             and not (self._glossary_review_worker and self._glossary_review_worker.isRunning()))
@@ -790,100 +1270,6 @@ class FindReplaceDialog(QDialog):
         self._invalidate_term_preview()
         self._do_preview()
 
-    def _preview_item_clicked(self, item: QListWidgetItem) -> None:
-        cue_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
-        if cue_id and self._page is not None:
-            binding = self._preview_binding
-            project = self._page.session.project
-            was_current = binding is not None and binding.matches(project)
-            self._page.select_cue(cue_id)
-            if not was_current or self._page.session.project is not project:
-                return
-            from ..projects.studio_runtime_state import DirtyDomain, state_for
-            runtime = state_for(project)
-            deltas = [delta for delta in runtime.delta_history if delta.revision > binding.revision]
-            navigation = DirtyDomain.CUE_SELECTION | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.TRANSFORM
-            # The TRANSFORM flag retires selection handles here. It never
-            # permits a manual transform: every editable field must match.
-            if (len(deltas) == runtime.revision - binding.revision
-                    and all(delta.action_id == 'select_cue' and not delta.dirty & ~navigation for delta in deltas)
-                    and PreviewBinding._document_fingerprint(project) == binding.document_fingerprint
-                    and PreviewBinding._fingerprint(project) == binding.fingerprint):
-                # Just verified at this revision: re-capture without hashing again.
-                PreviewBinding.remember_document_fingerprint(project, runtime.revision, binding.document_fingerprint)
-                self._preview_binding = PreviewBinding.capture(project)
-
-    def _checked_hits(self) -> list[TextOccurrence]:
-        hits = []
-        for index, hit in enumerate(self._preview_hits):
-            item = self.preview.item(index)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                hits.append(hit)
-        return hits
-
-    def _set_all_preview_checked(self, checked: bool) -> None:
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        for index in range(self.preview.count()):
-            item = self.preview.item(index)
-            if item is not None and item.flags() & Qt.ItemIsUserCheckable:
-                item.setCheckState(state)
-
-    def _queue_live_search(self, *_args) -> None:
-        self._refresh_status()
-        self._search_timer.start()
-
-    def _live_search(self) -> None:
-        if self.tabs.currentIndex() == 0:
-            self._do_preview()
-
-    def _tab_changed(self, index: int) -> None:
-        self._review_generation += 1
-        self._preview_hits = []
-        self._preview_binding = None
-        self.preview.clear()
-        self._preview_library_ids = None
-        self._preview_snapshot_digest = None
-        self._glossary_review_receipt = None
-        self._refresh_status()
-        self._update_association_button()
-        if index == 0:
-            self._queue_live_search()
-
-    def _refresh_status(self, *_args) -> None:
-        if self._glossary_review_worker is not None and self._glossary_review_worker.isRunning():
-            self.next_button.setEnabled(False)
-            self.all_button.setEnabled(False)
-            return
-        needle = self.find_edit.text()
-        enabled = bool(needle) and self._page.session.project is not None
-        self.next_button.setEnabled(enabled)
-        self.all_button.setEnabled(bool(self._checked_hits()))
-        self._update_association_button()
-        if self.tabs.currentIndex() != 0:
-            if self.tabs.currentIndex()==3:self._update_terms_status()
-            return
-        if not enabled:
-            bind_text(self.status_label, '输入查找文字后显示匹配数量')
-            return
-        hits = find_occurrences(
-            self._page.session.project,
-            _scope_cue_ids(self._page, self._current_scope()),
-            needle,
-            self.replace_edit.text(),
-            case_sensitive=self.case_box.isChecked(),
-            whole_word=self.word_box.isChecked(),
-            regex=self.regex_box.isChecked(),
-            body_only=self.body_box.isChecked(),
-            skip_locked=self.lock_box.isChecked(),
-            locked_ids=_locked_ids(self._page),
-        )
-        if not hits:
-            bind_text(self.status_label, '没有匹配的字幕')
-            self.next_button.setEnabled(False)
-            return
-        cues = {hit.cue_id for hit in hits}
-        bind_text(self.status_label, '匹配 {value0} 条字幕 · {value1} 处', value0=len(cues), value1=len(hits))
-
     @observed('cue.search')
     def _do_preview(self) -> None:
         project = self._page.session.project
@@ -891,136 +1277,20 @@ class FindReplaceDialog(QDialog):
             return
         self._preview_snapshot_digest = None
         self._glossary_review_receipt = None
-        tab = self.tabs.currentIndex()
-        if tab == 3 or (tab == 1 and self.glossary_box.isChecked()):
-            prepare = getattr(self._page.window(), '_prepare_glossary_for_task', None)
-            if callable(prepare) and not prepare():
-                self.status_label.setText('词库输入尚未提交，请先保存或放弃输入后重试。')
-                return
+        prepare = getattr(self._page.window(), '_prepare_glossary_for_task', None)
+        if callable(prepare) and not prepare():
+            self.status_label.setText('词库输入尚未提交，请先保存或放弃输入后重试。')
+            return
         cue_ids = _scope_cue_ids(self._page, self._current_scope())
-        locked = _locked_ids(self._page)
         binding = PreviewBinding.capture(project)
-        if tab == 0:
-            if not self.find_edit.text().strip():
-                self._fill_preview([])
-                return
-            hits = find_occurrences(
-                project, cue_ids, self.find_edit.text(), self.replace_edit.text(),
-                case_sensitive=self.case_box.isChecked(),
-                whole_word=self.word_box.isChecked(),
-                regex=self.regex_box.isChecked(),
-                body_only=self.body_box.isChecked(),
-                skip_locked=self.lock_box.isChecked(),
-                locked_ids=locked,
-            )
-        elif tab == 1:
-            hits = tidy_occurrences(
-                project, cue_ids,
-                punctuation=str(self.punct_combo.currentData() or ""),
-                whitespace=self.whitespace_box.isChecked(),
-                pause=str(self.pause_combo.currentData() or PAUSE_SKIP),
-                skip_locked=True, locked_ids=locked,
-            )
-            if self.glossary_box.isChecked():
-                from ..glossary.terminology import TermResolver, snapshot_glossaries
-                import subtitle_core as legacy
-                snapshot = snapshot_glossaries(legacy, project.glossary_ids)
-                from ..subtitle_rules.chinese_script import glossary_script
-                resolver = TermResolver(snapshot, script=glossary_script(project))  # 繁體 project: 2026-10-19
-                from ..recognition.content_scene import resolve_content_scene
-                from types import SimpleNamespace
-                scene = resolve_content_scene(SimpleNamespace(enable_domain_terms=bool(snapshot.libraries),
-                    glossary_snapshot=snapshot, game_name=''), snapshot)
-                tidied = {hit.cue_id: hit.replacement for hit in hits}
-                hits = [TextOccurrence(cue.id, cue.start_ms, cue.text, cleaned,
-                                       (0,len(cue.text)), reason='文本整理与术语规范化')
-                        for cue in project.cues if cue.id in cue_ids and cue.id not in locked
-                        for cleaned in [resolver.resolve(tidied.get(cue.id,cue.text), scene=scene).text]
-                        if cleaned != cue.text]
-        elif tab == 2:
-            bind_text(self.status_label, '请使用「生成 AI 预览」')
-            return
-        else:
-            from ..glossary.studio_glossary_service import preview_glossary_correction
-            try:
-                identities,snapshot=self._read_selected_snapshot()
-                result=preview_glossary_correction(project,cue_ids,snapshot,{},use_ai=False)
-            except Exception as exc:
-                self._fill_preview([],binding)
-                self.status_label.setText('当前词库本地预览未完成：'+str(exc)); return
-            self._show_terms_result(result,binding,snapshot,identities)
-            return
-        self._fill_preview(hits, binding)
-        if tab == 3:
-            summary = snapshot.summary()
-            warning = ('；冲突映射已跳过，请在词库中处理' if summary['conflicts'] else
-                       '；所选词库无已确认有效词' if not summary['effective_terms'] else
-                       '；范围内无可执行替换（规范词可能已正确，未确认错词不会强制修改）' if not hits else '')
-            self.status_label.setText(f"有效 {summary['effective_terms']} 个规范词 · 命中 {len(hits)} 处 · 修改 {len({h.cue_id for h in hits})} 条字幕{warning}")
-
-    @observed('cue.replace_next')
-    def _do_replace_next(self) -> None:
-        needle = self.find_edit.text()
-        if not needle:
-            return
-        ok = replace_next(
-            self._page, needle=needle, replacement=self.replace_edit.text(),
-            scope=self._current_scope(),
-        )
-        if ok:
-            self._page._show_studio_hint(tr('已替换下一条（可 Ctrl+Z 撤销）'))
-        self._refresh_status()
-
-    @observed('cue.replace_all')
-    def _do_replace_all(self) -> None:
-        self._do_preview()
-        self._do_apply_preview()
-
-    @observed('cue.replace_apply')
-    def _do_apply_preview(self) -> None:
-        if self._preview_binding is None or not self._preview_binding.matches(self._page.session.project):
-            self.status_label.setText("工程或文字已改变，请重新预览；本次没有修改字幕。")
-            return
-        if self._preview_snapshot_digest is not None:
-            from ..glossary.terminology import snapshot_glossaries
-            import subtitle_core as legacy
-            if snapshot_glossaries(legacy, self._preview_library_ids or ()).digest != self._preview_snapshot_digest:
-                self.status_label.setText("词库已更新，请按当前词库重新生成预览；本次没有修改字幕。")
-                return
-        hits = self._checked_hits()
-        if not hits:
-            bind_text(self.status_label, '没有可应用的预览')
-            return
-        if occurrence_conflicts(hits):
-            self.status_label.setText('同一位置选中了不同候选，请只保留一个后再应用；本次没有修改字幕。')
-            return
-        learn_pair = None
-        entity_receipt = None
-        if self.tabs.currentIndex() == 0 and not self.regex_box.isChecked():
-            # Only the plain find & replace tab is manual term evidence;
-            # regex patterns, tidy rules and AI cleanup are not corrections.
-            needle = self.find_edit.text().strip()
-            replacement = self.replace_edit.text().strip()
-            if needle and replacement:
-                if self.project_entity_box.isChecked():
-                    from ..glossary.project_entity_confirmations import confirmation_receipt
-                    entity_receipt = confirmation_receipt(self._page.session.project,
-                        needle, replacement, {h.cue_id for h in hits})
-                else:
-                    learn_pair = (needle, replacement)
-        total, cue_count = apply_occurrences(
-            self._page, hits,
-            title=self.find_edit.text() or "字幕文本工具",
-            learn_pair=learn_pair,
-            binding=self._preview_binding,
-            glossary_ids=(self._page.session.project.glossary_ids if entity_receipt else
-                self._preview_library_ids if self.tabs.currentIndex() == 3 else None),
-            review_receipt=entity_receipt or (self._glossary_review_receipt if self.tabs.currentIndex() == 3 else None),
-        )
-        if total:
-            self._page._show_studio_hint(tr('已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）', value0=total, value1=cue_count))
-        self._do_preview()
-        self._refresh_status()
+        from ..glossary.studio_glossary_service import preview_glossary_correction
+        try:
+            identities,snapshot=self._read_selected_snapshot()
+            result=preview_glossary_correction(project,cue_ids,snapshot,{},use_ai=False)
+        except Exception as exc:
+            self._fill_preview([],binding)
+            self.status_label.setText('当前词库本地预览未完成：'+str(exc)); return
+        self._show_terms_result(result,binding,snapshot,identities)
 
     def _do_terms_ai_preview(self) -> None:
         if self._glossary_review_worker is not None and self._glossary_review_worker.isRunning():
@@ -1080,57 +1350,12 @@ class FindReplaceDialog(QDialog):
             self._refresh_status()
             worker.deleteLater()
             if self._review_close_pending:
-                super(FindReplaceDialog,self).reject()
+                super(GlossaryReviewDialog,self).reject()
 
         worker.ready.connect(ready)
         worker.failed.connect(failed)
         worker.finished.connect(finished)
         worker.start()
-
-    def reject(self) -> None:
-        worker = self._glossary_review_worker
-        if worker is not None and worker.isRunning():
-            self._review_close_pending = True
-            worker.token.cancel()
-            self.status_label.setText("正在取消校对，请稍候…")
-            return
-        super().reject()
-
-    def _do_ai_preview(self) -> None:
-        project = self._page.session.project
-        if project is None:
-            return
-        options = [key for key, box in self.ai_option_boxes.items() if box.isChecked()]
-        from ..app.api_key_explainer import ask_for_key_if_missing
-        from ..storage.settings import load_runtime_settings
-        settings = load_runtime_settings()
-        settings = settings[0] if isinstance(settings, tuple) else settings
-        if ask_for_key_if_missing(self, settings, "polish", status=lambda: bind_text(
-                self.status_label, 'AI 清理没有运行：还没填 API Key')):
-            return
-        binding = PreviewBinding.capture(project)
-        bind_text(self.status_label, '正在调用已配置的 AI…')
-        try:
-            hits = request_text_cleanup(
-                project,
-                _scope_cue_ids(self._page, self._current_scope()),
-                options,
-            )
-        except Exception as exc:
-            bind_text(self.status_label, 'AI 清理无法调用：{exc}', exc=exc)
-            return
-        self._fill_preview(hits, binding)
-
-    @observed('cue.ai_apply')
-    def _accept_selected(self) -> None:
-        item = self.preview.currentItem()
-        if item is not None:
-            item.setCheckState(Qt.CheckState.Checked)
-
-    def _reject_selected(self) -> None:
-        item = self.preview.currentItem()
-        if item is not None:
-            item.setCheckState(Qt.CheckState.Unchecked)
 
 
 class TermAssociationDialog(QDialog):

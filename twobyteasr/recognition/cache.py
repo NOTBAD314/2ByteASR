@@ -268,7 +268,11 @@ def media_cache_context(media_path):
     cache_key = stable_digest(identity)[:24]
     cache_dir = os.path.join(CACHE_ROOT, cache_key)
     os.makedirs(cache_dir, exist_ok=True)
-    return {"identity": identity, "cache_dir": cache_dir}
+    from .audio_stream_choice import active_choice
+    stream = active_choice(media_path, context) if context.identity_task_active else {}
+    # The picked audio stream travels with its cache (2026-10-24); the
+    # identity above already names it, so the directory is its own.
+    return {"identity": identity, "cache_dir": cache_dir, **({"audio_stream": stream} if stream else {})}
 
 
 # ffmpeg 解码 watchdog（P1-6）：duration-aware absolute 上限。
@@ -323,18 +327,22 @@ def _decode_stall_limit(duration_seconds):
     )
 
 
-def decode_audio_to_array(media_path, cancellation_token=None, _stall_limit=None):
+def decode_audio_to_array(media_path, cancellation_token=None, _stall_limit=None, *, audio_stream=None):
     """用 ffmpeg 解码为统一 16k 单声道 float32。
 
     - 用户取消：终止 ffmpeg 进程树后抛项目统一 ``CancelledError``；
     - 异常卡死（duration-aware stall limit）：终止进程树后抛明确
       ``RuntimeError``；
     - ``cancellation_token`` 为 None 表示调用者主动选择不可取消。
+    - ``audio_stream``（``audio_stream_choice``，2026-10-24）：只解码首页选的
+      那条音轨（``-map 0:a:N``），并按它相对第一条音轨的起点补齐/裁掉开头；
+      None 时命令与之前相同（FFmpeg 自选音轨）。
     """
     import numpy as np
 
     from twobyteasr.system.processes import stop_process_tree
     from twobyteasr.recognition.service import CancelledError
+    from .audio_stream_choice import align_samples, ffmpeg_map
 
     command = [
         "ffmpeg",
@@ -342,6 +350,7 @@ def decode_audio_to_array(media_path, cancellation_token=None, _stall_limit=None
         "error",
         "-i",
         os.fspath(media_path),
+        *ffmpeg_map(audio_stream),
         "-vn",
         "-ac",
         "1",
@@ -391,7 +400,7 @@ def decode_audio_to_array(media_path, cancellation_token=None, _stall_limit=None
     audio = np.frombuffer(stdout, dtype="<f4").astype(np.float32, copy=True)
     if audio.ndim != 1 or audio.size == 0:
         raise RuntimeError("统一音频解码没有得到有效的单声道采样。")
-    return audio
+    return align_samples(audio, audio_stream, AUDIO_SAMPLE_RATE)
 
 
 def _read_shared_audio_memmap(audio_path, meta_path):
@@ -461,6 +470,7 @@ def load_shared_audio(media_path, cache_context):
         decoded = decode_audio_to_array(
             media_path,
             cancellation_token=get_runtime_context().cancellation_token,
+            audio_stream=cache_context.get("audio_stream") or None,
         )
         temp_audio_path = audio_path + ".tmp"
         try:

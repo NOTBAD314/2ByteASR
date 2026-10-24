@@ -156,4 +156,9 @@ def render_candidate_preview(concept,folder,text,*,cancel_check=lambda:False,pro
         row['preview_receipt']=receipt;ledger.save()
         (folder/'preview.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2),'utf8')
         return receipt
-    finally:service.close()
+    finally:
+        import sys
+        failed=sys.exc_info()[0] is not None
+        try:service.close()
+        except Exception:
+            if not failed:raise

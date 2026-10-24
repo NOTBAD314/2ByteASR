@@ -25,6 +25,17 @@ def referenced_style_ids(project: Any) -> set[str]:
     """Style ids a subtitle or a speaker points at."""
     ids = {str(cue.style_id) for cue in getattr(project, "cues", ()) or ()}
     ids.update(str(speaker.style_id) for speaker in getattr(project, "speakers", ()) or ())
+    ids.update(layer_style_ids(getattr(project,'cues',())))
+    return ids
+
+
+def layer_style_ids(cues):
+    ids=set()
+    for cue in cues or ():
+        transform=cue.get('transform',{}) if isinstance(cue,Mapping) else getattr(cue,'transform',{})
+        layers=transform.get('language_layers',{}) if isinstance(transform,Mapping) else {}
+        for value in layers.values() if isinstance(layers,Mapping) else ():
+            if isinstance(value,Mapping) and value.get('style_id'):ids.add(str(value['style_id']))
     return ids
 
 
@@ -59,6 +70,7 @@ def prune_unused_derived_payload(payload: dict[str, Any]) -> set[str]:
         str(item.get("style_id") or "default").strip() or "default"
         for key in ("cues", "speakers") for item in payload.get(key) or () if isinstance(item, Mapping)
     }
+    referenced.update(layer_style_ids(payload.get('cues',())))
     removed = set()
     kept_styles = []
     for style in styles:

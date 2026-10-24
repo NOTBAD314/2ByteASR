@@ -237,10 +237,10 @@ def install(output):
 def start(window, output):
     from PySide6.QtCore import QObject, QTimer, Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QToolButton
+    from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
     from .blank_project_audit import _capture
     from ..diagnostics.build_identity import load_build_identity
-    from ..studio.studio_find_replace import FindReplaceDialog
+    from ..studio.studio_find_replace import GlossaryReviewDialog
     from ..projects.studio_project import load_project
     from ..studio.studio_text_tools import SCOPE_ALL
     from ..exports.studio_subtitle_export import verify_subtitle_artifact
@@ -384,23 +384,10 @@ def start(window, output):
                 all(actual_provider[key] == guard.provider[key] for key in ('provider', 'model', 'transport', 'endpoint_identity')),
                 dict(saved=guard.provider, actual=actual_provider))
             self.shot('01-normal-studio-actual-project-copy')
-            button = page.studio_find_replace_button
-            if button.isVisible():
-                self.defer(lambda: self.click(button))
-            else:
-                overflow = next(c for c in page.studio_toolbar.findChildren(QToolButton)
-                    if c.property('commandSource') == '更多工作区操作')
-                self.defer(lambda: self.click(overflow))
-                yield lambda: overflow.menu().isVisible()
-                menu = overflow.menu()
-                action = next(a for a in menu.actions() if a.text() == button.text())
-                rect = menu.actionGeometry(action)
-                self.check('normal visible More menu reaches text tools', action.isEnabled() and action.isVisible() and not rect.isEmpty())
-                self.shot('02-visible-more-text-tools', menu)
-                self.defer(lambda: QTest.mouseClick(menu, Qt.LeftButton, pos=rect.center()))
-            yield lambda: isinstance(QApplication.activeModalWidget(), FindReplaceDialog)
+            # 2026-10-21: 应用术语库 left 批量替换; the review is its own window.
+            self.defer(lambda: GlossaryReviewDialog(page, page).exec())
+            yield lambda: isinstance(QApplication.activeModalWidget(), GlossaryReviewDialog)
             dialog = QApplication.activeModalWidget()
-            QTest.mouseClick(dialog.tabs.tabBar(), Qt.LeftButton, pos=dialog.tabs.tabBar().tabRect(3).center())
             self.check('normal glossary tab uses all current cues', dialog.terms_scope.currentData() == SCOPE_ALL)
             for i in range(dialog.terms_libraries.count()):
                 item = dialog.terms_libraries.item(i)
@@ -528,9 +515,9 @@ def start(window, output):
                 guard.restore()
             QApplication.instance().aboutToQuit.connect(stopped)
             modal = QApplication.activeModalWidget()
-            if isinstance(modal, FindReplaceDialog): modal.reject()
+            if isinstance(modal, GlossaryReviewDialog): modal.reject()
             def close_when_worker_stopped():
-                if isinstance(modal, FindReplaceDialog) and modal._glossary_review_worker is not None:
+                if isinstance(modal, GlossaryReviewDialog) and modal._glossary_review_worker is not None:
                     QTimer.singleShot(100, close_when_worker_stopped); return
                 window.close()
             QTimer.singleShot(100, close_when_worker_stopped)

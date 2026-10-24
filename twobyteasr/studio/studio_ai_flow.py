@@ -865,7 +865,8 @@ class StudioAIFlowMixin:
         console = getattr(self, "ai_stream_console", None)
         if console is None:
             return
-        console.setVisible(True)
+        toggle = getattr(self, 'ai_stream_toggle', None)
+        console.setVisible(bool(toggle and toggle.isChecked()))
         bar = getattr(console, "verticalScrollBar", lambda: None)()
         cursor = console.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
@@ -884,7 +885,8 @@ class StudioAIFlowMixin:
         console = getattr(self, "ai_stream_console", None)
         if console is not None and visible:
             console.clear()
-            console.setVisible(True)
+            toggle = getattr(self, 'ai_stream_toggle', None)
+            console.setVisible(bool(toggle and toggle.isChecked()))
 
     def _finish_ai_progress_bar(self) -> None:
         bar = getattr(self, "ai_progress_bar", None)
@@ -1903,7 +1905,18 @@ class StudioAIFlowMixin:
 
     def _show_ai_raw_response(self) -> None:
         suggestion = getattr(self, "_pending_suggestion", None)
-        if not isinstance(suggestion, AIDesignSuggestion):
+        raw = None
+        drafts = getattr(self, '_theme_draft_coordinator', None)
+        if drafts is not None and getattr(drafts, 'root', None):
+            for relative in ('creative/directions-completion/provider-original.txt',
+                             'creative/directions/provider-original.txt', 'creative/provider-original.txt'):
+                path = drafts.root/relative
+                if path.is_file() and path.stat().st_size <= 4*1024*1024:
+                    raw = path.read_text('utf8')
+                    break
+        if raw is None and isinstance(suggestion, AIDesignSuggestion):
+            raw = json.dumps(suggestion.raw_response, ensure_ascii=False, indent=2, sort_keys=True)
+        if raw is None:
             self._show_studio_hint(tr('当前没有可查看的 AI 原始响应'))
             return
         dialog = QDialog(self)
@@ -1916,7 +1929,7 @@ class StudioAIFlowMixin:
         layout.addWidget(note)
         viewer = QPlainTextEdit()
         viewer.setReadOnly(True)
-        viewer.setPlainText(json.dumps(suggestion.raw_response, ensure_ascii=False, indent=2, sort_keys=True))
+        viewer.setPlainText(raw)
         layout.addWidget(viewer, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)

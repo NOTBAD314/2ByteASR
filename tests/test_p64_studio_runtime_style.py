@@ -160,7 +160,8 @@ def test_clip_assistant_is_compact_and_candidate_actions_are_buttons():
     app.processEvents()
     assert panel.active_stage() == "candidates"
     card = panel.results.itemWidget(panel.results.item(0))
-    buttons = {button.text(): button for button in card.findChildren(QPushButton)}
+    # 2026-10-23 (design C): 预览 is an icon button named by its accessible name.
+    buttons = {button.text() or button.accessibleName(): button for button in card.findChildren(QPushButton)}
     assert {"预览", "加入剪辑", "忽略", "详情"} <= set(buttons)
     assert buttons["加入剪辑"].objectName() == "studioPrimary"
     assert all(button.cursor().shape() == Qt.CursorShape.PointingHandCursor for button in buttons.values())

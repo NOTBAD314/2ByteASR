@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QStyle,
+    QStyledItemDelegate,
     QWidget,
 )
 
@@ -215,12 +216,25 @@ QDialog#toolDialog QListWidget#findResultList {{
     border: 1px solid {theme.border}; border-radius: 4px;
 }}
 QDialog#toolDialog QListWidget#findResultList::item {{
-    padding: 8px 10px; margin: 2px 0; border-radius: 4px;
-    background: {theme.surface}; border: 1px solid {theme.border};
+    padding: 7px 10px; margin: 0; border: 0; border-bottom: 1px solid {theme.border}; border-radius: 0;
+    background: transparent;
 }}
 QDialog#toolDialog QListWidget#findResultList::item:selected {{
-    background: {theme.selected}; border-color: {theme.accent}; color: {theme.text};
+    background: {theme.selected}; color: {theme.text};
 }}
+QDialog#toolDialog QLabel#findFieldLabel {{ color: {theme.text_secondary}; }}
+QDialog#toolDialog QLabel#findKeyHint {{ color: {theme.text_muted}; font-size: 12px; }}
+QDialog#toolDialog QPushButton#findOptionChip {{
+    background: transparent; color: {theme.text_secondary}; border: 1px solid {theme.border};
+    border-radius: 13px; min-height: 26px; max-height: 26px; padding: 0 12px; font-weight: 500;
+}}
+QDialog#toolDialog QPushButton#findOptionChip:hover {{ background: {theme.selected}; color: {theme.text}; border-color: {theme.border_strong}; }}
+QDialog#toolDialog QPushButton#findOptionChip:checked {{ background: {theme.accent_soft}; color: {theme.text}; border-color: {theme.accent}; }}
+QDialog#toolDialog QPushButton#findOptionChip:focus {{ border-color: {theme.focus}; }}
+QDialog#toolDialog QPushButton#findLinkButton {{
+    background: transparent; color: {theme.accent_text}; border: 0; min-height: 22px; padding: 0 4px; font-weight: 500;
+}}
+QDialog#toolDialog QPushButton#findLinkButton:hover {{ background: transparent; color: {theme.text}; }}
 QWidget#studioVideoEmptyHost {{ background: {theme.panel}; }}
 QFrame#studioVideoDropZone {{
     background: {theme.surface_muted}; border: 2px dashed {theme.border}; border-radius: 8px;
@@ -298,10 +312,11 @@ def build_secondary_surface_qss(theme: ThemeDefinition | None = None) -> str:
     active = _active_theme(theme)
     from .control_qss import build_control_qss
     from .surface_qss import build_surface_qss
+    from .soft_qss import build_soft_popup_qss
     return _cached_qss(
-        f"secondary:{active.key}",
+        f"secondary:{active.key}:soft",
         lambda: retheme_qss(SECONDARY_SURFACE_QSS, active) + _secondary_theme_override(active)
-        + build_control_qss(active) + build_surface_qss(active),
+        + build_control_qss(active) + build_surface_qss(active) + build_soft_popup_qss(active),
     )
 
 
@@ -431,46 +446,7 @@ QPushButton#projectCardOpen:hover {{ background: {theme.accent_hover}; border-co
 QPushButton#hubSecondary {{ color: {theme.accent}; border-color: {theme.border}; }}
 QPushButton#hubSecondary:hover {{ background: {theme.selected}; border-color: {theme.accent}; }}
 QLabel#projectCardStatus {{ background: {theme.selected}; color: {theme.text}; border-color: {theme.border}; }}
-QFrame#highlightCandidateCard {{
-    background: {theme.surface}; border: 1px solid {theme.border}; border-radius: 7px;
-}}
-QLabel#highlightGrade {{
-    background: {theme.accent_soft}; color: {theme.accent}; border: 1px solid {theme.accent};
-    border-radius: 5px; padding: 3px 7px; font-weight: 800;
-}}
-QLabel#highlightTitle {{ color: {theme.text}; font-size: 14px; font-weight: 800; }}
-QLabel#highlightReason {{ color: {theme.text}; font-size: 13px; }}
-QLabel#highlightEvidence {{ color: {theme.text_secondary}; font-size: 13px; background: {theme.panel}; border-radius: 5px; padding: 6px; }}
-QLabel#highlightDetails {{ color: {theme.text_muted}; padding-top: 4px; }}
-QWidget#highlightAssistant {{ background: transparent; }}
-/* 五十二轮（用户反馈）：剪辑 tab 曾用 surface_elevated（warm=纯白）+radius 6
-   的孤立卡片系统，与相邻 tab 不是一个视觉体系。统一到 t.surface+radius 12
-   分组卡（对齐视频 tab 的 videoInspectorSection 语言）。选择器挂上
-   QFrame#contextPanel 以压过 surface_qss 的同名扁平规则（同特异度时后拼
-   接者胜）。 */
-QFrame#contextPanel QWidget#highlightAssistant QGroupBox {{
-    background: {theme.surface}; color: {theme.text};
-    border: 1px solid {theme.border}; border-radius: 12px; margin-top: 16px;
-}}
-QFrame#contextPanel QWidget#highlightAssistant QGroupBox::title {{
-    color: {theme.text}; background: {theme.surface}; subcontrol-origin: margin;
-    left: 12px; padding: 0 5px;
-}}
-QFrame#contextPanel QWidget#highlightAssistant QLabel {{ color: {theme.text_secondary}; }}
-QFrame#contextPanel QWidget#highlightAssistant QLabel#sectionTitle,
-QFrame#contextPanel QWidget#highlightAssistant QLabel#highlightTitle {{ color: {theme.text}; }}
-QFrame#contextPanel QWidget#highlightAssistant QComboBox,
-QFrame#contextPanel QWidget#highlightAssistant QSpinBox,
-QFrame#contextPanel QWidget#highlightAssistant QDoubleSpinBox {{
-    background: {theme.surface_input}; color: {theme.text}; border-color: {theme.border};
-    selection-background-color: {theme.accent};
-}}
-QFrame#contextPanel QWidget#highlightAssistant QPushButton#studioButton {{
-    background: {theme.surface}; color: {theme.text}; border: 1px solid {theme.border};
-}}
-QFrame#contextPanel QWidget#highlightAssistant QPushButton#studioButton:hover {{
-    background: {theme.selected}; border-color: {theme.accent};
-}}
+/* 2026-10-23: the 剪辑 panel (tabs B, cards A, candidate cards C) is styled in design/soft_qss.py. */
 """
 
 
@@ -479,10 +455,12 @@ def build_studio_qss(theme: ThemeDefinition | None = None) -> str:
     from .control_qss import build_control_qss
     from .surface_qss import build_surface_qss
     from .studio_qss import build_studio_component_qss
+    from .soft_qss import build_soft_popup_qss, build_soft_studio_qss
 
+    # 2026-10-23: the soft filled controls the user picked go last and win.
     return _cached_qss(
-        f"studio:{active.key}:p9a",
-        lambda: retheme_qss(STUDIO_QSS, active) + _studio_theme_override(active) + build_control_qss(active) + build_surface_qss(active) + build_studio_component_qss(active),
+        f"studio:{active.key}:soft",
+        lambda: retheme_qss(STUDIO_QSS, active) + _studio_theme_override(active) + build_control_qss(active) + build_surface_qss(active) + build_studio_component_qss(active) + build_soft_studio_qss(active) + build_soft_popup_qss(active),
     )
 
 
@@ -524,6 +502,9 @@ class StudioComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMaxVisibleItems(12)
+        # 2026-10-23: a styled delegate so the list rows take the soft popup
+        # style (rounded rows, the chosen one in the accent wash).
+        self.setItemDelegate(QStyledItemDelegate(self.view()))
         self.view().setUniformItemSizes(True)
         self.view().setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.view().setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)

@@ -12,15 +12,28 @@ from ..timeline.studio_commands import SetCuesPresentationCommand
 MOTION_PREFIX = 'cue-motion-'
 
 
-def motion_command(project, cue_ids, *, motion=None, words=None, changed=None):
-    selected = set(cue_ids)
+def motion_command(project, cue_ids, *, motion=None, words=None, changed=None, language=None, merge_token=None):
+    from .caption_layer_transform import MOTION_KEY, presentation_command,target_ids
+    if language not in {None,'linked','original','translation'}:
+        raise ValueError('unknown motion language layer')
+    selected = target_ids(project,cue_ids)
     targets = [c for c in project.cues if c.id in selected]
     if not targets:
         return None
     effects = dict(project.effects)
     ids = {}
+    transforms = {}
+    def store_effect(effect):
+        effect=validate_effect(effect)
+        digest=hashlib.sha256(json.dumps(effect,sort_keys=True).encode()).hexdigest()[:16]
+        key=MOTION_PREFIX+digest
+        effects[key]=effect
+        return key
     for cue in targets:
-        effect = validate_effect(effects.get(cue.effect_id, {}))
+        transform=copy.deepcopy(cue.transform or {})
+        prior=dict(transform.get(MOTION_KEY) or {})
+        source_id=prior.get('translation_effect_id','none') if language=='translation' else cue.effect_id
+        effect = validate_effect(effects.get(source_id, {}))
         if motion is not None:
             previous_words = word_part(effect)
             effect = validate_effect(motion)
@@ -30,21 +43,27 @@ def motion_command(project, cue_ids, *, motion=None, words=None, changed=None):
         if words is not None:
             if effect['entry']['type'] in WORD_MODES:
                 effect['entry'] = {'type': 'none'}
-            effect['word_highlight'] = words
+            if words.get('type','none')=='none':effect.pop('word_highlight',None)
+            else:effect['word_highlight'] = words
         effect = validate_effect(effect)
-        digest = hashlib.sha256(json.dumps(effect, sort_keys=True).encode()).hexdigest()[:16]
-        key = MOTION_PREFIX + digest
-        effects[key] = effect
-        ids[cue.id] = key
-    if all(c.effect_id == ids[c.id] for c in targets):
-        return None
-    return SetCuesPresentationCommand(
-        project, [c.id for c in targets], style_id=targets[0].style_id,
-        style_ids={c.id: c.style_id for c in targets},
-        effect_id=ids[targets[0].id], effect_ids=ids,
-        styles=project.styles, effects=effects, style_recipes=project.style_recipes,
-        text='应用字幕动效', changed=changed, merge_enabled=False,
-    )
+        key = store_effect(effect)
+        ids[cue.id] = cue.effect_id if language=='translation' else key
+        if language is not None:
+            companion=copy.deepcopy(effect)
+            # Translation text has no original acoustic word indices. A word
+            # request becomes one whole-line fade; keep entry/exit/loop intent.
+            companion.pop('word_highlight',None)
+            for stage in ('entry','exit'):
+                if companion[stage]['type'] in WORD_MODES:
+                    companion[stage]={'type':'fade','duration':250}
+            if word_part(effect) and companion['entry']['type']=='none':
+                companion['entry']={'type':'fade','duration':250}
+            translated = store_effect(companion) if language in {'linked','translation'} else prior.get('translation_effect_id','none')
+            transform[MOTION_KEY]={'linked':language=='linked','translation_effect_id':translated,
+                                  'word_fallback':'whole_sentence' if word_part(effect) else 'none'}
+            transforms[cue.id]=transform
+    return presentation_command(project,targets,transforms,effects=effects,effect_ids=ids,
+        text='应用字幕动效',changed=changed,merge_token=merge_token)
 
 
 def native_motion_graph(effect, duration_ms):

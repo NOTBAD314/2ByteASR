@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {fileURLToPath} from 'node:url';
-import {localBrowserExecutable} from './export-browser.mjs';
+import {localBrowserExecutable, browserModeForExecutable} from './export-browser.mjs';
 import {installBundleBoundary, installPageBoundary, protectLiveHtml} from './resource-boundary.mjs';
 import {
   makeCancelSignal,
@@ -17,8 +17,7 @@ const PROTOCOL_VERSION = 1;
 const RENDERER_JOB_KINDS = new Set(['production', 'diagnostic', 'thumbnail', 'card_preview']);
 const rendererRoot = path.dirname(fileURLToPath(import.meta.url));
 const entryPoint = path.join(rendererRoot, 'src', 'index.ts');
-const configuredChrome = process.env.TWOBYTEASR_RENDERER_CHROME ||
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const configuredChrome = process.env.TWOBYTEASR_RENDERER_CHROME;
 
 // Fonts live canonically in assets/fonts/ (public PR #2 by CODE-A-DUCK). Fill public/fonts/
 // only where a font is missing or differs in size: an installed or signed app already ships
@@ -208,6 +207,7 @@ const ensureBrowser = async () => {
     const started = performance.now();
     const browserExecutable = await localBrowserExecutable(rendererRoot, configuredChrome);
     browser = await openBrowser('chrome', {browserExecutable,
+      chromeMode: browserModeForExecutable(browserExecutable),
       chromiumOptions: {headless: true}, logLevel: 'error'});
     if (serveUrl) await installBundleBoundary(browser, serveUrl, event => record('resource_blocked',event));
     rendererGeneration += 1;

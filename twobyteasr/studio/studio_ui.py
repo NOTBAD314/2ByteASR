@@ -1943,6 +1943,14 @@ class SubtitleStudioPage(
         dialog = FindReplaceDialog(self, self)
         dialog.exec()
 
+    def _open_ai_cleanup(self) -> None:
+        if not self.project:
+            studio_message_box(self, QMessageBox.Icon.Information, tr('AI 清理'), tr('请先打开字幕工程。'))
+            return
+        from .studio_find_replace import AiCleanupDialog
+
+        AiCleanupDialog(self, self).exec()
+
     def _speaker_structure_changed(self) -> None:
         return self.cue_controller.speaker_structure_changed()
 
@@ -2167,7 +2175,11 @@ class SubtitleStudioPage(
                 self.position_overlay.sync_to_video(self.video)
                 self._sync_transform_visual_overlay()
                 self._overlay_cue_id = cue.id
-        self._preview_timer.start()
+        if not self._preview_timer.isActive():self._preview_timer.start()
+        # Independent/bilingual captions are owned by CaptionScene, so an ASS
+        # reload alone cannot refresh their paused pixels. Request this revision
+        # now; the existing cache-ready signal publishes the completed scene.
+        self._present_caption_scene()
 
     def _flush_deferred_updates(self) -> None:
         if not self.project:

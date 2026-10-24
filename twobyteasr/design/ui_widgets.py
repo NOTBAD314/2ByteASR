@@ -105,9 +105,29 @@ class SwitchControl(QAbstractButton):
         super().setChecked(bool(checked))
         self._sync_visual_state()
 
+    def set_forced_off(self, forced: bool) -> None:
+        """Show the switch off and locked, keeping its checked value (2026-10-21).
+
+        For a kept choice that cannot apply right now (an AI step without its
+        API key): ``isChecked()`` stays the user's choice, which shows again
+        as soon as the lock is lifted.
+        """
+        forced = bool(forced)
+        if forced == getattr(self, "_forced_off", False):
+            return
+        self._forced_off = forced
+        self.setEnabled(not forced)
+        self._sync_visual_state()
+
+    def is_forced_off(self) -> bool:
+        return getattr(self, "_forced_off", False)
+
+    def is_shown_on(self) -> bool:
+        return self.isChecked() and not self.is_forced_off()
+
     def _sync_visual_state(self):
         self._animation.stop()
-        self._set_progress(1.0 if self.isChecked() else 0.0)
+        self._set_progress(1.0 if self.is_shown_on() else 0.0)
 
     def showEvent(self, event):
         self._sync_visual_state()
@@ -123,7 +143,7 @@ class SwitchControl(QAbstractButton):
 
     def _animate_to_state(self, checked: bool):
         from .ui_motion import MOTION_FAST_MS, motion_duration
-        target = 1.0 if checked else 0.0
+        target = 1.0 if checked and not self.is_forced_off() else 0.0
         duration = motion_duration(MOTION_FAST_MS)
         self._animation.stop()
         if not self.isVisible() or not duration:
@@ -171,7 +191,7 @@ class SwitchControl(QAbstractButton):
             painter.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 8, 8)
 
         track = QRectF(2, (self.height() - 24) / 2, 44, 24)
-        if self.isChecked():
+        if self.is_shown_on():
             fill, edge, thumb = QColor(theme.accent_soft if theme else "#dcebdc"), accent, accent
         else:
             fill, edge, thumb = off_fill, off_edge, off_thumb

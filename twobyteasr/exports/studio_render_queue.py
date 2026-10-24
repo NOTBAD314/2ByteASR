@@ -40,6 +40,11 @@ class QueuedRenderJob:
         job.pop('completion_preview_path', None)
         job.pop('completion_metadata', None)
         job.pop('preview_callback', None)
+        settings=asdict(self.job.settings)
+        if settings.get('output_kind','video')=='video':
+            # Ordinary video queue entries keep their existing wire shape.
+            settings.pop('output_kind',None);settings.pop('audio_bit_depth',None)
+        if job.get('audio_graph') is None:job.pop('audio_graph',None)
         return {
             "id": self.id,
             "status": self.status,
@@ -49,7 +54,7 @@ class QueuedRenderJob:
             "updated_at": self.updated_at,
             "job": {
                 **job,
-                "settings": asdict(self.job.settings),
+                "settings": settings,
             },
         }
 

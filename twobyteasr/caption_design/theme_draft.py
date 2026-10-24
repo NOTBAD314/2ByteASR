@@ -273,4 +273,8 @@ def validate_draft_frames(draft: ThemeDraft, output: Path, *, cancel_check: Call
         raise failure from exc
     finally:
         (output/'validation.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf8')
-        session.close()
+        import sys
+        failed=sys.exc_info()[0] is not None
+        try:session.close()
+        except Exception:
+            if not failed:raise

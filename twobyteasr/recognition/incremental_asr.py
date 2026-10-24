@@ -117,8 +117,12 @@ class IncrementalASRPipeline:
         overlap_ms: int = 500,
         cache_manager: RuntimeCacheManager | None = None,
         governor: ResourceGovernor | None = None,
+        audio_stream: Mapping[str, object] | None = None,
     ) -> None:
         self.source = Path(source_path).resolve()
+        # 2026-10-24: the stream a home-page entry picked (audio_stream_choice);
+        # None keeps the first audio stream and the cache key of before.
+        self.audio_stream = dict(audio_stream or {})
         self.duration_ms = max(1, int(duration_ms))
         self.backend = str(backend)
         self.model_revision = str(model_revision)
@@ -141,6 +145,9 @@ class IncrementalASRPipeline:
                 "duration_ms": self.duration_ms,
                 "chunk_ms": self.chunk_ms,
                 "overlap_ms": self.overlap_ms,
+                **({"audio_stream": {key: self.audio_stream.get(key) for key in
+                                     ("ordinal", "stream_index", "offset_ms", "lead_ms")}}
+                   if self.audio_stream else {}),
             },
             model=f"{self.backend}:{self.model_revision}",
         )
@@ -319,11 +326,17 @@ class IncrementalASRPipeline:
             return
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp.wav")
+        from .audio_stream_choice import chunk_window
+        seek, silence_ms = chunk_window(self.audio_stream, spec.start_ms)
+        stream = int(self.audio_stream.get("ordinal", 0)) if self.audio_stream else 0
+        # A picked stream that starts later than the first one gets the
+        # missing lead as silence, so chunk time stays shared-audio time.
+        delay = ["-af", f"adelay={silence_ms:.0f}:all=1"] if round(silence_ms) > 0 else []
         command = [
             str(self.ffmpeg_path), "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", f"{spec.start_ms / 1000.0:.3f}",
+            "-ss", f"{seek:.3f}",
             "-t", f"{(spec.end_ms - spec.start_ms) / 1000.0:.3f}",
-            "-i", str(self.source), "-map", "0:a:0", "-vn",
+            "-i", str(self.source), "-map", f"0:a:{stream}", "-vn", *delay,
             "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(temporary),
         ]
         process = popen_hidden_subprocess(command, purpose="ffmpeg incremental ASR chunk")

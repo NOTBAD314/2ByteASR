@@ -11,7 +11,7 @@ def start(window,output):
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     from .blank_project_audit import _capture
-    from ..studio.studio_find_replace import FindReplaceDialog
+    from ..studio.studio_find_replace import FindReplaceDialog, GlossaryReviewDialog
     from ..studio.studio_text_tools import SCOPE_SELECTED,SCOPE_ALL
     from ..projects.studio_project import load_project
 
@@ -40,8 +40,8 @@ def start(window,output):
         def write(self):
             (output/'entry-result.json').write_text(json.dumps(self.result,ensure_ascii=False,indent=2),'utf8')
 
-        def enter(self):
-            self.dialog=FindReplaceDialog(self.page);self.dialog.show();QTest.qWait(150)
+        def enter(self, kind=FindReplaceDialog):
+            self.dialog=kind(self.page);self.dialog.show();QTest.qWait(150)
             return self.dialog
 
         def run(self):
@@ -60,7 +60,7 @@ def start(window,output):
                 QTest.mouseClick(d.case_box,Qt.MouseButton.LeftButton,pos=QPoint(10,d.case_box.height()//2))
                 QTest.mouseClick(d.project_entity_box,Qt.MouseButton.LeftButton,pos=QPoint(10,d.project_entity_box.height()//2))
                 self.check(d.project_entity_box.isChecked(),'explicit project confirmation checkbox selected')
-                QTest.mouseClick(d.preview_button,Qt.MouseButton.LeftButton)
+                QTest.qWait(400)  # the preview follows typing (2026-10-21: no 预览 button)
                 self.check({h.cue_id for h in d._preview_hits}=={'entity-a'},'literal correction preview uses selected cue')
                 self.shot('01-human-confirmation-preview.png')
                 QTest.mouseClick(d.all_button,Qt.MouseButton.LeftButton)
@@ -71,14 +71,14 @@ def start(window,output):
                 self.check(p.cues[1].text=='So的反应','other occurrence is untouched until reviewed')
                 d.reject();self.dialog=None
                 self.page.select_cue('entity-b')
-                d=self.enter();d.tabs.setCurrentIndex(3)
+                d=self.enter(GlossaryReviewDialog)
                 d.terms_scope.setCurrentIndex(d.terms_scope.findData(SCOPE_SELECTED))
                 QTest.mouseClick(d.project_entities_button,Qt.MouseButton.LeftButton)
                 self.check({h.cue_id for h in d._preview_hits}=={'entity-b'},'review candidate respects selected scope')
                 self.shot('02-project-entity-review.png')
                 d.reject();self.dialog=None
                 self.check(p.cues[1].text=='So的反应','closing candidate preview makes no change')
-                d=self.enter();d.tabs.setCurrentIndex(3)
+                d=self.enter(GlossaryReviewDialog)
                 d.terms_scope.setCurrentIndex(d.terms_scope.findData(SCOPE_ALL))
                 QTest.mouseClick(d.project_entities_button,Qt.MouseButton.LeftButton)
                 self.check({h.cue_id for h in d._preview_hits}=={'entity-b'},'complete handle boundary excludes So_player and Somebody')

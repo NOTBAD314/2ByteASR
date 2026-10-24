@@ -365,12 +365,17 @@ def validate_editorial_cue_result(before_cues, after_cues, resolution):
     return after_cues
 
 
-def apply_isolated_single_character_rules_safely(cues):
+def apply_isolated_single_character_rules_safely(cues, omitted=None):
     """Apply optional single-character polish transactionally.
 
     The input has already passed strict text/timing validation.  Therefore any
     unexpected mismatch in this cosmetic pass must roll back to the validated
     input instead of failing the whole media job and withholding all subtitles.
+
+    2026-10-23 (second user, 「哦」 at 104.4 s): ``omitted`` (a list) receives
+    copies of the filler cues this pass dropped, with their times before the
+    drop, so the final content check can tell a recorded omission from lost
+    text. Nothing is added when the pass rolls back.
     """
     before = deserialize_cues(serialize_cues(cues))
     try:
@@ -398,6 +403,8 @@ def apply_isolated_single_character_rules_safely(cues):
         )
         return before
     extend_review_items(editorial_review_items)
+    if omitted is not None:
+        omitted.extend(cue for cue in before if cue.cue_id in resolution["omitted_ids"])
     return validated
 
 

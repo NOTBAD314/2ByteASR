@@ -98,6 +98,15 @@ def resolve_cue_visual_from_records(
         if name in TRANSFORM_FIELDS and name != "rotation" and hasattr(style, name):
             setattr(style, name, copy.deepcopy(value))
     style.validate()
+    if transform.get('_canvas_transform'):
+        # Legacy SubtitleStyle clamps anchors to nonnegative integer pixels.
+        # Explicit layer transforms use finite project coordinates (including
+        # off-canvas and subpixel positions), shared with video transforms.
+        import math
+        for name in ('position_x','position_y'):
+            value=transform.get(name)
+            if isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value):
+                setattr(style,name,float(value))
     return ResolvedCueVisual(
         style=style,
         appearance_override=appearance,

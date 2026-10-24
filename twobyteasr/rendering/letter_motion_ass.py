@@ -21,6 +21,8 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
     from .ass_compiler import _dialogue_line, _style_anchor_position, escape_ass_text
     from ..caption_style.effect_dsl import _ass_color
     style = caption.style
+    from ..projects.studio_revisions import thaw_json
+    transform = thaw_json(getattr(cue, 'transform', {}))
     face,_ = resolve_local_face(style.font_family,style.font_weight,style.font_style_name,style.bold,style.font_file,style.font_face_index)
     font = ImageFont.truetype(face.file,1000,index=face.index)
     em = style.font_size
@@ -33,8 +35,8 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
     boxes = [font.getbbox(t or ' ') for t in rows]
     top = min(b[1]/1000*em+i*line_height for i,b in enumerate(boxes))
     bottom = max(b[3]/1000*em+i*line_height for i,b in enumerate(boxes))
-    ax = ((style.alignment-1)%3)/2
-    ay = (1,.5,0)[(style.alignment-1)//3]
+    ax = float(transform.get('anchor_x',((style.alignment-1)%3)/2))
+    ay = float(transform.get('anchor_y',(1,.5,0)[(style.alignment-1)//3]))
     px,py = _style_anchor_position(style,width,height)
     plan = remap_word_animation(plan,caption.text)
     duration = cue.end_ms-cue.start_ms
@@ -61,9 +63,8 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
         state['blur']+=group.get('blur',0)/em
         return state
     accent = _ass_color(plan.get('color','#B9DDF6'))
-    from ..projects.studio_revisions import thaw_json
-    transform = thaw_json(getattr(cue, 'transform', {}))
     rotation = float(transform.get('rotation', 0) or 0)
+    if transform.get('_canvas_transform'):rotation=-rotation
     angle = radians(-rotation)
     # ASS cannot interpolate vector clips. Frame-sample moving cuts so rotated
     # half glyphs / shards retain their actual cut shape, then merge holds.

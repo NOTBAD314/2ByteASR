@@ -78,7 +78,7 @@ def run(request: dict) -> list:
 
         counters = dict(done=0, total=1, reported_at=0.0)
 
-        def progress(state, done, total):
+        def progress(state, done, total, details=None):
             if state == 'upload_bytes':
                 # Bytes sent so far, at most twice a second, under the current request's counters.
                 import time
@@ -86,12 +86,14 @@ def run(request: dict) -> list:
                 if now - counters['reported_at'] < .5 and done < total:
                     return
                 counters['reported_at'] = now
-                event('asr_progress', dict(backend=endpoint['provider'], model=endpoint['model'], state='uploading',
-                                           uploaded_bytes=int(done), upload_bytes_total=int(total),
-                                           completed_batches=counters['done'], total_batches=counters['total']))
+                # MOSI's parallel requests add which ones it has and the request counts (2026-10-23).
+                event('asr_progress', dict(dict(completed_batches=counters['done'], total_batches=counters['total']),
+                                           **(details or {}), backend=endpoint['provider'], model=endpoint['model'],
+                                           state='uploading', uploaded_bytes=int(done), upload_bytes_total=int(total)))
                 return
             counters.update(done=done, total=total)
-            event('asr_progress', dict(backend=endpoint['provider'], model=endpoint['model'],
+            # MOSI adds how long the provider has had the task (2026-10-23).
+            event('asr_progress', dict(details or {}, backend=endpoint['provider'], model=endpoint['model'],
                                        state=state, completed_batches=done, total_batches=total))
 
         partial = {}
@@ -211,7 +213,10 @@ def main() -> int:
         problem = getattr(exc, 'problem', None)
         if problem is None and getattr(exc, 'category', '') in RESUBMIT_CATEGORIES:
             from .dashscope_service import ServiceProblem
-            problem = ServiceProblem('resubmit_needed', RESUBMIT_CATEGORIES[exc.category],
+            # Which request, its task id and the provider's own reason
+            # (2026-10-23: a user saw only the generic sentence).
+            detail = str(getattr(exc, 'remote_detail', '') or '')
+            problem = ServiceProblem('resubmit_needed', RESUBMIT_CATEGORIES[exc.category] + (' ' + detail if detail else ''),
                                      '要再试，可在完成页按“重试失败项”并确认重新提交；重新提交会再次上传并可能再次计费。',
                                      code=exc.category)
         if problem is not None:

@@ -229,6 +229,7 @@ def test_the_blue_grey_palette_follows_each_theme():
         assert set(palette) >= {'band', 'card', 'edge', 'chip', 'title', 'text', 'frost'}
         assert AI_LOCK_HUE not in palette.values()             # always mixed into the theme's surface
         sheet = build_home_qss(theme)
-        assert f'QFrame#homeAiCard[aiLock="true"] {{ background: {palette["card"]};' in sheet
+        assert f'QFrame#homeProcessCard[aiLock="true"] {{ background: {palette["band"]};' in sheet
+        assert 'QFrame#homeAiCard { background: transparent; border: 0;' in sheet   # no frame in the band (10-23)
         assert 'QFrame#homeContentProfile[aiLock="true"]' in sheet
     assert ai_lock_palette(theme_definition('grape'))['band'] != ai_lock_palette(theme_definition('warm'))['band']

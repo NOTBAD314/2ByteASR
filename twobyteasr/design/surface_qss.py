@@ -9,6 +9,43 @@ def build_surface_qss(t):
     return _build_surface_qss(t) + build_semantic_qss(t) + build_home_qss(t)
 
 
+def _header_navigation_qss(t):
+    """Header buttons (2026-10-23, home design A): tonal fills, no outline.
+    字幕工作台 and 模型工坊 take the accent tint; 检查更新, 设置, 说明 and the
+    language menu a quiet neutral one; 支持我 the Studio pink."""
+    from .ui_theme import blend_hex
+    light = t.is_light
+
+    def tone(color, rest, dark):
+        return blend_hex(t.surface, color, rest if light else dark)
+    nav, nav_hover, nav_down = tone(t.accent, 0.11, 0.16), tone(t.accent, 0.17, 0.23), tone(t.accent, 0.23, 0.29)
+    quiet, quiet_hover, quiet_down = tone(t.text, 0.055, 0.07), tone(t.text, 0.1, 0.12), tone(t.text, 0.14, 0.16)
+    studio = t.zone_colors.get("studio", t.accent)
+    pink, pink_hover = tone(studio, 0.14, 0.18), tone(studio, 0.2, 0.25)
+    chevron = tone(t.accent, 0.15, 0.22)
+    nav_sel = 'QPushButton#softAction[homeNavigation="true"]'
+    quiet_sel = nav_sel + '[homeTone="quiet"]'
+    return f"""
+{nav_sel}, QPushButton#supportEntry {{ min-height: 38px; max-height: 38px; padding: 0 14px;
+    border-radius: 12px; font-size: 14px; font-weight: 600; background: {nav};
+    border: 1px solid transparent; color: {t.text}; }}
+{nav_sel}:hover {{ background: {nav_hover}; }}
+{nav_sel}:pressed {{ background: {nav_down}; }}
+{quiet_sel} {{ background: {quiet}; }}
+{quiet_sel}:hover {{ background: {quiet_hover}; }}
+{quiet_sel}:pressed {{ background: {quiet_down}; }}
+QPushButton#supportEntry {{ background: {pink}; }}
+QPushButton#supportEntry:hover, QPushButton#supportEntry:pressed {{ background: {pink_hover}; }}
+{nav_sel}:focus, QPushButton#supportEntry:focus {{ border-color: {t.focus}; }}
+QComboBox#headerLanguage {{ background: {quiet}; color: {t.text}; border: 1px solid transparent; border-radius: 12px;
+    min-height: 38px; max-height: 38px; padding: 0 6px 0 13px; font-size: 14px; font-weight: 600; }}
+QComboBox#headerLanguage:hover, QComboBox#headerLanguage:on {{ background: {quiet_hover}; border-color: transparent; }}
+QComboBox#headerLanguage:focus {{ background: {quiet}; border: 1px solid {t.focus}; }}
+QComboBox#headerLanguage::drop-down {{ subcontrol-origin: content; subcontrol-position: center right;
+    width: 24px; height: 24px; border-radius: 11px; background: {chevron}; border: 0; }}
+"""
+
+
 def _build_surface_qss(t):
     from ..app.home_studio_entry import studio_paper_colors
     paper, paper_hover, paper_edge, paper_ink, paper_muted = studio_paper_colors(t)
@@ -42,23 +79,7 @@ QFrame#contextPanel QGroupBox {{ background: transparent; border: 0; border-top:
     border-radius: 0; margin-top: 20px; padding: 16px 0 8px; font-weight: 600; color: {t.text}; }}
 QFrame#contextPanel QGroupBox::title {{ subcontrol-origin: margin; subcontrol-position: top left;
     left: 0; padding: 0; color: {t.text}; }}
-QWidget#videoInspector QLabel, QWidget#videoInspector QGroupBox,
-QWidget#videoInspector QDoubleSpinBox, QWidget#videoInspector QComboBox,
-QWidget#videoInspector QCheckBox {{ font-family: {UI_FONT_STACK}; font-weight: 600; color: {t.text}; }}
-QWidget#videoInspector QLabel#videoSelectionSummary {{ background: {t.accent_soft};
-    border-radius: 9px; padding: 10px; font-size: 12px; color: {t.text}; }}
-QWidget#videoInspector QLabel#videoAxisLabel {{ color: {t.text_secondary}; font-size: 11px; min-width: 10px; }}
-QWidget#videoInspector QGroupBox#videoInspectorSection {{ background: {t.surface};
-    border: 1px solid {t.border}; border-radius: 12px; margin-top: 16px; padding: 14px 0 8px;
-    font-weight: 700; }}
-QWidget#videoInspector QGroupBox#videoInspectorSection::title {{ left: 12px; padding: 0 5px; }}
-QWidget#videoInspector QDoubleSpinBox, QWidget#videoInspector QComboBox {{ font-weight: 600;
-    background: {t.app_background}; border: 1px solid {t.border_strong}; border-radius: 7px; }}
-QWidget#videoInspector QDoubleSpinBox:hover, QWidget#videoInspector QComboBox:hover {{ border-color: {t.text_secondary}; }}
-QWidget#videoInspector QDoubleSpinBox:focus, QWidget#videoInspector QComboBox:focus {{ border: 1px solid {t.accent}; }}
-QWidget#videoInspector QToolButton#videoScaleLink {{ border: 0; border-radius: 7px; background: transparent; }}
-QWidget#videoInspector QToolButton#videoScaleLink:checked {{ background: {t.accent_soft}; }}
-QWidget#videoInspector QLabel#contextEmpty {{ color: {t.text_secondary}; font-weight: 500; font-size: 11px; }}
+/* 2026-10-23: the 视频 panel (design C) is styled in design/soft_qss.py. */
 QFrame#timelineHost {{ background: {t.timeline}; border: 0; border-top: 1px solid {t.border}; }}
 QLabel#projectLibraryBrand {{ font-family: {TITLE_FONT_STACK}; font-size: {TYPE_SCALE['display']}px; font-weight: {WEIGHT_SCALE['heavy']}; }}
 QLabel#projectLibraryTitle {{ font-family: {TITLE_FONT_STACK}; font-size: {TYPE_SCALE['heading1']}px; font-weight: {WEIGHT_SCALE['heavy']}; }}
@@ -83,10 +104,7 @@ QPushButton#libraryManageDanger:disabled {{ color: {t.disabled}; border-color: {
 QTabWidget#contextDrawer QTabBar::tab {{ min-width: 36px; max-width: 88px; min-height: 32px; padding: 2px 4px; font-size: 12px; }}
 QTabWidget#contextDrawer[tabMode="icon"] QTabBar::tab {{ min-width: 36px; max-width: 44px; min-height: 32px; padding: 2px 4px; }}
 QFrame#settingsSurface {{ background: transparent; border: 0; border-radius: 0; }}
-QPushButton#softAction[homeNavigation="true"] {{ min-height: 36px; padding: 0 14px;
-    border-radius: 10px; font-size: 14px; font-weight: 500; background: {t.surface_elevated};
-    border: 1px solid {t.border_strong}; color: {t.text}; }}
-QPushButton#softAction[homeNavigation="true"]:hover {{ background: {t.selected}; border-color: {t.text_muted}; }}
+{_header_navigation_qss(t)}
 QFrame#studioEntryCard {{ background: {paper}; border: 1px solid {paper_edge}; border-radius: 20px; }}
 QFrame#studioEntryCard:hover {{ background: {paper_hover}; border-color: {paper_muted}; }}
 QFrame#studioEntryCard:focus {{ border: 2px solid {paper_muted}; }}

@@ -39,29 +39,9 @@ HINTS = {**{(m.stage, m.key): m.hint for items in _SPECS.values() for m in items
          **{('words', key): hint for key, _, _, hint in WORDS}}
 STRENGTHS = [('low', '轻'), ('medium', '标准'), ('high', '强')]
 ARROWS = [('left', '←'), ('right', '→'), ('up', '↑'), ('down', '↓')]
-TILE_HEIGHT, PREVIEW_HEIGHT = 84, 54
-
-STYLE = '''
-QPushButton#motionStage { border: 1px solid transparent; border-radius: 8px; padding: 0; background: transparent;
-    min-height: 46px; max-height: 46px; }
-QPushButton#motionStage:hover { border-color: palette(mid); }
-QPushButton#motionStage:checked { border: 1px solid palette(highlight); }
-QPushButton#motionChip, QPushButton#motionSegment {
-    border: 1px solid palette(mid); border-radius: 10px; padding: 1px 9px;
-    min-height: 20px; max-height: 22px; font-size: 11px; background: transparent; }
-QPushButton#motionSegment { border-radius: 6px; padding: 1px 7px; min-width: 18px; }
-QPushButton#motionChip:hover, QPushButton#motionSegment:hover { border-color: palette(highlight); }
-QPushButton#motionChip:checked, QPushButton#motionSegment:checked {
-    background: palette(highlight); color: palette(highlighted-text); border-color: palette(highlight); }
-QPushButton#motionSegment:disabled { color: palette(mid); }
-QPushButton#motionEffectTile { border: 1px solid palette(mid); border-radius: 8px; padding: 0;
-    min-height: %dpx; max-height: %dpx; }
-QPushButton#motionEffectTile:hover { border-color: palette(highlight); }
-QPushButton#motionEffectTile:checked { border: 2px solid palette(highlight); }
-QLabel#motionTileLabel { font-size: 11px; background: transparent; border: 0; }
-QLabel#motionBadge { font-size: 9px; color: #E8EEF5; background: rgba(9, 14, 20, 170);
-    border-radius: 5px; padding: 0 4px; }
-''' % (TILE_HEIGHT-4, TILE_HEIGHT-4)
+TILE_HEIGHT, PREVIEW_HEIGHT = 84, 52
+# 2026-10-23 (user's design A): the stage track, chips, segments and tiles are
+# styled with the other soft controls in design/soft_qss.py (theme colours).
 
 
 def demo_project(effect, text='字幕动效', duration=2400):
@@ -170,7 +150,7 @@ class StageButton(QPushButton):
         self.setObjectName('motionStage')
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedHeight(48)
+        self.setFixedHeight(44)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.title_text, self.value_text, self.active = tr(title), '', False
         self.setAccessibleName(self.title_text)
@@ -185,7 +165,7 @@ class StageButton(QPushButton):
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.TextAntialiasing)
-        rect = self.rect().adjusted(5, 4, -5, -5)
+        rect = self.rect().adjusted(5, 3, -5, -4)
         color = self.palette().color(self.foregroundRole())
         muted = QColor(color); muted.setAlphaF(.58)
         title_font = QFont(self.font()); title_font.setPixelSize(11); title_font.setWeight(QFont.Normal)
@@ -206,7 +186,10 @@ class StageBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(4)
+        # One filled track; the open stage is the raised chip (design A).
+        self.setObjectName('motionStageBar')
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        row = QHBoxLayout(self); row.setContentsMargins(3, 3, 3, 3); row.setSpacing(2)
         self.buttons = []
         for i, stage in enumerate(STAGES):
             button = StageButton(STAGE_TITLES[stage], self)
@@ -245,13 +228,22 @@ class MotionEffectTile(QPushButton):
         from .motion_controls_ui import MotionSample
         self.preview = MotionSample(self, shared=True)
         self.preview.setFixedHeight(PREVIEW_HEIGHT)
+        self.preview.set_corner_radius(9)
         self.preview.auto_play = False
         self.preview.font_pixel_size = 19
         self.preview.setAttribute(Qt.WA_TransparentForMouseEvents)
         box.addWidget(self.preview)
-        caption = QLabel(tr(label)); caption.setObjectName('motionTileLabel'); caption.setAlignment(Qt.AlignCenter)
+        self.caption = caption = QLabel(tr(label)); caption.setObjectName('motionTileLabel'); caption.setAlignment(Qt.AlignCenter)
         caption.setAttribute(Qt.WA_TransparentForMouseEvents)
         box.addWidget(caption)
+        # The chosen tile: a tinted fill, an accent ring and a check (design A).
+        self.check = QLabel(self.preview)
+        self.check.setObjectName('motionTileCheck')
+        self.check.setFixedSize(18, 18)
+        self.check.setAlignment(Qt.AlignCenter)
+        self.check.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.check.move(5, 5)
+        self.check.hide()
         item = spec(stage, key) if stage != 'words' else None
         badge = '逐字' if item and item.per_char else '方向' if item and item.directional else (
             '语音' if stage == 'words' and key != 'none' else '')
@@ -294,6 +286,16 @@ class MotionEffectTile(QPushButton):
 
     def set_selected(self, selected):
         self.setChecked(selected)
+        if self.check.isHidden() == selected:
+            if selected:
+                import qtawesome as qta
+                from ..design.ui_theme import theme_definition
+                from ..design.theme_manager import theme_key
+                color = theme_definition(theme_key()).text_on_accent
+                self.check.setPixmap(qta.icon('fa5s.check', color=color).pixmap(10, 10))
+            self.check.setVisible(selected)
+            self.caption.setProperty('selected', bool(selected))
+            self.caption.style().unpolish(self.caption); self.caption.style().polish(self.caption)
         self.preview.auto_play = selected
         if selected and self.isVisible():
             self.build()
@@ -325,7 +327,6 @@ class MotionInspector(QWidget):
     def __init__(self, workflow):
         super().__init__()
         self.workflow, self.page = workflow, workflow.page
-        self.setStyleSheet(STYLE)
         self.stages = STAGES
         self._cards, self.grids, self.hosts, self.chips = {}, {}, {}, {}
         # 2026-10-22: the ~80 effect tiles (each a live preview with its own
@@ -337,46 +338,57 @@ class MotionInspector(QWidget):
         self.directions = {'entry': None, 'exit': None}
         self.columns = 0
         self._register_choices()
-        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(8)
+        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(10)
         self.tabs = StageBar(self)
         self.tabs.setAccessibleName(tr('动效分类'))
         layout.addWidget(self.tabs)
-        # Parameters for the stage in front: duration, strength, direction.
+        # Parameters for the stage in front, in one card (design A): duration,
+        # strength, direction, the word colour and what the stage does.
+        from ..design.soft_widgets import UnitField, soft_card
+        self.params_card, params = soft_card(margins=(12, 10, 12, 10), spacing=8)
         self.duration_row = QWidget(); row = QHBoxLayout(self.duration_row); row.setContentsMargins(0, 0, 0, 0)
-        self.duration_label = QLabel(tr('持续时间'))
+        row.setSpacing(8)
+        self.duration_label = QLabel(tr('持续时间')); self.duration_label.setObjectName('softLabel')
         row.addWidget(self.duration_label)
         self.slider = QSlider(Qt.Horizontal); self.slider.setRange(1, 80); self.slider.setAccessibleName(tr('动效持续时间'))
         row.addWidget(self.slider, 1)
         self.seconds = QDoubleSpinBox(); self.seconds.setDecimals(2); self.seconds.setRange(.01, 4.)
-        self.seconds.setSingleStep(.05); self.seconds.setSuffix(tr(' 秒')); self.seconds.setFixedWidth(92)
+        self.seconds.setSingleStep(.05); self.seconds.setSuffix(tr(' 秒'))
         self.seconds.setKeyboardTracking(False); self.seconds.setAccessibleName(tr('动效持续时间（秒）'))
-        row.addWidget(self.seconds)
-        layout.addWidget(self.duration_row)
+        self.seconds_field = UnitField(self.seconds)
+        self.seconds_field.setFixedWidth(92)
+        row.addWidget(self.seconds_field)
+        params.addWidget(self.duration_row)
         self.tuning_row = QWidget(); tuning = QHBoxLayout(self.tuning_row)
-        tuning.setContentsMargins(0, 0, 0, 0); tuning.setSpacing(4)
-        self.strength_label = QLabel(tr('强度')); tuning.addWidget(self.strength_label)
+        tuning.setContentsMargins(0, 0, 0, 0); tuning.setSpacing(8)
+        self.strength_label = QLabel(tr('强度')); self.strength_label.setObjectName('softLabel')
+        tuning.addWidget(self.strength_label)
+        strength_track = QFrame(self.tuning_row); strength_track.setObjectName('softSegmented')
+        track_row = QHBoxLayout(strength_track); track_row.setContentsMargins(3, 3, 3, 3); track_row.setSpacing(2)
         self.strength_buttons = {}
         for value, text in STRENGTHS:
-            button = _chip(text, self.tuning_row, 'motionSegment')
+            button = _chip(text, strength_track, 'motionSegment')
+            button.setMinimumWidth(44)
             button.clicked.connect(lambda _=False, value=value: self.set_strength(value))
-            tuning.addWidget(button); self.strength_buttons[value] = button
-        tuning.addSpacing(10)
-        self.direction_label = QLabel(tr('方向')); tuning.addWidget(self.direction_label)
+            track_row.addWidget(button); self.strength_buttons[value] = button
+        tuning.addWidget(strength_track)
+        tuning.addStretch(1)
+        self.direction_label = QLabel(tr('方向')); self.direction_label.setObjectName('softLabel'); tuning.addWidget(self.direction_label)
         self.direction_buttons = {}
         for value, text in ARROWS:
-            button = _chip(text, self.tuning_row, 'motionSegment')
+            button = _chip(text, self.tuning_row, 'motionDirection')
             button.setAccessibleName(tr({'left': '从左', 'right': '从右', 'up': '从上', 'down': '从下'}[value]))
             button.clicked.connect(lambda _=False, value=value: self.set_direction(value))
             tuning.addWidget(button); self.direction_buttons[value] = button
-        tuning.addStretch(1)
-        layout.addWidget(self.tuning_row)
+        params.addWidget(self.tuning_row)
         self.color_row = QWidget()
-        color_layout = QHBoxLayout(self.color_row); color_layout.setContentsMargins(0, 0, 0, 0)
-        color_label = QLabel(tr('强调颜色')); color_label.setObjectName('cardMeta')
+        color_layout = QHBoxLayout(self.color_row); color_layout.setContentsMargins(0, 0, 0, 0); color_layout.setSpacing(8)
+        color_label = QLabel(tr('强调颜色')); color_label.setObjectName('softLabel')
         color_layout.addWidget(color_label); color_layout.addWidget(self.page.motion_word_color, 1)
-        layout.addWidget(self.color_row)
-        self.explanation = QLabel(); self.explanation.setObjectName('cardMeta'); self.explanation.setWordWrap(True)
-        layout.addWidget(self.explanation)
+        params.addWidget(self.color_row)
+        self.explanation = QLabel(); self.explanation.setObjectName('softMeta'); self.explanation.setWordWrap(True)
+        params.addWidget(self.explanation)
+        layout.addWidget(self.params_card)
         # Category chips and the card grid share one scroll area per stage.
         self.stack = QStackedWidget()
         self.cards_scroll = QScrollArea(); self.cards_scroll.setWidgetResizable(True)

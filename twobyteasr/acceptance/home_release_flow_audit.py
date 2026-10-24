@@ -54,12 +54,27 @@ def start(window, out):
         result.setdefault('studio_preview', {})[label] = record
         check('actual Studio coloured decoded and composed video '+label, record['passed'])
 
+    limits = {'cancelled': 0}
+
     def run():
         guard = QTimer(window)
         def modal_guard():
             modal = QApplication.activeModalWidget()
             if isinstance(modal, QMessageBox):
                 from ..i18n import tr
+                if modal.windowTitle() in {'开始前请确认', tr('开始前请确认')}:
+                    # 2026-10-21: the pre-run limits box (no key / no word-level
+                    # timestamps). Record it; answer 取消 once when asked to, then 继续生成.
+                    result.setdefault('run_limits', []).append(modal.informativeText())
+                    role = (QMessageBox.ButtonRole.RejectRole
+                            if config.get('run_limits_cancel_first') and not limits['cancelled']
+                            else QMessageBox.ButtonRole.AcceptRole)
+                    modal.grab().save(str(out/f"01c-run-limits-box-{len(result['run_limits'])}.png"))
+                    if role == QMessageBox.ButtonRole.RejectRole:
+                        limits['cancelled'] += 1
+                    button = next((b for b in modal.buttons() if modal.buttonRole(b) == role), None)
+                    if button is not None:
+                        button.click(); return
                 if modal.windowTitle() in {'本次识别会上传音频', tr('本次识别会上传音频')}:
                     # The pre-run upload confirmation (shown when the run is
                     # not under TWOBYTEASR_TEST_ROOT): record what it says and
@@ -114,10 +129,34 @@ def start(window, out):
                     summary=tile.summary_label.text() if tile is not None else '',
                     state=tile.state_chip.text() if tile is not None else '',
                     key_help=window.ai_key_help_button.isVisible())
-                check('no key: AI proofreading and AI line breaks are still switched on (the defaults)',
-                      window.ai_polish.isChecked() and window.ai_grouping.isChecked())
+                # 2026-10-21 (user): without a key AI 校对 / AI 断句 are off by default. The saved
+                # choice (on) stays; the switches are shown off and locked until a key is there.
+                check('no key: the saved AI switches stay on but are shown off and locked',
+                      window.ai_polish.isChecked() and window.ai_grouping.isChecked()
+                      and window.ai_polish.is_forced_off() and window.ai_grouping.is_forced_off())
+                # 2026-10-22: the AI card is one state tag and a plain line (not three chips).
                 check('no key: the home AI card says subtitles work without a key and offers the explainer',
                       result['home_ai']['key_help'] and '没连也能开始' in result['home_ai']['summary'])
+                window._open_ai_settings_dialog(); pump(.8)
+                dialog = getattr(window, '_ai_settings_dialog', None)
+                check('the AI settings dialog opens', dialog is not None and dialog.isVisible())
+                # 2026-10-22: the switches and the note sit in 「更多选项 → 让 AI 负责」.
+                window.ai_advanced_toggle.setChecked(True); pump(.5)
+                note = window.ai_key_off_note
+                result['ai_dialog_note'] = note.text()
+                dialog.grab().save(str(out/'01a-ai-settings-no-key.png'))
+                check('no key: the AI settings show both switches off and locked, with the reason',
+                      note.isVisible() and '本地规则' in note.text()
+                      and not window.ai_polish.isEnabled() and not window.ai_grouping.isEnabled())
+                editor = window.polish_editor if window.polish_editor.isVisible() else window.group_editor
+                editor.key.setText('sk-typed-not-saved'); pump(.5)
+                dialog.grab().save(str(out/'01b-ai-settings-key-typed.png'))
+                check('a key typed in unlocks both switches and shows the saved choice (on)',
+                      window.ai_polish.is_shown_on() and window.ai_grouping.is_shown_on() and not note.isVisible())
+                dialog.reject(); pump(.8)
+                check('取消 keeps no key: the switches are shown off and locked again',
+                      getattr(window, '_ai_settings_dialog', None) is None
+                      and window._sync_ai_switches_with_keys() == ('polish', 'group'))
             source = str(Path(config['media']).resolve())
             window.import_media([source], replace=True)
             wait(lambda: window.media_paths == [source] and window.start_button.isEnabled(), 40, 'normal Home media intake')
@@ -128,7 +167,18 @@ def start(window, out):
             window._handle_event = observe
             check('Home Start visible and enabled', window.start_button.isVisible() and window.start_button.isEnabled())
             QTest.mouseClick(window.start_button, Qt.LeftButton); pump(.1)
+            if config.get('run_limits_cancel_first'):
+                check('取消 in “开始前请确认” starts nothing', limits['cancelled'] == 1 and window.worker is None)
+                check('取消 is logged', any('已取消' in line for line in getattr(window, '_console_lines', []) or []))
+                wait(lambda: window.start_button.isEnabled(), 10, 'Start can be clicked again after 取消')
+                QTest.mouseClick(window.start_button, Qt.LeftButton); pump(.1)
             check('normal Home Start launches actual worker', window.worker is not None)
+            if config.get('expect_run_limits') is not None:
+                texts = result.get('run_limits') or []
+                check('the pre-run box says: ' + ' / '.join(config['expect_run_limits']),
+                      bool(texts) and all(all(part in text for part in config['expect_run_limits']) for text in texts))
+                check('the pre-run box does not say: ' + ' / '.join(config.get('expect_run_limits_absent') or ()),
+                      not any(part in text for part in config.get('expect_run_limits_absent') or () for text in texts))
             worker = window.worker
             result['task_options'] = asdict(worker.options)
             if keep_text_ai:

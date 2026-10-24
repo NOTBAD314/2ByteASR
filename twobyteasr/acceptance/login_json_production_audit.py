@@ -15,7 +15,7 @@ def start(window, output):
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox
     from .blank_project_audit import _capture
-    from ..studio.studio_find_replace import FindReplaceDialog
+    from ..studio.studio_find_replace import GlossaryReviewDialog
     from ..diagnostics.build_identity import load_build_identity
     from ..providers.provider_diagnostics import redact_diagnostics
     from ..providers.ai_providers import CLIProvider, OpenAICompatibleProvider
@@ -144,10 +144,9 @@ def start(window, output):
                 from ..timeline.selection_scope import SelectionScope
                 page.cue_controller.apply_selection_scope(SelectionScope.explicit(selected, selected[0]))
                 self.check('normal selection scope', page.selected_cue_ids() == selected, page.selected_cue_ids())
-            QTimer.singleShot(0, lambda: QTest.mouseClick(page.studio_find_replace_button, Qt.LeftButton))
-            yield lambda: isinstance(QApplication.activeModalWidget(), FindReplaceDialog)
+            QTimer.singleShot(0, lambda: GlossaryReviewDialog(page, page).exec())
+            yield lambda: isinstance(QApplication.activeModalWidget(), GlossaryReviewDialog)
             dialog = QApplication.activeModalWidget()
-            dialog.tabs.setCurrentIndex(3)
             if selected:
                 from ..studio.studio_text_tools import SCOPE_SELECTED
                 dialog.terms_scope.setCurrentIndex(dialog.terms_scope.findData(SCOPE_SELECTED))

@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 import threading
 import uuid
+import time
 
 _CURRENT = ContextVar('studio_export_log', default=None)
 
@@ -53,6 +54,7 @@ class ExportRunLog:
         context['diagnostics_path'] = str(self.path)
         self._lock = threading.RLock()
         self._serial = 0
+        self._process_logs = []
         self.job = job
         binary = Path(ffmpeg).resolve()
         try:
@@ -66,6 +68,16 @@ class ExportRunLog:
                 if job.settings.quality_mode in {'target', 'limited', 'vbr', 'cbr'} else None),
             max_video_bitrate_bps=(int(job.settings.max_bitrate_kbps) * 1000
                 if job.settings.quality_mode in {'limited', 'vbr'} else None))
+        import sys
+        runtime = dict(executable_path=sys.executable, argv0=sys.argv[0],
+            packaged=bool(getattr(sys, 'frozen', False)), module_path=__file__)
+        if runtime['packaged']:
+            try:
+                runtime.update(json.loads((Path(sys.executable).parent/'2byteasr_build.json').read_text(encoding='utf-8')))
+            except (OSError, ValueError): runtime['build_metadata'] = 'unavailable'
+        self.manifest.update(runtime=runtime, worker_pid=os.getpid(), worker_thread=threading.current_thread().name,
+            burn_in=dict(enabled=bool(job.ass_path), cue_count=len((job.export_project_data or {}).get('cues', [])),
+                visibility=(job.export_project_data or {}).get('studio_state', {}).get('subtitle_track_visibility', {})))
         self.note('job_started', self.manifest)
         self._save_manifest()
 
@@ -112,7 +124,16 @@ class ExportRunLog:
             self.manifest['last_encoding'] = dict(purpose=purpose, **encoding)
             self.job.completion_metadata.update(actual_encoder=encoder, actual_rate_control=encoding['rate_control'])
             self._save_manifest()
-        return ProcessLog(self, identity, redirected or {}, capture_stdout)
+        log=ProcessLog(self, identity, redirected or {}, capture_stdout)
+        if encoder in final_encoders and '-progress' in argv:
+            from .encoding_observer import EncodingObserver
+            from fractions import Fraction
+            fps = float(Fraction(argv[argv.index('-r')+1])) if '-r' in argv else self.job.settings.fps
+            log.observer = EncodingObserver(self.path/f'{identity}.encoding.jsonl', process.pid,
+                fps=fps, duration=self.job.duration_seconds, encoder=encoder,
+                context=dict(project=self.job.export_project_data, start_seconds=self.job.start_seconds))
+        self._process_logs.append(log)
+        return log
 
     def _capture_filter_scripts(self, argv, identity, pid, cwd):
         """Retain only files referenced by the actual FFmpeg launch arguments."""
@@ -150,6 +171,7 @@ class ExportRunLog:
         return evidence
 
     def finish(self, error=None):
+        for log in self._process_logs:log.finish()
         self.note('job_finished', dict(error_type=type(error).__name__ if error else None,
             published=bool(self.job.completion_metadata.get('output_path'))))
 
@@ -158,25 +180,83 @@ class ProcessLog:
     def __init__(self, owner, identity, redirected, capture_stdout=True):
         self.owner, self.identity, self.redirected = owner, identity, redirected
         self.capture_stdout = capture_stdout
+        self._buffers = {}
+        self._sizes = {}
+        self._last_flush = 0.
+        self._exited = False
+        self.observer = None
+        import queue
+        self._queue = queue.Queue(maxsize=1024)
+        self._done = threading.Event()
+        self._drained = threading.Event()
+        self.dropped_chunks = 0
+        self.write_error = None
+        self._writer = threading.Thread(target=self._write_loop, daemon=True, name='export-log-writer')
+        self._writer.start()
+
+    def _write_loop(self):
+        import queue
+        from ..providers.provider_diagnostics import redact_diagnostics
+        while not self._done.is_set() or not self._queue.empty():
+            try:
+                channel, text = self._queue.get(timeout=.1)
+            except queue.Empty:
+                self._drained.set()
+                continue
+            try:
+                text = redact_diagnostics(text)
+                self._buffers.setdefault(channel, []).append(text)
+                self._sizes[channel] = self._sizes.get(channel, 0)+len(text)
+                if self._sizes[channel] >= 32768 or self._queue.empty(): self._write_buffers()
+            except Exception as exc:
+                self.write_error = f'{type(exc).__name__}: {exc}'
+            finally:
+                self._queue.task_done()
+                if self._queue.empty(): self._drained.set()
+        self._write_buffers()
+
+    def _write_buffers(self):
+        for channel, chunks in self._buffers.items():
+            if chunks:
+                with (self.owner.path/f'{self.identity}.{channel}.log').open('a', encoding='utf8') as stream:
+                    stream.write(''.join(chunks))
+                chunks.clear();self._sizes[channel]=0
+
+    def finish(self):
+        if self.observer: self.observer.close()
+        self.flush()
+        self._done.set();self._writer.join(timeout=2)
+        if self.dropped_chunks or self.write_error:
+            self.owner.note('diagnostics_incomplete', dict(process_id=self.identity,
+                dropped_chunks=self.dropped_chunks, write_error=self.write_error))
+
+    def flush(self):
+        if self._queue.unfinished_tasks:
+            self._drained.wait(timeout=2)
 
     def output(self, channel, value):
         if not value:
             return
         if channel == 'stdout' and not self.capture_stdout:
             return  # Raw video/PCM/image pixels are media payload, never diagnostics.
-        from ..providers.provider_diagnostics import redact_diagnostics
         text = value.decode('utf-8', errors='replace') if isinstance(value, bytes) else str(value)
-        text = redact_diagnostics(text)
-        with self.owner._lock, (self.owner.path / f'{self.identity}.{channel}.log').open('a', encoding='utf-8') as stream:
-            stream.write(text)
+        if channel == 'stdout' and self.observer: self.observer.feed(text)
+        import queue
+        for offset in range(0, len(text), 32768):
+            self._drained.clear()
+            try: self._queue.put_nowait((channel, text[offset:offset+32768]))
+            except queue.Full: self.dropped_chunks += 1
 
     def exited(self, code):
+        self._exited=True
+        if self.observer: self.observer.close()
         # File redirects (FFV1/decode) are copied before their temp directories disappear.
         for channel, filename in self.redirected.items():
             try:
                 self.output(channel, Path(filename).read_bytes())
             except (OSError, TypeError):
                 pass
+        self.flush()
         self.owner.note('process_exited', dict(process_id=self.identity, phase='exit', returncode=code))
 
 

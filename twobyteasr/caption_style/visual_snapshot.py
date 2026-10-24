@@ -316,6 +316,10 @@ def build_visual_cue_snapshot(
             cue = next((item for item in project.cues if item.id == resolved_id), None)
     if cue is None:
         return None
+    if ((cue.transform.get('language_layers') and not cue.transform.get('_language_materialized'))
+            or (project.studio_state.get('caption_group_transform') and not cue.transform.get('_group_materialized'))):
+        from .caption_layer_transform import displayed_layer
+        cue = displayed_layer(project, cue, 'original') or cue
     # Web-theme previews and renders show the project's punctuation choice.
     from ..subtitle_rules.punctuation_style import style_cues
     cue = style_cues(project, [cue])[0]
@@ -441,6 +445,8 @@ def build_visual_cue_snapshot(
             "exit": copy.deepcopy(motion.get("exit", {})),
         }
     position_x, position_y, anchor_x, anchor_y = _anchor(style, playres_x, playres_y)
+    anchor_x = float(cue.transform.get('anchor_x', anchor_x))
+    anchor_y = float(cue.transform.get('anchor_y', anchor_y))
     recipe.layout['positionY'] = position_y
     if recipe.web_theme:
         from .web_placement import cue_placement

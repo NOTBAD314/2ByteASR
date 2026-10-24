@@ -73,9 +73,15 @@ def _session_files(directory, missing):
     return files
 
 
-def collect(root, *, instance=None, scope="recent", start=None, end=None, report=None):
+def collect(root, *, instance=None, scope="recent", start=None, end=None, report=None,
+            cancelled=None, deadline=None):
     """Runs on an export/viewer worker, never on the GUI thread."""
     root=Path(root)
+    def checkpoint():
+        if cancelled and cancelled():raise InterruptedError('diagnostic collection cancelled')
+        if deadline is not None and time.monotonic()>deadline:
+            raise TimeoutError('diagnostic collection deadline exceeded')
+    checkpoint()
     missing=[]; sessions=[]; events=[]; losses=Counter(); consumed=0; cutoff=None
     sanitizer=instance.sanitizer if instance else Sanitizer((root/".alias-key").read_bytes() if (root/".alias-key").is_file() else None)
     snapshot=instance.snapshot() if instance and instance.root.resolve()==root.resolve() else None
@@ -84,6 +90,7 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
         if snapshot.get("write_error"): missing.append(dict(reason="writer_error",error=snapshot["write_error"]))
     directories=sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and (p/"session.json").is_file()),key=lambda p:p.stat().st_mtime,reverse=True) if root.exists() else []
     for directory in directories:
+        checkpoint()
         if consumed >= MAX_EXPORT_BYTES:
             missing.append(dict(reason="scan_limit",session=directory.name)); continue
         try:
@@ -99,6 +106,7 @@ def collect(root, *, instance=None, scope="recent", start=None, end=None, report
                 consumed+=len(data)
                 lines=data.splitlines(keepends=True)
                 for index,line in enumerate(lines):
+                    if index % 128 == 0:checkpoint()
                     try:
                         if not line.endswith(b"\n"):
                             raise ValueError("incomplete_line")

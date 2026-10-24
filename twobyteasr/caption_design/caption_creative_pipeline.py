@@ -543,12 +543,34 @@ def resume_saved_response(path,project,cue_id,settings,*,ledger_root,request_id,
     from ..providers.ai_providers import AIProviderError
     prior=ThemeLedger.open(path)
     if prior.value.get('pipeline') in {'authored-stages-1','authored-stages-2','authored-stages-3'} and not prior.value.get('directions'):
-        from ..recognition.structured_failure import recover_saved_directions
-        directions, recovery = recover_saved_directions(prior)
-        prior.value.update(directions=directions, local_direction_recovery=recovery,
-                           selected_direction=selected_direction or directions['candidates'][0]['id'])
-        prior.save()
-        if stage_callback: stage_callback('本地恢复了完整方向；原请求仍为失败，作品尚待实现与验证。')
+        # Invalid JSON is never patched locally. An explicit retry asks the
+        # same provider for a complete replacement and keeps the old ledger.
+        from .authored_generation import generate_staged
+        from .authored_preview import render_candidate_preview
+        from .authored_prompt import assemble
+        selection=GLOBAL_PROVIDER_REGISTRY.selection(settings,stage='polish')
+        configured=prior.value.get('provider',{})
+        if (selection.provider,selection.model)!=(configured.get('provider'),configured.get('model')):
+            raise ValueError('请选择此草稿原来的Provider与模型，不能静默切换')
+        record=prior.value.get('direction_response',{})
+        source=prior.root/'directions'/'provider-original.txt'
+        if not source.is_file() or source.stat().st_size>1024*1024:
+            raise ValueError('缺少完整方向回执，不能从流片段修复')
+        raw=source.read_text('utf8')
+        if not record.get('completed') or digest(raw)!=record.get('sha256'):
+            raise ValueError('完整方向响应缺少收据或内容已改变')
+        ledger=ThemeLedger(ledger_root,prior.value['raw_user_prompt'])
+        for key in ('creative_context','reference_files','style_reference','provider_inputs','reference_search'):
+            if key in prior.value:ledger.value[key]=copy.deepcopy(prior.value[key])
+        ledger.value['resumed_from']={'ledger':str(path),'kind':'provider_direction_repair','source_sha256':digest(raw)}
+        prompt,_=assemble(ledger);ledger.save()
+        repair_settings=copy.deepcopy(settings)
+        repair_settings.setdefault('models',{})['ai_design_candidate_count']=prior.value.get('requested_candidates',3)
+        if stage_callback:stage_callback('正在请求修复设计方向；原始失败回执保留，尚未应用。')
+        return generate_staged(ledger,GLOBAL_PROVIDER_SERVICE.client_for_stage(settings,'polish'),selection,prompt,repair_settings,
+            request_id=request_id,cancel_check=cancel_check,stage_callback=stage_callback,
+            image_parts=saved_reference_images(prior),render_candidate=render_candidate_preview,
+            direction_repair={'raw':raw,'reason':prior.value.get('last_failure',{'category':'structured_output_invalid_json'})})
     if prior.value.get('pipeline') in {'authored-stages-1','authored-stages-2','authored-stages-3'} and prior.value.get('directions'):
         from .authored_generation import generate_staged
         from .authored_preview import render_candidate_preview

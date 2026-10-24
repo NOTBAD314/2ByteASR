@@ -7,7 +7,7 @@ from PySide6.QtGui import QUndoStack
 from PySide6.QtWidgets import QApplication, QWidget
 
 import subtitle_core as legacy
-from twobyteasr.studio.studio_find_replace import FindReplaceDialog
+from twobyteasr.studio.studio_find_replace import GlossaryReviewDialog
 from twobyteasr.glossary.studio_glossary_service import preview_glossary_correction
 from twobyteasr.projects.studio_project import StudioCue, StudioMedia, SubtitleProject
 from twobyteasr.glossary.terminology import GlossaryLibrary, GlossarySnapshot, TermEntry
@@ -38,9 +38,8 @@ def test_local_preview_refuses_case_updated_library(monkeypatch, tmp_path):
     project = SubtitleProject(media=StudioMedia(path='isolated.mp4'),
         cues=[StudioCue('a', 100, 1000, 'nameid也没有接住')], glossary_ids=[identity])
     page = Page(project)
-    dialog = FindReplaceDialog(page)
+    dialog = GlossaryReviewDialog(page)
     try:
-        dialog.tabs.setCurrentIndex(3)
         dialog._do_preview()
         assert dialog.preview.count() == 1
         legacy.edit_learned_mapping(identity, ('NameID', 'NameID'), 'NAMEid', 'NAMEid')

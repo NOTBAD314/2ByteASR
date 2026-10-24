@@ -320,12 +320,23 @@ def preflight_video_job(ffmpeg, job, *, cancelled=None, progress=None):
                 continue
             path=str(Path(asset['canonical_source']).resolve())
             try:
-                if path not in indexes:indexes[path]=probe_media(ffmpeg,path,cancelled=cancelled)
+                new=path not in indexes
+                if new:indexes[path]=probe_media(ffmpeg,path,cancelled=cancelled)
                 media=indexes[path]
             except Exception as exc:
                 if isinstance(exc,InterruptedError):raise
                 from .export_media import ExportMediaError
                 raise ExportMediaError('MEDIA_PREFLIGHT',dict(clip_id=clip['id'],path=path),exc) from exc
+            if new and (media.rejected_packets or media.corrupt_frames):
+                # Played and exported like FFmpeg/mpv: the skipped pictures
+                # hold the previous one. Keep where, for the run log.
+                damage=dict(clip_id=clip['id'],status='damaged_source',path=path,rejected_packets=len(media.rejected_packets),
+                    corrupt_frames=media.corrupt_frames,damaged_head=media.damaged_head,decoded_frames=len(media.pts),
+                    approx_seconds=[round(float(p*media.time_base-media.origin),3)
+                                    for p in media.rejected_packets[:50] if p is not None])
+                receipts.append(damage)
+                from .export_run_log import note_export
+                note_export('source_damaged_packets',damage)
             # Positive affine clip mapping is bounded by actual first/last
             # samples. Check representative interior/tail frames as well.
             samples=sorted({first,(first+last)//2,max(first,last-2),max(first,last-1),last})

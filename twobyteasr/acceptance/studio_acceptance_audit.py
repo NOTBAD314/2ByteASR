@@ -51,6 +51,30 @@ def audit_directory() -> Path | None:
             raise ValueError('Acceptance requires isolated app data')
     return output
 
+def _ini_qsettings_before_ui() -> None:
+    """Without a test root, keep QSettings in the audit folder from before the UI imports it.
+
+    2026-10-21: the later swap in ``isolate_acceptance_settings`` came after
+    ``app.ui`` was imported; ``main_ui_helpers`` kept the QSettings class it
+    had imported, so a home-release-flow run wrote ``paths/last_media_directory``
+    into the real registry.
+    """
+    output = audit_directory()
+    if output is None or os.environ.get('TWOBYTEASR_TEST_ROOT'):
+        return
+    from PySide6 import QtCore
+    original = QtCore.QSettings
+    if getattr(original, '_audit_ini', False):
+        return
+
+    class AuditSettings(original):
+        _audit_ini = True
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(str(output/'qt.ini'), original.Format.IniFormat)
+    QtCore.QSettings = AuditSettings
+
+
 def isolate_acceptance_settings() -> None:
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'runtime-location':
         # Program-folder runtimes are chosen only without TWOBYTEASR_TEST_ROOT (2026-10-17).
@@ -63,11 +87,11 @@ def isolate_acceptance_settings() -> None:
         from .translation_requests_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'run-diagnosis':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('run-diagnosis', 'mosi-failure'):
         from .run_diagnosis_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'studio-splitter', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('export-page', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -245,6 +269,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'macos-desktop', 'home-release-flow'}:
+        _ini_qsettings_before_ui()
         from ..app.ui import EndpointEditor
         from ..studio.studio_ai_flow import StudioAIFlowMixin
         from ..providers.provider_service import ProviderService
@@ -501,6 +526,26 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-widgets':
+        from .home_widgets_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-panels':
+        from .studio_panels_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-page':
+        from .export_page_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-redesign':
+        from .proofread_redesign_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-plan-zoom':
         from .home_plan_zoom_audit import start
         output = audit_directory()
@@ -508,6 +553,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'recognition-sheet':
         from .recognition_sheet_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'multi-audio-tracks':
+        from .multi_audio_tracks_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-audio-tracks':
+        from .home_audio_tracks_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -741,6 +796,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mosi-failure':
+        from .mosi_failure_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-workflow':
         from .editor_workflow_audit import start
         output = audit_directory()
@@ -772,8 +832,28 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-visibility-stalls':
+        from .export_visibility_stalls_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'workbench-performance':
+        from .workbench_performance_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-language-transform':
+        from .studio_language_transform_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-splitter':
         from .studio_splitter_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'batch-replace':
+        from .batch_replace_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

@@ -137,7 +137,8 @@ def test_export_pipeline_stage_state(tmp_path):
     workspace._apply_progress(40, export_progress(
         STAGE_ENCODE, out_time_us="10000000", fps="30", speed="2.0x", indeterminate=False,
     ))
-    assert workspace._pipeline_stage_states[0] == ("complete", "complete", "running", "waiting")
+    # Container finalization and output validation are separate visible stages.
+    assert workspace._pipeline_stage_states[0] == ("complete", "complete", "running", "waiting", "waiting")
     encode_label=next(widget for widget,(key,_name) in zip(workspace.render_stage_labels,workspace._stage_specs) if key==STAGE_ENCODE)
     assert encode_label.property("stageState") == "running" and not encode_label.isHidden()
     assert "视频编码" in workspace.current_stage_title.text()

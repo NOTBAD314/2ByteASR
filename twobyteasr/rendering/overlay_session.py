@@ -49,6 +49,9 @@ class _DeferredLease:
         _storage_queue().put((self._acquire, (path, producer)))
 
     def _acquire(self, path, producer):
+        with self._lock:
+            if self._released:
+                return  # An evicted frame has no consumer and no lease to acquire.
         lease = lease_overlay(path, producer)
         with self._lock:
             if not self._released:

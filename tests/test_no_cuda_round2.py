@@ -123,13 +123,15 @@ def test_mosi_long_audio_is_cut_at_the_quietest_second_not_mid_speech():
     rng = np.random.default_rng(7)
     seconds = 70 * 60
     audio = (rng.standard_normal(seconds * rate).astype(np.float32) * 0.2)   # loud "game audio" everywhere
-    quiet_at = 57 * 60                                                        # one quieter second, past 55 min
+    # 70 minutes: four requests of 17.5 minutes since 2026-10-23; one quieter
+    # second half a minute before the second target cut (35 min).
+    quiet_at = 34 * 60 + 30
     audio[quiet_at * rate:(quiet_at + 1) * rate] *= 0.05
     ranges = mosi_asr.plan_ranges(audio)
-    assert ranges[0][0] == 0 and ranges[-1][1] == len(audio)
+    assert len(ranges) == 4 and ranges[0][0] == 0 and ranges[-1][1] == len(audio)
     assert all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))
-    assert all(end - start <= mosi_asr.MAX_AUDIO_SECONDS * rate for start, end in ranges)
-    cut = ranges[0][1] / rate
+    assert all(end - start <= (17.5 * 60 + 120) * rate for start, end in ranges)   # one part plus the 2-minute margin
+    cut = ranges[1][1] / rate
     assert quiet_at <= cut <= quiet_at + 1
 
 

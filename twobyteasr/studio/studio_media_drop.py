@@ -45,6 +45,7 @@ class MediaDropCommand(QUndoCommand):
                     "has_video":result.has_video,"source_start_ms":result.source_start_ms},
                 audio_metadata={"has_audio":result.has_audio,"sample_rate":result.sample_rate,
                     "channels":result.channels,"stream_index":0,
+                    "streams":[dict(row) for row in result.audio_streams],
                     "source_start_ms":result.source_start_ms,
                     "sample_timeline_origin_ms":result.sample_timeline_origin_ms})
             clip = add_video_clip(working, track.id, asset.asset_id, timeline_in_ms=position)

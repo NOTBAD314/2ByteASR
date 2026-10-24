@@ -15,9 +15,11 @@ from typing import Callable, Mapping
 from ..system.processes import popen_hidden_subprocess, run_hidden_subprocess
 from ..system.resource_governor import GLOBAL_RESOURCE_GOVERNOR, ResourceGovernor, ResourceKind
 from ..storage.runtime_cache import CacheIdentity, GLOBAL_RUNTIME_CACHE, RuntimeCacheManager
+from .audio_streams import probe_audio_streams
 
 
-MEDIA_METADATA_SCHEMA = 3
+# 4 (2026-10-24): every audio stream, not only the first (``audio_streams``).
+MEDIA_METADATA_SCHEMA = 4
 PROXY_MANIFEST_SCHEMA = 1
 
 
@@ -129,6 +131,10 @@ class MediaMetadataSnapshot:
     video_best_effort_timestamp_ms: float = 0.0
     audio_best_effort_timestamp_ms: float = 0.0
     sample_timeline_origin_ms: float = 0.0
+    # Every audio stream (media.audio_streams records). The single-stream
+    # fields above keep describing the first one, as before; the fingerprint
+    # does not include this list, so existing identities stay valid.
+    audio_streams: tuple = ()
     # Runtime decoder boundary, deliberately excluded from project metadata
     # and identity fingerprints. Container duration is not video duration.
     video_stream_end_ms: float = 0.0
@@ -276,7 +282,7 @@ class MediaService:
         completed = self._probe_runner(
             [
                 str(self.ffprobe_path), "-v", "error", "-show_entries",
-                "format=duration,size,start_time:stream=index,codec_type,codec_name,width,height,sample_rate,channels,avg_frame_rate,r_frame_rate,time_base,start_time,start_pts,best_effort_timestamp,duration,duration_ts:stream_tags=rotate:stream_side_data=rotation",
+                "format=duration,size,start_time:stream=index,codec_type,codec_name,width,height,sample_rate,channels,channel_layout,avg_frame_rate,r_frame_rate,time_base,start_time,start_pts,best_effort_timestamp,duration,duration_ts:stream_tags=rotate,language,title,name,handler_name,DURATION:stream_disposition=default:stream_side_data=rotation",
                 "-of", "json", str(source),
             ],
             purpose="shared media metadata",
@@ -363,6 +369,7 @@ class MediaService:
             video_best_effort_timestamp_ms=video_best_effort_timestamp_ms,
             audio_best_effort_timestamp_ms=audio_best_effort_timestamp_ms,
             sample_timeline_origin_ms=audio_start_ms,
+            audio_streams=probe_audio_streams(streams, container_start_ms),
             video_stream_end_ms=(video_start_ms + _stream_duration_ms(video) - container_start_ms)
             if video and _stream_duration_ms(video) else 0.0,
         )

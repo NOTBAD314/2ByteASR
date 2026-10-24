@@ -362,6 +362,57 @@ def test_async_cloud_recognition_names_upload_queue_and_processing():
         win.close()
 
 
+def test_cloud_wait_limit_leaves_room_for_long_segments():
+    from twobyteasr.app.progress_model import cloud_wait, cloud_wait_limit
+    assert cloud_wait_limit(None) == cloud_wait_limit(120) == 600.0
+    assert cloud_wait_limit(2400) == 720.0 and cloud_wait_limit(True) == 600.0
+    assert cloud_wait(dict(state="PROCESSING", remote_waited_seconds=700.0, request_audio_seconds=2400)) == (700.0, False)
+    assert cloud_wait(dict(state="PROCESSING", remote_waited_seconds=700.0, request_audio_seconds=2400), 20) == (720.0, True)
+    assert cloud_wait(dict(state="SUCCESS", remote_waited_seconds=700.0)) is None
+    assert cloud_wait(dict(state="PROCESSING")) is None
+
+
+def test_cloud_wait_names_the_segment_and_says_when_it_is_unusually_long():
+    """2026-10-23 user report: "已返回批次 1 / 2 · 最近回应 0 秒前" for 24
+    minutes read as frozen; MOSI then failed that segment."""
+    win = _window()
+    try:
+        win._active_job_id = ""
+        win.started_at = time.perf_counter()
+        win._handle_event(_stage("stage_started", 2, "在线 ASR API 主力转写（MOSS Pro 云端 · moss-transcribe-diarize-pro）"))
+
+        def progress(**payload):
+            win._handle_event(_event("asr_progress", payload=dict(backend="mosi_moss_pro",
+                                                                  model="moss-transcribe-diarize-pro", **payload)))
+            return dict(win.stage_metrics.metrics())
+        facts = progress(state="PROCESSING", completed_batches=1, total_batches=2,
+                         remote_waited_seconds=95.0, request_audio_seconds=2400.0)
+        assert facts["云端阶段"] == "云端识别中" and facts["当前分段"] == "2 / 2" and facts["本段已等"] == "01:35"
+        assert facts["已返回批次"] == "1 / 2" and win.stage_note.text() == ""
+        # Several requests with MOSI at once (2026-10-23): which ones, how many done, the longest wait.
+        facts = progress(state="PROCESSING", completed_batches=1, total_batches=5, active_requests=[2, 3, 4],
+                         remote_waited_seconds=300.0, request_audio_seconds=1200.0)
+        assert facts["当前分段"] == "2, 3, 4 / 5" and facts["已返回批次"] == "1 / 5" and facts["云端已等"] == "05:00"
+        assert "本段已等" not in facts and win.stage_note.text() == ""
+        facts = progress(state="uploading", completed_batches=2, total_batches=5, active_requests=[3, 4],
+                         uploaded_bytes=1048576, upload_bytes_total=4194304)
+        assert facts["云端阶段"] == "正在上传音频" and facts["当前分段"] == "3, 4 / 5" and facts["已上传"] == "1.0 / 4.0 MB"
+        facts = progress(state="PROCESSING", completed_batches=1, total_batches=2,
+                         remote_waited_seconds=24 * 60.0, request_audio_seconds=2400.0)
+        assert facts["本段已等"].startswith("24:0")
+        assert win.stage_note.text() == "这一段在云端已等 24 分钟，比平常久很多。"
+        assert win.stage_note_detail.text().startswith("约 40 分钟的音频平常几分钟内就会识别完")
+        assert "不会重新上传或重复计费" in win.stage_note_detail.text()
+        single = progress(state="PENDING", completed_batches=0, total_batches=1,
+                          remote_waited_seconds=30.0, request_audio_seconds=600.0)
+        assert single["云端已等"] == "00:30" and "当前分段" not in single and win.stage_note.text() == ""
+        # Upload and other states keep the batch count (no wait figure).
+        assert "本段已等" not in progress(state="uploading", completed_batches=1, total_batches=2,
+                                          uploaded_bytes=1, upload_bytes_total=2)
+    finally:
+        win.close()
+
+
 def test_translation_during_save_counts_translated_lines():
     win = _window()
     try:

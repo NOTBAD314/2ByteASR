@@ -65,7 +65,7 @@ class _FinalizeLegacy:
     def validate_final_cues(self, cues, *_args, **_kwargs):
         return self._same("validate", cues)
 
-    def apply_isolated_single_character_rules_safely(self, cues):
+    def apply_isolated_single_character_rules_safely(self, cues, **_kwargs):
         return self._same("single_character", cues)
 
     def merge_consecutive_short_repeated_cues(self, cues):

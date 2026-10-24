@@ -554,7 +554,10 @@ class SubtitlePositionOverlay(QWidget):
             self._snap_enabled = not bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
             self.position_x, self.position_y = self._dragged_video_position(point)
             if self._origin_bounds is not None:
-                self._measured_bounds=self._origin_bounds.translated(point-self._drag_origin)
+                content=self._content_rect()
+                self._measured_bounds=self._origin_bounds.translated(
+                    (self.position_x-self._origin_position[0])*content.width()/self.play_res_x,
+                    (self.position_y-self._origin_position[1])*content.height()/self.play_res_y)
             self.position_moved.emit(self.position_x, self.position_y)
         self.update()
 

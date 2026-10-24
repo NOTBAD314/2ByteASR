@@ -18,6 +18,25 @@ from collections import deque
 _conversion = threading.local()
 
 
+def decode_skipping_damaged(container, stream, rejected):
+    """Decode like the FFmpeg CLI and mpv: drop a packet the decoder rejects.
+
+    Recorded VODs can hold a few damaged packets; container.decode() stops at
+    the first one (2026-10-23 user report: one bad packet failed an export).
+    With frame threads the error surfaces on a later send, whose packet was
+    still accepted, so only the damaged packet's own picture is lost. Each
+    rejection appends the reporting packet's PTS to ``rejected``.
+    """
+    import av
+    for packet in container.demux(stream):
+        try:
+            frames = packet.decode()
+        except av.error.InvalidDataError:
+            rejected.append(packet.pts)
+            continue
+        yield from frames
+
+
 def open_decoder(path, backend='auto'):
     """Probe one real frame before committing to hardware; retain CPU fallback.
 
@@ -37,7 +56,9 @@ def open_decoder(path, backend='auto'):
             stream=container.streams.video[0]
             stream.codec_context.thread_count=8 if mode=='cpu' else 1
             stream.codec_context.thread_type='FRAME' if mode=='cpu' else 'SLICE'
-            first=next(container.decode(stream))
+            # Hardware stays strict so an unsupported surface falls back to CPU
+            # at once instead of scanning the whole file for a decodable frame.
+            first=next(decode_skipping_damaged(container,stream,[]) if mode=='cpu' else container.decode(stream))
             # Epoch initialization seeks again; this only checks the actual
             # codec/device and its transfer path, including unsupported formats.
             display_bgra(first,float(stream.sample_aspect_ratio or 1),(128,72))

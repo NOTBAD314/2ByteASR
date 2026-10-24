@@ -174,7 +174,8 @@ def start(window, out):
             pump(.2)
             check("Ctrl+F focuses the search box", QApplication.focusWidget() is review.search,
                   type(QApplication.focusWidget()).__name__)
-            check("no resident 全部替换 button", not hasattr(review, "replace_button") and review.replace_bar.isHidden())
+            check("the find/replace bar is always there (2026-10-23)",
+                  not hasattr(review, "replace_button") and review.replace_bar.isVisible())
             review.list.ensure_visible(review._rows[0]["cue_id"])
             pump(.2)
             review.list.repaint()
@@ -361,7 +362,7 @@ def start(window, out):
             review.replace_scope.setCurrentIndex(review.replace_scope.findData("project"))
             QTest.keyClick(review.replace_input, Qt.Key.Key_Return)
             pump(.3)
-            review.replace_toggle.setChecked(False)
+            review.replace_input.clear()
             review.search.clear()
             pump(.2)
             left_old = [cue.id for cue in page.project.cues if "古龙" in cue.text]
@@ -372,7 +373,8 @@ def start(window, out):
             review.list.setFocus()
             QTest.keyClick(review.list, Qt.Key.Key_H, Qt.KeyboardModifier.ControlModifier)
             pump(.2)
-            check("Ctrl+H opens the find/replace bar", review.replace_bar.isVisible())
+            check("Ctrl+H goes to the find/replace bar", review.replace_bar.isVisible()
+                  and QApplication.focusWidget() in (review.search, review.replace_input))
             review.search.setText("骨龙")
             review.replace_input.setFocus()
             review.replace_input.setText("骨龍")
@@ -399,7 +401,8 @@ def start(window, out):
                   and review._by_id[cue_id]["base"] == live[cue_id].text)
             QTest.keyClick(review.replace_input, Qt.Key.Key_Escape)
             pump(.2)
-            check("Esc closes the bar", review.replace_bar.isHidden())
+            check("Esc clears the replacement, the bar stays", review.replace_bar.isVisible()
+                  and review.replace_input.text() == "")
             # Interface zoom on the page: Ctrl+wheel over the list, then Ctrl+0.
             from ..app import ui_zoom
             zoom_before = ui_zoom.zoom_percent()

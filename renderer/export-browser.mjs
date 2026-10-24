@@ -10,6 +10,11 @@ export async function existingExecutable(executable) {
   try { return (await fs.stat(executable)).isFile(); } catch { return false; }
 }
 
+export function browserModeForExecutable(executable) {
+  const name=String(executable).toLowerCase();
+  return name.includes('headless-shell') || name.endsWith('headless_shell') ? 'headless-shell' : 'chrome-for-testing';
+}
+
 export async function localBrowserExecutable(root, configured) {
   const tag=process.platform === 'win32' ? 'win64' : process.platform === 'darwin'
     ? (process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64')
@@ -31,7 +36,7 @@ export async function openExportBrowser(executable, referenceExecutable) {
   let fontFamilies;
   let fontSource='bundled-defaults';
   if (referenceExecutable !== executable && await existingExecutable(referenceExecutable)) try {
-    reference=await openBrowser('chrome',{browserExecutable:referenceExecutable,logLevel:'error'});
+    reference=await openBrowser('chrome',{browserExecutable:referenceExecutable,chromeMode:browserModeForExecutable(referenceExecutable),logLevel:'error'});
     const page=await reference.newPage({context:null,logLevel:'error',indent:false,pageIndex:0,onBrowserLog:null,onLog:()=>{}});
     referencePage=page;
     const client=page._client();
@@ -59,7 +64,7 @@ export async function openExportBrowser(executable, referenceExecutable) {
     if(referencePage) await referencePage.close().catch(()=>{});
     if(reference) await reference.close({silent:true}).catch(()=>{});
   }
-  const browser=await openBrowser('chrome',{browserExecutable:executable,logLevel:'error'});
+  const browser=await openBrowser('chrome',{browserExecutable:executable,chromeMode:browserModeForExecutable(executable),logLevel:'error'});
   // Remotion's public page factory is invoked once per worker. CDP preferences
   // are installed before navigation, without rewriting any authored font stack.
   for(const context of browser.browserContexts()){

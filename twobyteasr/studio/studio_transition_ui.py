@@ -436,21 +436,17 @@ def refresh_defaults(page):
 def create_default_durations(page,parent):
     """Project defaults for newly applied transitions: a secondary, collapsed
     section at the end of the Video panel (2026-10-12: it used to sit above
-    position/scale, the controls users adjust most often)."""
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QFormLayout,QSpinBox,QToolButton,QWidget,QVBoxLayout,QSizePolicy
+    position/scale, the controls users adjust most often). 2026-10-23 (user's
+    design C): a folded card whose header shows the defaults."""
+    from PySide6.QtWidgets import QFormLayout,QSpinBox
     from ..design.studio_theme import StudioComboBox
-    section=QWidget();section.setObjectName('videoDefaultsSection')
-    outer=QVBoxLayout(section);outer.setContentsMargins(0,0,0,0);outer.setSpacing(4)
-    header=QToolButton();header.setObjectName('videoDefaultsToggle')
-    header.setCheckable(True);header.setChecked(False)
-    header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-    header.setArrowType(Qt.ArrowType.RightArrow)
-    header.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed)
-    content=QWidget();layout=QFormLayout(content);layout.setContentsMargins(18,2,4,4)
-    content.setVisible(False)
-    outer.addWidget(header);outer.addWidget(content)
+    from ..design.soft_widgets import FoldCard,UnitField
+    section=FoldCard('默认转场',expanded=False);section.setObjectName('videoDefaultsSection')
+    header=section.header;content=section.body
+    layout=QFormLayout();layout.setContentsMargins(0,0,0,0);layout.setHorizontalSpacing(10);layout.setVerticalSpacing(8)
+    section.body_layout.addLayout(layout)
     page.default_transition_toggle=header;page.default_transition_content=content
+    page.default_transition_card=section
     combo=StudioComboBox()
     for key in VIDEO_LOOKS:
         combo.addItem(tr(LOOK_TEXT[key][0]),key)
@@ -459,18 +455,14 @@ def create_default_durations(page,parent):
         video=getattr(page,'default_video_transition_duration',None)
         audio=getattr(page,'default_audio_transition_duration',None)
         if video is not None and audio is not None:
-            bind_text(header,'默认转场 · 视频 {look} {video} ms · 音频 {audio} ms',
-                      look=tr(LOOK_TEXT[combo.currentData() or 'cross_dissolve'][0]),video=video.value(),audio=audio.value())
+            section.set_summary('视频 {look} {video} ms · 音频 {audio} ms',
+                                look=tr(LOOK_TEXT[combo.currentData() or 'cross_dissolve'][0]),video=video.value(),audio=audio.value())
     page._refresh_transition_defaults_summary=refresh_summary
-    def toggled(checked):
-        content.setVisible(bool(checked))
-        header.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
-    header.toggled.connect(toggled)
     layout.addRow(tr('视频效果'),combo)
     combo.activated.connect(lambda _index:set_default_look(page,dict(id=combo.currentData())))
     for media,label,value in (('video','视频',500),('audio','音频',300)):
         spin=QSpinBox();spin.setRange(1,10000);spin.setValue(value);spin.setSuffix(' ms')
-        layout.addRow(tr(label),spin)
+        layout.addRow(tr(label),UnitField(spin))
         def save_default(m=media,s=spin):
             if page.project:
                 page.project.studio_state['default_'+m+'_transition_ms']=s.value();page._schedule_autosave()

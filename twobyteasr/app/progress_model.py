@@ -92,6 +92,8 @@ CLOUD_JOB_STATES = {
     "cached": "复用第 {index} / {total} 段",
     "cached_result": "复用已有结果",
     "PENDING": "排队中",
+    # MOSI already has as many requests as it takes at once (HTTP 429); asked again shortly.
+    "waiting_for_slot": "排队中",
     "RUNNING": "云端识别中",
     "PROCESSING": "云端识别中",
     "SUCCEEDED": "正在取回结果",
@@ -117,6 +119,37 @@ def cloud_job_phase(payload):
         return None
     done, total = int(payload.get("completed_batches") or 0), int(payload.get("total_batches") or 0)
     return source, dict(index=done + 1, done=done, total=max(total, 1))
+
+
+# States in which the provider has the task and the window only waits.
+CLOUD_WAIT_STATES = {"PENDING", "RUNNING", "PROCESSING"}
+
+
+def cloud_wait_limit(audio_seconds) -> float:
+    """Seconds after which a provider wait counts as unusually long.
+
+    Measured MOSS Pro tasks: 16-24 minutes of audio finished 1.5-2.5 minutes
+    after submission; a user's 40-minute segment still waited after 24 minutes
+    and then failed (2026-10-23). 10 minutes, or 30% of the request's audio
+    when that is longer, leaves several times the usual margin.
+    """
+    audio = float(audio_seconds) if isinstance(audio_seconds, (int, float)) and not isinstance(audio_seconds, bool) else 0.0
+    return max(600.0, 0.3 * max(0.0, audio))
+
+
+def cloud_wait(payload, since_event=0.0):
+    """(seconds waited, overdue) while the provider has a request, or None.
+
+    The worker reports the wait from the original submission (a resumed task
+    keeps counting); ``since_event`` adds the time since that report.
+    """
+    payload = payload or {}
+    waited = payload.get("remote_waited_seconds")
+    if str(payload.get("state") or "") not in CLOUD_WAIT_STATES or isinstance(waited, bool) \
+            or not isinstance(waited, (int, float)):
+        return None
+    waited = max(0.0, float(waited)) + max(0.0, float(since_event or 0.0))
+    return waited, waited >= cloud_wait_limit(payload.get("request_audio_seconds"))
 
 
 def upload_progress(payload):

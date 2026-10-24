@@ -527,7 +527,8 @@ def test_conflicting_spellings_are_decided_per_project_without_touching_glossari
         assert row["key"] == "chiochoo" and row["count"] == 1
         assert {option["target"]: option["library_ids"] for option in row["options"]} == {
             "CHICHOO": (second,), "CHIOCHOO": (first,)}
-        assert "冲突待处理" in page.library_summary.text()
+        assert "冲突待处理" in page.library_note.text() and page.library_note.isVisibleTo(page)
+        assert page.library_summary.text().startswith("已选 2 · ") and "冲突待处理" in page.library_summary.toolTip()
         page._conflict_chosen("chiochoo", (second, "CHICHOO"))
         assert _wait(page)
         page._set_all(True)
@@ -560,7 +561,9 @@ def test_libraries_are_inherited_from_the_recognition_snapshot_by_id(tmp_path):
     try:
         page.open_task(str(path), load_project(path))
         assert page._selected_ids() == (identity,)
-        assert "沿用本次识别的词库" in page.library_summary.text() and "识别后已更新" in page.library_summary.text()
+        # 2026-10-23: the count beside the title, the whole sentence as its tooltip,
+        # what needs attention under the list.
+        assert "沿用本次识别的词库" in page.library_summary.toolTip() and "识别后已更新" in page.library_note.text()
         assert _wait(page)
         [issue] = _row(page, "c1")["issues"]
         assert (issue["kind"], issue["replacement"], issue["checked"], issue["default"]) == ("term", "CHICHOO", False, True)
@@ -638,9 +641,10 @@ def test_completion_task_line_names_a_changed_project_count():
 
 
 def test_edit_button_opens_the_editor_and_ctrl_h_enter_replaces_the_whole_project(tmp_path):
-    """2026-10-10 (user): no resident 全部替换; Ctrl+H, Enter in the replace box,
-    Esc closes; an input method's Enter never replaces; empty means delete,
-    which asks for a second Enter."""
+    """Enter in the replace box replaces; an input method's Enter never
+    replaces; empty means delete, which asks for a second Enter. Since
+    2026-10-23 (user: replacing needed Ctrl+H first) the bar is always
+    there and Esc in 替换为 only clears it back to a plain search."""
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QInputMethodEvent
     from PySide6.QtTest import QTest
@@ -665,10 +669,13 @@ def test_edit_button_opens_the_editor_and_ctrl_h_enter_replaces_the_whole_projec
             APP.processEvents()
         assert page.list.editor.isVisible() and page.list.editing() == "c2"
         page.list.cancel_edit()
-        # Ctrl+H opens the bar; nothing depends on a shortcut having been used before.
-        assert page.replace_bar.isHidden()
-        page.replace_toggle.setChecked(True)
+        # The bar is there from the start; nothing depends on a shortcut.
+        assert page.replace_bar.isVisible() and page.replace_input.isVisible()
         page.search.setText("抽卡")
+        page._apply_filter()
+        page._refresh_replace_count()
+        # An empty 替换为 only searches: hits are listed, nothing is previewed.
+        assert "找到 3 处（2 条字幕）" in page.replace_count.text() and page.list.find["replace"] is None
         page.replace_input.setText("祈愿")
         page._refresh_replace_count()
         assert "将替换 3 处（2 条字幕）" in page.replace_count.text() and "即全部字幕里的「抽卡」" in page.replace_count.text()
@@ -700,7 +707,7 @@ def test_edit_button_opens_the_editor_and_ctrl_h_enter_replaces_the_whole_projec
         QTest.keyClick(page.replace_input, Qt.Key.Key_Return)
         assert page._stack.index() == index
         QTest.keyClick(page.replace_input, Qt.Key.Key_Escape)
-        assert page.replace_bar.isHidden()
+        assert page.replace_input.text() == "" and page.replace_bar.isVisible()
     finally:
         _close(page)
 
@@ -1224,3 +1231,165 @@ def test_flush_save_never_reports_a_still_running_save_as_written():
     assert GlossaryProofreadPage._flush_save(page) is False
     assert page._save_thread is thread and thread.waits == 1
     assert page._save_error
+
+
+def _speaker_page(tmp_path, cues, speakers):
+    """cues: (id, start, end, text, speaker id); speakers: (id, name)."""
+    from twobyteasr.projects.studio_project import (StudioCue, StudioMedia, StudioSpeaker, SubtitleProject,
+                                                    load_project, save_project)
+    project = SubtitleProject(media=StudioMedia(path="", duration_ms=60000),
+                              cues=[StudioCue(cue_id, a, b, text, speaker_id=speaker)
+                                    for cue_id, a, b, text, speaker in cues],
+                              speakers=[StudioSpeaker(identity, name) for identity, name in speakers])
+    path = tmp_path / "speakers.2byteproj"
+    save_project(project, path)
+    page = _page()
+    page.resize(1400, 800)
+    page.show()
+    page.open_task(str(path), load_project(path))
+    assert _wait(page)
+    return page, path
+
+
+def _listed(page):
+    return [page._rows[index]["cue_id"] for index in page.list.visible]
+
+
+def test_hidden_speakers_are_skipped_by_the_list_bulk_actions_replace_and_ai(tmp_path, monkeypatch):
+    """2026-10-23 (user): narration could not be screened out. Hiding a
+    speaker removes its captions from the list (a band says where), from the
+    counts, 采用全部, the current-list replacement and AI 校对; the whole
+    project stays an explicit choice. The choice is kept per project."""
+    from twobyteasr.projects.studio_project import load_project
+    cues = [("c1", 0, 1000, "风丹真好看", "S01"), ("c2", 1000, 2000, "欢迎来到风丹", "S02"),
+            ("c3", 2000, 3000, "风丹的水下", "S02"), ("c4", 3000, 4000, "去风丹吧", "S03")]
+    page, path = _speaker_page(tmp_path, cues, [("S01", "主播"), ("S02", "旁白"), ("S03", "队友")])
+    try:
+        assert [(key, name, count) for key, name, _color, count in page._speakers()] == [
+            ("S01", "主播", 1), ("S02", "旁白", 2), ("S03", "队友", 1)]
+        assert not page.speaker_card.isHidden() and page.speaker_badge.isHidden()
+        page._speaker_widgets["S02"]["eye"].click()  # hide 旁白
+        assert page._hidden_speakers == {"S02"} and _listed(page) == ["c1", "c4"]
+        assert page.list.gaps == {1: dict(count=2, names=["旁白"], speakers=["S02"], search=False)}
+        assert page.filter_buttons["all"].text().endswith("2 条") and page.speaker_badge.text() == "隐藏 1 位"
+        assert page.hidden_note.isVisible() and "旁白 2 条" in page.hidden_note.text()
+        # Search and replace in the current list leave narration alone.
+        page.search.setText("风丹")
+        page._apply_filter()
+        assert _listed(page) == ["c1", "c4"] and page.list.gaps[1]["search"]
+        page.replace_input.setText("枫丹")
+        page._refresh_replace_count()
+        assert "将替换 2 处（2 条字幕）" in page.replace_count.text()
+        assert "隐藏的说话人里 2 处不改" in page.replace_count.text()
+        page._replace_enter()
+        assert [_row(page, c)["base"] for c in ("c1", "c2", "c3", "c4")] == [
+            "枫丹真好看", "欢迎来到风丹", "风丹的水下", "去枫丹吧"]
+        # The whole project includes them, and says so.
+        page.replace_scope.setCurrentIndex(page.replace_scope.findData("project"))
+        page._refresh_replace_count()
+        assert "含隐藏的说话人 2 处" in page.replace_count.text()
+        page._undo()
+        page.replace_scope.setCurrentIndex(page.replace_scope.findData("list"))
+        page.search.clear()
+        page.replace_input.clear()
+        page._apply_filter()
+        # 采用全部 only sees the listed captions.
+        for cue_id in ("c1", "c2"):
+            text = _row(page, cue_id)["base"]
+            _row(page, cue_id)["issues"] = [_issue(text, "风丹", "枫丹")]
+        page._apply_filter()
+        page._set_all(True)
+        assert _row(page, "c1")["base"] == "枫丹真好看" and _row(page, "c2")["base"] == "欢迎来到风丹"
+        # AI 校对 sends only the shown speakers.
+        runs = []
+        monkeypatch.setattr(page, "_run", lambda use_ai, cue_ids=None: runs.append((use_ai, cue_ids)))
+        page.ai_stand_in = object()
+        page._run_ai()
+        assert runs == [(True, ["c1", "c4"])]
+        # 只看 and the band's 显示.
+        page._solo_speaker("S03")
+        assert _listed(page) == ["c4"] and page._hidden_speakers == {"S01", "S02"}
+        page._solo_speaker("S03")
+        assert page._hidden_speakers == set() and page.list.gaps == {}
+        page._speaker_widgets["S02"]["eye"].click()
+        page._reveal_speakers(page.list.gaps[1]["speakers"])
+        assert page._hidden_speakers == set() and _listed(page) == ["c1", "c2", "c3", "c4"]
+        page._speaker_widgets["S02"]["eye"].click()
+        page._flush_save()
+        assert _wait_saved(page)
+    finally:
+        _close(page)
+    # Reopened: still hidden for this project.
+    again = _page()
+    try:
+        again.open_task(str(path), load_project(path))
+        assert _wait(again)
+        assert again._hidden_speakers == {"S02"} and "c2" not in _listed(again)
+        assert not again._speaker_widgets["S02"]["eye"].isChecked()
+    finally:
+        _close(again)
+
+
+def test_a_click_on_a_hidden_band_shows_its_speaker_again(tmp_path):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    page, _path = _speaker_page(tmp_path, [("c1", 0, 1000, "主播说话", "S01"), ("c2", 1000, 2000, "旁白念词", "S02"),
+                                           ("c3", 2000, 3000, "主播又说", "S01")], [("S01", "主播"), ("S02", "旁白")])
+    try:
+        page._set_speaker_shown("S02", False)
+        page.list.repaint()
+        [box] = [rect for rect, action, _cue, _key in page.list._hit_boxes if action == "reveal"]
+        # The band sits between c1 and c3 and is not part of either caption.
+        assert page.list.offsets[1] <= box.top() < page.list.offsets[1] + page.list.GAP
+        QTest.mouseClick(page.list, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, box.center().toPoint())
+        assert page._hidden_speakers == set() and _listed(page) == ["c1", "c2", "c3"]
+    finally:
+        _close(page)
+
+
+def test_find_steps_through_hits_and_replaces_one_at_a_time(tmp_path):
+    """The resident bar counts hits (第 N / M 处), Enter / Shift+Enter in the
+    search step through them, 替换 replaces the framed one and moves on, one
+    undo step each; 全部替换 names how many it will replace."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    page, _path = _grouped_page(tmp_path, [("c1", 0, 2000, "抽卡抽卡"), ("c2", 2000, 4000, "没有"),
+                                          ("c3", 4000, 6000, "再去抽卡")])
+    try:
+        page.search.setText("抽卡")
+        page._apply_filter()
+        assert page.hit_label.text() == "3 处" and not page.replace_one.isEnabled()
+        QTest.keyClick(page.search, Qt.Key.Key_Return)
+        assert page.list.find["current"] == ("c1", 0) and page.hit_label.text() == "第 1 / 3 处"
+        QTest.keyClick(page.search, Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)
+        assert page.list.find["current"] == ("c3", 2) and page.hit_label.text() == "第 3 / 3 处"
+        page._step_hit(1)
+        assert page.list.find["current"] == ("c1", 0)
+        page.replace_input.setText("祈愿")
+        page._refresh_replace_count()
+        assert page.replace_one.isEnabled() and page.replace_go.text() == "全部替换 3 处"
+        page._replace_current()
+        assert _row(page, "c1")["base"] == "祈愿抽卡" and page.list.find["current"] == ("c1", 2)
+        assert page.hit_label.text() == "第 1 / 2 处"
+        page._toggle_hit("c1", 2)  # excluded: 替换 skips it
+        page._replace_current()
+        assert page.list.find["current"] == ("c3", 2) and _row(page, "c1")["base"] == "祈愿抽卡"
+        page._replace_current()
+        assert _row(page, "c3")["base"] == "再去祈愿" and page._stack.count() == 2
+        page._undo()
+        assert _row(page, "c3")["base"] == "再去抽卡"
+    finally:
+        _close(page)
+
+
+def test_a_plain_caption_is_one_line_high(tmp_path):
+    """2026-10-23: number · time · play · speaker share the caption's line."""
+    page, _path = _speaker_page(tmp_path, [("c1", 0, 1000, "三十天", "S01")], [("S01", "主播")])
+    try:
+        lst = page.list
+        assert lst.heights == [lst.PAD + lst.LINE + lst.PAD]
+        page._write({"c1": "三十一天"}, label="改一句", manual=True)
+        assert lst._meta_lines(_row(page, "c1")) == 2  # 已写回 · 还原这句 on one line under it
+        assert lst.heights[0] >= lst.PAD + lst.LINE + lst.META_LINE + lst.PAD
+    finally:
+        _close(page)

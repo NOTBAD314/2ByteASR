@@ -49,8 +49,11 @@ def prepared_pixels(image, png, started, raw_folder=None):
         Path(raw_folder).mkdir(parents=True, exist_ok=True)
         raw_path = Path(raw_folder)/(uuid.uuid4().hex+'.rgba')
         raw_path.write_bytes(cropped.constBits())
-        from .overlay_session import lease_overlay
-        lease = lease_overlay(raw_path, 'caption_pixel_cache')
+        from .overlay_session import lease_overlay_deferred
+        # The active session marker already protects these owned pixels.
+        # SQLite/path validation belongs to the existing storage queue, not
+        # the latency-critical frame handoff (even on a render worker).
+        lease = lease_overlay_deferred(raw_path, 'caption_pixel_cache')
         geometry = dict(bounds=bounds.getRect(), source_width=packed.width(), source_height=packed.height(),
             width=cropped.width(), height=cropped.height(), stride=cropped.bytesPerLine(),
             bytes=cropped.sizeInBytes(), alpha_nonzero=int(np.count_nonzero(alpha)))

@@ -19,6 +19,7 @@ class PreparedCaption:
     web: object = None
     pixel_content_key: str = ''
     preview_error: str = ''
+    interaction_transform: object = None
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ def materialize_caption_project(revision):
 VIEW_STATE_KEYS = frozenset({
     "last_selected_cue", "playhead_ms", "zoom", "scroll_ms", "follow_playhead",
     "timeline_snap_enabled", "timeline_tool", "timeline_track_heights", "layout",
-    "manual_caption_text", "cue_statuses", "review_risks", "review_confirmations",
+    "manual_caption_text", "cue_statuses", "review_risks", "review_confirmations", "caption_global_link",
 })
 # Per-cue entries some captions read (word timings for word effects): a
 # changed entry rebuilds its cue only.

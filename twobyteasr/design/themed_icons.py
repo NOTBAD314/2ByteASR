@@ -23,6 +23,7 @@ from .ui_theme import ThemeDefinition, theme_definition
 ICON_ROLES = (
     "primary", "secondary", "muted", "disabled", "on_accent", "accent", "warning",
     "window_control", "toolbar_primary", "toolbar_secondary", "toolbar_disabled",
+    "zone_studio", "zone_ai", "zone_content",
 )
 
 _BUTTON_PROPERTY = "_themed_icon"          # (name, role) on QAbstractButton
@@ -80,6 +81,10 @@ def icon_role_color(role: str, theme: ThemeDefinition | None = None) -> str:
         "toolbar_primary": active.text,
         "toolbar_secondary": active.text_secondary,
         "toolbar_disabled": active.disabled,
+        # Home section hues (2026-10-23): the icon on a section's tonal button.
+        "zone_studio": active.zone_colors.get("studio", active.accent_text),
+        "zone_ai": active.zone_colors.get("ai", active.accent_text),
+        "zone_content": active.zone_colors.get("content", active.accent_text),
     }.get(str(role), active.text)
 
 

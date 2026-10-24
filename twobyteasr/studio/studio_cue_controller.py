@@ -411,6 +411,10 @@ class StudioCueController:
         self, cue_id: str, *, refresh_advanced: bool = False, hydrate: bool = True,
     ) -> None:
         self._select_cue_transaction(cue_id,refresh_advanced=refresh_advanced,hydrate=hydrate)
+        # 2026-10-24 (user): a caption picked while 视频 is open stays there;
+        # the tab swaps to the caption's 位置与变换 card (panel.refresh).
+        panel=getattr(self.page,'caption_transform_panel',None)
+        if panel is not None:panel.refresh()
         updater=getattr(self.page,'_update_web_adjust_visibility',None)
         if callable(updater):updater()
 
@@ -766,7 +770,7 @@ class StudioCueController:
         )
         if visual_dirty:
             page._initial_preview_timer.stop()
-            page._visual_update_timer.start()
+            if not page._visual_update_timer.isActive():page._visual_update_timer.start()
             # Only the selected cue gets overlay work; any other id just
             # restarts the same timer (once, not once per affected cue).
             selected = self.session.selected_cue_id

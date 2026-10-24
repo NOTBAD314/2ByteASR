@@ -58,6 +58,7 @@ STAGE_PREPARE_SUBTITLES = "prepare_subtitles"
 STAGE_ADVANCED_RENDER = "advanced_render"
 STAGE_ENCODE = "encode"
 STAGE_MUX = "mux"
+STAGE_VALIDATE = "validate"
 STAGE_ORDER = (
     STAGE_PREPARE_PROJECT,
     STAGE_COMPOSE_VIDEO,
@@ -65,6 +66,7 @@ STAGE_ORDER = (
     STAGE_ADVANCED_RENDER,
     STAGE_ENCODE,
     STAGE_MUX,
+    STAGE_VALIDATE,
 )
 STAGE_LABELS = {
     STAGE_PREPARE_PROJECT: "准备工程",
@@ -72,7 +74,8 @@ STAGE_LABELS = {
     STAGE_PREPARE_SUBTITLES: "准备字幕",
     STAGE_ADVANCED_RENDER: "高级样式渲染",
     STAGE_ENCODE: "视频编码",
-    STAGE_MUX: "封装文件",
+    STAGE_MUX: "封装收尾",
+    STAGE_VALIDATE: "验证与发布",
 }
 
 
@@ -123,6 +126,9 @@ def export_progress(
 
 def parse_ffmpeg_out_time_seconds(payload: dict) -> float | None:
     """Parse FFmpeg ``out_time_ms`` / ``out_time`` into seconds, or None."""
+    if payload.get('video_time_seconds') not in (None, ''):
+        try: return float(payload['video_time_seconds'])
+        except (ValueError, TypeError): return None
     raw = str(payload.get("out_time_us") or payload.get("out_time_ms") or payload.get("out_time") or "")
     if not raw:
         return None
@@ -190,9 +196,17 @@ class RenderSettings:
     gop: int = 0
     b_frames: int = -1
     font_directory: str = ""
+    output_kind: str = "video"
+    audio_bit_depth: int = 16
 
     def validate(self) -> None:
         self.container = self.container.lower()
+        if self.output_kind == 'audio':
+            from .audio_delivery import validate_audio_settings
+            validate_audio_settings(self)
+            return
+        if self.output_kind != 'video':
+            raise ValueError('unknown output kind')
         self.codec = self.codec.lower()
         self.quality_mode = self.quality_mode.lower()
         if self.container not in CONTAINER_CODECS:
@@ -241,6 +255,7 @@ class RenderJob:
     edit_segments: tuple[tuple[float, float], ...] = ()
     # Immutable job-owned media graph; queued jobs never reread a live editor.
     video_graph: dict | None = None
+    audio_graph: dict | None = None
     direct_video_graph: dict | None = None
     composition_resolved: bool = False
     completion_preview_path: str = ''
@@ -640,18 +655,19 @@ def build_render_command(
     output = Path(job.output_path).resolve()
     if not media.is_file():
         raise FileNotFoundError(media)
-    if not ass.is_file():
+    if job.ass_path and not ass.is_file():
         raise FileNotFoundError(ass)
     if output.suffix.lower() != f".{settings.container}":
         raise ValueError("output extension does not match container")
     encoder = select_encoder(ffmpeg_path, settings)
     command = [str(Path(ffmpeg_path).resolve()), "-hide_banner", "-loglevel", "info", "-y"]
     slices = [(float(start), float(end)) for start, end in (job.edit_segments or ())]
-    ass_filter = f"ass=filename={_filter_path(ass)}"
+    ass_filter = f"ass=filename={_filter_path(ass)}" if job.ass_path else 'null'
     # Qt's application fonts are process-local. libass in FFmpeg cannot see
     # them unless the same bundled bytes are explicitly supplied here.
     font_directory = settings.font_directory or str(Path(__file__).resolve().parents[2] / 'assets/fonts')
-    ass_filter += f":fontsdir={_filter_path(font_directory)}"
+    if job.ass_path:
+        ass_filter += f":fontsdir={_filter_path(font_directory)}"
     scale = f"scale={settings.width}:{settings.height}" if settings.width and settings.height else ""
     if job.direct_video_graph:
         from .export_filtergraph import compile_video_filtergraph
@@ -793,7 +809,7 @@ def _run_render_attempt(
     temporary = output.with_name(
         f".{output.stem}.{uuid.uuid4().hex}.partial{output.suffix}"
     )
-    if progress:
+    if progress and job.ass_path:
         progress(export_progress(
             STAGE_PREPARE_SUBTITLES,
             message="正在准备 Native ASS 字幕烧录…",
@@ -865,10 +881,13 @@ def _run_render_attempt(
             if separator:
                 current[key] = value
                 if key == "progress" and progress:
-                    current["stage"] = STAGE_ENCODE
-                    current["stage_label"] = STAGE_LABELS[STAGE_ENCODE]
+                    stage = STAGE_MUX if value == 'end' else STAGE_ENCODE
+                    current["stage"] = stage
+                    current["stage_label"] = STAGE_LABELS[stage]
+                    if job.settings.fps and current.get('frame'):
+                        current['video_time_seconds'] = str(int(current['frame'])/job.settings.fps)
                     current["indeterminate"] = "0"
-                    current["message"] = "正在编码视频…"
+                    current["message"] = "正在封装收尾…" if stage == STAGE_MUX else "正在编码视频…"
                     if trace:
                         trace("progress_received", dict(current))
                     progress(dict(current))
@@ -893,7 +912,7 @@ def _run_render_attempt(
     if not temporary.is_file() or temporary.stat().st_size <= 0:
         raise RuntimeError("FFmpeg completed without a playable output file")
     if progress:
-        progress(export_progress(STAGE_MUX, message="校验完整视频与音频后发布文件…"))
+        progress(export_progress(STAGE_VALIDATE, message="校验完整视频与音频后发布文件…"))
     try:
         from .export_validation import validate_output
         metadata = validate_output(ffmpeg_path,temporary,duration=job.duration_seconds,fps=job.settings.fps,cancelled=cancelled,preview_path=job.completion_preview_path)
@@ -903,7 +922,7 @@ def _run_render_attempt(
         temporary.unlink(missing_ok=True)
     if progress:
         notify_after_publication(job, progress, export_progress(
-            STAGE_MUX,
+            STAGE_VALIDATE,
             message="封装完成",
             percent=100,
             indeterminate=False,
@@ -922,9 +941,12 @@ def run_render_job(
     cancelled: Callable[[], bool] | None = None,
     trace: Callable[[str, object], None] | None = None,
 ) -> Path:
+    if job.settings.output_kind == 'audio':
+        from .audio_delivery import run_audio_job
+        return run_audio_job(ffmpeg_path, job, progress=progress, cancelled=cancelled, trace=trace)
     if job.video_graph:
         from .timeline_media import resolve_video_graph
-        job = replace(job, video_graph=resolve_video_graph(job.video_graph, ffmpeg_path, cancelled=cancelled))
+        job = replace(job, video_graph=resolve_video_graph(job.video_graph, ffmpeg_path, cancelled=cancelled, seekable=True))
         validate_export_config(job)
         from ..media.media_availability import export_sources, probe_sources, require_available
         start_ms = (job.start_seconds or 0) * 1000

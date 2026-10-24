@@ -99,6 +99,16 @@ def caption_timeline_range(project, cue_id):
     return cue, (int(cue.start_ms), int(cue.end_ms)), "source"
 
 
+def caption_audio_lane(project, cue):
+    """Audio lane a caption was recognized from, when it still exists."""
+    sources = (getattr(project, "studio_state", {}) or {}).get("speaker_audio_sources") or {}
+    source = sources.get(str(getattr(cue, "speaker_id", ""))) if isinstance(sources, dict) else None
+    lane_id = str((source or {}).get("lane_id") or "")
+    if lane_id and any(track.id == lane_id and track.clips for track in project.audio_tracks):
+        return lane_id
+    return ""
+
+
 def plan_cue_preview(project, cue_id, *, pre_roll_ms=PRE_ROLL_MS, post_roll_ms=POST_ROLL_MS):
     """Resolve which clips/sources play for this caption (no decoding)."""
     from .audio_graph import capture_audio_graph
@@ -123,7 +133,15 @@ def plan_cue_preview(project, cue_id, *, pre_roll_ms=PRE_ROLL_MS, post_roll_ms=P
     total = max(int(timeline_duration_ms(project)), end)
     a, b = max(0, start - pre_roll_ms), min(total, end + post_roll_ms)
     layers = []
-    for layer in capture_audio_graph(project)["segments"]:
+    # 2026-10-24: a caption recognized from one audio track of a multi-track
+    # source is heard (and re-aligned) from that track, not the current mix.
+    lane_id = caption_audio_lane(project, cue)
+    if lane_id:
+        from .audio_graph import capture_lane_audio_graph
+        segments = capture_lane_audio_graph(project, lane_id)["segments"]
+    else:
+        segments = capture_audio_graph(project)["segments"]
+    for layer in segments:
         if layer["timeline_out_ms"] <= a or layer["timeline_in_ms"] >= b:
             continue
         layers.append(copy.deepcopy(layer))
@@ -134,6 +152,57 @@ def plan_cue_preview(project, cue_id, *, pre_roll_ms=PRE_ROLL_MS, post_roll_ms=P
             raise PreviewUnavailable(f"找不到素材文件：{layer['source_path']}")
     return CuePreviewPlan(request, str(project.project_id), revision, cue.id, cue.text, domain,
                           (start, end), (a, b), layers)
+
+
+LANE_PREVIEW_MS = 8000
+
+
+def lane_audible_windows(segments):
+    """(from, to) timeline ranges where each segment actually has sound.
+
+    A late-starting stream is silent before its first sample; auditioning it
+    from there would only play silence.
+    """
+    windows = []
+    for layer in segments:
+        rate = max(.01, float(layer.get("playback_rate") or 1.0))
+        lead = max(0.0, float(layer.get("stream_start_ms") or 0.0) - float(layer["source_in_ms"])) / rate
+        start = int(layer["timeline_in_ms"] + lead)
+        if start < layer["timeline_out_ms"]:
+            windows.append((start, int(layer["timeline_out_ms"])))
+    return sorted(windows)
+
+
+def plan_lane_preview(project, lane_id, start_ms, *, duration_ms=LANE_PREVIEW_MS):
+    """A few seconds of exactly one audio lane (recognition track picker).
+
+    The lane is heard on its own whatever its mute/solo state, through the
+    same graph recognition uses. It starts at ``start_ms`` (the playhead)
+    when the lane has sound there, otherwise at its next moment with sound.
+    Nothing is extracted beyond these seconds.
+    """
+    from .audio_graph import capture_lane_audio_graph
+    from ..timeline.studio_edit_sequence import timeline_duration_ms
+    try:
+        graph = capture_lane_audio_graph(project, lane_id)
+    except KeyError:
+        raise PreviewUnavailable("这条音轨已不在工程里") from None
+    windows = lane_audible_windows(graph["segments"])
+    if not windows:
+        raise PreviewUnavailable("这条音轨在时间轴上没有可播放的声音")
+    begin = int(start_ms or 0)
+    start = next((max(begin, a) for a, b in windows if b > begin), windows[0][0])
+    total = max(int(timeline_duration_ms(project)), start + 1)
+    a, b = start, min(total, start + int(duration_ms))
+    layers = [copy.deepcopy(layer) for layer in graph["segments"]
+              if layer["timeline_out_ms"] > a and layer["timeline_in_ms"] < b]
+    for layer in layers:
+        if not Path(layer["source_path"]).is_file():
+            raise PreviewUnavailable(f"找不到素材文件：{layer['source_path']}")
+    revision = hashlib.sha256(json.dumps(layers, ensure_ascii=False, sort_keys=True, default=str)
+                              .encode("utf-8")).hexdigest()[:16]
+    return CuePreviewPlan(uuid.uuid4().hex[:12], str(project.project_id), revision, f"lane:{lane_id}",
+                          str(lane_id), "timeline", (a, b), (a, b), layers)
 
 
 def preview_command(plan, ffmpeg, *, cancelled=None):

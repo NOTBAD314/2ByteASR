@@ -47,7 +47,11 @@ def build_clip_command(
     output_path: str | os.PathLike[str],
     start_ms: int,
     end_ms: int,
+    audio_stream: int | None = None,
 ) -> list[str]:
+    # 2026-10-24: a caption recognized from a further audio track of a
+    # multi-track file is heard again from that track (``0:a:N``).
+    stream = [] if audio_stream is None else ["-map", f"0:a:{int(audio_stream)}"]
     return [
         str(Path(ffmpeg_path).resolve()),
         "-hide_banner",
@@ -60,6 +64,7 @@ def build_clip_command(
         str(Path(media_path).resolve()),
         "-t",
         f"{max(0.05, (end_ms - start_ms) / 1000):.3f}",
+        *stream,
         "-vn",
         "-ac",
         "1",
@@ -83,6 +88,15 @@ def _existing_primary_text(project: SubtitleProject, cue_id: str) -> str:
             if value and value not in candidates:
                 candidates.append(value)
     return " / ".join(candidates) or cue.original_text or cue.text
+
+
+def _caption_stream(project, cue, media) -> int | None:
+    """Relative audio stream of the track this caption was recognized from."""
+    sources = (project.studio_state or {}).get("speaker_audio_sources") or {}
+    source = sources.get(cue.speaker_id) if isinstance(sources, dict) else None
+    if not source or os.path.normcase(str(source.get("source_path") or "")) != os.path.normcase(str(media.resolve())):
+        return None
+    return int(source.get("ordinal") or 0)
 
 
 def run_local_reasr(
@@ -111,7 +125,8 @@ def run_local_reasr(
         backend = "off"
     try:
         completed = run_hidden_subprocess(
-            build_clip_command(ffmpeg_path, media, clip_path, start_ms, end_ms),
+            build_clip_command(ffmpeg_path, media, clip_path, start_ms, end_ms,
+                               audio_stream=_caption_stream(project, cue, media)),
             purpose="ffmpeg re-asr extraction",
             capture_output=True,
             text=True,

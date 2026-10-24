@@ -27,9 +27,21 @@ def object_value(value, path='$', *, pairs=False):
 
 
 class StructuredResponseError(ValueError):
-    def __init__(self, message, category):
+    def __init__(self, message, category, *, diagnostics=None):
         super().__init__(message)
         self.category = category
+        self.diagnostics = dict(diagnostics or {})
+
+
+def _finite_json(text):
+    def reject(value):
+        raise StructuredResponseError('JSON contains a non-finite number',
+            'structured_output_schema', diagnostics={'stage': 'schema', 'validator': 'finite_number'})
+    def number(value):
+        import math
+        parsed=float(value)
+        return parsed if math.isfinite(parsed) else reject(value)
+    return json.loads(text, parse_constant=reject, parse_float=number)
 
 
 def response_object(raw, path='$', *, protocol=None):
@@ -51,7 +63,7 @@ def response_object(raw, path='$', *, protocol=None):
     first = None
     if lines and not fenced:
         try:
-            first = json.loads(lines[0][1])
+            first = _finite_json(lines[0][1])
         except json.JSONDecodeError:
             pass
     typed = isinstance(first, dict) and ('type' in first or 'event' in first)
@@ -80,12 +92,17 @@ def response_object(raw, path='$', *, protocol=None):
             raise StructuredResponseError(f'{path}: expected one final JSONL result; received {len(finals)}', 'conflicting_final' if finals else 'provider_no_body') from None
         return object_value(finals[0], path+'.result')
     try:
-        value = json.loads(text)
+        value = _finite_json(text)
     except json.JSONDecodeError as exc:
         incomplete = exc.msg.startswith('Unterminated') or exc.pos >= len(text.rstrip()) - 1
         category = 'structured_output_truncated' if incomplete else 'structured_output_invalid_json'
         label = 'incomplete JSON' if incomplete else 'invalid JSON'
-        raise StructuredResponseError(f'{path}: {label}; chars={len(raw)}, line={exc.lineno}, column={exc.colno}', category) from None
+        raise StructuredResponseError(f'{path}: {label}; chars={len(raw)}, line={exc.lineno}, column={exc.colno}', category,
+            diagnostics={'stage': 'json_syntax', 'characters': len(raw),
+                'parsed_characters': len(text), 'line': exc.lineno, 'column': exc.colno,
+                'character_offset': exc.pos, 'parser_message': exc.msg,
+                'excerpt': text[max(0, exc.pos-48):exc.pos+48],
+                'normalization': 'complete_json_fence' if fenced else 'trim_whitespace'}) from None
     # A JSON string is a string, even if its contents resemble another object.
     if isinstance(value, str):
         raise ValueError(f'{path}: expected object; received str (length={len(value)})')

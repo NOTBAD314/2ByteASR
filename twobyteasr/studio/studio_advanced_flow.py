@@ -64,7 +64,7 @@ class StudioAdvancedFlowMixin:
             raster_only = getattr(getattr(self.video, 'controller', None), 'supports_native_subtitles', True) is False
             audio_tail = getattr(self, '_audio_tail_visual_active', lambda:False)()
             from ..timeline.studio_caption_timeline import independent_captions
-            if len(cues) < 2 and not raster_only and not audio_tail and not independent_captions(self.project):
+            if len(cues) < 2 and not raster_only and not audio_tail and not independent_captions(self.project) and not getattr(self,'_caption_transform_preview',{}):
                 return False
             scene = self._caption_scene = CaptionScene(self)
         return scene.present(cues, milliseconds)
@@ -90,18 +90,20 @@ class StudioAdvancedFlowMixin:
         ids = tuple(dict.fromkeys((*current, *runtime._cue_order[following:following+count])))
         width,height = getattr(self,'_caption_tick_geometry',None) or self._advanced_preview_size()
         cache.prepare(store.render, ids, width, height)
-        if prepare_pixels:self._prepare_caption_pixels(ids)
+        scene=getattr(self,'_caption_scene',None)
+        if prepare_pixels and not (scene is not None and scene.active):self._prepare_caption_pixels(ids)
 
     def _caption_window_ready(self, key, cue_ids):
         store = getattr(self, '_revision_store', None)
         if store is None or getattr(self, '_close_requested', False): return
         from ..rendering.caption_playback_cache import revision_key
         if key != revision_key(store.render, *self._advanced_preview_size()): return
-        self._prepare_caption_pixels(cue_ids)
         scene=getattr(self,'_caption_scene',None)
         if scene is not None and scene.active:
             scene.warm_current()
             if scene.wanted_times:scene.warm_times(list(scene.wanted_times))
+        else:
+            self._prepare_caption_pixels(cue_ids)
         worker = getattr(self, '_web_live_worker', None)
         if worker is not None:
             for cue_id in cue_ids:
@@ -2043,9 +2045,16 @@ class StudioAdvancedFlowMixin:
         if callable(clear):clear()
         self._subtitle_track_visibility[speaker_id] = bool(visible)
         if self.project is not None:
-            state = self.project.studio_state.setdefault("subtitle_track_visibility", {})
-            if isinstance(state, dict):
-                state[speaker_id] = bool(visible)
+            # Visibility is persisted presentation, not a private preview flag.
+            # Advance the revision so snapshots, autosave and cached scenes agree.
+            from ..timeline.studio_commands import _commit_mutation
+            from ..projects.studio_runtime_state import DirtyDomain
+            _commit_mutation(self.project, action_id='字幕轨可见性',
+                dirty=DirtyDomain.PROJECT_METADATA | DirtyDomain.AUTOSAVE | DirtyDomain.CUE_STYLE |
+                    DirtyDomain.NATIVE_SUBTITLE | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TIMELINE_PIXELS,
+                cue_ids=(), snapshot_cues=False,
+                mutate=lambda: self.project.studio_state.setdefault('subtitle_track_visibility', {}).__setitem__(speaker_id, bool(visible)),
+                changed=self._changed)
         self._advanced_preview_state.generation += 1
         if not visible:
             self._revoke_advanced_preview(reason="subtitle_track_hidden")
