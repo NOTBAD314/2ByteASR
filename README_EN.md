@@ -15,15 +15,15 @@ Built for Chinese first, with Japanese and English recognition too. Run everythi
 
 ## Download
 
-Current release: **0.8.3** (2026-10-23). Pick the one installer for your computer:
+Current release: **0.8.4** (2026-10-24). Pick the one installer for your computer:
 
 | Your computer | Download |
 | --- | --- |
-| **Windows 10 1809 or later (64-bit)**<br>Stable | **[2ByteASR-Setup-0.8.3.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.3/2ByteASR-Setup-0.8.3.exe)** (about 1 GB)<br>The installer is not code-signed, so Windows may show an "unknown publisher" warning. See [Installing on Windows](docs/product-guide.en.md#installing-on-windows). |
-| **Mac with Apple silicon (M1 or later), macOS 15 or later**<br>**Experimental** | **[2ByteASR-0.8.3-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.3/2ByteASR-0.8.3-macos-arm64-Setup.dmg)** (about 0.5 GB)<br>Tested only on GitHub's virtual Macs. **Intel Macs are not supported.** Not notarized by Apple; see [Installing on Mac](docs/product-guide.en.md#installing-on-mac-experimental) for the first launch. |
+| **Windows 10 1809 or later (64-bit)**<br>Stable | **[2ByteASR-Setup-0.8.4.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.4/2ByteASR-Setup-0.8.4.exe)** (about 1 GB)<br>The installer is not code-signed, so Windows may show an "unknown publisher" warning. See [Installing on Windows](docs/product-guide.en.md#installing-on-windows). |
+| **Mac with Apple silicon (M1 or later), macOS 15 or later**<br>**Experimental** | **[2ByteASR-0.8.4-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.4/2ByteASR-0.8.4-macos-arm64-Setup.dmg)** (about 0.5 GB)<br>Tested only on GitHub's virtual Macs. **Intel Macs are not supported.** Not notarized by Apple; see [Installing on Mac](docs/product-guide.en.md#installing-on-mac-experimental) for the first launch. |
 
-- **Slow or blocked downloads in mainland China?** Use the GitCode mirror first: [Windows installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.3/2ByteASR-Setup-0.8.3.exe) · [Mac installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.3/2ByteASR-0.8.3-macos-arm64-Setup.dmg). If that fails too, try the third-party gh-proxy accelerator: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.3/2ByteASR-Setup-0.8.3.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.3/2ByteASR-0.8.3-macos-arm64-Setup.dmg). The files are identical on every source; check them with `SHA256SUMS.txt`.
-- **Already on 0.6.5, 0.7.x, 0.8.0, 0.8.1 or 0.8.2?** Use "Check for updates" in the app; it downloads only what changed. For 0.6.0 or earlier, run the new installer over the old one without uninstalling first.
+- **Slow or blocked downloads in mainland China?** Use the GitCode mirror first: [Windows installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.4/2ByteASR-Setup-0.8.4.exe) · [Mac installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.4/2ByteASR-0.8.4-macos-arm64-Setup.dmg). If that fails too, try the third-party gh-proxy accelerator: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.4/2ByteASR-Setup-0.8.4.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.4/2ByteASR-0.8.4-macos-arm64-Setup.dmg). The files are identical on every source; check them with `SHA256SUMS.txt`.
+- **Already on 0.6.5, 0.7.x, 0.8.0, 0.8.1, 0.8.2 or 0.8.3?** Use "Check for updates" in the app; it downloads only what changed. For 0.6.0 or earlier, run the new installer over the old one without uninstalling first.
 - **You don't need the other files.** The `Source`, `ThirdParty`, `update` and `.sig` files on the [Releases page](https://github.com/NOTBAD314/2ByteASR/releases/latest) are for source code, licence materials and in-app updates. `SHA256SUMS.txt` lets you check that a download is complete.
 
 ### Docker (Linux amd64 / CPU)
@@ -157,7 +157,7 @@ A run uses up to three roles, combined to suit your media and hardware:
 - [User guide](docs/product-guide.en.md): installation, first launch, choosing a route, costs and privacy, updates, FAQ, running from source
 - [Interface tour](docs/product-demo.en.md): progress, completion, Model workshop, export, themes and more (0.7.1 interface)
 - [API setup guides](docs/api-setup/README.md) (Chinese): sign-up steps and pricing notes for each cloud and text-AI provider
-- [Mac notes](docs/deployment/macos-experimental.zh-CN.md) (Chinese) · [Updating](UPDATING.md) (Chinese) · [0.8.3 release notes](docs/releases/0.8.3.md) (Chinese, English, Japanese, Korean) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
+- [Mac notes](docs/deployment/macos-experimental.zh-CN.md) (Chinese) · [Updating](UPDATING.md) (Chinese) · [0.8.4 release notes](docs/releases/0.8.4.md) (Chinese, English, Japanese, Korean) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
 ## How recognition works
 
@@ -216,4 +216,4 @@ Please report problems in [Issues](https://github.com/NOTBAD314/2ByteASR/issues)
 
 Project-owned code is licensed under **GPL-3.0-only** ([English license](LICENSE), [scope](PROJECT_LICENSE.md)). Official versions are free; GPL permits commercial use, modification and paid distribution subject to its source and other conditions. Private changes need not be published. Ordinary subtitle, video and image outputs do not become GPL merely through use of this software. Third-party components keep their own licenses: Remotion, used by the high-fidelity renderer, is free for individuals and for-profit organizations of up to 3 employees, while larger for-profit organizations need its Company License; GSAP uses its standard license. See the [third-party notices](THIRD_PARTY_NOTICES.md) and [model license table](licenses/MODELS.md); distribution materials for the full installer are still being completed ([status](licenses/DISTRIBUTION-STATUS.md)).
 
-Source: the `main` branch holds the application source. The tag `v0.8.3` is the build source of the 0.8.3 installers, and the full build inputs are in the release's `2ByteASR-Source-0.8.3.zip` (see "Source and checksums" in the [0.8.3 release notes](docs/releases/0.8.3.md#source-and-checksums)). [SOURCE_DELIVERY.md](SOURCE_DELIVERY.md) was written for 0.5.0 and has not been updated for 0.8.3.
+Source: the `main` branch holds the application source. The tag `v0.8.4` is the build source of the 0.8.4 installers, and the full build inputs are in the release's `2ByteASR-Source-0.8.4.zip` (see "Source and checksums" in the [0.8.4 release notes](docs/releases/0.8.4.md#source-and-checksums)). [SOURCE_DELIVERY.md](SOURCE_DELIVERY.md) was written for 0.5.0 and has not been updated for 0.8.4.
