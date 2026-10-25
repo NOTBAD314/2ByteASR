@@ -35,7 +35,7 @@ What the other files on the [Releases page](https://github.com/NOTBAD314/2ByteAS
 
 ## Installing on Mac (experimental)
 
-**Supported:** Apple silicon (M series) with macOS 15 or later. **Intel Macs are not supported.** 16 GB of memory or more is recommended; 8 GB Macs have not been tested. This version was checked only on GitHub's virtual Macs (virtual M1, 7 GB of memory), not on a physical Mac.
+**Supported:** Apple silicon (M series) with macOS 14 or later (from 0.8.5; 0.8.4 and earlier need macOS 15). **Intel Macs are not supported.** 16 GB of memory or more is recommended; 8 GB Macs have not been tested. This version was checked only on GitHub's virtual Macs (virtual M1, 7 GB of memory), not on a physical Mac.
 
 1. Download the DMG. To check it, run `shasum -a 256 2ByteASR-0.7.2-macos-arm64-Setup.dmg` in Terminal and compare with `SHA256SUMS.txt`.
 2. Open the DMG and drag `2ByteASR` into Applications.

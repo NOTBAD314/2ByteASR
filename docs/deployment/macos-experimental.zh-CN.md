@@ -4,7 +4,7 @@
 
 ## 适用范围
 
-- **只支持 Apple 芯片（M 系列）、macOS 15 及以上。** 不支持 Intel Mac：没有 Intel 版程序包，PyTorch 与 MLX 也没有可用的 Intel 版本。
+- **只支持 Apple 芯片（M 系列）、macOS 14 及以上**（0.8.5 起；0.8.4 及更早要 macOS 15）。 不支持 Intel Mac：没有 Intel 版程序包，PyTorch 与 MLX 也没有可用的 Intel 版本。
 - 云端识别（自备服务商账号与 API Key）不需要本地模型，也不需要 NVIDIA 显卡。
 - 本地识别：模型工坊可准备 MOSS（文字 + 说话人）与 FireRedASR2-AED（字级时间），在这台 Mac 的 Apple GPU 上用自带样本实际跑一次，通过才启用；也可用 SenseVoice（CPU）与社区实现的 MLX 方案。只能在 NVIDIA CUDA 上运行的组件，在开始前就会标出“这台电脑不能运行”并说明原因，不会当成 Mac 已支持。
 - 内存建议 16 GB 以上；8 GB 的 Mac 没有实测。

@@ -35,7 +35,7 @@
 
 ## Mac 安装（实验版）
 
-**适用范围：** Apple 芯片（M 系列）、macOS 15 或更新。**不支持 Intel Mac**。建议 16 GB 以上内存，8 GB 的 Mac 没有测过。这个版本只在 GitHub 提供的虚拟 Mac（虚拟 M1、7 GB 内存）上检查过，没有在实体 Mac 上测过。
+**适用范围：** Apple 芯片（M 系列）、macOS 14 或更新（0.8.5 起；0.8.4 及更早要 macOS 15）。**不支持 Intel Mac**。建议 16 GB 以上内存，8 GB 的 Mac 没有测过。这个版本只在 GitHub 提供的虚拟 Mac（虚拟 M1、7 GB 内存）上检查过，没有在实体 Mac 上测过。
 
 1. 下载 DMG，可以在“终端”运行 `shasum -a 256 2ByteASR-0.7.2-macos-arm64-Setup.dmg`，和 `SHA256SUMS.txt` 比对。
 2. 打开 DMG，把 `2ByteASR` 拖进“应用程序”。
