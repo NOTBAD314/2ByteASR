@@ -31,5 +31,12 @@
     "source": "https://pypi.org/pypi/pip/26.1.2/json"
   },
   "verified_official_metadata": "2026-10-01",
-  "native_runtime_executed": false
+  "native_runtime_executed": false,
+  "compatibility": {
+    "architectures": [
+      "arm64"
+    ],
+    "minimum_macos": "14.0",
+    "contract": "macos-arm64-sonoma-v1"
+  }
 }

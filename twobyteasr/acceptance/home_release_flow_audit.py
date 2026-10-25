@@ -8,6 +8,24 @@ from dataclasses import asdict
 from pathlib import Path
 
 
+def expected_plain_bilingual_project(project, format_name):
+    """Independent expected text for the explicit translation-first audit.
+
+    JSON keeps source cues; ASS has separate display rows. SRT/TXT put the two
+    known texts in one cue. Do not loosen text/timing checks for bilingual QA.
+    """
+    if format_name not in ('srt','txt'):
+        return project
+    import copy
+    from ..caption_style.bilingual_layout import translation_for_cue
+    expected=copy.deepcopy(project)
+    translations=project.generation_metadata.get('translations',{})
+    for cue in expected.cues:
+        text=translation_for_cue(translations,cue.id)
+        if text:cue.text=str(text)+'\n'+cue.text
+    return expected
+
+
 def start(window, out):
     from PySide6.QtCore import QTimer, Qt
     from PySide6.QtGui import QInputMethodEvent
@@ -45,8 +63,13 @@ def start(window, out):
             return
         controller = page.video.controller
         def visible_pixels():
+            from .macos_desktop_evidence import visible_caption_pixels
+            from ..rendering.caption_scene import active_cues
+            if label == 'bilingual' and not any(str(key).endswith('#tr') for key in page._caption_scene.trace().get('rendered_cue_ids',[])):
+                return False
             return (image_colour_observation(controller.surface.frame)['colour_fraction'] > .10
-                    and image_colour_observation(page.video.grab().toImage())['colour_fraction'] > .10)
+                    and image_colour_observation(page.video.grab().toImage())['colour_fraction'] > .10
+                    and (not active_cues(page,page._caption_sample_ms()) or visible_caption_pixels(page.video)['passed']))
         deadline = time.monotonic()+3
         while not visible_pixels() and time.monotonic() < deadline:
             pump()
@@ -287,10 +310,20 @@ def start(window, out):
             editor = page.subtitle_edit_input
             check('normal Chinese editor visible', editor.isVisible())
             editor.setFocus(); QTest.keyClick(editor, Qt.Key_A, Qt.ControlModifier)
-            event = QInputMethodEvent(); event.setCommitString('兔白字幕 0.5.0 实际识别后中文编辑')
+            event = QInputMethodEvent(); event.setCommitString('兔白字幕 · 实际识别后中文编辑')
             QApplication.sendEvent(editor, event); QTest.keyClick(editor, Qt.Key_Return); pump(.3)
             expected = page._cue_lookup[cue.id].text
             check('Chinese commit reaches actual cue', '实际识别后中文编辑' in expected)
+            if config.get('bilingual'):
+                from ..studio.studio_bilingual import set_manual_translation, apply_display
+                from ..caption_style.bilingual_layout import translation_for_cue, settings_from_state
+                translation = 'Mac bilingual subtitle verification.'
+                check('manual translation enters normal undoable edit', set_manual_translation(page, cue.id, translation))
+                apply_display(page, mode='bilingual', order='translation_first')
+                pump(.5)
+                check('bilingual display mode selected', settings_from_state(page.project.studio_state).mode == 'bilingual')
+                preview(page, 'bilingual')
+                window.grab().save(str(out/'01-bilingual-preview.png'))
             from ..timeline.studio_edit_sequence import projected_cues, sequence_of
             import copy
             def signature():
@@ -337,6 +370,10 @@ def start(window, out):
             window.open_studio_project(target, mode='edit', source='home_release_reopen')
             wait(lambda: page.project is not None and cue.id in page._cue_lookup and page._readiness.ready, 90, 'normal reopen completes')
             check('Chinese edit survives save and reopen', page._cue_lookup[cue.id].text == expected)
+            if config.get('bilingual'):
+                check('manual translation survives save and reopen',
+                      translation_for_cue(page.project.generation_metadata.get('translations',{}),cue.id)==translation)
+                check('bilingual mode survives reopen',settings_from_state(page.project.studio_state).mode=='bilingual')
             check('cut captions survive save and reopen', signature()==before and len(sequence_of(page.project).segments)==3)
             window.grab().save(str(out/'02-recognized-edited-reopened.png'))
             preview(page, 'reopened')
@@ -347,6 +384,8 @@ def start(window, out):
             ui.subtitle_custom_directory.setText(str(export_root))
             ui.subtitle_destination_modes['custom'].setChecked(True)
             for control in ui.subtitle_format_checks.values(): control.setChecked(True)
+            if config.get('bilingual'):
+                for control in ui.subtitle_language_checks.values(): control.setChecked(False)
             ui.subtitle_speaker_modes['combined'].setChecked(True)
             QTest.mouseClick(ui.subtitle_export_button,Qt.LeftButton);pump(.3)
             artifacts=ui._last_subtitle_artifacts
@@ -356,9 +395,19 @@ def start(window, out):
             from ..exports.studio_subtitle_export import verify_subtitle_artifact
             expected_project=copy.copy(page.project)
             expected_project.cues=projected_cues(page.project, domain='timeline')
-            verification=[verify_subtitle_artifact(a,expected_project) for a in artifacts]
+            verification=[verify_subtitle_artifact(a,expected_plain_bilingual_project(expected_project,a.format)
+                          if config.get('bilingual') else expected_project) for a in artifacts]
             result['subtitle_verification']=[asdict(row) for row in verification]
             check('GUI subtitle files parse with expected text and timing',all(row.valid for row in verification))
+            if config.get('bilingual'):
+                for name,control in ui.subtitle_format_checks.items(): control.setChecked(name=='srt')
+                for name,control in ui.subtitle_language_checks.items(): control.setChecked(name=='bilingual')
+                QTest.mouseClick(ui.subtitle_export_button,Qt.LeftButton);pump(.3)
+                bilingual_artifacts=ui._last_subtitle_artifacts
+                check('bilingual SRT includes both manually edited texts',
+                      len(bilingual_artifacts)==1 and translation in bilingual_artifacts[0].path.read_text('utf-8-sig')
+                      and expected in bilingual_artifacts[0].path.read_text('utf-8-sig'))
+                result['bilingual_subtitle_artifacts']=[str(a.path) for a in bilingual_artifacts]
             ui.directory.setText(str(export_root));ui.resolution.setCurrentIndex(ui.resolution.findData((640,360)))
             ui.export_range.setCurrentIndex(ui.export_range.findData('full'))
             destination=ui.export_target().full_path

@@ -65,7 +65,7 @@ def test_new_api_presets_registered():
     assert ASR_API_PRESETS["azure"]["protocol"] == "azure_transcription"
     assert ASR_API_PRESETS["qwen31_filetrans"]["model"] == "qwen-audio-3.1-asr-flash-filetrans"
     assert ASR_API_PRESETS["qwen31_filetrans"]["protocol"] == "dashscope_filetrans"
-    assert ASR_API_PRESETS["openrouter_word"]["model"] == ""  # No unverified MAI 2.1 ID.
+    assert ASR_API_PRESETS["openrouter_word"]["model"] == "microsoft/mai-transcribe-2"  # 2026-10-25: no MAI 2.1 exists.
     assert "dashscope_qwen_audio" not in ASR_API_PRESETS
     assert "dashscope" not in ASR_API_PRESETS
     by_key = {model.key: model for model in MODELS}

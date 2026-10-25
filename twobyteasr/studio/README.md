@@ -47,6 +47,7 @@
 | 工具列排版 | `studio_toolbar_layout.py` |
 | 批量替換、AI 清理、應用術語庫（三個視窗共用預覽與套用） | `studio_find_replace.py`、`studio_text_tools.py` |
 | 開啟工程後的「就緒」等待與首幀 | `studio_readiness.py` |
+| 只重新識別入點到出點這一段（右鍵選單、彈窗範圍模式、完成後整段替換） | `studio_range_recognition.py`；規則在 `recognition/range_recognition.py`，撤銷指令在 `timeline/range_replace.py` |
 
 ## 不能破壞的事
 

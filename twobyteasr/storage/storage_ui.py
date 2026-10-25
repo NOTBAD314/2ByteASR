@@ -319,7 +319,10 @@ class StoragePanel(QWidget):
             old,new=edit.text(),str(get_runtime_paths().model_root);edit.setText(new)
             # The move already saved it: closing the dialog must not ask to save it again.
             saved=getattr(dialog,'_saved_values',None)
-            if isinstance(saved,tuple) and saved and isinstance(saved[0],tuple):
+            accept_value=getattr(dialog,'accept_external_value',None)
+            if callable(accept_value):
+                accept_value(edit)
+            elif isinstance(saved,tuple) and saved and isinstance(saved[0],tuple):
                 dialog._saved_values=(tuple((name,new if name==edit.objectName() and text==old else text)
                                             for name,text in saved[0]),*saved[1:])
         workshop=existing_page(self.owner,'workshop')

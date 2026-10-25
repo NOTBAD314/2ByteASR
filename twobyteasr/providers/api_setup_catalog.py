@@ -131,6 +131,9 @@ class ProviderGuide:
     free_trial: bool = False
     after_note: str = ''
     walk: tuple = ()
+    # 2026-10-25: 'cn' / 'intl' for the entry offered on two official sites
+    # (千问AI平台 / Qwen Cloud); the setup dialog switches between them.
+    site_variant: str = ''
 
     @property
     def name(self) -> str:
@@ -215,7 +218,7 @@ BAILIAN_ACCOUNT = StepText('account', lines=('用手机号注册阿里云账号�
 
 ASR_GUIDES = (
     ProviderGuide(
-        'qwen_cloud_filetrans', 'asr', 'Qwen Cloud（Qwen 官方 API）· 录音文件识别',
+        'qwen_cloud_filetrans', 'asr', 'Qwen Cloud（Qwen 官方国际站）· 录音文件识别',
         '云端识别：文字与字/词级时间（Qwen-Audio-3.1 另有说话人），不需要显卡。'
         '正式使用还需要你自己的 OSS 私有存储（阿里云国际站，设置一次）。',
         'qwen-cloud-filetrans.zh-CN.md',
@@ -254,10 +257,11 @@ ASR_GUIDES = (
              '单价见官方模型页（2026-10-13 核对）。用自己的 OSS 时另有很少的存储与流量费用（按阿里云国际站 OSS 价格）。',
         needs_storage=True,
         account_note='需要 Qwen Cloud 账号（home.qwencloud.com，用阿里云国际账号登录）；正式使用另需同一国际账号下的 OSS。'
-                     'Qwen Cloud 的 Key 与阿里云百炼（中国站）的 Key 不能互换；Qwen 官网 qwen.ai 的聊天登录也不能用来调用识别接口。',
+                     'Qwen Cloud 的 Key 与千问AI平台（中国站）、阿里云百炼的 Key 都不能互换；'
+                     'Qwen 官网 qwen.ai 的聊天登录也不能用来调用识别接口。',
         status_note='代码与离线测试已完成；本机没有 Qwen Cloud 账号，真实服务尚未验证。',
         short_title='Qwen Cloud 录音文件识别', site='Qwen 官方 API', minutes=15, money='补全付款信息后有免费额度',
-        tag='另需国际站 OSS',
+        tag='另需国际站 OSS', site_variant='intl',
         walk=(StepText('account', lines=('点右上角“Get Started”，', '用阿里云国际账号登录。'),
                        shot=Shot('qwencloud-1-home.jpg', (0.855, 0.028, 0.124, 0.075), 'https://home.qwencloud.com/',
                                  '2026-10-18')),
@@ -426,10 +430,10 @@ ASR_GUIDES = (
                                  'https://developers.openai.com/api/docs/quickstart', '2026-10-18')),)),
     ProviderGuide(
         # 2026-10-14: there is no "MAI 2.1" transcription model (mai-voice-2.1
-        # is text-to-speech); the current MAI-Transcribe-2 id is still refused
-        # by 兔白 (KNOWN_ISSUES), so the title no longer names MAI.
+        # is text-to-speech). 2026-10-25: MAI-Transcribe 2 is accepted again
+        # and preset; one real call returned word times and two speakers.
         'openrouter_word', 'asr', 'OpenRouter 语音转文字（进阶）',
-        '经 OpenRouter 转给第三方服务商的转写模型。兔白目前拒绝 MAI-Transcribe 2；其他模型兔白未实测。',
+        '经 OpenRouter 调用的转写模型，预设微软 MAI-Transcribe 2：字级时间、区分说话人。也可以填其他模型 ID（兔白未实测）。',
         'openrouter.zh-CN.md',
         links=(Link('OpenRouter API Key 页面', 'https://openrouter.ai/keys', needs_login=True),
                Link('OpenRouter 官网（注册 / 登录）', 'https://openrouter.ai/'),
@@ -440,14 +444,17 @@ ASR_GUIDES = (
                Link('错误码', 'https://openrouter.ai/docs/api_reference/errors-and-debugging')),
         fields=(Field('api_key', 'API Key', _KEY_HELP + '在 openrouter.ai/keys 创建，建议设额度上限。', '（整串贴上）',
                       secret=True, hint='在 OpenRouter 的 Keys 页面创建，建议设额度上限。'),
-                Field('model', '模型 ID', '从 OpenRouter 语音转文字模型列表复制“厂商/模型”格式的 ID；目前不能填 '
-                      'microsoft/mai-transcribe-2（兔白会拒绝）；microsoft/mai-transcribe-1.5 拿不到时间。',
-                      'openai/whisper-large-v3-turbo', hint='从 OpenRouter 语音转文字模型列表复制 ID（兔白未实测）。')),
+                Field('model', '模型 ID', '已预填 microsoft/mai-transcribe-2（MAI-Transcribe 2），一般不用改。'
+                      '也可以从 OpenRouter 语音转文字模型列表复制其他“厂商/模型”格式的 ID（兔白未实测）；'
+                      'microsoft/mai-transcribe-1.5 拿不到时间。',
+                      'microsoft/mai-transcribe-2', prefilled='microsoft/mai-transcribe-2',
+                      hint='已预填 MAI-Transcribe 2，一般不用改。')),
         uploads='识别时把音频分段上传到 OpenRouter（openrouter.ai）及其转发的模型提供方。',
-        cost='按模型单价（美元）：mai-transcribe-1.5 $0.36/小时、whisper-large-v3-turbo 约 $0.012/小时；'
+        cost='按模型单价（美元）：mai-transcribe-2 $0.10/小时、mai-transcribe-1.5 $0.36/小时、whisper-large-v3-turbo 约 $0.012/小时；'
              '买额度另收 5.5% 平台费（2026-10-14 核对，以账单为准）。',
         account_note='需要 OpenRouter 账号并先充值（转写模型没有免费额度）；Key 可设额度上限。',
-        status_note='兔白未用真实密钥实测；不建议一般使用者选择。', advanced_only=True,
+        status_note='2026-10-25 用真实 Key 识别过一段 20 秒的中英两人录音：MAI-Transcribe 2 返回字级时间并分出两位说话人。其他模型兔白未实测。',
+        advanced_only=True,
         site='OpenRouter', minutes=5, money='需先充值',
         walk=(StepText('account', shot=Shot('openrouter-1-home.jpg', (0.888, 0.011, 0.079, 0.06), 'https://openrouter.ai/',
                                             '2026-10-18')),)),
@@ -597,10 +604,102 @@ ALL_GUIDES = ASR_GUIDES + TEXT_GUIDES
 # 录音文件识别 entries: audio is handed over by URL (official temporary upload or own OSS).
 FILETRANS_GUIDES = frozenset({'qwen_cloud_filetrans', 'qwen31_filetrans'})
 
+# 2026-10-25: the official Qwen API on its mainland site, 千问AI平台. It is the
+# same entry as Qwen Cloud (same key, models and protocol, different host,
+# account and keys): the setup dialog switches between the two, the saved
+# address says which one is in use, and the Simplified Chinese interface starts
+# here. Not in ALL_GUIDES, so the provider list keeps one row for both.
+# Sources (checked 2026-10-25): https://platform.qianwenai.com/docs/api-reference/preparation/api-key ,
+# .../speech-recognition/fun-asr-recording/restful-api , .../preparation/error-messages ,
+# https://platform.qianwenai.com/docs/developer-guides/speech/speech-to-text-models
+_QWEN_CLOUD = next(g for g in ASR_GUIDES if g.key == 'qwen_cloud_filetrans')
+QIANWEN_CHECKED = '2026-10-25'
+QIANWEN_FILETRANS_GUIDE = ProviderGuide(
+    'qwen_cloud_filetrans', 'asr', '千问AI平台（Qwen 官方中国站）· 录音文件识别',
+    '云端识别：文字与字/词级时间（Qwen-Audio-3.1 另有说话人），不需要显卡。'
+    '正式使用还需要你自己的阿里云 OSS 私有存储（设置一次）。',
+    'qianwen-filetrans.zh-CN.md',
+    links=(Link('千问AI平台控制台（注册 / 登录）', 'https://platform.qianwenai.com/home', checked=QIANWEN_CHECKED),
+           Link('API Key 页面', 'https://platform.qianwenai.com/home/api-keys', needs_login=True, checked=QIANWEN_CHECKED),
+           Link('账单：实名认证与充值', 'https://platform.qianwenai.com/home/billing/overview', needs_login=True,
+                checked=QIANWEN_CHECKED),
+           Link('新用户体验额度', 'https://www.qianwenai.com/benefits', checked=QIANWEN_CHECKED),
+           Link('获取 API Key（官方说明）', 'https://platform.qianwenai.com/docs/api-reference/preparation/api-key',
+                checked=QIANWEN_CHECKED),
+           Link('语音识别模型与限制', 'https://platform.qianwenai.com/docs/developer-guides/speech/speech-to-text-models',
+                checked=QIANWEN_CHECKED),
+           Link('模型价格', 'https://platform.qianwenai.com/pricing/api', checked=QIANWEN_CHECKED),
+           Link('录音文件识别 API',
+                'https://platform.qianwenai.com/docs/api-reference/speech-recognition/fun-asr-recording/restful-api',
+                checked=QIANWEN_CHECKED),
+           Link('错误码说明', 'https://platform.qianwenai.com/docs/api-reference/preparation/error-messages',
+                checked=QIANWEN_CHECKED),
+           Link('OSS 控制台', 'https://oss.console.aliyun.com/', needs_login=True, checked=QIANWEN_CHECKED),
+           Link('RAM 访问控制（创建 AccessKey）', 'https://ram.console.aliyun.com/', needs_login=True, checked=QIANWEN_CHECKED),
+           Link('临时上传的官方限制', TEMPORARY_UPLOAD_SOURCE, checked=QIANWEN_CHECKED)),
+    fields=(Field('api_key', 'API Key', _KEY_HELP + '在千问AI平台的 API Key 页面点“创建 API Key”生成，sk-ws- 开头'
+                  '（早期创建的是 sk- 开头）；完整密钥只显示一次。不要用 Token Plan 订阅专用 Key（sk-sp- 开头），'
+                  '它不能做录音文件识别。', 'sk-ws-…', secret=True,
+                  hint='在千问AI平台的 API Key 页面创建，只显示一次（不要用 sk-sp- 开头的 Token Plan Key）。'),
+            Field('url', '服务地址', '已预填千问AI平台官方地址（北京），一般不用改。',
+                  'https://maas.qianwenaiapi.com', prefilled='https://maas.qianwenaiapi.com', advanced=True,
+                  hint='已预填官方地址（北京），一般不用改。'),
+            Field('filetrans_upload', '音频交给服务商的方式', _UPLOAD_HELP, choices=UPLOAD_CHOICES,
+                  prefilled=UPLOAD_OWN_OSS, hint=_UPLOAD_HINT))
+    + _oss_fields('cn-beijing（华北2 北京，与千问AI平台服务同地）'),
+    models=_QWEN_CLOUD.models,
+    uploads='识别时把本次任务的音频（16 kHz 单声道 WAV，只有声音，不含画面）交给千问AI平台：正式方式是先传到你的 OSS '
+            '私有 Bucket，生成限时签名链接交给服务商读取，取得结果后删除；选了“仅供试用”的临时上传时，'
+            '音频上传到服务商临时空间，48 小时后由服务商删除。',
+    cost='按音频用量计费，以千问AI平台账单为准；新用户注册有体验额度（哪些模型可用以控制台为准）。'
+         '单价见官方定价页。用自己的 OSS 时另有很少的存储与流量费用。',
+    needs_storage=True,
+    account_note='需要千问AI平台账号（platform.qianwenai.com，用阿里云账号或手机号登录）；正式使用另需阿里云 OSS。'
+                 '千问AI平台的 Key 与 Qwen Cloud（国际站）、阿里云百炼的 Key 都不能互换；'
+                 '千问 App 的聊天登录也不能用来调用识别接口。',
+    status_note='接口与 Qwen Cloud 相同，代码与离线测试已完成；本机没有千问AI平台账号，真实服务尚未验证。',
+    short_title='千问AI平台 录音文件识别', site='Qwen 官方 API', minutes=15, money='新用户有体验额度',
+    tag='另需阿里云 OSS', site_variant='cn',
+    walk=(StepText('account', lines=('点右上角“登录”，', '用手机号或阿里云账号登录。'),
+                   shot=Shot('qianwen-1-home.jpg', (0.855, 0.024, 0.124, 0.08), 'https://platform.qianwenai.com/home',
+                             '2026-10-25')),
+          StepText('topup', title='认证与充值', label='充值',
+                   lines=('新用户先有体验额度；', '用完后完成实名认证并充值。'), action='打开账单页'),
+          StepText('key', lines=('打开 API Key 页面，', '点“创建 API Key”新建一把。'),
+                   note='不要用 sk-sp- 开头的 Token Plan Key', note_kind='warn'),
+          StepText('storage', lines=('在阿里云 OSS 建一个私有 Bucket，', '再为它建一把 AccessKey。'))))
+QWEN_SITE_GUIDES = {'cn': QIANWEN_FILETRANS_GUIDE, 'intl': _QWEN_CLOUD}
+QWEN_SITES = (('cn', '中国站（千问AI平台）'), ('intl', '国际站（Qwen Cloud）'))
 
-def guide_for(key: str, kind: str = 'asr') -> ProviderGuide | None:
+
+def qwen_site_for(url: str = '', language: str | None = None) -> str:
+    """'cn' or 'intl' for the Qwen entry: a saved address decides, otherwise
+    the interface language (Simplified Chinese starts on 千问AI平台)."""
+    if str(url or '').strip():
+        from .api_endpoints import EndpointInputError, parse_dashscope_address
+        try:
+            address = parse_dashscope_address(url)
+        except EndpointInputError:
+            address = None
+        if address is not None and address.qwen_site:
+            return address.qwen_site
+        if address is not None and address.host == 'dashscope-intl.aliyuncs.com':
+            return 'intl'
+    if language is None:
+        try:
+            from ..i18n import current_language
+            language = current_language()
+        except Exception:
+            language = 'zh'
+    return 'cn' if language == 'zh' else 'intl'
+
+
+def guide_for(key: str, kind: str = 'asr', *, url: str = '') -> ProviderGuide | None:
+    """The guide of one entry; ``url`` (a saved address) picks the Qwen site."""
     if kind == 'text' and key in {'grok_account', 'codex_cli', 'antigravity'}:
         key = 'cli_accounts'
+    if kind == 'asr' and key == 'qwen_cloud_filetrans' and url:
+        return QWEN_SITE_GUIDES[qwen_site_for(url, language='')]
     return next((g for g in ALL_GUIDES if g.key == key and g.kind == kind), None)
 
 

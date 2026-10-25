@@ -373,6 +373,15 @@ class ApiSetupDialog(SpringDialog):
         self.site_label = QLabel()
         self.site_label.setObjectName('apiSetupSite')
         names.addWidget(self.site_label)
+        # 2026-10-25: 千问AI平台 (中国站) / Qwen Cloud (国际站) are one entry.
+        self._qwen_site = None
+        self.qwen_site_box = QComboBox()
+        self.qwen_site_box.setObjectName('apiSetupQwenSite')
+        for site, label in catalog.QWEN_SITES:
+            self.qwen_site_box.addItem(tr(label), site)
+        self.qwen_site_box.setVisible(False)
+        self.qwen_site_box.currentIndexChanged.connect(self._choose_qwen_site)
+        names.addWidget(self.qwen_site_box)
         names.addStretch(1)
         about.addLayout(names)
         self.facts = QHBoxLayout()
@@ -502,7 +511,24 @@ class ApiSetupDialog(SpringDialog):
     # ------------------------------------------------------- the provider
     def _guides(self, kind: str):
         source = catalog.ASR_GUIDES if kind == 'asr' else catalog.TEXT_GUIDES
-        return [guide for guide in source if self.show_advanced or not guide.advanced_only]
+        return [catalog.QWEN_SITE_GUIDES[self._current_qwen_site()] if guide.site_variant else guide
+                for guide in source if self.show_advanced or not guide.advanced_only]
+
+    def _current_qwen_site(self) -> str:
+        """The Qwen site shown: chosen here, else the saved address, else the interface language."""
+        if self._qwen_site is None:
+            settings = self.host.settings() or {}
+            models = settings.get('models', {}) if isinstance(settings, dict) else {}
+            saved = models.get('qwen_asr_api_provider') == 'qwen_cloud_filetrans'
+            self._qwen_site = catalog.qwen_site_for(str(models.get('qwen_asr_api_url') or '') if saved else '')
+        return self._qwen_site
+
+    def _choose_qwen_site(self, index: int) -> None:
+        site = self.qwen_site_box.itemData(index)
+        if not site or site == self._qwen_site or self._guide is None or not self._guide.site_variant:
+            return
+        self._qwen_site = site
+        self._show(catalog.QWEN_SITE_GUIDES[site])
 
     def _fill_provider_menu(self) -> None:
         """“换一家” (2026-10-18): the provider list only when asked for, with a few honest words each."""
@@ -551,6 +577,8 @@ class ApiSetupDialog(SpringDialog):
         guide = catalog.guide_for(key, kind)
         if guide is None:
             return
+        if guide.site_variant:
+            guide = catalog.QWEN_SITE_GUIDES[self._current_qwen_site()]
         if guide.advanced_only:
             self.show_advanced = True
         self._show(guide)
@@ -562,6 +590,11 @@ class ApiSetupDialog(SpringDialog):
         self.name_label.setText(tr(guide.name))
         self.name_label.setToolTip(ui_literal(guide.title + '\n' + guide.role))
         self.site_label.setText(' · '.join(str(tr(part)) for part in (guide.site, KIND_LABELS[guide.kind]) if part))
+        self.qwen_site_box.setVisible(bool(guide.site_variant))
+        if guide.site_variant:
+            self.qwen_site_box.blockSignals(True)
+            self.qwen_site_box.setCurrentIndex(max(0, self.qwen_site_box.findData(guide.site_variant)))
+            self.qwen_site_box.blockSignals(False)
         while self.facts.count():
             item = self.facts.takeAt(0)
             widget = item.widget()
@@ -1125,6 +1158,8 @@ class ApiSetupDialog(SpringDialog):
         models = settings.get('models', {}) if isinstance(settings, dict) else {}
         same_provider = models.get('qwen_asr_api_provider') == guide.key
         current_url = str(models.get('qwen_asr_api_url') or '') if same_provider else ''
+        if guide.site_variant and current_url and catalog.qwen_site_for(current_url, language='') != guide.site_variant:
+            current_url = ''
         main, more = self._main_form, self._more_form
         if guide.models:
             combo = QComboBox()
@@ -1298,11 +1333,18 @@ class ApiSetupDialog(SpringDialog):
             # Nothing set up yet: start on the regular route (own OSS), never on the trial upload.
             return catalog.UPLOAD_OWN_OSS if mode == catalog.UPLOAD_MISSING else mode
         if spec.key == 'model':
-            return str(models.get('qwen_asr_api_model') or '') if models.get('qwen_asr_api_provider') == guide.key else ''
+            # A saved model of this provider, else the prefilled one (2026-10-25: OpenRouter's
+            # MAI-Transcribe 2 showed an empty box when nothing, or an emptied model, was saved).
+            saved = str(models.get('qwen_asr_api_model') or '') if models.get('qwen_asr_api_provider') == guide.key else ''
+            return saved or spec.prefilled
         if guide.key == 'spark_asr_v2' and spec.key == 'app_id':
             # AppID is not secret: show the saved one so a check works without re-pasting.
             return self._spark_saved(current_url).get('app_id', '')
         return spec.prefilled
+
+    @staticmethod
+    def _prefilled_url(guide) -> str:
+        return next((spec.prefilled for spec in guide.fields if spec.key == 'url'), '')
 
     def _spark_saved(self, current_url='') -> dict:
         try:
@@ -1334,7 +1376,7 @@ class ApiSetupDialog(SpringDialog):
             if self._guide.key == 'mosi_moss_pro':
                 info = describe_mosi(self._value('url'))
             elif self._guide.key == 'qwen_cloud_filetrans':
-                info = describe_dashscope(self._value('url') or 'https://maas.qwencloudapi.com')
+                info = describe_dashscope(self._value('url') or self._prefilled_url(self._guide))
             else:
                 info = describe_dashscope(self._value('api_host'))
         except EndpointInputError as exc:
@@ -1378,9 +1420,10 @@ class ApiSetupDialog(SpringDialog):
                 values['oss_endpoint'] = catalog.oss_endpoint_for_region(values.get('oss_region', ''))
         elif guide.key == 'qwen_cloud_filetrans':
             from .api_endpoints import EndpointInputError, parse_dashscope_address
-            address = parse_dashscope_address(values.get('url') or 'https://maas.qwencloudapi.com')
+            address = parse_dashscope_address(values.get('url') or self._prefilled_url(guide))
             if not (address.qwen_cloud or address.host == 'dashscope-intl.aliyuncs.com'):
-                raise EndpointInputError('这里只接受 Qwen Cloud 的地址（maas.qwencloudapi.com 或 dashscope-intl.aliyuncs.com）。'
+                raise EndpointInputError('这里只接受千问AI平台或 Qwen Cloud 的地址（maas.qianwenaiapi.com、'
+                                         'maas.qwencloudapi.com 或 dashscope-intl.aliyuncs.com）。'
                                          '阿里云百炼的地址请到“阿里云百炼 · 录音文件识别”填写。')
             values['url'] = address.filetrans_url
         elif guide.key == 'mosi_moss_pro':

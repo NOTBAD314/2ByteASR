@@ -26,12 +26,12 @@ class PreparedPixels:
     def __del__(self):
         # The actor callback retains this object until the immutable file has
         # been consumed. Eviction/close then removes only this owned leaf.
-        if self.raw_path is not None:
-            try:self.raw_path.unlink(missing_ok=True)
-            except OSError:pass
         if self.raw_lease is not None:
             try:self.raw_lease.__exit__(None, None, None)
             except Exception:pass
+        if self.raw_path is not None:
+            try:self.raw_path.unlink(missing_ok=True)
+            except OSError:pass
 
 
 def prepared_pixels(image, png, started, raw_folder=None):
@@ -119,7 +119,7 @@ class CaptionPixelCache(QObject):
                         page=(web.theme_key,width,height)
                         if loaded!=page:
                             service.live_set(web.html,width=width,height=height);loaded=page
-                        service.live_text(text=web.text,speaker=web.speaker,duration_ms=web.duration*1000,placement=web.placement)
+                        service.live_text(text=web.text,speaker=web.speaker,duration_ms=web.duration*1000,placement=web.placement, **({'translation':web.translation} if getattr(web,'translation','') else {}))
                         png=service.live_frame(cue_ms=0,stage_ms=snapshot.start_ms)
                         image=QImage.fromData(png)
                     if image.isNull():raise ValueError('Empty prepared caption raster')

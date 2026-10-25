@@ -262,7 +262,92 @@ def test_resubmit_evidence_names_the_segment_and_mosi_reason():
     assert "第 2 / 2 段（55:59–1:36:04）的 MOSI 任务（任务编号 t-9）执行失败，MOSI 没有说明原因" in finding.evidence[0]
 
 
+def test_content_review_block_is_its_own_cause_not_a_resubmit():
+    """2026-10-24 user report: MOSI's safety review stopped segment 2 of 5; the
+    report called it 「需要你确认后重新提交」 and advised 重试失败项."""
+    from twobyteasr.providers.cloud_api_worker import CONTENT_BLOCKED_ACTION, ERROR_MARKER, RESUBMIT_CATEGORIES
+    message = (RESUBMIT_CATEGORIES["content_blocked"] + " 第 2 / 5 段（21:16–41:46）的 MOSI 任务（任务编号 t-9）"
+               "被 MOSI 的内容安全审查拦下，没有返回这一段的字幕（MOSI 返回的原因：safety policy error；"
+               "safety guardrail blocked（17001，111111004））。")
+    marker = ERROR_MARKER + json.dumps({"category": "resubmit_needed", "message": message, "action": CONTENT_BLOCKED_ACTION,
+                                        "link": "", "code": "content_blocked", "resubmit": True}, ensure_ascii=False)
+    error = f"{message} {CONTENT_BLOCKED_ACTION} PRIMARY_API worker failed (exit 1): stdout: stderr: {marker} 已保存远端终态 FAILED"
+    data = with_settings(failed(error, stage="在线 ASR API 主力转写（MOSS Pro 云端 · moss-transcribe-diarize-pro）"),
+                         models={"primary_asr_backend": "api"})
+    diagnosis = diagnose_run(DiagnosisInput(report=data, ai_ready=True))
+    found = [f.rule_id for f in diagnosis.findings]
+    assert found[0] == "cloud_asr_content_blocked" and "cloud_asr_resubmit" not in found
+    assert "第 2 / 5 段（21:16–41:46）" in diagnosis.findings[0].evidence[0]
+    assert "pick_primary" in diagnosis.findings[0].issue.actions and "retry" not in diagnosis.findings[0].issue.actions
+
+
+def test_content_review_block_in_a_084_report_is_recognized():
+    """The error text of the user's 0.8.4 report (raw MOSI JSON, remote_terminal)."""
+    error = ('上次提交的云端识别任务已结束但没有成功（失败或已取消）。 第 2 / 5 段（21:16–41:46）的 MOSI 任务'
+             '（任务编号 bdcd3aa0-2ebf-468d-9fc6-b8243315ed48）执行失败，MOSI 返回的原因：{"error_code": 17001, '
+             '"error_msg": "safety policy error", "internal_error_code": 111111004, "internal_error_msg": '
+             '"safety guardrail blocked"}。 要再试，可在完成页按“重试失败项”并确认重新提交；重新提交会再次上传并可能再次计费。')
+    found = ids(with_settings(failed(error, stage="在线 ASR API 主力转写（MOSS Pro 云端）"),
+                              models={"primary_asr_backend": "api"}), ai_ready=True)
+    assert found[0] == "cloud_asr_content_blocked" and "cloud_asr_resubmit" not in found
+
+
+def _gap_event(**overrides):
+    row = {"event": "cloud_asr_gap_fill", "ranges": [[1276.0, 2506.0]], "language": "en", "filled": True, "rows": 212,
+           "backend": "qwen_local", "model": "Qwen3-ASR 1.7B", "resplittable": True,
+           "gaps": [{"start": 1276.0, "end": 2506.0, "segment": [2, 5], "task_id": "t-2", "resplittable": True}]}
+    row.update(overrides)
+    return row
+
+
+def test_a_filled_content_review_gap_is_a_finished_task_with_a_note():
+    """2026-10-24: a blocked range no longer fails the task; it is filled locally."""
+    data = with_settings(report(events=report()["events"] + [_gap_event()]), models={"primary_asr_backend": "api"})
+    diagnosis = diagnose_run(DiagnosisInput(report=data, ai_ready=True))
+    finding = diagnosis.findings[0]
+    assert finding.rule_id == "cloud_asr_gap_filled" and finding.issue.severity == "problem"
+    assert specific_text(finding, "zh") == "被拦下的时间：21:16–41:46；补识别用的是本地 Qwen3-ASR 1.7B。"
+    assert finding.issue.actions == ("studio", "mosi_resplit")
+
+
+@pytest.mark.parametrize("reason, why", [("no_local_model", "这台电脑上没有能补这段语言的本地主力模型。"),
+                                         ("fill_failed", "本地模型补识别失败。")])
+def test_an_unfilled_content_review_gap_names_the_range_and_why(reason, why):
+    event = _gap_event(filled=False, rows=0, backend="", model="", reason=reason)
+    data = with_settings(report(events=report()["events"] + [event]), models={"primary_asr_backend": "api"})
+    diagnosis = diagnose_run(DiagnosisInput(report=data, ai_ready=True))
+    finding = diagnosis.findings[0]
+    assert finding.rule_id == "cloud_asr_gap_unfilled"
+    assert specific_text(finding, "zh") == "被拦下的时间：21:16–41:46。" + why
+    assert finding.issue.actions == ("model_workshop", "mosi_resplit")
+    assert specific_text(finding, "en").endswith(".") and "21:16–41:46" in specific_text(finding, "en")
+
+
+@pytest.mark.parametrize("filled, expected", [(False, False), (True, True)])
+def test_a_transcript_stopping_at_an_unfilled_gap_is_the_gap_not_a_cut_off(filled, expected):
+    early = {"timestamp": 1275.4, "category": "主力转写提前结束", "detail": "api 到 1275.40s，FireRedVAD 人声到 3600.00s",
+             "priority": 3}
+    event = _gap_event(filled=filled, reason="" if filled else "no_local_model")
+    data = with_settings(report(events=report()["events"] + [event], review_items=[early]),
+                         models={"primary_asr_backend": "api"})
+    found = ids(data, ai_ready=True)
+    assert ("primary_incomplete" in found) is expected
+    assert found[0] == ("cloud_asr_gap_filled" if filled else "cloud_asr_gap_unfilled") or "primary_incomplete" in found[:1]
+
+
+def test_a_task_failed_by_a_block_it_could_not_fill_keeps_the_failure_cause():
+    from twobyteasr.providers.cloud_api_worker import RESUBMIT_CATEGORIES
+    error = RESUBMIT_CATEGORIES["content_blocked"] + " 第 1 / 1 段的 MOSI 任务被 MOSI 的内容安全审查拦下。"
+    event = _gap_event(filled=False, rows=0, backend="", model="", reason="no_local_model")
+    data = with_settings(failed(error, stage="在线 ASR API 主力转写（MOSS Pro 云端）", events=[event]),
+                         models={"primary_asr_backend": "api"})
+    found = ids(data, ai_ready=True)
+    assert found[0] == "cloud_asr_content_blocked" and "cloud_asr_gap_unfilled" not in found
+    assert "mosi_resplit" in ISSUES["cloud_asr_content_blocked"].actions
+
+
 @pytest.mark.parametrize("error, issue", [
+    ("MOSI 的内容安全审查拦下了这段音频（HTTP 403：safety_guardrail_blocked），没有受理。", "cloud_asr_content_blocked"),
     ('[2BYTEASR_API_ERROR] {"category": "balance", "message": "x"}', "cloud_asr_quota"),
     ('[2BYTEASR_API_ERROR] {"category": "key", "message": "x"}', "cloud_asr_auth"),
     ('[2BYTEASR_API_ERROR] {"category": "resubmit_needed", "resubmit": true}', "cloud_asr_resubmit"),

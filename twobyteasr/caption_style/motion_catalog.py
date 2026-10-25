@@ -426,16 +426,10 @@ def glyph_em(ch):
 
 
 def char_spans(text):
-    """Contiguous units: one per glyph cluster; spaces/newlines stay inert."""
-    spans, i = [], 0
-    while i < len(text):
-        j = i+1
-        while j < len(text) and (unicodedata.combining(text[j]) or text[j] in '‍️︎'
-                                 or (text[j-1] == '‍')):
-            j += 1
-        spans.append({'char_start': i, 'char_end': j})
-        i = j
-    return spans
+    """Use the same grapheme boundaries as text selection and saved marks."""
+    from .text_marks import boundaries
+    edges = boundaries(text)
+    return [{'char_start':a,'char_end':b} for a,b in zip(edges,edges[1:])]
 
 
 def geometry(text, units):

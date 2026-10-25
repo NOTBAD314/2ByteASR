@@ -55,15 +55,20 @@ class StudioProjectFlowMixin:
         self.show_project_hub(skip_dirty_guard=True)
 
     def _request_return_home(self) -> None:
-        if not self._confirm_leave_project("返回字幕识别前是否保存当前兔白字幕修改？"):
-            return
+        # Home is a page switch, not a project close. Keep the one live session
+        # (including undo, selection, scroll and edit position); library / open
+        # another project / application exit still own their dirty-save guards.
+        readiness = getattr(self, '_readiness', None)
+        if readiness is not None and readiness.active:
+            readiness.cancel()
+        self.video.set_paused(True)
         self._close_export_workspace()
-        self.show_project_hub(skip_dirty_guard=True)
+        self._studio_trace('PROJECT_SUSPENDED', project_path=str(self.project_path or ''))
         self.return_requested.emit()
 
     @observed('project.close')
     def _close_project_session(self, reason: str = "") -> int:
-        """Unified A→Home/B boundary; services persist, project work does not."""
+        """Explicit project-close / replacement boundary; page services persist."""
         from time import perf_counter
 
         from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
@@ -334,13 +339,30 @@ class StudioProjectFlowMixin:
             save_state.setVisible(False)
 
     def dragEnterEvent(self, event) -> None:
+        from .studio_source_monitor import read_media_part
+        if read_media_part(event.mimeData()) is not None:
+            # A media-pool source (2026-10-25): accepted lane by lane in dragMoveEvent.
+            event.acceptProposedAction()
+            return
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         if any(path.suffix.lower() in STUDIO_MEDIA_SUFFIXES | {PROJECT_SUFFIX, ".srt", ".ass", ".xml"} for path in paths):
             event.acceptProposedAction()
         else:
             event.ignore()
 
+    def dragMoveEvent(self, event) -> None:
+        from .studio_source_monitor import media_part_drag_move
+        if not media_part_drag_move(self, event):
+            super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:
+        self.timeline.set_media_drop_preview(None)
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event) -> None:
+        from .studio_source_monitor import media_part_drop
+        if media_part_drop(self, event):
+            return
         paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         projects = [path for path in paths if path.suffix.lower() == PROJECT_SUFFIX]
         media = [path for path in paths if path.suffix.lower() in STUDIO_MEDIA_SUFFIXES]

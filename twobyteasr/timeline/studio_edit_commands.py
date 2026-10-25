@@ -291,7 +291,7 @@ def _inherit_clip_lineage(before: EditSequence, after: EditSequence) -> None:
 
 
 def _replace_primary_sequence(project, after, label, *, page=None, locked_speakers=(),
-                              playhead_after=0, restore_stash=False):
+                              playhead_after=0, restore_stash=False, primary_track_id="", before_sequence=None):
     """Independent captions: one atomic clip edit moving V1, linked audio and captions."""
     from .studio_caption_timeline import (
         locked_caption_speakers, remap_captions_to_sequence,
@@ -300,8 +300,13 @@ def _replace_primary_sequence(project, after, label, *, page=None, locked_speake
     from .studio_media_pool import sync_primary_video_track_from_sequence
 
     working = _working_copy(project)
+    if primary_track_id:
+        working.studio_state['primary_video_track_id']=primary_track_id
     sequence = sequence_of(working)
-    before = copy.deepcopy(sequence)
+    before = copy.deepcopy(before_sequence if before_sequence is not None else sequence)
+    sequence.source_path=after.source_path
+    sequence.source_duration_ms=after.source_duration_ms
+    sequence.video_track_locked=after.video_track_locked
     sequence.segments = copy.deepcopy(after.segments)
     sequence.segment_lineage = copy.deepcopy(after.segment_lineage)
     sequence.empty_timeline = not sequence.segments
@@ -312,7 +317,7 @@ def _replace_primary_sequence(project, after, label, *, page=None, locked_speake
     locked = locked_caption_speakers(project, page, locked_speakers)
     skipped, dropped = remap_captions_to_sequence(working, before, sequence, locked=locked)
     if restore_stash:
-        restore_generated_edit_captions(working, project.media.path)
+        restore_generated_edit_captions(working, after.source_path)
     else:
         stash_generated_edit_captions(working, dropped)
     command = _finalize_edit(project, working, label, page=page, playhead_after=playhead_after,
@@ -340,23 +345,45 @@ def generate_edit_command(
     from .studio_edit_sequence import MIN_SEGMENT_MS
 
     current = sequence_of(project)
+    from .studio_edit_sequence import recording_sequence
+    from .studio_media_pool import primary_video_track_id
+    target_track_id,current_view=recording_sequence(project)
+    adopt=target_track_id!=primary_video_track_id(project)
     wanted = candidates if candidates is not None else accepted_candidates(current)
     if not wanted:
         raise ValueError("剪辑候选箱是空的：先在候选上点「加入剪辑」")
-    duration = int(project.media.duration_ms or 0)
-    usable = [item for item in wanted
-              if min(duration or item.source_out_ms, item.source_out_ms) - max(0, item.source_in_ms) >= MIN_SEGMENT_MS]
+    from ..media.danmaku_binding import analysis_media
+    media = analysis_media(project)
+    duration = int(media.duration_ms or 0)
+    usable = [item for item in wanted if item.clip_range
+              and min(item.source_duration_ms or duration or item.source_out_ms, item.source_out_ms)
+              - max(0, item.source_in_ms) >= MIN_SEGMENT_MS]
     if len(usable) != len(wanted):
         raise ValueError("候选箱里有超出录播时长或过短的区间，未生成；请移除后重试")
-    after = sequence_from_candidates(project.media, wanted, locked=current.video_track_locked)
-    if _mapping_signature(after) == _mapping_signature(current):
+    after = sequence_from_candidates(media, wanted, locked=current.video_track_locked)
+    if not adopt and _mapping_signature(after) == _mapping_signature(current):
         return None
-    if _primary_video_locked(project):
+    if (current_view.video_track_locked if adopt else _primary_video_locked(project)):
         raise ValueError("主视频轨已锁定，未生成剪辑；请先解锁视频轨")
-    _inherit_clip_lineage(current, after)
+    _inherit_clip_lineage(current_view, after)
     after.clip_candidates = copy.deepcopy(current.clip_candidates)
     after.markers = copy.deepcopy(current.markers)
     after.danmaku_path = current.danmaku_path
+    if adopt:
+        from ..projects.studio_project import _normalized_media_source
+        from .studio_caption_timeline import KEY
+        paths={_normalized_media_source(c.source_path or media.path) for c in wanted}
+        receipts=(project.studio_state.get(KEY) or {}).get('instances') or {}
+        for cue in project.cues:
+            receipt=receipts.get(cue.id) or {}
+            owners={_normalized_media_source(row.get('source_path','')) for row in (receipt.get('source_spans') or [])
+                    if isinstance(row,dict) and row.get('source_path')}
+            if not owners:owners={_normalized_media_source(receipt.get('source_path') or project.media.path)}
+            if not owners<=paths:
+                raise ValueError("字幕来源与当前录播不一致，请先确认字幕归属后再生成。")
+        after.video_track_locked=current_view.video_track_locked
+        return _replace_primary_sequence(project,after,"根据候选生成剪辑",page=page,
+            locked_speakers=locked_speakers,primary_track_id=target_track_id,before_sequence=current_view)
     if independent_captions(project) and not project.generation_metadata.get("timeline_recognition"):
         # Captions live in project time here: they move with the cut through
         # source time (word-exact) in the same undo step as V1 and its audio.
@@ -380,7 +407,8 @@ def restore_full_sequence_command(
     from .studio_caption_timeline import STASH_KEY, independent_captions
 
     current = sequence_of(project)
-    after = identity_sequence(project.media)
+    from ..media.danmaku_binding import analysis_media
+    after = identity_sequence(analysis_media(project))
     after.video_track_locked = current.video_track_locked
     after.clip_candidates = copy.deepcopy(current.clip_candidates)
     after.markers = copy.deepcopy(current.markers)
@@ -431,22 +459,51 @@ def replace_candidates_command(
     candidates: list[HighlightCandidate],
     text: str = "更新剪辑候选",
     changed: ChangedCallback | None = None,
+    *, preserve_decisions: bool = False,
 ) -> EditSequenceCommand:
     sequence = copy.deepcopy(sequence_of(project))
     # 2026-09-19 P1：重新分析不得丢掉用户已做的取舍——同时间范围（重叠
     # 过半）的旧候选 status/origin 延续到新候选，未匹配的按新结果。
     def _overlap(a: HighlightCandidate, b: HighlightCandidate) -> bool:
-        shared = max(0, min(a.source_out_ms, b.source_out_ms) - max(a.source_in_ms, b.source_in_ms))
-        shorter = min(a.source_out_ms - a.source_in_ms, b.source_out_ms - b.source_in_ms)
+        ai=a.signal_in_ms if a.signal_in_ms is not None else a.source_in_ms
+        ao=a.signal_out_ms if a.signal_out_ms is not None else a.source_out_ms
+        bi=b.signal_in_ms if b.signal_in_ms is not None else b.source_in_ms
+        bo=b.signal_out_ms if b.signal_out_ms is not None else b.source_out_ms
+        shared = max(0, min(ao,bo)-max(ai,bi))
+        shorter = min(ao-ai,bo-bi)
         return shorter > 0 and shared * 2 >= shorter
 
-    for fresh in candidates:
-        old = next((item for item in sequence.clip_candidates if _overlap(item, fresh)), None)
-        if old is not None and old.status in {"accepted", "ignored"}:
+    fresh_items = copy.deepcopy(candidates)
+    if preserve_decisions:
+        from ..media.danmaku_binding import normalized_source
+        matched = set()
+        reconciled = []
+        for fresh in fresh_items:
+            old = next((item for item in sequence.clip_candidates
+                        if item.id == fresh.id or (
+                            normalized_source(item.source_path or sequence.source_path) == normalized_source(fresh.source_path)
+                            and _overlap(item, fresh))), None)
+            if old is None:
+                reconciled.append(fresh)
+                continue
+            if old.id in matched:
+                continue
+            matched.add(old.id)
+            fresh.id = old.id
             fresh.status = old.status
-            if old.origin == "manual":
-                fresh.origin = "manual"
-    sequence.clip_candidates = copy.deepcopy(candidates)
+            if old.user_adjusted or old.user_confirmed or old.origin == "manual":
+                fresh.source_in_ms, fresh.source_out_ms = old.source_in_ms, old.source_out_ms
+                fresh.range_status = old.range_status
+                fresh.user_adjusted, fresh.user_confirmed = old.user_adjusted, old.user_confirmed
+                fresh.key_moment_ms, fresh.key_moment_ref = old.key_moment_ms, old.key_moment_ref
+            reconciled.append(fresh)
+        fresh_items = reconciled
+        # Re-analysis may omit an event. Human choices remain recoverable,
+        # including ignored rows; never silently re-create them as suggestions.
+        fresh_items.extend(copy.deepcopy(item) for item in sequence.clip_candidates
+                           if item.id not in matched and (item.status in {"accepted", "ignored"}
+                                                        or item.user_adjusted or item.origin == "manual"))
+    sequence.clip_candidates = fresh_items
     return EditSequenceCommand(project, sequence, None, text, changed)
 
 

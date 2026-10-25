@@ -186,8 +186,11 @@ def test_panel_build_and_selected_cue_control_resync(tmp_path, monkeypatch):
     assert page.style_controller.page is page
     assert page.style_controller.session is page.session
     assert page.context_drawer.count() == 6
-    assert page.context_drawer.tabText(5) == "素材"
-    assert page.style_scope.currentData() == "current"
+    # Narrow drawers use icons; the complete navigation label remains in the
+    # tooltip. Creating the final parent tree earlier also lays this out earlier.
+    assert page.context_drawer.tabText(5) in ("", "素材")
+    assert page.context_drawer.tabToolTip(5) == "素材"
+    assert page.style_scope.currentData() == "selected"
     cue = next(item for item in page.project.cues if item.id == "a")
     style = next(item for item in page.project.styles if item.id == cue.style_id)
     assert page.style_font.currentText() == style.font_family
@@ -288,13 +291,16 @@ def test_gradient_and_motion_each_keep_one_undo_step(tmp_path, monkeypatch):
     page.motion_preset.setCurrentIndex(index)
     page.motion_preset.blockSignals(False)
     page._motion_preset_changed(index)
+    assert page.undo_stack.count() == 0  # the current motion UI edits a draft
+    page.motion_apply.click()
     assert page.undo_stack.count() == 1
-    assert page.session._cue_lookup["a"].effect_id == "soft_pop"
-    assert page.project.effects["soft_pop"]["entry"]["duration"] == page.effect_duration.value()
+    effect_id = page.session._cue_lookup["a"].effect_id
+    assert page.project.effects[effect_id]["entry"]["type"] == "soft_pop"
+    assert page.project.effects[effect_id]["entry"]["duration"] == page.effect_duration.value()
     page.undo_stack.undo()
     assert page.session._cue_lookup["a"].effect_id == "none"
     page.undo_stack.redo()
-    assert page.session._cue_lookup["a"].effect_id == "soft_pop"
+    assert page.session._cue_lookup["a"].effect_id == effect_id
     _finish(page)
 
 
@@ -399,8 +405,8 @@ def test_missing_font_warning_is_visible_without_persisting_fallback(tmp_path, m
     _finish(page)
 
 
-def test_scope_switch_to_speaker_reapplies_current_preset(tmp_path, monkeypatch):
-    """切到"当前说话人"必须立即把预设套到该说话人全部 cue（2026-09-02 R1）。"""
+def test_scope_switch_to_speaker_only_changes_future_edit_targets(tmp_path, monkeypatch):
+    """2026-10-24: selecting a scope is not itself a style mutation."""
     app, page = _page(tmp_path, monkeypatch)
     try:
         page.select_cue("a")
@@ -411,10 +417,10 @@ def test_scope_switch_to_speaker_reapplies_current_preset(tmp_path, monkeypatch)
         # scope 仍是 current：只有 a 换成 game
         assert str(page.session._cue_lookup["a"].style_id).startswith("game")
         assert page.session._cue_lookup["c"].style_id == "default"
-        # 切范围到 speaker：立即重套 → a 与 c（同为 S01）都变 game
+        # Changing the scope must preserve the other cue until an explicit edit.
         page.style_scope.setCurrentIndex(page.style_scope.findData("speaker"))
         app.processEvents()
-        assert str(page.session._cue_lookup["c"].style_id).startswith("game")
+        assert page.session._cue_lookup["c"].style_id == "default"
         assert str(page.session._cue_lookup["a"].style_id).startswith("game")
     finally:
         _finish(page)

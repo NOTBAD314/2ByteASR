@@ -17,7 +17,10 @@ from tests.test_studio_cue_controller import _finish, _page
 
 def _seed_text(page, cue_id: str, text: str):
     """Put a stable starting text in place directly (test fixture seeding)."""
-    page._cue_lookup[cue_id].text = text
+    # The UI lookup contains projected rows. Seed the authoritative source and
+    # publish its delta, otherwise undo/search still sees the old source text.
+    next(cue for cue in page.project.cues if cue.id == cue_id).text = text
+    page.cue_controller.cue_changed(cue_id)
     page._manual_text_baselines[cue_id] = text
     page.undo_stack.clear()
 

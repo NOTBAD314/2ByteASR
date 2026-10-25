@@ -23,6 +23,7 @@ ACTION_LABELS = {
     "pick_review": "选择文字复核模型…",
     "model_workshop": "打开模型工坊",
     "retry": "重试失败项",
+    "mosi_resplit": "切成小段再交 MOSI…",
     "recover": "恢复已有识别结果…",
     "glossary_proofread": "AI 词库校对…",
     "studio": "打开字幕工作台",
@@ -87,7 +88,7 @@ PIPELINE_OVERVIEW = """\
 - 「联网核验」是可选的术语联网查证，没配置或服务商不支持时只是没执行，不影响字幕。
 - 任务报告 JSON 里：status 是总状态；result.error 是失败原因；stages[] 是每一步的状态与耗时；events[] 是详细事件（带 fallback / failed / rejected 的多半是问题）；review_items[] 是需要人工检查的字幕；settings 是这次实际用的模型与开关（不含 API Key）。
 - 读报告时要注意：失败的任务 review_items 是空的，原因只在 result.error、stages[] 和 events[]；settings 里没有语言，语言看 TASK_LANGUAGE 事件（requested 是用户选的，disagrees_with_transcript 表示识别出的文字其实是另一种语言）；没填 Key 和手动关掉 AI 在报告里看起来一样（enable_ai_polish / use_ai_grouping = false，polish_provider = disabled）；报告不记录程序版本；开跑前就失败（环境检查、缺模型、没有 NVIDIA、云端识别没配置）的任务没有报告，只有一句错误。
-- 在线识别失败的错误里常带 [2BYTEASR_API_ERROR] {"category": …}，category 是 key / permission / balance / rate_limit / network / file_access / server / resubmit_needed 之一。
+- 在线识别失败的错误里常带 [2BYTEASR_API_ERROR] {"category": …}，category 是 key / permission / balance / rate_limit / network / file_access / server / resubmit_needed / content_blocked 之一；code 是 content_blocked 或 content_rejected 时，是服务商的内容安全审查拦下了那段音频（原样重交多半还会被拦）。
 """
 
 
@@ -354,6 +355,57 @@ ISSUES: dict[str, KnownIssue] = _issues(
         actions=("retry",),
         supersedes=("cloud_asr_failed", "worker_timeout", "worker_crashed", "unknown_failure"),
         short="在线识别任务状态不确定，为避免重复扣费没有自动重交。",
+    ),
+    KnownIssue(
+        "cloud_asr_content_blocked", "asr", "blocker", "在线识别服务的内容审查拦下了一段音频",
+        "报「被 MOSI 的内容安全审查拦下」，或 MOSI 返回 safety guardrail blocked / safety policy error（17001）。",
+        "在线识别服务会对上传的音频和识别出的文字做内容安全审查，这一段里有它不接受的内容；具体是哪一句，服务商不会说明，软件这边也改不了审查规则。这一段没有字幕。",
+        "同一段音频原样重新提交多半还会被拦下，也可能再次计费，不建议直接「重试失败项」。可以改用本地识别，或换别的在线识别服务，再重新识别这个视频；是否扣了积分请到服务商控制台查看。",
+        actions=("pick_primary", "mosi_resplit", "cloud_asr_setup"),
+        # A refusal at upload is an HTTP 403 too; it is not a key problem.
+        supersedes=("cloud_asr_resubmit", "cloud_asr_auth", "cloud_asr_failed", "worker_crashed", "unknown_failure"),
+        short="在线识别服务的内容审查拦下了一段音频，这一段没有字幕。",
+    ),
+    # 2026-10-24: a blocked range no longer fails the task; it is filled
+    # locally when a model can (recognition/cloud_gap_fill.py).
+    KnownIssue(
+        "cloud_asr_gap_filled", "asr", "problem", "有一段被在线识别的内容审查拦下，已用本地模型补上",
+        "完成页提示有一段被 MOSI 的内容安全审查拦下；字幕工作台的审核里有「这一段由本地模型补识别」。",
+        "在线识别服务（MOSS Pro 云端）会对上传的音频和识别出的文字做内容安全审查，这一段没有通过，服务商没有返回字幕。其余段照常识别；这一段改用这台电脑上的本地主力模型识别，字和说话人分辨可能跟其他段不同。",
+        "在字幕工作台里检查这一段。想用 MOSS Pro 再试，可以「切成小段再交 MOSI」：被拦的那段切成约 3 分钟的小段重新上传，会再次计费，能不能通过不确定，仍被拦下的小段继续用本地模型补。",
+        actions=("studio", "mosi_resplit"),
+        supersedes=("cloud_asr_content_blocked", "cloud_asr_resubmit", "cloud_asr_failed"),
+        short="有一段被在线识别服务拦下，已用本地模型补上；请在工作台检查这一段。",
+    ),
+    KnownIssue(
+        "cloud_asr_gap_unfilled", "asr", "problem", "有一段被在线识别的内容审查拦下，这一段没有字幕",
+        "完成页提示有一段被 MOSI 的内容安全审查拦下；字幕工作台的审核里有「这一段没有字幕」。",
+        "在线识别服务（MOSS Pro 云端）的内容安全审查拦下了这一段，服务商没有返回字幕。其余段照常识别；这台电脑上没有能补这段语言的本地主力模型，或者本地补识别失败，所以这一段空着。",
+        "在模型工坊下载一个本地主力模型（例如 SenseVoice 或 Whisper，没有 NVIDIA 显卡也能用）后再识别这个视频：被拦的段会自动用它补上，已完成的段不会重新上传。也可以「切成小段再交 MOSI」：会再次计费，能不能通过不确定。",
+        actions=("model_workshop", "mosi_resplit"),
+        supersedes=("cloud_asr_content_blocked", "cloud_asr_resubmit", "cloud_asr_failed"),
+        short="有一段被在线识别服务拦下，这一段没有字幕。",
+    ),
+    # 2026-10-25, a user's English singing stream: MOSS Pro timed a sentence
+    # past the audio of its request. 0.8.4 failed the task on it, and as the
+    # result was not kept, every new start failed the same way.
+    KnownIssue(
+        "cloud_asr_timing_rejected", "asr", "blocker", "MOSS Pro 有一句时间超出上传的音频，旧版本因此让识别失败",
+        "报「MOSS Pro 句段时间越出提交的音频」，重新开始也一样。",
+        "MOSS Pro 云端偶尔把个别句子的时间标到上传的这段音频之外，多在唱歌、音乐处。旧版本只要有一句这样，就判这一段的结果无效；结果又没有存下来，每次重新开始都取回同一份结果、再失败一次（不会再次计费）。",
+        "更新后再识别这个视频：超出的句子截短或去掉，其余照常。MOSI 还保留这个任务时直接取回结果，不重新上传；查不到时会先问你要不要重新提交（会再次计费）。等不及更新，可以先改用本地识别。",
+        actions=("update", "pick_primary"),
+        fixed="2026-10-25 已在源码修正，随之后的更新提供",
+        supersedes=("cloud_asr_failed", "worker_crashed", "unknown_failure"),
+        short="MOSS Pro 有一句时间超出上传的音频，旧版本因此让识别失败。",
+    ),
+    KnownIssue(
+        "cloud_asr_timing_repaired", "asr", "tip", "MOSS Pro 有几句时间超出上传的音频，已截短或去掉",
+        "排查原因里列出 MOSS Pro 截短或去掉的句数和所在的段。",
+        "MOSS Pro 云端偶尔把个别句子的时间标到上传的这段音频之外，或者起止颠倒，多在唱歌、音乐处，常是模型把歌词重复了几遍。结尾超出的截到音频结尾；时间不在这段音频里的句子找不到位置，没有放进字幕。",
+        "在字幕工作台里听一下这几段，缺的字幕手动补上；其余字幕不受影响。",
+        actions=("studio",),
+        short="MOSS Pro 有几句时间超出上传的音频，已截短或去掉。",
     ),
     KnownIssue(
         "cloud_asr_input_limit", "asr", "blocker", "素材超过在线识别服务的限制",

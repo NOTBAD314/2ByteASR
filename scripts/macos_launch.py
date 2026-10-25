@@ -103,6 +103,17 @@ def main() -> int:
     data_root = user_data_root()
     data_root.mkdir(parents=True, exist_ok=True)
     os.chdir(data_root)
+    from twobyteasr.system.macos_compatibility import require_compatible, write_startup_diagnostics
+    # Before Qt / AV / GPU imports. Worker diagnostics have independent names
+    # so a media child cannot overwrite the main process's startup evidence.
+    worker = len(sys.argv) > 1 and sys.argv[1] not in ('--macos-startup-smoke',)
+    diagnostic = data_root/'logs'/('macos-worker-'+str(os.getpid())+'.json' if worker else 'macos-startup.json')
+    write_startup_diagnostics(ROOT, diagnostic, stage='before_native_imports')
+    try:
+        require_compatible('app')
+    except RuntimeError as exc:
+        write_startup_diagnostics(ROOT, diagnostic, stage='incompatible_host', error=str(exc))
+        raise
     # Frozen media children inherit the parent's guarded audit environment.
     # Dispatch them before creating QApplication, first-run dialogs or settings;
     # they own their native decoder/audio event loop and never enter GUI audit.
@@ -199,4 +210,17 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        # A missing Qt plugin / dylib may fail before the regular GUI logger.
+        # Keep the existing sanitizer and do not dump environment variables.
+        try:
+            from twobyteasr.diagnostics.event_log import Sanitizer
+            from twobyteasr.system.macos_compatibility import write_startup_diagnostics, failure_category
+            from twobyteasr.runtime_paths import user_data_root
+            write_startup_diagnostics(ROOT,user_data_root()/'logs/macos-startup-failure.json',
+                stage=failure_category(str(exc)),error=type(exc).__name__+': '+Sanitizer().string(str(exc)))
+        except Exception:
+            pass
+        raise

@@ -170,10 +170,10 @@ def test_picker_card_configure_signal_is_wired():
         },
     )
     panel = ModelPickerPanel(page, "primary")
-    assert "mai_transcribe_2_word" in panel.cards
+    assert "mai_latest" in panel.cards
     fired: list = []
     page.api_configure_requested.connect(fired.append)
-    panel.cards["mai_transcribe_2_word"].configure.click()
+    panel.cards["mai_latest"].configure.click()
     assert fired == ["openrouter_word"]
     panel.deleteLater()
     page.deleteLater()

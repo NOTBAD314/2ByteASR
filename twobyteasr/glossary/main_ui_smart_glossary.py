@@ -58,12 +58,16 @@ class SmartGlossaryWorker(QThread):
             StructuredWikiSource,
             ai_enhance,
             build_candidates,
+            is_ai_glossary_tsv,
             parse_ai_glossary_tsv,
         )
 
         try:
             root = Path(__file__).resolve().parents[2]
             collected = []
+            if self.mode == "pasted" and is_ai_glossary_tsv(self.text):
+                # The AI's own TSV pasted under 粘贴资料: same as 复制 AI 建词提示词 (2026-10-25).
+                self.mode = "ai_tsv"
             if self.mode == "builtin":
                 payload = {}
                 try:
@@ -366,8 +370,10 @@ class SmartGlossaryDialog(QWidget):
         self.review_panel.hide()
         layout.addWidget(self.review_panel, 1)
 
-        # Footer remains visually anchored like the rest of the application.
-        layout.addStretch(1)
+        # Footer remains visually anchored like the rest of the application: the source
+        # section and the review panel (stretch 1 each, one shown at a time) take the free
+        # height. 2026-10-25: an extra stretch here took half of it, so the review list
+        # showed two rows and the AI card's last line slid under the footer.
         footer = QFrame()
         footer.setObjectName("modalFooter")
         actions = QHBoxLayout(footer)
@@ -514,11 +520,27 @@ class SmartGlossaryDialog(QWidget):
             bind_text(self.ai_status, '尚未配置 AI 模型与密钥（未配置 API）')
 
     def _goto_ai_config(self):
-        self.owner.ai_panel.set_expanded(True)
-        try:
-            self.owner.polish_editor.key.setFocus()
-        except Exception:
-            pass
+        """Open the text-AI settings window (the one on the home page) over this dialog.
+
+        2026-10-25: this used to expand the AI panel on the settings page behind the
+        dialog, so 「配置 API」 seemed to do nothing (and raised when the page was
+        not built yet, e.g. after starting in the project library).
+        """
+        owner = self.owner
+        opener = getattr(owner, "_open_ai_settings_dialog", None)
+        if opener is None:
+            return
+        ensure_page = getattr(owner, "_ensure_recognition_page", None)
+        if ensure_page is not None:
+            ensure_page()
+
+        def refresh():
+            try:
+                self._refresh_ai_state()
+            except RuntimeError:  # this dialog was closed while settings were open
+                pass
+
+        opener(on_finished=refresh)
 
     # ------------------------------------------------------------ 提取
 
@@ -602,27 +624,39 @@ class SmartGlossaryDialog(QWidget):
         message.setIcon(QMessageBox.Icon.Warning)
         message.setIconPixmap(_icon("fa5s.exclamation-triangle", AMBER).pixmap(QSize(40, 40)))
         bind_text(message, 'AI 增强不可用')
-        bind_text(message, '当前 API 密钥无效或未授权。\n基础建词仍可继续使用，结果已保留。', property='informativeText')
-        continue_button = message.addButton(
-            "继续无 AI 建词", QMessageBox.ButtonRole.AcceptRole
-        )
-        config_button = message.addButton(
-            "配置 API", QMessageBox.ButtonRole.ActionRole
-        )
-        message.addButton("查看详情", QMessageBox.ButtonRole.ActionRole)
+        # 2026-10-25: say the actual cause. This used to read "key invalid" for every
+        # failure, including DeepSeek answering without JSON (thinking used the budget).
+        if error.code == "unauthorized":
+            bind_text(message, '当前 API 密钥无效或未授权。\n基础建词仍可继续使用，结果已保留。', property='informativeText')
+        elif error.code == "no_balance":
+            bind_text(message, 'API 账户余额不足，充值后再试。\n基础建词仍可继续使用，结果已保留。', property='informativeText')
+        elif error.code == "rate_limited":
+            bind_text(message, 'AI 服务繁忙或请求太频繁，请稍后再试。\n基础建词仍可继续使用，结果已保留。', property='informativeText')
+        elif error.code == "bad_response":
+            bind_text(message, 'AI 已连接，但这次没有返回完整的整理结果，可以再试一次。\n基础建词仍可继续使用，结果已保留。', property='informativeText')
+        else:
+            bind_text(message, '暂时连不上 AI 服务（网络或服务端问题），请稍后再试。\n基础建词仍可继续使用，结果已保留。', property='informativeText')
+        message.addButton("继续无 AI 建词", QMessageBox.ButtonRole.AcceptRole)  # 基础流程继续
+        config_button = None
+        if error.needs_settings:
+            config_button = message.addButton(
+                "配置 API", QMessageBox.ButtonRole.ActionRole
+            )
+        details_button = message.addButton("查看详情", QMessageBox.ButtonRole.ActionRole)
         message.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
         self._exec_dialog(message)
         clicked = message.clickedButton()
         if clicked is None:
             return message  # 非模态展示（截图/预览）时不处理按钮
-        if clicked is config_button:
-            self.owner.ai_panel.set_expanded(True)
-            self.owner.polish_editor.key.setFocus()
-        elif clicked == continue_button:
-            pass  # 基础流程继续
-        else:
-            detail = f"错误码：{error.code}\nendpoint：{error.endpoint or '未记录'}\n{error.detail}"
-            QMessageBox.information(self, tr('AI 增强详情'), detail)
+        if config_button is not None and clicked is config_button:
+            self._goto_ai_config()
+        elif clicked is details_button:  # 「关闭」以前也落到这里，弹出详情
+            lines = [tr('错误码：{code}', code=error.code)]
+            if error.model:
+                lines.append(tr('模型：{model}', model=error.model))
+            lines.append(f"endpoint：{error.endpoint or tr('未记录')}")
+            lines.append(error.detail)
+            QMessageBox.information(self, tr('AI 增强详情'), "\n".join(lines))
         return message
 
     # ------------------------------------------------------------ review
@@ -746,6 +780,9 @@ class SmartGlossaryDialog(QWidget):
         self.back_button.hide()
         self.extract_button.show()
         self.add_button.hide()
+        # 2026-10-25: the stepper stayed on 「2 提取预览」 and the source note stayed hidden.
+        self.source_summary.show()
+        self._set_smart_step(0)
 
     @glossary_write_errors
     def add_selected(self):

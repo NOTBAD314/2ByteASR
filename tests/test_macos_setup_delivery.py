@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import shutil
+import struct
 import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
@@ -20,7 +21,8 @@ def built_app(root):
     app = root/'2ByteASR.app'
     (app/'Contents/MacOS').mkdir(parents=True)
     (app/'Contents/Resources').mkdir()
-    (app/'Contents/MacOS/2ByteASR').write_bytes(b'owned fake bootloader')
+    (app/'Contents/MacOS/2ByteASR').write_bytes(struct.pack('<8I',0xfeedfacf,0x100000C,0,2,1,24,0,0)+struct.pack('<6I',0x32,24,1,0x0e0000,0x0f0000,0))
+    (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'LSMinimumSystemVersion':'14.0'}))
     identity = dict(app_version=dmg.product_version(), git_sha='a'*40, source_sha256='b'*64,
                     source_file_count=42, build_channel='test', git_dirty=False)
     (app/'Contents/Resources/2byteasr_build.json').write_text(json.dumps(identity), 'utf8')

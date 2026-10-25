@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal, QEvent, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QBoxLayout,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -18,6 +19,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -28,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..timeline.studio_edit_sequence import HighlightCandidate, sequence_of
-from .studio_highlight_analyzer import HighlightSkillAdapter, analyze_highlights
+from .studio_highlight_analyzer import HighlightSkillAdapter, analyze_highlights, highlight_transcript_project
 from ..projects.studio_project import SubtitleProject, analysis_transcript_cues
 from ..design.theme_manager import theme_key
 from ..design.ui_theme import theme_definition
@@ -45,6 +48,7 @@ from ..i18n import tr
 class HighlightAnalyzeWorker(QThread):
     finished_ok = Signal(object)
     failed = Signal(str)
+    progress = Signal(str, int)
 
     def __init__(self, project: SubtitleProject, options: dict, parent=None) -> None:
         super().__init__(parent)
@@ -59,6 +63,7 @@ class HighlightAnalyzeWorker(QThread):
                 result = analyze_highlights(
                     self._project,
                     cancel_check=self.isInterruptionRequested,
+                    progress=self.progress.emit,
                     **self._options,
                 )
         except Exception as exc:
@@ -145,255 +150,197 @@ class HighlightCandidateCard(QFrame):
     accept_requested = Signal(str)
     ignore_requested = Signal(str)
     remove_requested = Signal(str)
+    context_requested = Signal(str)
+    edit_requested = Signal(str)
 
-    def __init__(self, candidate: HighlightCandidate, parent=None) -> None:
+    def __init__(self, candidate, parent=None):
         super().__init__(parent)
         self._owner_list = parent if isinstance(parent, QListWidget) else None
         self.candidate_id = candidate.id
+        self._candidate = candidate
         self.setObjectName("highlightCandidateCard")
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        theme = theme_definition(theme_key())
-        # 2026-10-23 (user's design C): a compact card — the score in a circle,
-        # the hook and its range, preview at the right, why it is worth cutting
-        # in a tinted box, then the actions. What happened, the evidence and
-        # the ranges open with 详情.
         self.setProperty("softCard", True)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout=QVBoxLayout(self)
+        layout.setContentsMargins(12,12,12,12)
         layout.setSpacing(8)
-        heading = QHBoxLayout()
-        heading.setSpacing(10)
-        score = QLabel(str(round(candidate.score * 100)))
-        score.setObjectName("highlightScore")
-        score.setFixedSize(38, 38)
-        score.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        score.setToolTip(f"{candidate.grade or tr('推荐')} · {round(candidate.score * 100)}")
-        heading.addWidget(score, 0, Qt.AlignmentFlag.AlignTop)
-        title_column = QVBoxLayout()
-        title_column.setSpacing(2)
-        hook_text = QLabel(candidate.hook or candidate.title or "等待补充事件摘要")
-        hook_text.setObjectName("highlightTitle")
-        hook_text.setWordWrap(True)
-        _clamp_label_lines(hook_text, 3)
-        title_column.addWidget(hook_text)
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(6)
-        span_ms = max(0, candidate.source_out_ms - candidate.source_in_ms)
-        clock = QLabel(
-            f"{_clock_range(candidate.source_in_ms, candidate.source_out_ms)} · {_duration_label(span_ms)}"
-        )
-        clock.setObjectName("softMeta")
-        bind_text(clock, '建议剪辑范围（包含铺垫、爆点与收尾）', property='toolTip')
-        meta_row.addWidget(clock)
-        if candidate.grade:
-            grade = QLabel(candidate.grade)
-            grade.setProperty("softPill", "accent")
-            meta_row.addWidget(grade)
-        meta_row.addStretch(1)
-        title_column.addLayout(meta_row)
-        heading.addLayout(title_column, 1)
-        preview = QPushButton()
-        preview.setProperty("softSize", "sm")
-        preview.setFixedSize(30, 30)
-        install_themed_icon(preview, "fa5s.play", "secondary")
-        bind_text(preview, '预览', property='toolTip')
-        bind_text(preview, '预览', property='accessibleName')
-        heading.addWidget(preview, 0, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(heading)
-
-        why = QLabel(candidate.clip_reason or candidate.reason or "等待补充编辑判断")
-        why.setObjectName("highlightWhy")
-        why.setWordWrap(True)
-        bind_text(why, '为什么值得剪', property='toolTip')
-        # Full text, wrapped: the list scrolls instead of truncating reasons.
-        layout.addWidget(why)
-
-        what = _section_frame(
-            "发生了什么",
-            candidate.event_summary or candidate.hook or candidate.title or "",
-            theme, accent=False,
-        )
-        what.setVisible(False)
-        self._what = what
-
-        # 底部统计=簇级唯一口径（2026-09-19 P1：卡片/详情/文案同源；
-        # 422=簇累计有效条数、峰值取簇内最高倍数窗、笑/叹为真实条数——
-        # 旧"hits 次数"与 best 单窗 raw 数不再混入）。
-        summary_bits = []
-        signal = candidate.danmaku_signal or {}
-        if isinstance(signal, dict) and (signal.get("usable_total") or signal.get("raw_count")):
-            usable = signal.get("usable_total") or signal.get("raw_count")
-            bits = [f"弹幕{usable}条"]
-            if signal.get("windows", 1) > 1:
-                bits.append(f"{signal['windows']}个热窗")
-            if signal.get("peak_spike"):
-                bits.append(f"峰值{signal['peak_spike']}x")
-            if signal.get("chaos_count"):
-                bits.append(f"惊叹{signal['chaos_count']}条")
-            if signal.get("funny_count"):
-                bits.append(f"笑声{signal['funny_count']}条")
-            summary_bits.append("观众反应 " + " · ".join(str(bit) for bit in bits))
-        elif candidate.danmaku_evidence or candidate.subtitle_evidence:
-            summary_bits.append(
-                f"证据 弹幕{len(candidate.danmaku_evidence)} · 字幕{len(candidate.subtitle_evidence)}"
-            )
-        if candidate.origin == "local":
-            summary_bits.append("本地分析 · 事件待核实")
-        if candidate.context_required:
-            summary_bits.append(f"上下文 {candidate.context_required}")
-        evidence_summary = QLabel("   ".join(summary_bits))
-        evidence_summary.setObjectName("contextEmpty")
-        evidence_summary.setWordWrap(True)
-        # Secondary statistics open with 详情; the card body stays readable.
-        evidence_summary.setVisible(False)
-        bind_text(evidence_summary, '统计为候选范围簇级口径：有效条数已剔除广告/例行弹幕；峰值=簇内最高倍数窗；惊叹/笑声为弹幕条数（非命中次数）。', property='toolTip')
-
-        signal_in = candidate.signal_in_ms if candidate.signal_in_ms is not None else candidate.source_in_ms
-        signal_out = candidate.signal_out_ms if candidate.signal_out_ms is not None else candidate.source_out_ms
-        self._ranges = None
-        if (signal_in, signal_out) != (candidate.source_in_ms, candidate.source_out_ms):
-            self._ranges = bind_text(QLabel(), '核心 {value0} · 建议保留 {value1}', value0=_clock_range(signal_in, signal_out), value1=_clock_range(candidate.source_in_ms, candidate.source_out_ms))
-            self._ranges.setObjectName("softMeta")
-            self._ranges.setVisible(False)
-        evidence_source = candidate.danmaku_evidence
-        if isinstance(evidence_source, str):
-            evidence_source = [line for line in evidence_source.splitlines() if line.strip()]
-        evidence_lines = [line for line in evidence_source[:3] if str(line).strip()]
-        for quote in candidate.quotes[:3]:
-            # Skip quotes already surfaced by the evidence rows above.
-            if any(quote in line for line in evidence_lines):
-                continue
-            evidence_lines.append(f"“{quote}”")
-        evidence = QLabel("\n".join(evidence_lines))
-        evidence.setObjectName("highlightEvidence")
-        evidence.setWordWrap(True)
-        evidence.setVisible(False)  # 原始弹幕默认不占主卡片，随详情展开
-        # 2026-09-19 P1：详情展开时同步显示完整字幕上下文（"发生了什么"
-        # 的可追溯证据；此前 evidence 永不可见是存量 bug）。
-        context_lines = [line for line in (candidate.subtitle_context or [])[:14] if str(line).strip()]
-        context_block = QLabel(
-            ("信号范围字幕摘录：\n" + "\n".join(context_lines)) if context_lines else ""
-        )
-        context_block.setObjectName("highlightEvidence")
-        context_block.setWordWrap(True)
-        context_block.setVisible(False)
-        details = QLabel("\n".join(filter(None, (
-            f"建议范围：{_clock_range(candidate.source_in_ms, candidate.source_out_ms)}",
-            f"上下文范围：{_clock_range(candidate.context_in_ms, candidate.context_out_ms)}"
-            if candidate.context_in_ms is not None and candidate.context_out_ms is not None else "",
-            f"信号窗口：{_clock_range(signal_in, signal_out)}",
-            f"开头：{candidate.hook}" if candidate.hook else "",
-            f"剪辑：{candidate.edit_direction}" if candidate.edit_direction else "",
-            f"字幕重点：{'、'.join(candidate.subtitle_emphasis)}" if candidate.subtitle_emphasis else "",
-            f"风险：{'、'.join(candidate.risk_notes)}" if candidate.risk_notes else "",
-        ))))
-        details.setObjectName("highlightDetails")
-        details.setWordWrap(True)
-        details.hide()
-        actions = QHBoxLayout()
-        actions.setSpacing(6)
-        in_bin = candidate.status == "accepted"
-        accept = QPushButton("移出候选箱" if in_bin else "加入剪辑")
-        ignore = QPushButton("忽略")
-        detail = QPushButton("详情")
-        self._action_buttons=(preview,accept,ignore,detail)
-        self._action_grid=actions
-        self._action_columns=0
-        for button in (accept, ignore, detail):
-            button.setObjectName("studioPrimary" if button is accept and not in_bin else "studioButton")
-            button.setProperty("softSize", "sm")
-            button.setProperty("flexibleWidth", True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setMinimumWidth(0)
-        preview.setCursor(Qt.CursorShape.PointingHandCursor)
-        detail.setProperty("softRole", "ghost")
-        if in_bin:
-            actions.addWidget(soft_pill("已在候选箱", "ok"))
-            actions.addStretch(1)
-            actions.addWidget(accept)
-            actions.addWidget(ignore)
+        def label(value, name):
+            widget=QLabel(value)
+            widget.setTextFormat(Qt.TextFormat.PlainText)
+            widget.setObjectName(name)
+            widget.setWordWrap(True)
+            widget.setMinimumWidth(0)
+            widget.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            return widget
+        self.title_label=label(candidate.title, 'highlightTitle')
+        self.title_label.setToolTip(candidate.title)
+        _clamp_label_lines(self.title_label, 2)
+        layout.addWidget(self.title_label)
+        reason=candidate.clip_reason or candidate.reason
+        if not candidate.evidence and candidate.origin!='manual':
+            reason=tr('旧建议，待重新确认')
+        self.reason_label=label(reason, 'highlightWhy')
+        self.reason_label.setToolTip(candidate.clip_reason or candidate.reason)
+        # Keep the bounded editorial sentence fully readable at narrow widths;
+        # a pixel-height clamp can slice the last glyph when fonts/theme change.
+        layout.addWidget(self.reason_label)
+        self.range_label=label('', 'highlightRange')
+        if candidate.clip_range:
+            bind_text(self.range_label, '建议片段：{range} · {duration}',
+                range=_clock_range(*candidate.clip_range),
+                duration=_duration_label(candidate.source_out_ms-candidate.source_in_ms))
         else:
-            accept.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            ignore.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            actions.addWidget(accept, 1)
-            actions.addWidget(ignore, 1)
-        actions.addWidget(detail)
-        preview.clicked.connect(lambda: self.preview_requested.emit(self.candidate_id))
-        accept.clicked.connect(lambda: (self.remove_requested if in_bin else self.accept_requested).emit(self.candidate_id))
-        ignore.clicked.connect(lambda: self.ignore_requested.emit(self.candidate_id))
-        detail.clicked.connect(lambda: self._toggle_details(details, evidence, context_block, evidence_summary))
-        # Footer order: content (title/reason/evidence) first, actions last —
-        # buttons mid-card cut the reading flow and orphan the evidence block.
-        layout.addWidget(what)
-        if self._ranges is not None:
-            layout.addWidget(self._ranges)
-        layout.addWidget(evidence_summary)
-        layout.addWidget(evidence)
-        layout.addWidget(context_block)
-        layout.addWidget(details)
-        layout.addLayout(actions)
-
-    def _reflow_actions(self):
-        # The actions are one row at every drawer width (design C).
-        return False
-
-    def resizeEvent(self,event):
-        super().resizeEvent(event)
-        if not hasattr(self,'_action_grid'):return
+            bind_text(self.range_label, '待确认剪辑范围')
+        layout.addWidget(self.range_label)
+        kinds=candidate.evidence_kinds
+        basis=('字幕＋弹幕' if kinds == {'subtitle','danmaku'} else '字幕' if 'subtitle' in kinds
+               else '仅弹幕，待确认内容' if 'danmaku' in kinds else
+               '手动' if candidate.origin=='manual' else '旧建议，待重新确认')
+        state=('已加入待生成' if candidate.status == 'accepted' else
+               '已忽略' if candidate.status == 'ignored' else
+               '人工确认' if candidate.user_confirmed else
+               '人工调整起止' if candidate.user_adjusted else '尚未人工确认' if 'subtitle' in kinds else '')
+        self.basis_label=label(' · '.join(tr(t) for t in (basis,state) if t), 'softMeta')
+        layout.addWidget(self.basis_label)
+        self.preview_button=QPushButton(tr('预览片段' if candidate.clip_range else '查看现场'))
+        self.accept_button=QPushButton(tr('已加入待生成' if candidate.status=='accepted' else
+                                         '加入待生成' if candidate.clip_range else '设置起止'))
+        self.more_button=QToolButton()
+        self.more_button.setText('•••')
+        bind_text(self.more_button, '更多操作', property='accessibleName')
+        bind_text(self.more_button, '更多操作', property='toolTip')
+        self.more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu=QMenu(self.more_button)
+        self.details_action=menu.addAction(tr('查看依据'))
+        self.details_action.triggered.connect(self.toggle_details)
+        menu.addAction(tr('查看前后内容'),lambda:self.context_requested.emit(self.candidate_id))
+        menu.addAction(tr('调整起止'),lambda:self.edit_requested.emit(self.candidate_id))
+        if candidate.status=='accepted':
+            menu.addAction(tr('移出待生成'),lambda:self.remove_requested.emit(self.candidate_id))
+        menu.addAction(tr('忽略（可撤销）'),lambda:self.ignore_requested.emit(self.candidate_id))
+        self.more_button.setMenu(menu)
+        self.preview_button.clicked.connect(lambda:self.preview_requested.emit(self.candidate_id))
+        self.accept_button.clicked.connect(lambda:(self.accept_requested if candidate.clip_range
+                                                   else self.edit_requested).emit(self.candidate_id))
+        self.accept_button.setEnabled(candidate.status != 'accepted')
+        self._action_buttons=(self.preview_button,self.accept_button,self.more_button)
+        self._action_grid=QGridLayout()
+        self._action_grid.setSpacing(6)
+        self._action_columns=0
+        for b in self._action_buttons:
+            b.setObjectName('studioPrimary' if b is self.preview_button else 'studioButton')
+            b.setProperty('softSize','sm')
+            b.setMinimumWidth(0)
+            b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setProperty('candidateId',candidate.id)
+        self.preview_button.setObjectName('studioPrimary')
+        self.preview_button.setProperty('buttonRole','primary')
+        self.accept_button.setObjectName('highlightAccept')
+        self.more_button.setObjectName('highlightMore')
+        self.preview_button.setProperty('zone','accent')
+        layout.addLayout(self._action_grid)
+        self.details_body=QWidget()
+        detail_layout=QVBoxLayout(self.details_body)
+        detail_layout.setContentsMargins(0,6,0,0)
+        detail_layout.setSpacing(8)
+        for kind,heading in [('subtitle','对应字幕'),('danmaku','观众原话')]:
+            rows=[r for r in candidate.evidence if r.get('kind')==kind]
+            if rows:
+                detail_layout.addWidget(label(tr(heading), 'softLabel'))
+                from ..projects.project_range import clock_text
+                rendered=['['+clock_text(r['start_ms'])+'] '+r['text'] for r in sorted(rows[:10],key=lambda r:r['start_ms'])]
+                detail_layout.addWidget(label('\n'.join(rendered),'highlightEvidence'))
+        if len(candidate.clip_reason or candidate.reason)>60:
+            detail_layout.addWidget(label(tr('为什么值得剪'), 'softLabel'))
+            detail_layout.addWidget(label(candidate.clip_reason or candidate.reason, 'highlightEvidence'))
+        if candidate.key_moment_ms is not None:
+            detail_layout.addWidget(label(tr('关键话语：{time}（来自字幕）',
+                                           time=_clock_range(candidate.key_moment_ms,candidate.key_moment_ms).split('–')[0]),'softMeta'))
+        detail_layout.addWidget(label(tr('查看前后：{range}',range=_clock_range(candidate.context_in_ms or 0,
+                                                                       candidate.context_out_ms or 0)),'softMeta'))
+        detail_layout.addWidget(label(tr('弹幕反应范围：{range}',range=_clock_range(candidate.signal_in_ms or 0,
+                                                                              candidate.signal_out_ms or 0)),'softMeta'))
+        if candidate.risk_notes:
+            detail_layout.addWidget(label(tr('待确认：')+'\n'+'\n'.join(candidate.risk_notes),'highlightEvidence'))
+        context=QPushButton(tr('查看前后内容'))
+        context.setObjectName('studioButton')
+        context.clicked.connect(lambda:self.context_requested.emit(self.candidate_id))
+        detail_layout.addWidget(context)
+        stats=QToolButton()
+        bind_text(stats,'统计与排序依据')
+        stats.setCheckable(True)
+        stats.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        stats.setArrowType(Qt.ArrowType.RightArrow)
+        signal=candidate.danmaku_signal
+        diagnostic=label(tr('原始弹幕 {raw} · 去除例行和推广后 {usable} · 热度 {spike} 倍 · 内部排序分 {score}',
+            raw=signal.get('raw_total',0),usable=signal.get('usable_total',0),
+            spike=signal.get('peak_spike',0),score=round(candidate.score*100)),'softMeta')
+        diagnostic.hide()
+        stats.toggled.connect(lambda checked:(diagnostic.setVisible(checked),self._resize_row()))
+        detail_layout.addWidget(stats)
+        detail_layout.addWidget(diagnostic)
+        self.details_body.hide()
+        layout.addWidget(self.details_body)
         self._reflow_actions()
+
+    def toggle_details(self):
+        self.details_body.setVisible(self.details_body.isHidden())
+        self._resize_row()
+
+    def _resize_row(self):
+        self.updateGeometry()
         self.layout().activate()
         owner=self._owner_list
-        if isinstance(owner,QListWidget):
+        if owner:
             for index in range(owner.count()):
                 item=owner.item(index)
                 if owner.itemWidget(item) is self:
-                    size=QSize(0,self.sizeHint().height())
-                    if item.sizeHint()!=size:item.setSizeHint(size)
+                    hint=QSize(0,self.sizeHint().height())
+                    if item.sizeHint()!=hint:item.setSizeHint(hint)
                     break
 
-    def _toggle_details(self, details: QLabel, evidence: QLabel | None = None, context_block: QLabel | None = None,
-                        summary: QLabel | None = None) -> None:
-        visible = not details.isVisible()
-        details.setVisible(visible and bool(details.text()))
-        what = getattr(self, "_what", None)
-        if what is not None:
-            what.setVisible(visible and bool(what.body.text()))
-        if getattr(self, "_ranges", None) is not None:
-            self._ranges.setVisible(visible)
-        if summary is not None:
-            summary.setVisible(visible and bool(summary.text()))
-        # 2026-09-19 P1：原始弹幕证据与完整字幕上下文随详情一起展开。
-        if evidence is not None:
-            evidence.setVisible(visible and bool(evidence.text()))
-        if context_block is not None:
-            context_block.setVisible(visible and bool(context_block.text()))
-        self.updateGeometry()
-        owner = self._owner_list
-        if not isinstance(owner, QListWidget):
-            return
-        for index in range(owner.count()):
-            item = owner.item(index)
-            if owner.itemWidget(item) is self:
-                item.setSizeHint(QSize(0, self.sizeHint().height()))
-                break
-        owner = self._owner_list
-        if not isinstance(owner, QListWidget):
-            return
-        for index in range(owner.count()):
-            item = owner.item(index)
-            if owner.itemWidget(item) is self:
-                item.setSizeHint(QSize(0, self.sizeHint().height()))
-                break
+    def _reflow_actions(self):
+        available=max(1,self.width()-24)
+        pair=sum(b.sizeHint().width() for b in self._action_buttons[:2])+6
+        columns=3 if pair+self.more_button.sizeHint().width()+6<=available else 2 if pair<=available else 1
+        if columns==self._action_columns:return
+        self._action_columns=columns
+        while self._action_grid.count():self._action_grid.takeAt(0)
+        for index,b in enumerate(self._action_buttons):
+            self._action_grid.addWidget(b,index//columns,index%columns)
+        for c in range(3):
+            self._action_grid.setColumnMinimumWidth(c,0)
+            self._action_grid.setColumnStretch(c,1 if c<min(2,columns) else 0)
 
-    def sizeHint(self) -> QSize:
-        hint = super().sizeHint()
-        owner = self._owner_list
-        if isinstance(owner, QListWidget):
-            available = owner.viewport().width()
-            if available > 0:
-                hint.setWidth(min(hint.width(), available))
-                wrapped=self.layout().totalHeightForWidth(available)
-                if wrapped>0:hint.setHeight(max(hint.height(),wrapped))
+    def event(self,event):
+        result=super().event(event)
+        if (event.type() in (QEvent.Type.LayoutRequest,QEvent.Type.StyleChange,QEvent.Type.FontChange)
+                and hasattr(self,'_action_grid') and not getattr(self,'_layout_pending',False)):
+            self._layout_pending=True
+            QTimer.singleShot(0,self._settle_layout)
+        return result
+
+    def _settle_layout(self):
+        from shiboken6 import isValid
+        if not isValid(self):return
+        self._layout_pending=False
+        self._reflow_actions()
+        self._resize_row()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        if hasattr(self,'_action_grid'):
+            self._reflow_actions()
+            self._resize_row()
+
+    def sizeHint(self):
+        hint=super().sizeHint()
+        if self._owner_list:
+            width=max(240,self._owner_list.viewport().width()-8)
+            hint.setWidth(width)
+            wrapped=self.layout().totalHeightForWidth(width)
+            if wrapped>0:hint.setHeight(wrapped)
         return hint
 
 
@@ -440,6 +387,9 @@ class HighlightBinCard(QFrame):
 
 class HighlightAssistantPanel(QWidget):
     preview_requested = Signal(int)
+    context_requested = Signal(str)
+    edit_requested = Signal(str)
+    source_changed = Signal(str)
     candidates_ready = Signal(object)
     add_to_bin_requested = Signal(str)
     ignore_requested = Signal(str)
@@ -471,6 +421,8 @@ class HighlightAssistantPanel(QWidget):
         self._analysis_note = ""
         self._last_note = ""
         self._candidate_signature = ""
+        self._show_all = False
+        self._all_candidates = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(7)
@@ -519,6 +471,7 @@ class HighlightAssistantPanel(QWidget):
         self.tool_tabs.setObjectName("softSegmented")
         self.tool_tabs.setProperty("tone", "soft")
         tabs_row = QHBoxLayout(self.tool_tabs)
+        self._tabs_row=tabs_row
         tabs_row.setContentsMargins(4, 4, 4, 4)
         tabs_row.setSpacing(2)
         self.clips_tab_button = QPushButton("找值得剪的片段")
@@ -539,6 +492,7 @@ class HighlightAssistantPanel(QWidget):
 
         self.config_header_host = QWidget()
         config_header = QHBoxLayout(self.config_header_host)
+        self._config_header_row=config_header
         config_header.setContentsMargins(0, 0, 0, 0)
         config_header.setSpacing(8)
         self.config_summary = QLabel("数据与分析设置")
@@ -566,6 +520,20 @@ class HighlightAssistantPanel(QWidget):
         self.config_toggle.setArrowType(Qt.ArrowType.UpArrow)
         config_header.addWidget(self.config_toggle)
         layout.addWidget(self.config_header_host)
+        self.progress_label=QLabel()
+        self.progress_label.setObjectName('softMeta')
+        self.progress_label.setWordWrap(True)
+        self.progress_label.hide()
+        self.analysis_progress=QProgressBar()
+        self.analysis_progress.hide()
+        layout.addWidget(self.progress_label)
+        layout.addWidget(self.analysis_progress)
+        self.local_hint=QLabel()
+        self.local_hint.setObjectName('softMeta')
+        self.local_hint.setWordWrap(True)
+        self.local_hint.hide()
+        layout.addWidget(self.local_hint)
+
 
         # 2026-10-11: data and analysis settings share one collapsible scroll
         # area. Once candidates exist it folds away and the candidate list is
@@ -634,6 +602,19 @@ class HighlightAssistantPanel(QWidget):
 
         data, data_layout = soft_card()
         data_layout.addLayout(card_title("数据"))
+        self.source_combo=QComboBox()
+        flexible_combo(self.source_combo)
+        self.source_combo.currentIndexChanged.connect(lambda: self.source_changed.emit(str(self.source_combo.currentData() or '')))
+        data_layout.addWidget(QLabel(tr('分析录播来源')))
+        data_layout.addWidget(self.source_combo)
+        self.offset_box=QDoubleSpinBox()
+        self.offset_box.setRange(-86400,86400)
+        self.offset_box.setDecimals(3)
+        self.offset_box.setSingleStep(1)
+        self.offset_box.setSuffix(tr(' 秒'))
+        bind_text(self.offset_box,'录播时间 = XML 时间 + 此偏移；这不是观众反应延迟。',property='toolTip')
+        data_layout.addWidget(QLabel(tr('弹幕时间偏移')))
+        data_layout.addWidget(self.offset_box)
         self.subtitle_status = QLabel("字幕：0 条（当前工程）", data)
         self.subtitle_status.setObjectName("softMeta")
         self.subtitle_status.hide()  # the pill below says it; the text stays for tooltips and checks
@@ -678,8 +659,8 @@ class HighlightAssistantPanel(QWidget):
         self.detected_data.setIndent(0)
         setup_layout.addWidget(self.detected_data)
         self.count_box = QSpinBox()
-        self.count_box.setRange(3, 50)
-        self.count_box.setValue(20)
+        self.count_box.setRange(1, 30)
+        self.count_box.setValue(8)
         self.min_box = QSpinBox()
         self.min_box.setRange(8, 300)
         self.min_box.setValue(30)
@@ -692,13 +673,13 @@ class HighlightAssistantPanel(QWidget):
         count_group = QWidget()
         count_field = UnitField(self.count_box, unit=tr("个"))
         count_field.setMinimumWidth(70)
-        count_group.setLayout(labelled("候选数量", (count_field, 1)))
+        count_group.setLayout(labelled("最多建议", (count_field, 1)))
         count_group.layout().setContentsMargins(0, 0, 0, 0)
         length_group = QWidget()
         min_field, max_field = UnitField(self.min_box), UnitField(self.max_box, unit=tr("秒"))
         min_field.setMinimumWidth(64)
         max_field.setMinimumWidth(80)
-        length_row = labelled("长度", (min_field, 1))
+        length_row = labelled("参考长度", (min_field, 1))
         length_row.setContentsMargins(0, 0, 0, 0)
         dash = QLabel("–")
         dash.setObjectName("softMeta")
@@ -868,7 +849,7 @@ class HighlightAssistantPanel(QWidget):
         self.analysis_source.setObjectName("softMeta")
         self.analysis_source.setWordWrap(True)
         self.analysis_source.hide()
-        candidates_layout.addWidget(self.analysis_source)
+        config_body_layout.addWidget(self.analysis_source)
         # 候选区常驻：没有候选时也保留分隔与占位说明，而不是整块消失
         # （三十一轮用户反馈：收起后只剩"分析录播"，面板像坏了一样空白）。
         self.candidates_empty = QLabel(
@@ -892,6 +873,14 @@ class HighlightAssistantPanel(QWidget):
         self.results.setStyleSheet(list_qss)
         self.results.itemClicked.connect(self._item_clicked)
         candidates_layout.addWidget(self.results, 1)
+        self.more_candidates=QPushButton(tr('展开其余建议'))
+        self.more_candidates.setObjectName('studioButton')
+        self.more_candidates.setProperty('softSize','sm')
+        self.more_candidates.setProperty('softRole','ghost')
+        self.more_candidates.clicked.connect(self._toggle_more_candidates)
+        self.more_candidates.hide()
+        candidates_layout.addWidget(self.more_candidates)
+
         self.bin_header = QWidget()
         bin_header_layout = QHBoxLayout(self.bin_header)
         bin_header_layout.setContentsMargins(0, 0, 0, 0)
@@ -908,7 +897,7 @@ class HighlightAssistantPanel(QWidget):
         bin_header_layout.addWidget(self.bin_toggle, 1)
         self.bin_label = self._heading("剪辑候选箱")
         self.bin_label.setWordWrap(True)
-        self.clear_bin_button = QPushButton("清空候选")
+        self.clear_bin_button = QPushButton("清空")
         self.clear_bin_button.setObjectName("studioButton")
         self.clear_bin_button.setProperty("softSize", "sm")
         self.clear_bin_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -928,8 +917,9 @@ class HighlightAssistantPanel(QWidget):
         candidates_layout.addWidget(self.bin)
         self.generate_row_host = QWidget()
         generate_row = QHBoxLayout(self.generate_row_host)
+        self._generate_row=generate_row
         generate_row.setContentsMargins(0, 0, 0, 0)
-        self.generate_button = QPushButton("生成剪辑")
+        self.generate_button = QPushButton("生成清单中的剪辑")
         self.restore_button = QPushButton("返回完整录播")
         self.generate_button.setObjectName("studioPrimary")
         self.restore_button.setObjectName("studioButton")
@@ -961,6 +951,29 @@ class HighlightAssistantPanel(QWidget):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_theme_palette()
         self._refresh_skill()
+
+    def _responsive_rows(self):
+        from shiboken6 import isValid
+        if not isValid(self):return
+        self._rows_pending=False
+        if not hasattr(self,'_generate_row'):return
+        available=max(1,self.width()-28)
+        rows=((self._tabs_row,(self.clips_tab_button,self.pauses_tab_button)),
+              (self._config_header_row,(self.analyze_button,self.config_toggle)),
+              (self._generate_row,(self.generate_button,self.restore_button)))
+        for row,buttons in rows:
+            shown=[b for b in buttons if not b.isHidden()]
+            needed=sum(b.sizeHint().width() for b in shown)+row.spacing()*max(0,len(shown)-1)
+            direction=QBoxLayout.Direction.TopToBottom if needed>available else QBoxLayout.Direction.LeftToRight
+            if row.direction()!=direction:row.setDirection(direction)
+
+    def event(self,event):
+        result=super().event(event)
+        if (event.type() in (QEvent.Type.LayoutRequest,QEvent.Type.Resize,QEvent.Type.StyleChange)
+                and hasattr(self,'_generate_row') and not getattr(self,'_rows_pending',False)):
+            self._rows_pending=True
+            QTimer.singleShot(0,self._responsive_rows)
+        return result
 
     def _toggle_config(self, expanded: bool) -> None:
         self._stage = "settings" if expanded else "candidates"
@@ -1102,12 +1115,18 @@ class HighlightAssistantPanel(QWidget):
         settings_shown = not compact_empty and form_expanded
         self.settings_area.setVisible(settings_shown)
         self.config_body.setVisible(not compact_empty and form_expanded)
-        self.config_summary.setVisible(not compact_empty and not form_expanded)
+        self.config_summary.setVisible(not compact_empty and not form_expanded and not has_candidates)
         self.config_toggle.setVisible(not compact_empty)
         self.analyze_button.setVisible(not compact_empty)
         if has_candidates and not form_expanded:
-            bind_text(self.config_summary, '{count} 条候选 · {data}', count=self.results.count(),
-                      data=tr(self._source_label()))
+            bind_text(self.config_summary, '分析信息')
+        self.analyze_button.setObjectName('studioButton' if has_candidates else 'studioPrimary')
+        self.analyze_button.setProperty('buttonRole','secondary' if has_candidates else 'primary')
+        self.analyze_button.setProperty('softRole','ghost' if has_candidates else 'primary')
+        self.analyze_button.setProperty('softSize','sm' if has_candidates else 'lg')
+        self.analyze_button.style().unpolish(self.analyze_button)
+        self.analyze_button.style().polish(self.analyze_button)
+        install_themed_icon(self.analyze_button,'fa5s.redo' if has_candidates else 'fa5s.magic','secondary' if has_candidates else 'on_accent')
         if not getattr(self, "_analyzing", False):
             (bind_text(self.analyze_button, '重新分析') if has_candidates
              else bind_text(self.analyze_button, '分析录播'))
@@ -1173,6 +1192,10 @@ class HighlightAssistantPanel(QWidget):
     def set_project_status(self, project: SubtitleProject | None, danmaku_path: str = "") -> None:
         if project is not self._project:
             self.show_edit_result("")
+            info=(project.studio_state.get('highlight_analysis') or {}) if project else {}
+            self.offset_box.setValue(int(info.get('danmaku_offset_ms') or 0)/1000)
+            self._show_all=False
+            self._analysis_note=''
         previous = self.autocut_audio_track.currentData()
         self.autocut_audio_track.blockSignals(True)
         self.autocut_audio_track.clear()
@@ -1183,6 +1206,15 @@ class HighlightAssistantPanel(QWidget):
         self.autocut_audio_track.setCurrentIndex(max(0,index))
         self.autocut_audio_track.blockSignals(False)
         self._project = project
+        from ..media.danmaku_binding import analysis_sources, primary_source
+        selected_source=primary_source(project)
+        self.source_combo.blockSignals(True)
+        self.source_combo.clear()
+        for asset in analysis_sources(project):
+            self.source_combo.addItem(asset.display_name or Path(asset.canonical_source).name,asset.canonical_source)
+        self.source_combo.setCurrentIndex(max(0,self.source_combo.findData(selected_source)))
+        self.source_combo.blockSignals(False)
+        self.source_combo.setToolTip(selected_source)
         from ..media.danmaku_binding import binding_of, binding_matches_source, describe
         # An XML recorded for another source recording is never analysed.
         if project is not None and binding_of(project) and not binding_matches_source(project):
@@ -1197,7 +1229,8 @@ class HighlightAssistantPanel(QWidget):
             bind_text(self.status, '空白工程。先导入视频或音频，再导入弹幕 XML 或字幕。')
         else:
             # Asset counts live once in the 数据 group — no triple repetition.
-            self.status.setText("")
+            info=project.studio_state.get('highlight_analysis') or {}
+            self.status.setText(str(info.get('llm_error') or '') if info.get('source_path')==selected_source else '')
         self.status.setVisible(bool(self.status.text()))
         self._refresh_skill()
         self._refresh_data_mode()
@@ -1205,7 +1238,7 @@ class HighlightAssistantPanel(QWidget):
         self._sequence_edited = not sequence.is_identity()
         candidates = sequence.clip_candidates
         signature = json.dumps(
-            [candidate.to_dict() for candidate in candidates],
+            [selected_source, [candidate.to_dict() for candidate in candidates]],
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -1219,7 +1252,7 @@ class HighlightAssistantPanel(QWidget):
 
     def _refresh_data_mode(self) -> None:
         cue_count = (
-            len(analysis_transcript_cues(self._project)) or len(self._project.cues)
+            len(highlight_transcript_project(self._project).cues)
             if self._project is not None
             else 0
         )
@@ -1243,7 +1276,7 @@ class HighlightAssistantPanel(QWidget):
         bind_text(self.detected_data, '自动分析：{automatic}（{xml_text}）', automatic=tr(automatic), xml_text=tr(xml_text))
         bind_text(self.config_summary, '{automatic} · {value1} 个 · {value2}–{value3} 秒', automatic=tr(automatic), value1=self.count_box.value(), value2=self.min_box.value(), value3=self.max_box.value())
         available = self._auto_mode != "none"
-        self.analyze_button.setEnabled(available)
+        self.analyze_button.setEnabled(available and not getattr(self,"_analyzing",False))
         (bind_text(self.analyze_button, '', property='toolTip') if available else bind_text(self.analyze_button, '请先识别字幕或导入弹幕 XML', property='toolTip'))
         if hasattr(self, "empty_summary"):
             bind_text(self.empty_summary, '候选数 {value0}\n建议长度 {value1}–{value2}秒', value0=self.count_box.value(), value1=self.min_box.value(), value2=self.max_box.value())
@@ -1345,30 +1378,19 @@ class HighlightAssistantPanel(QWidget):
             str(self.ai_model_combo.currentData() or ""),
         )
 
-    def set_analysis_note(self, llm_status: str, llm_error: str = "") -> None:
-        """Surface why AI ranking was skipped; shown until the next analysis."""
-        if str(llm_status or "") == "local_fallback":
-            error = " ".join(str(llm_error or "").split())[:120]
-            self._analysis_note = (
-                f"AI 排序不可用，已使用本地分析结果（原因：{error or '未知'}）。"
-                "候选理由为原始弹幕/字幕证据。"
-            )
-        else:
-            self._analysis_note = ""
-        self._append_analysis_note()
+    def set_analysis_note(self, llm_status, llm_error=''):
+        self._analysis_note=tr('AI 暂不可用，已保留本地建议。') if llm_status=='local_fallback' else ''
+        if llm_status=='not_needed':
+            self._analysis_note=tr('当前依据是弹幕；补充字幕后，可得到更具体的内容和起止建议。')
+        self.local_hint.setText(self._analysis_note)
+        self.local_hint.setVisible(bool(self._analysis_note))
+        # Technical detail belongs beside analysis information, never on cards.
+        self.status.setText(str(llm_error or ''))
+        self.status.setVisible(bool(llm_error))
 
-    def _append_analysis_note(self) -> None:
-        if self._project is None:
-            return
-        base = self.status.text()
-        # Strip the previously embedded note so a cleared note really disappears.
-        if self._last_note and self._last_note in base:
-            base = base.replace("\n" + self._last_note, "").replace(self._last_note, "")
-        if self._analysis_note:
-            base = f"{base}\n{self._analysis_note}" if base else self._analysis_note
-        self.status.setText(base)
-        self.status.setVisible(bool(base))
-        self._last_note = self._analysis_note
+    def _append_analysis_note(self):
+        self.local_hint.setText(self._analysis_note)
+        self.local_hint.setVisible(bool(self._analysis_note))
 
     def set_danmaku_state(self, state: str, name: str = "", fields: dict | None = None) -> None:
         """Concrete XML state from danmaku_binding.describe; never a bare 'unmatched'."""
@@ -1429,67 +1451,83 @@ class HighlightAssistantPanel(QWidget):
             self.xml_unbind_button.hide()
         self._refresh_data_mode()
 
-    def reload_candidates(self, candidates: list[HighlightCandidate]) -> None:
+    def reload_candidates(self, candidates):
+        from ..media.danmaku_binding import primary_source, normalized_source
+        source=normalized_source(primary_source(self._project)) if self._project else ''
+        self._all_candidates=list(candidates)
+        current=self.current_id()
+        scroll=self.results.verticalScrollBar().value()
+        expanded={self.results.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.results.count())
+                  if not self.results.itemWidget(self.results.item(i)).details_body.isHidden()}
+        focus=self.focusWidget()
+        focus_key=(focus.property('candidateId'),focus.objectName()) if focus else None
         self.results.clear()
         self.bin.clear()
-        accepted = [candidate for candidate in candidates if candidate.status == "accepted"]
-        for candidate in candidates:
+        visible=[c for c in candidates if c.status!='ignored' and (not source or not c.source_path
+                  or normalized_source(c.source_path)==source)]
+        accepted=[c for c in candidates if c.status=='accepted' and c.clip_range]
+        shown=visible if self._show_all else visible[:5]
+        for candidate in shown:
             candidate.validate()
-            if candidate.status == "ignored":
-                continue
-            clock = _clock_range(candidate.source_in_ms, candidate.source_out_ms)
-            spike = ""
-            signal = candidate.danmaku_signal or {}
-            if signal.get("peak") and signal.get("baseline"):
-                try:
-                    spike = f" · 弹幕 {float(signal['peak']) / max(1.0, float(signal['baseline'])):.1f}×"
-                except (TypeError, ValueError):
-                    spike = ""
-            label = f"{int(candidate.score * 100):02d}  {candidate.title}\n{clock}{spike}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, candidate.id)
+            # The embedded card paints the title. A second DisplayRole title
+            # leaks through transparent margins and overlaps narrow cards.
+            item=QListWidgetItem()
+            item.setData(Qt.ItemDataRole.AccessibleTextRole,candidate.title)
+            item.setData(Qt.ItemDataRole.UserRole,candidate.id)
             self.results.addItem(item)
-            card = HighlightCandidateCard(candidate, self.results)
+            card=HighlightCandidateCard(candidate,self.results)
             card.preview_requested.connect(self._preview_candidate)
             card.accept_requested.connect(self.add_to_bin_requested.emit)
             card.remove_requested.connect(self.remove_from_bin_requested.emit)
             card.ignore_requested.connect(self.ignore_requested.emit)
-            item.setSizeHint(QSize(0, card.sizeHint().height()))
-            self.results.setItemWidget(item, card)
-        for index, candidate in enumerate(accepted):
-            bin_item = QListWidgetItem()
-            bin_item.setData(Qt.ItemDataRole.UserRole, candidate.id)
-            self.bin.addItem(bin_item)
-            card = HighlightBinCard(candidate, index, len(accepted), self.bin)
+            card.context_requested.connect(self.context_requested.emit)
+            card.edit_requested.connect(self.edit_requested.emit)
+            self.results.setItemWidget(item,card)
+            if candidate.id in expanded:card.details_body.show()
+            item.setSizeHint(QSize(0,card.sizeHint().height()))
+            if candidate.id==current:self.results.setCurrentItem(item)
+            if focus_key and focus_key[0]==candidate.id:
+                target=card.findChild(QWidget,focus_key[1])
+                if target:target.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.results.verticalScrollBar().setValue(scroll)
+        for index,candidate in enumerate(accepted):
+            item=QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole,candidate.id)
+            self.bin.addItem(item)
+            card=HighlightBinCard(candidate,index,len(accepted),self.bin)
             card.remove_requested.connect(self.remove_from_bin_requested.emit)
             card.move_requested.connect(self.candidate_move_requested.emit)
-            bin_item.setSizeHint(QSize(0, card.sizeHint().height()))
-            self.bin.setItemWidget(bin_item, card)
-        # As tall as its rows (at most 150 px), so the leftover height goes to
-        # the candidate list instead of a blank area under the bin.
-        rows = sum(self.bin.sizeHintForRow(i) + 2 * self.bin.spacing() for i in range(self.bin.count()))
-        self.bin.setFixedHeight(max(48, min(150, rows + 2 * self.bin.frameWidth() + 2)))
-        total_ms =sum(max(0, c.source_out_ms - c.source_in_ms) for c in accepted)
-        bind_text(self.bin_toggle, '剪辑候选箱 · {count} 段 · 共 {duration}', count=len(accepted),
-                  duration=_duration_label(total_ms))
-        # Collapsed summary: the generation order and the ranges really kept.
-        self.bin_label.setText("  ".join(
-            f"{index}. {_clock_range(c.source_in_ms, c.source_out_ms)}" for index, c in enumerate(accepted, 1)))
+            item.setSizeHint(QSize(0,card.sizeHint().height()))
+            self.bin.setItemWidget(item,card)
+        rows=sum(self.bin.sizeHintForRow(i)+2*self.bin.spacing() for i in range(self.bin.count()))
+        self.bin.setFixedHeight(max(48,min(180,rows+4)))
+        total=sum(c.source_out_ms-c.source_in_ms for c in accepted)
+        bind_text(self.bin_toggle,'待生成清单 · {count} 段 · {duration}',count=len(accepted),duration=_duration_label(total))
+        self.bin_label.setText('  '.join(f'{i}. {_clock_range(*c.clip_range)}' for i,c in enumerate(accepted,1)))
+        if accepted and getattr(self,'_bin_count',0)!=len(accepted):self.bin_toggle.setChecked(False)
+        self._bin_count=len(accepted)
         self._refresh_bin_controls()
-        has_candidates = self.results.count() > 0
-        bind_text(self.candidates_heading, '剪辑候选 · {value0} 条（按推荐度排序）', value0=self.results.count())
-        # Fold settings when candidates first appear; adding to the bin or a
-        # refresh must not fold settings the user opened again.
-        had_candidates = getattr(self, "_had_candidates", False)
-        self._had_candidates = has_candidates
-        if has_candidates != had_candidates or not has_candidates:
-            self._show_stage("candidates" if has_candidates else "settings")
-        else:
-            self._apply_stage()
-        if self._project is not None:
-            # Cues may have been added since the project was bound.
-            self._refresh_data_mode()
+        ready=sum(bool(c.clip_range) for c in visible)
+        bind_text(self.candidates_heading,'剪辑建议 {ready} 段 · 待确认 {pending} 处',ready=ready,pending=len(visible)-ready)
+        bind_text(self.more_candidates,'收起其余建议' if self._show_all else '展开其余 {count} 条',count=max(0,len(visible)-5))
+        self.more_candidates.setVisible(len(visible)>5)
+        has_candidates=bool(visible)
+        had=getattr(self,'_had_candidates',False)
+        self._had_candidates=has_candidates
+        if has_candidates and not had:self._show_stage('candidates')
+        else:self._apply_stage()
+        if not has_candidates:
+            bind_text(self.candidates_empty,'没有足够依据的剪辑建议。可以补充字幕，或在时间轴用 I / O 手动选取片段。')
         self._refresh_analysis_source()
+
+    def _toggle_more_candidates(self):
+        self._show_all=not self._show_all
+        self.reload_candidates(self._all_candidates)
+
+    def set_progress(self, label, percent):
+        if not getattr(self,'_analyzing',False):return
+        self.progress_label.setText(tr(label))
+        self.analysis_progress.setValue(percent)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1552,6 +1590,8 @@ class HighlightAssistantPanel(QWidget):
         self._analyzing = True
         bind_text(self.analyze_button, '正在分析…')
         self.cancel_button.show()
+        self.analysis_progress.show()
+        self.progress_label.show()
         self._analysis_note = ""
         ai_service, ai_model = self.selected_ai()
         self.analyze_requested.emit(
@@ -1562,6 +1602,7 @@ class HighlightAssistantPanel(QWidget):
                 "max_seconds": int(self.max_box.value()),
                 "ai_service": ai_service,
                 "model": ai_model,
+                "danmaku_offset_ms": round(self.offset_box.value()*1000),
             }
         )
 
@@ -1575,6 +1616,8 @@ class HighlightAssistantPanel(QWidget):
 
     def analysis_finished(self) -> None:
         self._analyzing = False
+        self.analysis_progress.hide()
+        self.progress_label.hide()
         self.analyze_button.setEnabled(self._auto_mode != "none")
         (bind_text(self.analyze_button, '重新分析') if self.results.count()
          else bind_text(self.analyze_button, '分析录播'))
@@ -1600,16 +1643,19 @@ def _clock_range(start_ms: int, end_ms: int) -> str:
         total = max(0, int(ms)) // 1000
         minutes, seconds = divmod(total, 60)
         hours, minutes = divmod(minutes, 60)
+        fraction=f'.{int(ms)%1000:03d}' if int(ms)%1000 else ''
         if hours:
-            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes:02d}:{seconds:02d}"
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}{fraction}"
+        return f"{minutes:02d}:{seconds:02d}{fraction}"
     return f"{clock(start_ms)} – {clock(end_ms)}"
 
 
 def _duration_label(ms: int) -> str:
+    if int(ms)%1000:
+        return tr('{seconds} 秒',seconds=f'{max(0,int(ms))/1000:.3f}'.rstrip('0').rstrip('.'))
     seconds = max(0, int(ms)) // 1000
     if seconds < 60:
-        return f"{seconds}秒"
+        return tr('{seconds} 秒',seconds=seconds)
     minutes, sec = divmod(seconds, 60)
     if minutes < 60:
         return f"{minutes}分{sec:02d}秒" if sec else f"{minutes}分钟"

@@ -54,7 +54,7 @@ def test_cluster_recall_merges_contiguous_spikes(tmp_path):
     rows: list[tuple[float, str]] = []
     for window in range(10):
         for i in range(8):
-            rows.append((window * 30 + i * 3 + 0.5, "哈哈哈哈 笑死"))
+            rows.append((window * 30 + i * 3 + 0.5, ("哈哈哈哈 笑死", "？？？", "太强了")[i % 3]))
     rows += [(305 + i, "普通聊天") for i in range(3)]
     document = parse_danmaku_xml(_xml(tmp_path / "long.xml", rows))
     cues = [StudioCue(f"c{i}", i * 30_000, i * 30_000 + 2_000, "正常对话内容平平淡淡") for i in range(11)]
@@ -85,7 +85,7 @@ def test_quiet_highlight_recalled_with_danmaku_bound(tmp_path):
 
 def test_quiet_quality_window_admitted(tmp_path):
     """低量高质弹幕（每条都带反应词）凭内容准入，不需要密度峰。"""
-    rows = [(1 + i, "牛！太强了") for i in range(6)]        # w0: 6 条 hype
+    rows = [(1 + i, ("牛！太强了", "厉害", "封神")[i % 3]) for i in range(6)]        # w0: 6 条 hype
     rows += [(31 + i, "普通") for i in range(6)]            # w1: 6 条无反应
     rows += [(61 + i, "普通") for i in range(6)]            # w2: 6 条无反应
     document = parse_danmaku_xml(_xml(tmp_path / "quality.xml", rows))
@@ -97,20 +97,14 @@ def test_quiet_quality_window_admitted(tmp_path):
 
 
 def test_gap_merge_nms_merges_fragments_not_events():
-    inside = HighlightCandidate("a", "整局翻盘", 0, 600_000, 0.9)
-    fragment = HighlightCandidate("b", "同一局的收尾", 630_000, 810_000, 0.8)  # 180s，gap 30s → 合并
-    merged = merge_overlapping_candidates([inside, fragment])
-    assert len(merged) == 1
-    assert merged[0].source_in_ms == 0 and merged[0].source_out_ms == 810_000
-
-    separate_a = HighlightCandidate("c", "事件一", 0, 30_000, 0.9)
-    separate_b = HighlightCandidate("d", "事件二", 90_000, 120_000, 0.8)  # gap 60s > 阈值 → 不合并
-    kept = merge_overlapping_candidates([separate_a, separate_b])
-    assert len(kept) == 2
-
-    contained = HighlightCandidate("e", "爆点", 100_000, 130_000, 0.85)
-    host = HighlightCandidate("f", "完整事件", 40_000, 400_000, 0.9)
-    assert len(merge_overlapping_candidates([contained, host])) == 1
+    # 10-24: proximity alone must not join distinct events or enlarge a cut.
+    inside = HighlightCandidate("a", "整局", 0, 600000, .9)
+    fragment = HighlightCandidate("b", "后续", 630000, 810000, .8)
+    assert len(merge_overlapping_candidates([inside,fragment])) == 2
+    contained = HighlightCandidate("e", "重复范围", 100000, 130000, .85)
+    host = HighlightCandidate("f", "原范围", 40000, 400000, .9)
+    result = merge_overlapping_candidates([contained,host])
+    assert len(result)==1 and result[0].source_out_ms==400000
 
 
 def test_cluster_windows_groups_by_time_gap():
@@ -136,13 +130,14 @@ def test_candidates_from_local_keeps_long_cluster_span(tmp_path):
     rows: list[tuple[float, str]] = []
     for window in range(20):
         for i in range(8):
-            rows.append((window * 30 + i * 3 + 0.5, "哈哈哈哈 笑死"))
+            rows.append((window * 30 + i * 3 + 0.5, ("哈哈哈哈 笑死", "？？？", "太强了")[i % 3]))
     document = parse_danmaku_xml(_xml(tmp_path / "long20.xml", rows))
     cues = [StudioCue(f"c{i}", i * 30_000, i * 30_000 + 2_000, "正常对话") for i in range(21)]
     locals_ = discover_local_candidates(_project(cues, 660_000), document, window_ms=30_000)
     fallback = candidates_from_local(_project(cues, 660_000), locals_, limit=3, max_seconds=1200)
     assert fallback, "本地回退应产生候选"
-    assert fallback[0].source_out_ms - fallback[0].source_in_ms >= 590_000, "max>600s 时 10 分钟片段不应被截断"
+    assert fallback[0].context_out_ms - fallback[0].context_in_ms >= 590_000
+    assert fallback[0].clip_range is None, "长反应簇是上下文，不能冒充成片范围"
 
 
 def test_length_spinbox_range_and_coupling(tmp_path):
@@ -180,32 +175,14 @@ def test_analysis_auto_collapses_settings(tmp_path):
 
 def test_card_evidence_visible_by_default(tmp_path):
     _app()
-    panel = HighlightAssistantPanel()
-    panel.resize(300, 720)
-    panel.reload_candidates([
-        HighlightCandidate(
-            "k1",
-            "翻盘名场面",
-            10_000,
-            190_000,
-            0.9,
-            reason="观众反应集中",
-            quotes=["牛！这就是翻盘", "泪目了"],
-            danmaku_evidence=["弹幕高峰 2 段共 41 条"],
-        ),
-    ])
-    card = panel.results.itemWidget(panel.results.item(0))
-    assert card is not None
-    evidence = card.findChild(QLabel, "highlightEvidence")
-    # 2026-09-18 五字段规约：原始弹幕默认收起、随详情展开（2026-09-19
-    # 修复了 evidence 曾永远不可见的存量 bug——现在详情按钮真正联动）。
-    assert evidence is not None and bool(evidence.text())
-    assert evidence.isHidden()
-    detail_button = next(
-        button for button in card.findChildren(QPushButton) if button.text() == "详情"
-    )
-    detail_button.click()
-    assert not evidence.isHidden()
+    panel=HighlightAssistantPanel()
+    panel.reload_candidates([HighlightCandidate('k1','观众赞叹',10000,190000,.9,
+        evidence=[dict(id='d:1',kind='danmaku',start_ms=12000,end_ms=12000,text='牛！')])])
+    card=panel.results.itemWidget(panel.results.item(0))
+    evidence=card.findChild(QLabel,'highlightEvidence')
+    assert evidence and '牛！' in evidence.text() and not evidence.isVisibleTo(card)
+    card.details_action.trigger()
+    assert evidence.isVisibleTo(card)
     panel.deleteLater()
 
 
@@ -259,15 +236,13 @@ def test_panel_ai_selection_persisted_and_emitted(tmp_path, monkeypatch):
 
 
 def test_analysis_note_surfaced_on_llm_fallback(tmp_path):
-    _app()
-    panel = HighlightAssistantPanel()
-    project = _project([StudioCue("c0", 0, 2_000, "开场白")], 30_000)
-    panel.set_project_status(project, "")
-    panel.set_analysis_note("local_fallback", "HTTP 401 unauthorized")
-    assert "AI 排序不可用" in panel.status.text()
-    assert "401" in panel.status.text()
-    panel.set_analysis_note("completed", "")
-    assert "AI 排序不可用" not in panel.status.text(), "成功后提示应清除"
+    _app();panel=HighlightAssistantPanel()
+    panel.set_project_status(_project([StudioCue('c0',0,2000,'开场白')],30000),'')
+    panel.set_analysis_note('local_fallback','HTTP 401 unauthorized')
+    assert '已保留本地建议' in panel.local_hint.text()
+    assert '401' in panel.status.text() and '401' not in panel.local_hint.text()
+    panel.set_analysis_note('completed','')
+    assert not panel.local_hint.text()
     panel.deleteLater()
 
 
@@ -293,47 +268,31 @@ def test_cluster_stats_is_single_source_for_card_and_reason(tmp_path):
 
 
 def test_local_fallback_is_honest_not_fabricated(tmp_path):
-    from twobyteasr.projects.studio_project import StudioSpeaker
-
-    project = SubtitleProject(media=StudioMedia(path="rec.flv", duration_ms=120_000))
-    project.speakers.append(StudioSpeaker(id="S01", name="主播"))
-    for i in range(20):
-        project.cues.append(StudioCue(f"c{i}", 5_000 + i * 5_000, 8_000 + i * 5_000, f"第{i}局开始了", speaker_id="S01"))
-    rows = [(10 + i * 0.4, "哈哈" if i % 2 else "？") for i in range(30)]
-    document = parse_danmaku_xml(_xml(tmp_path / "local.xml", rows))
-    candidates = discover_local_candidates(project, document, window_ms=10_000)
-    fallback = candidates_from_local(project, candidates, limit=3, max_seconds=60)
+    project=_project([StudioCue('c0',10000,12000,'普通对话')],120000)
+    rows=[(10+i*.2,('哈哈哈','？？？','真的假的')[i%3]) for i in range(30)]
+    document=parse_danmaku_xml(_xml(tmp_path/'local.xml',rows))
+    candidates=discover_local_candidates(project,document,window_ms=10000)
+    fallback=candidates_from_local(project,candidates,limit=3,max_seconds=60)
     assert fallback
-    item = fallback[0]
-    # 标题不再用截断台词冒充事件；标注待核实。
-    assert "待核实" in item.title
-    assert item.title != item.subtitle_evidence[0] if item.subtitle_evidence else True
-    assert item.origin == "local"
-    assert item.context_required == "high"
-    # 发生了什么=台词摘录（明确来源），不编造事件。
-    assert "主播台词摘录" in (item.event_summary or "")
-    # 为什么值得剪=热度证据+待核实声明，不含"观众反应集中："数字翻译前缀。
-    assert "尚未核实" in item.clip_reason
-    assert not item.clip_reason.startswith("观众反应集中：")
-    # 统计为簇级口径（卡片底部同 dict）。
-    signal = item.danmaku_signal
-    assert "usable_total" in signal and "windows" in signal and "peak_spike" in signal
-    assert "funny_count" in signal and "chaos_count" in signal
-    # 信号范围字幕上下文随候选存档（重生成解释/人工核对共享）。
-    assert item.subtitle_context
+    item=fallback[0]
+    assert item.origin=='local' and item.clip_range is None
+    assert '附近' in item.title and '弹幕集中' in item.title
+    assert item.grade=='待确认' and '热窗' not in item.clip_reason
+    assert any(r['kind']=='danmaku' and r['text'] in {'哈哈哈','？？？','真的假的'} for r in item.evidence)
+    assert any(r['kind']=='subtitle' for r in item.evidence)
 
 
 def test_replace_candidates_preserves_user_status():
     from twobyteasr.timeline.studio_edit_commands import replace_candidates_command
     from twobyteasr.timeline.studio_edit_sequence import sequence_of
-
-    project = SubtitleProject(media=StudioMedia(path="r.flv", duration_ms=600_000))
-    old = HighlightCandidate("old-1", "旧", 100_000, 160_000, 0.8, status="accepted")
-    sequence_of(project).clip_candidates = [old]
-    fresh = HighlightCandidate("new-1", "新", 102_000, 158_000, 0.9)
-    replace_candidates_command(project, [fresh]).redo()
-    stored = sequence_of(project).clip_candidates
-    assert stored[0].status == "accepted"  # 重生成不丢用户取舍
-    other = HighlightCandidate("new-2", "无关", 400_000, 460_000, 0.7)
-    replace_candidates_command(project, [other]).redo()
-    assert sequence_of(project).clip_candidates[0].status == "suggested"
+    project=SubtitleProject(media=StudioMedia(path='r.flv',duration_ms=600000))
+    old=HighlightCandidate('old-1','旧',100000,160000,.8,status='accepted',source_path='r.flv')
+    sequence_of(project).clip_candidates=[old]
+    fresh=HighlightCandidate('new-1','新',102000,158000,.9,source_path='r.flv')
+    replace_candidates_command(project,[fresh],preserve_decisions=True).redo()
+    assert sequence_of(project).clip_candidates[0].status=='accepted'
+    row=sequence_of(project).clip_candidates[0]
+    import copy
+    row=copy.deepcopy(row);row.status='suggested'
+    replace_candidates_command(project,[row]).redo()
+    assert sequence_of(project).clip_candidates[0].status=='suggested'

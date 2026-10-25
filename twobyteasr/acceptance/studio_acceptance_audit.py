@@ -87,11 +87,16 @@ def isolate_acceptance_settings() -> None:
         from .translation_requests_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('run-diagnosis', 'mosi-failure'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('run-diagnosis', 'mosi-failure', 'mosi-blocked',
+                                                             'mosi-timing'):
         from .run_diagnosis_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('export-page', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'update-reminder':
+        from .update_reminder_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('workspace-drag', 'caption-workbench', 'export-page', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -113,6 +118,10 @@ def isolate_acceptance_settings() -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'claude-service':
         from .claude_service_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'smart-glossary-ai':
+        from .smart_glossary_ai_audit import install_guards
         install_guards()
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'grouping-prompt':
@@ -163,6 +172,10 @@ def isolate_acceptance_settings() -> None:
         install_offline_guards()
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'moss-full-context':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'navigation-performance':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -456,6 +469,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'navigation-performance':
+        from .navigation_performance_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-pages':
         from .perf_pages_audit import start
         output = audit_directory()
@@ -531,6 +549,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'clip-suggestions':
+        from .clip_suggestions_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-panels':
         from .studio_panels_audit import start
         output = audit_directory()
@@ -553,6 +576,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'recognition-sheet':
         from .recognition_sheet_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'glossary-av-split':
+        from .glossary_av_split_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'range-recognition':
+        from .range_recognition_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -657,6 +690,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'glossary-input','glossary-input-restore'}:
         from .glossary_input_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'smart-glossary-ai':
+        from .smart_glossary_ai_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -801,6 +839,21 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mosi-blocked':
+        from .mosi_blocked_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'mosi-timing':
+        from .mosi_timing_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'update-reminder':
+        from .update_reminder_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-workflow':
         from .editor_workflow_audit import start
         output = audit_directory()
@@ -859,6 +912,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'preview-scale':
         from .preview_scale_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'workspace-drag':
+        from .workspace_drag_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'caption-workbench':
+        from .caption_workbench_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

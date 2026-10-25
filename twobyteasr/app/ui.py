@@ -29,6 +29,7 @@ Shared widgets live in design/.
 
 from __future__ import annotations
 
+from ..diagnostics.navigation_timing import timed as navigation_timed
 from ..diagnostics.studio_events import observed
 
 import os
@@ -297,10 +298,11 @@ QWEN_API_KEY_HELP_URL = "https://help.aliyun.com/zh/model-studio/get-api-key"
 
 ASR_API_PRESETS = {
     # 2026-10-13: Qwen Cloud — the official international Qwen API platform
-    # (home.qwencloud.com). One pay-as-you-go key, no workspace host, no OSS:
-    # audio goes through the provider's own 48-hour temporary upload.
+    # (home.qwencloud.com). One pay-as-you-go key, no workspace host. 2026-10-25:
+    # the same entry also serves the mainland site 千问AI平台 (maas.qianwenaiapi.com);
+    # the setup dialog writes that host into the URL when 中国站 is chosen.
     "qwen_cloud_filetrans": {
-        "short": "Qwen Cloud 录音文件识别", "label": "Qwen Cloud（Qwen 官方 API）｜录音文件识别",
+        "short": "Qwen 官方 录音文件识别", "label": "Qwen 官方 API（千问AI平台 / Qwen Cloud）｜录音文件识别",
         "protocol": "dashscope_filetrans", "model": "qwen-audio-3.1-asr-flash-filetrans",
         "models": ("qwen-audio-3.1-asr-flash-filetrans", "qwen3-asr-flash-filetrans"),
         "url": "https://maas.qwencloudapi.com/api/v1/services/audio/asr/transcription",
@@ -351,14 +353,14 @@ ASR_API_PRESETS = {
     # 要求移除）；settings 加载器把存量 provider=openrouter 迁移到字级通道。
     "openrouter_word": {
         "short": "OpenRouter",
-        "label": "OpenRouter MAI 2.1（模型映射待验证）",
+        "label": "OpenRouter MAI-Transcribe 2",
         "protocol": "openrouter_verbose_json",
-        "model": "",
+        "model": "microsoft/mai-transcribe-2",
         "url": "https://openrouter.ai/api/v1/audio/transcriptions",
     },
     "azure": {
         "short": "Azure",
-        "label": "Azure MAI 2.1（部署映射待验证）",
+        "label": "Azure OpenAI 部署（如 whisper）",
         "protocol": "azure_transcription",
         "model": "",
         "url": "",
@@ -1010,6 +1012,8 @@ class MainWindow(QWidget):
         self.legacy = legacy
         self.pipeline = pipeline
         self.startup_self_test = startup_self_test
+        from ..diagnostics.navigation_timing import install_shutdown_flush
+        install_shutdown_flush(QApplication.instance())
         self._recognition_page_deferred = startup_page == "project_library"
         self.profile_store = ProjectProfileStore()
         self.current_project_profile: ProjectProfile | None = None
@@ -1149,7 +1153,7 @@ class MainWindow(QWidget):
         # P0: background preload of model install status + term index after first paint.
         # Never on click path; cheap FS/metadata only. No spinners.
         if self._recognition_page_deferred:
-            self._switch_page(self.studio_page)
+            self.open_studio_project(source='startup_library')
         else:
             QTimer.singleShot(0, self, self._background_preload)
             QTimer.singleShot(0, self, self._restore_last_project_profile)
@@ -1218,15 +1222,33 @@ class MainWindow(QWidget):
         self._studio_page_instance = page
 
     def _build_lazy_page(self, name: str):
+        partial = self.__dict__.get('_studio_page_building') if name == 'studio' else None
+        if partial is not None:
+            partial.finish_workspace_construction()
+            self._studio_construction_finished()
+            return self.built_page('studio')
+        # A queued entry whose construction has not started yet (it waits for
+        # the loading page to paint): a caller needs the page now. Build it
+        # here, keep the queued start from building a second page, and serve
+        # the queued request as a finished construction would (2026-10-25).
+        queued = name == 'studio' and self.__dict__.get('_studio_entry_pending') is not None
+        if queued:
+            self._studio_entry_start_queued = False
         # First visit builds the page (0.5-2 s with many reports): show the
         # busy cursor at once instead of an unexplained pause after the click.
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            return self._construct_lazy_page(name)
+            page = self._construct_lazy_page(name)
         finally:
             QApplication.restoreOverrideCursor()
+        if queued:
+            request, self._studio_entry_pending = self.__dict__.get('_studio_entry_pending'), None
+            if request is not None:
+                path, options = request
+                self.open_studio_project(path, **options)
+        return page
 
-    def _construct_lazy_page(self, name: str):
+    def _construct_lazy_page(self, name: str, prepared=None):
         started = time.perf_counter()
         if name == "workshop":
             page = ModelWorkshopPage(APP_ROOT, self.legacy.RUNTIME_SETTINGS, self)
@@ -1264,7 +1286,7 @@ class MainWindow(QWidget):
             # Imported on first use (or by the idle warm-up after startup):
             # the Studio module tree is ~0.5 s of the home page's start.
             from twobyteasr.studio.studio_ui import SubtitleStudioPage
-            page = SubtitleStudioPage(self)
+            page = prepared if prepared is not None else SubtitleStudioPage(self)
             self._studio_page_instance = page
             page.return_requested.connect(self._return_to_settings)
             page.glossary_proofread_requested.connect(self._open_studio_glossary_proofread)
@@ -1500,7 +1522,7 @@ class MainWindow(QWidget):
         self.subtitle_studio_button = AnimatedButton("字幕工作台")
         self.subtitle_studio_button.setObjectName("softAction")
         install_themed_icon(self.subtitle_studio_button, "fa5s.closed-captioning", "accent")
-        self.subtitle_studio_button.clicked.connect(self._open_subtitle_studio)
+        self.subtitle_studio_button.clicked.connect(lambda _checked=False: self.open_studio_project(source='header'))
         row.addWidget(self.subtitle_studio_button)
         self.model_workshop_button = AnimatedButton("模型工坊")
         self.model_workshop_button.setObjectName("softAction")
@@ -1649,6 +1671,7 @@ class MainWindow(QWidget):
             handle.setVisible(not hidden)
             handle.raise_()
 
+    @navigation_timed('navigation.refresh')
     def _page_changed(self, index: int):
         current = self.pages.widget(index)
         if current is self.__dict__.get("settings_scroll"):
@@ -1687,6 +1710,7 @@ class MainWindow(QWidget):
         _apply_ui_zoom(current)
         self._update_bottom_bar_visibility(index)
 
+    @navigation_timed('navigation.layout')
     def _switch_page(self, target) -> None:
         """Commit a stacked-page transition under one paint boundary."""
         widget = self.pages.widget(target) if isinstance(target, int) else target
@@ -1788,8 +1812,13 @@ class MainWindow(QWidget):
         self.workshop_page.restore_active_navigation()
         self._switch_page(self.workshop_page)
 
+    @navigation_timed('studio.entry.dispatch')
     def open_studio_project(self, project_path=None, *, mode="edit", source="canonical", on_ready=None, expected_result_ref=None):
         """Canonical Studio navigation entry for every project-opening source."""
+        if self.built_page('studio') is None:
+            self._queue_studio_construction(project_path, mode=mode, source=source,
+                on_ready=on_ready, expected_result_ref=expected_result_ref)
+            return
         proofread = getattr(self, "glossary_proofread_page", None)
         if proofread is not None and project_path and not proofread.settle_writes(project_path):
             # The proofreading edits of this file are not saved yet; Studio
@@ -1800,8 +1829,12 @@ class MainWindow(QWidget):
             from .external_open import path_identity
             current = self.studio_page.session.project_path
             if current and path_identity(current) == path_identity(project_path):
-                self._switch_page(self.studio_page)
-                return
+                from ..studio.studio_readiness import project_file_identity
+                readiness = getattr(self.studio_page, '_readiness', None)
+                if (readiness is not None and readiness.ready
+                        and readiness.loaded_file_identity == project_file_identity(project_path)):
+                    self._switch_page(self.studio_page)
+                    return
         self.studio_page._studio_trace(
             "ENTRY",
             source=str(source),
@@ -1811,6 +1844,92 @@ class MainWindow(QWidget):
         self._open_subtitle_studio(project_path, mode=mode,
             skip_dirty_guard=source == 'studio_recognition', on_ready=on_ready,
             expected_result_ref=expected_result_ref)
+
+    def _queue_studio_construction(self, project_path, **options):
+        """Cancellable GUI construction; only the latest project request wins."""
+        self._studio_entry_pending = (project_path, options)
+        loading = self.__dict__.get('_studio_entry_loading')
+        if loading is None:
+            loading = QFrame(self.pages)
+            loading.setObjectName('studioEntryLoading')
+            layout = QVBoxLayout(loading)
+            layout.addStretch()
+            self._studio_entry_status = QLabel(tr('正在创建工作台界面…'), loading)
+            self._studio_entry_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(self._studio_entry_status)
+            cancel = QPushButton(tr('返回主页'), loading)
+            cancel.clicked.connect(self._cancel_studio_construction)
+            layout.addWidget(cancel, 0, Qt.AlignmentFlag.AlignCenter)
+            layout.addStretch()
+            self.pages.addWidget(loading)
+            self._studio_entry_loading = loading
+            def painted(event):
+                QFrame.paintEvent(loading, event)
+                if self.__dict__.get('_studio_entry_start_queued', False):
+                    self._studio_entry_start_queued = False
+                    QTimer.singleShot(0, self, self._start_studio_construction)
+            loading.paintEvent = painted
+        self._switch_page(loading)
+        if self.__dict__.get('_studio_entry_discarding', False):
+            return
+        building = self.__dict__.get('_studio_page_building')
+        if building is not None:
+            building.resume_workspace_construction()
+        elif not self.__dict__.get('_studio_entry_start_queued', False):
+            self._studio_entry_start_queued = True
+
+    def _start_studio_construction(self):
+        self._studio_entry_start_queued = False
+        if self.__dict__.get('_studio_entry_pending') is None:
+            return
+        try:
+            from ..studio.studio_ui import SubtitleStudioPage
+            page = SubtitleStudioPage(self, deferred_build=True)
+            self._studio_page_building = page
+            page.workspace_build_progress.connect(
+                lambda stage: self._studio_entry_status.setText(tr('已准备：{stage}；正在继续创建界面…', stage=tr(stage))))
+            page.workspace_build_failed.connect(self._studio_construction_failed)
+            page.workspace_built.connect(self._studio_construction_finished)
+            page.resume_workspace_construction()
+        except Exception as exc:
+            self._studio_entry_status.setText(tr('工作台界面创建失败：{error}', error=str(exc)))
+
+    def _studio_construction_failed(self, error):
+        self._studio_entry_pending = None
+        self._studio_entry_status.setText(tr('工作台界面创建失败：{error}', error=error))
+        page = self.__dict__.get('_studio_page_building')
+        if page is None:
+            return
+        self._studio_entry_discarding = True
+        def disposed():
+            if self.__dict__.get('_studio_page_building') is page:
+                self._studio_page_building = None
+            self._studio_entry_discarding = False
+            if self.__dict__.pop('_close_after_studio_discard', False):
+                self.close()
+            elif self.__dict__.get('_studio_entry_pending') is not None:
+                self._studio_entry_start_queued = True
+                self._studio_entry_status.setText(tr('正在创建工作台界面…'))
+        page.discard_workspace_construction(disposed)
+
+    def _studio_construction_finished(self):
+        page = self.__dict__.get('_studio_page_building')
+        if page is None:
+            return
+        self._studio_page_building = None
+        self._construct_lazy_page('studio', prepared=page)
+        request, self._studio_entry_pending = self.__dict__.get('_studio_entry_pending'), None
+        if request is not None:
+            path, options = request
+            self.open_studio_project(path, **options)
+
+    def _cancel_studio_construction(self):
+        self._studio_entry_pending = None
+        self._studio_entry_start_queued = False
+        page = self.__dict__.get('_studio_page_building')
+        if page is not None:
+            page.pause_workspace_construction()
+        self._switch_page(self.settings_scroll)
 
     def _retry_pending_recognition_reload(self):
         """Reload a recognition handoff that failed to land earlier.
@@ -1841,7 +1960,13 @@ class MainWindow(QWidget):
             expected_result_ref=working_reference(
                 getattr(studio, '_pending_recognition_result_ref', None)) or None)
 
+    @navigation_timed('studio.switch_and_open')
     def _open_subtitle_studio(self, project_path=None, *, mode="edit", skip_dirty_guard=False, on_ready=None, expected_result_ref=None):
+        if self.built_page('studio') is None:
+            self._queue_studio_construction(project_path, mode=mode,
+                source='studio_recognition' if skip_dirty_guard else 'legacy_entry',
+                on_ready=on_ready, expected_result_ref=expected_result_ref)
+            return
         if expected_result_ref:
             from ..recognition.recognition_result import verify_result_reference
             try:
@@ -1866,9 +1991,11 @@ class MainWindow(QWidget):
         self.last_studio_transition_profile = {
             "request_to_layout_settled_ms": round((time.perf_counter() - transition_started) * 1000, 3)
         }
-        # Opening the Studio entry always lands in the Project Hub. Explicit
-        # project paths from completed runs remain a deliberate deep link.
+        # Resume the retained editor after Home. The explicit library command
+        # still closes the project with its save guard and opens the Hub.
         candidate = str(project_path or "")
+        if not candidate and self.studio_page.project is not None:
+            candidate = str(self.studio_page.project_path or '')
         if candidate and not Path(candidate).is_file():
             self.studio_page._studio_trace(
                 "OPEN_FAILED",
@@ -1919,6 +2046,7 @@ class MainWindow(QWidget):
             self.studio_page.show_project_hub()
             self._retry_pending_recognition_reload()
 
+    @navigation_timed('home.return')
     def _return_to_settings(self):
         self._ensure_recognition_page()
         self._refresh_available_asr_choices()
@@ -1991,13 +2119,21 @@ class MainWindow(QWidget):
             "subtitle_output": str(request_options.get("subtitle_output") or ""),
             "translation_script": str(request_options.get("translation_script") or ""),
         }
+        # 2026-10-25: 只重新识别这一段 hears only this stretch of the timeline.
+        range_ms = request_options.get("recognition_range_ms")
+        if range_ms:
+            self._studio_recognition_context["recognition_range_ms"] = [int(v) for v in range_ms]
         from ..recognition.recognition_input import capture_recognition_snapshot
         # 2026-10-24: audio tracks picked in Studio, each recognized on its own
         # input (a fast analysis reads the one picked track).
         lanes = [dict(row) for row in request_options.get("audio_lanes") or ()]
         self._studio_recognition_context["audio_lanes"] = lanes
         try:
-            if lanes and str(action) == "start_analysis":
+            if range_ms:
+                snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()),
+                                                        range_ms=range_ms)
+                snapshot["requested_range_ms"] = [int(v) for v in request_options.get("requested_range_ms") or range_ms]
+            elif lanes and str(action) == "start_analysis":
                 snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()), lane=lanes[0])
             else:
                 snapshot = capture_recognition_snapshot(self.studio_page.project, str(project.resolve()),
@@ -2026,6 +2162,12 @@ class MainWindow(QWidget):
     def _finish_studio_recognition(self, project_path: str, expected_result_ref=None) -> None:
         context = getattr(self, "_studio_recognition_context", None) or {}
         snapshot = context.get("snapshot")
+        if snapshot and snapshot.get("range_ms"):
+            # Only one stretch was recognized: the Studio splices it into the
+            # open project as one undo step instead of opening the result.
+            self._studio_recognition_context = None
+            self.studio_page.apply_range_recognition_result(project_path, snapshot)
+            return
         if snapshot:
             from ..recognition.recognition_input import project_content_revision
             studio = self.studio_page
@@ -2164,6 +2306,7 @@ class MainWindow(QWidget):
             self.history_page.restore_active_navigation()
         self._switch_page(self.history_page)
 
+    @navigation_timed('home.asr_choices')
     def _refresh_available_asr_choices(self):
         """Refresh selectors after a model workshop install or uninstall."""
         if not hasattr(self, "primary_asr_backend"):
@@ -2394,6 +2537,7 @@ class MainWindow(QWidget):
         message = tr('已保存。') + (tr('已设为主力转写。') if use_as_primary else '')
         return True, message + ''.join(notes)
 
+    @navigation_timed('home.workshop')
     def _refresh_workshop_after_asr_change(self):
         workshop = self.built_page("workshop")
         if workshop is None:
@@ -2475,7 +2619,8 @@ class MainWindow(QWidget):
             print(f"[update] confirm failed: {exc}")
         threading.Thread(target=cleanup_after_update, name='update-cleanup', daemon=True).start()
         if automatic_checks_allowed():
-            QTimer.singleShot(automatic_check_delay_ms(), self, self._auto_check_updates)
+            from .application_settings import update_reminder_enabled
+            QTimer.singleShot(automatic_check_delay_ms(update_reminder_enabled()), self, self._auto_check_updates)
         QTimer.singleShot(2500, self, self._warm_studio_module)
         # Hardware, models and cloud setup are checked off the GUI thread.
         QTimer.singleShot(0, self, self._refresh_next_step)
@@ -2528,6 +2673,7 @@ class MainWindow(QWidget):
             return
         self._onboarding_facts = facts
         self._render_next_step()
+        self._onboarding_rendered = generation   # the tutorial waits for this after the demo video (2026-10-24)
 
     def _render_next_step(self):
         card = self.__dict__.get("next_step_card")
@@ -2596,16 +2742,23 @@ class MainWindow(QWidget):
         return next((key for key, plan in PLANS.items() if key != "cloud" and plan.backends[0] == primary), "")
 
     def _choose_plan_in_tutorial(self) -> str:
-        """The tutorial's ② (2026-10-22): cloud or local compared, the choice saved, downloads after the tutorial."""
+        """The tutorial's plan step (2026-10-22): cloud or local compared, the choice saved, downloads after the tutorial.
+
+        2026-10-24: the first step, with the language the videos mainly speak."""
         choice = _open_quick_setup(self, compare=True)
         self._refresh_asr_summary()
         self._refresh_next_step()
         return choice or ""
 
     def _after_quick_setup(self):
-        """After the chooser (2026-10-21): the tutorial if its box stayed ticked, on the home page."""
+        """After the chooser (2026-10-21): the tutorial if its box stayed ticked, on the home page.
+
+        2026-10-24: when a plan was just chosen there, the tutorial's first step
+        (plan and language) does not open the comparison again by itself."""
+        chosen = bool(self.__dict__.pop("_quick_setup_chosen", False))
         if not self.__dict__.pop("_quick_setup_tour", False):
             return
+        self._tutorial_plan_chosen = chosen
         def start_when_home():
             if self.pages.currentWidget() is self.__dict__.get("settings_scroll"):
                 self._start_home_tour()
@@ -2784,7 +2937,8 @@ class MainWindow(QWidget):
         if (self.update_check_worker and self.update_check_worker.isRunning()) or \
                 (self.update_download_worker and self.update_download_worker.isRunning()):
             return
-        worker = UpdateCheckWorker(self, automatic=True)
+        from .application_settings import update_reminder_enabled
+        worker = UpdateCheckWorker(self, automatic=True, reminder=update_reminder_enabled())
         self.update_check_worker = worker
         worker.result_ready.connect(self._auto_update_check_finished)
         worker.failed.connect(self._auto_update_check_failed)
@@ -2799,6 +2953,37 @@ class MainWindow(QWidget):
             self._set_update_idle()
             bind_text(self.update_button, '发现新版本 {value0}，点击查看更新内容和下载量', property='toolTip',
                       value0=check.latest_version)
+            if not getattr(self.update_check_worker, '_user_waiting', False):
+                # The user pressed 检查更新 meanwhile: that click shows the offer.
+                self._remind_update(check)
+
+    def _update_reminder_busy(self) -> bool:
+        """The user is in the middle of something the reminder must not cut into."""
+        from PySide6.QtWidgets import QApplication
+        from .home_tour import GuidedTour
+        workers = (self.update_check_worker, self.update_download_worker)
+        tour = self.findChild(GuidedTour)
+        return bool(QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None
+                    or (tour is not None and tour.isVisible()) or getattr(self, '_home_tour_pending', False)
+                    or getattr(self, '_run_in_progress', False) or getattr(self, '_prepared_update', None) is not None
+                    or getattr(self, '_update_offer_dialog', None) is not None
+                    or any(worker is not None and worker.isRunning() and not getattr(worker, 'reminder', False)
+                           for worker in workers))
+
+    def _remind_update(self, check, tries=0):
+        """Start-up reminder (2026-10-24): offer a newer version by itself once
+        per start, when the user is not busy; the dialog's check box or
+        应用设置 → 关于 turns it off."""
+        from .application_settings import update_reminder_enabled
+        from .update_dialog import REMINDER_RETRY_MS, reminder_action
+        action = reminder_action(check, enabled=update_reminder_enabled(),
+                                 reminded_version=getattr(self, '_reminded_update_version', ''),
+                                 busy=self._update_reminder_busy(), tries=tries)
+        if action == 'later':
+            QTimer.singleShot(REMINDER_RETRY_MS, self, lambda: self._remind_update(check, tries + 1))
+        elif action == 'show' and getattr(self, '_available_update', None) is check:
+            self._reminded_update_version = check.latest_version
+            self._offer_update(check, reminder=True)
 
     def _check_updates(self):
         if getattr(self, '_prepared_update', None) is not None:
@@ -2868,10 +3053,16 @@ class MainWindow(QWidget):
             )
             return
         self._available_update = check
-        dialog = UpdateOfferDialog(check, self)
+        self._offer_update(check)
+
+    def _offer_update(self, check, *, reminder=False):
+        dialog = UpdateOfferDialog(check, self, reminder=reminder)
         self._update_offer_dialog = dialog
         dialog.exec()
         self._update_offer_dialog = None
+        if reminder and not dialog.keep_reminding:
+            from .application_settings import save_update_reminder
+            save_update_reminder(False)
         if dialog.choice == 'page':
             QDesktopServices.openUrl(QUrl(check.release_url))
         elif dialog.choice == 'setup':
@@ -5775,6 +5966,8 @@ class MainWindow(QWidget):
             available |= {'studio', 'glossary_proofread'}
         if getattr(self, '_last_failed_items', None) and getattr(self, '_last_run_options', None):
             available.add('retry')
+        if self._cloud_gap_resplit(item):
+            available.add('mosi_resplit')
         if outcome is not None and not outcome.result_usable:
             available.add('recover')
         open_run_diagnosis(self, report, item_error=str(getattr(item, 'error', '') or ''),
@@ -6223,21 +6416,33 @@ class MainWindow(QWidget):
         resubmit = [problem for problem in (failure_from_text(str(getattr(item, 'error', '') or '')) for item in failed)
                     if problem and problem.get('resubmit')]
         settings_json = snapshot.settings_snapshot_json
-        if settings_json and 'cloud_resubmit_confirmed' in settings_json:
+        if settings_json and ('cloud_resubmit_confirmed' in settings_json or 'mosi_resplit_blocked' in settings_json):
             # The confirmation belongs to one retry only; never carry it forward.
             try:
                 cleaned = json.loads(settings_json)
                 cleaned.get('models', {}).pop('cloud_resubmit_confirmed', None)
+                cleaned.get('models', {}).pop('mosi_resplit_blocked', None)
                 settings_json = json.dumps(cleaned, ensure_ascii=False)
             except (TypeError, ValueError, AttributeError):
                 pass
         if resubmit:
             box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Question)
-            bind_text(box, '重新提交云端识别？', property='windowTitle')
-            bind_text(box, '{reason}\n\n重新提交会再次上传音频，服务商可能再次计费。如果你不确定上次是否已经扣费，可以先到服务商控制台查看任务与账单。', reason=str(resubmit[0].get('message') or ''))
-            again = box.addButton(tr('重新提交'), QMessageBox.ButtonRole.AcceptRole)
-            box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole)
+            first = next((problem for problem in resubmit if problem.get('code') == 'content_blocked'), resubmit[0])
+            reason = str(first.get('message') or '')
+            if first.get('code') == 'content_blocked':
+                # The provider's content review stopped this audio (2026-10-24):
+                # sending it unchanged is very likely stopped again.
+                box.setIcon(QMessageBox.Icon.Warning)
+                bind_text(box, '仍要重新提交被拦下的音频？', property='windowTitle')
+                bind_text(box, '{reason}\n\n同一段音频原样重新提交多半还会被内容审查拦下，服务商也可能再次计费。建议改用本地识别，或换别的在线识别服务再识别这个视频。', reason=reason)
+                again = box.addButton(tr('仍要重新提交'), QMessageBox.ButtonRole.AcceptRole)
+                box.setDefaultButton(box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole))
+            else:
+                box.setIcon(QMessageBox.Icon.Question)
+                bind_text(box, '重新提交云端识别？', property='windowTitle')
+                bind_text(box, '{reason}\n\n重新提交会再次上传音频，服务商可能再次计费。如果你不确定上次是否已经扣费，可以先到服务商控制台查看任务与账单。', reason=reason)
+                again = box.addButton(tr('重新提交'), QMessageBox.ButtonRole.AcceptRole)
+                box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole)
             box.exec()
             if box.clickedButton() is not again:
                 return
@@ -6284,6 +6489,67 @@ class MainWindow(QWidget):
                     and int(getattr(item, 'audio_stream', -1)) < 0):
                 bases[str(Path(item.media_path).resolve())] = str(item.project_path)
         return request_json(picks, bases)
+
+    def _cloud_gap_resplit(self, item) -> list:
+        """Ranges of ``item`` that MOSI's content review stopped and that can
+        go again in pieces (2026-10-24), from the task report. Single-track
+        runs of this session only: the run's settings snapshot is needed."""
+        snapshot = getattr(self, '_last_run_options', None)
+        if snapshot is None or int(getattr(item, 'audio_stream', -1)) >= 0 \
+                or str(getattr(snapshot, 'audio_streams_json', '') or '').strip():
+            return []
+        evidence = self._completion_task_evidence.get(self._completion_task_key(item), {})
+        self._completion_diagnosis(item, evidence)
+        report = evidence.get('diagnosis_report')
+        events = report.get('events') if isinstance(report, dict) else None
+        rows = [row for row in events or () if isinstance(row, dict) and row.get('event') == 'cloud_asr_gap_fill']
+        return [gap for gap in (rows[-1].get('gaps') or ()) if gap.get('resplittable')] if rows else []
+
+    def _resplit_blocked_cloud_segments(self):
+        """切成小段再交 MOSI…: the ranges MOSI's content review stopped go
+        again in pieces of about 3 minutes (2026-10-24). Billed again, outcome
+        uncertain; pieces still stopped are filled locally as before."""
+        tasks = getattr(self, '_completion_tasks', [])
+        index = self.result_task_selector.currentIndex()
+        snapshot = getattr(self, '_last_run_options', None)
+        if not 0 <= index < len(tasks) or snapshot is None or getattr(self, '_run_in_progress', False):
+            return
+        item, _project = tasks[index]
+        gaps = self._cloud_gap_resplit(item)
+        if not gaps:
+            return
+        from ..providers.mosi_asr import PIECE_SECONDS, PRICE_CNY_PER_HOUR, estimate_cost_cny
+        seconds = sum(max(0.0, float(gap['end']) - float(gap['start'])) for gap in gaps)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        bind_text(box, '切成小段再交 MOSI？', property='windowTitle')
+        bind_text(box, '被内容审查拦下的 {count} 段（共 {minutes} 分钟）会切成约 {piece} 分钟的小段，重新上传给 MOSS Pro 云端；已经有字幕的段不会重新上传。\n\n'
+                       '会再次计费：按每小时 ¥{price} 估算约 ¥{cost}（被拦下的小段收不收费，MOSI 官方没写）。\n\n'
+                       '能不能通过不确定：审查规则在服务商那边，小段可能都能通过，也可能仍被拦下；仍被拦下的小段照旧用本地模型补，没有本地模型时空着。',
+                  count=len(gaps), minutes=f'{seconds / 60:.1f}', piece=PIECE_SECONDS // 60,
+                  price=f'{PRICE_CNY_PER_HOUR:.2f}', cost=f'{estimate_cost_cny(seconds):.2f}')
+        again = box.addButton(tr('切成小段再交'), QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(box.addButton(tr('取消'), QMessageBox.ButtonRole.RejectRole))
+        box.exec()
+        if box.clickedButton() is not again:
+            return
+        try:
+            settings_json = snapshot.settings_snapshot_json
+            settings = json.loads(settings_json) if settings_json else copy.deepcopy(self.legacy.RUNTIME_SETTINGS)
+            models = settings.setdefault('models', {})
+            models.pop('cloud_resubmit_confirmed', None)
+            # For this one run only (asr_api_process reads it).
+            models['mosi_resplit_blocked'] = True
+            settings_json = json.dumps(settings, ensure_ascii=False)
+        except (TypeError, ValueError, AttributeError):
+            return
+        self.media_paths = _merge_media_paths([], [item.media_path])
+        self._retry_cached_failed = True
+        self._retry_run_options = replace(snapshot, force_refresh_polish=False, force_refresh_group=False,
+                                          overwrite_policy='overwrite', settings_snapshot_json=settings_json)
+        self._switch_page(0)
+        self._refresh_media_summary()
+        QTimer.singleShot(0, self, self._start_run)
 
     @staticmethod
     def _supported_paths(paths):
@@ -6796,6 +7062,7 @@ class MainWindow(QWidget):
         combo.setCurrentIndex(index)
         return True
 
+    @navigation_timed('home.profiles')
     def _refresh_project_profile_combo(self, selected_id: str = "") -> None:
         if not hasattr(self, "project_profile_combo"):
             return
@@ -6813,6 +7080,7 @@ class MainWindow(QWidget):
         self.project_profile_combo.setCurrentIndex(max(0, index))
         self.project_profile_combo.blockSignals(False)
 
+    @navigation_timed('home.profile_snapshot')
     def _profile_configuration(self) -> dict:
         settings = self.legacy.RUNTIME_SETTINGS
         studio = settings.get("studio", {}) if isinstance(settings.get("studio", {}), dict) else {}
@@ -7288,9 +7556,7 @@ class MainWindow(QWidget):
     def _refresh_recognition_recommendation(self) -> None:
         if not hasattr(self, "recognition_mode_combo"):
             return
-        primary = str(self.primary_asr_backend.currentData() or "") if hasattr(self, "primary_asr_backend") else ""
-        timeline = str(self.firered_asr_backend.currentData() or "") if hasattr(self, "firered_asr_backend") else ""
-        review = str(self.qwen_asr_backend.currentData() or "") if hasattr(self, "qwen_asr_backend") else ""
+        primary, timeline, review = self._shown_asr_backends()
         language = (self._subtitle_language_options()["recognition_language"]
                     if self.__dict__.get("recognition_language") is not None else "")
         provider = (str(self.qwen_asr_api_provider.currentData() or "")
@@ -8002,6 +8268,26 @@ class MainWindow(QWidget):
             widget.setEnabled(api_mode)
         self._refresh_asr_summary()
 
+    def _shown_asr_backends(self) -> tuple[str, str, str]:
+        """(primary, timeline, review) as the home page names them.
+
+        2026-10-21: a saved choice whose files are still to come (云端识别's
+        timeline model downloads after the tutorial) is shown as itself with
+        需要下载, not as the 已关闭 / 未选择 its selector falls back to.
+        2026-10-24: the plan menu reads the same; right after 云端识别 or 本地识别
+        on a fresh install it said 自定义.
+        """
+        pending = dict(getattr(self, "_missing_saved_asr_backends", ()) or ())
+
+        def shown(key, fallback):
+            combo = getattr(self, key, None)   # the selectors are named after their setting
+            current = str(combo.currentData() or "") if combo is not None else ""
+            # Only while the selector still sits on the fallback it was given; a choice made since wins.
+            return str(pending[key]) if key in pending and current == fallback else current
+
+        return (shown("primary_asr_backend", "none"), shown("firered_asr_backend", "off"),
+                shown("qwen_asr_backend", "off"))
+
     def recognition_role_state(self, backends=None, provider=None) -> dict:
         """Per role what the home card shows: effective backend, name, readiness and model.
 
@@ -8050,19 +8336,7 @@ class MainWindow(QWidget):
                               qwen_asr_api_protocol=str(preset.get("protocol") or ""))
             typed_key = ""  # the typed key belongs to the provider shown on home
         if backends is None:
-            # 2026-10-21: a saved choice whose files are still to come (云端识别's
-            # timeline model downloads after the tutorial) is shown as itself with
-            # 需要下载, not as the 已关闭 / 未选择 its selector falls back to.
-            pending = dict(getattr(self, "_missing_saved_asr_backends", ()) or ())
-
-            def shown(combo, key, fallback):
-                # Only while the selector still sits on the fallback it was given; a choice made since wins.
-                current = str(combo.currentData())
-                return str(pending[key]) if key in pending and current == fallback else current
-
-            primary_backend = shown(self.primary_asr_backend, "primary_asr_backend", "none")
-            qwen_backend = shown(self.qwen_asr_backend, "qwen_asr_backend", "off")
-            firered_backend = shown(self.firered_asr_backend, "firered_asr_backend", "off")
+            primary_backend, firered_backend, qwen_backend = self._shown_asr_backends()
         else:
             primary_backend = str(backends.get("primary") or "none")
             firered_backend = str(backends.get("timeline") or "off")
@@ -8207,6 +8481,7 @@ class MainWindow(QWidget):
         ))
         return {"roles": roles, "summary": summary, "block_reason": block_reason}
 
+    @navigation_timed('home.summary')
     def _refresh_asr_summary(self):
         if not hasattr(self, "asr_panel"):
             return
@@ -8868,6 +9143,7 @@ class MainWindow(QWidget):
         ]
         return list(dict.fromkeys(enabled))
 
+    @navigation_timed('home.glossary')
     def _refresh_glossary_chips(self):
         if not hasattr(self, "glossary_chips_layout"):
             return
@@ -10678,7 +10954,7 @@ class MainWindow(QWidget):
             context = getattr(self, "_studio_recognition_context", None)
             # Picked tracks are combined at the end; one track's live rows
             # must not stand in for the captions of the others meanwhile.
-            if context and not context.get("audio_lanes"):
+            if context and not context.get("audio_lanes") and not context.get("recognition_range_ms"):
                 self.studio_page.apply_recognition_cue_delta(event.payload)
             cue_count = len(event.payload.get("cues", ()) or ())
             label = "最终字幕" if event.payload.get("state") == "final" else "临时转写（待校对）"
@@ -11230,6 +11506,23 @@ class MainWindow(QWidget):
         QTimer.singleShot(0, self, self.close)
 
     def closeEvent(self, event):
+        if self.__dict__.get('_studio_entry_discarding', False):
+            self._studio_entry_pending = None
+            self._close_after_studio_discard = True
+            event.ignore()
+            return
+        partial = self.__dict__.get('_studio_page_building')
+        if partial is not None:
+            event.ignore()
+            if not self.__dict__.get('_studio_construction_discarding', False):
+                self._studio_construction_discarding = True
+                self._studio_entry_pending = None
+                def disposed():
+                    self._studio_page_building = None
+                    self._studio_construction_discarding = False
+                    self.close()
+                partial.discard_workspace_construction(disposed)
+            return
         if getattr(self, "_studio_close_pending", False) and not getattr(
             self, "_studio_close_finalizing", False
         ):
@@ -11545,7 +11838,8 @@ def _open_quick_setup(parent, *, compare: bool = False):
         from . import onboarding
         from .quick_setup import QuickSetupDialog
         extra = dict(compare=True, current=parent._current_plan_key()) if compare else {}
-        dialog = QuickSetupDialog(parent, size_of=lambda backends: GuidedSetupDialog.estimate_size(*backends), **extra)
+        dialog = QuickSetupDialog(parent, size_of=lambda backends: GuidedSetupDialog.estimate_size(*backends),
+                                  spoken=_home_spoken_language(parent), **extra)
         if onboarding.load_state().get("tour_done"):
             dialog.tour_check.setChecked(False)   # reopened later: no tutorial unless asked for
         accepted = dialog.exec() == QDialog.DialogCode.Accepted
@@ -11553,6 +11847,10 @@ def _open_quick_setup(parent, *, compare: bool = False):
             parent._quick_setup_tour = dialog.tour_check.isChecked()
         if not accepted or dialog.choice is None:
             return "" if compare else False
+        # 2026-10-24: the language picked above the cards is the home page's 视频里说的话.
+        _apply_spoken_language(parent, getattr(dialog, "spoken", ""))
+        if not compare:
+            parent._quick_setup_chosen = True   # the tutorial that follows does not ask again
         if compare:
             _apply_plan_for_tutorial(parent, dialog)
             return dialog.choice
@@ -11585,6 +11883,21 @@ def _open_quick_setup(parent, *, compare: bool = False):
         traceback.print_exc()
         _startup_mark("FIRST_RUN_WIZARD_FAILED", traceback=traceback.format_exc())
         return False
+
+
+def _home_spoken_language(parent) -> str:
+    """The home page's 视频里说的话 as the plan window's language row names it ('' for 自动)."""
+    combo = parent.__dict__.get("recognition_language")
+    value = str(combo.currentData() or "") if combo is not None else ""
+    return "" if value == "auto" else value
+
+
+def _apply_spoken_language(parent, spoken: str) -> None:
+    """Select ``spoken`` on the home page; its own handler saves it and renames the timeline card."""
+    combo = parent.__dict__.get("recognition_language")
+    index = combo.findData(spoken) if combo is not None and spoken else -1
+    if index >= 0 and index != combo.currentIndex():
+        combo.setCurrentIndex(index)
 
 
 def _apply_plan_for_tutorial(parent, dialog) -> None:
@@ -11638,6 +11951,7 @@ def _apply_setup_choice(parent, primary, timeline, review, download_keys, *, ope
         parent.legacy.RUNTIME_SETTINGS,
     )
     parent._apply_asr_backend_mode()
+    parent._refresh_recognition_recommendation()   # the plan menu names the choice at once (2026-10-24)
     if open_workshop:
         QTimer.singleShot(0, lambda: _open_combination_download(parent, primary,
                                                                 download_keys if auto_download else (),

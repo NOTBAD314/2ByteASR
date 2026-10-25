@@ -10,6 +10,12 @@ OpenAI/Anthropic chat protocols and cannot upload local files, so they cannot
 run 录音文件识别. 阿里云百炼（中国站）keys belong to their own region and
 workspace host and are not interchangeable with Qwen Cloud keys.
 
+千问AI平台 (https://www.qianwenai.com, docs https://platform.qianwenai.com/docs,
+checked 2026-10-25) is the mainland China counterpart: same ``sk-ws-`` key
+format and the same REST protocol on ``https://maas.qianwenaiapi.com/api/v1``,
+results in Beijing, sign-in with a 阿里云 (China) account. Its keys work only
+there.
+
 The temporary upload is the documented ``oss://`` route of the DashScope REST
 API (``GET /api/v1/uploads?action=getPolicy&model=<id>``, then a signed form
 POST to the returned OSS host). Objects expire after 48 hours. The official
@@ -46,6 +52,10 @@ QWEN_CLOUD_BILLING = 'https://home.qwencloud.com/billing/overview'
 QWEN_CLOUD_FREE_TIER = 'https://home.qwencloud.com/benefits'
 QWEN_CLOUD_WORKSPACES = 'https://home.qwencloud.com/settings/workspaces'
 QWEN_CLOUD_HOSTS = frozenset({QWEN_CLOUD_HOST, QWEN_CLOUD_INTL_HOST})
+QIANWEN_HOST = 'maas.qianwenaiapi.com'
+QIANWEN_CONSOLE = 'https://platform.qianwenai.com/home'
+QIANWEN_API_KEYS = 'https://platform.qianwenai.com/home/api-keys'
+QIANWEN_BILLING = 'https://platform.qianwenai.com/home/billing/overview'
 
 UPLOAD_POLICY_PATH = '/api/v1/uploads'
 TEMPORARY_OBJECT_HOURS = 48
@@ -60,6 +70,10 @@ def is_token_plan_key(key: str) -> bool:
 
 def is_qwen_cloud_host(host: str) -> bool:
     return str(host or '').lower().rstrip('.') in QWEN_CLOUD_HOSTS
+
+
+def is_qianwen_host(host: str) -> bool:
+    return str(host or '').lower().rstrip('.') == QIANWEN_HOST
 
 
 def api_root(url: str) -> str:
@@ -111,8 +125,10 @@ def explain(status: int | None, body=None, *, model: str = '', host: str = '',
     product activation, throttling and file access each get their own text.
     """
     qwen_cloud = is_qwen_cloud_host(host)
-    console = QWEN_CLOUD_CONSOLE if qwen_cloud else 'https://bailian.console.aliyun.com/'
-    keys_page = QWEN_CLOUD_API_KEYS if qwen_cloud else 'https://bailian.console.aliyun.com/?tab=model#/api-key'
+    qianwen = is_qianwen_host(host)
+    console = QWEN_CLOUD_CONSOLE if qwen_cloud else QIANWEN_CONSOLE if qianwen else 'https://bailian.console.aliyun.com/'
+    keys_page = QWEN_CLOUD_API_KEYS if qwen_cloud else QIANWEN_API_KEYS if qianwen         else 'https://bailian.console.aliyun.com/?tab=model#/api-key'
+    billing = QWEN_CLOUD_BILLING if qwen_cloud else QIANWEN_BILLING if qianwen else console
     if exception is not None:
         name = type(exception).__name__
         timeout = 'timeout' in name.lower() or 'timed out' in str(exception).lower()
@@ -128,12 +144,20 @@ def explain(status: int | None, body=None, *, model: str = '', host: str = '',
     if code == 'Arrearage' or 'arrearage' in lowered or 'out_of_service' in lowered or 'good standing' in lowered:
         return ServiceProblem('balance', '账户欠费或余额不足，服务商拒绝了请求。',
                               '请到控制台的账单页面充值或结清欠费，几分钟后再试。',
-                              QWEN_CLOUD_BILLING if qwen_cloud else console, code or 'Arrearage')
+                              billing, code or 'Arrearage')
     if 'unpurchased' in lowered or 'eligible for using the model' in lowered:
+        if qianwen:
+            return ServiceProblem('billing_info', '账户还没完成认证或充值，暂时不能调用模型。',
+                                  '在千问AI平台控制台完成实名认证并充值后再试（新用户体验额度用完后需要这一步）。',
+                                  QIANWEN_BILLING, code)
         return ServiceProblem('billing_info', '账户还没补全付款信息，暂时不能调用模型。',
                               '在控制台“账单”里补全付款信息（补全后才会解锁新用户免费额度）。',
                               QWEN_CLOUD_BILLING + '?target=payment' if qwen_cloud else console, code)
     if 'freetieronly' in lowered or 'free tier of the model has been exhausted' in lowered:
+        if qianwen:
+            return ServiceProblem('free_tier_only', f'{model_text} 的免费额度已用完，且账户开着“免费额度用完即停”。',
+                                  '要继续按量付费，请在千问AI平台控制台关闭“免费额度用完即停”（新用户需先完成认证并充值）；'
+                                  '不想付费就到此为止。', QIANWEN_CONSOLE, code)
         return ServiceProblem('free_tier_only', f'{model_text} 的免费额度已用完，且账户开着“仅使用免费额度”。',
                               '要继续按量付费，请在控制台关闭“仅使用免费额度”（新用户需先补全资料）；不想付费就到此为止。',
                               QWEN_CLOUD_FREE_TIER if qwen_cloud else console, code)
@@ -152,10 +176,11 @@ def explain(status: int | None, body=None, *, model: str = '', host: str = '',
                               '先登录控制台开通服务（同意服务协议）后再试。', console, code)
     if status == 401 or code in {'InvalidApiKey', 'invalid_api_key'} or 'api-key' in lowered or 'api key' in lowered:
         hint = ''
-        if region_label and not qwen_cloud:
+        if region_label and not (qwen_cloud or qianwen):
             hint = f'当前地址属于{region_label}，密钥必须是同一地域创建的；'
         return ServiceProblem('key', '服务商不认这把 API Key。',
-                              hint + '常见原因：没复制完整或多了空格、Key 已删除、或把 Qwen Cloud 与阿里云百炼（中国站）的 Key 混用（两者不能互换）。',
+                              hint + '常见原因：没复制完整或多了空格、Key 已删除、或把千问AI平台、Qwen Cloud 与阿里云百炼的 Key '
+                              '混用（三者不能互换）。',
                               keys_page, code or 'InvalidApiKey')
     if status == 403 or code.startswith('AccessDenied'):
         return ServiceProblem('permission', '服务商拒绝访问（没有权限）。',
@@ -180,10 +205,10 @@ def explain(status: int | None, body=None, *, model: str = '', host: str = '',
                           '请把“复制诊断信息”的内容发给维护者；其中不会包含密钥。', console, code)
 
 
-def explain_token_plan_key() -> ServiceProblem:
+def explain_token_plan_key(host: str = '') -> ServiceProblem:
     return ServiceProblem('token_plan_key', '这是 Token Plan 订阅专用的 Key（sk-sp- 开头）。',
                           '它只能用于聊天类工具，不能上传音频做录音文件识别。请在同一页面创建“按量付费”的 API Key（sk-ws- 开头）。',
-                          QWEN_CLOUD_API_KEYS, 'token_plan_key')
+                          QIANWEN_API_KEYS if is_qianwen_host(host) else QWEN_CLOUD_API_KEYS, 'token_plan_key')
 
 
 # ----------------------------------------------------------------- temporary upload
@@ -295,7 +320,7 @@ class DashScopeTemporaryStorage:
         if not self.api_key:
             raise TemporaryUploadError(ServiceProblem('key', '还没有填写 API Key。'))
         if is_token_plan_key(self.api_key):
-            raise TemporaryUploadError(explain_token_plan_key())
+            raise TemporaryUploadError(explain_token_plan_key(urlsplit(self.root).hostname or ''))
 
     @property
     def client(self):

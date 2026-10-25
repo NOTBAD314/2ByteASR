@@ -149,8 +149,10 @@ def test_real_shared_remotion_current_position_keeps_peer_style_recipe_and_undo(
         assert next(asdict(s) for s in page.project.styles if s.id == original_id) == next(
             s for s in before['styles'] if s['id'] == original_id)
         selected = page.project.cues[0]
-        assert selected.style_id != original_id
-        assert page.project.style_recipes[selected.style_id]['visualGraph']['motionGraph'] == before[
+        # 2026-10-24 (Codex scoped style): a position-only edit lives on the cue's transform and may
+        # keep the shared style id; what matters is that the cue still draws the rich recipe.
+        from twobyteasr.caption_style.style_resolution import recipe_for_cue
+        assert recipe_for_cue(page.project.style_recipes, selected)['visualGraph']['motionGraph'] == before[
             'style_recipes'][original_id]['visualGraph']['motionGraph']
         assert page.undo_stack.count() == 1
         page.undo_stack.undo()

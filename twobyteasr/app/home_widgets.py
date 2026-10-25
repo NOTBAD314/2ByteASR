@@ -464,6 +464,8 @@ class DropOverlay(QFrame):
         self._requested_visible = bool(active)
         self.animation.stop()
         if active:
+            from ..design.native_surfaces import cover_native_video
+            cover_native_video(self)
             self.show()
             self.raise_()
             start = max(0.0, float(self.opacity.opacity()))

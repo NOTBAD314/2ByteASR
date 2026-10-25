@@ -179,7 +179,7 @@ class CaptionProxyStore:
                         service = self._factory() if self._factory else RendererService()
                     staging.mkdir()
                     service.live_set(prepared.html,width=width,height=height)
-                    service.live_text(text=prepared.text,speaker=prepared.speaker,duration_ms=prepared.duration*1000,placement=prepared.placement)
+                    service.live_text(text=prepared.text,speaker=prepared.speaker,duration_ms=prepared.duration*1000,placement=prepared.placement, **({'translation':prepared.translation} if getattr(prepared,'translation','') else {}))
                     count = math.ceil(prepared.duration*FPS)
                     with self._lock:self._progress[key]=(0,count)
                     hashes = []

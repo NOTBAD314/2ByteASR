@@ -128,7 +128,8 @@ def normalize_glow(value: object) -> dict[str, object]:
 
 
 def recipe_payload_for_cue(project: SubtitleProject, cue) -> Mapping[str, object] | None:
-    return recipe_payload_for_style(project.style_recipes, cue.style_id)
+    from ..caption_style.style_resolution import recipe_for_cue
+    return recipe_for_cue(project.style_recipes, cue)
 
 
 def project_requires_advanced(project: SubtitleProject, *, start_ms=None, end_ms=None) -> bool:
@@ -547,6 +548,7 @@ def scale_visual_for_composition(visual: dict[str, object], composition_width: i
 def normalized_visual_snapshot(snapshot: VisualCueSnapshot) -> dict[str, object]:
     normalized = _normalized_recipe(snapshot.style_recipe)
     normalized['wordAnimation'] = deepcopy(getattr(snapshot, 'word_animation', None) or {})
+    normalized['wordAnimation']['marks'] = deepcopy(getattr(snapshot, 'text_marks', None) or [])
     normalized["typography"] = {
         "fontFamily": snapshot.font_family,
         "fontSize": snapshot.font_size,
@@ -683,11 +685,11 @@ def compile_composition_data(
         # recipes 键按样式共享，保持无偏移的样式定义；偏移只进 per-cue visual。
         if cue.style_id not in recipes:
             recipes[cue.style_id] = visual
+        from ..caption_style.speaker_labels import template_speaker
         cues.append({
             "id": cue.id,
             "text": snapshot.text,
-            "speaker": next((str(item.name or '') for item in project.speakers
-                             if item.id == cue.speaker_id), ''),
+            "speaker": template_speaker(project, cue),
             "translation": getattr(snapshot, "translation", ""),
             "startMs": max(0, cue.start_ms - start_ms),
             "endMs": min(round(duration_seconds * 1000), cue.end_ms - start_ms),

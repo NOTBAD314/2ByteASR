@@ -1295,6 +1295,9 @@ def substitute_placeholders(
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+    if not speaker:
+        cue_html = re.sub(r'<([a-zA-Z][\w:-]*)\b[^>]*>\s*\{\{\s*speaker\s*\}\}\s*</\1\s*>',
+                          '', str(cue_html or ''), flags=re.I)
     html = _PLACEHOLDER_RE.sub(
         lambda match: {
             "text": escaped,
@@ -1396,12 +1399,12 @@ window.__2bytePlay = async function (cueMs, stageMs, rate) {
 // __2bytePlay/__2byteSeek 同步动画（新 DOM = 新动画实例）。换页 1-2s vs 换字
 // ~50ms——cue 切换不再丢入场首帧。
 var preparedCues = new Map();
-function cuePoolKey(text,speaker) { return JSON.stringify([String(text||''),String(speaker||'')]); }
-window.__2bytePrepareCue = function (text, speaker) {
+function cuePoolKey(text,speaker,translation) { return JSON.stringify([String(text||''),String(speaker||''),String(translation||'')]); }
+window.__2bytePrepareCue = function (text, speaker, translation) {
   var started = performance.now();
   var template = window.__2byteCueTemplate;
   if (typeof template !== 'string') return false;
-  var key=cuePoolKey(text,speaker);
+  var key=cuePoolKey(text,speaker,translation);
   if(preparedCues.has(key)) return true;
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1416,11 +1419,11 @@ window.__2bytePrepareCue = function (text, speaker) {
     words += /\\s/.test(ch) ? ch : '<span class="wt-w">' + esc(ch) + '</span>';
   }
   words='<span data-caption-text="true">'+words+'</span>';
-  var html = template
+  var html = (speaker ? template : template.replace(/<([a-zA-Z][\\w:-]*)\\b[^>]*>\\s*\\{\\{\\s*speaker\\s*\\}\\}\\s*<\\/\\1\\s*>/gi, ''))
     .replace(/\\{\\{\\s*text\\s*\\}\\}/g, escaped)
     .replace(/\\{\\{\\s*words\\s*\\}\\}/g, words)
     .replace(/\\{\\{\\s*speaker\\s*\\}\\}/g, esc(String(speaker || '')))
-    .replace(/\\{\\{\\s*translation\\s*\\}\\}/g, '');
+    .replace(/\\{\\{\\s*translation\\s*\\}\\}/g, esc(String(translation || '')));
   var holder=document.createElement('template');
   holder.innerHTML=html;
   preparedCues.set(key,Array.from(holder.content.childNodes));
@@ -1430,11 +1433,11 @@ window.__2bytePrepareCue = function (text, speaker) {
   metrics.prepareMs=performance.now()-started;
   return true;
 };
-window.__2byteSetCue = function(text,speaker,durationMs) {
+window.__2byteSetCue = function(text,speaker,durationMs,translation) {
   var started=performance.now(), cue=document.getElementById('wt-cue');
   if(!cue) return false;
-  var key=cuePoolKey(text,speaker), hit=preparedCues.has(key);
-  if(!hit && !window.__2bytePrepareCue(text,speaker)) return false;
+  var key=cuePoolKey(text,speaker,translation), hit=preparedCues.has(key);
+  if(!hit && !window.__2bytePrepareCue(text,speaker,translation)) return false;
   var nodes=preparedCues.get(key);
   // Retain node identity, including on revisits; only the active cue is attached.
   preparedCues.delete(key); preparedCues.set(key,nodes);

@@ -1,12 +1,13 @@
 <!-- 由 scripts/make_zh_hant.py 從簡體版自動轉換；請改簡體原文後重新產生。 -->
 # Azure OpenAI 部署式轉寫（進階，不建議一般使用者）
 
-最後核對：2026-10-14。來源見文末。標“待核實”的地方需要登入才能確認。
+最後核對：2026-10-14（名稱說明 2026-10-25 更新）。來源見文末。標“待核實”的地方需要登入才能確認。
 
 ## 先說結論
 
 - **一般使用者請不要選這一項**，改用列表裡的官方雲端服務（MOSS Pro 雲端、阿里雲百鍊、Qwen Cloud 等）或本地模型。
-- 兔白把這一項標成“MAI 2.1”，**這與微軟現狀不符**：微軟官方頁面列出的轉寫模型是 MAI-Transcribe-2 和 MAI-Transcribe-1.5（MAI-Transcribe-1 已於 2026-08-20 棄用），沒有 MAI-Transcribe-2.1；名字帶 2.1 的 MAI-Voice-2.1 是“文字變語音”的模型。
+- 兔白以前把這一項標成“MAI 2.1”，與微軟現狀不符，2026-10-25 起改名“Azure OpenAI 部署（如 whisper）”。微軟官方頁面列出的轉寫模型是 MAI-Transcribe-2 和 MAI-Transcribe-1.5（MAI-Transcribe-1 已於 2026-08-20 棄用），沒有 MAI-Transcribe-2.1；名字帶 2.1 的 MAI-Voice-2.1 是“文字變語音”的模型。
+- 想用 MAI-Transcribe 2：請選 OpenRouter 那一項（預設 `microsoft/mai-transcribe-2`，由 Azure 提供），不用自己在 Azure 開 Speech 資源。
 - MAI-Transcribe 走的是 Azure Speech 的另一種介面，**不需要、也不能“部署”**。兔白這一項呼叫的是 **Azure OpenAI 的“部署式”轉寫介面**，只能用你在 Azure 部署的 OpenAI 轉寫模型（例如 `whisper`）。所以，**兔白目前不能通過這一項使用 MAI-Transcribe**。
 - 如果你已經有 Azure OpenAI 資源並部署了 whisper，可以試：預計只有句段時間，沒有逐字時間和說話人。兔白未實測。
 - 兔白驗證狀態：已有接入；本輪未用真實金鑰重新實測。
@@ -28,7 +29,7 @@
 | 可部署的轉寫模型 | <https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure?tabs=standard-audio> | 否 |
 | 各區域能部署哪些模型 | <https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure-region-availability> | 否 |
 | 價格 | <https://azure.microsoft.com/en-us/pricing/details/azure-openai/> | 否 |
-| MAI-Transcribe（兔白目前不能呼叫） | <https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe> | 否 |
+| MAI-Transcribe（這一項不能呼叫；請用 OpenRouter 那一項） | <https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe> | 否 |
 
 視窗頂部如果沒有“開啟網頁”按鈕，直接用上表的連結。
 
@@ -116,7 +117,7 @@
 | 其他 HTTP 400 | 部署的模型不接受兔白的請求（兔白已自動退回仍失敗） | 改部署 `whisper` 再試 |
 | HTTP 429 | 超過這個部署的速率配額 | 兔白會自動等待重試；仍失敗就在 Azure 調高該部署的配額（具體位置需登入，待核實） |
 | 回傳時間戳 顯示 ? | whisper 只給句段時間，或模型沒給時間 | 需要逐字時間就改用百鍊或 Qwen Cloud 錄音檔案識別 |
-| 想用 MAI-Transcribe，填 Speech 地址後失敗 | 兔白這一項不支援 Azure Speech 的介面 | 目前無法在兔白使用 MAI-Transcribe；改用其他服務 |
+| 想用 MAI-Transcribe，填 Speech 地址後失敗 | 兔白這一項不支援 Azure Speech 的介面 | 改選 OpenRouter 那一項（預設 MAI-Transcribe 2） |
 
 ## 進階（一般使用者可跳過）
 

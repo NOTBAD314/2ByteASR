@@ -227,6 +227,7 @@ class MotionWorkflow:
         page.motion_language = StudioComboBox()
         for label,value in [('双语联动','linked'),('仅原文','original'),('仅译文','translation')]:
             page.motion_language.addItem(tr(label),value)
+        page.motion_scope.setCurrentIndex(page.motion_scope.findData('selected'))
         page.motion_status = QLabel()
         page.motion_status.setObjectName('softMeta')
         page.motion_status.setWordWrap(True)
@@ -289,8 +290,7 @@ class MotionWorkflow:
         if scope == 'speaker':
             return [c for c in project.cues if c.speaker_id == current.speaker_id]
         if scope == 'selected':
-            rows = page.cue_table.selectionModel().selectedRows()
-            ids = {str(page.cue_model.data(page.cue_model.index(i.row(), 0), Qt.UserRole)) for i in rows}
+            ids = set(page.selected_cue_ids())
             return [c for c in project.cues if c.id in ids]
         return [current]
 

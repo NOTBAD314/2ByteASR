@@ -444,6 +444,15 @@ class StudioProjectController:
         page = self.page
         if getattr(page, "_manual_save_in_progress", False):
             return
+        for name in ('_highlight_source_view', '_highlight_range_editor'):
+            dialog = getattr(page, name, None)
+            if dialog is not None:
+                dialog.close()
+        from ..studio.studio_source_monitor import close_source_monitor
+        close_source_monitor(page)
+        page._highlight_preview = None
+        page.timeline._highlight_preview_range = None
+        page.timeline._highlight_key_moment = None
         profile_started = perf_counter()
         profile_mark = profile_started
         profile: dict[str, float] = {}
@@ -666,6 +675,11 @@ class StudioProjectController:
         ):
             page.cue_model.set_project(project)
             page.timeline.set_project(project)
+            # A newly opened project now remains paused at zero: publish the
+            # total duration here, without waiting for a playback-position tick.
+            if hasattr(page, '_sync_timeline_duration_label'):
+                from ..timeline.studio_edit_sequence import timeline_duration_ms
+                page._sync_timeline_duration_label(timeline_duration_ms(project))
         if hasattr(page, "media_pool_panel"):
             page.media_pool_panel.refresh(project)
         # Project open may consume an existing disk thumbnail, but it must not
@@ -1187,6 +1201,13 @@ class StudioProjectController:
                     return
                 self.session.project_path = saved
                 project.updated_at = revision.updated_at
+                readiness = getattr(page, '_readiness', None)
+                if readiness is not None and readiness.ready:
+                    # Our own completed save is already represented by the live
+                    # session. External replacement still invalidates this stamp.
+                    from ..studio.studio_readiness import project_file_identity
+                    readiness.path = str(Path(saved).resolve())
+                    readiness.loaded_file_identity = project_file_identity(saved)
                 if (self.session.undo_stack.index() != undo_index
                         or getattr(page, "_autosave_generation", 0) != save_generation
                         or new_edits[0]):

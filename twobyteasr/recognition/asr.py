@@ -1475,6 +1475,26 @@ def _inherit_word_speakers_from_segments(words, segments):
     return words
 
 
+_UNSPACED_SCRIPT = re.compile(r"[぀-ヿ㐀-鿿豈-﫿ｦ-ﾟ]")
+
+
+def _join_word_texts(texts) -> str:
+    """Word texts as one line: Chinese and Japanese characters touch, words of
+    space-separated scripts get one space (2026-10-25: MAI-Transcribe 2
+    returns bare English words, and "".join made "Helloeveryone")."""
+    def spaced(char):
+        return char.isalnum() and not _UNSPACED_SCRIPT.match(char)
+
+    line = ""
+    for piece in texts:
+        piece = str(piece or "")
+        if (line and piece and not line[-1].isspace() and not piece[0].isspace() and spaced(piece[0])
+                and (spaced(line[-1]) or line[-1] in ",.!?;:")):
+            line += " "
+        line += piece
+    return line
+
+
 def _api_transcription_rows(result, chunk):
     """Expand one verbose_json chunk result into reference rows with real timing.
 
@@ -1564,7 +1584,7 @@ def _api_transcription_rows(result, chunk):
         if end <= start:
             continue
         if group_words:
-            text = clean_subtitle_text("".join(_word_text(w) for w in group_words))
+            text = clean_subtitle_text(_join_word_texts(_word_text(w) for w in group_words))
             tokens = []
             for word in group_words:
                 token_start, token_end = _clamped(
@@ -1708,9 +1728,13 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
     # A prompt/context hint is different from native hotword biasing. Some
     # existing adapters carry no text context and must report that honestly.
     context_supported = protocol in {"openai_transcription", "azure_transcription", "dashscope_multimodal"}
+    # 2026-10-25: MAI-Transcribe 2 through OpenRouter takes Azure's phraseList
+    # (native keyword biasing). The cloud worker fills ``azure_phrases``.
+    mai_phrases = list(endpoint.get("azure_phrases") or []) if protocol == "openrouter_verbose_json" else []
     record_run_event("asr_terminology_input", backend="api", model=endpoint.get("model", ""),
-        method="context_hint" if context_supported else "unsupported",
-        native_hotwords=False, context_sent=bool(context_supported and context),
+        method="native_phrase_list" if mai_phrases else "context_hint" if context_supported else "unsupported",
+        native_hotwords=bool(mai_phrases), native_terms=len(mai_phrases),
+        context_sent=bool(context_supported and context),
         **(_qwen_context_receipt(context) if context_supported else {
             "prompt_version": "unsupported-context", "context_sha256": "", "content_scene": {}}))
     from .speaker_evidence import save_speaker_evidence, public_request
@@ -1748,6 +1772,7 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
     verbose_ok = is_transcription
     granularities_ok = is_openrouter_json
     provider_ok = is_openrouter_json
+    phrases_ok = bool(mai_phrases)
 
     def _openrouter_body(
         with_granularities: bool, with_verbose: bool, with_provider: bool = True
@@ -1765,17 +1790,21 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
         if with_provider:
             # Azure Fast Transcription 官方参数（provider.options.azure 原样转发）：
             # transcribeStyle clean|verbatim，官方默认 verbatim——我们要 clean 必须
-            # 显式传（三十九轮）。diarization 见三十七轮。
-            payload["provider"] = {
-                "options": {
-                    "azure": {
-                        "diarization": {"enabled": True},
-                        "modelOptions": {
-                            "transcribeStyle": str(endpoint.get("style") or "clean"),
-                        },
-                    }
-                }
+            # 显式传（三十九轮）。diarization 见三十七轮。2026-10-25 实测：
+            # transcribeStyle 要放在 enhancedMode.modelOptions 里才生效（微软
+            # MAI-Transcribe 文档的写法；放在顶层 modelOptions 时 clean 与
+            # verbatim 结果完全相同），phraseList.phrases 放在顶层。
+            azure = {
+                "diarization": {"enabled": True},
+                "enhancedMode": {
+                    "modelOptions": {
+                        "transcribeStyle": str(endpoint.get("style") or "clean"),
+                    },
+                },
             }
+            if phrases_ok:
+                azure["phraseList"] = {"phrases": mai_phrases}
+            payload["provider"] = {"options": {"azure": azure}}
         return payload
 
     def _post_openrouter(
@@ -1808,8 +1837,11 @@ def call_qwen_asr_api(audio, context, *, endpoint=None, requests_module=None):
         try:
             if is_openrouter_json:
                 response = _post_openrouter(granularities_ok, verbose_ok, provider_ok)
-                # 400 降级链：撤时间戳粒度 → 撤 verbose_json → 撤 provider 路由项
-                # （diarization/transcribeStyle 被拒时的最终兜底）。
+                # 400 降级链：撤短语列表 → 撤时间戳粒度 → 撤 verbose_json → 撤
+                # provider 路由项（diarization/transcribeStyle 被拒时的最终兜底）。
+                if response.status_code == 400 and phrases_ok:
+                    phrases_ok = False
+                    response = _post_openrouter(granularities_ok, verbose_ok, provider_ok)
                 if response.status_code == 400 and granularities_ok:
                     granularities_ok = False
                     response = _post_openrouter(False, verbose_ok, provider_ok)
@@ -2734,6 +2766,22 @@ def write_pcm16_wav(path, audio):
         wav_file.writeframes(pcm.tobytes())
 
 
+def _reported_worker_device(stdout):
+    """Device actually reported by a worker; never infer CUDA from success."""
+    device='unknown'
+    prefixes=('[2BYTEASR_FUNASR] ', '[2BYTEASR_FIRERED_AED] ', '[2BYTEASR_QWEN] ')
+    for line in stdout.splitlines():
+        if not line.startswith(prefixes):
+            continue
+        try:event=json.loads(line.partition(' ')[2])
+        except (ValueError,TypeError):continue
+        if not isinstance(event,dict):continue
+        value=event.get('device') or (event.get('kind') if event.get('event')=='device' else None)
+        if isinstance(value,str) and (value=='cpu' or value.split(':')[0] in ('cuda','mps')):
+            device=value
+    return device
+
+
 def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, model_path, entrypoint,
                              input_text=None, event_handler=None, cancel_handler=None, timeout_seconds=None):
     """Run a model worker and return parsed JSON plus process telemetry."""
@@ -2841,6 +2889,8 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
         record_run_event('asr_worker_exited',model_id=canonical_model_id(model_id),backend=model_id.lower(),pid=process.pid,
             returncode=process.poll(),readers_stopped=not any(t.is_alive() for t in readers))
     stdout,stderr=''.join(captured['stdout']),''.join(captured['stderr'])
+    worker_device=_reported_worker_device(stdout)
+    worker_cuda=None if worker_device=='unknown' else worker_device.startswith('cuda')
     elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
     if process.returncode != 0:
         log = f"{model_id} worker failed (exit {process.returncode}):\nstdout:\n{stdout[-4500:]}\nstderr:\n{stderr[-1500:]}"
@@ -2888,8 +2938,8 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             "FIRERED_PYTHON_EXECUTABLE": command[0],
             "FIRERED_ENTRYPOINT": entrypoint,
             "FIRERED_MODEL_PATH": model_path,
-            "FIRERED_DEVICE": "cuda:0",
-            "FIRERED_CUDA_AVAILABLE": True,
+            "FIRERED_DEVICE": worker_device,
+            "FIRERED_CUDA_AVAILABLE": worker_cuda,
             "FIRERED_GPU_NAME": "",
             "FIRERED_AUDIO_INPUT": audio_input,
             "FIRERED_AUDIO_DURATION": 0.0,
@@ -2908,8 +2958,8 @@ def _run_isolated_asr_worker(command, output_path, *, model_id, audio_input, mod
             "QWEN_PYTHON_EXECUTABLE": command[0],
             "QWEN_WORKER_ENTRYPOINT": entrypoint,
             "QWEN_MODEL_PATH": model_path,
-            "QWEN_DEVICE": "cuda:0",
-            "QWEN_CUDA_AVAILABLE": True,
+            "QWEN_DEVICE": worker_device,
+            "QWEN_CUDA_AVAILABLE": worker_cuda,
             "QWEN_GPU_NAME": "",
             "QWEN_INPUT_CHUNK_COUNT": count,
             "QWEN_PROCESS_PID": process.pid,

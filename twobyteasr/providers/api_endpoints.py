@@ -32,9 +32,16 @@ DASHSCOPE_REGIONS = {
     'eu-central-1': '德国（法兰克福）',
     'ap-northeast-1': '日本（东京）',
 }
-# Qwen Cloud (official international Qwen API, 2026-10-13): pay-as-you-go keys
-# from home.qwencloud.com. Not a legacy domain and has no workspace id.
-QWEN_CLOUD_HOSTS = {'maas.qwencloudapi.com': 'ap-southeast-1'}
+# The official Qwen API comes as two sites with the same protocol, neither a
+# legacy domain nor with a workspace id: Qwen Cloud (international, keys from
+# home.qwencloud.com, 2026-10-13) and 千问AI平台 (mainland China, keys from
+# platform.qianwenai.com, results in Beijing, checked 2026-10-25). Keys of one
+# site do not work on the other.
+QWEN_CLOUD_HOST = 'maas.qwencloudapi.com'
+QIANWEN_HOST = 'maas.qianwenaiapi.com'
+QWEN_CLOUD_HOSTS = {QWEN_CLOUD_HOST: 'ap-southeast-1', QIANWEN_HOST: 'cn-beijing'}
+QWEN_SITE_HOSTS = {'cn': QIANWEN_HOST, 'intl': QWEN_CLOUD_HOST}
+QWEN_SITE_WEBSITES = {'cn': 'https://platform.qianwenai.com/home', 'intl': 'https://home.qwencloud.com/'}
 # Legacy shared domains (no workspace id) and the region each belongs to.
 LEGACY_DASHSCOPE_HOSTS = {
     'dashscope.aliyuncs.com': 'cn-beijing',
@@ -79,11 +86,21 @@ class DashScopeAddress:
         """OpenAI-compatible root for chat models (never for 录音文件识别)."""
         return f'https://{self.host}/compatible-mode/v1'
 
+    @property
+    def qwen_site(self) -> str:
+        """'cn' (千问AI平台), 'intl' (Qwen Cloud) or '' for 百炼 addresses."""
+        if not self.qwen_cloud:
+            return ''
+        return 'cn' if self.host == QIANWEN_HOST else 'intl'
+
     def notes(self) -> list[str]:
         notes = []
+        if self.qwen_site == 'cn':
+            return ['千问AI平台（Qwen 官方中国站，北京）：用千问AI平台控制台创建的按量付费 API Key（sk-ws- 开头）；'
+                    'Qwen Cloud 国际站和阿里云百炼的 Key 都不能在这里使用。']
         if self.qwen_cloud:
             return ['Qwen Cloud（Qwen 官方国际站，新加坡）：用 Qwen Cloud 控制台创建的按量付费 API Key；'
-                    '阿里云百炼（中国站）的 Key 不能在这里使用，反之亦然。']
+                    '千问AI平台（中国站）和阿里云百炼的 Key 都不能在这里使用，反之亦然。']
         if self.legacy:
             notes.append('这是百炼旧的共用域名：仍可使用，但官方说明自 2026-09-30 起不再支持新特性；'
                          '建议改贴控制台“API Host”里的工作空间专属域名。')
@@ -142,12 +159,12 @@ def filetrans_endpoint(value: str, *, region: str = '') -> str:
 def describe_dashscope(value: str, *, region: str = '') -> dict:
     """All four address kinds for display in the setup dialog."""
     address = parse_dashscope_address(value, region=region)
-    website = 'https://home.qwencloud.com/' if address.qwen_cloud else 'https://bailian.console.aliyun.com/'
+    website = QWEN_SITE_WEBSITES.get(address.qwen_site, 'https://bailian.console.aliyun.com/')
     return {'website': website, 'api_host': address.host,
             'base_url': address.base_url, 'endpoint': address.filetrans_url,
             'task_url_example': address.task_url('<task_id>'), 'region': address.region,
             'region_label': address.region_label, 'workspace_id': address.workspace_id,
-            'legacy': address.legacy, 'notes': address.notes()}
+            'legacy': address.legacy, 'qwen_site': address.qwen_site, 'notes': address.notes()}
 
 
 def describe_mosi(value: str = '') -> dict:

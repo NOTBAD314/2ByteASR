@@ -4195,7 +4195,10 @@ def process_media(
                             f"primary_{primary_backend}",
                             cache_context,
                             transcribe,
-                            should_cache=bool,
+                            # Rows with a content-review gap are not kept: the cloud
+                            # job cache answers the next run, so pieces sent again
+                            # later are never hidden behind this entry (2026-10-24).
+                            should_cache=lambda rows: bool(rows) and not any(row.get("cloud_gap") for row in rows),
                             extra_signature=primary_signature(speech_regions),
                         ),
                     )
@@ -4211,6 +4214,11 @@ def process_media(
                             backend=primary_backend,
                             seams=overlap_seams,
                         )
+            # Ranges the cloud's content review stopped come back as markers
+            # (2026-10-24); fill_cloud_gaps covers them once VAD is known.
+            cloud_gaps = [dict(item["cloud_gap"], start=float(item["start"]), end=float(item["end"]))
+                          for item in references if item.get("cloud_gap")]
+            references = [item for item in references if not item.get("cloud_gap")]
             payload = {
                 "segments": [
                     {
@@ -4224,6 +4232,7 @@ def process_media(
                 ],
                 "references": references,
                 "primary_backend": primary_backend,
+                "cloud_gaps": cloud_gaps,
             }
             # The real backend already ran (or returned cached rows). This is
             # a result receipt, never evidence that a MOSS worker was started.
@@ -4595,7 +4604,7 @@ def process_media(
             moss_payload = run_moss_stage()
     if deferred_primary_cache:
         rows, primary_review_items = deferred_primary_cache
-        if rows:
+        if rows and not any(row.get("cloud_gap") for row in rows):
             from twobyteasr.recognition.cache import store_cached_stage_value
             try:
                 store_cached_stage_value(f"primary_{primary_backend}", cache_context, rows,
@@ -4603,6 +4612,15 @@ def process_media(
                                          review_items=primary_review_items)
             except Exception as exc:  # noqa: BLE001 - a missing cache entry only costs a later re-upload
                 legacy.record_run_event("cache_write_failed", stage=f"primary_{primary_backend}", error=str(exc)[:300])
+    if moss_payload.get("cloud_gaps"):
+        # The cloud's content review stopped part of the audio (2026-10-24):
+        # an installed local primary model recognizes those ranges.
+        from twobyteasr.recognition.cloud_gap_fill import fill_cloud_gaps
+        fill_cloud_gaps(legacy, moss_payload, media_path=media_path, shared_audio=shared_audio,
+                        speech_regions=speech_regions, audio_seconds=audio_seconds, cache_context=cache_context,
+                        requested_language=getattr(runtime_context, "requested_language", "auto"),
+                        stage_total=stage_total,
+                        moss_runner=lambda audio: transcribe_moss_global(media_path, audio, legacy, cache_context))
     stage_index = 3
 
     # The language this task runs with: a manual choice, otherwise the kana

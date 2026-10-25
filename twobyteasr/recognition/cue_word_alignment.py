@@ -425,6 +425,12 @@ def _independent_words(project, cue, *, allow_realign=True):
 
 
 def cue_words(project, cue, *, allow_realign=True):
+    appearance = getattr(cue, 'appearance_override', {})
+    if not isinstance(appearance, Mapping):
+        from ..projects.studio_revisions import thaw_json
+        appearance = thaw_json(appearance) or {}
+    if appearance.get('_translation_display'):
+        return (), 'translation_has_no_measured_word_alignment'
     if project is None:
         return (), 'missing_project_evidence'
     from ..timeline.studio_caption_timeline import independent_captions, KEY

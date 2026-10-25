@@ -518,8 +518,6 @@ def validate_qwen_asr_endpoint(endpoint: dict, *, require_key: bool = True) -> N
     from .mosi_asr import MODEL as MOSI_MODEL, PROTOCOL as MOSI_PROTOCOL
     if (model == MOSI_MODEL) != (endpoint.get('protocol') == MOSI_PROTOCOL):
         raise RuntimeError('MOSS-Transcribe-Diarize Pro 云端必须使用 MOSI 转写协议。')
-    if model == 'microsoft/mai-transcribe-2':
-        raise RuntimeError('旧 MAI 2 模型不能作为新版运行。请先向当前服务商确认 MAI 2.1 的实际模型 ID 或稳定别名映射。')
     if endpoint.get('protocol')=='spark_wss':
         from .spark_asr import URL, MODEL
         if endpoint.get('url')!=URL or endpoint.get('model')!=MODEL:

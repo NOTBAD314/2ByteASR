@@ -10,6 +10,13 @@ from types import SimpleNamespace
 
 import pytest
 
+@pytest.fixture(autouse=True)
+def simulated_supported_macos_version(monkeypatch):
+    # Host-routing tests only; never presented as real 14.4.1 execution evidence.
+    monkeypatch.setattr('platform.mac_ver', lambda: ('14.4.1', ('', '', ''), ''))
+    monkeypatch.setattr('platform.machine', lambda: 'arm64')
+
+
 from twobyteasr.providers import llm_config
 from twobyteasr.local_models import macos_model_prepare as prepare
 
@@ -83,7 +90,7 @@ def test_failed_native_dependency_probe_never_changes_runtime_registration(tmp_p
     lock = {'target': 'darwin-arm64', 'uv': {'version': 'fixed', 'member': 'uv/uv'}, 'pip': {'version': 'fixed'},
             'python': {'version': '3.10.19', 'build': 'fixed'}}
     (root / 'packaging/macos/bootstrap.lock.json').write_text(json.dumps(lock))
-    for name in ('requirements-cpu.txt', 'requirements-gui.txt'):
+    for name in ('requirements-cpu.txt', 'requirements-gui.txt', 'constraints-cpu.txt', 'source-wheels.lock.json'):
         (root / 'packaging/macos' / name).write_text('owned==1\n')
     (root / 'packaging/macos/native-dependencies.lock.json').write_text(json.dumps({'critical_wheel_availability': {}}))
     monkeypatch.setattr(prepare, 'sys', SimpleNamespace(platform='darwin'))
@@ -98,7 +105,11 @@ def test_failed_native_dependency_probe_never_changes_runtime_registration(tmp_p
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text('owned binary fixture')
     monkeypatch.setattr(prepare, 'extract_archive', extract)
+    monkeypatch.setattr(prepare, 'verify_runtime_binaries', lambda path: None)
+    monkeypatch.setattr('twobyteasr.system.macos_wheels.verify_wheelhouse', lambda root: tmp_path)
+    commands=[]
     def run(command, **_kwargs):
+        commands.append(command)
         if '--report' in command:
             report = Path(command[command.index('--report') + 1])
             report.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +119,9 @@ def test_failed_native_dependency_probe_never_changes_runtime_registration(tmp_p
     with pytest.raises(RuntimeError, match='previous registration was preserved'):
         prepare.prepare(root, models=tmp_path / 'models', source='HF_OFFICIAL')
     assert registrations == []
+    install=next(command for command in commands if '--force-reinstall' in command)
+    assert '--only-binary=:all:' in install
+    assert install[install.index('--find-links')+1] == tmp_path
     assert list((tmp_path / 'profile').rglob('managed-runtime.json')) == []
 
 

@@ -104,6 +104,7 @@ def _dispatch_page(**overrides):
     callbacks = {name: (lambda name=name: calls.append(name)) for name in reg.BY_ID}
     callbacks["select_all"] = lambda: False  # nothing focused that can select
     page = SimpleNamespace(
+        project=None,
         _editing_has_focus=lambda: False, _studio_ime_composing=False, _review_mode=False,
         timeline=SimpleNamespace(cancel_selection_gesture=lambda: False),
         _interaction_runtime_audit=SimpleNamespace(measure=lambda name: __import__("contextlib").nullcontext()),
@@ -199,6 +200,14 @@ def test_settings_dialog_does_not_ask_to_save_after_searching_shortcuts(tmp_path
     app = QApplication.instance() or QApplication([])
     dialog = ApplicationSettingsDialog(None, {}, tmp_path / "Projects", browse=lambda *a: None,
                                        clear_recent=lambda: None, reset_layout=lambda: None)
+    dialog.ensure_section('快捷键')                       # 2026-10-25: rows are listed in batches while shown
+    dialog.show()
+    import time
+    from PySide6.QtTest import QTest
+    deadline = time.monotonic() + 5
+    while not dialog.shortcut_panel.construction_complete and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert dialog.shortcut_panel.construction_complete
     dialog.shortcut_panel.search.setText("吸附")          # looking around is not a change
     assert dialog._values() == dialog._saved_values
     editor = dialog.shortcut_panel.findChild(QKeySequenceEdit, "shortcutEditor_toggle_snap")

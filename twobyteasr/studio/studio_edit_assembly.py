@@ -42,6 +42,10 @@ class StudioEditAssemblyMixin:
         project = self.project
         if project is None:
             return
+        editor = getattr(self, '_highlight_range_editor', None)
+        if editor is not None and editor.isVisible():
+            editor.mark_point(index)
+            return
         from ..projects.project_range import set_range, range_points, text_input_focused, clock_text, RANGE_TOGGLE_MS
         if text_input_focused(): return
         points = list(range_points(project))
@@ -75,15 +79,38 @@ class StudioEditAssemblyMixin:
         end = sequence.out_point_ms
         if start is None or end is None or end - start < 40:
             return
-        mapped_in = timeline_to_source(sequence, start)
-        mapped_out = timeline_to_source(sequence, max(start + 1, end - 1))
+        from ..timeline.studio_edit_sequence import recording_sequence
+        mapping_sequence = recording_sequence(project)[1]
+        mapped_in = timeline_to_source(mapping_sequence, start)
+        mapped_out = timeline_to_source(mapping_sequence, max(start + 1, end - 1))
         if mapped_in is None or mapped_out is None:
             return
+        from ..media.danmaku_binding import normalized_source
+        from .highlight_workflow import timeline_range
+        tail=next(s for s in mapping_sequence.segments if s.id==mapped_out.segment_id)
+        source_out=tail.source_in_ms+round((end-tail.timeline_in_ms)*tail.source_duration_ms/max(1,tail.duration_ms))
+        if (normalized_source(mapped_in.source_path)!=normalized_source(mapped_out.source_path)
+                or timeline_range(project,mapped_in.source_path,mapped_in.source_ms,source_out)!=(start,end)):
+            self.highlight_panel.show_edit_result(tr('选区跨越不同素材或已删除内容，请分别设置起止。'),ok=False)
+            return
+        asset=next((a for a in project.media_pool if normalized_source(a.canonical_source)==normalized_source(mapped_in.source_path)),None)
+        from .highlight_evidence import stable_id
+        candidate_id='manual-'+stable_id(mapped_in.source_path,mapped_in.source_ms,source_out)[3:]
+        existing=next((c for c in sequence.clip_candidates if c.id==candidate_id or
+                       (c.status=='accepted' and c.clip_range==(mapped_in.source_ms,source_out)
+                        and normalized_source(c.source_path or project.media.path)==normalized_source(mapped_in.source_path))),None)
+        if existing is not None:
+            self._set_candidate_status(existing.id,'accepted')
+            return
         candidate = HighlightCandidate(
-            id=f"manual-{start}-{end}",
-            title="手动候选",
+            id=candidate_id,
+            title="手动选取的片段",
             source_in_ms=mapped_in.source_ms,
-            source_out_ms=mapped_out.source_ms,
+            source_out_ms=source_out,
+            source_path=mapped_in.source_path,
+            source_duration_ms=asset.duration_ms if asset else 0,
+            range_status='manual',
+            user_adjusted=True,
             score=1.0,
             reason="I / O",
             status="accepted",
@@ -106,26 +133,39 @@ class StudioEditAssemblyMixin:
         )
         self.undo_stack.push(add_marker_command(project, marker, self._sequence_changed))
 
-    def _on_candidate_clicked(self, candidate_id: str) -> None:
-        project = self.project
-        if project is None:
-            return
-        sequence = sequence_of(project)
-        candidate = next((item for item in sequence.clip_candidates if item.id == candidate_id), None)
-        if candidate is None:
-            return
-        mapped = source_to_timeline(sequence, candidate.source_in_ms)
-        if mapped is None:
-            # Candidate is in source time of the original recording.
-            self._seek(candidate.source_in_ms / 1000.0)
-            return
-        self._seek(mapped.timeline_ms / 1000.0)
+    def _on_candidate_clicked(self, candidate_id: str, play: bool = False) -> None:
+        from .highlight_workflow import preview
+        preview(self, candidate_id, play=play)
+
+    def _highlight_context(self, candidate_id: str) -> None:
+        from .highlight_workflow import preview
+        preview(self, candidate_id, play=True, context=True)
+
+    def _edit_highlight_range(self, candidate_id: str) -> None:
+        from .highlight_workflow import edit_range
+        edit_range(self, candidate_id)
+
+    def _change_highlight_source(self, source: str) -> None:
+        project=self.project
+        if project is None or not source:return
+        from ..media.danmaku_binding import primary_source, normalized_source, analysis_sources
+        if normalized_source(primary_source(project))==normalized_source(source):return
+        if not any(normalized_source(a.canonical_source)==normalized_source(source) for a in analysis_sources(project)):return
+        self._cancel_highlight_analysis()
+        project.studio_state['highlight_source_path']=source
+        self._schedule_danmaku_discovery()
+        self._refresh_danmaku_status()
 
     def _set_candidate_status(self, candidate_id: str, status: str) -> None:
         project = self.project
         if project is None:
             return
         sequence = sequence_of(project)
+        target=next((item for item in sequence.clip_candidates if item.id==candidate_id),None)
+        if target is None or target.status==status:return
+        if status=='accepted' and not target.clip_range:
+            self._edit_highlight_range(candidate_id)
+            return
         candidates = []
         for item in sequence.clip_candidates:
             clone = copy.deepcopy(item)
@@ -134,6 +174,8 @@ class StudioEditAssemblyMixin:
             candidates.append(clone)
         self.undo_stack.push(replace_candidates_command(project, candidates, "更新剪辑候选", self._sequence_changed))
         self.highlight_panel.set_project_status(project, sequence.danmaku_path)
+        if status=='accepted':
+            self.highlight_panel.show_edit_result(tr('已加入待生成清单；点击「生成清单中的剪辑」后会出现在时间轴。'))
         self.timeline.update()
 
     def _remove_candidate_from_bin(self, candidate_id: str) -> None:
@@ -193,7 +235,8 @@ class StudioEditAssemblyMixin:
             return
         from ..timeline.studio_edit_sequence import timeline_duration_ms
         panel = self.highlight_panel
-        full_ms = int(project.media.duration_ms or 0)
+        from ..media.danmaku_binding import analysis_media
+        full_ms = int(analysis_media(project).duration_ms or 0)
         try:
             command = generate_edit_command(project, changed=self._sequence_changed, page=self,
                                             locked_speakers=self.timeline.locked_speakers)
@@ -216,6 +259,11 @@ class StudioEditAssemblyMixin:
             + (tr('{count} 条字幕不在保留区间，返回完整录播可恢复。', count=left_out) if left_out else ''), ok=True)
         bind_text(self.save_state, '已生成剪辑 · {count} 段 · {duration}', count=len(sequence.segments),
                   duration=_clock(duration))
+        from .studio_highlight_ui import _duration_label
+        details=panel.edit_result.text()
+        panel.show_edit_result(tr('已生成 {count} 段 · {duration}。Ctrl+Z 可撤销。',
+                                  count=len(sequence.segments),duration=_duration_label(duration)))
+        panel.edit_result.setToolTip(details)
 
     def _restore_full_sequence(self) -> None:
         project = self.project
@@ -251,8 +299,13 @@ class StudioEditAssemblyMixin:
 
     def _refresh_danmaku_status(self) -> None:
         if hasattr(self, "highlight_panel"):
-            from ..media.danmaku_binding import effective_path
+            from ..media.danmaku_binding import effective_path, primary_source, normalized_source
             self.highlight_panel.set_project_status(self.project, effective_path(self.project) if self.project else "")
+            source = normalized_source(primary_source(self.project))
+            if source != getattr(self, '_highlight_bound_source', ''):
+                self._highlight_bound_source = source
+                if source:
+                    self._schedule_danmaku_discovery()
 
     def _schedule_danmaku_discovery(self, manual_path: str = "") -> None:
         """Find/validate the same-name XML beside the ORIGINAL source, off the GUI thread.
@@ -269,6 +322,8 @@ class StudioEditAssemblyMixin:
             self._refresh_danmaku_status()
             return
         legacy = "" if binding_of(project) else str(sequence_of(project).danmaku_path or "")
+        if normalized_source(primary_source(project))!=normalized_source(project.media.path):
+            legacy=""
         manual = str(manual_path or legacy)
         if not manual and not needs_discovery(project):
             self._refresh_danmaku_status()
@@ -352,13 +407,17 @@ class StudioEditAssemblyMixin:
             "max_seconds": int(options.get("max_seconds") or 180),
             "ai_service": str(options.get("ai_service") or ""),
             "model": str(options.get("model") or ""),
+            "danmaku_offset_ms": int(options.get("danmaku_offset_ms") or 0),
             "runtime_settings": self.runtime_settings,
         }
         request = begin_request(self, "highlight")
         request.analysis_input = {"danmaku_path": payload["danmaku_path"], "mode": payload["mode"]}
-        self._highlight_worker = HighlightAnalyzeWorker(copy.deepcopy(project), copy.deepcopy(payload))
+        from .highlight_evidence import worker_snapshot
+        self._highlight_worker = HighlightAnalyzeWorker(worker_snapshot(project), copy.deepcopy(payload))
         self._highlight_worker.finished_ok.connect(lambda result: self._highlights_ready(result, request))
         self._highlight_worker.failed.connect(lambda message: self._highlights_failed(message, request))
+        self._highlight_worker.progress.connect(lambda label,percent:
+            self.highlight_panel.set_progress(label,percent) if current_request(self,'highlight',request) else None)
         retain_worker(self, self._highlight_worker)
         self._highlight_worker.start()
 
@@ -385,12 +444,14 @@ class StudioEditAssemblyMixin:
         # Provenance of these candidates: which XML (and how many comments)
         # really went into the analysis.
         provenance = {key: result.get(key) for key in (
-            "danmaku_count", "danmaku_duration_ms", "local_count", "llm_status", "ai_service", "model")}
+            "danmaku_count", "danmaku_duration_ms", "local_count", "llm_status", "llm_error", "ai_service", "model",
+            "source_path", "source_duration_ms", "danmaku_offset_ms")}
         provenance.update(getattr(request, "analysis_input", {}) or {}, candidates=len(candidates))
         with state_for(project).transaction(project, action_id="highlight_provenance",
                                             dirty=DirtyDomain.PROJECT_METADATA):
             project.studio_state["highlight_analysis"] = provenance
-        self.undo_stack.push(replace_candidates_command(project, candidates, "AI 剪辑候选", self._sequence_changed))
+        self.undo_stack.push(replace_candidates_command(project, candidates, "更新剪辑建议", self._sequence_changed,
+                                                        preserve_decisions=True))
         self._refresh_danmaku_status()
         if candidates:
             self.highlight_panel.show_candidates_stage()

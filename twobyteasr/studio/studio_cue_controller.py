@@ -533,8 +533,8 @@ class StudioCueController:
                 # 表格行——编辑器与样式检查器水合（实测单次 280ms）推迟到暂停
                 # 时补做（见 _playback_state_changed 的全量重选）。
                 page._manual_text_baselines.setdefault(cue.id, cue.text)
-                if page.cue_text.toPlainText() != cue.text:
-                    page.cue_text.setPlainText(cue.text)
+                from .caption_text_tools import hydrate_editor
+                hydrate_editor(page.cue_text, cue, cue.text)
                 if hasattr(page, "subtitle_edit_input") and getattr(page, "_canvas_editor", None) is not page.subtitle_edit_input:
                     if page.subtitle_edit_input.toPlainText() != cue.text:
                         page.subtitle_edit_input.blockSignals(True)
@@ -546,9 +546,8 @@ class StudioCueController:
                     if isinstance(translations, dict)
                     else ""
                 )
-                if page.translation_text.toPlainText() != translation:
-                    page.translation_text.setPlainText(translation)
-                if editor_had_focus:
+                hydrate_editor(page.translation_text, cue, translation)
+                if editor_had_focus and not getattr(page, '_text_input_in_progress', False):
                     cursor = page.cue_text.textCursor()
                     cursor.setPosition(min(cursor_position, len(cue.text)))
                     page.cue_text.setTextCursor(cursor)
@@ -794,9 +793,16 @@ class StudioCueController:
                 refresh_advanced=bool(dirty & DirtyDomain.ADVANCED_PREVIEW),
             )
 
-        if dirty & DirtyDomain.CLIP_STATUS and hasattr(page, "highlight_panel"):
-            sequence = sequence_of(project)
-            page.highlight_panel.set_project_status(project, sequence.danmaku_path)
+        if dirty & (DirtyDomain.CLIP_STATUS | DirtyDomain.VIDEO_TRACKS | DirtyDomain.MEDIA_POOL) and hasattr(page, "highlight_panel"):
+            page._refresh_danmaku_status()
+            from .highlight_workflow import candidate_of, timeline_range
+            candidate=candidate_of(page,getattr(page,'_highlight_active_candidate',''))
+            if candidate is not None and candidate.clip_range:
+                page._highlight_preview=None
+                page.timeline._highlight_preview_range=timeline_range(project,candidate.source_path,*candidate.clip_range)
+                key=candidate.key_moment_ms
+                mapped=timeline_range(project,candidate.source_path,key,key+1) if key is not None else None
+                page.timeline._highlight_key_moment=mapped[0] if mapped else None
         if dirty & DirtyDomain.AUTOSAVE:
             page._schedule_autosave()
         if os.environ.get("TWOBYTEASR_DEBUG_SUBTITLES") == "1":
@@ -1066,7 +1072,9 @@ class StudioCueController:
         # Do not hydrate all inspectors back into the emitting editor.
         self.page._text_input_in_progress = True
         try:
-            self.set_text(cue_id, self.page.cue_text.toPlainText())
+            tools = getattr(self.page.cue_text, '_caption_tools', None)
+            if tools is not None: tools.commit()
+            else: self.set_text(cue_id, self.page.cue_text.toPlainText())
         finally:
             self.page._text_input_in_progress = False
 
@@ -1120,7 +1128,9 @@ class StudioCueController:
             return
         self.page._text_input_in_progress = True
         try:
-            self.set_translation(cue_id, self.page.translation_text.toPlainText())
+            tools = getattr(self.page.translation_text, '_caption_tools', None)
+            if tools is not None: tools.commit()
+            else: self.set_translation(cue_id, self.page.translation_text.toPlainText())
         finally:
             self.page._text_input_in_progress = False
 
@@ -1338,8 +1348,8 @@ class StudioCueController:
         if mapped is None:
             bind_text(self.page.save_state, '切点跨剪辑边界，无法无损映射到原字幕')
             return
-        self.session.undo_stack.push(
-            split_cue_command(
+        try:
+            command = split_cue_command(
                 project,
                 cue.id,
                 mapped[0],
@@ -1347,7 +1357,10 @@ class StudioCueController:
                 preview.right_text,
                 self.model_changed,
             )
-        )
+        except ValueError as error:  # e.g. inside an emoji (2026-10-24 grapheme guard)
+            bind_text(self.page.save_state, error.args[0] if error.args else str(error))
+            return
+        self.session.undo_stack.push(command)
         if preview.measured:
             bind_text(self.page.save_state, '已按字级时间切分：「{left}」｜「{right}」',
                       left=preview.left_text[-4:], right=preview.right_text[:4])
@@ -1418,8 +1431,13 @@ class StudioCueController:
         if mapped is None:
             bind_text(self.page.save_state, '切点跨剪辑边界，无法无损映射到原字幕')
             return
-        self.session.undo_stack.push(split_cue_command(
-            project, cue.id, mapped[0], choice.left_text, choice.right_text, self.model_changed))
+        try:
+            command = split_cue_command(
+                project, cue.id, mapped[0], choice.left_text, choice.right_text, self.model_changed)
+        except ValueError as error:  # e.g. inside an emoji (2026-10-24 grapheme guard)
+            bind_text(self.page.save_state, error.args[0] if error.args else str(error))
+            return
+        self.session.undo_stack.push(command)
         if choice.kind == "estimate":
             bind_text(self.page.save_state, '已在估算时间拆分：「{left}」｜「{right}」，请试听核对',
                       left=choice.left_text[-6:], right=choice.right_text[:6])

@@ -418,7 +418,10 @@ class StudioVideoFlowMixin:
         self._video_effects_preview_overrides.pop(str(clip_id), None)
         self._refresh_video_transform_panel()
         self._show_context_panel()
-        if hasattr(self, "video_transform_tab_index"):
+        # Browsing the footage is part of choosing a clip. Keep that workspace
+        # open until the user explicitly chooses another tool page.
+        if (hasattr(self, "video_transform_tab_index")
+                and self.context_drawer.currentIndex() != getattr(self, "highlight_tab_index", -1)):
             self.context_drawer.setCurrentIndex(self.video_transform_tab_index)
 
     def _video_transform_values_from_controls(self) -> dict[str, object]:
@@ -1133,6 +1136,14 @@ class StudioVideoFlowMixin:
                     remove.triggered.connect(
                         lambda: delete_clips(self, track_id, [clip_id])
                     )
+                # 2026-10-25: picture and sound become two clips that move on their own.
+                from ..timeline.studio_media_pool import can_detach_clip_audio, detach_clip_audio, linked_audio_clip
+                if linked_audio_clip(project, track_id, clip_id) is not None:
+                    why = can_detach_clip_audio(project, track_id, clip_id)
+                    detach = menu.addAction(_icon("fa5s.unlink"), tr("分离音频（{reason}）", reason=tr(why)) if why else "分离音频")
+                    detach.setEnabled(not why)
+                    detach.triggered.connect(lambda: self.undo_stack.push(media_graph_command(
+                        project, tr("分离音频"), lambda working: detach_clip_audio(working, track_id, clip_id))))
                 menu.addSeparator()
         rename = menu.addAction(_icon("fa5s.edit"), "重命名轨道")
         rename.setEnabled(not track.locked)

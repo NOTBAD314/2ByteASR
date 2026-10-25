@@ -139,6 +139,7 @@ class SpringDialog(QDialog):
     # 入场滑动+渐入动画开关：应用设置等"高频即开"入口置 False，
     # 用户反馈弹窗动画带来约 1 秒等待感（2026-09-19 轮）。
     ENTRY_ANIMATED = True
+    EXIT_ANIMATED = True
 
     # A parentless dialog always sits in a reference cycle (WindowBounds);
     # left to the cycle collector it must not be torn down wrapper by wrapper.
@@ -184,6 +185,10 @@ class SpringDialog(QDialog):
                 self.finished.disconnect(completed)
                 guard.deleteLater()
                 self._input_guard = None
+            # A reused dialog owns one loop per visit. The loop has finished;
+            # retaining it as a child would accumulate destroy connections.
+            if isValid(loop):
+                loop.deleteLater()
         return answer[0]
 
     def refresh_theme_palette(self) -> None:
@@ -273,7 +278,7 @@ class SpringDialog(QDialog):
             self.setWindowOpacity(1.0)
 
     def done(self, result):
-        duration = motion_duration(MOTION_FAST_MS)
+        duration = motion_duration(MOTION_FAST_MS) if self.EXIT_ANIMATED else 0
         if not duration or not self.isVisible():
             return super().done(result)
         if getattr(self, "_exit_pending", False):

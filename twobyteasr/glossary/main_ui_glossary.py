@@ -159,6 +159,7 @@ class TermGameListRow(QFrame):
     """Two-level glossary nav row: strong name, quiet count."""
 
     clicked = Signal()
+    menu_requested = Signal(object)  # global QPoint of a right click
 
     def __init__(
         self,
@@ -219,6 +220,10 @@ class TermGameListRow(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):  # noqa: N802 - Qt API
+        self.menu_requested.emit(event.globalPos())
+        event.accept()
 
 
 # P0-5: Lightweight model + delegate for 650-row term table.
@@ -541,6 +546,8 @@ class TermLibraryDialog(QWidget):
         return getattr(self.legacy, "resolve_glossary_identity", lambda _name: "")(name) or name
 
     def _notify_owner_library_changed(self):
+        from .visual_emphasis import refresh_visual_glossary
+        refresh_visual_glossary(getattr(self.owner, '_studio_page_instance', None))
         refresh = getattr(self.owner, "_refresh_content_choices", None)
         if callable(refresh):
             refresh()
@@ -811,6 +818,7 @@ class TermLibraryDialog(QWidget):
     def _focus_new_game(self):
         self.show_page("mine")
         self.new_library_panel.show()
+        self._refresh_restore_builtin()
         self.game_input.setFocus()
         self.game_input.selectAll()
 
@@ -954,6 +962,13 @@ class TermLibraryDialog(QWidget):
         self.add_game_button.clicked.connect(self.create_game)
         new_library_actions.addWidget(self.add_game_button)
         new_library.addLayout(new_library_actions)
+        # 2026-10-25: deleted built-in libraries come back from here.
+        self.restore_builtin_button = AnimatedButton("恢复自带词库")
+        self.restore_builtin_button.setObjectName("termLinkButton")
+        bind_text(self.restore_builtin_button, '把删除过的软件自带词库放回列表', property='toolTip')
+        self.restore_builtin_popup = ActionPopup(self.restore_builtin_button, min_width=200)
+        new_library.addWidget(self.restore_builtin_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.restore_builtin_button.hide()
         self.new_library_panel.hide()
         sidebar_layout.addWidget(self.new_library_panel)
         self.game_list = QListWidget()
@@ -1703,6 +1718,7 @@ class TermLibraryDialog(QWidget):
             parent=self.game_list,
         )
         row.clicked.connect(lambda target=item: self.game_list.setCurrentItem(target))
+        row.menu_requested.connect(lambda pos, target=item: self._show_game_menu(target, pos))
         self.game_list.setItemWidget(item, row)
         if hasattr(self, "my_tab_button"):
             self._sync_tab_counts()
@@ -2297,11 +2313,11 @@ class TermLibraryDialog(QWidget):
         self._sync_batch_switch()
         self.share_button.setEnabled(enabled and bool(self.state.get("mappings")))
         self.more_button.setEnabled(enabled)
-        # 删除游戏只对非保护游戏可用（C7 与删除术语分离）
+        # 2026-10-25: built-in libraries can be deleted too (hidden; 新建 → 恢复 brings them back).
         protected = self._game_identity(game_name) in self.protected_game_ids
-        self.delete_game_button.setEnabled(enabled and not protected)
+        self.delete_game_button.setEnabled(enabled)
         self.rename_game_button.setEnabled(enabled and not protected)
-        bind_text(self.delete_game_button, translate('内置/受保护游戏不可删除' if protected else '删除当前游戏及其术语', current_language()), property='toolTip')
+        bind_text(self.delete_game_button, translate('从列表删除这个自带词库；软件自带的内容不会被改动，以后可在「新建」里恢复' if protected else '删除当前游戏及其术语', current_language()), property='toolTip')
         (bind_text(self.library_badge, f'{self.game_list.count()} games') if current_language() == 'en' else bind_text(self.library_badge, '{value0} 个游戏', value0=self.game_list.count()))
         self._sync_tab_counts()
         self._refresh_game_item_counts()
@@ -2549,9 +2565,50 @@ class TermLibraryDialog(QWidget):
 
     def delete_current_game(self):
         game_name = self.state["game"]
-        if not game_name or self._game_identity(game_name) in self.protected_game_ids:
+        if not game_name:
             return
         self._show_delete_game_confirm(game_name)
+
+    def _show_game_menu(self, item, global_pos):
+        """Right click on a library in the list: the same actions as 「⋯」 (2026-10-25)."""
+        if item is None:
+            return
+        self.game_list.setCurrentItem(item)
+        game_name = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not game_name:
+            return
+        menu = QMenu(self)
+        menu.setObjectName("termGameMenu")
+        if self._game_identity(game_name) not in self.protected_game_ids:
+            menu.addAction(tr("改名…")).triggered.connect(lambda _=False: self.rename_current_game())
+        menu.addAction(tr("导出词库")).triggered.connect(lambda _=False: self.export_current_library())
+        menu.addSeparator()
+        menu.addAction(tr("删除词库…")).triggered.connect(lambda _=False: self.delete_current_game())
+        self._game_menu = menu
+        menu.popup(global_pos)
+
+    def _refresh_restore_builtin(self):
+        names = list(getattr(self.legacy, "hidden_runtime_game_profile_names", lambda: [])())
+        self.restore_builtin_popup.clear_items()
+        for name in names:
+            button = AnimatedButton(name)
+            button.clicked.connect(lambda _=False, value=name: self.restore_builtin_library(value))
+            self.restore_builtin_popup.add_button(button)
+        self.restore_builtin_button.setVisible(bool(names))
+        bind_text(self.restore_builtin_button, '恢复自带词库（{count}）', count=len(names))
+
+    @glossary_write_errors
+    def restore_builtin_library(self, game_name):
+        if not getattr(self.legacy, "unhide_runtime_game_profile", lambda _name: False)(game_name):
+            self._show_toast("没能恢复这个词库，请检查文件写入权限。", 5000)
+            return
+        getattr(self.legacy, "migrate_user_verified_profile_terms", lambda: 0)()
+        self._notify_library_changed()
+        self.add_game_item(game_name, select=True)
+        self.new_library_panel.hide()
+        self._refresh_restore_builtin()
+        self._sync_tab_counts()
+        bind_text(self.owner.term_hint, '已恢复《{value0}》', value0=game_name)
 
     def _show_delete_game_confirm(self, game_name: str):
         """Warm in-app confirm for deleting a game term set (no native black dialog)."""
@@ -2578,10 +2635,28 @@ class TermLibraryDialog(QWidget):
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
 
-        q = bind_text(QLabel(), '要从术语库中删除《{game_name}》以及它的术语吗？\n内置词库文件不会被修改。', game_name=game_name)
+        identity = self._library_key(game_name)
+        own_terms = self._game_term_count(game_name, identity)
+        if identity in self.profile_game_ids:
+            # Rows migrated from the built-in profile come back with it; only
+            # the user's own rows are lost.
+            own_terms = sum(1 for row in getattr(self.legacy, "user_confirmed_mappings_for_game",
+                                                 self.legacy.learned_mappings_for_game)(identity)
+                            if row.get("verification") != "user_profile_migration")
+            # 2026-10-25: a built-in library is hidden, never edited; 新建 → 恢复 brings it back.
+            q = bind_text(QLabel(), '要删除软件自带的《{game_name}》吗？', game_name=game_name)
+            detail = (bind_text(QLabel(), '它不再出现在列表里，也不再用于识别。你自己加的 {count} 条术语会一起删除；软件自带的内容不会被改动，以后可在「新建」→「恢复自带词库」里放回来。', count=own_terms)
+                      if own_terms else
+                      bind_text(QLabel(), '它不再出现在列表里，也不再用于识别。软件自带的内容不会被改动，以后可在「新建」→「恢复自带词库」里放回来。'))
+        else:
+            q = bind_text(QLabel(), '要删除《{game_name}》以及它的术语吗？', game_name=game_name)
+            detail = bind_text(QLabel(), '{count} 条术语会一起删除，删除后不能撤销。', count=own_terms)
         q.setWordWrap(True)
         q.setStyleSheet("font-weight:600;")
         lay.addWidget(q)
+        detail.setWordWrap(True)
+        detail.setObjectName("termHint")
+        lay.addWidget(detail)
 
         row = QHBoxLayout()
         row.addStretch(1)
@@ -2598,7 +2673,8 @@ class TermLibraryDialog(QWidget):
 
         def _place():
             pr = self.rect()
-            sw, sh = 420, 140
+            sw = 440
+            sh = max(140, lay.totalHeightForWidth(sw) if lay.hasHeightForWidth() else sheet.sizeHint().height())
             sheet.setGeometry((pr.width() - sw)//2, max(40, (pr.height() - sh)//2 - 10), sw, sh)
 
         _place()
@@ -2881,6 +2957,14 @@ class TermLibraryDialog(QWidget):
         if idx >= 0:
             cat.setCurrentIndex(idx)
         form.addRow("分类", cat)
+        from PySide6.QtWidgets import QCheckBox
+        correction = QCheckBox('用于校对／替换')
+        emphasis = QCheckBox('用于字幕视觉强调')
+        correction.setChecked(bool(mapping.get('correction_enabled', True)))
+        emphasis.setChecked(bool(mapping.get('emphasis_enabled', False)))
+        self.edit_correction_enabled, self.edit_emphasis_enabled = correction, emphasis
+        form.addRow('用途', correction)
+        form.addRow('', emphasis)
         lay.addLayout(form)
 
         row = QHBoxLayout()
@@ -2897,7 +2981,7 @@ class TermLibraryDialog(QWidget):
         def _place():
             # center sheet over current view
             pr = self.rect()
-            sw, sh = 480, 220
+            sw, sh = 480, 310
             sheet.setGeometry((pr.width() - sw)//2, max(40, (pr.height() - sh)//2 - 20), sw, sh)
 
         _place()
@@ -2931,12 +3015,13 @@ class TermLibraryDialog(QWidget):
                 return False
             new_target = val
             new_source = alias_edit.text().strip() or val
-            if (new_source, new_target) == (source, target) and (cat.currentData() or "其他") == self._mapping_category(mapping):
+            if (new_source, new_target) == (source, target) and (cat.currentData() or "其他") == self._mapping_category(mapping) and correction.isChecked() == bool(mapping.get("correction_enabled", True)) and emphasis.isChecked() == bool(mapping.get("emphasis_enabled", False)):
                 _cleanup()
                 return True
             ok = self.legacy.edit_learned_mapping(
                 self._library_key(game_name), (source, target), new_source, new_target,
-                category=str(cat.currentData() or "其他"), origin=self._mapping_origin(mapping))
+                category=str(cat.currentData() or "其他"), origin=self._mapping_origin(mapping),
+                correction_enabled=correction.isChecked(), emphasis_enabled=emphasis.isChecked())
             if not ok:
                 # keep simple; surface via owner hint
                 bind_text(self.owner.term_hint, '修改后的术语已存在或内容为空')
@@ -2959,7 +3044,7 @@ class TermLibraryDialog(QWidget):
         # keep refs so we can close on resize etc.
         self._edit_cleanup = _cleanup
         self._edit_pending = lambda: ((alias_edit.text().strip() or term_edit.text().strip(), term_edit.text().strip(),
-            cat.currentData() or '其他') != (source, target, self._mapping_category(mapping)))
+            cat.currentData() or '其他', correction.isChecked(), emphasis.isChecked()) != (source, target, self._mapping_category(mapping), bool(mapping.get('correction_enabled', True)), bool(mapping.get('emphasis_enabled', False))))
         self._edit_submit = _save
         self._edit_preview = lambda: f"《{game_name}》：{alias_edit.text().strip() or term_edit.text().strip()} → {term_edit.text().strip()}"
 

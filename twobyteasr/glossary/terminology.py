@@ -44,6 +44,8 @@ class TermEntry:
     category: str = "其他"
     origin: str = "手动"
     priority: int = 20
+    correction_enabled: bool = True
+    emphasis_enabled: bool = False
 
 
 # Hotword value (2026-10-17). Names are what recognizers miss; a recorded
@@ -94,7 +96,7 @@ class GlossarySnapshot:
     @property
     def canonical_terms(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(term.canonical for library in self.libraries
-            for term in library.terms if term.confirmed))
+            for term in library.terms if term.confirmed and term.correction_enabled))
 
     @property
     def hotword_terms(self) -> tuple[str, ...]:
@@ -106,7 +108,7 @@ class GlossarySnapshot:
         Not part of to_dict: the digest and every other consumer are unchanged.
         """
         best: dict[str, tuple[int, int]] = {}
-        terms = (term for library in self.libraries for term in library.terms if term.confirmed)
+        terms = (term for library in self.libraries for term in library.terms if term.confirmed and term.correction_enabled)
         for index, term in enumerate(terms):
             rank = (_hotword_tier(term), index)
             if term.canonical not in best:
@@ -138,7 +140,7 @@ class GlossarySnapshot:
         aliases, corrections = [], []
         for library in self.libraries:
             for term in library.terms:
-                if not term.confirmed:
+                if not term.confirmed or not term.correction_enabled:
                     continue
                 canonical = spellings.get(term.canonical.casefold(), term.canonical)
                 for alias in term.aliases:
@@ -207,7 +209,8 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
             aliases = tuple(_text(x) for x in row.get("aliases", ()) if _text(x)) if (
                 row.get("replacement_mode") == "global" or explicitly_confirmed) else ()
             terms.append(TermEntry(_text(row["canonical"]), aliases,
-                provenance="builtin", category=_text(row.get("category")), origin="官方", priority=10))
+                provenance="builtin", category=_text(row.get("category")), origin="官方", priority=10, correction_enabled=bool(row.get("correction_enabled", True)),
+                emphasis_enabled=bool(row.get("emphasis_enabled", False))))
         for row in entry.get("mappings", ()):
             if not isinstance(row, dict) or not _text(row.get("to")):
                 continue
@@ -225,7 +228,8 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
             aliases = tuple(x for x in aliases if x)
             terms.append(TermEntry(_text(row["to"]), aliases, confirmed,
                 provenance or ("user_confirmed" if user else "candidate"),
-                _text(row.get("category")) or "其他", _text(row.get("origin")) or "手动", 20))
+                _text(row.get("category")) or "其他", _text(row.get("origin")) or "手动", 20,
+                bool(row.get("correction_enabled", True)), bool(row.get("emphasis_enabled", False))))
         references = []
         paths = getattr(legacy, "_profile_lexicon_paths_for", lambda _profile: [])(profile)
         for path in paths:
@@ -281,6 +285,44 @@ def snapshot_from_pairs(pairs: Iterable[tuple[str, str]]) -> GlossarySnapshot:
             if _text(source) and _text(target))),))
 
 
+def symbol_free_spelling(canonical: str) -> str:
+    """How the Chinese subtitle cleanup writes a term with symbols inside it, else ''.
+
+    漂泊者·男 -> 漂泊者男, Re:Zero -> ReZero (2026-10-25). A symbol at either
+    end (《鸣潮》, S.A.T.) gives '': reading every plain 鸣潮 as 《鸣潮》 would wrap
+    ordinary mentions, so such spellings apply only through aliases.
+    """
+    from ..subtitle_rules.chinese_punctuation import clean
+    canonical = _text(canonical)
+    plain = clean(canonical)
+    if (plain == canonical or len(plain) < 2
+            or plain[:1] != canonical[:1] or plain[-1:] != canonical[-1:]):
+        return ""
+    return plain
+
+
+_SYMBOL_SPELLINGS: dict[int, tuple[GlossarySnapshot, re.Pattern | None]] = {}
+
+
+def symbol_spellings_pattern(snapshot: GlossarySnapshot) -> re.Pattern | None:
+    """Confirmed spellings the Chinese cleanup would change, matched like the resolver.
+
+    The cleanup keeps these as written (2026-10-25); None when there are none.
+    Cached for the last snapshot: the cleanup runs for every subtitle line.
+    """
+    cached = _SYMBOL_SPELLINGS.get(id(snapshot))
+    if cached is not None and cached[0] is snapshot:
+        return cached[1]
+    from ..subtitle_rules.chinese_punctuation import clean
+    spellings = {term.canonical for library in snapshot.libraries for term in library.terms
+                 if term.confirmed and term.correction_enabled and term.canonical
+                 and clean(term.canonical) != term.canonical}
+    pattern = TermResolver._compile(spellings) if spellings else None
+    _SYMBOL_SPELLINGS.clear()
+    _SYMBOL_SPELLINGS[id(snapshot)] = (snapshot, pattern)
+    return pattern
+
+
 @dataclass(frozen=True)
 class TermConflict:
     key: str
@@ -334,6 +376,7 @@ class TermResolver:
         self._fold = chinese_script.fold if self.script else (lambda text: text)
         self._categories = {}
         claims: dict[str, list[tuple[str, str, int]]] = {}
+        disabled = {}
         for library in snapshot.libraries:
             for term in library.terms:
                 if not term.confirmed:
@@ -341,12 +384,26 @@ class TermResolver:
                 target = self._written(term.canonical)
                 for source in (term.canonical, *term.aliases):
                     if source:
+                        if not term.correction_enabled:
+                            key=self._key(source)
+                            disabled[key]=max(disabled.get(key,-1),term.priority)
+                            claims.setdefault(key,[])
+                            continue
                         self._categories.setdefault(self._key(source), []).append(term.category)
                         claims.setdefault(self._key(source), []).append((target, library.id, term.priority))
+                # 2026-10-25: the Chinese cleanup writes 漂泊者·男 as 漂泊者男; that
+                # spelling reads as the term again. Anything written out wins.
+                plain = symbol_free_spelling(term.canonical)
+                if plain and term.correction_enabled:
+                    self._categories.setdefault(self._key(plain), []).append(term.category)
+                    claims.setdefault(self._key(plain), []).append((target, library.id, term.priority - 1))
         self._rules: dict[str, tuple[str, tuple[str, ...]]] = {}
         conflicts = {}
         for key, rows in sorted(claims.items()):
-            priority = max(row[2] for row in rows)
+            priority = max((row[2] for row in rows),default=-1)
+            if disabled.get(key,-1) >= priority and key in disabled:
+                conflicts[key]=TermConflict(key,(),tuple(sorted({row[1] for row in rows})), 'disabled_correction')
+                continue
             top = [row for row in rows if row[2] == priority]
             targets = tuple(sorted({row[0] for row in top}))
             library_ids = tuple(sorted({row[1] for row in top}))

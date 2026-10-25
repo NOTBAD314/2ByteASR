@@ -13,6 +13,7 @@ ROOT=Path(os.environ['TWOBYTEASR_MAC_SOURCE']).resolve()
 WORK=Path(os.environ['TWOBYTEASR_MAC_BUILD_ROOT']).resolve()
 sys.path.insert(0,str(ROOT))
 from twobyteasr.system.platform_macos import cpu_factory_settings
+from twobyteasr.system.macos_compatibility import MINIMUM_MACOS
 from twobyteasr.storage.settings import DEFAULT_SETTINGS
 from scripts.macos_build import is_macho, selected_media_libraries
 native=json.loads(Path(os.environ['TWOBYTEASR_MAC_NATIVE_INPUTS']).read_text(encoding='utf8'))
@@ -27,6 +28,9 @@ factory.mkdir()
 datas=collect_data_files('certifi')+collect_data_files('qtawesome')
 datas.extend([(os.environ['TWOBYTEASR_BUILD_METADATA'],'.'),(str(factory/'2byteasr_settings.json'),'.'),
               (os.environ['TWOBYTEASR_MAC_NATIVE_INPUTS'],'.')])
+for path in Path(native['cpu_wheelhouse']).iterdir():
+    if path.suffix=='.whl' or path.name=='manifest.json':
+        datas.append((str(path),'wheels/macos-arm64-cp310'))
 binaries=[(native['native_tools']['node']['path'],'tools/node'),
           (native['native_tools']['mpv']['path'],'tools/mpv'),
           (native['native_tools']['ffmpeg']['path'],'tools/ffmpeg/bin'),
@@ -34,6 +38,7 @@ binaries=[(native['native_tools']['node']['path'],'tools/node'),
 # mpv's standard FFmpeg dependency shares these basenames. Explicit selected
 # full-build libraries precede discovered dependencies in Analysis's TOC.
 binaries.extend((str(path),'.') for path in selected_media_libraries(Path(native['native_tools']['ffmpeg']['path'])))
+binaries.extend((item['path'],'.') for item in native['compatibility_libraries'])
 # QVideoSink uses Qt's native multimedia decoder plugin. Collect the precise
 # plugin class explicitly, while Analysis handles its linked libraries.
 binaries.extend(get_qt_library_info('PySide6').collect_plugins('multimedia'))
@@ -59,4 +64,4 @@ coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='2ByteASR')
 app=BUNDLE(coll,name='2ByteASR.app',icon=native['app_icon']['path'],bundle_identifier='org.2byteasr.desktop.experimental',
            info_plist={'CFBundleName':'2ByteASR','CFBundleDisplayName':'兔白字幕 / 2ByteASR',
                        'CFBundleShortVersionString':VERSION,'CFBundleVersion':VERSION,
-                       'LSMinimumSystemVersion':'15.0','NSHighResolutionCapable':True})
+                       'LSMinimumSystemVersion':MINIMUM_MACOS,'NSHighResolutionCapable':True})

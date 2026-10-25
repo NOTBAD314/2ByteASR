@@ -696,7 +696,11 @@ def split_translation_text(left_source: str, right_source: str, translation: str
         counts.append(counts[-1] + (1 if _content(char) else 0))
     content_total = counts[-1]
     best = None
+    # 2026-10-24 (caption marks, Codex): never cut inside an emoji or a combining sequence.
+    from ..caption_style.text_marks import boundaries
+    edges = set(boundaries(text))
     for k in range(1, len(text)):
+        if k not in edges: continue
         before, after = text[k - 1], text[k]
         if spaced and not (before.isspace() or after.isspace()):
             continue
@@ -806,6 +810,12 @@ def _receipts(project) -> Mapping:
 
 
 def _parent_entry(cue_id: str, record: Mapping) -> dict:
+    reference = record.get('split_from')
+    if isinstance(reference, Mapping):
+        return {'cue_id': str(reference.get('cue_id') or cue_id),
+                'source_text': str(reference.get('source_text') or ''),
+                'translation': str(reference.get('translation') or ''),
+                'origin': str(reference.get('origin') or record.get('origin') or '')}
     return {"cue_id": cue_id, "source_text": str(record.get("source_text") or ""),
             "translation": str(record.get("text") or ""), "origin": str(record.get("origin") or "")}
 

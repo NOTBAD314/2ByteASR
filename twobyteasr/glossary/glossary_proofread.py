@@ -320,19 +320,8 @@ def window_text(text, start, end, metrics, width):
 
 
 def inherited_library_ids(project):
-    """Libraries this project actually used, as (ids, origin).
-
-    An explicit project choice wins; otherwise the libraries recorded in the
-    recognition snapshot. Never another project's or game's selection."""
-    explicit = [str(x) for x in (getattr(project, "glossary_ids", None) or ()) if str(x)]
-    if explicit:
-        return tuple(dict.fromkeys(explicit)), "project"
-    snapshot = (getattr(project, "generation_metadata", None) or {}).get("terminology_snapshot") or {}
-    recorded = [str(row.get("id") or "") for row in snapshot.get("libraries", ()) if isinstance(row, dict)]
-    recorded = [identity for identity in recorded if identity]
-    if recorded:
-        return tuple(dict.fromkeys(recorded)), "recognition"
-    return (), ""
+    from .glossary_binding import applied_library_ids
+    return applied_library_ids(project)
 
 
 def recorded_revisions(project):

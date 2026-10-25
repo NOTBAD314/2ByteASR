@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
-"""A compact, sectioned settings surface; persistence stays in application_settings."""
+"""A compact, sectioned settings surface; persistence stays in application_settings.
+
+2026-10-25: a category is built the first time it is shown (opening used to
+build all eight, ~2 s); edits made in categories visited earlier are kept.
+"""
 from pathlib import Path
 import os
 from PySide6.QtCore import Qt
@@ -11,10 +15,27 @@ from ..design.theme_manager import theme_key
 from ..design.ui_theme import theme_display_label
 from ..design.presentation import button_role, field_width
 from ..diagnostics.build_identity import about_build_text, load_build_identity
+from ..diagnostics.navigation_timing import phase as navigation_phase, timed as navigation_timed
 
 from ..i18n import bind_text
 
 from ..i18n import tr
+
+# Controls that settings saving, audits and older callers read directly;
+# reading one builds its category first (without showing it).
+_SECTION_CONTROLS = {
+    '工程与保存': ('startup_page', 'root_edit', 'frame_directory', 'auto_save', 'interval', 'recovery_policy'),
+    'Studio 与维护': ('cover', 'restore_layout_box', 'speaker_tracks'),
+    '存储与缓存': ('model_root_edit', 'model_root_browse', 'storage_panel'),
+    '外观': ('theme_gallery', 'theme_preview_hint', 'reduce_motion_box'),
+    '高级设置': ('advanced_controls',),
+    '快捷键': ('shortcut_panel', '_shortcut_saved'),
+    '外部 AI（MCP）': ('mcp_enabled', 'mcp_scope', 'mcp_allow_edits', 'mcp_allow_export', 'mcp_allow_glossary',
+                     'mcp_export_dir', 'mcp_client', 'mcp_write', 'mcp_remove', 'mcp_copy', 'mcp_steps',
+                     'mcp_status', 'mcp_revoke', '_mcp_acknowledged', '_mcp_message', '_mcp_refresh', '_mcp_timer'),
+    '关于': ('update_reminder_box',),
+}
+_CONTROL_SECTION = {name: label for label, names in _SECTION_CONTROLS.items() for name in names}
 
 
 class ApplicationSettingsDialog(SpringDialog):
@@ -22,7 +43,10 @@ class ApplicationSettingsDialog(SpringDialog):
     # （2026-09-19 用户反馈：弹窗动画带来约 1 秒等待感，且它是唯一带
     # 弹出动画的顶栏入口）。悬停/选中等常规控件反馈不受影响。
     ENTRY_ANIMATED = False
+    # 关闭同样不等淡出（2026-10-25：窗口留着下次直接再显示）。
+    EXIT_ANIMATED = False
 
+    @navigation_timed('settings.construct')
     def __init__(self, parent, preferences, project_root, *, browse, clear_recent, reset_layout, advanced_owner=None, repaired_fields=()):
         super().__init__(parent)
         from .settings_lifecycle import normalized_preferences
@@ -30,6 +54,8 @@ class ApplicationSettingsDialog(SpringDialog):
         repaired = list(repaired_fields) + repaired
         if advanced_owner is None and parent is not None and hasattr(parent.window(), 'advanced_disclosure'):
             advanced_owner = parent.window()
+        # A window shown again calls the callbacks of the opening that shows it.
+        self._callbacks = dict(clear_recent=clear_recent, reset_layout=reset_layout)
         self.setObjectName('applicationSettings')
         bind_text(self, '应用设置', property='windowTitle')
         self.setMinimumSize(480, 300)
@@ -46,14 +72,12 @@ class ApplicationSettingsDialog(SpringDialog):
         header.mousePressEvent=lambda e: self.windowHandle().startSystemMove() if e.button()==Qt.MouseButton.LeftButton and self.windowHandle() else None
         body=QHBoxLayout();body.setContentsMargins(0,0,0,0);body.setSpacing(0)
         self.navigation=QListWidget();self.navigation.setObjectName('settingsNavigation');self.navigation.setFixedWidth(160)
-        self.navigation.addItems(['工程与保存','Studio 与维护','外观','关于'])
         self.navigation.setProperty('i18nItems', True)
         body.addWidget(self.navigation)
         self.pages=QStackedWidget();self.pages.setMinimumSize(0,0)
         from PySide6.QtWidgets import QSizePolicy
         self.pages.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Ignored)
         body.addWidget(self.pages,1);outer.addLayout(body,1)
-        self.navigation.currentRowChanged.connect(self.pages.setCurrentIndex)
 
         def page(title, description):
             scroll=QScrollArea();scroll.setObjectName('settingsScroll');scroll.setWidgetResizable(True)
@@ -62,7 +86,7 @@ class ApplicationSettingsDialog(SpringDialog):
             lay.setContentsMargins(28,24,28,24);lay.setSpacing(16)
             name=QLabel(title);name.setProperty('typography','section');lay.addWidget(name)
             sub=QLabel(description);sub.setObjectName('settingsDescription');sub.setWordWrap(True);lay.addWidget(sub)
-            scroll.setWidget(content);self.pages.addWidget(scroll)
+            scroll.setWidget(content);self._place_page(scroll)
             return lay
 
         def section(lay):
@@ -83,122 +107,123 @@ class ApplicationSettingsDialog(SpringDialog):
         def toggle(checked):
             control=QCheckBox();control.setChecked(bool(checked));return control
 
-        project=page('工程与保存','设置新工程的位置，以及工作中自动保存和恢复的方式。')
-        if repaired:
-            warning = QLabel(tr('部分旧设置无效，已使用默认值。保存前会备份原文件；取消不会修改文件。'))
-            warning.setWordWrap(True)
-            project.addWidget(warning)
-        startup=section(project)
-        self.startup_page=field_width(StudioComboBox(),'preferred')
-        for label,value in [('字幕识别主页','recognition'),('工程库','project_library')]:
-            self.startup_page.addItem(label,value)
-        self.startup_page.setCurrentIndex(max(0,self.startup_page.findData(str(preferences.get('startup_page','recognition')))))
-        row(startup,'启动后显示',self.startup_page,'双击工程文件时直接打开该工程')
-        repair=button_role(QPushButton('关联／修复工程文件关联'),'secondary')
-        repair.clicked.connect(self._repair_project_association)
-        row(startup,'工程文件关联',repair,'为 .2byteproj 注册当前程序；默认应用由 Windows 管理')
-        storage=section(project)
-        label=QLabel('默认工程位置');label.setObjectName('settingsRowTitle');storage.addWidget(label)
-        rootrow=QHBoxLayout();rootrow.setSpacing(8)
-        self.root_edit=field_width(QLineEdit(str(project_root)),'expanding');bind_text(self.root_edit, '默认工程保存位置', property='accessibleName')
-        rootrow.addWidget(self.root_edit,1)
-        choose=button_role(QPushButton('浏览…'),'secondary');choose.clicked.connect(lambda:browse(self,self.root_edit));rootrow.addWidget(choose)
-        storage.addLayout(rootrow)
-        reset=button_role(QPushButton('恢复默认位置'),'ghost')
-        reset.clicked.connect(lambda:self.root_edit.setText(str(Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData'/'Local'))/'2ByteASR'/'Projects')))
-        storage.addWidget(reset,0,Qt.AlignmentFlag.AlignLeft)
-        from PySide6.QtCore import QSettings
-        frame_settings=QSettings('2ByteASR','2ByteASR')
-        storage.addWidget(QLabel('保存当前帧的位置（独立于视频导出目录）'))
-        frame_row=QHBoxLayout()
-        self.frame_directory=QLineEdit(str(frame_settings.value('frame_export/directory','')))
-        bind_text(self.frame_directory, '首次保存帧时选择', property='placeholderText')
-        frame_row.addWidget(self.frame_directory,1)
-        choose_frame=QPushButton('浏览…')
-        choose_frame.clicked.connect(lambda:browse(self,self.frame_directory))
-        frame_row.addWidget(choose_frame);storage.addLayout(frame_row)
-        self.accepted.connect(lambda:frame_settings.setValue('frame_export/directory',self.frame_directory.text().strip()))
-        saving=section(project)
-        self.auto_save=toggle(preferences.get('autosave_enabled',True));bind_text(self.auto_save, '自动保存', property='accessibleName')
-        row(saving,'自动保存',self.auto_save,'在后台保留工作进度')
-        self.interval=field_width(StudioComboBox(),'compact')
-        for label,value in [('30 秒',30),('1 分钟',60),('2 分钟',120),('5 分钟',300)]:self.interval.addItem(label,value)
-        self.interval.setCurrentIndex(max(0,self.interval.findData(int(preferences.get('autosave_interval_seconds',60) or 60))))
-        row(saving,'保存间隔',self.interval)
-        self.interval.setEnabled(self.auto_save.isChecked());self.auto_save.toggled.connect(self.interval.setEnabled)
-        self.recovery_policy=field_width(StudioComboBox(),'preferred')
-        for label,value in [('每次询问','ask'),('恢复较新的自动保存','auto'),('打开正式保存','official')]:self.recovery_policy.addItem(label,value)
-        self.recovery_policy.setCurrentIndex(max(0,self.recovery_policy.findData(str(preferences.get('recovery_policy','ask')))))
-        row(saving,'打开工程时',self.recovery_policy)
-        project.addStretch()
+        def build_project():
+            project=page('工程与保存','设置新工程的位置，以及工作中自动保存和恢复的方式。')
+            if repaired:
+                warning = QLabel(tr('部分旧设置无效，已使用默认值。保存前会备份原文件；取消不会修改文件。'))
+                warning.setWordWrap(True)
+                project.addWidget(warning)
+            startup=section(project)
+            self.startup_page=field_width(StudioComboBox(),'preferred')
+            for label,value in [('字幕识别主页','recognition'),('工程库','project_library')]:
+                self.startup_page.addItem(label,value)
+            self.startup_page.setCurrentIndex(max(0,self.startup_page.findData(str(preferences.get('startup_page','recognition')))))
+            row(startup,'启动后显示',self.startup_page,'双击工程文件时直接打开该工程')
+            repair=button_role(QPushButton('关联／修复工程文件关联'),'secondary')
+            repair.clicked.connect(self._repair_project_association)
+            row(startup,'工程文件关联',repair,'为 .2byteproj 注册当前程序；默认应用由 Windows 管理')
+            storage=section(project)
+            label=QLabel('默认工程位置');label.setObjectName('settingsRowTitle');storage.addWidget(label)
+            rootrow=QHBoxLayout();rootrow.setSpacing(8)
+            self.root_edit=field_width(QLineEdit(str(project_root)),'expanding');bind_text(self.root_edit, '默认工程保存位置', property='accessibleName')
+            rootrow.addWidget(self.root_edit,1)
+            choose=button_role(QPushButton('浏览…'),'secondary');choose.clicked.connect(lambda:browse(self,self.root_edit));rootrow.addWidget(choose)
+            storage.addLayout(rootrow)
+            reset=button_role(QPushButton('恢复默认位置'),'ghost')
+            reset.clicked.connect(lambda:self.root_edit.setText(str(Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData'/'Local'))/'2ByteASR'/'Projects')))
+            storage.addWidget(reset,0,Qt.AlignmentFlag.AlignLeft)
+            from PySide6.QtCore import QSettings
+            frame_settings=QSettings('2ByteASR','2ByteASR')
+            storage.addWidget(QLabel('保存当前帧的位置（独立于视频导出目录）'))
+            frame_row=QHBoxLayout()
+            self.frame_directory=QLineEdit(str(frame_settings.value('frame_export/directory','')))
+            bind_text(self.frame_directory, '首次保存帧时选择', property='placeholderText')
+            frame_row.addWidget(self.frame_directory,1)
+            choose_frame=QPushButton('浏览…')
+            choose_frame.clicked.connect(lambda:browse(self,self.frame_directory))
+            frame_row.addWidget(choose_frame);storage.addLayout(frame_row)
+            self.accepted.connect(lambda:frame_settings.setValue('frame_export/directory',self.frame_directory.text().strip()))
+            saving=section(project)
+            self.auto_save=toggle(preferences.get('autosave_enabled',True));bind_text(self.auto_save, '自动保存', property='accessibleName')
+            row(saving,'自动保存',self.auto_save,'在后台保留工作进度')
+            self.interval=field_width(StudioComboBox(),'compact')
+            for label,value in [('30 秒',30),('1 分钟',60),('2 分钟',120),('5 分钟',300)]:self.interval.addItem(label,value)
+            self.interval.setCurrentIndex(max(0,self.interval.findData(int(preferences.get('autosave_interval_seconds',60) or 60))))
+            row(saving,'保存间隔',self.interval)
+            self.interval.setEnabled(self.auto_save.isChecked());self.auto_save.toggled.connect(self.interval.setEnabled)
+            self.recovery_policy=field_width(StudioComboBox(),'preferred')
+            for label,value in [('每次询问','ask'),('恢复较新的自动保存','auto'),('打开正式保存','official')]:self.recovery_policy.addItem(label,value)
+            self.recovery_policy.setCurrentIndex(max(0,self.recovery_policy.findData(str(preferences.get('recovery_policy','ask')))))
+            row(saving,'打开工程时',self.recovery_policy)
+            project.addStretch()
 
-        studio=page('Studio 与维护','让工作区记住你的习惯。维护操作不会删除工程文件。')
-        layout=section(studio)
-        self.cover=toggle(preferences.get('auto_cover',True));bind_text(self.cover, '自动生成工程封面', property='accessibleName')
-        row(layout,'生成工程封面',self.cover,'从素材中生成工程库缩略图')
-        self.restore_layout_box=toggle(preferences.get('restore_layout',True));bind_text(self.restore_layout_box, '打开工程时恢复上次布局', property='accessibleName')
-        row(layout,'恢复上次工作区',self.restore_layout_box,'记住面板和时间线的布局')
-        # 2026-10-22 (user): how many speakers keep an own subtitle track by default.
-        self.speaker_tracks=field_width(StudioComboBox(),'compact')
-        for count in (1,2,3,5,8):self.speaker_tracks.addItem(tr('{count} 位',count=count),count)
-        self.speaker_tracks.setCurrentIndex(max(0,self.speaker_tracks.findData(int(preferences.get('speaker_main_tracks',2) or 2))))
-        row(layout,'默认独立字幕轨',self.speaker_tracks,'字幕最多的几位说话人各占一条轨，其余合成一条；工程里手动选过的不变')
-        maintenance=section(studio)
-        usage=button_role(QPushButton('查看用量与估算费用'),'secondary')
-        from ..studio.usage_dialog import open_usage
-        usage.clicked.connect(lambda:open_usage(self, project=getattr(getattr(advanced_owner, '_studio_page_instance', None), 'project', None)))
-        row(maintenance,'API 用量',usage,'按任务、工程与步骤查看 API 回传用量及当时费率')
-        clear=button_role(QPushButton('清除记录'),'secondary');clear.clicked.connect(clear_recent)
-        row(maintenance,'最近使用记录',clear,'工程文件仍保留在原位置')
-        if callable(reset_layout):
-            reset_workspace=button_role(QPushButton('重置布局'),'secondary');reset_workspace.clicked.connect(reset_layout)
-            row(maintenance,'Studio 布局',reset_workspace,'恢复默认的面板位置与尺寸')
-        studio.addStretch()
+        def build_studio():
+            studio=page('Studio 与维护','让工作区记住你的习惯。维护操作不会删除工程文件。')
+            layout=section(studio)
+            self.cover=toggle(preferences.get('auto_cover',True));bind_text(self.cover, '自动生成工程封面', property='accessibleName')
+            row(layout,'生成工程封面',self.cover,'从素材中生成工程库缩略图')
+            self.restore_layout_box=toggle(preferences.get('restore_layout',True));bind_text(self.restore_layout_box, '打开工程时恢复上次布局', property='accessibleName')
+            row(layout,'恢复上次工作区',self.restore_layout_box,'记住面板和时间线的布局')
+            # 2026-10-22 (user): how many speakers keep an own subtitle track by default.
+            self.speaker_tracks=field_width(StudioComboBox(),'compact')
+            for count in (1,2,3,5,8):self.speaker_tracks.addItem(tr('{count} 位',count=count),count)
+            self.speaker_tracks.setCurrentIndex(max(0,self.speaker_tracks.findData(int(preferences.get('speaker_main_tracks',2) or 2))))
+            row(layout,'默认独立字幕轨',self.speaker_tracks,'字幕最多的几位说话人各占一条轨，其余合成一条；工程里手动选过的不变')
+            maintenance=section(studio)
+            usage=button_role(QPushButton('查看用量与估算费用'),'secondary')
+            from ..studio.usage_dialog import open_usage
+            usage.clicked.connect(lambda:open_usage(self, project=getattr(getattr(advanced_owner, '_studio_page_instance', None), 'project', None)))
+            row(maintenance,'API 用量',usage,'按任务、工程与步骤查看 API 回传用量及当时费率')
+            clear=button_role(QPushButton('清除记录'),'secondary');clear.clicked.connect(lambda:self._callbacks['clear_recent']())
+            row(maintenance,'最近使用记录',clear,'工程文件仍保留在原位置')
+            if callable(reset_layout):
+                reset_workspace=button_role(QPushButton('重置布局'),'secondary')
+                reset_workspace.clicked.connect(lambda:self._callbacks['reset_layout']())
+                row(maintenance,'Studio 布局',reset_workspace,'恢复默认的面板位置与尺寸')
+            studio.addStretch()
 
-        self.navigation.insertItem(2, '存储与缓存')
-        cache_page = page('存储与缓存', '查看应用管理的占用，清理有明确归属的缓存。工程与模型分别保护。')
-        from ..runtime_paths import get_runtime_paths
-        models = section(cache_page)
-        model_title = bind_text(QLabel(), '模型下载目录')
-        model_title.setObjectName('settingsRowTitle'); models.addWidget(model_title)
-        model_row = QHBoxLayout()
-        self.model_root_edit = QLineEdit(str(get_runtime_paths().model_root))
-        self.model_root_edit.setObjectName('modelDownloadRoot')
-        bind_text(self.model_root_edit, '模型下载目录', property='accessibleName')
-        model_row.addWidget(self.model_root_edit, 1)
-        self.model_root_browse = button_role(bind_text(QPushButton(), '浏览…'), 'secondary')
-        self.model_root_browse.clicked.connect(lambda: browse(self, self.model_root_edit))
-        model_row.addWidget(self.model_root_browse); models.addLayout(model_row)
-        note = bind_text(QLabel(), '新下载的模型和下载临时文件保存在此目录。可选择其他磁盘；现有模型保留原位置，继续可用。')
-        note.setObjectName('settingsDescription'); note.setWordWrap(True); models.addWidget(note)
-        from ..storage.storage_ui import StoragePanel
-        self.storage_panel = StoragePanel(self, owner=parent.window() if parent else None)
-        cache_page.addWidget(self.storage_panel)
-        cache_page.addStretch()
+        def build_storage():
+            cache_page = page('存储与缓存', '查看应用管理的占用，清理有明确归属的缓存。工程与模型分别保护。')
+            from ..runtime_paths import get_runtime_paths
+            models = section(cache_page)
+            model_title = bind_text(QLabel(), '模型下载目录')
+            model_title.setObjectName('settingsRowTitle'); models.addWidget(model_title)
+            model_row = QHBoxLayout()
+            self.model_root_edit = QLineEdit(str(get_runtime_paths().model_root))
+            self.model_root_edit.setObjectName('modelDownloadRoot')
+            bind_text(self.model_root_edit, '模型下载目录', property='accessibleName')
+            model_row.addWidget(self.model_root_edit, 1)
+            self.model_root_browse = button_role(bind_text(QPushButton(), '浏览…'), 'secondary')
+            self.model_root_browse.clicked.connect(lambda: browse(self, self.model_root_edit))
+            model_row.addWidget(self.model_root_browse); models.addLayout(model_row)
+            note = bind_text(QLabel(), '新下载的模型和下载临时文件保存在此目录。可选择其他磁盘；现有模型保留原位置，继续可用。')
+            note.setObjectName('settingsDescription'); note.setWordWrap(True); models.addWidget(note)
+            from ..storage.storage_ui import StoragePanel
+            self.storage_panel = StoragePanel(self, owner=parent.window() if parent else None)
+            cache_page.addWidget(self.storage_panel)
+            cache_page.addStretch()
 
-        appearance=page('外观','选择适合你的工作环境的主题与动态反馈。')
-        appearance_rows=section(appearance)
-        # 2026-10-14: grouped theme cards with a painted miniature each; a
-        # click previews the whole app at once, Cancel restores the theme the
-        # dialog opened with (done()), Save keeps it.
-        from ..design.theme_gallery import ThemeGallery
-        self._theme_on_open=theme_key()
-        theme_title=bind_text(QLabel(),'界面主题');theme_title.setObjectName('settingsRowTitle');appearance_rows.addWidget(theme_title)
-        self.theme_gallery=ThemeGallery(self._theme_on_open)
-        self.theme_gallery.themeChosen.connect(self._preview_theme)
-        self.theme_gallery.languageRefreshed.connect(self._update_theme_hint)
-        appearance_rows.addWidget(self.theme_gallery)
-        self.theme_preview_hint=QLabel();self.theme_preview_hint.setObjectName('settingsDescription')
-        self.theme_preview_hint.setWordWrap(True);self.theme_preview_hint.setProperty('i18nUserText',True)
-        appearance_rows.addWidget(self.theme_preview_hint)
-        self._update_theme_hint()
-        self.reduce_motion_box=toggle(preferences.get('reduce_motion',False));bind_text(self.reduce_motion_box, '减少界面动画', property='accessibleName')
-        row(appearance_rows,'减少动态效果',self.reduce_motion_box,'保留状态反馈，关闭进入与展开动画')
-        appearance.addStretch()
+        def build_appearance():
+            appearance=page('外观','选择适合你的工作环境的主题与动态反馈。')
+            appearance_rows=section(appearance)
+            # 2026-10-14: grouped theme cards with a painted miniature each; a
+            # click previews the whole app at once, Cancel restores the theme the
+            # dialog opened with (done()), Save keeps it.
+            from ..design.theme_gallery import ThemeGallery
+            theme_title=bind_text(QLabel(),'界面主题');theme_title.setObjectName('settingsRowTitle');appearance_rows.addWidget(theme_title)
+            self.theme_gallery=ThemeGallery(self._theme_on_open)
+            self.theme_gallery.themeChosen.connect(self._preview_theme)
+            self.theme_gallery.languageRefreshed.connect(self._update_theme_hint)
+            appearance_rows.addWidget(self.theme_gallery)
+            self.theme_preview_hint=QLabel();self.theme_preview_hint.setObjectName('settingsDescription')
+            self.theme_preview_hint.setWordWrap(True);self.theme_preview_hint.setProperty('i18nUserText',True)
+            appearance_rows.addWidget(self.theme_preview_hint)
+            self._update_theme_hint()
+            self.reduce_motion_box=toggle(preferences.get('reduce_motion',False));bind_text(self.reduce_motion_box, '减少界面动画', property='accessibleName')
+            row(appearance_rows,'减少动态效果',self.reduce_motion_box,'保留状态反馈，关闭进入与展开动画')
+            appearance.addStretch()
 
-        self.advanced_controls = {}
-        if advanced_owner is not None:
-            self.navigation.insertItem(4, '高级设置')
+        def build_advanced():
             advanced = page('高级设置', '调整本批识别、输出和缓存策略。保存后生效。')
             groups = (
                 ('识别范围', (('dialogue_coverage', '对白覆盖', '控制角色与主播对白的保留范围'),
@@ -211,6 +236,7 @@ class ApplicationSettingsDialog(SpringDialog):
                               ('overwrite', '已有字幕', '选择遇到已有结果时的处理方式'))),
             )
             from PySide6.QtWidgets import QComboBox
+            self.advanced_controls = {}
             for group_name, entries in groups:
                 group = section(advanced)
                 group_title = QLabel(group_name); group_title.setProperty('typography', 'section'); group.addWidget(group_title)
@@ -228,34 +254,54 @@ class ApplicationSettingsDialog(SpringDialog):
                     row(group, title, control, note)
             advanced.addStretch()
 
-        self._build_shortcut_page(page)
-        self._build_mcp_page(page, section, row, toggle, parent)
+        def build_about():
+            about=page('2ByteASR','本地 AI 字幕与视频创作工具')
+            build=load_build_identity()
+            version=bind_text(QLabel(), '版本 {value0}', value0=build.app_version);version.setProperty('typography','title');about.addWidget(version)
+            context=QLabel('构建信息可在排查问题时提供给支持人员。');context.setObjectName('settingsDescription');about.addWidget(context)
+            # 2026-10-24 (user): check at every start and pop up a newer version; can be turned off.
+            updates=section(about)
+            self.update_reminder_box=toggle(preferences.get('update_reminder',True))
+            self.update_reminder_box.setObjectName('updateReminderSetting')
+            bind_text(self.update_reminder_box, '打开软件时检查更新并提醒', property='accessibleName')
+            row(updates,'打开软件时检查更新并提醒',self.update_reminder_box,
+                '有新版本时自动弹出更新说明；关闭后只在顶栏「检查更新」按钮上标出新版本')
+            info=QLabel(about_build_text());info.setObjectName('buildIdentityLabel')
+            info.setWordWrap(True);info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse);about.addWidget(info)
+            copy=button_role(QPushButton('复制构建信息'),'secondary')
+            from PySide6.QtWidgets import QApplication
+            copy.clicked.connect(lambda:QApplication.clipboard().setText(about_build_text()))
+            about.addWidget(copy,0,Qt.AlignmentFlag.AlignLeft)
+            legal=bind_text(QLabel(), '项目自有代码采用 GPL-3.0-only，允许依照该许可商用与收费分发。历史生效分界保持为 0.2.6-test.3。')
+            legal.setObjectName('projectLicenseLabel');legal.setWordWrap(True);about.addWidget(legal)
+            third_party=bind_text(QLabel(),'第三方代码、工具和模型权重分别适用各自许可。历史版本的第三方许可记录继续保留；已移除的模型不随当前程序提供。')
+            third_party.setObjectName('thirdPartyModelLicenseLabel');third_party.setWordWrap(True);about.addWidget(third_party)
+            from .license_documents import show_document
+            for label, filename, name in (
+                ('GPL 许可全文', 'LICENSE', 'openProjectLicense'),
+                ('第三方声明', 'THIRD_PARTY_NOTICES.md', 'openThirdPartyNotices'),
+                ('对应源码交付', 'SOURCE_DELIVERY.md', 'openCorrespondingSource'),
+            ):
+                button=button_role(bind_text(QPushButton(), label),'secondary');button.setObjectName(name)
+                button.clicked.connect(lambda checked=False, f=filename:show_document(self,f))
+                about.addWidget(button,0,Qt.AlignmentFlag.AlignLeft)
+            about.addStretch()
 
-        about=page('2ByteASR','本地 AI 字幕与视频创作工具')
-        build=load_build_identity()
-        version=bind_text(QLabel(), '版本 {value0}', value0=build.app_version);version.setProperty('typography','title');about.addWidget(version)
-        context=QLabel('构建信息可在排查问题时提供给支持人员。');context.setObjectName('settingsDescription');about.addWidget(context)
-        info=QLabel(about_build_text());info.setObjectName('buildIdentityLabel')
-        info.setWordWrap(True);info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse);about.addWidget(info)
-        copy=button_role(QPushButton('复制构建信息'),'secondary')
-        from PySide6.QtWidgets import QApplication
-        copy.clicked.connect(lambda:QApplication.clipboard().setText(about_build_text()))
-        about.addWidget(copy,0,Qt.AlignmentFlag.AlignLeft)
-        legal=bind_text(QLabel(), '项目自有代码采用 GPL-3.0-only，允许依照该许可商用与收费分发。历史生效分界保持为 0.2.6-test.3。')
-        legal.setObjectName('projectLicenseLabel');legal.setWordWrap(True);about.addWidget(legal)
-        third_party=bind_text(QLabel(),'第三方代码、工具和模型权重分别适用各自许可。历史版本的第三方许可记录继续保留；已移除的模型不随当前程序提供。')
-        third_party.setObjectName('thirdPartyModelLicenseLabel');third_party.setWordWrap(True);about.addWidget(third_party)
-        from .license_documents import show_document
-        for label, filename, name in (
-            ('GPL 许可全文', 'LICENSE', 'openProjectLicense'),
-            ('第三方声明', 'THIRD_PARTY_NOTICES.md', 'openThirdPartyNotices'),
-            ('对应源码交付', 'SOURCE_DELIVERY.md', 'openCorrespondingSource'),
-        ):
-            button=button_role(bind_text(QPushButton(), label),'secondary');button.setObjectName(name)
-            button.clicked.connect(lambda checked=False, f=filename:show_document(self,f))
-            about.addWidget(button,0,Qt.AlignmentFlag.AlignLeft)
-        about.addStretch()
-        self.navigation.setCurrentRow(0)
+        self._theme_on_open=theme_key()
+        self._section_builders=[('工程与保存',build_project),('Studio 与维护',build_studio),
+                                ('存储与缓存',build_storage),('外观',build_appearance)]
+        if advanced_owner is not None:
+            self._section_builders.append(('高级设置',build_advanced))
+        else:
+            self.advanced_controls = {}
+        self._section_builders+=[('快捷键',self._build_shortcut_page),
+                                 ('外部 AI（MCP）',lambda:self._build_mcp_page(page, section, row, toggle, parent)),
+                                 ('关于',build_about)]
+        self._section_built=set();self._sections_building=set();self._building_section=None
+        self._input_baseline={}
+        for label,_build in self._section_builders:
+            self.navigation.addItem(label);self.pages.addWidget(QWidget())
+        self.navigation.currentRowChanged.connect(self._select_section)
 
         footer=QFrame();footer.setObjectName('settingsFooter')
         f=QHBoxLayout(footer);f.setContentsMargins(24,16,24,16);f.setSpacing(8)
@@ -266,48 +312,151 @@ class ApplicationSettingsDialog(SpringDialog):
         self.buttons.accepted.connect(self.accept);self.buttons.rejected.connect(self.reject)
         f.addWidget(self.buttons);outer.addWidget(footer)
         apply_secondary_surface_theme(self)
-        self._saved_values = self._values()
+        self.navigation.setCurrentRow(0)
+        # _values() lists only inputs changed since their category was built.
+        self._saved_values = ()
 
-    def _build_shortcut_page(self, page):
+    def __getattr__(self, name):
+        # Only reached for attributes not set yet: a control of a category not
+        # built yet. Internal "is it built?" checks read self.__dict__ instead.
+        label = _CONTROL_SECTION.get(name)
+        builders = self.__dict__.get('_section_builders')
+        if label is not None and builders is not None:
+            index = next((i for i, (title, _build) in enumerate(builders) if title == label), None)
+            if index is not None:
+                self._build_section(index)
+                if name in self.__dict__:
+                    return self.__dict__[name]
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    def _place_page(self, widget):
+        """The page of the category being built; it joins the window once built."""
+        self._section_page = widget
+
+    def _build_section(self, index):
+        if index in self._section_built or index in self._sections_building:
+            return
+        label, build = self._section_builders[index]
+        self._sections_building.add(index)
+        previous = self._building_section, self.__dict__.pop('_section_page', None)
+        self._building_section = index
+        try:
+            with navigation_phase('settings.section:' + label):
+                build()
+            page = self.__dict__.pop('_section_page')
+        finally:
+            self._building_section, self._section_page = previous
+            self._sections_building.discard(index)
+        # What construction and showing the window did for every category
+        # when all were built up front: control widths before the window's
+        # style sheet polishes them (classified after polishing, a combo box
+        # keeps 36 px instead of the zoomed sheet's height), then, once
+        # shown, the interface zoom and the language pass, in that order.
+        from ..design.presentation import prepare_controls
+        prepare_controls(page)
+        placeholder = self.pages.widget(index)
+        self.pages.insertWidget(index, page)
+        self.pages.removeWidget(placeholder)
+        placeholder.deleteLater()
+        self._section_built.add(index)
+        # New inputs start from what they show now; edits elsewhere stay edits.
+        for widget, value in self._input_values(page):
+            self._input_baseline.setdefault(widget, value)
+        if self.isVisible():
+            from .ui_zoom import apply_to
+            from ..i18n import apply_ui_language, current_language
+            apply_to(page)
+            apply_ui_language(page, current_language())
+
+    def _select_section(self, index):
+        if index < 0:
+            return
+        self._build_section(index)
+        self.pages.setCurrentIndex(index)
+        timer = self.__dict__.get('_mcp_timer')
+        if timer is not None:
+            if self._section_builders[index][0] == '外部 AI（MCP）':
+                self._mcp_refresh()
+                timer.start()
+            else:
+                timer.stop()
+
+    def ensure_section(self, label) -> bool:
+        """Show one category by name (source or current language); deep links use it."""
+        for index, (name, _build) in enumerate(self._section_builders):
+            if label in (name, str(tr(name))):
+                if self.navigation.currentRow() == index:
+                    self._select_section(index)
+                else:
+                    self.navigation.setCurrentRow(index)
+                return True
+        return False
+
+    def section_built(self, label) -> bool:
+        return any(name == label and index in self._section_built
+                   for index, (name, _build) in enumerate(self._section_builders))
+
+    def prepare_reuse(self, *, clear_recent, reset_layout):
+        """Shown again: this opening's callbacks, first category, centred like a new window."""
+        self._callbacks.update(clear_recent=clear_recent, reset_layout=reset_layout)
+        if 'mcp_enabled' in self.__dict__:
+            from ..local_mcp import mcp_common
+            values = mcp_common.read_settings()
+            self._mcp_acknowledged = bool(values.get('acknowledged') or values.get('enabled'))
+            self._mcp_message = ''
+        self.navigation.setCurrentRow(0)
+        self.setAttribute(Qt.WidgetAttribute.WA_Moved, False)
+
+    def reusable(self) -> bool:
+        """Closed without edits and without background storage work."""
+        panel = self.__dict__.get('storage_panel')
+        if panel is not None and (panel.worker is not None or panel.scan_result is not None):
+            return False
+        return not self._values()
+
+    @navigation_timed('settings.shortcuts')
+    def _build_shortcut_page(self):
         """快捷键: every page's keys in one place (2026-10-13).
 
         2026-10-17: the page does not scroll itself; the panel's grouped list
         is the one scroll area (the old table sat in the page's scroll and
         showed four rows). 保存更改 below saves the keys with everything else.
+        2026-10-25: rows are built in batches while the page is shown.
         """
         from ..studio import shortcut_registry
         from ..studio.studio_shortcuts import ShortcutSettingsPanel
-        self.navigation.insertItem(self.navigation.count() - 1, '快捷键')
         content = QWidget(); content.setObjectName('settingsPage')
         lay = QVBoxLayout(content); lay.setContentsMargins(28, 24, 20, 16); lay.setSpacing(12)
         name = QLabel('快捷键'); name.setProperty('typography', 'section'); lay.addWidget(name)
         sub = QLabel('点一下按键，再按新的组合；按 Esc 取消。同一页面里不能重复，不同页面可以共用。')
         sub.setObjectName('settingsDescription'); sub.setWordWrap(True); lay.addWidget(sub)
-        self.pages.addWidget(content)
+        self._place_page(content)
         self.shortcut_panel = ShortcutSettingsPanel(shortcut_registry.current_values(), self,
-                                                    scopes=tuple(shortcut_registry.SCOPE_LABELS), embedded=True)
+                                                    scopes=tuple(shortcut_registry.SCOPE_LABELS), embedded=True,
+                                                    incremental=True)
         self.shortcut_panel.setObjectName('applicationShortcutPanel')
         lay.addWidget(self.shortcut_panel, 1)
         self._shortcut_saved = dict(self.shortcut_panel.values())
 
     def _save_shortcuts(self) -> bool:
         from ..studio import shortcut_registry
-        panel = getattr(self, 'shortcut_panel', None)
+        panel = self.__dict__.get('shortcut_panel')
         if panel is None:
             return True
         values = panel.values()
-        if values == getattr(self, '_shortcut_saved', None):
+        if values == self._shortcut_saved:
             return True
         if shortcut_registry.blocking_conflicts(values):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(self, tr('快捷键'), tr('还有快捷键冲突，请先在“快捷键”页处理。'))
-            self.navigation.setCurrentRow(self.navigation.count() - 3)
+            self.ensure_section('快捷键')
             return False
         shortcut_registry.save_values(values)
         self._shortcut_saved = dict(values)
         panel.show_message(tr('已保存，立即生效。'))
         return True
 
+    @navigation_timed('settings.mcp')
     def _build_mcp_page(self, page, section, row, toggle, parent):
         """外部 AI（MCP）: local access for desktop AI clients, off by default (2026-10-12).
 
@@ -319,8 +468,8 @@ class ApplicationSettingsDialog(SpringDialog):
         from PySide6.QtCore import QTimer
         from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
         from ..local_mcp import mcp_clients, mcp_common
-        self.navigation.insertItem(self.navigation.count() - 1, '外部 AI（MCP）')
         lay = page('外部 AI（MCP）', '让 Claude 等 AI 客户端帮你查字幕、改字幕、导出。每次修改都要你批准，可以撤销。')
+        mcp_page = self._section_page
         values = mcp_common.read_settings()
         self._mcp_acknowledged = bool(values.get('acknowledged') or values.get('enabled'))
         from .onboarding import emphasis_html
@@ -575,7 +724,8 @@ class ApplicationSettingsDialog(SpringDialog):
                 mcp_common.save_settings(dict(mcp_common.read_settings(), enabled=False))
                 mcp_common.delete_key()
             self.mcp_enabled.setChecked(False)
-            self._saved_values = self._values()
+            # Already saved: closing must not ask to save it again (other edits still count).
+            self.accept_external_value(self.mcp_enabled)
             self._mcp_message = tr('已撤销：访问已关闭，新的请求都会被拒绝。需要时可重新开启。')
             refresh()
 
@@ -587,13 +737,13 @@ class ApplicationSettingsDialog(SpringDialog):
         self.mcp_remove.clicked.connect(remove_claude)
         self.mcp_copy.clicked.connect(copy_config)
         self.mcp_revoke.clicked.connect(revoke)
+        # Process discovery is unrelated to opening Settings: it runs when this
+        # page is selected (_select_section) and every second while it is shown.
         timer = QTimer(self)
         timer.setInterval(1000)
-        # Process discovery is unrelated to opening Settings. Never run it
-        # during construction or while the MCP page is hidden.
-        mcp_page = self.pages.widget(self.pages.count() - 1)
         timer.timeout.connect(lambda: refresh() if self.isVisible() and mcp_page.isVisible() else None)
-        timer.start()
+        self._mcp_timer = timer
+        self._mcp_refresh = refresh
         bind_text(self.mcp_status, '打开此页后检查客户端连接状态。')
 
     def mcp_values(self):
@@ -603,35 +753,44 @@ class ApplicationSettingsDialog(SpringDialog):
                     acknowledged=bool(self._mcp_acknowledged or self.mcp_enabled.isChecked()),
                     allow_glossary=self.mcp_allow_glossary.isChecked())
 
-    def _values(self):
+    def _input_values(self, root=None):
         from PySide6.QtWidgets import QAbstractButton, QComboBox
         # The shortcut page keeps its own saved state (its search box and key
         # editors are not settings); unsaved key edits compare as bindings.
-        panel = getattr(self, 'shortcut_panel', None)
-        # findChildren() follows each parent's child list, and the page stack
-        # moves the page it shows to the end of it; keep the order the inputs
-        # were first seen in, so browsing pages is not a change (2026-10-15).
-        order = getattr(self, '_input_order', None)
-        if order is None:
-            order = self._input_order = {}
+        panel = self.__dict__.get('shortcut_panel')
+        for kind, read in ((QLineEdit, QLineEdit.text), (QComboBox, QComboBox.currentIndex),
+                           (QAbstractButton, QAbstractButton.isChecked)):
+            for widget in (self if root is None else root).findChildren(kind):
+                if (panel is None or not panel.isAncestorOf(widget)) and (kind is not QAbstractButton or widget.isCheckable()):
+                    yield widget, read(widget)
 
-        def inputs(kind, wanted=lambda widget: True):
-            found = [w for w in self.findChildren(kind) if (panel is None or not panel.isAncestorOf(w)) and wanted(w)]
-            for widget in found:
-                order.setdefault(widget, len(order))
-            return sorted(found, key=order.__getitem__)
-        shortcuts = (tuple(sorted(panel.values().items())) != tuple(sorted(self._shortcut_saved.items()))
-                     if panel is not None and hasattr(self, '_shortcut_saved') else False)
-        return (tuple((w.objectName(), w.text()) for w in inputs(QLineEdit)),
-                tuple(w.currentIndex() for w in inputs(QComboBox)),
-                tuple(w.isChecked() for w in inputs(QAbstractButton, lambda w: w.isCheckable())),
-                shortcuts)
+    def _values(self):
+        """The inputs changed since their category was built, plus unsaved keys.
+
+        Compared input by input (2026-10-25), so building or browsing
+        categories is never a change; empty when there is nothing to save.
+        """
+        changed = tuple((widget, value) for widget, value in self._input_values()
+                        if value != self._input_baseline.get(widget, value))
+        panel = self.__dict__.get('shortcut_panel')
+        if panel is not None and panel.values() != self._shortcut_saved:
+            changed += (('shortcuts', tuple(sorted(panel.values().items()))),)
+        return changed
+
+    def accept_external_value(self, widget):
+        """A value saved by an action on the page itself (storage move, MCP revoke)."""
+        for control, value in self._input_values():
+            if control is widget:
+                self._input_baseline[control] = value
+                return
 
     def accept(self):
         from ..local_models.model_root_settings import save_model_download_root
         from PySide6.QtWidgets import QMessageBox
+        model_root = self.__dict__.get('model_root_edit')
         try:
-            save_model_download_root(self.model_root_edit.text(), owner=self.parentWidget().window() if self.parentWidget() else None)
+            if model_root is not None:
+                save_model_download_root(model_root.text(), owner=self.parentWidget().window() if self.parentWidget() else None)
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, tr('模型下载目录'), str(exc))
             return
@@ -676,6 +835,9 @@ class ApplicationSettingsDialog(SpringDialog):
         if result != QDialog.DialogCode.Accepted and theme_key() != getattr(self, '_theme_on_open', theme_key()):
             from ..design.theme_manager import apply_theme
             apply_theme(self._theme_on_open, QApplication.instance())
+        timer = self.__dict__.get('_mcp_timer')
+        if timer is not None:
+            timer.stop()
         super().done(result)
 
     def reject(self):

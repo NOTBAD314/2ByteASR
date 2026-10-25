@@ -442,10 +442,11 @@ MODELS = (
     # 2026-10-13: Qwen Cloud, the official international Qwen API (no workspace
     # host). 2026-10-14 (ADR 0112): regular use needs the user's own OSS; the
     # provider's temporary upload is a labelled trial only.
-    WorkshopModel('qwen_cloud_filetrans','api','Qwen Cloud｜录音文件识别','QC',
-        '长文件异步 · Qwen-Audio-3.1 或 Qwen3-ASR','在线 · Qwen Cloud API Key + 自己的 OSS','不占本地空间',
+    # 2026-10-25: one card for both official sites, 千问AI平台 (中国站) and Qwen Cloud (国际站).
+    WorkshopModel('qwen_cloud_filetrans','api','Qwen 官方 API｜录音文件识别','QC',
+        '长文件异步 · Qwen-Audio-3.1 或 Qwen3-ASR','在线 · 千问AI平台或 Qwen Cloud 的 API Key + 自己的 OSS','不占本地空间',
         '不需要显卡与本地模型；正式使用需要自己的 OSS 私有存储',
-        'Qwen 官方国际站（home.qwencloud.com）的录音文件识别：Qwen-Audio-3.1 返回字/词级时间与说话人，Qwen3-ASR 返回字/词级时间（无说话人）。音频先传到你自己的 OSS 私有存储，用限时签名链接交给服务商，结果保存后删除；服务商临时上传只供试用（48 小时失效，官方说明勿用于生产）。单文件不超过 12 小时。Key 与阿里云百炼（中国站）的不能互换。超时不会自动重新付费提交。',(),
+        'Qwen 官方 API 的录音文件识别，分中国站千问AI平台（platform.qianwenai.com，服务在北京）与国际站 Qwen Cloud（home.qwencloud.com，服务在新加坡），在设置窗口顶部切换。Qwen-Audio-3.1 返回字/词级时间与说话人，Qwen3-ASR 返回字/词级时间（无说话人）。音频先传到你自己的 OSS 私有存储，用限时签名链接交给服务商，结果保存后删除；服务商临时上传只供试用（48 小时失效，官方说明勿用于生产）。单文件不超过 12 小时。两站的 Key 不能互换，也不能与阿里云百炼的互换。超时不会自动重新付费提交。',(),
         logo_asset='qwen.png',api_preset='qwen_cloud_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
     WorkshopModel('qwen31_filetrans','api','阿里云百炼｜录音文件识别','QF',
         '长文件异步 · Qwen3-ASR 或 Qwen-Audio-3.1','在线 · 百炼 Key + API Host','不占本地空间',
@@ -665,15 +666,18 @@ MODELS = (
     WorkshopModel(
         # 三十七轮：OpenRouter JSON input_audio + timestamp_granularities(word)
         # 字级时间戳通道（三十八轮起是 OpenRouter 唯一通道，旧 multipart 已删）。
+        # 2026-10-25: there is no "MAI 2.1" (OpenRouter lists MAI-Transcribe 2
+        # and 1.5); the card is MAI-Transcribe 2 again, configurable.
         "mai_latest",
         "api",
-        "MAI 2.1｜待服务商验证",
+        "MAI-Transcribe 2",
         "MA",
-        "OpenRouter · 新版映射需验证",
+        "OpenRouter · microsoft/mai-transcribe-2",
         "在线 · 需 OpenRouter Key",
         "不占本地空间",
-        "模型与原生能力待当前服务商验证",
-        "MAI 2.1 的当前 OpenRouter 模型 ID 尚未获得服务商确认。旧 microsoft/mai-transcribe-2 不会冒充新版；请在配置中填写服务商确认的新版 ID。实际通道是否提供词时间戳、说话人和原样转写须逐项验证。",
+        "字级时间、说话人分离",
+        "微软 MAI-Transcribe 2，经 OpenRouter 调用（模型 ID microsoft/mai-transcribe-2，约 $0.10 / 小时音频）。"
+        "支持 60 种语言，返回字级时间，并区分说话人。",
         (),
         api_preset="openrouter_word",
         logo_asset=None,
@@ -681,7 +685,7 @@ MODELS = (
         icon_color="#ffffff",
         icon_background="#0078d4",
         languages=("多语言",),
-        asr_capabilities=("ASR_TEXT", "LANGUAGE_ID"),
+        asr_capabilities=("ASR_TEXT", "TIMESTAMP", "DIARIZATION", "LANGUAGE_ID"),
         adapter_bindings=(("primary", "api"), ("review", "api")),
     ),
     WorkshopModel(
@@ -1022,6 +1026,11 @@ def _host_platform_tag() -> str:
 
 def model_platform_available(model: WorkshopModel) -> bool:
     """Keep platform-only builds out of the host's model choices."""
+    if sys.platform == 'darwin' and model.download_key in (MLX_DOWNLOAD_KEYS | MAC_GPU_INSTALL_KEYS | {'sensevoice'}):
+        from ..system.macos_compatibility import compatibility_problem
+        role = 'mlx' if model.download_key in MLX_DOWNLOAD_KEYS else 'moss' if model.download_key == 'moss' else 'main'
+        if compatibility_problem(role, system=sys.platform):
+            return False
     return not model.platforms or _host_platform_tag() in model.platforms
 
 
@@ -3531,6 +3540,12 @@ class ModelDownloadDialog(QDialog):
             self._finish_with_error(tr('MLX 模型只能在 Apple Silicon（M 系列芯片）的 Mac 上使用；没有开始下载。'))
             return
         if sys.platform == 'darwin':
+            from ..system.macos_compatibility import compatibility_problem
+            role = 'mlx' if set(self.download_keys) & MLX_DOWNLOAD_KEYS else 'moss' if 'moss' in self.download_keys else 'main'
+            problem = compatibility_problem(role, system=sys.platform)
+            if problem:
+                self._finish_with_error(problem)
+                return
             mac_gpu = bool(self.download_keys) and set(self.download_keys) <= MAC_GPU_INSTALL_KEYS
             if mac_gpu and _host_platform_tag() != 'darwin-arm64':
                 self._finish_with_error(tr('MOSS 与 FireRed 需要 Apple 芯片（M 系列）Mac 的 GPU；这台 Mac 没有，没有开始下载。'))
@@ -6375,9 +6390,6 @@ class ModelWorkshopPage(QWidget):
             return 'partial'
         if model.api_preset:
             from ..providers.llm_config import read_asr_api_key
-            if model.key == 'mai_latest' and self._api_model_for(model) in {'', 'microsoft/mai-transcribe-2'}:
-                return 'configure'
-
             configured = bool(
                 read_asr_api_key(
                     model.api_preset, str(models.get("qwen_asr_api_url", "") or "")
@@ -6474,6 +6486,10 @@ class ModelWorkshopPage(QWidget):
         if state=='platform_unverified':return '当前平台未验证',False
         if model.key in self._removing: return '正在永久删除…', False
         if state == 'platform_unavailable':
+            if sys.platform == 'darwin' and _host_platform_tag() == 'darwin-arm64':
+                from ..system.macos_compatibility import compatibility_problem, MINIMUM_MACOS
+                if compatibility_problem('app', system=sys.platform):
+                    return f'需要 macOS {MINIMUM_MACOS} 或更新版本', False
             if model.platforms or model.download_key in MAC_GPU_DOWNLOAD_KEYS:
                 return '仅限 Apple Silicon Mac', False
             from ..system.platform_macos import macos_copy

@@ -4,11 +4,38 @@ import tempfile
 from pathlib import Path
 
 
+# MAI-Transcribe 2 through OpenRouter (2026-10-25): Azure's ``phraseList.phrases``
+# is forwarded as-is and biases recognition toward the glossary (measured: 鸣潮 /
+# 今汐 / 无妄者 / 守岸人 right only with it). Microsoft publishes no count limit;
+# the head of the ranked list is sent and the rest is reported, never silently cut.
+MAI_TRANSCRIBE_2 = 'microsoft/mai-transcribe-2'
+MAX_MAI_PHRASES = 100
+MAX_MAI_PHRASE_CHARS = 50
+
+
+def mai_phrase_hints(canonical_terms) -> dict:
+    sent, dropped, seen = [], [], set()
+    for raw in canonical_terms or ():
+        term = str(raw or '').strip()
+        if not term or term in seen or '\n' in term or '\r' in term:
+            continue
+        seen.add(term)
+        if len(term) > MAX_MAI_PHRASE_CHARS:
+            dropped.append({'term': term, 'reason': 'longer_than_50_characters'})
+        elif len(sent) >= MAX_MAI_PHRASES:
+            dropped.append({'term': term, 'reason': 'over_100_phrases'})
+        else:
+            sent.append(term)
+    return {'azure_phrases': sent, 'azure_phrases_dropped': dropped[:200],
+            'hint_counts': {'phrase_list': len(sent), 'dropped': len(dropped)}}
+
+
 def cloud_request_hints(endpoint, settings, requested_language=None):
     """Provider hints added to the request (and to its cache identity).
 
     Bailian Filetrans: per-model hotwords/context/language; MOSS Pro cloud:
-    keyterms within the official 20 x 30-character limit.
+    keyterms within the official 20 x 30-character limit; MAI-Transcribe 2
+    (OpenRouter → Azure): the glossary as ``phraseList``.
     """
     from .qwen31_asr import filetrans_hints_for_model, is_filetrans_model
     from .mosi_asr import MODEL as MOSI_MODEL, keyterm_hints
@@ -21,6 +48,8 @@ def cloud_request_hints(endpoint, settings, requested_language=None):
                                          language=requested_language)
     if endpoint.get('model') == MOSI_MODEL:
         return keyterm_hints(recognition_hotwords(runtime_snapshot()))
+    if endpoint.get('protocol') == 'openrouter_verbose_json' and endpoint.get('model') == MAI_TRANSCRIBE_2:
+        return mai_phrase_hints(recognition_hotwords(runtime_snapshot()))
     return {}
 
 
@@ -29,10 +58,13 @@ def cache_hint_signature(endpoint, settings, requested_language=None):
     import hashlib
     from .qwen31_asr import QWEN3_FILETRANS
     from .mosi_asr import MODEL as MOSI_MODEL
-    if endpoint.get('model') not in {QWEN3_FILETRANS, MOSI_MODEL}:
+    if endpoint.get('model') not in {QWEN3_FILETRANS, MOSI_MODEL, MAI_TRANSCRIBE_2}:
         return {}
     hints = cloud_request_hints(endpoint, settings, requested_language)
-    keep = {k: hints.get(k) for k in ('filetrans_language', 'mosi_keyterms', 'mosi_diarize') if k in hints}
+    keep = {k: hints.get(k) for k in ('filetrans_language', 'mosi_keyterms', 'mosi_diarize', 'azure_phrases') if k in hints}
+    if endpoint.get('model') == MAI_TRANSCRIBE_2:
+        # Results from before 2026-10-25 were asked with an ignored style option.
+        keep['mai_request'] = 'enhanced-mode-style-v1'
     return {'api_hints_v1': hashlib.sha256(json.dumps(keep, ensure_ascii=False, sort_keys=True).encode('utf8')).hexdigest()}
 
 
@@ -92,6 +124,9 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
         # Set only for one run after the user confirmed resubmission (retry dialog).
         if (settings or {}).get('models', {}).get('cloud_resubmit_confirmed') is True:
             request['restart_terminal'] = True
+        # Set only for one run after the user chose 切成小段再交 MOSI (2026-10-24).
+        if (settings or {}).get('models', {}).get('mosi_resplit_blocked') is True:
+            request['resplit_blocked'] = True
         if cache_root: request['cache_root'] = str(cache_root)
         record_run_event('asr_wait',backend='api',state='connecting',total_batches=len(chunks),
             message='上传音频并等待云端转写；本地独立证据可同时运行')
@@ -102,4 +137,13 @@ def transcribe(audio_path,chunks,*,publish_primary=False,cache_root=None,storage
             input_text=json.dumps(request,ensure_ascii=False),event_handler=forward,
             timeout_seconds=worker_timeout(endpoint['model'],shape),
             cancel_handler=lambda:(root/'cancel').write_text('local cancellation requested','utf8'))
-        return payload['results']
+        rows=payload['results']
+        blocked=[dict(row['cloud_gap'],start=row['start'],end=row['end']) for row in rows if row.get('cloud_gap')]
+        if blocked:
+            # Ranges the provider's content review stopped (2026-10-24). The
+            # primary transcript keeps them as markers for the local fill;
+            # review evidence simply has nothing there.
+            record_run_event('cloud_asr_blocked',role='primary' if publish_primary else 'review',requests=blocked)
+            if not publish_primary:
+                rows=[row for row in rows if not row.get('cloud_gap')]
+        return rows

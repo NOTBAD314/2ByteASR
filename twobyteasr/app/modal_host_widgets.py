@@ -152,6 +152,8 @@ class ModalHost(QFrame):
         retain_content: bool = False,
     ):
         """Show the card and stable backdrop at their final state immediately."""
+        from ..design.native_surfaces import cover_native_video
+        cover_native_video(self)
         self._click_ts = time.perf_counter() if GUI_PROFILE_ENABLED else None
         self._first_paint = False
         self._first_paint_marked = False

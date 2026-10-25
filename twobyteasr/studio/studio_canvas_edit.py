@@ -253,6 +253,10 @@ class StudioCanvasEditMixin:
             return
         if video.parentWidget() is host:
             return
+        attach_canvas = getattr(host, "set_canvas", None)
+        if callable(attach_canvas):
+            attach_canvas(video)
+            return
         layout = host.layout()
         if layout is None:
             return

@@ -75,8 +75,48 @@ def binding_of(project) -> dict:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def analysis_sources(project) -> list:
+    """Sources actually retained in the edit, in video/audio track order."""
+    if project is None:
+        return []
+    assets = {a.asset_id: a for a in project.media_pool}
+    result, seen = [], set()
+    tracks=project.video_tracks if any(t.clips for t in project.video_tracks) else project.audio_tracks
+    for track in tracks:
+        for clip in track.clips:
+            asset = assets.get(clip.asset_id)
+            if asset and asset.canonical_source and asset.asset_id not in seen:
+                result.append(asset)
+                seen.add(asset.asset_id)
+    return result
+
+
 def primary_source(project) -> str:
+    sources = analysis_sources(project)
+    if sources:
+        chosen = normalized_source(project.studio_state.get("highlight_source_path", ""))
+        match = next((a for a in sources if normalized_source(a.canonical_source) == chosen), None)
+        return (match or sources[0]).canonical_source
+    # A graph with no retained clips must not resurrect a deleted recording.
+    if project is not None and (project.video_tracks or project.audio_tracks):
+        return ""
     return str(getattr(getattr(project, "media", None), "path", "") or "")
+
+
+def analysis_media(project):
+    from ..projects.studio_project import StudioMedia
+    source = primary_source(project)
+    asset = next((a for a in analysis_sources(project) if a.canonical_source == source), None)
+    if asset is not None:
+        return StudioMedia(path=source, display_name=asset.display_name, duration_ms=asset.duration_ms,
+                           fingerprint=asset.fingerprint,
+                           width=int(asset.video_metadata.get("width") or 0),
+                           height=int(asset.video_metadata.get("height") or 0))
+    import copy
+    media = copy.copy(project.media)
+    if not source:
+        media.path, media.duration_ms = "", 0
+    return media
 
 
 def binding_matches_source(project) -> bool:
@@ -159,6 +199,8 @@ def effective_path(project) -> str:
     binding = binding_of(project)
     if binding and not binding_matches_source(project):
         return ""
+    if not binding and project is not None and normalized_source(primary_source(project))!=normalized_source(project.media.path):
+        return ""  # a legacy XML has no evidence tying it to a later source
     return path
 
 

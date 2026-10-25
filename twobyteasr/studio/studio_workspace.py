@@ -7,6 +7,7 @@ SubtitleStudioPage and are created in their legacy order.
 from __future__ import annotations
 
 import os
+import sys
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
@@ -142,6 +143,11 @@ class StudioWorkspaceBuilder:
         self._time_spinbox = time_spinbox
 
     def build(self) -> None:
+        for _stage in self.build_steps():
+            pass
+
+    def build_steps(self):
+        """Create Qt controls on the GUI thread in dependency-ordered sections."""
         page = self.page
         _icon = self._icon
         _icon_label = self._icon_label
@@ -473,6 +479,7 @@ class StudioWorkspaceBuilder:
         page._hub_toolbar_hidden.extend([page.relink_button])
         page._hub_toolbar_hidden.extend(toolbar.findChildren(QFrame, "toolbarDivider"))
         page._set_hub_toolbar_mode(True)
+        yield '工作台工具栏'
         page.teach_banner = QFrame()
         page.teach_banner.setObjectName("studioTeachBanner")
         page._apply_teach_banner_theme()
@@ -490,7 +497,8 @@ class StudioWorkspaceBuilder:
         from .studio_media_availability import StudioMediaAvailability
         page.media_availability = StudioMediaAvailability(page, outer)
 
-        page.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        page.workspace_host = QWidget(page)
+        page.workspace_splitter = QSplitter(Qt.Orientation.Vertical, page.workspace_host)
         page.workspace_splitter.setObjectName("studioWorkspaceSplitter")
         page.workspace_splitter.setChildrenCollapsible(False)
         page.workspace_splitter.setHandleWidth(5)
@@ -500,7 +508,7 @@ class StudioWorkspaceBuilder:
         # window and picture now match the surface within 1 ms of each step
         # (scripts/verify_studio_splitter_headed.py).
         page.workspace_splitter.setOpaqueResize(True)
-        page.upper_splitter = QSplitter(Qt.Orientation.Horizontal)
+        page.upper_splitter = QSplitter(Qt.Orientation.Horizontal, page.workspace_splitter)
         page.upper_splitter.setObjectName("studioUpperSplitter")
         page.upper_splitter.setChildrenCollapsible(False)
         page.upper_splitter.setHandleWidth(5)
@@ -509,31 +517,36 @@ class StudioWorkspaceBuilder:
         page.cue_list_panel = self._cue_list_panel()
         page.upper_splitter.addWidget(page.cue_list_panel)
 
-        page.center_splitter = QSplitter(Qt.Orientation.Vertical)
+        yield '字幕列表'
+        page.center_splitter = QSplitter(Qt.Orientation.Vertical, page.upper_splitter)
         page.center_splitter.setObjectName("studioCenterSplitter")
         page.center_splitter.setChildrenCollapsible(False)
         page.center_splitter.setHandleWidth(5)
         page.center_splitter.setOpaqueResize(True)
-        video_host = QWidget()
+        video_host = QWidget(page.center_splitter)
         # 2026-10-22: no fixed minimum below the picture + review strip;
         # 160 px squeezed the strip's legend onto the candidate cards.
         video_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         video_layout = QVBoxLayout(video_host)
         video_layout.setContentsMargins(0, 0, 0, 0)
         video_layout.setSpacing(0)
-        overlay_host = QWidget()
+        from .video_viewport import VideoViewportHost
+        overlay_host = VideoViewportHost(video_host) if sys.platform == 'win32' else QWidget(video_host)
         overlay_host.setObjectName("studioVideoOverlayHost")
         page.video_overlay_host = overlay_host
         video_stack = QGridLayout(overlay_host)
         video_stack.setContentsMargins(0, 0, 0, 0)
         video_stack.setSpacing(0)
-        page.video = MpvCanvas()
+        page.video = MpvCanvas(overlay_host)
         page.video.error.connect(page._show_video_error)
         page.video.position_changed.connect(page._position_changed)
         page.video.playback_state_changed.connect(page._playback_state_changed)
         # 十八轮：双击视频层 → AI 字幕工坊（对话式二修特效字幕）。
         page.video.workshop_requested.connect(page._open_web_theme_workshop)
-        video_stack.addWidget(page.video, 0, 0)
+        if isinstance(overlay_host, VideoViewportHost):
+            overlay_host.set_canvas(page.video)
+        else:
+            video_stack.addWidget(page.video, 0, 0)
         from ..playback.video_compositor import VideoCompositionScene
         from ..playback.audio_engine import StudioAudioEngine
 
@@ -544,7 +557,7 @@ class StudioWorkspaceBuilder:
         page.video.set_external_clock_provider(page.audio_engine.clock_observation)
         page.video_compositor.transform_preview.connect(page._video_transform_previewed)
         page.video_compositor.transform_committed.connect(page._video_transform_committed)
-        empty_host = QWidget()
+        empty_host = QWidget(overlay_host)
         empty_host.setObjectName("studioVideoEmptyHost")
         empty_layout = QVBoxLayout(empty_host)
         empty_layout.setContentsMargins(20, 20, 20, 20)
@@ -652,6 +665,7 @@ class StudioWorkspaceBuilder:
         page.subtitle_edit_card.hide()
         page.subtitle_edit_card.raise_()
         video_layout.addWidget(overlay_host, 1)
+        yield '视频承载区'
         page.review_summary_strip = QFrame()
         page.review_summary_strip.setObjectName("reviewSummaryStrip")
         strip_layout = QVBoxLayout(page.review_summary_strip)
@@ -719,6 +733,8 @@ class StudioWorkspaceBuilder:
         # It must never become a helper top-level HWND.
         page.position_overlay = SubtitlePositionOverlay(page.video, top_level=False)
         page.video.video_display_size_changed.connect(page.position_overlay.set_video_size)
+        if isinstance(overlay_host, VideoViewportHost):
+            page.video.video_display_size_changed.connect(overlay_host.set_video_size)
         page.position_overlay.position_moved.connect(page._position_overlay_moved)
         page.position_overlay.position_committed.connect(page._position_overlay_committed)
         page.position_overlay.font_size_preview.connect(page._position_overlay_font_preview)
@@ -728,7 +744,8 @@ class StudioWorkspaceBuilder:
         page.position_overlay.interaction_started.connect(
             page._position_overlay_interaction_started
         )
-        page.video.installEventFilter(page)
+        # The page's application filter receives these events once. Installing
+        # it on video too repeats every Move/Resize and renderer publication.
         page.position_slider = QSlider(Qt.Orientation.Horizontal)
         page.position_slider.setRange(0, 1000)
         page.position_slider.sliderMoved.connect(page._slider_seek)
@@ -799,7 +816,7 @@ class StudioWorkspaceBuilder:
         page.editor_metadata.hide()
         editor_layout.addWidget(page.editor_metadata)
 
-        from ..diagnostics.input_latency import InputLatencyTextEdit
+        from .caption_text_tools import CaptionInputEdit as InputLatencyTextEdit
         page.cue_text = InputLatencyTextEdit(page.cue_editor)
         page.cue_text.setObjectName("cueText")
         bind_text(page.cue_text, '当前字幕文本', property='placeholderText')
@@ -809,7 +826,7 @@ class StudioWorkspaceBuilder:
         page._cue_text_split_shortcut = QShortcut(QKeySequence("Ctrl+Return"), page.cue_text)
         page._cue_text_split_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         page._cue_text_split_shortcut.activated.connect(lambda: page.cue_controller.split_at_text(
-            page.selected_cue_id, page.cue_text.textCursor().position(),
+            page.selected_cue_id, page.cue_text._caption_tools.split_position(),
             page.cue_text.mapToGlobal(page.cue_text.cursorRect().bottomLeft())))
         page.translation_text = InputLatencyTextEdit(page.cue_editor)
         page.translation_text.setObjectName("cueText")
@@ -825,7 +842,8 @@ class StudioWorkspaceBuilder:
         page.center_splitter.setSizes([648])
         page.upper_splitter.addWidget(page.center_splitter)
 
-        page.context_panel = QFrame()
+        yield '字幕编辑区'
+        page.context_panel = QFrame(page.upper_splitter)
         page.context_panel.setObjectName("contextPanel")
         page.context_panel.setMinimumWidth(360)
         # 2026-10-11: the splitter may widen the tool panel (clip candidates are
@@ -852,7 +870,9 @@ class StudioWorkspaceBuilder:
         collapse = page._tool_button("fa5s.chevron-right", "收起右侧面板", page._collapse_context_panel)
         context_header.addWidget(collapse)
         context_layout.addLayout(context_header)
-        page.context_drawer = QTabWidget()
+        from PySide6.QtWidgets import QStackedWidget
+        page.context_stack = QStackedWidget(page.context_panel)
+        page.context_drawer = QTabWidget(page.context_stack)
         page.context_drawer.setObjectName("contextDrawer")
         # Keep tab geometry inside a narrow context drawer. The page toggles
         # scroll buttons only when measured tab content exceeds the available
@@ -867,27 +887,34 @@ class StudioWorkspaceBuilder:
         page.context_drawer.addTab(self._scroll_context_panel(self._ai_panel()), QIcon(), "AI设计")
         # 二十七轮（agy 复审）：样式面板内容随特效字幕模式伸缩，常驻细滚动条
         # 明示可滚——展开快速调整时不再像"布局截断"。
-        style_scroll = self._scroll_context_panel(page._style_panel_p213())
+        yield 'AI 工具'
+        style_panel = yield from page.style_controller._style_panel_steps()
+        style_scroll = self._scroll_context_panel(style_panel)
         style_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         page.context_drawer.addTab(style_scroll, QIcon(), "样式")
+        yield '字幕样式'
         page.motion_tab_index = page.context_drawer.addTab(
             self._self_scrolling_context_panel(page.motion_panel, page.motion_inspector.cards_scroll), QIcon(), "动效"
         )
+        yield '动效面板'
         page.video_transform_tab_index = page.context_drawer.addTab(
             self._scroll_context_panel(self._video_transform_panel()), QIcon(), "视频"
         )
+        yield '视频面板'
         from .studio_highlight_ui import HighlightAssistantPanel
         page.highlight_panel = HighlightAssistantPanel()
         page.highlight_tab_index = page.context_drawer.addTab(
             self._self_scrolling_context_panel(page.highlight_panel, page.highlight_panel.settings_area),
             QIcon(), "剪辑助手"
         )
+        yield '剪辑助手面板'
         from .studio_media_pool_ui import StudioMediaPoolPanel
 
         page.media_pool_panel = StudioMediaPoolPanel(page)
         page.media_pool_tab_index = page.context_drawer.addTab(
             self._scroll_context_panel(page.media_pool_panel), QIcon(), "素材"
         )
+        yield '素材面板'
         for index, tip in enumerate(("AI设计", "样式", "动效", "视频", "剪辑助手", "素材")):
             page.context_drawer.setTabToolTip(index, tip)
         install_themed_tabs(page.context_drawer, [
@@ -896,8 +923,6 @@ class StudioWorkspaceBuilder:
             ("fa5s.photo-video", "secondary"),
         ])
         page.context_drawer.currentChanged.connect(page._remember_context_tab)
-        from PySide6.QtWidgets import QStackedWidget
-        page.context_stack = QStackedWidget(page.context_panel)
         page.context_stack.addWidget(page.context_drawer)
         context_layout.addWidget(page.context_stack, 1)
         page.upper_splitter.addWidget(page.context_panel)
@@ -916,6 +941,7 @@ class StudioWorkspaceBuilder:
         # splitter; never force layouts or drain posted events while dragging.
         page.workspace_splitter.addWidget(page.upper_splitter)
 
+        yield '工具面板'
         timeline_host = QFrame()
         timeline_host.setObjectName("timelineHost")
         timeline_layout = QVBoxLayout(timeline_host)
@@ -1121,7 +1147,7 @@ class StudioWorkspaceBuilder:
         from PySide6.QtCore import QSettings
         from ..i18n_widgets import add_combo_item
         from ..playback.platform_mpv import preview_scale_value, preview_surface
-        page.preview_scale_box = StudioComboBox()
+        page.preview_scale_box = StudioComboBox(page)
         page.preview_scale_box.setObjectName("previewScaleBox")
         for label, value in (("原画", 1.0), ("1/2 画质", 0.5), ("1/4 画质", 0.25)):
             add_combo_item(page.preview_scale_box, label, value)
@@ -1204,6 +1230,7 @@ class StudioWorkspaceBuilder:
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             button.setIconSize(QSize(18, 18))
         bind_text(page.make_cover_button, '制作封面：当前截图、新建封面或选择模板', property='toolTip')
+        yield '时间轴工具栏'
         page.timeline_options_button = page._tool_button('fa5s.sliders-h', '时间轴选项 · 显示、缩放与新字幕自动避让', lambda: None)
         page.timeline_options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         options_menu = create_studio_menu(page.timeline_options_button)
@@ -1359,7 +1386,10 @@ class StudioWorkspaceBuilder:
         page.timeline.video_track_swap_requested.connect(page._video_track_swap_requested)
         page.timeline.video_clip_trim_committed.connect(page._video_clip_trim_committed)
         page.timeline.candidate_clicked.connect(page._on_candidate_clicked)
-        page.highlight_panel.preview_requested.connect(lambda _flag: page._on_candidate_clicked(page.highlight_panel.current_id()))
+        page.highlight_panel.preview_requested.connect(lambda flag: page._on_candidate_clicked(page.highlight_panel.current_id(), bool(flag)))
+        page.highlight_panel.context_requested.connect(page._highlight_context)
+        page.highlight_panel.edit_requested.connect(page._edit_highlight_range)
+        page.highlight_panel.source_changed.connect(page._change_highlight_source)
         page.highlight_panel.add_to_bin_requested.connect(lambda cue_id: page._set_candidate_status(cue_id, "accepted"))
         page.highlight_panel.ignore_requested.connect(lambda cue_id: page._set_candidate_status(cue_id, "ignored"))
         page.highlight_panel.remove_from_bin_requested.connect(page._remove_candidate_from_bin)
@@ -1391,7 +1421,7 @@ class StudioWorkspaceBuilder:
         page.workspace_splitter.setStretchFactor(0, 3)
         page.workspace_splitter.setStretchFactor(1, 2)
         page.workspace_splitter.setSizes([560, 380])
-        page.workspace_host = QWidget(page)
+        yield '时间轴'
         workspace_layers = QStackedLayout(page.workspace_host)
         workspace_layers.setContentsMargins(0, 0, 0, 0)
         workspace_layers.setStackingMode(QStackedLayout.StackingMode.StackAll)
@@ -1419,6 +1449,7 @@ class StudioWorkspaceBuilder:
 
         # Brand/header area mirrors the selected Project Library reference:
         # product identity first, then the resume action and recent projects.
+        yield '工程库布局'
         page.project_library_header = QFrame()
         page.project_library_header.setObjectName("projectLibraryHeader")
         page.project_library_header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1481,6 +1512,7 @@ class StudioWorkspaceBuilder:
         page.project_library_subtitle.hide()
         library_layout.addWidget(page.project_library_header)
 
+        yield '工程库标题'
         page.resume_hero = QFrame()
         page.resume_hero.setObjectName("resumeProjectCard")
         page.resume_hero.setMinimumHeight(280)
@@ -1662,6 +1694,7 @@ class StudioWorkspaceBuilder:
         page.project_manage_bar.hide()
         library_layout.addWidget(page.project_manage_bar)
 
+        yield '工程库导航'
         page.all_projects_stack = QStackedWidget()
         page.all_projects_stack.setObjectName("projectLibraryViewStack")
         page.all_projects_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1741,7 +1774,12 @@ class StudioWorkspaceBuilder:
         content.setMinimumWidth(0)
         content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         scroll.setWidget(content)
-        frame_layout.addWidget(scroll)
+        # 2026-10-25: a double-clicked media-pool source previews in this slot
+        # (studio_source_monitor, page 1, built on first use).
+        page.cue_list_stack = QStackedWidget(panel)
+        page.cue_list_stack.setObjectName("cueListStack")
+        page.cue_list_stack.addWidget(scroll)
+        frame_layout.addWidget(page.cue_list_stack)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 9, 8, 8)
         layout.setSpacing(7)
@@ -2770,7 +2808,7 @@ class StudioWorkspaceBuilder:
         suggestion_layout.addWidget(page.ai_stream_toggle)
         suggestion_layout.addWidget(page.ai_stream_console)
         suggestion_layout.setStretchFactor(page.ai_stream_console, 1)
-        page.ai_raw_response_button = QPushButton("查看 AI 原始 JSON")
+        page.ai_raw_response_button = QPushButton("查看 AI 原始 JSON", suggestion_layout.parentWidget())
         page.ai_raw_response_button.setObjectName("studioButton")
         page.ai_raw_response_button.setCursor(Qt.CursorShape.PointingHandCursor)
         page.ai_raw_response_button.clicked.connect(page._show_ai_raw_response)

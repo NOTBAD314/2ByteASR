@@ -78,7 +78,7 @@ def test_xml_recall_ignores_subtitle_density(tmp_path):
         media=StudioMedia(path="recording.flv", duration_ms=60_000),
         cues=[StudioCue(f"c{i}", 30_000, 31_000, "非常非常密集的普通字幕" * 20) for i in range(20)],
     )
-    rows = [(1 + i * 0.1, "哈哈 笑死") for i in range(18)]
+    rows = [(1 + i * 0.1, ("哈哈 笑死", "太好笑", "？？？")[i % 3]) for i in range(18)]
     rows += [(31 + i * 0.4, "普通") for i in range(3)]
     document = parse_danmaku_xml(_xml(tmp_path / "recording.xml", rows))
     candidates = discover_local_candidates(project, document, window_ms=10_000)
@@ -88,7 +88,7 @@ def test_xml_recall_ignores_subtitle_density(tmp_path):
     fallback = candidates_from_local(project, candidates, limit=3, max_seconds=60)
     # 2026-09-19 P1：本地回退标题诚实化（时间范围+待核实，不用台词截断）。
     assert fallback[0].title.startswith("00:00")
-    assert "待核实" in fallback[0].title
+    assert "弹幕集中" in fallback[0].title and fallback[0].clip_range is None
     assert "哈哈哈哈哈哈" not in fallback[0].title
     assert fallback[0].origin == "local"
     assert fallback[0].reason.count("；") <= 2
@@ -101,10 +101,11 @@ def test_candidate_nms_and_backward_compatible_schema():
     merged = merge_overlapping_candidates([first, second, third])
     assert len(merged) == 2
     assert merged[0].source_in_ms == 40_000
-    assert merged[0].source_out_ms == 65_000
+    assert merged[0].source_out_ms == 60_000  # dedup does not enlarge the editorial cut
     payload = HighlightCandidate.from_dict({"id": "old", "title": "旧候选", "source_in_ms": 0, "source_out_ms": 5000}).to_dict()
     assert payload["category"] == "other"
-    assert payload["grade"] == "可考虑"
+    assert payload["grade"] == "待确认"
+    assert payload["recommended_range"] is None
 
 
 def test_auto_data_source_cases(tmp_path):

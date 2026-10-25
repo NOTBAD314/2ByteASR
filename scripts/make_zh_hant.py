@@ -42,6 +42,8 @@ OVERRIDES = (
     ("平臺", "平台"),
     ("臺式", "桌上型"),
     ("文書處理", "文字處理"),   # 文字处理 is text handling here, not "word processing" (2026-10-23)
+    ("區域性", "局部"),         # 局部 is "partial" here (局部格式, 局部微调), not "regional" (2026-10-25)
+    ("擴充套件", "擴充"),       # 扩展 of a syntax, not a software add-on (2026-10-25)
 )
 
 

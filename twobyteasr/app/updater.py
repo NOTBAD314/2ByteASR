@@ -61,6 +61,7 @@ from twobyteasr.app.update_manifest import (
     ARCH,
     PLATFORM,
     PRODUCT,
+    Asset,
     FileEntry,
     ManifestError,
     UpdateManifest,
@@ -130,13 +131,19 @@ CONFIRM_ENV = "TWOBYTEASR_UPDATE_CONFIRM"
 QA_AUTO_ENV = "TWOBYTEASR_UPDATE_AUTO_IN_QA"
 AUTO_DELAY_ENV = "TWOBYTEASR_UPDATE_AUTO_DELAY_MS"
 AUTO_DELAY_MS = 30_000
+# 2026-10-24 (user): with the update reminder on (the default), every start
+# checks shortly after the window is up and offers a newer version; a restart
+# within STARTUP_RECHECK_SECONDS reuses the last answer instead of the network.
+REMINDER_DELAY_MS = 5_000
+STARTUP_RECHECK_SECONDS = 10 * 60
 
 
-def automatic_check_delay_ms() -> int:
+def automatic_check_delay_ms(reminder: bool = False) -> int:
+    default = REMINDER_DELAY_MS if reminder else AUTO_DELAY_MS
     try:
-        return max(0, int(os.environ.get(AUTO_DELAY_ENV, "") or AUTO_DELAY_MS))
+        return max(0, int(os.environ.get(AUTO_DELAY_ENV, "") or default))
     except ValueError:
-        return AUTO_DELAY_MS
+        return default
 
 
 class UpdateError(RuntimeError):
@@ -266,6 +273,7 @@ class UpdateCheck:
     checked_at: float
     manifest_sha256: str = ""
     from_cache: bool = False
+    manual_installer: Asset | None = None
 
     @property
     def latest_version(self) -> str:
@@ -285,13 +293,17 @@ class UpdateCheck:
 
     @property
     def installer_url(self) -> str:
+        if self.manual_installer is not None:
+            return _asset_sources(self.manual_installer.urls, self.from_gitcode)[0]
+        if sys.platform == 'darwin':
+            return self.release_url
         if not (self.manifest and self.manifest.setup):
             return self.release_url
         return _asset_sources(self.manifest.setup.urls, self.from_gitcode)[0]
 
     @property
     def can_self_update(self) -> bool:
-        return bool(self.newer and self.plan and self.plan.mode == "components")
+        return bool(sys.platform == 'win32' and self.newer and self.plan and self.plan.mode == "components")
 
 
 # --------------------------------------------------------------------------
@@ -504,14 +516,14 @@ def _record_failure(error: str) -> None:
 
 
 def check_for_update(*, request_get: Callable | None = None, use_cache: bool = False,
-                     root: Path | None = None) -> UpdateCheck:
-    """Fetch, verify and plan.  ``use_cache`` returns a recent cached result."""
+                     root: Path | None = None, cache_seconds: float = MANUAL_RECHECK_SECONDS) -> UpdateCheck:
+    """Fetch, verify and plan.  ``use_cache`` returns a result cached within ``cache_seconds``."""
     root = root or install_root()
     current = current_version(version_path(root))
     channel = installed_channel(version_path(root))
     cache = _read_cache()
     feed = os.environ.get(FEED_ENV, "").strip()
-    if use_cache and cache.get("manifest") and time.time() - float(cache.get("checked_at") or 0) < MANUAL_RECHECK_SECONDS:
+    if use_cache and cache.get("manifest") and time.time() - float(cache.get("checked_at") or 0) < cache_seconds:
         try:
             return _evaluate(bytes.fromhex(cache["manifest"]), bytes.fromhex(cache["signature"]),
                              current, channel, cache.get("source", ""), float(cache["checked_at"]),
@@ -556,6 +568,13 @@ def _evaluate(manifest_bytes: bytes, signature_bytes: bytes, current: str, chann
     if manifest.channel != channel and not (channel == "prerelease" and manifest.channel == "stable"):
         raise UpdateError(f"更新清单渠道 {manifest.channel} 与本机 {channel} 不符，已忽略")
     newer = manifest.version > parse_version(current)
+    if sys.platform == 'darwin':
+        import platform
+        from .update_manifest import select_macos_installer
+        asset = select_macos_installer(manifest, release=platform.mac_ver()[0], machine=platform.machine()) if newer else None
+        plan = UpdatePlan('setup', (), asset.size, asset.size, '下载完整 Mac 安装包，退出程序后拖入 Applications；当前工程和模型保留。') if asset else None
+        return UpdateCheck(current, channel, manifest, newer, plan, source, checked_at,
+                           hashlib.sha256(manifest_bytes).hexdigest(), from_cache, asset)
     plan = plan_update(manifest, root) if newer else None
     return UpdateCheck(current, channel, manifest, newer, plan, source, checked_at,
                        hashlib.sha256(manifest_bytes).hexdigest(), from_cache)

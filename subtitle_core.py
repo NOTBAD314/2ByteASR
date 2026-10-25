@@ -132,6 +132,7 @@ GAME_PROFILES_PATH = os.path.join(SCRIPT_DIR, "game_profiles.json")
 
 
 from twobyteasr.glossary.term_constants import GAME_LEXICON_MAX_PROMPT_TERMS
+from twobyteasr.glossary.glossary_input import clean_glossary_term
 
 
 PROFILE_HISTORY_PATH = os.path.join(
@@ -1021,6 +1022,10 @@ def glossary_catalog():
         if not isinstance(entry, dict):
             continue
         identity = str(entry.get("library_id", key))
+        if identity in hidden:
+            # 2026-10-25: a deleted built-in stays deleted although opening the
+            # term library migrates its user-verified profile rows back here.
+            continue
         result[identity] = {"id": identity, "name": str(entry.get("game", key)),
                             "content_type": str(entry.get("content_type", "game")),
                             "revision": str(entry.get("revision", 0))}
@@ -1251,6 +1256,29 @@ def hidden_runtime_game_profile_ids():
 
 def is_runtime_game_profile_hidden(game_name):
     return runtime_game_identity(canonicalize_runtime_game_name(game_name)) in hidden_runtime_game_profile_ids()
+
+
+def unhide_runtime_game_profile(game_name):
+    """Show a deleted built-in library again (2026-10-25); its built-in content was never touched."""
+    identity = runtime_game_identity(canonicalize_runtime_game_name(game_name))
+    payload = load_learned_term_payload()
+    hidden = [str(item) for item in payload.get("hidden_profile_ids", []) if str(item).strip()]
+    if not identity or identity not in hidden:
+        return False
+    payload["hidden_profile_ids"] = [item for item in hidden if item != identity]
+    try:
+        os.makedirs(os.path.dirname(LEARNED_TERMS_PATH), exist_ok=True)
+        atomic_write_json(LEARNED_TERMS_PATH, payload)
+    except OSError:
+        return False
+    return True
+
+
+def hidden_runtime_game_profile_names():
+    """Built-in libraries the user deleted, by display name (2026-10-25)."""
+    hidden = hidden_runtime_game_profile_ids()
+    return [str(name) for name, profile in load_game_profiles().items()
+            if runtime_game_identity(profile.get("identity", name)) in hidden]
 
 
 def hide_runtime_game_profile(game_name):
@@ -1494,8 +1522,8 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
     def confirmed(item):
         return mapping_is_confirmed(item,
             inferred_manual=learned_mapping_provenance(item) == TERM_PROVENANCE_USER_CONFIRMED)
-    source = clean_subtitle_text(source)
-    target = clean_subtitle_text(target)
+    source = clean_glossary_term(source)
+    target = clean_glossary_term(target)
     if not source or not target:
         return False
     payload = load_learned_term_payload(strict=True)
@@ -1579,9 +1607,9 @@ def add_learned_mapping(game_name, source, target, *, category="其他", origin=
     return True
 
 
-def edit_learned_mapping(game_name, old_key, source, target, *, category="其他", origin=None):
+def edit_learned_mapping(game_name, old_key, source, target, *, category="其他", origin=None, correction_enabled=None, emphasis_enabled=None):
     """One atomic edit, including case-only edits and existing aliases."""
-    source, target = clean_subtitle_text(source), clean_subtitle_text(target)
+    source, target = clean_glossary_term(source), clean_glossary_term(target)
     if not source or not target:
         return False
     payload = load_learned_term_payload(strict=True)
@@ -1599,6 +1627,10 @@ def edit_learned_mapping(game_name, old_key, source, target, *, category="其他
     old.update({"from": source, "to": target, "category": clean_subtitle_text(category) or "其他",
                 "confirmed": True, "provenance": TERM_PROVENANCE_USER_CONFIRMED,
                 "updated": time.strftime("%Y-%m-%d")})
+    if correction_enabled is not None:
+        old['correction_enabled'] = bool(correction_enabled)
+    if emphasis_enabled is not None:
+        old['emphasis_enabled'] = bool(emphasis_enabled)
     if origin is not None:
         old["origin"] = clean_subtitle_text(origin)
     if previous_target.casefold() == target.casefold():

@@ -10,6 +10,7 @@ can re-rasterize just the theme-sensitive icons on theme switch.
 from __future__ import annotations
 
 from pathlib import Path
+from functools import lru_cache
 import sys
 
 from PySide6.QtCore import QRect, QSize
@@ -136,6 +137,19 @@ class _CachedIconEngine(QIconEngine):
 
     def clone(self):
         return _CachedIconEngine(self._source, self._cache)
+
+
+@lru_cache(maxsize=256)
+def _colored_icon(name: str, color: str) -> QIcon:
+    return QIcon(_CachedIconEngine(qta.icon(name, color=color)))
+
+
+def colored_icon(name: str, color) -> QIcon:
+    # Explicit colours are immutable; copies share the raster cache. Unknown
+    # colour objects keep qtawesome's existing interpretation.
+    if isinstance(color, str):
+        return QIcon(_colored_icon(str(name), color))
+    return QIcon(_CachedIconEngine(qta.icon(name, color=color)))
 
 
 def themed_icon(name: str, role: str = "primary", theme: ThemeDefinition | None = None) -> QIcon:

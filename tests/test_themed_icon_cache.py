@@ -56,3 +56,14 @@ def test_cached_icon_renders_each_size_once(monkeypatch):
     copy = QIcon(icon)
     copy.pixmap(QSize(24, 24), 1.75)
     assert calls == [1]
+
+
+def test_explicit_colour_icons_share_cache_and_preserve_pixels():
+    QApplication.instance() or QApplication([])
+    import qtawesome as qta
+    from twobyteasr.design.themed_icons import colored_icon
+    a=colored_icon('fa5s.video','#8fc4df');b=colored_icon('fa5s.video','#8fc4df')
+    assert a.cacheKey()==b.cacheKey()
+    reference=qta.icon('fa5s.video',color='#8fc4df')
+    for scale in (1.,1.75,2.):
+        assert a.pixmap(QSize(24,24),scale).toImage()==reference.pixmap(QSize(24,24),scale).toImage()

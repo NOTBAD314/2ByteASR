@@ -7,6 +7,7 @@ from collections import OrderedDict
 from dataclasses import replace
 import copy
 import hashlib
+import math
 import threading
 import time
 
@@ -64,34 +65,74 @@ class WebSceneCache:
         self.errors = {}
         self.closed = False
         self.workers = []
+        self.active_keys = None
+        self.prefetch_pending = OrderedDict()
+        self.prefetch_errors = set()
+        self.generation = None
+
+    def _wake_workers(self):
+        if len(self.workers) < min(3, len(self.pending)+len(self.prefetch_pending)+len(self.inflight)):
+            thread = threading.Thread(target=self.work, name='caption-scene-web', daemon=True)
+            self.workers.append(thread); thread.start()
+        self.condition.notify()
+
+    def prefetch(self, key, web, cue_ms, stage_ms, width, height):
+        """Low-priority first frames use the same project/clip time as playback."""
+        with self.condition:
+            if self.closed or key in self.images or key in self.inflight or key in self.pending or key in self.prefetch_errors:
+                return
+            self.generation = key[1]
+            for previous in tuple(self.prefetch_pending):
+                if previous[1] != self.generation: del self.prefetch_pending[previous]
+            self.prefetch_pending[key] = (web, cue_ms, stage_ms, width, height)
+            while len(self.prefetch_pending)>6:self.prefetch_pending.popitem(last=False)
+            self._wake_workers()
+
+    def retain(self, keys):
+        """A seek/cue change retires queued HTML frames, including old generations."""
+        with self.condition:
+            self.active_keys = frozenset(keys)
+            if self.active_keys:
+                first = next(iter(self.active_keys))
+                if isinstance(first, tuple): self.generation = first[1]
+            for key in tuple(self.pending):
+                if key not in self.active_keys:
+                    del self.pending[key]
 
     def get(self, key, web, cue_ms, stage_ms, width, height):
         with self.condition:
             cached = self.images.get(key)
             if key not in self.inflight and key not in self.errors and (cached is None or cached[1] != cue_ms):
                 self.pending[key] = (web, cue_ms, stage_ms, width, height)
-                if len(self.workers) < min(3, len(self.pending) + len(self.inflight)):
-                    thread = threading.Thread(target=self.work, name='caption-scene-web', daemon=True)
-                    self.workers.append(thread); thread.start()
-                self.condition.notify()
+                self.pending.move_to_end(key)
+                self.prefetch_pending.pop(key, None)
+                self._wake_workers()
             return cached[0] if cached else None, self.errors.get(key)
 
     def work(self):
-        service = loaded = None
+        service = loaded = bound = None
         from .renderer_service import GLOBAL_RENDERER_SERVICE, LiveRendererSession
         try:
             while True:
                 with self.condition:
-                    self.condition.wait_for(lambda: self.closed or self.pending)
+                    self.condition.wait_for(lambda: self.closed or self.pending or self.prefetch_pending)
                     if self.closed: return
-                    key, (web, cue, stage, width, height) = self.pending.popitem(last=False)
+                    warming = not bool(self.pending)
+                    key, (web, cue, stage, width, height) = (
+                        self.prefetch_pending.popitem(last=False) if warming else self.pending.popitem(last=True))
                     self.inflight.add(key)
                 try:
                     if service is None: service = LiveRendererSession(GLOBAL_RENDERER_SERVICE)
                     page_key = (web.theme_key, width, height)
                     if page_key != loaded:
-                        service.live_set(web.html, width=width, height=height); loaded = page_key
-                    service.live_text(text=web.text, speaker=web.speaker, duration_ms=web.duration*1000, placement=web.placement)
+                        service.live_set(web.html, width=width, height=height); loaded = page_key; bound = None
+                    with self.condition:
+                        if ((not warming and self.active_keys is not None and key not in self.active_keys)
+                                or (warming and key[1] != self.generation)):
+                            continue
+                    if bound != web.strip_key:
+                        service.live_text(text=web.text, speaker=web.speaker, duration_ms=web.duration*1000, placement=web.placement, **({'translation':web.translation} if getattr(web,'translation','') else {}))
+                        bound = web.strip_key
                     image = QImage.fromData(service.live_frame(cue_ms=cue, stage_ms=stage))
                     if image.isNull(): raise ValueError('empty HTML raster')
                     with self.condition:
@@ -101,8 +142,12 @@ class WebSceneCache:
                         while len(self.images)>1 and sum(v[0].sizeInBytes() for v in self.images.values())>48*1024*1024:
                             self.images.popitem(last=False)
                 except Exception as exc:
-                    loaded = None
-                    with self.condition: self.errors[key] = f'{type(exc).__name__}: {exc}'
+                    loaded = bound = None
+                    with self.condition:
+                        if warming:
+                            self.prefetch_errors.add(key)
+                            if len(self.prefetch_errors)>64:self.prefetch_errors.clear()
+                        else: self.errors[key] = f'{type(exc).__name__}: {exc}'
                     # Discard the failed lease. The next cue gets a fresh page;
                     # the failed key remains quarantined (no per-frame retries).
                     if service is not None:
@@ -111,7 +156,7 @@ class WebSceneCache:
                     service = None
                 finally:
                     with self.condition: self.inflight.discard(key)
-                if not self.closed: self.changed()
+                if not self.closed and (not warming or key in (self.active_keys or ())): self.changed()
         finally:
             if service is not None:
                 try: service.close()
@@ -121,6 +166,7 @@ class WebSceneCache:
         with self.condition:
             self.closed = True
             self.pending.clear(); self.images.clear(); self.errors.clear()
+            self.prefetch_pending.clear(); self.prefetch_errors.clear()
             self.condition.notify_all()
 
 
@@ -131,7 +177,7 @@ class SceneRasterizer:
         self.pages = OrderedDict()
         self.web_cache = web_cache
 
-    def frame(self, prepared_cues, milliseconds, width, height, generation=0):
+    def frame(self, prepared_cues, milliseconds, width, height, generation=0, retire_web=True):
         from .advanced_live_renderer import (render_live_snapshot, render_live_layers,
             composite_live_scene_layers, composition_pivot_for_snapshot)
         from .studio_live_canvas import compiled_scene_for_snapshot
@@ -144,6 +190,10 @@ class SceneRasterizer:
         from .caption_playback_cache import FailedCaption as _FailedCaption
         prepared_cues = tuple((key, p.fallback if isinstance(p, _FailedCaption) and p.fallback else p)
                              for key, p in prepared_cues)
+
+        if self.web_cache is not None and retire_web:
+            self.web_cache.retain((p.snapshot_hash, generation, width, height)
+                for _, p in prepared_cues if p is not None and not isinstance(p, _FailedCaption) and p.web)
 
         for cue_id, prepared in prepared_cues:
             row = {'cue_id': cue_id, 'status': 'pending'}
@@ -252,6 +302,30 @@ def animated_caption(prepared):
             word in str(theme.get('cueCss',''))+str(theme.get('stageCss','')) for word in ('animation','@keyframes')))
     graph=snapshot.style_recipe.get('visualGraph') or {}
     return bool(snapshot.motion_recipe.get('mode','none')!='none' or graph.get('motionGraph',{}).get('tracks'))
+
+
+def scene_raster_geometry(page, rect, prepared):
+    """Static native pixels survive viewport moves; HTML/motion retain exact sizing."""
+    dpr=max(1.,float(page.video.devicePixelRatioF()))
+    width=max(1,round(rect.width()*dpr));height=max(1,round(rect.height()*dpr))
+    factor=min(1.,math.sqrt(1_200_000/(width*height)))
+    natural=(max(1,round(width*factor)),max(1,round(height*factor)))
+    reusable=bool(prepared) and all(p is not None and hasattr(p,'snapshot') and not p.web
+                                    and not animated_caption(p) for _,p in prepared)
+    if reusable:
+        overlay=page.position_overlay;media=page.project.media
+        video_w=getattr(overlay,'video_width',0) or getattr(media,'width',0)
+        video_h=getattr(overlay,'video_height',0) or getattr(media,'height',0)
+        aspect=video_w/video_h if video_w and video_h else rect.width()/max(1,rect.height())
+        cap=max(1,int(math.sqrt(1_200_000*aspect)))
+        tiers=sorted({min(cap,n) for n in (320,640,960,1280,cap)})
+        tier=next((n for n in tiers if n>=width),cap)
+        natural=(tier,max(1,round(tier/aspect)))
+    prepare_size=getattr(page,'_caption_tick_geometry',None)
+    if prepare_size is None:
+        get_size=getattr(page,'_advanced_preview_size',None)
+        prepare_size=get_size() if callable(get_size) else None
+    return (*natural,reusable,tuple(prepare_size) if prepare_size else None)
 
 
 class CaptionScene(QObject):
@@ -395,11 +469,11 @@ class CaptionScene(QObject):
         if request_key == self.last_request:
             # Keep the next boundaries warm while one long cue stays on screen.
             if time.perf_counter() - self._last_preheat >= PREHEAT_INTERVAL_S:
-                width, height = self.pixel_size(rect)
+                width, height = token[6][:2]
                 self.preheat(milliseconds, rect, generation, width, height)
             return True
         self.last_request = request_key
-        width,height=self.pixel_size(rect)
+        width,height=token[6][:2]
         with self.lock:
             cached=self.frames.get(self.frame_key(token)) if not animated else None
             if cached is None:
@@ -425,6 +499,8 @@ class CaptionScene(QObject):
     @staticmethod
     def frame_key(token):
         """Raster identity: a static scene does not depend on the playback generation."""
+        if len(token)>10 and token[6][2]:
+            return token[:3]+token[4:-4]
         return token[:3] + token[4:]
 
     @staticmethod
@@ -467,6 +543,7 @@ class CaptionScene(QObject):
             if not cues:
                 continue
             token = self.scene_token(cues, rect, generation)
+            width,height=token[6][:2]
             with self.lock:
                 if self.frame_key(token) in self.frames or token in self.warm_pending:
                     continue
@@ -496,6 +573,9 @@ class CaptionScene(QObject):
             for cue in cues:
                 if not str(translated.get(cue.id, '') or '').strip():
                     continue
+                from ..caption_style.bilingual_layout import theme_owns_translation
+                if theme_owns_translation(page.project.style_recipes, cue):
+                    continue
                 key = companion_id(cue.id)
                 prepared = page._prepared_caption(key)
                 if prepared is None and cache is not None:
@@ -510,7 +590,8 @@ class CaptionScene(QObject):
         page=self.page;revision=page._revision_store.render
         return (id(self.project),revision.mapping_revision,revision.visual_revision,generation,tuple(c.id for c in cues),
                 repr((getattr(page,'_caption_transform_preview_serial',0),getattr(page,'_live_edit_text_overrides',{}),getattr(page,'_live_transform_overrides',{}),
-                      [(c.id,c.start_ms,c.end_ms,c.speaker_id) for c in cues])),*rect.getRect())
+                      [(c.id,c.start_ms,c.end_ms,c.speaker_id) for c in cues])),
+                scene_raster_geometry(page,rect,self.scene_items(cues)),*rect.getRect())
 
     def preheat(self,milliseconds,rect,generation,width,height):
         """Prepare upcoming static active sets before their first visible tick."""
@@ -535,10 +616,16 @@ class CaptionScene(QObject):
             cues=active_cues(self.page,at)
             if not cues:continue
             token=self.scene_token(cues,rect,generation)
+            width,height=token[6][:2]
             with self.lock:
                 if self.frame_key(token) in self.frames or token in self.warm_pending:continue
             prepared=self.scene_items(cues)
-            if any(p is None or animated_caption(p) for _,p in prepared):continue
+            if any(p is None for _,p in prepared):continue
+            for _,p in prepared:
+                if getattr(p, 'web', None):
+                    self.web_cache.prefetch((p.snapshot_hash,generation,width,height),p.web,
+                        max(0,at-p.snapshot.start_ms),at,width,height)
+            if any(animated_caption(p) for _,p in prepared):continue
             with self.lock:
                 self.warm_pending[token]=(token,prepared,at,width,height)
                 while len(self.warm_pending)>12:self.warm_pending.popitem(last=False)
@@ -579,13 +666,14 @@ class CaptionScene(QObject):
                 with self.lock:
                     if self.closed: return
                     task, self.pending = self.pending, None
+                    current_task = task is not None
                     if task is None and self.warm_pending:_,task=self.warm_pending.popitem(last=False)
                     if not self.warm_pending:self.wake.clear()
                 if task is None: continue
                 token, cues, milliseconds, width, height = task
                 started = time.perf_counter()
                 try:
-                    image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3])
+                    image, rows = rasterizer.frame(cues, milliseconds, width, height, generation=token[3], retire_web=current_task)
                     if any(row['status']=='pending' for row in rows):
                         # A configured HTML page is not yet a rendered frame.
                         # Keep the last complete foreground until WebSceneCache
@@ -679,8 +767,10 @@ class CaptionScene(QObject):
                 and self.page.video._playback_clock.generation == token[3])
 
     def trace(self):
-        rows = self.metrics[-1]['cue_pixels'] if self.metrics and getattr(self, 'last_result_token', None)==self.token else []
+        current = self.metrics[-1] if self.metrics and getattr(self, 'last_result_token', None)==self.token else {}
+        rows = current.get('cue_pixels', [])
         return dict(expected_cue_ids=list(self.token[4]) if self.token else [],
+                    expected_display_cue_ids=current.get('expected_cue_ids',list(self.token[4]) if self.token else []),
                     rendered_cue_ids=[r['cue_id'] for r in rows if r['status']=='rendered'],
                     cue_pixels=rows,
                     visible=self.published is not None and bool(self.published.raw_geometry['alpha_nonzero']),

@@ -54,6 +54,7 @@ class MpvCanvas(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("videoSurface")
+        self.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, sys.platform == 'win32')
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, sys.platform != 'darwin')
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # 2026-10-22 (user, 1080p at 125%): the picture may get small when
@@ -656,12 +657,17 @@ class MpvCanvas(QFrame):
                 self._compositor_overlay_contexts[int(overlay_id)]=dict(context or {})
                 self._trace_compositor_event(action,int(overlay_id),context)
                 return True
-        if (int(overlay_id)==int(self.ADVANCED_OVERLAY_ID) and not self._paused
+        async_native = (int(overlay_id)==int(self.ADVANCED_OVERLAY_ID) and not self._paused
                 and (context or {}).get('web_worker_id') is None
-                and str((context or {}).get('caller','')).startswith('AdvancedLiveCanvas.')
-                and float(opacity)>.001 and callable(getattr(self.controller,'post_raw_overlay',None))):
+                and str((context or {}).get('caller','')).startswith('AdvancedLiveCanvas.'))
+        async_handles = (int(overlay_id)==int(self.TRANSFORM_OVERLAY_ID)
+                and (context or {}).get('caller')=='SubtitlePositionOverlay._publish_to_mpv')
+        if ((async_native or async_handles) and float(opacity)>.001
+                and callable(getattr(self.controller,'post_raw_overlay',None))):
             # Native cue changes used to hold the video's file lock for a
-            # synchronous 10–70ms disk write. This channel owns separate files.
+            # synchronous 10–70ms disk write. The same revocable channel owns
+            # resize/selection handles: never reopen files on the GUI thread
+            # for every splitter step. remove_compositor_overlay revokes both.
             if self._subtitle_raster_publisher is None:
                 from ..rendering.subtitle_raster_publisher import SubtitleRasterPublisher
                 self._subtitle_raster_publisher=SubtitleRasterPublisher(self._compositor_overlay_dir)
@@ -1208,6 +1214,25 @@ class MpvCanvas(QFrame):
         self._set_interpolation_base(0.0, paused=True)
         self._startup_state = "READY"
         self.video_display_size_changed.emit(0, 0)
+
+    def set_navigation_visible(self, visible: bool) -> None:
+        """Suspend only presentation polling while another page is visible.
+
+        The retained controller, project clock and paused position keep their
+        identity. Project close still goes through unload_project_media.
+        """
+        if not visible:
+            if getattr(self, '_navigation_timers', None) is not None:
+                return
+            self._navigation_timers = [timer for timer in (self._timer, self._sync_timer)
+                                       if timer.isActive()]
+            for timer in self._navigation_timers:
+                timer.stop()
+        else:
+            timers = getattr(self, '_navigation_timers', None)
+            self._navigation_timers = None
+            for timer in timers or ():
+                timer.start()
 
     def unload_project_media(self) -> None:
         """Release project state while retaining the one reusable mpv actor."""

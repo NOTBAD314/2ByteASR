@@ -283,12 +283,8 @@ class StudioAdvancedFlowMixin:
         if viewport[0] * viewport[1] > pixel_budget:
             scale = (pixel_budget / (viewport[0] * viewport[1])) ** .5
             viewport = (max(1, round(viewport[0]*scale)), max(1, round(viewport[1]*scale)))
-        speaker = ""
-        if self.project:
-            for item in self.project.speakers or []:
-                if getattr(item, "id", "") == cue.speaker_id:
-                    speaker = str(getattr(item, "name", "") or "")
-                    break
+        from ..caption_style.speaker_labels import template_speaker
+        speaker = template_speaker(self.project, cue) if self.project else ''
         # 二十八轮（入场闪烁）：同 cue+同内容重复 configure 是入场连闪的根因
         # ——调度器每个播放 tick 都会走到这里，每次都换 snapshot 对象+重配
         # worker → _publish_web_live_frame 判 identity 变化 → 首帧整幅重发
@@ -344,7 +340,7 @@ class StudioAdvancedFlowMixin:
             worker.configure_prepared(prepared.web)
         else:
             worker.configure(theme=theme,text=snapshot.text,speaker=speaker,duration_seconds=duration_seconds,
-                placement=snapshot.style_recipe.get('layout', {}).get('webPlacement'))
+                placement=snapshot.style_recipe.get('layout', {}).get('webPlacement'), **({'translation':snapshot.translation} if getattr(snapshot,'translation','') else {}))
         runtime = getattr(getattr(self, 'session', None), 'runtime', None)
         if runtime is not None:
             from bisect import bisect_right
@@ -558,11 +554,8 @@ class StudioAdvancedFlowMixin:
             )
             if not isinstance(theme, Mapping) or not theme:
                 continue
-            speaker = ""
-            for item in self.project.speakers or []:
-                if getattr(item, "id", "") == cue.speaker_id:
-                    speaker = str(getattr(item, "name", "") or "")
-                    break
+            from ..caption_style.speaker_labels import template_speaker
+            speaker = template_speaker(self.project, cue)
             try:
                 worker.warm(
                     theme=theme,

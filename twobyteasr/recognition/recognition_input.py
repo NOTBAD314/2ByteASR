@@ -31,9 +31,17 @@ def _graph_sources(graph):
     return sources
 
 
-def capture_recognition_snapshot(project, project_path="", *, lanes=None, lane=None):
+def capture_recognition_snapshot(project, project_path="", *, lanes=None, lane=None, range_ms=None):
     """See ``_capture``; ``lane`` alone hears one picked lane in a single run
-    (仅本地识别: its transcript is stored apart, nothing is replaced)."""
+    (仅本地识别: its transcript is stored apart, nothing is replaced).
+
+    ``range_ms`` (2026-10-25, 只重新识别这一段): only this stretch of the
+    timeline mix is heard; the result replaces the captions there
+    (``range_recognition``)."""
+    if range_ms is not None:
+        if lanes or lane is not None:
+            raise ValueError("只识别一段时不能同时选择音轨。")
+        return _capture(project, project_path, range_ms=range_ms)
     if lane is None:
         return _capture(project, project_path, lanes=lanes)
     snapshot = _capture(project, project_path, lanes=[lane])
@@ -45,7 +53,7 @@ def capture_recognition_snapshot(project, project_path="", *, lanes=None, lane=N
     return snapshot
 
 
-def _capture(project, project_path="", *, lanes=None):
+def _capture(project, project_path="", *, lanes=None, range_ms=None):
     """Freeze what one recognition run hears.
 
     Without ``lanes`` the input is the timeline mix (as before). With
@@ -68,6 +76,11 @@ def _capture(project, project_path="", *, lanes=None):
         graph = capture_audio_graph(project)
         identity = {"version": 2, "duration_ms": duration, "audio_graph": graph,
                     "sequence": sequence, "sources": _graph_sources(graph)}
+        if range_ms is not None:
+            start, end = int(range_ms[0]), int(range_ms[1])
+            if start < 0 or end > duration or end <= start:
+                raise ValueError("要识别的这一段超出了时间轴，请重新设置入点和出点。")
+            identity.update(duration_ms=end - start, range_ms=[start, end])
         return {**identity, "fingerprint": _digest(identity), **snapshot}
     from ..timeline.audio_stream_lanes import source_key
     runs = []
@@ -102,6 +115,11 @@ def lane_snapshots(snapshot):
             for index, run in enumerate(runs, 1)]
 
 
+def range_identity_keys(snapshot):
+    """Extra identity keys of a range run (two stretches of one length never share a cache)."""
+    return ("range_ms",) if snapshot.get("range_ms") else ()
+
+
 def project_content_revision(data):
     # Conservative late-result guard: studio_state also contains mixer edits.
     return _digest({k: v for k, v in data.items() if k != "updated_at"})
@@ -123,7 +141,9 @@ def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None):
                                             ffmpeg, cancelled=cancelled)
     snapshot.update(version=2, media_time_contract=TIME_CONTRACT, media_timebases=timebases)
     snapshot['fingerprint'] = _digest({k: snapshot[k] for k in
-        ('version', 'duration_ms', 'audio_graph', 'sequence', 'sources', 'media_time_contract', 'media_timebases')})
+        ('version', 'duration_ms', 'audio_graph', 'sequence', 'sources', 'media_time_contract', 'media_timebases')
+        + range_identity_keys(snapshot)})
+    range_start, range_end = snapshot.get('range_ms') or (0, snapshot['duration_ms'])
     root = Path(cache_root) / "timeline-inputs" / snapshot["fingerprint"]
     root.mkdir(parents=True, exist_ok=True)
     target, manifest = root / "timeline.wav", root / "input.json"
@@ -145,8 +165,9 @@ def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None):
         except (OSError, ValueError, wave.Error):
             pass
     duration = snapshot["duration_ms"] / 1000
-    job = SimpleNamespace(start_seconds=0, duration_seconds=duration,
-                          video_graph={"duration_ms": snapshot["duration_ms"]})
+    # A range run hears only [range_start, range_end) of the timeline mix.
+    job = SimpleNamespace(start_seconds=range_start / 1000, duration_seconds=duration,
+                          video_graph={"duration_ms": range_end})
     args = audio_mix_arguments(str(ffmpeg), job, layers)
     if args == ["-an"]:
         args = ["-map", "0:a:0", "-c:a", "pcm_s16le"]
@@ -180,7 +201,7 @@ def prepare_recognition_input(snapshot, cache_root, ffmpeg, *, token=None):
         public = {k: v for k, v in snapshot.items() if k != "project"}
         public.update(input_path=str(target), sample_rate=16000, channels=1,
                       frames=expected_frames, time_domain="timeline", audio_sha256=_file_sha256(target),
-                      rendered_audio_segments=layers, project_range_ms=[0, snapshot['duration_ms']])
+                      rendered_audio_segments=layers, project_range_ms=[range_start, range_end])
         manifest.write_text(json.dumps(public, ensure_ascii=False, indent=2), encoding="utf-8")
         return str(target)
     finally:
@@ -204,6 +225,8 @@ def attach_timeline_result(result, snapshot):
     captured.studio_state["project_name"] = f"{Path(snapshot.get('project_path') or '时间轴').stem} · 识别结果"
     captured.studio_state["project_name_automatic"] = True
     captured.studio_state["project_name_origin"] = {"kind": "recognition_result", "parent": Path(snapshot.get("project_path") or "").stem}
+    if snapshot.get("range_ms"):
+        return _attach_range_result(captured, result, snapshot)
     captured.cues = result.cues
     # These cues are a new recognition result. Anonymous ids cannot inherit
     # the previous task's host identity or hidden-track state.
@@ -245,6 +268,56 @@ def attach_timeline_result(result, snapshot):
             captured.render_settings.pop('_cue_domain', None)
         else:
             captured.render_settings['_cue_domain'] = prior_domain
+    return captured
+
+
+# Metadata about the captions and speakers themselves: a range run's values
+# describe its own anonymous result, so the captured project keeps its own.
+_RANGE_KEPT_METADATA = ("translations", "translation_records", "speaker_names", "asr_cue_states",
+                        "asr_replacement_mapping", "cue_forced_alignment", "speaker_recovery",
+                        "speaker_recovery_error")
+
+
+def _attach_range_result(captured, result, snapshot):
+    """2026-10-25 (只重新识别这一段): the captured project with only the range replaced.
+
+    The written result is the whole captured project with the range's new
+    captions spliced in, which is also what the Studio's undoable
+    replacement produces from it; speakers, styles, the edit and every caption
+    outside the range stay as captured. ``timeline_recognition["range"]``
+    names the new captions for the Studio.
+    """
+    from .range_recognition import apply_plan, cue_signature, history_entry, range_payload, splice_range
+    start, end = (int(value) for value in snapshot["range_ms"])
+    kept = {key: copy.deepcopy(captured.generation_metadata[key])
+            for key in _RANGE_KEPT_METADATA if key in captured.generation_metadata}
+    metadata = {**captured.generation_metadata, **result.generation_metadata}
+    for key in _RANGE_KEPT_METADATA:
+        metadata.pop(key, None)
+    metadata.update(kept)
+    captured.report_path = result.report_path
+    captured.original_outputs = copy.deepcopy(result.original_outputs)
+    info = {"fingerprint": snapshot["fingerprint"],
+            "media_time_contract": snapshot.get('media_time_contract', 'legacy-v1'),
+            "media_timebases": copy.deepcopy(snapshot.get('media_timebases', {})),
+            "source_project_id": snapshot["project_id"],
+            "source_project_path": snapshot["project_path"],
+            "source_project_revision": snapshot["project_revision"],
+            "duration_ms": snapshot["duration_ms"], "sequence": snapshot["sequence"],
+            "range_ms": [start, end]}
+    captured.generation_metadata = {**metadata, "timeline_recognition": info}
+    prefix = "range-" + str(snapshot["fingerprint"])[:8]
+    payload = range_payload(result, start, end, prefix=prefix, span_project=captured)
+    plan = splice_range(captured, (start, end), payload, foreign_speakers=True)
+    info["cue_ids"] = list(plan.inserted_ids)
+    info["range"] = {"window_ms": [start, end], "requested_ms": list(snapshot.get("requested_range_ms") or (start, end)),
+                     "cue_ids": list(plan.inserted_ids), "replaced_cue_ids": list(plan.removed_ids),
+                     "replaced_signature": cue_signature(captured, plan.removed_ids),
+                     "speaker_map": dict(plan.speaker_map)}
+    apply_plan(captured, plan, history_entry(plan, snapshot.get("requested_range_ms"),
+                                             fingerprint=snapshot["fingerprint"]))
+    if captured.studio_state.get('last_selected_cue') not in {c.id for c in captured.cues}:
+        captured.studio_state.pop('last_selected_cue', None)
     return captured
 
 

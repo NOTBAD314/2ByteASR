@@ -187,35 +187,9 @@ def test_smooth_card_list_wheel_notch_is_bounded(tmp_path):
 
 
 def test_parse_highlight_payload_maps_five_fields():
+    # Uncited old free-text output cannot enter the actionable edit pipeline.
     from twobyteasr.studio.studio_highlight_analyzer import parse_highlight_payload
-
-    payload = json.dumps({
-        "candidates": [
-            {
-                "start_ms": 1000, "end_ms": 25000, "score": 96, "grade": "强烈推荐",
-                "title": "第50抽出五星", "hook": "50抽意外出了目标五星",
-                "event_summary": "连续几十抽未出货后，第50抽突然命中目标五星，主播愣住后爆发。",
-                "clip_reason": "铺垫→反转→爆发完整，情绪转折脱离上下文也能看懂。",
-                "context_required": "low",
-                "reason": "", "category": "reaction",
-            }
-        ]
-    })
-    parsed = parse_highlight_payload(payload, [])
-    assert len(parsed) == 1
-    candidate = parsed[0]
-    assert candidate.event_summary.startswith("连续几十抽")
-    assert candidate.clip_reason.startswith("铺垫")
-    assert candidate.context_required == "low"
-    assert candidate.hook == "50抽意外出了目标五星"
-
-    legacy = json.dumps({
-        "candidates": [
-            {"start_ms": 1000, "end_ms": 25000, "score": 80, "grade": "推荐",
-             "title": "旧格式", "hook": "旧钩子", "reason": "旧理由", "category": "funny"}
-        ]
-    })
-    parsed = parse_highlight_payload(legacy, [])
-    assert parsed[0].clip_reason == "旧理由"
-    assert parsed[0].event_summary == "旧钩子"
-    assert parsed[0].context_required == ""
+    import pytest
+    with pytest.raises(ValueError,match='来源工程'):
+        parse_highlight_payload(json.dumps({'candidates':[{
+            'start_ms':1000,'end_ms':25000,'title':'无素材引用的事件','score':96}]}),[])

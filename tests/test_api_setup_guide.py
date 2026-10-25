@@ -162,8 +162,10 @@ def test_bailian_page_turns_any_pasted_host_into_exact_addresses(qapp):
     dialog.deleteLater()
 
 
-def test_qwen_cloud_page_needs_only_a_key_and_rejects_other_hosts(qapp):
+def test_qwen_cloud_page_needs_only_a_key_and_rejects_other_hosts(qapp, monkeypatch):
     from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
+    # The international site (2026-10-25: Simplified Chinese starts on 千问AI平台 instead).
+    monkeypatch.setattr('twobyteasr.i18n.current_language', lambda: 'en')
     host = Host()
     dialog = ApiSetupDialog(None, host.make(), kind='asr', initial='qwen_cloud_filetrans')
     assert dialog._guide.key == 'qwen_cloud_filetrans'
@@ -176,7 +178,7 @@ def test_qwen_cloud_page_needs_only_a_key_and_rejects_other_hosts(qapp):
     values = dialog.collected()
     assert values['url'] == 'https://maas.qwencloudapi.com/api/v1/services/audio/asr/transcription'
     dialog._fields['url'].setText('https://llm-abc.cn-beijing.maas.aliyuncs.com')
-    with pytest.raises(Exception, match='只接受 Qwen Cloud'):
+    with pytest.raises(Exception, match='只接受千问AI平台或 Qwen Cloud'):
         dialog.collected()
     dialog._fields['url'].setText('https://dashscope-intl.aliyuncs.com')
     assert dialog.collected()['url'].startswith('https://dashscope-intl.aliyuncs.com/api/v1/')
@@ -360,7 +362,8 @@ def test_every_screenshot_shows_the_page_its_button_opens():
     from PIL import Image
     from twobyteasr.providers import api_setup_catalog as catalog
     shots = 0
-    for guide in catalog.ALL_GUIDES:
+    guides = catalog.ALL_GUIDES + (catalog.QWEN_SITE_GUIDES['cn'],)   # 千问AI平台 shares Qwen Cloud's row (2026-10-25)
+    for guide in guides:
         for step in catalog.walkthrough(guide):
             shot = step.shot
             if shot is None:
@@ -373,7 +376,7 @@ def test_every_screenshot_shows_the_page_its_button_opens():
             x, y, w, h = shot.ring
             assert 0 <= x and 0 <= y and x + w <= 1 and y + h <= 1, shot.file
     assert shots >= 10
-    used = {step.shot.file for guide in catalog.ALL_GUIDES for step in catalog.walkthrough(guide) if step.shot}
+    used = {step.shot.file for guide in guides for step in catalog.walkthrough(guide) if step.shot}
     assert {path.name for path in (ROOT / 'assets' / 'api-setup').iterdir()} == used   # no stale pictures
 
 

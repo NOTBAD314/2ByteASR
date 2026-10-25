@@ -141,6 +141,7 @@ class StudioReadiness(QObject):
         self.completed = set()
         self.overlay = QFrame(page)
         self.overlay.setObjectName('studioLoadingSurface')
+        self.overlay.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, sys.platform == 'win32')
         # A native CHILD can cover mpv while loading without reparenting mpv
         # or creating a flashing top-level splash window.
         self.overlay.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)

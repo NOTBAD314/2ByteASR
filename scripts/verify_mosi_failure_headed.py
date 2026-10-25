@@ -11,7 +11,21 @@ real app (source, or the frozen EXE with ``--exe``, which uploads through its
 own ``--asr-api-worker``) on a private desktop. MOSI is a loopback stand-in:
 no key, no network, no paid call. The steps and checks are in the audit.
 
+``--scenario mosi-blocked`` (2026-10-24) runs
+``twobyteasr/acceptance/mosi_blocked_audit.py`` instead: MOSI's content safety
+review stops the second request; the task finishes with a gap, and 切成小段再交
+MOSI sends it again in pieces. ``--fill-model sensevoice --main-runtime <python>``
+links the real SenseVoice model (read-only junction, removed afterwards) and the
+main runtime into the isolated profile, so the gap is filled locally.
+
+``--scenario mosi-timing`` (2026-10-25) runs
+``twobyteasr/acceptance/mosi_timing_audit.py``: MOSI returns sentences timed
+past a request's audio or with swapped times; the task finishes with them
+clipped or left out, and 查看原因 says where and how many.
+
 usage: python scripts/verify_mosi_failure_headed.py --output tmp/<new dir> [--minutes 61.5] [--exe <frozen>]
+                                                    [--scenario mosi-failure|mosi-blocked|mosi-timing]
+                                                    [--fill-model sensevoice --main-runtime <python>]
 """
 from __future__ import annotations
 
@@ -42,12 +56,39 @@ def build_media(output: Path, minutes: float) -> Path:
     return media
 
 
+JUNCTION = 0xA0000003
+
+
+def _link(pairs) -> list[Path]:
+    links = []
+    for target, link in pairs:
+        if Path(target).is_dir() and not Path(link).exists():
+            Path(link).parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)], check=True, capture_output=True)
+            links.append(Path(link))
+    return links
+
+
+def _unlink(links) -> None:
+    for link in links:
+        try:
+            if getattr(os.lstat(link), 'st_reparse_tag', 0) == JUNCTION:
+                os.rmdir(link)  # the link only; the installed model is untouched
+        except FileNotFoundError:
+            pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--minutes', type=float, default=61.5)
     parser.add_argument('--scale', default='1')
     parser.add_argument('--exe', type=Path)
+    parser.add_argument('--scenario', choices=('mosi-failure', 'mosi-blocked', 'mosi-timing'), default='mosi-failure')
+    parser.add_argument('--fill-model', choices=('sensevoice',))
+    parser.add_argument('--main-runtime', type=Path, help='real main runtime python (read through a venv shim)')
+    parser.add_argument('--models', type=Path, default=ROOT.parents[2] / 'models'
+                        if (ROOT.parents[2] / 'models').is_dir() else ROOT / 'models')
     args = parser.parse_args()
     output = args.output.resolve()
     if not output.is_relative_to(ROOT / 'tmp') or output.exists():
@@ -67,8 +108,14 @@ def main() -> int:
     settings_path = settings_module.project_settings_path()  # <test root>/config in an isolated run
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding='utf-8')
-    (output / 'delivery.json').write_text(json.dumps(dict(media=str(media), minutes=args.minutes),
+    (output / 'delivery.json').write_text(json.dumps(dict(media=str(media), minutes=args.minutes,
+                                                          fill_model=args.fill_model or ''),
                                                      ensure_ascii=False, indent=2), 'utf-8')
+    links = []
+    if args.fill_model:
+        # Only the model this check needs; the links are removed below.
+        model_root = Path(os.environ['2BYTEASR_MODEL_ROOT'])
+        links = _link([(args.models.resolve() / 'SenseVoiceSmall', model_root / 'SenseVoiceSmall')])
     entry = save_project(SubtitleProject(media=StudioMedia(path='', duration_ms=0)), output / 'entry.2byteproj')
     env = os.environ.copy()
     # One spelling per variable: the root 2ByteASR.exe launcher (.NET) refuses an
@@ -76,7 +123,7 @@ def main() -> int:
     for key in [key for key in env if key.startswith('TWOBYTEASR_STARTUP_') or key.lower() in
                 {'http_proxy', 'https_proxy', 'no_proxy', 'all_proxy'}]:
         env.pop(key)
-    env.update(TWOBYTEASR_ACCEPTANCE_DIR=str(output), TWOBYTEASR_ACCEPTANCE_SCENARIO='mosi-failure',
+    env.update(TWOBYTEASR_ACCEPTANCE_DIR=str(output), TWOBYTEASR_ACCEPTANCE_SCENARIO=args.scenario,
                TWOBYTEASR_STARTUP_PROJECT=str(entry), TWOBYTEASR_INVOKER_CWD=str(ROOT),
                TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', QT_QPA_PLATFORM='windows', PYTHONUTF8='1',
                CUDA_VISIBLE_DEVICES='-1', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
@@ -84,10 +131,19 @@ def main() -> int:
     if args.scale != '1':
         env.update(QT_SCALE_FACTOR=args.scale, QT_ENABLE_HIGHDPI_SCALING='0', QT_FONT_DPI='96',
                    QT_SCALE_FACTOR_ROUNDING_POLICY='PassThrough')
+    if args.main_runtime:
+        # The queue only accepts a main interpreter inside the app's own runtime
+        # folder (under the test root: the profile); a small venv reads the real one.
+        from verify_ui_polish_headed import _runtime_shim
+        from twobyteasr.system.runtime_registry import stable_runtime_root
+        env['TWOBYTEASR_MAIN_PYTHON'] = str(_runtime_shim(args.main_runtime, Path(stable_runtime_root('main'))))
     from isolated_windows_desktop import run_on_desktop
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, '-B', str(ROOT / 'quick_start.py')]
     started = time.monotonic()
-    code = run_on_desktop(command, cwd=ROOT, env=env, output=output / 'process', timeout=1500)
+    try:
+        code = run_on_desktop(command, cwd=ROOT, env=env, output=output / 'process', timeout=2400)
+    finally:
+        _unlink(links)
     result_path = output / 'result.json'
     result = json.loads(result_path.read_text('utf8')) if result_path.is_file() else {}
     passed = bool(code == 0 and result.get('passed') and result.get('gui_shutdown'))

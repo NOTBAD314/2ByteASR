@@ -258,6 +258,7 @@ class SubtitleRenderRevision:
     # LIVE consumers select cues in project time; native ASS uses source time.
     timeline_cues: tuple[RenderCueDTO, ...] | None = None
     word_animations: FrozenJSON = None
+    glossary_ids: tuple[str, ...] = ()
 
     @property
     def compile_key(self) -> tuple[str, int, int, str]:
@@ -512,6 +513,7 @@ class StudioRevisionStore:
                 span['start_ms'] += source.start_ms-rendered.start_ms
                 span['end_ms'] += source.start_ms-rendered.start_ms
             word_plans[rendered.id] = plan
+        from ..glossary.glossary_binding import applied_library_ids
         return SubtitleRenderRevision(
             project_id=str(self.project.project_id),
             revision_id=int(revision),
@@ -529,11 +531,13 @@ class StudioRevisionStore:
             # belong to persistence, not every live visual revision.
             generation_metadata=freeze_json({
                 'translations': (self.project.generation_metadata or {}).get('translations', {}),
+                'speaker_names': (self.project.generation_metadata or {}).get('speaker_names', {}),
             }),
             studio_state=self._frozen_studio_state(),
             frame_rate=project_frame_rate(self.project),
             timeline_cues=self._timeline_cues,
             word_animations=freeze_json(word_plans),
+            glossary_ids=applied_library_ids(self.project)[0],
         )
 
     def _frozen_evidence(self, *, deep: bool = False) -> FrozenJSON:

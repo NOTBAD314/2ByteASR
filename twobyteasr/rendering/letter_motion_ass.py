@@ -23,6 +23,9 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
     style = caption.style
     from ..projects.studio_revisions import thaw_json
     transform = thaw_json(getattr(cue, 'transform', {}))
+    from ..caption_style.text_marks import layer_marks, remap_marks
+    from .marked_glyphs import marked_ass_text
+    marks = remap_marks(cue.text, caption.text, layer_marks(cue))
     face,_ = resolve_local_face(style.font_family,style.font_weight,style.font_style_name,style.bold,style.font_file,style.font_face_index)
     font = ImageFont.truetype(face.file,1000,index=face.index)
     em = style.font_size
@@ -81,6 +84,8 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
             a,b=max(char_offset,unit['char_start']),min(char_offset+len(row),unit['char_end'])
             if a>=b:continue
             content=row[a-char_offset:b-char_offset]
+            content_marks=[dict(m,start=max(a,m['start'])-a,end=min(b,m['end'])-a)
+                           for m in marks if m['start']<b and m['end']>a]
             if not content.strip():continue
             span_width=measure(content)
             cx=(widest-widths[row_index])*ax+measure(row[:a-char_offset])+(style.spacing if a>char_offset else 0)+span_width/2-widest*ax
@@ -144,7 +149,7 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
                     elif plain:tags+=r'\bord0\shad0'
                     if color:tags+=rf'\1c{color}'
                     if rect or polygon:tags+=clip_tag(rect,dx,dy,factor,polygon)
-                    emit('{'+tags+'}'+escape_ass_text(content),layer)
+                    emit(marked_ass_text(content,content_marks,ass_style,extra_tags=tags) if content_marks else '{'+tags+'}'+escape_ass_text(content),layer)
                 def vector(points,opacity,color=None,layer=BASE):
                     if opacity<.001:return
                     emit(r'{\an7\pos(0,0)\p1\fscx100\fscy100\frz0\bord0\shad0'+rf'\1c{color or accent}\alpha&H{round((1-min(1,opacity))*255):02X}&'+'}'+shape([point(x,y) for x,y in points]),layer)

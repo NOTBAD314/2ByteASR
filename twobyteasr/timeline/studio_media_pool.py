@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..projects.studio_project import (
+    AudioClip,
+    AudioTrack,
     MediaAsset,
     SubtitleProject,
     VideoClip,
@@ -244,7 +246,9 @@ def add_video_clip(
     timeline_in_ms: int | None = None,
     source_in_ms: int = 0,
     source_out_ms: int | None = None,
+    audio_enabled: bool = True,
 ) -> VideoClip:
+    """``audio_enabled=False`` (2026-10-25): the picture only, no linked audio clip."""
     track = track_by_id(project, track_id)
     if track.locked:
         raise ValueError(f"track {track_id} is locked")
@@ -265,12 +269,200 @@ def add_video_clip(
         source_out_ms=source_out,
         timeline_in_ms=timeline_in,
         timeline_out_ms=timeline_in + source_out - source_in,
+        audio_enabled=audio_enabled,
     )
     clip.validate()
     track.clips.append(clip)
     track.clips.sort(key=lambda item: (item.timeline_in_ms, item.id))
     sync_linked_av_contract(project)
     return clip
+
+
+# 2026-10-25 (user: "像 Premiere 一样分别拖视频或音频进轨道"): audio placed on
+# its own is an AudioClip without a video owner. The A/V contract keeps such
+# clips on any ordinary lane and the audio graph plays them as standalone.
+
+def asset_has_audio(asset: MediaAsset) -> bool:
+    from ..projects.studio_project import _asset_has_audio
+    return _asset_has_audio(asset)
+
+
+def asset_has_video(asset: MediaAsset) -> bool:
+    return (asset.video_metadata or {}).get("has_video") is not False
+
+
+def audio_lane_is_free(project: SubtitleProject, track_id: str, start_ms: int, end_ms: int) -> bool:
+    """An ordinary, unlocked A lane with nothing in [start, end)."""
+    track = next((item for item in project.audio_tracks if item.id == track_id), None)
+    if track is None or track.locked or track.stream_ordinal >= 0:
+        return False
+    return not any(clip.timeline_in_ms < end_ms and start_ms < clip.timeline_out_ms for clip in track.clips)
+
+
+def create_audio_track(project: SubtitleProject) -> AudioTrack:
+    """A standalone A lane (no video track of its own), added below the others."""
+    from ..projects.studio_project import _next_audio_track_id
+    track_id = _next_audio_track_id(project)
+    track = AudioTrack(id=track_id, name=track_id, z_index=len(project.audio_tracks))
+    project.audio_tracks.append(track)
+    sync_linked_av_contract(project)
+    return track
+
+
+def add_audio_clip(
+    project: SubtitleProject,
+    track_id: str,
+    asset_id: str,
+    *,
+    timeline_in_ms: int,
+    source_in_ms: int = 0,
+    source_out_ms: int | None = None,
+) -> AudioClip:
+    """Place a source's sound on an A lane by itself (its default stream)."""
+    from ..projects.studio_project import _primary_stream_of
+    asset = asset_by_id(project, asset_id)
+    if not asset_has_audio(asset):
+        raise ValueError("这个素材没有音频")
+    source_in = max(0, int(source_in_ms))
+    source_out = asset.duration_ms if source_out_ms is None else int(source_out_ms)
+    source_out = min(asset.duration_ms or source_out, max(source_in, source_out))
+    if source_out <= source_in:
+        raise ValueError("clip source range is empty")
+    timeline_in = max(0, int(timeline_in_ms))
+    timeline_out = timeline_in + source_out - source_in
+    if not audio_lane_is_free(project, track_id, timeline_in, timeline_out):
+        raise ValueError(f"音频轨 {track_id} 在这段时间已有片段或已锁定")
+    track = next(item for item in project.audio_tracks if item.id == track_id)
+    clip = AudioClip(
+        id="audio-" + uuid.uuid4().hex[:12],
+        asset_id=asset.asset_id,
+        source_in_ms=source_in,
+        source_out_ms=source_out,
+        timeline_in_ms=timeline_in,
+        timeline_out_ms=timeline_out,
+        stream_index=_primary_stream_of(asset),
+    )
+    clip.validate()
+    track.clips.append(clip)
+    track.clips.sort(key=lambda item: (item.timeline_in_ms, item.id))
+    sync_linked_av_contract(project)
+    return clip
+
+
+PLACEMENT_PARTS = ("both", "video", "audio")
+
+
+def placement_plan(
+    project: SubtitleProject,
+    asset_id: str,
+    part: str = "both",
+    *,
+    timeline_in_ms: int,
+    video_track_id: str = "",
+    audio_track_id: str = "",
+    selected_video_track_id: str = "",
+) -> dict[str, Any]:
+    """Where a media-pool source lands when dropped (also drawn while dragging).
+
+    ``part`` is both / video (picture only) / audio (sound only). Pictures go
+    to the track under the pointer when it is free there, else the selected
+    track, else the first free upper track, else a new one; V1 is kept by the
+    main edit, as in 「加入所选轨道」. Sound alone goes to the A lane under
+    the pointer when that time is free there, else to a new audio track.
+    """
+    asset = asset_by_id(project, asset_id)
+    has_video, has_audio = asset_has_video(asset), asset_has_audio(asset)
+    if part not in PLACEMENT_PARTS:
+        raise ValueError(part)
+    picture_only = part == "video"
+    if part == "both":
+        part = "video" if not has_audio else "audio" if not has_video else "both"
+    if part == "video" and not has_video:
+        raise ValueError("这个素材没有画面")
+    if part == "audio" and not has_audio:
+        raise ValueError("这个素材没有音频")
+    start = max(0, int(timeline_in_ms))
+    end = start + max(1, int(asset.duration_ms or 0))
+    plan: dict[str, Any] = {"asset_id": asset.asset_id, "part": part, "timeline_in_ms": start,
+                            "timeline_out_ms": end, "video_track_id": "", "audio_track_id": "",
+                            "new_video_track": False, "new_audio_track": False,
+                            "audio_enabled": not picture_only}
+    if part == "audio":
+        if audio_track_id and audio_lane_is_free(project, audio_track_id, start, end):
+            plan["audio_track_id"] = audio_track_id
+        else:
+            plan["new_audio_track"] = True
+        return plan
+    primary = primary_video_track_id(project)
+    groups = {g.video_track_id: g.audio_track_id for g in project.av_track_groups if g.linked}
+
+    def usable(track_id: str) -> bool:
+        track = next((t for t in project.video_tracks if t.id == track_id), None)
+        if track is None or track.id == primary or track.locked:
+            return False
+        if any(c.timeline_in_ms < end and start < c.timeline_out_ms for c in track.clips):
+            return False
+        lane = groups.get(track.id)
+        return part == "video" or not lane or audio_lane_is_free(project, lane, start, end)
+
+    ordered = [video_track_id, selected_video_track_id, *(t.id for t in project.video_tracks)]
+    plan["video_track_id"] = next((track_id for track_id in ordered if track_id and usable(track_id)), "")
+    plan["new_video_track"] = not plan["video_track_id"]
+    return plan
+
+
+def apply_placement(project: SubtitleProject, plan: Mapping[str, Any]) -> str:
+    """Carry out a ``placement_plan``; returns the new clip's id."""
+    start = int(plan["timeline_in_ms"])
+    if plan["part"] == "audio":
+        track_id = create_audio_track(project).id if plan["new_audio_track"] else str(plan["audio_track_id"])
+        return add_audio_clip(project, track_id, str(plan["asset_id"]), timeline_in_ms=start).id
+    track_id = create_video_track(project).id if plan["new_video_track"] else str(plan["video_track_id"])
+    return add_video_clip(project, track_id, str(plan["asset_id"]), timeline_in_ms=start,
+                          audio_enabled=bool(plan.get("audio_enabled", True))).id
+
+
+PLACEMENT_LABELS = {"both": "添加媒体片段", "video": "添加仅视频片段", "audio": "添加仅音频片段"}
+
+
+def linked_audio_clip(project: SubtitleProject, track_id: str, clip_id: str) -> AudioClip | None:
+    """The audio clip that follows a video clip on its track's A lane, if any."""
+    group = next((g for g in project.av_track_groups if g.linked and g.video_track_id == track_id), None)
+    lane = next((t for t in project.audio_tracks if group is not None and t.id == group.audio_track_id), None)
+    return next((c for c in (lane.clips if lane else ()) if c.linked_video_clip_id == clip_id), None)
+
+
+def can_detach_clip_audio(project: SubtitleProject, track_id: str, clip_id: str) -> str:
+    """'' when the clip's sound can become its own clip, else the reason."""
+    track = track_by_id(project, track_id)
+    if track.locked:
+        return "轨道已锁定"
+    clip = next((item for item in track.clips if item.id == clip_id), None)
+    if clip is None or linked_audio_clip(project, track_id, clip_id) is None:
+        return "这个片段没有连着的音频"
+    from ..media.audio_streams import asset_streams
+    if len(asset_streams(asset_by_id(project, clip.asset_id))) > 1:
+        return "多音轨素材暂不支持分离音频"
+    return ""
+
+
+def detach_clip_audio(project: SubtitleProject, track_id: str, clip_id: str) -> AudioClip:
+    """Split a video clip into picture and sound (2026-10-25, 「分离音频」).
+
+    The video clip keeps playing silently; its sound stays where it was as an
+    independent clip (same range, stream and gain) that moves on its own.
+    """
+    reason = can_detach_clip_audio(project, track_id, clip_id)
+    if reason:
+        raise ValueError(reason)
+    clip = next(item for item in track_by_id(project, track_id).clips if item.id == clip_id)
+    sound = linked_audio_clip(project, track_id, clip_id)
+    clip.audio_enabled = False
+    sound.id = "audio-" + uuid.uuid4().hex[:12]
+    sound.linked_video_clip_id = ""
+    sound.link_group_id = ""
+    sync_linked_av_contract(project)
+    return sound
 
 
 def remove_video_clip(project: SubtitleProject, track_id: str, clip_id: str) -> None:

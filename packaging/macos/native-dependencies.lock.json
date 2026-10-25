@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "verified_date": "2026-10-02",
+  "verified_date": "2026-10-23",
   "target": "darwin-arm64",
-  "minimum_macos": "15.0",
+  "minimum_macos": "14.0",
   "python_minor": "3.10",
   "homebrew_core": {
     "repository": "https://github.com/Homebrew/homebrew-core.git",
-    "commit": "0211e9c2eeea26bc0f1b382446dc076321e9a871",
-    "bottle_tag": "arm64_sequoia",
-    "installation": "Homebrew official core checkout at this commit, API disabled, forced bottles; no global upgrade"
+    "commit": "252c29dbece147fa170e1755c0d68c18ffe3d651",
+    "bottle_tag": "arm64_sonoma",
+    "installation": "Fixed official snapshot; native Sonoma build; reinstall the entire runtime dependency closure from bottles; final Mach-O gate required"
   },
   "node": {
     "version": "22.16.0",
@@ -17,16 +17,11 @@
   },
   "media": {
     "ffmpeg": {
-      "version": "9.0.2",
-      "revision": 0,
+      "version": "9.0.1",
+      "revision": 1,
       "formula_path": "Formula/f/ffmpeg-full.rb",
-      "formula_sha256": "9d97328f2cc181719a6bc15982e3706f5c6ce39a2d959c96e40ccde503c81056",
+      "formula_sha256": "bb93f7059f200431221f56f653ea4c269097264d938a51d1819bc2a9acf54afc",
       "official_url": "https://formulae.brew.sh/api/formula/ffmpeg-full.json",
-      "arm64_sequoia_bottle": {
-        "cellar": "/opt/homebrew/Cellar",
-        "url": "https://ghcr.io/v2/homebrew/core/ffmpeg-full/blobs/sha256:ef9633f1fee8a0039c6b8ac241f6303c2d4768892f2e84a4934564e91e9fff90",
-        "sha256": "ef9633f1fee8a0039c6b8ac241f6303c2d4768892f2e84a4934564e91e9fff90"
-      },
       "formula_name": "ffmpeg-full",
       "required_filters": [
         "ass",
@@ -36,18 +31,25 @@
         "trim",
         "concat",
         "amix"
-      ]
+      ],
+      "bottle_tag": "arm64_sonoma",
+      "bottle": {
+        "cellar": "/opt/homebrew/Cellar",
+        "url": "https://ghcr.io/v2/homebrew/core/ffmpeg-full/blobs/sha256:a12d53f94b4e386a94b444ac5116671aed70f9fc732c779368fe1e98311beb42",
+        "sha256": "a12d53f94b4e386a94b444ac5116671aed70f9fc732c779368fe1e98311beb42"
+      }
     },
     "mpv": {
       "version": "0.41.0",
-      "revision": 10,
+      "revision": 9,
       "formula_path": "Formula/m/mpv.rb",
-      "formula_sha256": "bcf37e4202e262c0e907ed643dc7cbff6cb60a9249178fd538c02f63b58b10aa",
+      "formula_sha256": "89f2f85ad377d7cb44045d018f3e26322cb4406b53775574dd008f359361eca3",
       "official_url": "https://formulae.brew.sh/api/formula/mpv.json",
-      "arm64_sequoia_bottle": {
+      "bottle_tag": "arm64_sonoma",
+      "bottle": {
         "cellar": "/opt/homebrew/Cellar",
-        "url": "https://ghcr.io/v2/homebrew/core/mpv/blobs/sha256:a0313cae157832a61b4cd2428f5907cba22f43d2a7d133982c4ec11406a5b89d",
-        "sha256": "a0313cae157832a61b4cd2428f5907cba22f43d2a7d133982c4ec11406a5b89d"
+        "url": "https://ghcr.io/v2/homebrew/core/mpv/blobs/sha256:adeccfdd66dd3d5c1a0a6f44dd400b10d01263e876941f8eb03e33975ba6cdc8",
+        "sha256": "adeccfdd66dd3d5c1a0a6f44dd400b10d01263e876941f8eb03e33975ba6cdc8"
       }
     }
   },
@@ -153,5 +155,33 @@
     }
   },
   "platform_materials_complete": false,
-  "native_validation_executed": false
+  "native_validation_executed": false,
+  "compatibility_rebuilds": {
+    "tesseract": {
+      "version": "5.5.3",
+      "url": "https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.5.3.tar.gz",
+      "sha256": "9218e62793116d42a9f6d14cd9348518b27f382096eea3d0f2d1a24616bb5884",
+      "source_directory": "tesseract-5.5.3",
+      "minimum_macos": "14.0"
+    }
+  },
+  "renderer_media_compatibility": {
+    "consumer_version": "4.0.513",
+    "source_package_version": "4.0.400",
+    "ffmpeg_version": "7.1",
+    "url": "https://registry.npmjs.org/@remotion/compositor-darwin-arm64/-/compositor-darwin-arm64-4.0.400.tgz",
+    "sha256": "133b34eb45ae8bb5e505be4d349fe6ce41db6e51b8729529bf210139a09bf469",
+    "npm_integrity": "sha512-Vq7fcrVvq+2VAnXUoRKdHfMdYSUyH5WEA3XqFtg2qTEfBCeffbL/XCXUumtcexeNWNJszu52V4XyBusFKtGo5w==",
+    "files": {
+      "ffmpeg": "bdab41e23ecd1c16ce3330318993c633ed6a52a1cf489e589866937e776be319",
+      "ffprobe": "1da19b94c960aa3f14ca5f0b2dfa599cde2f94298a68a1a26c6e593b6e92d132",
+      "libavcodec.dylib": "084202ac6475d6fc18549cbbff1d984d69253ba0463b03c9f5d0ef34db514d48",
+      "libavdevice.dylib": "35be5fa688e36457ddb49412d9e816a4fb26b125baa43d54d9deb6e4da599685",
+      "libavfilter.dylib": "1f5e84444fee4b8467c92f61fbe587854256647da345e52d0a327b907e521146",
+      "libavformat.dylib": "9d14e3e4f4800181454174954b69ae88c269ffa0b2aff60ea2e3a5b6c7d118aa",
+      "libavutil.dylib": "bba2b19a01b2ca9d74a2573ec7d329f9e7c655c6e85e4dcd74d422b7f8cda66e",
+      "libswresample.dylib": "cbb334ff7bfdeaa239e99f7d58100648ef670e7c988cdbf5066350130293f3d7",
+      "libswscale.dylib": "d198d1fe653e2ad49b020372bdbecca9ad52db565902ba72033946ff05a154b6"
+    }
+  }
 }

@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "target": "darwin-arm64-cp310",
+  "minimum_macos": "14.0",
+  "build_requirements": [
+    "setuptools==65.5.0",
+    "wheel==0.45.1"
+  ],
+  "sources": [
+    {
+      "name": "jieba",
+      "version": "0.42.1",
+      "url": "https://files.pythonhosted.org/packages/c6/cb/18eeb235f833b726522d7ebed54f2278ce28ba9438e3135ab0278d9792a2/jieba-0.42.1.tar.gz",
+      "sha256": "055ca12f62674fafed09427f176506079bc135638a14e23e25be909131928db2"
+    },
+    {
+      "name": "oss2",
+      "version": "2.19.1",
+      "url": "https://files.pythonhosted.org/packages/df/b5/f2cb1950dda46ac2284d6c950489fdacd0e743c2d79a347924d3cc44b86f/oss2-2.19.1.tar.gz",
+      "sha256": "a8ab9ee7eb99e88a7e1382edc6ea641d219d585a7e074e3776e9dec9473e59c1"
+    },
+    {
+      "name": "TextGrid",
+      "version": "1.6.1",
+      "url": "https://files.pythonhosted.org/packages/cf/6f/701ef6aa56cf85c8965b7ff929f0766e0e8311c4478937eeee9441bf9663/TextGrid-1.6.1.tar.gz",
+      "sha256": "0d3f8d4f511474777ce287d2ecef090573c0e63141aa73c6f400637e1ecaca63"
+    },
+    {
+      "name": "crcmod",
+      "version": "1.7",
+      "url": "https://files.pythonhosted.org/packages/6b/b0/e595ce2a2527e169c3bcd6c33d2473c1918e0b7f6826a043ca1245dd4e5b/crcmod-1.7.tar.gz",
+      "sha256": "dc7051a0db5f2bd48665a990d3ec1cc305a466a77358ca4492826f41f283601e"
+    },
+    {
+      "name": "antlr4-python3-runtime",
+      "version": "4.9.3",
+      "url": "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz",
+      "sha256": "f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b"
+    }
+  ]
+}

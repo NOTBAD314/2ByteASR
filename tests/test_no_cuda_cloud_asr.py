@@ -596,6 +596,138 @@ def test_mosi_failure_detail_reads_tasks_saved_before_the_reason_was_kept():
         '第 2 / 2 段（55:59–1:36:05）的 MOSI 任务（任务编号 t-9）在 MOSI 查不到（不存在或已超过保留期）。')
 
 
+# What MOSI returned for the 2nd of 5 requests of a user's English game stream (2026-10-24).
+GUARDRAIL_ERROR = {'error_code': 17001, 'error_msg': 'safety policy error', 'internal_error_code': 111111004,
+                   'internal_error_msg': 'safety guardrail blocked'}
+GUARDRAIL_REASON = 'safety policy error；safety guardrail blocked（17001，111111004）'
+
+
+class BlockingMosi(MosiClient):
+    """One task id per upload; the uploads whose number is in ``blocked``
+    end FAILED with the user's error, the others return one row."""
+
+    def __init__(self, blocked=(2,), **kw):
+        super().__init__(**kw)
+        self.blocked = set(blocked)
+
+    def post(self, url, **kw):
+        super().post(url, **kw)
+        task = f'task-{len(self.posts)}'
+        return Response({'id': task, 'task_id': task, 'status': 'PENDING', 'retry_after': 2})
+
+    def get(self, url, **kw):
+        self.gets += 1
+        task = url.rsplit('/', 1)[-1]
+        if int(task.split('-')[1]) in self.blocked:
+            return Response({'id': task, 'status': 'FAILED', 'error': GUARDRAIL_ERROR})
+        return Response({'id': task, 'status': 'SUCCESS', 'text': '你好。',
+                         'segments': [{'speaker': 'S01', 'text': f'第{task}段。', 'start': 0.2, 'end': 1.1}]})
+
+
+def test_mosi_content_review_block_leaves_a_gap_and_the_task_goes_on(tmp_path, monkeypatch):
+    """2026-10-24: request 2 of 5 was stopped by MOSI's safety review; the
+    task failed, requests 4 and 5 were never sent, and 重试失败项 would have
+    sent the same 20 minutes again. Now the others go on (one at a time here,
+    so request 3 is sent after the block) and the block is a gap."""
+    from twobyteasr.providers import mosi_asr
+    monkeypatch.setattr(mosi_asr, 'plan_ranges', lambda a, **kw: [(0, 32000), (32000, 64000), (64000, 96000)])
+    client, audio = BlockingMosi(), np.zeros(96000, dtype=np.float32)
+    rows = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None, parallel=1)
+    assert len(client.posts) == 3
+    assert [row['text'].rstrip('。') for row in rows] == ['第task-1段', '', '第task-3段']
+    gap = rows[1]['cloud_gap']
+    assert (rows[1]['start'], rows[1]['end']) == (2.0, 4.0) and gap['segment'] == [2, 3] and gap['task_id'] == 'task-2'
+    assert gap['provider_reason'] == GUARDRAIL_REASON and gap['resplittable'] is False
+    assert gap['detail'] == ('第 2 / 3 段（0:02–0:04）的 MOSI 任务（任务编号 task-2）被 MOSI 的内容安全审查拦下，'
+                             f'没有返回这一段的字幕（MOSI 返回的原因：{GUARDRAIL_REASON}）。')
+    saved = json.loads(next(tmp_path.rglob('request-001-*/task.json')).read_text('utf8'))
+    assert saved['remote_blocked'] is True and saved['remote_reason'] == GUARDRAIL_REASON
+
+    # Again, and again with the user's 重新提交 confirmation: never sent unchanged.
+    for restart in (False, True):
+        again = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None,
+                                    restart_terminal=restart)
+        assert len(client.posts) == 3 and again == rows
+
+
+def test_mosi_blocked_request_goes_again_only_in_pieces(tmp_path, monkeypatch):
+    """切成小段再交 MOSI: the stopped request goes again as pieces; a piece
+    stopped again stays a (smaller) gap and is never cut further."""
+    from twobyteasr.providers import mosi_asr
+    monkeypatch.setattr(mosi_asr, 'PIECE_SINGLE_SECONDS', 1)
+    monkeypatch.setattr(mosi_asr, 'PIECE_SECONDS', .5)
+    monkeypatch.setattr(mosi_asr, 'PIECE_SEARCH_SECONDS', .1)
+    real_plan = mosi_asr.plan_ranges
+    monkeypatch.setattr(mosi_asr, 'plan_ranges', lambda a, **kw: real_plan(a, **kw) if kw else
+                        [(0, 32000), (32000, 64000), (64000, 96000)])
+    client, audio = BlockingMosi(blocked=(2, 5)), np.zeros(96000, dtype=np.float32)
+    first = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None)
+    assert [row.get('cloud_gap', {}).get('resplittable') for row in first] == [None, True, None]
+    rows = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None,
+                               resplit_blocked=True)
+    # 2 s cut into four pieces of 0.5 s: uploads 4-7, upload 5 (the second piece) is stopped again.
+    assert len(client.posts) == 7
+    gaps = [row for row in rows if row.get('cloud_gap')]
+    assert [(row['start'], row['end']) for row in gaps] == [(2.5, 3.0)] and not gaps[0]['cloud_gap']['resplittable']
+    assert sum(1 for row in rows if row['text']) == 5
+    plan = json.loads(next(tmp_path.rglob('plan.json')).read_text('utf8'))['requests']
+    assert len(plan) == 6
+    # The next normal run and another 切成小段 keep the pieces; nothing is sent.
+    for resplit in (False, True):
+        assert mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None,
+                                   resplit_blocked=resplit) == rows
+    assert len(client.posts) == 7
+
+
+def test_mosi_upload_refused_by_the_review_is_a_gap_and_not_sent_again(tmp_path, monkeypatch):
+    from twobyteasr.providers import mosi_asr
+    monkeypatch.setattr(mosi_asr, 'plan_ranges', lambda a, **kw: [(0, 32000), (32000, 64000)])
+
+    class RefusesFirst(BlockingMosi):
+        def post(self, url, **kw):
+            if not self.posts:
+                MosiClient.post(self, url, **kw)
+                return Response({'error': {'code': 'safety_guardrail_blocked', 'type': 'permission_error'}}, 403)
+            return super().post(url, **kw)
+
+    client, audio = RefusesFirst(blocked=()), np.zeros(64000, dtype=np.float32)
+    rows = mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None, parallel=1)
+    assert len(client.posts) == 2 and rows[0]['cloud_gap']['task_id'] == '' and rows[1]['text']
+    assert 'safety_guardrail_blocked' in rows[0]['cloud_gap']['detail']
+    assert mosi_asr.transcribe(audio, mosi_endpoint(), tmp_path, client=client, sleep=lambda *_: None) == rows
+    assert len(client.posts) == 2
+
+
+def test_mosi_block_saved_by_084_reads_as_a_content_review_block():
+    """0.8.4 saved the user's task with the reason as raw JSON and no flag."""
+    from twobyteasr.providers.mosi_asr import content_blocked, failure_detail
+    raw = json.dumps(GUARDRAIL_ERROR, ensure_ascii=False)
+    old = {'task_id': 'bdcd3aa0', 'status': 'FAILED', 'remote_error': raw, 'remote_reason': raw}
+    assert content_blocked(old)
+    assert failure_detail(old, (2, 5, 1276.0, 2506.0)) == (
+        '第 2 / 5 段（21:16–41:46）的 MOSI 任务（任务编号 bdcd3aa0）被 MOSI 的内容安全审查拦下，'
+        f'没有返回这一段的字幕（MOSI 返回的原因：{GUARDRAIL_REASON}）。')
+    other = {'task_id': 't', 'status': 'FAILED', 'remote_error': '{"message": "decoder stalled"}'}
+    assert not content_blocked(other) and '执行失败' in failure_detail(other)
+
+
+def test_mosi_upload_refused_by_the_content_review(monkeypatch, capsys):
+    """HTTP 403 safety_guardrail_blocked at upload: no task, so nothing to resubmit."""
+    import io
+    from twobyteasr.providers import cloud_api_worker
+    from twobyteasr.providers.mosi_asr import classify_http_error
+    category, message = classify_http_error(403, {'error': {'code': 'safety_guardrail_blocked', 'type': 'permission_error'}})
+    assert category == 'content_rejected' and '内容安全审查' in message and 'API Key' not in message
+    monkeypatch.setattr(cloud_api_worker, '_ensure_stdio', lambda: None)
+    monkeypatch.setattr(cloud_api_worker.sys, 'stdin', io.StringIO('{}'))
+    monkeypatch.setattr(cloud_api_worker, 'run',
+                        lambda _request: (_ for _ in ()).throw(ASRProtocolError(message, category)))
+    assert cloud_api_worker.main() == 1
+    problem = cloud_api_worker.failure_from_text(capsys.readouterr().err)
+    assert problem['category'] == 'content_blocked' and problem['resubmit'] is False
+    assert problem['action'] == cloud_api_worker.CONTENT_BLOCKED_ACTION
+
+
 def test_mosi_progress_reports_how_long_mosi_has_had_the_request(tmp_path, monkeypatch):
     """The window shows the wait and warns when it is far beyond the usual (2026-10-23)."""
     import time as real_time
@@ -987,3 +1119,41 @@ def test_real_worker_failure_shows_mosi_reason_not_forwarded_progress_lines(monk
     assert '[2BYTEASR_API] ' not in stdout and 'asr_progress' not in stdout
     problem = failure_from_text(_exception_message(failure.value, ''))   # as the completion page stores it
     assert problem['resubmit'] is True and 'decoder stalled' in problem['message']
+
+
+class _BlockedMosi(_FakeMosi):
+    def do_GET(self):
+        assert self.path == '/v1/audio/tasks/loop-1'
+        self._send(200, {'id': 'loop-1', 'status': 'FAILED', 'error': GUARDRAIL_ERROR})
+
+
+def test_real_worker_content_review_block_comes_back_as_a_gap(monkeypatch, tmp_path):
+    """Real worker process: a block is no failure (2026-10-24). The primary
+    transcript gets the gap marker for the local fill; review evidence (not
+    the primary) simply has nothing there. Both runs record the block."""
+    from twobyteasr.recognition import asr
+    from twobyteasr.providers import asr_api_process
+    from twobyteasr.recognition.run_context import RuntimeContext, activate_runtime_context
+    events = []
+    monkeypatch.setattr('twobyteasr.recognition.cache.record_run_event', lambda kind, **kw: events.append((kind, kw)))
+    server = ThreadingHTTPServer(('127.0.0.1', 0), _BlockedMosi)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        endpoint = mosi_endpoint(url=f'http://127.0.0.1:{server.server_port}/v1', api_key='sk-loopback')
+        context = RuntimeContext(job_id='job-loop', asr_endpoint_snapshot=endpoint,
+                                 asr_settings_snapshot={'models': {}}, speaker_source='native')
+        monkeypatch.setattr(asr, 'build_qwen_asr_context', lambda *a: '')
+        monkeypatch.setattr('twobyteasr.glossary.terminology.runtime_snapshot', lambda: SimpleNamespace(canonical_terms=[]))
+        chunks = [dict(start=0, end=2, audio=(np.zeros(32000, np.float32), 16000))]
+        with activate_runtime_context(context):
+            primary = asr_api_process.transcribe('fixture.wav', chunks, publish_primary=True, cache_root=tmp_path / 'jobs')
+            review = asr_api_process.transcribe('fixture.wav', chunks, cache_root=tmp_path / 'jobs')
+    finally:
+        server.shutdown()
+    assert [row['text'] for row in primary] == [''] and review == []
+    gap = primary[0]['cloud_gap']
+    assert gap['task_id'] == 'loop-1' and gap['provider_reason'] == GUARDRAIL_REASON
+    assert '被 MOSI 的内容安全审查拦下' in gap['detail']
+    blocked = [kw for kind, kw in events if kind == 'cloud_asr_blocked']
+    assert [row['role'] for row in blocked] == ['primary', 'review']
+    assert blocked[0]['requests'][0]['task_id'] == 'loop-1' and blocked[0]['requests'][0]['end'] == 2.0

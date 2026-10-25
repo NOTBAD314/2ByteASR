@@ -850,10 +850,16 @@ def render_live_snapshot(
     for index,line in enumerate(lines):
         offset=(widest-widths[index])*float(snapshot.anchor_x)
         path.addText(QPointF(offset, metrics.ascent() + index * line_height), font, line or ' ')
+    marked_pieces = []
+    if getattr(snapshot, 'text_marks', None):
+        from .marked_glyphs import shape_marked_text
+        path, marked_pieces = shape_marked_text(snapshot.text, font, snapshot.text_marks, float(snapshot.anchor_x))
     bounds = path.boundingRect()
     local_x = -bounds.left() - bounds.width() * float(snapshot.anchor_x)
     local_y = -bounds.top() - bounds.height() * float(snapshot.anchor_y)
     path.translate(local_x, local_y)
+    for glyph, _, _ in marked_pieces:
+        glyph.translate(local_x, local_y)
     local_bounds = path.boundingRect()
 
     highlight_path = QPainterPath()
@@ -870,6 +876,14 @@ def render_live_snapshot(
                 x = (widest-widths[line_index])*float(snapshot.anchor_x)+metrics.horizontalAdvance(line[:a-char_offset])
                 part.addText(QPointF(x,metrics.ascent()+line_index*line_height),font,line[a-char_offset:b-char_offset])
                 part.translate(local_x,local_y)
+                if marked_pieces:
+                    part = QPainterPath()
+                    colours = []
+                    for glyph, index, color in marked_pieces:
+                        if a <= index < b:
+                            part.addPath(glyph)
+                            if color: colours.append((glyph, color))
+                    unit = dict(unit, _marked_colours=colours)
                 animated_pieces.append((part,unit,word_time_ms))
             char_offset += len(line)+1
     elif word_time_ms is not None and word_plan.get('spans'):
@@ -978,6 +992,8 @@ def render_live_snapshot(
         )
 
     if text_layer:
+        fill_brush = resolve_fill_brush(snapshot.fill, local_bounds)
+        opaque_fill = fill_brush.isOpaque() and all(not color or _color(color).alpha() == 255 for _, _, color in marked_pieces)
         strokes = [item for item in snapshot.strokes if isinstance(item, Mapping)]
         for stroke in reversed(strokes):
             alignment = str(stroke.get("alignment") or "OUTSIDE").upper()
@@ -991,11 +1007,22 @@ def render_live_snapshot(
                 stroke.get("color"),
                 opacity=_number(stroke, "opacity", default=1.0),
             ))
-            painter.drawPath(outside_stroke_ring(path, width_px))
+            if opaque_fill:
+                # The opaque glyph fill below covers the inward half exactly;
+                # avoid an expensive Boolean subtraction for ordinary captions.
+                pen = QPen(painter.brush(), width_px*2, Qt.PenStyle.SolidLine,
+                           Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+                painter.strokePath(path, pen)
+            else:
+                painter.drawPath(outside_stroke_ring(path, width_px))
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(resolve_fill_brush(snapshot.fill, local_bounds))
+        painter.setBrush(fill_brush)
         painter.drawPath(path)
+        for glyph, index, color in marked_pieces:
+            if color:
+                painter.setBrush(_color(color))
+                painter.drawPath(glyph)
         if not highlight_path.isEmpty():
             painter.setBrush(_color(word_plan.get('color'), '#FFFFD166'))
             painter.drawPath(highlight_path)

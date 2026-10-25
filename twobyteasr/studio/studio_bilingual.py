@@ -84,6 +84,8 @@ def sync_controls(page, settings: BilingualSettings | None = None) -> None:
     text = getattr(page, "translation_text", None)
     if text is not None:
         text.setVisible(shown)
+    tools = getattr(page, 'translation_text_tools', None)
+    if tools is not None: tools.setVisible(shown)
     timeline = getattr(page, "timeline", None)
     if timeline is not None and hasattr(timeline, "set_bilingual"):
         timeline.set_bilingual(shown)
@@ -111,6 +113,12 @@ def apply_display(page, **changes) -> bool:
     refresh = getattr(page, "_refresh_ass_preview", None)
     if callable(refresh):
         refresh()
+    # Refresh captures the final display revision. A paused raster-only
+    # player does not get a native ASS redraw or a later transport tick to
+    # request that revision; explicitly present it without moving the clock.
+    present = getattr(page, "_present_caption_scene", None)
+    if callable(present):
+        present()
     return True
 
 

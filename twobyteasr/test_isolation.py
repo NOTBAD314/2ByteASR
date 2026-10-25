@@ -262,12 +262,59 @@ def install():
     for key in tuple(os.environ):
         if key.upper() in {'HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN', 'MODELSCOPE_API_TOKEN'} or key.endswith(('_API_KEY', '_ACCESS_TOKEN', '_AUTH_TOKEN')):
             os.environ.pop(key, None)
-    try:
-        from PySide6 import QtCore
-    except ImportError:
-        # Headless role environments may not install Qt. They still inherit
-        # the filesystem/config boundary and cannot construct QSettings.
+    # A headless role can see the frozen app's incomplete PySide6 namespace
+    # through its resource path even though its own venv has no Qt. Importing
+    # that namespace aborts inside Shiboken, before an ImportError is possible.
+    # Keep the data boundary now; patch QSettings only if Qt is actually used.
+    QtCore = sys.modules.get('PySide6.QtCore')
+    if QtCore is None:
+        _defer_qsettings_isolation()
+    else:
+        _isolate_qsettings(QtCore, root)
+
+
+def _defer_qsettings_isolation():
+    import importlib.abc
+    if any(getattr(finder, '_twobyte_qsettings_isolation', False) for finder in sys.meta_path):
         return
+
+    class IsolatedQtLoader:
+        def __init__(self, loader):
+            self.loader = loader
+
+        def __getattr__(self, name):
+            return getattr(self.loader, name)
+
+        def create_module(self, spec):
+            create = getattr(self.loader, 'create_module', None)
+            return create(spec) if create is not None else None
+
+        def exec_module(self, module):
+            self.loader.exec_module(module)
+            root = isolation_root()
+            if root is not None:
+                _isolate_qsettings(module, root)
+
+    class IsolatedQtFinder(importlib.abc.MetaPathFinder):
+        _twobyte_qsettings_isolation = True
+
+        def find_spec(self, fullname, path, target=None):
+            if fullname != 'PySide6.QtCore':
+                return None
+            for finder in tuple(sys.meta_path):
+                if finder is self or not hasattr(finder, 'find_spec'):
+                    continue
+                spec = finder.find_spec(fullname, path, target)
+                if spec is not None:
+                    if spec.loader is not None:
+                        spec.loader = IsolatedQtLoader(spec.loader)
+                    return spec
+            return None
+
+    sys.meta_path.insert(0, IsolatedQtFinder())
+
+
+def _isolate_qsettings(QtCore, root):
     if getattr(QtCore.QSettings, '_twobyte_isolation_root', None) == root:
         return
     original = getattr(QtCore.QSettings, '_twobyte_original', QtCore.QSettings)

@@ -7,6 +7,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QImage
 from twobyteasr.rendering.caption_scene import SceneRasterizer
+from twobyteasr.rendering.caption_scene import CaptionScene
 from twobyteasr.rendering.caption_playback_cache import PreparedCaption
 from twobyteasr.projects.studio_project import StudioMedia, StudioCue, StudioSpeaker, SubtitleStyle, SubtitleProject
 from twobyteasr.caption_style.style_recipe import RecipeRoute
@@ -27,6 +28,20 @@ def prepared(count):
             position_x=300, position_y=60+65*i) for i in range(count)])
     return [(cue.id, PreparedCaption(snapshot:=build_visual_cue_snapshot(p, cue.id, width=600, height=480),
              snapshot.stable_hash(), RecipeRoute('native', ()))) for cue in p.cues]
+
+
+def test_readiness_trace_distinguishes_source_cues_from_bilingual_display_layers():
+    token=('project',1,1,1,('a',))
+    owner=SimpleNamespace(token=token,last_result_token=token,published=None,metrics=[{
+        'expected_cue_ids':['a','a#tr'],
+        'cue_pixels':[{'cue_id':c,'status':'rendered'} for c in ('a','a#tr')]}])
+    trace=CaptionScene.trace(owner)
+    assert trace['expected_cue_ids']==['a']
+    assert set(trace['expected_display_cue_ids'])==set(trace['rendered_cue_ids'])=={'a','a#tr'}
+    owner.token=('project',1,2,1,('b',))
+    trace=CaptionScene.trace(owner)
+    assert trace['expected_display_cue_ids']==['b']
+    assert trace['cue_pixels']==[]  # Prior pixels cannot satisfy a new readiness gate.
 
 
 def alpha(image):

@@ -6,11 +6,14 @@ from twobyteasr.studio.studio_context_tabs import restored_context_tab
 from tests.test_studio_cue_controller import _page, _finish
 
 
-@pytest.mark.parametrize('old,expected', [(0,0),(1,1),(2,1),(3,2),(4,3),(5,4),(99,1),('bad',1)])
+# 2026-10-24 (Codex clip suggestions): the 动效 tab (index 2) is in the identity list, so video,
+# highlight and media restore to their real tabs 3, 4 and 5 (before, one tab too far left).
+@pytest.mark.parametrize('old,expected', [(0,0),(1,1),(2,1),(3,3),(4,4),(5,5),(99,1),('bad',1)])
 def test_old_context_index_migrates(old,expected):
     assert restored_context_tab({'context_tab':old})==expected
     assert restored_context_tab({'context_tab_id':'checks','context_tab':3})==1
-    assert restored_context_tab({'context_tab_id':'media','context_tab':1})==4
+    assert restored_context_tab({'context_tab_id':'media','context_tab':1})==5
+    assert restored_context_tab({'context_tab_id':'motion','context_tab':2})==2
 
 
 def test_real_escape_clears_all_selection_domains_and_next_target_restores(tmp_path,monkeypatch):

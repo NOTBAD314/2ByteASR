@@ -593,6 +593,7 @@ class _AudioEngineWorker(QObject):
         self._endpoint_generation = 0
         self._last_device_check = 0.
         self._decode_recoveries = deque(maxlen=3)
+        self._rejected_seek_copies: set[str] = set()
         self._clock_sequence = 0
         self._source_generation = 0
         self._ring_generation = 0
@@ -1204,6 +1205,13 @@ class _AudioEngineWorker(QObject):
             # Indexed audio-only copy for fast seeks; it only changes how the
             # next decoder reads the same source, never restarts the current one.
             self._decode_source = request.get('decode_source') if isinstance(request.get('decode_source'), Mapping) else None
+            if self._decode_source and str(self._decode_source.get('path') or '') in self._rejected_seek_copies:
+                self._decode_source = None
+            if self._rejected_seek_copies:
+                self._mix_layers = tuple(
+                    {k:v for k,v in item.items() if k!='decode_source'}
+                    if str((item.get('decode_source') or {}).get('path') or '') in self._rejected_seek_copies else item
+                    for item in self._mix_layers)
             self._active_input = {key:request[key] for key in ('track_id','audio_track_id','clip_id','audio_clip_id','asset_id','source_ms','project_ms') if key in request}
             gain_db = float(request.get("gain_db", 0.))
             source_out_ms = request.get("source_out_ms")
@@ -1273,6 +1281,24 @@ class _AudioEngineWorker(QObject):
                 and ring_generation == self._ring_generation
                 and self.device.has_produced_pcm()
             )
+            # A successful FFmpeg exit with zero samples is not a buffered
+            # tail. A bad FLV seek copy used to stay silent until another seek.
+            empty_eof = (self._decoder_eof and self.device is not None
+                         and not self.device.has_produced_pcm() and self._source_path == source_path)
+            used_copy = str(getattr(self, '_decode_input_path', '') or '')
+            if (empty_eof and len(self._mix_layers)<=1 and used_copy and used_copy!=source_path
+                    and used_copy not in self._rejected_seek_copies
+                    and (source_out_ms is None or source_ms+1000<int(source_out_ms))):
+                self._rejected_seek_copies.add(used_copy)
+                self._decode_source = None
+                self._mix_layers = tuple({k:v for k,v in item.items() if k!='decode_source'} for item in self._mix_layers)
+                discontinuity = True
+                self._trace_decoder('AUDIO_SEEK_COPY_EMPTY', fallback='original_source')
+            elif (empty_eof and not discontinuity and self._decode_source
+                  and str(self._decode_source.get('path') or '')!=used_copy):
+                # A validated indexed copy became ready after an empty raw
+                # FLV seek. Never restart a generation that has valid PCM.
+                discontinuity = True
             restart = discontinuity or decoder_restart_required(
                 # Successful decode EOF means buffered PCM is still valid.
                 # Restarting here discarded/replayed the tail every UI tick.

@@ -154,6 +154,12 @@ class StudioAssFlowMixin:
     def _refresh_ass_preview(self) -> None:
         if not self.project:
             return
+        # Paused edits keep the same active cue IDs, so the playhead-change
+        # hook does not request their new revision. Share this existing 80 ms
+        # debounce with native caption preparation without rehydrating input.
+        prepare = getattr(self, '_prepare_caption_window', None)
+        if callable(prepare):
+            prepare(int(getattr(self.timeline, 'playhead_ms', 0)))
         self._ass_generation += 1
         self._start_ass_worker(self._ass_generation)
 

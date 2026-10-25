@@ -43,8 +43,8 @@ def main():
     parser.add_argument('--theme', default='slate')
     parser.add_argument('--zoom', type=int, default=110)
     parser.add_argument('--click', default='real', choices=('real', 'helper'))
-    parser.add_argument('--language', default='', choices=('', 'zh', 'ja', 'en'),
-                        help='subtitle language picked at the language step')
+    parser.add_argument('--language', default='', choices=('', 'zh', 'zh-Hant', 'ja', 'en', 'ko'),
+                        help='language picked in the plan window\'s language row (2026-10-24: the first step)')
     parser.add_argument('--choose', default='', choices=('', 'cloud'),
                         help='answer the first-run chooser with this card instead of 稍后再说 (2026-10-21)')
     parser.add_argument('--tooltips', action='store_true',

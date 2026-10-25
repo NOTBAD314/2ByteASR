@@ -220,6 +220,7 @@ def test_settings_page_asks_before_enabling_and_writes_only_after_confirming(hom
                         lambda *a, **k: answers.pop(0) if answers else QMessageBox.StandardButton.No)
     dialog = ApplicationSettingsDialog(None, {}, home / "Projects", browse=lambda *a: None,
                                        clear_recent=lambda: None, reset_layout=lambda: None)
+    dialog.ensure_section('外部 AI（MCP）')               # 2026-10-25: built and refreshed when selected
     notice = dialog.findChild(QLabel, "mcpDataNotice")
     assert notice is not None and "AI 服务" in notice.text()
     assert not dialog.mcp_enabled.isChecked()
@@ -259,6 +260,7 @@ def test_settings_page_refuses_while_claude_desktop_runs(home, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: questions.append(a[2]) or QMessageBox.StandardButton.Yes)
     dialog = ApplicationSettingsDialog(None, {}, home / "Projects", browse=lambda *a: None,
                                        clear_recent=lambda: None, reset_layout=lambda: None)
+    dialog.ensure_section('外部 AI（MCP）')               # 2026-10-25: built and refreshed when selected
     assert dialog.mcp_steps.text().startswith("2. 完全退出 Claude")             # quit first, then write
     assert "正在运行" in dialog.mcp_status.text()
     dialog.mcp_write.click()

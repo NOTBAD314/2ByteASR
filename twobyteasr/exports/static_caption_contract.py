@@ -3,6 +3,7 @@ from ..caption_style.style_recipe import motion_mode
 
 
 def shared_static_recipe(recipe):
+    recipe = recipe or {}
     if recipe.get('webTheme') or recipe.get('wordHighlight'):
         return False
     graph = recipe.get('visualGraph') or {}

@@ -200,6 +200,35 @@ def _translation_font(settings: BilingualSettings, text: str, style) -> str:
     return ""
 
 
+def _translation_appearance(cue, shown):
+    layer = cue.appearance_override.get('translation', {})
+    shown.appearance_override = copy.deepcopy(shown.appearance_override)
+    shown.appearance_override.pop('text_marks', None)
+    shown.appearance_override.pop('translation', None)
+    shown.appearance_override.update(copy.deepcopy(layer.get('style', {})))
+    shown.appearance_override['text_marks'] = copy.deepcopy(layer.get('text_marks', []))
+    shown.appearance_override['_translation_display'] = True
+    if layer.get('recipe'): shown.appearance_override['_recipe_patch'] = copy.deepcopy(layer['recipe'])
+    if 'recipe_base' in layer: shown.appearance_override['_recipe_base'] = copy.deepcopy(layer['recipe_base'])
+    shown.evidence_refs = []
+    if 'font_size' in layer.get('style', {}):
+        shown.transform['font_size'] = layer['style']['font_size']
+    for key in ('position_x', 'position_y', 'scale_x', 'scale_y'):
+        if key in layer.get('style', {}): shown.transform[key] = layer['style'][key]
+    return shown
+
+
+@functools.lru_cache(maxsize=128)
+def _translation_placeholder(html):
+    import re
+    return bool(re.search(r'\{\{\s*translation\s*\}\}', html))
+
+
+def theme_owns_translation(recipes, cue):
+    theme=(recipes.get(cue.style_id) or {}).get('webTheme') or {}
+    return _translation_placeholder(str(theme.get('cueHtml','')))
+
+
 def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settings: BilingualSettings,
                  styles, speakers, style_recipes, play_res_x: int = 1920, play_res_y: int = 1080,
                  show_speaker_names: bool = False) -> list:
@@ -215,8 +244,15 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
     out = []
     for cue in cues:
         text = str(translation_for_cue(translations, cue.id) or "").strip()
+        group = cue.appearance_override.get('translation_group', {})
+        if group: text = str(group.get('text') or text)
         if not text:
             out.append(materialize_layer(decorate(cue, speakers) if show_speaker_names else cue,'original'))
+            continue
+        if settings.mode == 'bilingual' and theme_owns_translation(style_recipes, cue):
+            shown=copy.deepcopy(cue)
+            shown.appearance_override['_theme_translation']=text
+            out.append(materialize_layer(shown,'original'))
             continue
         if show_speaker_names and settings.mode == 'bilingual' and settings.order == 'original_first':
             cue = decorate(cue, speakers)
@@ -231,10 +267,11 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
             font = _translation_font(settings, text, base)
             if font:
                 shown.appearance_override = dict(shown.appearance_override or {}, font_family=font)
+            _translation_appearance(cue, shown)
             out.append(materialize_layer(shown,'translation'))
             continue
         original = cue if settings.legacy else _with_transform(
-            cue, font_size=round(base.font_size * settings.original_scale, 2))
+            cue, font_size=cue.appearance_override.get('original', {}).get('font_size', round(base.font_size * settings.original_scale, 2)))
         original_caption = caption if settings.legacy else resolve_caption_style(
             styles, speakers, original, style_recipes, play_res_x)
         companion = copy.deepcopy(cue)
@@ -253,6 +290,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
         font = _translation_font(settings, text, base)
         if font:
             companion.appearance_override = dict(cue.appearance_override or {}, font_family=font)
+        _translation_appearance(cue, companion)
         companion_caption = resolve_caption_style(styles, speakers, companion, style_recipes, play_res_x)
         x, y = _anchor(original_caption.style, play_res_x, play_res_y)
         row = (int(base.alignment) - 1) // 3          # 0 bottom, 1 middle, 2 top
@@ -319,6 +357,11 @@ def project_display_cues(project, cues=None) -> list:
     from ..subtitle_rules.punctuation_style import style_cues, style_translations
     from .speaker_names import enabled
     styled = style_cues(project, cues if cues is not None else project.cues)
+    from ..glossary.visual_emphasis import visual_cues, snapshot_active
+    snapshot = getattr(project, '_visual_glossary_snapshot', None)
+    if snapshot is None:
+        snapshot = snapshot_active(project)
+    styled = visual_cues(styled, snapshot)
     return display_cues(styled,
                         translations=style_translations(project.studio_state,
                                                         translations_of(project.generation_metadata)),

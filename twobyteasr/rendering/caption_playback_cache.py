@@ -96,8 +96,29 @@ def _caption_context(revision):
                dict(recipes.items) if isinstance(recipes, FrozenMap) else None,
                dict(effects.items) if isinstance(effects, FrozenMap) else None)
     context = (revision.project_id, revision.play_res_x, revision.play_res_y, state,
-               None if records[2] is not None else recipes, None if records[3] is not None else effects)
+               None if records[2] is not None else recipes, None if records[3] is not None else effects,
+               _glossary_marks_digest(revision))
     return context, (receipts, overrides), records
+
+
+def _glossary_marks_digest(revision):
+    """Which glossary terms the captions mark (2026-10-24 caption-marks port, Codex's emphasis).
+
+    A changed library, or a term's 视觉强调 switch, must rebuild the captions; the cue DTOs
+    themselves stay the same. ``snapshot_active`` is cached by the library files' mtimes."""
+    from types import SimpleNamespace
+    from ..projects.studio_revisions import FrozenMap, thaw_json
+    from ..glossary.visual_emphasis import snapshot_active
+    ids = tuple(getattr(revision, "glossary_ids", ()) or ())
+    metadata = {}
+    if not ids and isinstance(revision.generation_metadata, FrozenMap):
+        recorded = dict(revision.generation_metadata.items).get("terminology_snapshot")
+        if recorded is not None:
+            metadata = {"terminology_snapshot": thaw_json(recorded)}
+    try:
+        return snapshot_active(SimpleNamespace(glossary_ids=ids, generation_metadata=metadata)).digest
+    except Exception:  # noqa: BLE001 - no glossary data: nothing is marked
+        return ""
 
 
 def _context_change(previous, context):
@@ -107,6 +128,8 @@ def _context_change(previous, context):
             return name
     if previous[4:6] != context[4:6]:
         return "recipes_or_effects"
+    if previous[6:] != context[6:]:
+        return "glossary_marks"
     if previous[3] != context[3]:
         old_state, new_state = dict(previous[3] or ()), dict(context[3] or ())
         keys = sorted(key for key in set(old_state) | set(new_state) if old_state.get(key) != new_state.get(key))
@@ -288,6 +311,7 @@ def _caption_source_project(revision):
         speakers=[StudioSpeaker(**speaker.to_dict()) for speaker in revision.speakers],
         effects=thaw_json(revision.effects), style_recipes=thaw_json(revision.style_recipes),
         generation_metadata=thaw_json(revision.generation_metadata) or {},
+        glossary_ids=list(getattr(revision, "glossary_ids", ())),
         studio_state=thaw_json(revision.studio_state) or {},
         render_settings={'play_res_x':revision.play_res_x, 'play_res_y':revision.play_res_y, '_cue_domain':'timeline'})
 
@@ -426,22 +450,24 @@ class PlaybackCaptionCache(QObject):
                             continue
                     try:
                         snapshot = build_visual_cue_snapshot(project, cue_id, width=width, height=height, fps=30.)
-                        from ..caption_style.style_recipe import route_recipe,recipe_payload_for_style,RecipeRoute
+                        from ..caption_style.style_recipe import route_recipe,RecipeRoute
                         cue = next(c for c in project.cues if c.id == cue_id)
                         # Resolved snapshots add layout/font measurement fields.
                         # Those are presentation data, not authored capabilities.
                         # Routing that enriched payload promoted plain ASS cues
                         # and the boundary worker drew a second text layer while
                         # the foreground owner correctly remained NATIVE.
-                        payload=recipe_payload_for_style(project.style_recipes,cue.style_id)
+                        from ..caption_style.style_resolution import recipe_for_cue
+                        payload=recipe_for_cue(project.style_recipes,cue)
                         route = route_recipe(payload) if payload else RecipeRoute('native',())
                         web = None
                         theme = snapshot.style_recipe.get('webTheme')
                         if theme:
                             from .live_web_preview import prepare_web_configuration
-                            speaker = next((item.name or '' for item in project.speakers if item.id==cue.speaker_id), '')
+                            from ..caption_style.speaker_labels import template_speaker
+                            speaker = template_speaker(project, cue)
                             web = prepare_web_configuration(theme,snapshot.text,speaker,(cue.end_ms-cue.start_ms)/1000.,
-                                snapshot.style_recipe.get('layout',{}).get('webPlacement'))
+                                snapshot.style_recipe.get('layout',{}).get('webPlacement'), translation=snapshot.translation)
                         # Repeated caption text can share first-frame pixels while
                         # keeping cue identity/revision guards on publication.
                         # A legacy persistent stage depends on absolute time.

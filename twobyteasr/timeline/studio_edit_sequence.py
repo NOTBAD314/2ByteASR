@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import bisect
 import copy
+import math
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Generic, Iterable, Mapping, Sequence, TypeVar
@@ -65,7 +66,7 @@ def _clean_id(value: Any) -> str:
 def _int_ms(value: Any, default: int = 0) -> int:
     try:
         return max(0, int(round(float(value))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return int(default)
 
 
@@ -174,16 +175,61 @@ class HighlightCandidate:
     signal_out_ms: int | None = None
     context_in_ms: int | None = None
     context_out_ms: int | None = None
+    # One candidate, one optional editorial range. Legacy numeric source fields
+    # remain readable, but are not an actionable cut when range_status is pending.
+    range_status: str = "suggested"  # suggested | unconfirmed | manual
+    source_path: str = ""
+    source_duration_ms: int = 0
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    boundary_refs: list[str] = field(default_factory=list)
+    key_moment_ms: int | None = None
+    key_moment_ref: str = ""
+    user_adjusted: bool = False
+    user_confirmed: bool = False
+
+    @property
+    def clip_range(self) -> tuple[int, int] | None:
+        if self.range_status not in {"suggested", "manual"}:
+            return None
+        start, end = self.source_in_ms, self.source_out_ms
+        if start < 0 or end - start < MIN_SEGMENT_MS:
+            return None
+        if self.source_duration_ms and end > self.source_duration_ms:
+            return None
+        return start, end
+
+    @property
+    def view_range(self) -> tuple[int, int]:
+        """A search context is only a viewing aid, never a replacement cut."""
+        if self.clip_range:
+            return self.clip_range
+        left=self.context_in_ms or 0
+        right=self.context_out_ms or self.source_out_ms
+        peak=self.danmaku_signal.get('peak_in_ms')
+        if isinstance(peak,int):
+            return max(left,peak-20000),min(right,peak+40000)
+        return left,right
+
+    @property
+    def evidence_kinds(self) -> set[str]:
+        return {str(row.get("kind")) for row in self.evidence}
 
     def validate(self) -> None:
         self.id = _clean_id(self.id)
         self.title = str(self.title or "候选片段")
         self.source_in_ms = _int_ms(self.source_in_ms)
-        self.source_out_ms = max(self.source_in_ms + MIN_SEGMENT_MS, _int_ms(self.source_out_ms))
+        self.source_out_ms = _int_ms(self.source_out_ms)
+        self.source_path = str(self.source_path or "")
+        self.source_duration_ms = _int_ms(self.source_duration_ms)
+        if self.range_status not in {"suggested", "unconfirmed", "manual"}:
+            self.range_status = "unconfirmed"
+        if self.clip_range is None:
+            self.range_status = "unconfirmed"
         self.signal_in_ms = self.source_in_ms if self.signal_in_ms is None else _int_ms(self.signal_in_ms)
         self.signal_out_ms = self.source_out_ms if self.signal_out_ms is None else _int_ms(self.signal_out_ms)
-        self.signal_in_ms = max(self.source_in_ms, min(self.source_out_ms - 1, self.signal_in_ms))
-        self.signal_out_ms = max(self.signal_in_ms + 1, min(self.source_out_ms, self.signal_out_ms))
+        # Audience response can follow the event. Do not force its window into
+        # an editorial clip or turn it into an event timestamp.
+        self.signal_out_ms = max(self.signal_in_ms + 1, self.signal_out_ms)
         self.context_in_ms = self.source_in_ms if self.context_in_ms is None else _int_ms(self.context_in_ms)
         self.context_out_ms = self.source_out_ms if self.context_out_ms is None else _int_ms(self.context_out_ms)
         self.context_in_ms = max(
@@ -196,9 +242,12 @@ class HighlightCandidate:
             self.source_out_ms,
             self.signal_out_ms,
         )
+        if self.source_duration_ms:
+            self.context_in_ms = min(self.context_in_ms, max(0, self.source_duration_ms - 1))
+            self.context_out_ms = min(self.context_out_ms, self.source_duration_ms)
         try:
             score = float(self.score)
-            self.score = max(0.0, min(1.0, score / 100.0 if score > 1.0 else score))
+            self.score = max(0.0, min(1.0, score / 100.0 if score > 1.0 else score)) if math.isfinite(score) else 0.0
         except (TypeError, ValueError):
             self.score = 0.0
         self.reason = str(self.reason or "")
@@ -208,8 +257,20 @@ class HighlightCandidate:
             self.status = "suggested"
         if self.origin not in {"ai", "manual", "local"}:
             self.origin = "ai"
-        if self.grade not in {"强烈推荐", "推荐", "可考虑"}:
+        if not self.clip_range:
+            self.grade = "待确认"
+        elif self.grade not in {"强烈推荐", "推荐", "可考虑"}:
             self.grade = "强烈推荐" if self.score >= 0.85 else "推荐" if self.score >= 0.68 else "可考虑"
+        for name in ("event_summary", "clip_reason", "context_required"):
+            setattr(self, name, str(getattr(self, name) or ""))
+        self.subtitle_context = _string_list(self.subtitle_context)
+        self.boundary_refs = _string_list(self.boundary_refs)
+        self.evidence = [dict(row) for row in self.evidence if isinstance(row, Mapping)]
+        if self.key_moment_ms is not None:
+            self.key_moment_ms = _int_ms(self.key_moment_ms)
+            if not self.clip_range or not self.source_in_ms <= self.key_moment_ms < self.source_out_ms:
+                self.key_moment_ms = None
+                self.key_moment_ref = ""
         self.hook = str(self.hook or "")
         self.danmaku_evidence = _string_list(self.danmaku_evidence)
         self.subtitle_evidence = _string_list(self.subtitle_evidence)
@@ -235,6 +296,18 @@ class HighlightCandidate:
             "origin": self.origin,
             "grade": self.grade,
             "hook": self.hook,
+            "event_summary": self.event_summary,
+            "clip_reason": self.clip_reason,
+            "context_required": self.context_required,
+            "range_status": self.range_status,
+            "source_path": self.source_path,
+            "source_duration_ms": self.source_duration_ms,
+            "evidence": copy.deepcopy(self.evidence),
+            "boundary_refs": list(self.boundary_refs),
+            "key_moment_ms": self.key_moment_ms,
+            "key_moment_ref": self.key_moment_ref,
+            "user_adjusted": self.user_adjusted,
+            "user_confirmed": self.user_confirmed,
             "danmaku_evidence": list(self.danmaku_evidence),
             "subtitle_evidence": list(self.subtitle_evidence),
             "subtitle_context": list(self.subtitle_context),
@@ -257,7 +330,7 @@ class HighlightCandidate:
             "recommended_range": {
                 "start_ms": self.source_in_ms,
                 "end_ms": self.source_out_ms,
-            },
+            } if self.clip_range else None,
         }
 
     @classmethod
@@ -271,7 +344,7 @@ class HighlightCandidate:
             title=str(data.get("title") or ""),
             source_in_ms=_int_ms(data.get("source_in_ms", data.get("source_in", recommended_range.get("start_ms")))),
             source_out_ms=_int_ms(data.get("source_out_ms", data.get("source_out", recommended_range.get("end_ms")))),
-            score=float(data.get("score") or 0.0),
+            score=data.get("score") or 0.0,
             reason=str(data.get("reason") or ""),
             danmaku_signal=dict(data.get("danmaku_signal") or {}),
             quotes=_string_list(data.get("quotes")),
@@ -279,6 +352,19 @@ class HighlightCandidate:
             origin=str(data.get("origin") or "ai"),
             grade=str(data.get("grade") or ""),
             hook=str(data.get("hook") or ""),
+            event_summary=str(data.get("event_summary") or ""),
+            clip_reason=str(data.get("clip_reason") or ""),
+            context_required=str(data.get("context_required") or ""),
+            range_status=str(data.get("range_status") or (
+                "manual" if data.get("origin") == "manual" else "unconfirmed")),
+            source_path=str(data.get("source_path") or ""),
+            source_duration_ms=_int_ms(data.get("source_duration_ms")),
+            evidence=list(data.get("evidence") or []) if isinstance(data.get("evidence"), list) else [],
+            boundary_refs=_string_list(data.get("boundary_refs")),
+            key_moment_ms=data.get("key_moment_ms"),
+            key_moment_ref=str(data.get("key_moment_ref") or ""),
+            user_adjusted=data.get("user_adjusted") is True,
+            user_confirmed=data.get("user_confirmed") is True,
             danmaku_evidence=_string_list(data.get("danmaku_evidence")),
             subtitle_evidence=_string_list(data.get("subtitle_evidence")),
             subtitle_context=_string_list(data.get("subtitle_context")),
@@ -554,15 +640,20 @@ class EditSequenceRuntime:
         )
         candidate_entries: list[tuple[int, int, HighlightCandidate]] = []
         for candidate in self.sequence.clip_candidates:
+            if not candidate.clip_range or candidate.status == "ignored":
+                continue
             for segment in self._source_segment_index.query(
                 candidate.source_in_ms, candidate.source_out_ms,
             ):
+                if candidate.source_path and candidate.source_path != segment.source_path:
+                    continue
                 source_in = max(int(candidate.source_in_ms), int(segment.source_in_ms))
                 source_out = min(int(candidate.source_out_ms), int(segment.source_out_ms))
                 if source_out <= source_in:
                     continue
-                timeline_in = int(segment.timeline_in_ms) + source_in - int(segment.source_in_ms)
-                timeline_out = int(segment.timeline_in_ms) + source_out - int(segment.source_in_ms)
+                scale = segment.duration_ms / max(1, segment.source_duration_ms)
+                timeline_in = int(segment.timeline_in_ms) + round((source_in - segment.source_in_ms) * scale)
+                timeline_out = int(segment.timeline_in_ms) + round((source_out - segment.source_in_ms) * scale)
                 candidate_entries.append((timeline_in, timeline_out, candidate))
         self._candidate_index = TemporalIntervalIndex(candidate_entries)
         self._marker_index = TemporalIntervalIndex(
@@ -651,6 +742,35 @@ def sequence_of(project: SubtitleProject) -> EditSequence:
     """Return the canonical runtime sequence without serialization or mutation."""
 
     return runtime_of(project).sequence
+
+
+
+def recording_sequence(project: SubtitleProject) -> tuple[str, EditSequence]:
+    """Read the sole retained recording even when its old primary lane is empty.
+
+    This is a projection only. Generation adopts the retained lane through the
+    existing atomic undo command; ordinary browsing does not change ownership.
+    """
+    from .studio_media_pool import primary_video_track_id
+    current=sequence_of(project)
+    primary_id=primary_video_track_id(project)
+    primary=next((t for t in project.video_tracks if t.id==primary_id),None)
+    occupied=[t for t in project.video_tracks if t.clips]
+    if (primary is not None and primary.clips) or len(occupied)!=1 or occupied[0].id==primary_id:
+        return primary_id,current
+    track=occupied[0]
+    assets={a.asset_id:a for a in project.media_pool}
+    view=copy.deepcopy(current)
+    view.segments=[VideoSegment(c.id,assets[c.asset_id].canonical_source,c.source_in_ms,c.source_out_ms,
+                                c.timeline_in_ms,c.timeline_out_ms) for c in track.clips if c.asset_id in assets]
+    view.video_track_locked=track.locked
+    view.empty_timeline=not view.segments
+    if view.segments:
+        first=next(a for a in assets.values() if a.canonical_source==view.segments[0].source_path)
+        view.source_path=first.canonical_source
+        view.source_duration_ms=first.duration_ms
+    view.validate()
+    return track.id,view
 
 
 def replace_runtime_sequence(
@@ -1211,17 +1331,20 @@ def sequence_from_candidates(
         source_duration_ms=int(media.duration_ms or 0),
     )
     for candidate in candidates:
+        if not candidate.clip_range:
+            raise ValueError("请先确认候选的剪辑起止，再加入待生成清单")
         duration = int(candidate.source_out_ms) - int(candidate.source_in_ms)
         if duration < MIN_SEGMENT_MS:
             continue
         source_in = max(0, int(candidate.source_in_ms))
-        source_out = min(sequence.source_duration_ms or source_in + duration, int(candidate.source_out_ms))
+        source_out = min(candidate.source_duration_ms or sequence.source_duration_ms or source_in + duration,
+                         int(candidate.source_out_ms))
         if source_out - source_in < MIN_SEGMENT_MS:
             continue
         sequence.segments.append(
             VideoSegment(
                 id=f"seg-{uuid.uuid4().hex[:10]}",
-                source_path=sequence.source_path,
+                source_path=candidate.source_path or sequence.source_path,
                 source_in_ms=source_in,
                 source_out_ms=source_out,
                 timeline_in_ms=0,

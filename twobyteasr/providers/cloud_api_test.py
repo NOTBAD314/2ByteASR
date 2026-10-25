@@ -94,7 +94,7 @@ def format_check(endpoint: dict, values: dict | None = None) -> Report:
     elif any(ch.isspace() for ch in key):
         problems.append('API Key 里有空格或换行，请重新复制（只要那一串字符）。')
     elif protocol == 'dashscope_filetrans' and is_token_plan_key(key):
-        problems.append(explain_token_plan_key().text())
+        problems.append(explain_token_plan_key(urlsplit(str(endpoint.get('url') or '')).hostname or '').text())
     url = str(endpoint.get('url') or '')
     parts = urlsplit(url) if url else None
     if protocol != 'spark_wss' and (not parts or parts.scheme != 'https' or not parts.hostname):

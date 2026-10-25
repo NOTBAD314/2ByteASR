@@ -48,7 +48,7 @@ def run(request: dict) -> list:
 
     def event(kind, payload):
         if kind not in {'cue_delta', 'asr_progress', 'asr_reference_delta', 'api_usage', 'asr_request_retry',
-                        'asr_retry_sweep'}:
+                        'asr_retry_sweep', 'cloud_asr_timing_repaired'}:
             return
         if kind == 'api_usage' and payload.get('stage') == 'asr':
             payload = dict(payload, stage=usage_stage)
@@ -116,7 +116,8 @@ def run(request: dict) -> list:
             # reach MOSS Pro too; without it a saved terminal/uncertain task is
             # never resubmitted (no double charge).
             return mosi_transcribe(audio, endpoint, cache, progress=progress, check=check,
-                                   restart_terminal=bool(request.get('restart_terminal')), on_rows=on_rows)
+                                   restart_terminal=bool(request.get('restart_terminal')), on_rows=on_rows,
+                                   resplit_blocked=bool(request.get('resplit_blocked')))
         return transcribe_chunks(audio, endpoint, cache, progress=progress, check=check, on_rows=on_rows)
 
 
@@ -217,8 +218,11 @@ def main() -> int:
             # (2026-10-23: a user saw only the generic sentence).
             detail = str(getattr(exc, 'remote_detail', '') or '')
             problem = ServiceProblem('resubmit_needed', RESUBMIT_CATEGORIES[exc.category] + (' ' + detail if detail else ''),
-                                     '要再试，可在完成页按“重试失败项”并确认重新提交；重新提交会再次上传并可能再次计费。',
-                                     code=exc.category)
+                                     RESUBMIT_ACTIONS.get(exc.category, RESUBMIT_ACTION), code=exc.category)
+        elif problem is None and getattr(exc, 'category', '') == 'content_rejected':
+            # Refused at upload: no task was created, so nothing to resubmit.
+            from .dashscope_service import ServiceProblem
+            problem = ServiceProblem('content_blocked', str(exc), CONTENT_BLOCKED_ACTION, code='content_rejected')
         if problem is not None:
             # One machine-readable line first so the window can show the real
             # cause (and a fix link) instead of a truncated log tail.
@@ -237,7 +241,14 @@ RESUBMIT_CATEGORIES = {
     'remote_terminal': '上次提交的云端识别任务已结束但没有成功（失败或已取消）。',
     'remote_unknown': '服务商查不到上次的识别任务（不存在或已超过官方保留的 24 小时）。',
     'submission_uncertain': '上次提交时连线中断，无法确认服务商是否已经受理；为避免重复收费没有自动重新提交。',
+    'content_blocked': '在线识别服务的内容安全审查拦下了一段音频，这一段没有字幕。',
 }
+RESUBMIT_ACTION = '要再试，可在完成页按“重试失败项”并确认重新提交；重新提交会再次上传并可能再次计费。'
+# The provider's content review stopped the audio itself (2026-10-24): the
+# same audio sent again is very likely stopped again, so no retry is advised.
+CONTENT_BLOCKED_ACTION = ('同一段音频原样重新提交多半还会被拦下，也可能再次计费，不建议直接重试。'
+                          '可以改用本地识别，或换别的在线识别服务，再重新识别这个视频。')
+RESUBMIT_ACTIONS = {'content_blocked': CONTENT_BLOCKED_ACTION}
 
 
 def failure_from_text(text: str) -> dict | None:

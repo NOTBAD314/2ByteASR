@@ -20,6 +20,8 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+import time
+from collections import deque
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QKeyCombination, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QPainter, QPen
@@ -251,7 +253,9 @@ class ShortcutKeyField(QKeySequenceEdit):
 
     def sizeHint(self) -> QSize:
         from ..app.ui_zoom import px
-        return QSize(px(150 if self._compact else 176), px(30))
+        # Styled Ctrl + Shift + S needs ~186 logical px including cap borders
+        # and margins. Narrow drawers already stack this fixed-width column.
+        return QSize(px(192), px(30))
 
     def minimumSizeHint(self) -> QSize:
         return self.sizeHint()
@@ -340,7 +344,7 @@ class ShortcutKeyField(QKeySequenceEdit):
             room = self.sizeHint().width() - 16  # fixed size: the real width once laid out
             for label in labels:
                 label.ensurePolished()
-            if sum(label.sizeHint().width() for label in labels) + 4 * len(labels) > room:
+            if sum(label.sizeHint().width() for label in labels) + row.spacing() * max(0, len(labels) - 1) > room:
                 for label in labels:  # very long combination: one line of text instead of caps
                     row.removeWidget(label)
                     label.setParent(None)
@@ -439,8 +443,8 @@ def _panel_sheet() -> str:
 class _ShortcutRow(QFrame):
     """Name (and a short status line) on the left, the key caps on the right."""
 
-    def __init__(self, panel: 'ShortcutSettingsPanel', action, value: str, *, compact: bool):
-        super().__init__()
+    def __init__(self, panel: 'ShortcutSettingsPanel', action, value: str, *, compact: bool, parent=None):
+        super().__init__(parent)
         from ..design.themed_icons import install_themed_icon
         self.panel, self.action = panel, action
         self.setObjectName('shortcutRow')
@@ -564,7 +568,7 @@ class ShortcutSettingsPanel(QWidget):
     rejected = Signal()
     close_requested = Signal()  # × in the drawer panel; unsaved keys are the owner's question
 
-    def __init__(self, shortcuts: dict[str, str], parent=None, *, scopes=STUDIO_SCOPES, embedded=False):
+    def __init__(self, shortcuts: dict[str, str], parent=None, *, scopes=STUDIO_SCOPES, embedded=False, incremental=False):
         from ..design.studio_theme import apply_secondary_surface_theme
         from ..design.themed_icons import install_themed_icon
         super().__init__(parent)
@@ -582,11 +586,19 @@ class ShortcutSettingsPanel(QWidget):
         merged = registry.load_values(None)[0]
         merged.update({key: registry.normalize(value) for key, value in (shortcuts or {}).items()})
         compact = not embedded
+        self._compact = compact
+        self._incremental = incremental
+        self._bindings = {action.id: merged.get(action.id, self._defaults.get(action.id, '')) for action in self._actions}
+        self._pending_rows = deque()
+        self._clashes = {}
+        self._row_timer = QTimer(self)
+        self._row_timer.setSingleShot(True)
+        self._row_timer.timeout.connect(self._build_rows)
         outer = QVBoxLayout(self)
         margin = 0 if embedded else 12
         outer.setContentsMargins(margin, margin, margin, margin)
         outer.setSpacing(10)
-        title = QLabel(tr("快捷键设置"))
+        title = QLabel(tr("快捷键设置"), self)
         title.setObjectName('sectionTitle')
         # Inside 应用设置 the page already has its heading (2026-10-14).
         title.setVisible(not embedded)
@@ -612,7 +624,7 @@ class ShortcutSettingsPanel(QWidget):
         self.search.setObjectName('shortcutSearch')
         self.search.setClearButtonEnabled(True)
         bind_text(self.search, '搜索功能或按键，如：剃刀、Ctrl+S', property='placeholderText')
-        self.scope_filter = QComboBox()
+        self.scope_filter = QComboBox(self)
         self.scope_filter.setObjectName('shortcutScopeFilter')
         self.scope_filter.addItem(tr('全部范围'), '')
         for scope in self._scopes:
@@ -635,6 +647,10 @@ class ShortcutSettingsPanel(QWidget):
             filters.addWidget(self.changed_only, 0, 2)
             filters.setColumnStretch(0, 1)
         outer.addLayout(filters)
+        self.build_status = QLabel(self)
+        self.build_status.setObjectName('shortcutBuildStatus')
+        self.build_status.setProperty('typography', 'meta')
+        outer.addWidget(self.build_status)
 
         self.banner = QFrame()
         self.banner.setObjectName('shortcutBanner')
@@ -669,7 +685,7 @@ class ShortcutSettingsPanel(QWidget):
         self._groups: list[tuple[QWidget, QWidget, list[_ShortcutRow]]] = []
         for category in dict.fromkeys(action.category for action in self._actions):
             members = [action for action in self._actions if action.category == category]
-            header = QWidget()
+            header = QWidget(content)
             header_row = QHBoxLayout(header)
             header_row.setContentsMargins(4, 10 if self._groups else 0, 4, 2)
             header_row.setSpacing(8)
@@ -679,21 +695,14 @@ class ShortcutSettingsPanel(QWidget):
             meta = QLabel(self._group_meta(members))
             meta.setObjectName('shortcutGroupMeta')
             header_row.addWidget(meta, 1, Qt.AlignmentFlag.AlignBottom)
-            group = QFrame()
+            group = QFrame(content)
             group.setObjectName('shortcutGroup')
             group_rows = QVBoxLayout(group)
             group_rows.setContentsMargins(1, 1, 1, 1)
             group_rows.setSpacing(0)
             rows = []
             for index, action in enumerate(members):
-                row = _ShortcutRow(self, action, merged.get(action.id, self._defaults.get(action.id, '')),
-                                   compact=compact)
-                row.setProperty('firstRow', index == 0)
-                row.field.keySequenceChanged.connect(lambda _seq, action_id=action.id: self._edited(action_id))
-                group_rows.addWidget(row)
-                rows.append(row)
-                self.rows[action.id] = row
-                self._editors[action.id] = row.field
+                self._pending_rows.append((group, group_rows, rows, index, action))
             column.addWidget(header)
             column.addWidget(group)
             self._groups.append((header, group, rows))
@@ -752,10 +761,51 @@ class ShortcutSettingsPanel(QWidget):
         self.search.textChanged.connect(lambda _text: self._filter())
         self.scope_filter.currentIndexChanged.connect(lambda _index: self._filter())
         self.changed_only.toggled.connect(lambda _checked: self._filter())
-        for row in self.rows.values():
-            row.sync()
         self._validate_conflicts()
         self._update_changed_count()
+        self._build_rows(complete=not incremental)
+
+    @property
+    def construction_complete(self):
+        return not self._pending_rows
+
+    def _build_rows(self, *, complete=False):
+        started = time.perf_counter()
+        added = []
+        while self._pending_rows:
+            group, layout, rows, index, action = self._pending_rows.popleft()
+            row = _ShortcutRow(self, action, self._bindings[action.id], compact=self._compact, parent=group)
+            row.setProperty('firstRow', index == 0)
+            row.field.keySequenceChanged.connect(lambda _seq, action_id=action.id: self._edited(action_id))
+            layout.addWidget(row)
+            rows.append(row)
+            self.rows[action.id] = row
+            self._editors[action.id] = row.field
+            row.set_clash(self._clashes.get(action.id, ''))
+            added.append(row)
+            if not complete and time.perf_counter()-started >= .012:
+                break
+        if added and self.isVisible():
+            # Rows added after the window was shown missed its zoom and
+            # language passes (2026-10-25: at 150% they kept 100% margins).
+            from ..app.ui_zoom import apply_to
+            from ..i18n import apply_ui_language, current_language
+            for row in added:
+                apply_to(row)
+                apply_ui_language(row, current_language())
+        if self._pending_rows:
+            bind_text(self.build_status, '正在列出快捷键：{done} / {total}；已显示的项目可以先修改。',
+                      done=len(self.rows), total=len(self._actions))
+            self.build_status.show()
+            if self.isVisible():
+                self._row_timer.start(0)
+        else:
+            self.build_status.hide()
+        self._filter()
+
+    def hideEvent(self, event):
+        self._row_timer.stop()
+        super().hideEvent(event)
 
     # ------------------------------------------------------------ layout
 
@@ -829,6 +879,8 @@ class ShortcutSettingsPanel(QWidget):
         set_sheet(self.banner, sheet)
 
     def showEvent(self, event) -> None:
+        if self._pending_rows:
+            self._row_timer.start(0)
         if _theme().key != self._sheet_theme:  # a theme previewed in 应用设置 meanwhile
             self._apply_sheet()
         super().showEvent(event)
@@ -858,13 +910,14 @@ class ShortcutSettingsPanel(QWidget):
             header.setVisible(bool(visible))
             group.setVisible(bool(visible))
             shown_any = shown_any or bool(visible)
+        bind_text(self.empty_label, '正在查找其余快捷键…' if self._pending_rows else '没有找到匹配的快捷键')
         self.empty_label.setVisible(not shown_any)
 
     def visible_action_ids(self) -> list[str]:
         return [action_id for action_id, row in self.rows.items() if not row.isHidden()]
 
     def _update_changed_count(self) -> None:
-        count = sum(row.changed() for row in self.rows.values())
+        count = sum(value != registry.normalize(self._defaults.get(key, '')) for key, value in self.values().items())
         bind_text(self.changed_only, '只看改过的（{count}）', count=count)
         if not count and self.changed_only.isChecked():
             self.changed_only.setChecked(False)
@@ -873,7 +926,8 @@ class ShortcutSettingsPanel(QWidget):
     # ------------------------------------------------------------ editing
 
     def _value(self, action_id: str) -> str:
-        return self.rows[action_id].value()
+        row = self.rows.get(action_id)
+        return row.value() if row is not None else self._bindings[action_id]
 
     def _edited(self, action_id: str) -> None:
         value = self._value(action_id)
@@ -883,9 +937,11 @@ class ShortcutSettingsPanel(QWidget):
             editor.blockSignals(True)
             editor.clear()
             editor.blockSignals(False)
+            self._bindings[action_id] = ''
             self.rows[action_id].sync()
             self.show_message(tr('{key}：{reason}', key=registry.display(value), reason=tr(reason)), 'error')
             return
+        self._bindings[action_id] = value
         self._last_edited = action_id
         self.rows[action_id].sync()
         self._validate_conflicts()
@@ -893,9 +949,23 @@ class ShortcutSettingsPanel(QWidget):
         if self.changed_only.isChecked():
             self._filter()
 
+    def _apply_bindings(self, values):
+        for command_id, value in values.items():
+            if command_id not in self._bindings:
+                continue
+            self._bindings[command_id] = registry.normalize(value)
+            editor = self._editors.get(command_id)
+            if editor is not None:
+                blocked = editor.blockSignals(True)
+                editor.setKeySequence(QKeySequence(value))
+                editor.blockSignals(blocked)
+                self.rows[command_id].sync()
+        self._validate_conflicts()
+        self._update_changed_count()
+        self._filter()
+
     def _restore_defaults(self) -> None:
-        for command_id, editor in self._editors.items():
-            editor.setKeySequence(QKeySequence(self._defaults.get(command_id, '')))
+        self._apply_bindings({key:self._defaults.get(key,'') for key in self._bindings})
 
     def _current_conflicts(self):
         return registry.conflicts(self.values())
@@ -920,6 +990,7 @@ class ShortcutSettingsPanel(QWidget):
         for item in blocking:
             clashes.setdefault(item.first, registry.BY_ID[item.second].label)
             clashes.setdefault(item.second, registry.BY_ID[item.first].label)
+        self._clashes = clashes
         for action_id, row in self.rows.items():
             row.set_clash(clashes.get(action_id, ''))
         if blocking:
@@ -939,12 +1010,12 @@ class ShortcutSettingsPanel(QWidget):
         keep = self._last_edited
         for item in [c for c in self._current_conflicts() if c.blocking]:
             other = item.second if item.first == keep else item.first if item.second == keep else item.second
-            if other in self._editors:
-                self._editors[other].clear()
+            if other in self._bindings:
+                self._apply_bindings({other:''})
         self._validate_conflicts()
 
     def values(self) -> dict[str, str]:
-        return {command_id: self._value(command_id) for command_id in self._editors}
+        return {command_id: self._value(command_id) for command_id in self._bindings}
 
     # ------------------------------------------------------------ files
 
@@ -976,10 +1047,7 @@ class ShortcutSettingsPanel(QWidget):
         except (OSError, ValueError) as exc:
             self.show_message(tr('导入失败：{exc}', exc=exc), 'error')
             return False
-        for action_id, value in bindings.items():
-            if action_id in self._editors:
-                self._editors[action_id].setKeySequence(QKeySequence(value))
-        self._validate_conflicts()
+        self._apply_bindings(bindings)
         return True
 
 

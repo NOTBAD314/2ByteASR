@@ -207,7 +207,7 @@ def test_first_run_cloud_choice_sets_up_moss_pro(monkeypatch, preset, tour):
     app = QApplication.instance() or QApplication([])
 
     class FakeQuickSetup:
-        def __init__(self, parent, size_of=None):
+        def __init__(self, parent, size_of=None, **_options):   # spoken= (2026-10-24)
             self.choice, self.backends, self.api_preset, self.tour = "cloud", ("api", "local", "off"), preset, tour
             self.tour_check = SimpleNamespace(isChecked=lambda: tour, setChecked=lambda value: None)
             self.source_combo = SimpleNamespace(currentData=lambda: "MODELSCOPE")

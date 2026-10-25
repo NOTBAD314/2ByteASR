@@ -739,7 +739,9 @@ class StudioMediaFlowMixin:
         if path:
             self._import_subtitle_file(Path(path))
 
-    def _open_recognition_sheet(self) -> None:
+    def _open_recognition_sheet(self, range_ms=None) -> None:
+        """The 识别字幕 sheet; ``range_ms`` = (in, out) opens it for that stretch only
+        (2026-10-25, studio_range_recognition)."""
         project = self.project
         media_path = str(project.media.path or "") if project else ""
         if not project or not media_path or not Path(media_path).is_file():
@@ -764,6 +766,16 @@ class StudioMediaFlowMixin:
             title, message = audio_problem
             studio_message_box(self, QMessageBox.Icon.Information, title, message)
             return
+        range_info = None
+        if range_ms is not None:
+            # Only this stretch: captions a point cuts are recognized whole.
+            from ..recognition.range_recognition import edited_cue_ids, recognition_window, translated_cue_ids
+            requested = (int(range_ms[0]), int(range_ms[1]))
+            window_start, window_end, replaced_ids = recognition_window(project, *requested)
+            range_info = {"requested": requested, "window": (window_start, window_end),
+                          "replaced": replaced_ids, "edited": edited_cue_ids(project, replaced_ids),
+                          "translated": translated_cue_ids(project, replaced_ids)}
+        sheet_title = "只重新识别这一段字幕" if range_info else "识别字幕"
 
         host = self.window()
         sheet = QWidget()
@@ -962,7 +974,8 @@ class StudioMediaFlowMixin:
         summary_title.setObjectName("recognitionStepTitle")
         title_row.addWidget(summary_title, 0, Qt.AlignmentFlag.AlignVCenter)
         from .recognition_role_rows import ElidedLabel
-        context = user_text(ElidedLabel(Path(media_path).name)) if project.cues \
+        # A range run names its stretch in the note above the start button.
+        context = user_text(ElidedLabel(Path(media_path).name)) if project.cues or range_info \
             else bind_text(ElidedLabel(), '{name} · 还没有字幕', name=Path(media_path).name)
         context.setObjectName("recognitionContext")
         context.setToolTip(media_path)
@@ -1064,7 +1077,8 @@ class StudioMediaFlowMixin:
             options.addWidget(empty_glossary, 0, 1)
 
         # 翻译（原来说话人的位置）：和主页同一组选择，只管这一次识别；要先连上 AI。
-        options.addWidget(field_label("翻译"), 1, 0, Qt.AlignmentFlag.AlignVCenter)
+        translation_label = field_label("翻译")
+        options.addWidget(translation_label, 1, 0, Qt.AlignmentFlag.AlignVCenter)
         from ..subtitle_rules.subtitle_translation import TARGET_LABELS, TARGETS, targets_for
         output_labels = (("只显示原文", "original"), ("原文 + 翻译（双语）", "bilingual"), ("只显示翻译", "translation"))
         translation_output = QComboBox()
@@ -1127,8 +1141,9 @@ class StudioMediaFlowMixin:
                     else tr(lines.get(gate) or lines.get("no_key") or "需要先填 API Key 并测试连接才能用"))
             translation_output.setToolTip(str(note))
             ai_button.setToolTip(str(note))
-            ai_button.setVisible(callable(getattr(host, "_open_ai_settings_dialog", None)))
-            translation_target.setVisible(ready and translation_output.currentData() != "original")
+            # A range run recognizes original text only (no translation this time).
+            ai_button.setVisible(not range_info and callable(getattr(host, "_open_ai_settings_dialog", None)))
+            translation_target.setVisible(not range_info and ready and translation_output.currentData() != "original")
             QTimer.singleShot(0, fit_card)
 
         def open_ai_settings() -> None:
@@ -1144,6 +1159,24 @@ class StudioMediaFlowMixin:
         bind_text(local_analysis, '跳过云端校对和 AI 断句；仍使用所选主转写与时间轴模型（需选本地模型）。说话人跟随主力转写，身份需试听确认。', property='toolTip')
         summary.addSpacing(2)
         summary.addWidget(local_analysis)
+        range_notes = []
+        if range_info:
+            from ..projects.project_range import clock_text
+            for widget in (translation_label, translation_output, translation_target, local_analysis):
+                widget.hide()
+            window_start, window_end = range_info["window"]
+            range_notes.append(bind_text(QLabel(), '只识别 {start} – {end}（{duration}），替换这一段的 {count} 条字幕；其他字幕不动，可一步撤销。',
+                                         start=clock_text(window_start), end=clock_text(window_end),
+                                         duration=clock_text(window_end - window_start),
+                                         count=len(range_info["replaced"])))
+            if range_info["window"] != range_info["requested"]:
+                range_notes.append(bind_text(QLabel(), '入点或出点切在字幕中间，这几条整条一起重新识别。'))
+            if range_info["translated"]:
+                range_notes.append(bind_text(QLabel(), '这一段的译文会清空，之后可以重新翻译。'))
+            for index, note in enumerate(range_notes):
+                note.setObjectName("recognitionImpact" if index == 0 else "recognitionStepHint")
+                note.setWordWrap(True)
+                summary.addWidget(note)
         # Only for a start that cannot go ahead; what each model still needs is on its row.
         problem = QLabel("")
         problem.setObjectName("recognitionProblem")
@@ -1161,7 +1194,11 @@ class StudioMediaFlowMixin:
         confirm_layout = QVBoxLayout(confirm_row)
         confirm_layout.setContentsMargins(0, 0, 0, 0)
         confirm_layout.setSpacing(6)
-        confirm_text = bind_text(QLabel(), '将替换当前 {count} 条字幕；保留样式、剪辑和候选。', count=len(project.cues))
+        if range_info:
+            confirm_text = bind_text(QLabel(), '这一段有 {count} 条字幕你改过，会被新识别结果替换。',
+                                     count=len(range_info["edited"]))
+        else:
+            confirm_text = bind_text(QLabel(), '将替换当前 {count} 条字幕；保留样式、剪辑和候选。', count=len(project.cues))
         confirm_text.setObjectName("recognitionImpact")
         confirm_text.setWordWrap(True)
         confirm_layout.addWidget(confirm_text)
@@ -1336,7 +1373,7 @@ class StudioMediaFlowMixin:
                 if host_modal is not None:
                     host_modal.show_content(
                         sheet,
-                        title="识别字幕",
+                        title=sheet_title,
                         size=sheet_size(),
                         min_size=(760, 420),
                         retain_content=True,
@@ -1345,13 +1382,28 @@ class StudioMediaFlowMixin:
 
             open_fn(role, on_closed=_restore)
 
-        (bind_text(start, '识别并替换当前字幕') if project.cues else bind_text(start, '识别字幕'))
+        if range_info:
+            bind_text(start, '识别这一段')
+        else:
+            (bind_text(start, '识别并替换当前字幕') if project.cues else bind_text(start, '识别字幕'))
+
+        def current_range() -> dict | None:
+            """The stretch at the start (captions may have changed since the sheet opened)."""
+            if not range_info:
+                return None
+            from ..recognition.range_recognition import recognition_window
+            window_start, window_end, replaced_ids = recognition_window(project, *range_info["requested"])
+            return {"requested": list(range_info["requested"]), "window": [window_start, window_end],
+                    "replaced": list(replaced_ids)}
 
         def request_options() -> dict:
             from ..recognition.speaker_strategy import resolve
             settings = getattr(getattr(host, "legacy", None), "RUNTIME_SETTINGS", {}) or {}
             output = str(translation_output.currentData() or "original") if translation_state["ready"] else "original"
-            return {
+            stretch = current_range()
+            if stretch is not None:
+                output = "original"
+            options = {
                 "purpose": "analysis" if local_analysis.isChecked() else "final",
                 "recognition_plan": str(plan.currentData() or "custom"),
                 "models": {
@@ -1368,6 +1420,13 @@ class StudioMediaFlowMixin:
                 "subtitle_output": output,
                 "translation_script": str(translation_target.currentData() or "zh-Hans"),
             }
+            if stretch is not None:
+                # 2026-10-25: only this stretch is heard; its captions are replaced.
+                options.update(replace_policy="replace_range", purpose="final",
+                               recognition_range_ms=stretch["window"],
+                               requested_range_ms=stretch["requested"],
+                               range_replaced_cue_ids=stretch["replaced"])
+            return options
 
         def dispatch(action: str, lanes=None) -> None:
             modal = getattr(host, "_modal_host", None)
@@ -1392,10 +1451,13 @@ class StudioMediaFlowMixin:
             # 否则 _start_run 预检分支的 QMessageBox 会被 ModalHost 盖住形成
             # "隐形模态卡死"（用户实录"在线API识别一直卡住"）；②记录替换基线
             # 与 autosave 代次，供完成后"保留编辑/重新加载"裁决。
-            if action == "start_final":
+            stretch = self._recognition_request_options.get("recognition_range_ms")
+            if action == "start_final" and not stretch:
                 self._recognition_replace_baseline_ids = {cue.id for cue in project.cues}
             else:
                 self._recognition_replace_baseline_ids = None
+            # A range run's live rows are window-local; the result is spliced at the end.
+            self._recognition_range = list(stretch) if stretch else None
             self._recognition_autosave_generation = int(getattr(self, "_autosave_generation", 0) or 0)
             # 2026-09-17：真实编辑判定基准——undo 栈只在真实编辑时增长；
             # autosave 代次会被无编辑的周期保存顶掉。
@@ -1422,7 +1484,7 @@ class StudioMediaFlowMixin:
             def restore_sheet() -> None:
                 host_modal = getattr(host, "_modal_host", None)
                 if host_modal is not None:
-                    host_modal.show_content(sheet, title="识别字幕", size=sheet_size(),
+                    host_modal.show_content(sheet, title=sheet_title, size=sheet_size(),
                                             min_size=(760, 420), retain_content=True)
                     QTimer.singleShot(0, fit_card)
 
@@ -1444,6 +1506,19 @@ class StudioMediaFlowMixin:
             picker.cancelled.connect(cancel)
 
         def start_clicked() -> None:
+            if range_info:
+                # Captions edited by hand in this stretch are confirmed first.
+                from ..recognition.range_recognition import edited_cue_ids
+                stretch = current_range()
+                edited = edited_cue_ids(project, stretch["replaced"])
+                if edited:
+                    bind_text(confirm_text, '这一段有 {count} 条字幕你改过，会被新识别结果替换。', count=len(edited))
+                    start.hide()
+                    confirm_row.show()
+                    QTimer.singleShot(0, fit_card)
+                    return
+                dispatch("start_final")
+                return
             if self._recognition_needs_track_picker(project):
                 # Several audio tracks: which ones is the user's call. The
                 # picker also shows what happens to existing captions.
@@ -1490,6 +1565,11 @@ class StudioMediaFlowMixin:
             "translation_target": translation_target,
             "start": start,
             "confirm": confirm_row,
+            "confirm_text": confirm_text,
+            "confirm_replace": confirm_replace,
+            "local_analysis": local_analysis,
+            "range": range_info,
+            "range_notes": range_notes,
         }
 
         modal = getattr(host, "_modal_host", None)
@@ -1498,7 +1578,7 @@ class StudioMediaFlowMixin:
             # 2026-10-22：宽卡片，显示后按内容定高（放不下才滚动）。
             modal.show_content(
                 sheet,
-                title="识别字幕",
+                title=sheet_title,
                 size=sheet_size(),
                 min_size=(760, 420),
                 retain_content=True,
@@ -1694,7 +1774,9 @@ class StudioMediaFlowMixin:
     def apply_recognition_cue_delta(self, payload: Mapping[str, object]) -> None:
         """Apply immutable worker output on the Qt GUI thread."""
         project = self.project
-        if project is None:
+        if project is None or getattr(self, "_recognition_range", None):
+            # A range run's live rows are window-local: the finished result is
+            # spliced in by ``studio_range_recognition.apply_range_result``.
             return
         try:
             source = str(Path(str(payload.get("source_path") or "")).resolve())
@@ -1808,6 +1890,11 @@ class StudioMediaFlowMixin:
             if button is not None:
                 button.hide()
 
+    def apply_range_recognition_result(self, project_path: str, snapshot) -> bool:
+        """A finished 只重新识别这一段 run: splice it in as one undo step (2026-10-25)."""
+        from .studio_range_recognition import apply_range_result
+        return apply_range_result(self, project_path, snapshot)
+
     def note_recognition_kept_in_memory(self) -> None:
         """完成时用户选择"保留编辑"：新字幕已写入工程文件，当前窗口不动。"""
         parts = self._recognition_chip_parts()
@@ -1826,6 +1913,7 @@ class StudioMediaFlowMixin:
         self._recognition_running = False
         self._recognition_cancelling = False
         self._recognition_replace_baseline_ids = None
+        self._recognition_range = None
         timer = getattr(self, "_recognition_runtime_timer", None)
         if timer is not None:
             timer.stop()
@@ -1988,6 +2076,8 @@ class StudioMediaFlowMixin:
     def _waveform_progress(self, generation: int, media_key: str, text: str) -> None:
         if generation != self._waveform_generation:
             return
+        if getattr(self, '_completed_waveform_progress', None) == (generation, media_key):
+            return
         if self._waveform_last_progress_text == text:
             return
         self._waveform_last_progress_text = text
@@ -2026,6 +2116,12 @@ class StudioMediaFlowMixin:
                         f"正在生成音频波形… {min(99, int(coverage * 100 / duration))}%",
                     )
             if stage == "full":
+                self._completed_waveform_progress = (generation, media_key)
+                label = getattr(self, 'save_state', None)
+                if label is not None and label.text() == self._waveform_last_progress_text:
+                    # This says only that waveform work completed; never claim
+                    # that a concurrent manual/automatic project save succeeded.
+                    bind_text(label, '波形已就绪')
                 self._studio_mark_startup_milestone("WAVEFORM_COMPLETE", media_path=media_key)
                 self._start_next_project_waveform(media_key)
 

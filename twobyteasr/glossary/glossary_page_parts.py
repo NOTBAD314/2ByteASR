@@ -176,6 +176,12 @@ class ActionPopup(QFrame):
         self._layout.addWidget(widget)
         return widget
 
+    def clear_items(self) -> None:
+        while self._layout.count():
+            widget = self._layout.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+
     def add_separator(self) -> QFrame:
         line = QFrame()
         line.setObjectName("termPopupSeparator")

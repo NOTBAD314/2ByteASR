@@ -34,6 +34,7 @@ from ..design.theme_manager import apply_theme, available_themes, theme_key
 from ..design.ui_theme import DEFAULT_THEME_KEY, theme_display_label
 
 from ..i18n import bind_text, tr
+from ..diagnostics.navigation_timing import timed as navigation_timed
 from .lazy_pages import existing_page
 from .settings_lifecycle import owned_settings, retain, trace, normalized_preferences
 
@@ -52,6 +53,21 @@ def _preferences_snapshot():
 
 def read_studio_preferences() -> dict[str, object]:
     return _preferences_snapshot()[0]
+
+
+def update_reminder_enabled() -> bool:
+    """Check for updates at every start and pop up a newer version (2026-10-24; on by default)."""
+    return bool(read_studio_preferences().get("update_reminder", True))
+
+
+def save_update_reminder(enabled: bool) -> None:
+    """The reminder switch alone (the check box in the update dialog)."""
+    def mutate(payload: dict) -> None:
+        preferences = payload.get("studio_preferences")
+        payload["studio_preferences"] = dict(preferences) if isinstance(preferences, dict) else {}
+        payload["studio_preferences"]["update_reminder"] = bool(enabled)
+
+    _write_settings_json(mutate)
 
 
 def _write_settings_json(mutate) -> None:
@@ -96,6 +112,7 @@ def save_hub_preferences(
     reduce_motion: bool | None = None,
     startup_page: str | None = None,
     speaker_main_tracks: int | None = None,
+    update_reminder: bool | None = None,
 ) -> None:
     def mutate(payload: dict) -> None:
         previous_preferences = payload.get("studio_preferences", {})
@@ -123,8 +140,46 @@ def save_hub_preferences(
             payload["studio_preferences"]["startup_page"] = (
                 "project_library" if startup_page == "project_library" else "recognition"
             )
+        if update_reminder is not None:
+            payload["studio_preferences"]["update_reminder"] = bool(update_reminder)
 
     _write_settings_json(mutate)
+
+
+@navigation_timed('settings.read_inputs')
+def _dialog_cache_stamp(owner, preferences, repaired_fields, reset_layout):
+    """Everything the settings window shows when built; any change rebuilds it."""
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QComboBox
+    from ..i18n import current_language
+    from ..local_mcp.mcp_common import read_settings as read_mcp_settings
+    from ..runtime_paths import get_runtime_paths
+    from ..studio import shortcut_registry
+    from .ui_zoom import zoom_percent
+    paths = get_runtime_paths()
+    storage = []
+    for name in ('policy.json', 'last-cleanup.json', 'last-uv-cleanup.json'):
+        try:
+            stat = (paths.user_data_root / 'storage' / name).stat()
+            storage.append((stat.st_size, stat.st_mtime_ns))
+        except OSError:
+            storage.append(None)
+    # 高级设置 copies these recognition-page controls (never builds that page).
+    advanced = []
+    for key in ('dialogue_coverage', 'expected_speakers', 'overwrite', 'review_track', 'jianying_txt',
+                'speaker_tracks', 'refresh_polish', 'refresh_group'):
+        control = owner.__dict__.get(key)
+        if isinstance(control, QComboBox):
+            advanced.append((key, control.currentIndex(), control.count(), control.isEnabled()))
+        elif control is not None:
+            advanced.append((key, control.isChecked(), control.isEnabled()))
+    return (json.dumps(preferences, sort_keys=True, default=str), tuple(repaired_fields),
+            str(project_library_root()), str(paths.model_root), str(paths.managed_runtime_root),
+            str(paths.user_data_root), tuple(storage), theme_key(), current_language(), zoom_percent(),
+            str(QSettings('2ByteASR', '2ByteASR').value('frame_export/directory', '')), tuple(advanced),
+            tuple(sorted(shortcut_registry.current_values().items())),
+            json.dumps(read_mcp_settings(), sort_keys=True, default=str),
+            id(existing_page(owner, 'studio')), callable(reset_layout))
 
 
 @owned_settings('application')
@@ -141,8 +196,13 @@ def open_application_settings(
     Returns True when the user saved. The dialog never navigates pages,
     rescans the project library, or touches any project content: saving only
     persists preferences and re-applies the UI theme.
+
+    2026-10-25: a window closed without changes is kept (one per main window)
+    and shown again while everything it shows is unchanged
+    (``_dialog_cache_stamp``); rebuilding it took about 2 s.
     """
     from .application_settings_ui import ApplicationSettingsDialog
+    from shiboken6 import isValid
     preferences, repaired_fields = _preferences_snapshot()
     owner = parent.window()
     advanced_owner = owner if hasattr(owner, 'advanced_disclosure') else None
@@ -152,62 +212,88 @@ def open_application_settings(
         if callable(refresh_library):
             refresh_library()
 
-    dialog = ApplicationSettingsDialog(
-        parent, preferences, project_library_root(), browse=_choose_hub_project_root,
-        clear_recent=_clear_recent, reset_layout=reset_layout,
-        advanced_owner=advanced_owner, repaired_fields=repaired_fields,
-    )
-    retain(owner, dialog, 'application')
     from ..diagnostics.event_log import emit
-    from ..diagnostics.support_dialog import open_support_dialog
-    from PySide6.QtWidgets import QDialogButtonBox
-    report_button = dialog.buttons.addButton("回报问题／导出诊断", QDialogButtonBox.ButtonRole.ActionRole)
-    report_button.clicked.connect(lambda: open_support_dialog(dialog, getattr(parent, "_studio_page", None)))
-    emit("settings.dialog", result="completed", phase="created")
-    dialog.finished.connect(lambda code: emit("settings.dialog",result="completed",phase="closed",dialog_code=code))
-    dialog.destroyed.connect(lambda: emit("settings.dialog",result="completed",phase="destroyed"))
+    stamp = _dialog_cache_stamp(owner, preferences, repaired_fields, reset_layout)
+    dialog = owner.__dict__.get('_application_settings_cache')
+    owner._application_settings_cache = None   # a failing visit must not be reused
+    if dialog is not None and (not isValid(dialog) or owner.__dict__.get('_application_settings_cache_stamp') != stamp):
+        if isValid(dialog):
+            dialog.deleteLater()
+        dialog = None
+    if dialog is None:
+        # Owned by the window, not the page it was opened from, so it outlives page changes.
+        dialog = ApplicationSettingsDialog(
+            owner, preferences, project_library_root(), browse=_choose_hub_project_root,
+            clear_recent=_clear_recent, reset_layout=reset_layout,
+            advanced_owner=advanced_owner, repaired_fields=repaired_fields,
+        )
+        retain(owner, dialog, 'application')
+        from ..diagnostics.support_dialog import open_support_dialog
+        from PySide6.QtWidgets import QDialogButtonBox
+        report_button = dialog.buttons.addButton("回报问题／导出诊断", QDialogButtonBox.ButtonRole.ActionRole)
+        report_button.clicked.connect(lambda: open_support_dialog(dialog, getattr(parent, "_studio_page", None)))
+        emit("settings.dialog", result="completed", phase="created")
+        dialog.finished.connect(lambda code: emit("settings.dialog",result="completed",phase="closed",dialog_code=code))
+        dialog.destroyed.connect(lambda: emit("settings.dialog",result="completed",phase="destroyed"))
+    else:
+        owner._application_settings_dialog = dialog
+        dialog.prepare_reuse(clear_recent=_clear_recent, reset_layout=reset_layout)
+        trace('reused', 'application')
+        emit("settings.dialog", result="completed", phase="reused")
     root_edit, auto_save, interval = dialog.root_edit, dialog.auto_save, dialog.interval
-    cover, restore_layout_box = dialog.cover, dialog.restore_layout_box
-    recovery_policy, theme_combo = dialog.recovery_policy, dialog.theme_gallery
-    reduce_motion_box = dialog.reduce_motion_box
+    recovery_policy = dialog.recovery_policy
     if isinstance(initial_section, str):
-        from ..i18n import tr
-        matches = (dialog.navigation.findItems(initial_section, Qt.MatchFlag.MatchExactly)
-                   or dialog.navigation.findItems(str(tr(initial_section)), Qt.MatchFlag.MatchExactly))
-        if matches: dialog.navigation.setCurrentItem(matches[0])
+        dialog.ensure_section(initial_section)
     trace('showing', 'application')
     emit("settings.dialog", result="started", phase="shown")
     if dialog.exec() != QDialog.DialogCode.Accepted:
-        # 2026-10-14: each opening used to stay alive (~770 widgets) and every
-        # later theme switch restyled all of them; the theme preview made that visible.
-        dialog.deleteLater()
         owner._application_settings_dialog = None
+        if dialog.reusable():
+            owner._application_settings_cache = dialog
+            owner._application_settings_cache_stamp = stamp
+        else:
+            # 2026-10-14: each opening used to stay alive (~770 widgets) and every
+            # later theme switch restyled all of them; the theme preview made that visible.
+            dialog.deleteLater()
         return False
-    dialog.storage_panel.save_policy()
-    # Local MCP access (additive "mcp" settings key; off by default).
-    from ..local_mcp.mcp_common import save_settings as save_mcp_settings
-    mcp_values = save_mcp_settings(dialog.mcp_values())
-    from ..local_mcp import mcp_bridge
-    if mcp_values["enabled"] or mcp_bridge._BRIDGE is not None:
-        mcp_bridge.bridge_for(owner).apply_settings(mcp_values)
+
+    def chosen(name, key, default):
+        """A control's value, or the stored one when its category was never shown."""
+        control = dialog.__dict__.get(name)
+        if control is None:
+            return preferences.get(key, default)
+        return control.currentData() if hasattr(control, 'currentData') else control.isChecked()
+
+    if dialog.section_built('存储与缓存'):
+        dialog.storage_panel.save_policy()
+    if dialog.section_built('外部 AI（MCP）'):
+        # Local MCP access (additive "mcp" settings key; off by default).
+        from ..local_mcp.mcp_common import save_settings as save_mcp_settings
+        mcp_values = save_mcp_settings(dialog.mcp_values())
+        from ..local_mcp import mcp_bridge
+        if mcp_values["enabled"] or mcp_bridge._BRIDGE is not None:
+            mcp_bridge.bridge_for(owner).apply_settings(mcp_values)
     workshop = existing_page(owner, 'workshop')
     if workshop is not None:
         workshop.refresh()
     previous_root = str(project_library_root())
+    reduce_motion = bool(chosen('reduce_motion_box', 'reduce_motion', False))
     save_hub_preferences(
         root_edit.text().strip(), bool(auto_save.isChecked()), int(interval.currentData() or 60),
-        int(preferences.get("recent_project_count", 9) or 9), bool(cover.isChecked()), bool(restore_layout_box.isChecked()),
+        int(preferences.get("recent_project_count", 9) or 9),
+        bool(chosen('cover', 'auto_cover', True)), bool(chosen('restore_layout_box', 'restore_layout', True)),
         str(recovery_policy.currentData() or "ask"),
-        bool(reduce_motion_box.isChecked()),
+        reduce_motion,
         str(dialog.startup_page.currentData() or "recognition"),
-        speaker_main_tracks=int(dialog.speaker_tracks.currentData() or 2),
+        speaker_main_tracks=int(chosen('speaker_tracks', 'speaker_main_tracks', 2) or 2),
+        update_reminder=bool(chosen('update_reminder_box', 'update_reminder', True)),
     )
     _apply_speaker_tracks_to_open_project(owner)
-    QApplication.instance().setProperty("reduceMotion", bool(reduce_motion_box.isChecked()))
+    QApplication.instance().setProperty("reduceMotion", reduce_motion)
     if advanced_owner is not None:
         from PySide6.QtWidgets import QComboBox
         from ..storage.settings import save_runtime_settings
-        for key, control in dialog.advanced_controls.items():
+        for key, control in dialog.__dict__.get('advanced_controls', {}).items():
             target = getattr(advanced_owner, key)
             if isinstance(control, QComboBox):
                 target.setCurrentIndex(control.currentIndex())
@@ -228,7 +314,8 @@ def open_application_settings(
     if root_edit.text().strip() and Path(root_edit.text().strip()).expanduser() != Path(previous_root).expanduser():
         if callable(refresh_library):
             refresh_library()
-    apply_theme(str(theme_combo.currentData() or DEFAULT_THEME_KEY), QApplication.instance())
+    if dialog.section_built('外观'):   # otherwise the theme was neither previewed nor changed
+        apply_theme(str(dialog.theme_gallery.currentData() or DEFAULT_THEME_KEY), QApplication.instance())
     dialog.deleteLater()
     owner._application_settings_dialog = None
     return True

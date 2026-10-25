@@ -301,6 +301,21 @@ def cmd_feed(args) -> None:
         "build": freeze["identity"],
         "data_migrations": [],
     }
+    if getattr(args, 'macos_receipt', None):
+        mac = json.loads(Path(args.macos_receipt).read_text('utf8'))
+        compat = mac.get('compatibility', {})
+        if (not mac.get('passed') or not compat.get('static_binary_check_passed')
+                or mac.get('source_identity', {}).get('app_version') != version):
+            raise SystemExit('Mac feed entry requires a successful matching-version DMG receipt with binary compatibility audit')
+        artifact = mac['artifact']
+        dmg = assets / artifact['file']
+        if not dmg.is_file() or file_sha256(dmg) != artifact['sha256'] or dmg.stat().st_size != artifact['bytes']:
+            raise SystemExit('Mac DMG bytes do not match the audited receipt')
+        manifest['macos_installers'] = [{
+            'architecture':compat['architecture'], 'minimum_macos':compat['minimum_macos'],
+            'runtime_contract':compat['runtime_contract'],
+            'asset':{'name':dmg.name,'size':artifact['bytes'],'sha256':artifact['sha256'],
+                     'urls':listed_urls([base+dmg.name],args.gitcode_first)}}]
     data = (json.dumps(manifest, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
     parse_update_manifest(data, allow_http_local=bool(args.base_url))
     with manifest_path.open("xb") as stream:
@@ -728,6 +743,7 @@ def main() -> None:
     p.add_argument("--base-url", help="QA only: local feed base URL instead of the GitHub release")
     p.add_argument("--release-page")
     p.add_argument("--notes-json")
+    p.add_argument("--macos-receipt", help="successful macos_package_dmg.py receipt; corresponding DMG must already be in assets")
     p.add_argument("--previous-manifest")
     p.add_argument("--skip-archives", nargs="*", default=[])
     p.add_argument("--gitcode-first", action="store_true",

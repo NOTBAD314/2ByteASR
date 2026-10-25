@@ -63,7 +63,7 @@ from typing import Callable
 
 from PySide6.QtCore import (QEasingCurve, QElapsedTimer, QEvent, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt,
                             QTimer, QVariantAnimation, Signal)
-from PySide6.QtGui import QColor, QImage, QMovie, QPainter, QPainterPath, QPen, QPolygonF, QRegion
+from PySide6.QtGui import QColor, QImage, QMovie, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
 from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
@@ -105,6 +105,9 @@ class TourStep:
     auto: TourAction | None = None                       # runs once, a moment after the step has appeared
     chapter: str = ''                                    # the counter counts within it: "做字幕 · 3 / 19"
     group: str = ''                                      # alternatives (only one is shown) count once
+    # 2026-10-24: the page keeps changing for a moment after this step (the demo video loading, the
+    # 「还差一步」 banner answering): the next step is judged and shown only once this is true.
+    settle: Callable[[], bool] | None = None
 
 
 def tutorial_anim_path(name: str, light: bool, still: bool = False):
@@ -146,9 +149,10 @@ class TourAnim(QWidget):
         if not name:
             return False
         from ..design.ui_motion import reduced_motion
-        from .tour_motion import SCENES, Look
+        from .tour_motion import SCENES, Look, refresh_keys
         scene = SCENES.get(name)
         if scene is not None:
+            refresh_keys()   # the key caps name the keys as set (2026-10-24)
             from ..design.theme_manager import theme_key
             from ..design.ui_theme import theme_definition
             self._scene = scene
@@ -336,6 +340,8 @@ class GuidedTour(QWidget):
         self._carry.finished.connect(self._carry_done)
         self._carry_path = None
         self._modal_running = 0                          # actions opening a window that have not returned yet
+        self._shown_target = None                        # the widget the shown step outlines (its Hide is watched)
+        self._settle = None                              # (check, since ms): the last step's page is still changing
         self._build_bubble()
         self._build_chip()
         self._sync_geometry()
@@ -637,9 +643,16 @@ class GuidedTour(QWidget):
             return False
         return step.target is None or self._target(index) is not None
 
+    SETTLE_MS = 3000                                     # never wait longer than this for a page to hold still
+
     def go(self, index: int, *, step: int = 1):
         self._poller.stop()
         self._advancing = False
+        leaving = self._step()
+        if step > 0 and leaving is not None and leaving.settle is not None and index > self.index:
+            self._settle = (leaving.settle, self._clock.elapsed())
+        elif step < 0:
+            self._settle = None
         if index >= len(self.steps):
             follow = self.next_part() if self.next_part is not None else None
             if follow:
@@ -651,6 +664,14 @@ class GuidedTour(QWidget):
             return
         self.index = index
         self._hide_bubble()
+        if self._settle is not None:
+            # The last step's page is still changing: wait under the shade, without outline or bubble,
+            # then judge this step (an optional one may turn out not to apply).
+            self._wait_direction = step
+            self._set_hole(QRectF())
+            self._set_mode('wait')
+            self._poller.start()
+            return
         current = self.steps[index]
         if index not in self._entered and current.enter is not None:
             self._entered.add(index)
@@ -697,6 +718,17 @@ class GuidedTour(QWidget):
         """Waiting for the step's page and target; the outline sets off as soon as the target is there."""
         if self.mode != 'wait':
             self._poller.stop()
+            return
+        if self._settle is not None:
+            check, since = self._settle
+            try:
+                still = bool(check())
+            except Exception:  # noqa: BLE001 - a failing check never holds the tutorial
+                still = True
+            if not still and self._clock.elapsed() - since < self.SETTLE_MS:
+                return
+            self._settle = None
+            self.go(self.index, step=self._wait_direction)   # now judge (and show) the step
             return
         if self._host_gone(self._step()):
             self._poller.stop()
@@ -790,15 +822,28 @@ class GuidedTour(QWidget):
         self._show_bubble(animate=True)
 
     def _bubble_picture(self):
-        """The bubble as one picture, drawn by the overlay while it fades in (None: show it at once)."""
+        """The bubble as one picture, drawn by the overlay while it fades in (None: show it at once).
+
+        2026-10-24 (user: square corners flash at the bubble's four corners on every step):
+        ``grab()`` paints a widget as a window and first fills its whole rectangle with the
+        palette's window colour, so the picture had opaque light squares outside the rounded
+        border until the real bubble replaced it. Rendered without the window background into
+        a transparent picture, only the style sheet's rounded background is painted.
+        """
         try:
             for child in self.bubble.findChildren(QWidget):
                 child.ensurePolished()
             self.bubble.layout().activate()
-            picture = self.bubble.grab()
+            ratio = self.bubble.devicePixelRatioF()
+            picture = QPixmap(QSize(math.ceil(self.bubble.width() * ratio), math.ceil(self.bubble.height() * ratio)))
+            if picture.isNull():
+                return None
+            picture.setDevicePixelRatio(ratio)
+            picture.fill(Qt.GlobalColor.transparent)
+            self.bubble.render(picture, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
         except Exception:  # noqa: BLE001
             return None
-        return None if picture.isNull() else picture
+        return picture
 
     def _show_bubble(self, *, animate: bool):
         step = self._step()
@@ -810,6 +855,8 @@ class GuidedTour(QWidget):
         self._slide = {'right': QPoint(10, 0), 'left': QPoint(-10, 0), 'below': QPoint(0, 10),
                        'above': QPoint(0, -10)}.get(side, QPoint(0, 8)) if animate else QPoint(0, 0)
         self.pointer = pointer
+        target = self._raw_target(self.index)
+        self._shown_target = target[0] if isinstance(target, tuple) else target
         self.bubble.setGraphicsEffect(None)
         self.bubble.move(self._final_pos + self._slide)
         # 2026-10-22: the fade-in draws one picture of the bubble; a QGraphicsOpacityEffect rendered
@@ -862,7 +909,18 @@ class GuidedTour(QWidget):
                 keys = step.focus() if step.focus is not None else None
             except Exception:  # noqa: BLE001
                 keys = None
+            if keys is None and self._focus_in_target():
+                # 2026-10-24: the editor T (or E) just opened keeps the keyboard; taking it back to the
+                # main window here made the typing of "按 Enter 保存" go nowhere.
+                return
             (keys or self.window_).setFocus()
+
+    def _focus_in_target(self) -> bool:
+        """The keyboard is already inside the step's target (an open editor)."""
+        target = self._raw_target(self.index)
+        widget = target[0] if isinstance(target, tuple) else target
+        focus = QApplication.focusWidget()
+        return widget is not None and focus is not None and (focus is widget or widget.isAncestorOf(focus))
 
     def _reveal_step(self, value):
         dirty = self._bubble_dirty()
@@ -1334,6 +1392,13 @@ class GuidedTour(QWidget):
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt override
         kind = event.type()
+        if kind == QEvent.Type.Hide and watched is not None and watched is self._shown_target and self.mode == 'shown':
+            # 2026-10-24: the outlined editor closed (Enter): outline and bubble go now, not a tick later.
+            try:
+                self._follow_target()
+            except Exception:  # noqa: BLE001 - the next tick tries again
+                pass
+            return False
         if watched is self.window_:
             if kind == QEvent.Type.Resize:
                 self._relayout()
@@ -1439,6 +1504,13 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
     three model cards → AI 智能断句 and its key, inside the real AI 设置 window → content
     and glossary → languages → result → export → proofreading → workbench.
     ``part='advanced'`` still gives only the steps after the export (kept for audits).
+
+    2026-10-24 (user): the plan comes first, together with the language the videos
+    mainly speak (the comparison window has a language row; Chinese is timed by
+    FireRedASR2, other languages by Qwen3 对齐), then the video. The workbench is a
+    chapter of its own and also teaches C (razor: cut the demo line into three), B
+    (merge tool: two pieces back into one), Shift+Q / Shift+W (ripple merge: the
+    rest) and T (a new line at the playhead); key names follow the shortcut settings.
     """
     from .sample_project import TUTORIAL_LIBRARY
     w = window
@@ -1467,11 +1539,6 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
 
     def proofread_part(name):
         return lambda: getattr(proofread(), name, None) if proofread() is not None else None
-
-    def set_language(code):
-        combo = w.__dict__.get('recognition_language')
-        if combo is not None and combo.findData(code) >= 0:
-            combo.setCurrentIndex(combo.findData(code))
 
     # ---- where each step lives ("回到教学"): close an in-window dialog (the model picker...), go to the page
     def close_in_window_dialog():
@@ -1587,23 +1654,104 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
             page.ai_stand_in = tutorial_ai_preview   # 教学里的 AI 校对：不联网、不收费
 
     # ---- workbench
-    def block_target():
+    def cue_blocks(cue_ids, pad=0.0):
+        """The timeline blocks of these cues as one target (``pad``: room around them, e.g. for the razor's preview)."""
         page = studio()
         timeline = getattr(page, 'timeline', None)
         if timeline is None:
             return None
-        cue = next((c for c in getattr(timeline, '_cues_by_start', ()) if c.id == fix_cue()), None)
-        if cue is None:
-            return None
+        wanted = set(cue_ids)
+        rect = QRectF()
         try:
             rows, _track, _wave = timeline._track_layout()
-            band = timeline._cue_band(cue, rows[cue.speaker_id])
-            left = max(timeline.TRACK_HEADER_WIDTH, timeline._time_to_x(cue.start_ms))
-            right = min(timeline._content_right(), timeline._time_to_x(cue.end_ms))
-            rect = QRectF(left, band.top() + 7, max(4, right - left), band.height() - 14)
-            return timeline, rect.intersected(timeline._track_viewport())
+            for cue in getattr(timeline, '_cues_by_start', ()):
+                if cue.id not in wanted:
+                    continue
+                band = timeline._cue_band(cue, rows[cue.speaker_id])
+                left = max(timeline.TRACK_HEADER_WIDTH, timeline._time_to_x(cue.start_ms))
+                right = min(timeline._content_right(), timeline._time_to_x(cue.end_ms))
+                block = QRectF(left, band.top() + 7, max(4, right - left), band.height() - 14)
+                rect = block if rect.isNull() else rect.united(block)
+            if rect.isNull():
+                return None
+            return timeline, rect.adjusted(-pad, -pad / 2, pad, pad / 2).intersected(timeline._track_viewport())
         except Exception:  # noqa: BLE001
             return None
+
+    def block_target():
+        return cue_blocks([fix_cue()])
+
+    # 2026-10-24: C / B / Shift+Q·W work on one line: cut into three, then merged back twice.
+    cut_cue = 'tutorial-6'   # 这期纪行的奖励还挺划算 (a cut keeps the left id, the right one is "<id>-split-…")
+
+    def pieces():
+        project = getattr(studio(), 'project', None)
+        if project is None:
+            return []
+        return sorted((cue for cue in project.cues if cue.id == cut_cue or cue.id.startswith(cut_cue + '-split-')),
+                      key=lambda cue: (cue.start_ms, cue.end_ms))
+
+    def cut_target():
+        return cue_blocks([cue.id for cue in pieces()], pad=24.0)
+
+    def show_cut_line():
+        page = studio()
+        page._set_timeline_tool('selection')
+        page.select_cue(cut_cue)
+
+    def cut_into_three():
+        page = studio()
+        page._set_timeline_tool('razor')
+        for _ in range(2):
+            parts = pieces()
+            if len(parts) >= 3:
+                break
+            longest = max(parts, key=lambda cue: cue.end_ms - cue.start_ms)
+            page._split_at(longest.id, (longest.start_ms + longest.end_ms) // 2)
+
+    merge_mark = {'count': 0}
+
+    def remember_pieces():
+        merge_mark['count'] = len(pieces())
+
+    def merge_two():
+        page = studio()
+        page._set_timeline_tool('merge')
+        parts = pieces()
+        if len(parts) >= 2:
+            page.cue_controller.merge_pair(parts[0].id, parts[1].id)
+
+    def select_last_piece():
+        page = studio()
+        page._set_timeline_tool('selection')
+        parts = pieces()
+        if parts:
+            page.select_cue(parts[-1].id)
+
+    def ripple_merge():
+        page = studio()
+        page._set_timeline_tool('selection')
+        for _ in range(3):
+            parts = pieces()
+            if len(parts) < 2:
+                break
+            page.select_cue(parts[-1].id)
+            page.cue_controller.merge_with_neighbor(-1)
+
+    def before_new_line():
+        """T adds at the playhead on the selected line's track: a free spot after 下次带派门一起去探险."""
+        page = studio()
+        page._set_timeline_tool('selection')
+        page.select_cue('tutorial-7')
+        try:
+            page._seek(21.05)
+        except Exception:  # noqa: BLE001 - T still works wherever the playhead is
+            pass
+
+    def key(action_id):
+        """The key bound to a workbench command, as the shortcut settings name it."""
+        from ..studio.shortcut_registry import tooltip_key
+        return str(tr(tooltip_key(action_id)))
 
     def editor():
         page = studio()
@@ -1722,12 +1870,68 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
         if callable(chooser):
             chooser()
 
+    # 2026-10-24: right after the first-run chooser the plan (and language) was just picked:
+    # the first step then waits for 下一步 instead of opening the comparison again.
+    just_chosen = bool(w.__dict__.pop('_tutorial_plan_chosen', False))
+
+    demo = {'added': False}
+
+    def add_demo():
+        demo['added'] = True
+        w._tutorial_add_demo_media()
+
+    def demo_settled():
+        """The demo video is in and the home page holds still (2026-10-24): the import is applied
+        and the 「还差一步」 banner has its answer. Both come a moment after the click; with the plan
+        no longer between them, they moved ③'s card by 125 px while its bubble was showing."""
+        intake = w.__dict__.get('_desktop_intake')
+        if not demo['added'] or not (w.__dict__.get('media_paths') or []):
+            return False
+        if intake is not None and (intake.active or intake.requests):
+            return False
+        timer = w.__dict__.get('_next_step_probe_timer')
+        if timer is not None and timer.isActive():
+            return False
+        return w.__dict__.get('_onboarding_rendered', 0) == w.__dict__.get('_onboarding_generation', 0)
+
+    def spoken_code():
+        try:
+            options = w._subtitle_language_options()
+        except Exception:  # noqa: BLE001 - no home page (tests)
+            return 'auto'
+        code = str(options.get('recognition_language') or 'auto')
+        return 'zh-Hant' if code == 'zh' and options.get('chinese_script') == 'zh-Hant' else code
+
+    def spoken_name():
+        from .quick_setup import SPOKEN_NAMES
+        return str(tr(SPOKEN_NAMES.get(spoken_code(), '自动识别语言')))
+
     def plan_note():
         from .quick_setup import PLANS
-        key = w._current_plan_key() if hasattr(w, '_current_plan_key') else ''
-        name = PLANS[key].title if key in PLANS else ''
+        key_ = w._current_plan_key() if hasattr(w, '_current_plan_key') else ''
+        name = PLANS[key_].title if key_ in PLANS else ''
+        if just_chosen and name:
+            return tr('刚才选好了「{value0}」· {value1}；想换就点「比较两种方案」', value0=tr(name), value1=spoken_name())
         return ('马上会弹出比较：云端不挑电脑，本机免费不上传' if not name
                 else tr('现在用的是「{value0}」；马上会弹出两种方案的比较', value0=tr(name)))
+
+    def timeline_note():
+        """Which model times this language's subtitles (the plan step chose both)."""
+        from ..recognition.recognition_plans import chinese_or_auto
+        timeline = str(saved_models().get('firered_asr_backend') or 'off')
+        if timeline != 'off':
+            if not chinese_or_auto(spoken_code()):
+                return tr('{value0}用 **Qwen3 对齐** 对准每个字词的时间', value0=spoken_name())
+            if timeline == 'local':
+                return '中文用 **FireRedASR2** 对准每个字，时间最准'
+            if timeline in ('qwen_aligner', 'mlx_qwen_aligner'):
+                return '用 **Qwen3 对齐** 对准每个字，不用 NVIDIA 显卡'
+        return '字幕跟着说话一起出来，不会早一截或晚一截'
+
+    def spoken_note():
+        if spoken_code() == 'auto':
+            return '不确定就选“自动识别”'
+        return tr('刚才选了「{value0}」；换别的视频时在这里改', value0=spoken_name())
 
     def ai_ready():
         unlocked = getattr(w, '_ai_unlocked', None)
@@ -1798,14 +2002,15 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
     choose = TourAction('比较两种方案', choose_plan, modal=True, advance=True)
     open_ai = TourAction('打开 AI 设置看看', open_ai_settings, advance=True, big=True)
     home_steps = [
-        TourStep('跟着做一遍：从放入视频到改好字幕', note='用自带的演示视频，不上传、不花钱，约 6 分钟',
-                 next_label='开始', enter=w._tutorial_prepare_demo),
-        TourStep('① 把视频拖到这里；现在**点一下**放入演示视频', get('media_frame'),
-                 [TourAction('放入演示视频', w._tutorial_add_demo_media, advance=True)], show_next=False, ready=on_home,
-                 anim='drop', click=TourAction('', w._tutorial_add_demo_media, advance=True), page=home),
-        # User 10-22: right after the video, the plan - local or cloud - with what each is good for.
-        TourStep('② 先选**识别方案**：云端还是本机', get('recognition_plan'), [choose], note=plan_note,
-                 anim='plan_compare', page=home, auto=choose),
+        # User 10-24: the plan - cloud or local - is the very first step, with the language the
+        # videos mainly speak (it decides the subtitle-time model); the welcome card is gone.
+        TourStep('① 先选**识别方案**和视频的**主要语言**', get('recognition_plan'), [choose], note=plan_note,
+                 anim='plan_compare', page=home, auto=None if just_chosen else choose,
+                 enter=w._tutorial_prepare_demo),
+        TourStep('② 把视频拖到这里；现在**点一下**放入演示视频', get('media_frame'),
+                 [TourAction('放入演示视频', add_demo, advance=True)], show_next=False, ready=on_home,
+                 note='用自带的演示视频，不上传、不花钱，约 6 分钟', settle=demo_settled,
+                 anim='drop', click=TourAction('', add_demo, advance=True), page=home),
         TourStep('③ **主力转写**把说话变成文字。**点这张卡**，注册 MOSS Pro', role_card('primary'),
                  [TourAction('注册 MOSS Pro', open_moss_guide, advance=True, modal=True),
                   TourAction('先跳过', lambda: None, advance=True)],
@@ -1820,7 +2025,7 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
                  note=lambda: downloads_note() or '点这张卡可以换模型', anim='plan_ok', page=home, optional=True,
                  ready=lambda: not moss_pro_chosen()),
         TourStep('④ **字幕时间轴**：让每句字幕出现、消失的时间更准', role_card('timeline'),
-                 note='字幕跟着说话一起出来，不会早一截或晚一截', anim='timeline_mg', page=home),
+                 note=timeline_note, anim='timeline_mg', page=home),
         # User 10-22: AI 断句, translation and 术语库校对 all need the key; open the real settings.
         TourStep('⑤ **AI 智能断句**要先填 **API Key**', get('home_process_card'),
                  [open_ai, TourAction('API Key 是什么？', explain_key), TourAction('先不设置', lambda: None, goto='after_ai')],
@@ -1856,10 +2061,9 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
                  note=lambda: ('右边的「联网补充核验」会再上网查一遍（可选）' if ai_ready()
                                else '要先连接 AI（填 API Key 并测试连接）才能用，现在是灰的'),
                  anim='glossary', page=home),
+        # 2026-10-24: chosen with the plan in ①; here it is shown where to change it per video.
         TourStep('⑧ 视频里说的是什么话，就选什么', field('spoken_language_field', 'recognition_language'),
-                 [TourAction('中文', lambda: set_language('zh')), TourAction('日本語', lambda: set_language('ja')),
-                  TourAction('English', lambda: set_language('en'))],
-                 note='不确定就选“自动识别”', anim='spoken', page=home),
+                 note=spoken_note, anim='spoken', page=home),
         TourStep('⑨ 要翻译就在「字幕显示」选“原文 + 翻译”', field('subtitle_output_fields', 'subtitle_output'),
                  note=lambda: ('翻译也是 AI 做的，会用上面的 API Key' if ai_ready()
                                else '没连接 AI 时只能选“只显示原文”，翻译是灰的'),
@@ -1897,6 +2101,8 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
         TourStep('点这里打开字幕工作台：逐条修改、审核、调时间、压制', get('open_studio_result_button'),
                  [TourAction('帮我做', lambda: w.open_studio_result_button.click())], show_next=False, interactive=True,
                  done=studio_ready, ready=on_completion, anim='studio_open', page=to_completion),
+    ]
+    studio_steps = [
         # ---- workbench (each step first stops the player: nothing moves under the outline)
         TourStep('**双击**字幕修改文字，或按 **E** 改播放头处那条', block_target,
                  [TourAction('帮我做', open_editor)], show_next=False, interactive=True, enter=quiet(),
@@ -1921,6 +2127,34 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
                  ready=studio_ready, anim='replace', enter=quiet(), page=to_studio),
         TourStep('**拖动**字幕两端改时间；按 **Q / W** 把起止点剪到播放头', studio_part('timeline'),
                  ready=studio_ready, anim='qw', enter=quiet(), page=to_studio),
+        # User 10-24: C cuts, B merges, Shift+Q / Shift+W ripple-merge, T adds a line. One demo
+        # line is cut into three and merged back twice, so both merges join one speaker's pieces.
+        TourStep(lambda: tr('按 **{value0}** 拿剃刀：在这条字幕上**点两下**，切成三段', value0=key('razor_tool')),
+                 cut_target, [TourAction('帮我切开', cut_into_three)], show_next=False, interactive=True,
+                 note=lambda: tr('鼠标移上去能先看到切点和两边的字；切错了按 **{value0}** 撤销', value0=key('undo')),
+                 enter=quiet(show_cut_line), done=lambda: len(pieces()) >= 3, ready=studio_ready, focus=studio_keys,
+                 anim='razor', page=to_studio),
+        TourStep(lambda: tr('按 **{value0}** 换合并工具：点一段，**按住往旁边拖**到相邻那段', value0=key('merge_tool')),
+                 cut_target, [TourAction('帮我合并', merge_two)], show_next=False, interactive=True,
+                 note=lambda: tr('两段合成一段，文字接在一起；用完按 **{value0}** 换回选择工具', value0=key('selection_tool')),
+                 enter=quiet(remember_pieces), done=lambda: 0 < len(pieces()) < merge_mark['count'],
+                 ready=lambda: studio_ready() and len(pieces()) >= 2, optional=True, focus=studio_keys,
+                 anim='merge_tool', page=to_studio),
+        TourStep(lambda: tr('**{value0}** 和上一段合并，**{value1}** 和下一段合并', value0=key('merge_previous'),
+                            value1=key('merge_next')),
+                 cut_target, [TourAction('帮我做', ripple_merge)], show_next=False, interactive=True,
+                 note=lambda: tr('这叫**波纹合并**：已经选中最后一段，按 **{value0}** 试试', value0=key('merge_previous')),
+                 enter=quiet(select_last_piece), done=lambda: len(pieces()) == 1,
+                 ready=lambda: studio_ready() and len(pieces()) >= 2, optional=True, focus=studio_keys,
+                 anim='ripple', page=to_studio),
+        TourStep(lambda: tr('按 **{value0}** 在播放头新建一条字幕，直接打字', value0=key('add_subtitle')),
+                 tool('add_subtitle_button'), [TourAction('帮我做', lambda: studio()._add_subtitle_at_playhead())],
+                 show_next=False, interactive=True, note='加在选中字幕的那条轨上，长 2 秒；拖两端能改长短',
+                 enter=quiet(before_new_line), done=lambda: editor() is not None, ready=studio_ready,
+                 focus=studio_keys, anim='add_cue', page=to_studio),
+        TourStep('按 **Enter** 保存，**Esc** 取消', editor,
+                 [TourAction('帮我做', save_editor)], show_next=False, interactive=True,
+                 done=lambda: editor() is None, optional=True),
         TourStep('标点：添加、去掉或保留原文，只影响显示和导出', studio_part('punctuation_button'),
                  ready=studio_ready, anim='punct', enter=quiet(), page=to_studio),
         TourStep('导出字幕：选格式和文件夹', studio_part('studio_export_button'), ready=studio_ready,
@@ -1937,6 +2171,9 @@ def tutorial_steps(window, part: str = 'all') -> list[TourStep]:
             step.group = 'ai'                  # ⑤: key missing or connected
     for step in later_steps:
         step.chapter = '改字幕'
+    for step in studio_steps:
+        step.chapter = '工作台'          # 2026-10-24: its own chapter, so no part counts past 20
+    later_steps += studio_steps
     return later_steps if part == 'advanced' else home_steps + later_steps
 
 

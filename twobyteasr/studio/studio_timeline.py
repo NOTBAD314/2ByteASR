@@ -169,7 +169,8 @@ class _TimelineInlineEdit(QPlainTextEdit):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._finished = True
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                self.split_requested.emit(self.textCursor().position())
+                from ..caption_style.text_marks import python_offset
+                self.split_requested.emit(python_offset(self.toPlainText(), self.textCursor().position()))
             else:
                 self.commit_requested.emit(0)
             event.accept()
@@ -961,6 +962,58 @@ class WaveformTimeline(QWidget):
         hidden = sum(len(self._stream_lanes(t.id)) for t in self.project.video_tracks
                      if self.stream_lanes_collapsed(t.id))
         return max(0, len(self.project.audio_tracks) - hidden)
+
+    def set_media_drop_preview(self, plan) -> None:
+        """Where a dragged media-pool source will land (2026-10-25); None clears it."""
+        changed = plan != getattr(self, '_media_drop_preview', None)
+        self._media_drop_preview = plan
+        if changed:
+            self.update()
+
+    def _paint_media_drop_preview(self, painter, palette) -> None:
+        plan = getattr(self, '_media_drop_preview', None)
+        if not plan or not self.project:
+            return
+        left = max(self.TRACK_HEADER_WIDTH, self._time_to_x(plan['timeline_in_ms']))
+        right = min(self._content_right(), self._time_to_x(plan['timeline_out_ms']))
+        if right <= left:
+            return
+        video_rects, audio_rects = self._video_track_rects(), self._audio_track_rects()
+        ghosts = []  # (row, label, new track)
+        if plan['part'] in ('both', 'video'):
+            if plan['new_video_track']:
+                row = video_rects.get(plan.get('pointer_video_track_id')) or audio_rects.get(
+                    plan.get('pointer_audio_track_id'))
+                ghosts.append((row, tr('新建视频轨'), True))
+            else:
+                ghosts.append((video_rects.get(plan['video_track_id']), plan['video_track_id'], False))
+                lane = next((g.audio_track_id for g in self.project.av_track_groups
+                             if g.linked and g.video_track_id == plan['video_track_id']), '')
+                if plan['part'] == 'both' and lane:
+                    ghosts.append((audio_rects.get(lane), lane, False))
+        else:
+            if plan['new_audio_track']:
+                row = audio_rects.get(plan.get('pointer_audio_track_id')) or video_rects.get(
+                    plan.get('pointer_video_track_id'))
+                ghosts.append((row, tr('新建音频轨'), True))
+            else:
+                ghosts.append((audio_rects.get(plan['audio_track_id']), plan['audio_track_id'], False))
+        accent = QColor(palette.clip_selected_border)
+        fill = QColor(accent)
+        fill.setAlpha(60)
+        painter.save()
+        for row, label, new in ghosts:
+            if row is None:
+                continue
+            rect = QRectF(left, row.top() + 2, right - left, max(4.0, row.height() - 4))
+            painter.fillRect(rect, fill)
+            pen = QPen(accent, 2)
+            if new:
+                pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.drawRoundedRect(rect, 4, 4)
+            painter.drawText(rect.adjusted(6, 0, -4, 0), Qt.AlignmentFlag.AlignVCenter, str(label))
+        painter.restore()
 
     def set_stream_lanes_collapsed(self, video_track_id: str, collapsed: bool) -> None:
         """Fold or unfold one source's further audio streams (a view choice)."""
@@ -2882,6 +2935,26 @@ class WaveformTimeline(QWidget):
             self._paint_timing_guides(painter,palette)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self._paint_active_cues(painter, palette)
+        preview_range = getattr(self, '_highlight_preview_range', None)
+        if preview_range:
+            start, end = preview_range
+            left=max(self.TRACK_HEADER_WIDTH,self._time_to_x(start))
+            right=min(self._content_right(),self._time_to_x(end))
+            if right>left:
+                painter.save()
+                tint=QColor(palette.clip_selected_border)
+                tint.setAlpha(28)
+                painter.fillRect(QRectF(left,0,right-left,self.height()),tint)
+                painter.setPen(QPen(QColor(palette.clip_selected_border),2))
+                painter.drawRect(QRectF(left,2,right-left,max(4,self.RULER_HEIGHT-4)))
+                painter.drawText(QRectF(left+5,2,max(0,right-left-10),self.RULER_HEIGHT-4),
+                                 Qt.AlignmentFlag.AlignVCenter,tr('本次查看范围'))
+                key=getattr(self,'_highlight_key_moment',None)
+                if key is not None:
+                    x=self._time_to_x(key)
+                    painter.drawLine(QPointF(x,0),QPointF(x,self.height()))
+                painter.restore()
+        self._paint_media_drop_preview(painter, palette)
         if self.selected_gap:
             track_id, start, end = self.selected_gap
             row = self._video_track_rect(track_id)

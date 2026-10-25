@@ -169,6 +169,13 @@ class SetCueFieldsCommand(QUndoCommand):
                     changes["start_ms"] = mapped[0]
                 if "end_ms" in changes:
                     changes["end_ms"] = mapped[1]
+        self._coalesce_text = set(changes) == {'text'} or ('text' in changes and text == '编辑字幕与局部格式')
+        if 'text' in changes and str(changes['text']) != cue.text:
+            from ..caption_style.text_marks import remap_marks, layer_marks, remapped_override
+            changes = dict(changes)
+            override = copy.deepcopy(changes['appearance_override']) if 'appearance_override' in changes else remapped_override(cue, str(changes['text']))
+            override['text_alignment'] = {'text': str(changes['text']), 'status': 'needs_alignment'}
+            changes['appearance_override'] = override
         self.before = {key: copy.deepcopy(getattr(cue, key)) for key in changes}
         self.after = {key: copy.deepcopy(value) for key, value in changes.items()}
         self.changed = changed
@@ -238,13 +245,13 @@ class SetCueFieldsCommand(QUndoCommand):
             or self.origin != other.origin
         ):
             return False
-        if set(self.after) != {"text"}:
+        if not self._coalesce_text or not other._coalesce_text:
             return False
         self.after = copy.deepcopy(other.after)
         return True
 
     def id(self) -> int:
-        return 0x2B17 if set(self.after) == {"text"} else -1
+        return 0x2B17 if self._coalesce_text else -1
 
 
 class AdoptReviewCandidateCommand(SetCueFieldsCommand):
@@ -392,6 +399,17 @@ class ReplaceCuesCommand(QUndoCommand):
         self.project = project
         self.before = copy.deepcopy(project.cues)
         self.after = copy.deepcopy(list(replacement))
+        from .caption_translation_splice import TranslationSplice
+        before_by_id = {c.id:c for c in self.before}
+        from ..caption_style.text_marks import remapped_override
+        for cue in self.after:
+            old=before_by_id.get(cue.id)
+            if old is not None and old.text!=cue.text and old.appearance_override==cue.appearance_override:
+                cue.appearance_override=remapped_override(old,cue.text)
+        after_by_id = {c.id:c for c in self.after}
+        removed = [c for c in self.before if c.id not in after_by_id or c.text != after_by_id[c.id].text]
+        inserted = [c for c in self.after if c.id not in before_by_id or c.text != before_by_id[c.id].text]
+        self._translations = TranslationSplice(project, removed, inserted)
         self.changed = changed
         self.origin = MutationOrigin(origin)
         self._selection_before = state_for(project).selected_cue_id
@@ -446,6 +464,8 @@ class ReplaceCuesCommand(QUndoCommand):
         if states is not None:
             from ..subtitle_rules.subtitle_translation import restore_snapshot
             restore_snapshot(self.project, states[1 if cues is self.after else 0])
+        else:
+            self._translations.apply(self.project, cues is self.after)
         receipts = getattr(self, '_merge_caption_states', None)
         if receipts is not None and receipts[1 if cues is self.after else 0] is not None:
             from .studio_caption_timeline import KEY
@@ -495,6 +515,8 @@ class SpliceCuesCommand(QUndoCommand):
             for cue in project.cues[self.index:self.index + self.removed_count]
         ]
         self._after_cues = [copy.deepcopy(cue) for cue in inserted]
+        from .caption_translation_splice import TranslationSplice
+        self._translations = TranslationSplice(project, self._before_cues, self._after_cues)
         from .studio_caption_timeline import caption_replacement_receipts
         self._caption_before, self._caption_after = caption_replacement_receipts(project, self._before_cues, self._after_cues)
         self.changed = changed
@@ -556,6 +578,8 @@ class SpliceCuesCommand(QUndoCommand):
             if states is not None:
                 from ..subtitle_rules.subtitle_translation import restore_snapshot
                 restore_snapshot(self.project, states[1 if inserted_source is self._after_cues else 0])
+            else:
+                self._translations.apply(self.project, inserted_source is self._after_cues)
             if caption_receipts is not None:
                 from .studio_caption_timeline import KEY
                 receipts=self.project.studio_state[KEY].setdefault('instances', {})
@@ -600,6 +624,10 @@ def _splice_split(
     right_text: str,
     changed: ChangedCallback | None,
 ) -> SpliceCuesCommand:
+    from ..caption_style.text_marks import boundaries
+    if str(left_text) + str(right_text) == cue.text and len(str(left_text)) not in boundaries(cue.text):
+        from ..i18n import tr
+        raise ValueError(tr('不能在 emoji 或组合字符中间切分'))
     left = copy.deepcopy(cue)
     right = copy.deepcopy(cue)
     left.end_ms = int(split_ms)
@@ -607,6 +635,14 @@ def _splice_split(
     right.id = f"{cue.id}-split-{uuid.uuid4().hex[:8]}"
     right.start_ms = int(split_ms)
     right.text = str(right_text)
+    from ..caption_style.text_marks import remap_marks, layer_marks, with_marks
+    left_marks = ([dict(m,end=min(len(left.text),m['end'])) for m in layer_marks(cue) if m['start']<len(left.text)]
+                  if cue.text.startswith(left.text) else remap_marks(cue.text,left.text,layer_marks(cue)))
+    left.appearance_override = with_marks(left, left_marks)
+    # A split is positional; repeated words must use the known suffix, not a best match.
+    cut = len(cue.text) - len(right.text) if cue.text.endswith(right.text) else len(left.text)
+    right.appearance_override = with_marks(right, [dict(m, start=max(0,m['start']-cut), end=m['end']-cut)
+        for m in layer_marks(cue) if m['end'] > cut])
     index = next(
         position for position, item in enumerate(project.cues) if item.id == cue.id
     )
@@ -617,6 +653,9 @@ def _splice_split(
     # (local estimate, "needs update"); before, the right half had none.
     from ..subtitle_rules.subtitle_translation import split_snapshot
     command._translation_states = split_snapshot(project, cue, left, right)
+    # 2026-10-24 caption-marks port: the records stay the daily's; Codex's TranslationSplice
+    # only carries the translation marks, moved onto the texts the records hold.
+    command._translations.follow(command._after_cues, command._translation_states[1])
     return command
 
 
@@ -653,6 +692,10 @@ def _splice_merge_adjacent(
     else:
         merged.text = earlier.text + later.text
         merged.original_text = earlier.original_text + later.original_text
+    from ..caption_style.text_marks import layer_marks, with_marks
+    offset = len(merged.text) - len(later.text)
+    merged.appearance_override = with_marks(merged, list(layer_marks(earlier)) +
+        [dict(m, start=m['start']+offset, end=m['end']+offset) for m in layer_marks(later)])
     merged.evidence_refs = list(
         dict.fromkeys([*first.evidence_refs, *second.evidence_refs])
     )
@@ -661,6 +704,7 @@ def _splice_merge_adjacent(
     )
     from ..subtitle_rules.subtitle_translation import merged_snapshot
     command._translation_states = merged_snapshot(project, (earlier, later), merged)
+    command._translations.follow(command._after_cues, command._translation_states[1])
     return command
 
 
@@ -1048,6 +1092,10 @@ class SetCuePresentationCommand(QUndoCommand):
         cue = cue_by_id(project, cue_id)
         self.before_cue = {key: copy.deepcopy(getattr(cue, key)) for key in cue_changes}
         self.after_cue = copy.deepcopy(dict(cue_changes))
+        if 'appearance_override' in self.after_cue:
+            for key in ('text_marks', 'original', 'translation', 'translation_group', 'text_alignment'):
+                if key not in self.after_cue['appearance_override'] and key in cue.appearance_override:
+                    self.after_cue['appearance_override'][key] = copy.deepcopy(cue.appearance_override[key])
         self.before_styles = copy.deepcopy(project.styles)
         self.before_effects = copy.deepcopy(project.effects)
         self.before_style_recipes = copy.deepcopy(project.style_recipes)
@@ -1186,6 +1234,12 @@ class SetCuesPresentationCommand(QUndoCommand):
             )
             for cue_id in self.before
         }
+        # Inline formatting and language-layer data belong to the cue, not to
+        # the selected preset. Preserve them unless explicitly replaced.
+        for cue_id, presentation in self.after.items():
+            for key in ('text_marks', 'original', 'translation', 'translation_group', 'text_alignment'):
+                if key not in presentation[3] and key in self.before[cue_id][3]:
+                    presentation[3][key] = copy.deepcopy(self.before[cue_id][3][key])
         self.before_styles = copy.deepcopy(project.styles)
         self.before_effects = copy.deepcopy(project.effects)
         self.before_style_recipes = copy.deepcopy(project.style_recipes)
@@ -1308,6 +1362,14 @@ def merge_cues_command(
     else:
         merged.text = "".join(item.text for item in matches)
         merged.original_text = "".join(item.original_text for item in matches)
+    from ..caption_style.text_marks import layer_marks, with_marks
+    marks, cursor = [], 0
+    for item in matches:
+        offset = merged.text.find(item.text, cursor)
+        if offset < 0: continue
+        marks.extend(dict(mark, start=mark['start']+offset, end=mark['end']+offset) for mark in layer_marks(item))
+        cursor = offset+len(item.text)
+    merged.appearance_override = with_marks(merged, marks)
     merged.evidence_refs = list(
         dict.fromkeys(ref for item in matches for ref in item.evidence_refs)
     )
@@ -1325,6 +1387,8 @@ def merge_cues_command(
         command._merge_caption_states = caption_replacement_receipts(project, matches, [merged])
     from ..subtitle_rules.subtitle_translation import merged_snapshot
     command._translation_states = merged_snapshot(project, matches, merged)
+    command._translations.follow(command._after_cues if hasattr(command, '_after_cues') else command.after,
+                                 command._translation_states[1])
     return command
 
 
@@ -1377,6 +1441,7 @@ class SetCuesFieldsCommand(QUndoCommand):
         }
         if len(self.before) != len(self.ids):
             raise KeyError("one or more cues were not found")
+        self.appearance_before = {c.id:copy.deepcopy(c.appearance_override) for c in project.cues if c.id in self.ids}
         self.changed = changed
 
     def _apply(self, values: Mapping[str, Mapping[str, object]] | None = None) -> None:
@@ -1385,6 +1450,10 @@ class SetCuesFieldsCommand(QUndoCommand):
                 if cue.id not in self.ids:
                     continue
                 patch = values.get(cue.id, {}) if values is not None else self.changes
+                if 'text' in patch:
+                    from ..caption_style.text_marks import remapped_override
+                    cue.appearance_override = (remapped_override(cue,str(patch['text'])) if values is None
+                        else copy.deepcopy(self.appearance_before[cue.id]))
                 for key, value in patch.items():
                     setattr(cue, key, copy.deepcopy(value))
 
@@ -1431,6 +1500,9 @@ class BatchReplaceTextCommand(QUndoCommand):
         }
         if len(self.before) != len(self.after):
             raise KeyError("one or more cues were not found")
+        from ..caption_style.text_marks import remapped_override
+        self.appearance_before = {c.id:copy.deepcopy(c.appearance_override) for c in project.cues if c.id in self.after}
+        self.appearance_after = {c.id:remapped_override(c,self.after[c.id]) for c in project.cues if c.id in self.after}
         self.changed = changed
         self.origin = MutationOrigin(origin)
         self.needle = str(needle or "")
@@ -1542,6 +1614,7 @@ class BatchReplaceTextCommand(QUndoCommand):
             for cue in self.project.cues:
                 if cue.id in values:
                     cue.text = values[cue.id]
+                    cue.appearance_override = copy.deepcopy((self.appearance_after if values is self.after else self.appearance_before)[cue.id])
 
         _commit_mutation(
             self.project,

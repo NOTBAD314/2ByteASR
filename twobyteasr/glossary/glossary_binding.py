@@ -6,6 +6,17 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping
 
 
+def applied_library_ids(project):
+    """The same project/recognition choice for proofreading and visual marks."""
+    explicit = [str(x) for x in (getattr(project, 'glossary_ids', None) or ()) if str(x)]
+    if explicit:
+        return tuple(dict.fromkeys(explicit)), 'project'
+    snapshot = (getattr(project, 'generation_metadata', None) or {}).get('terminology_snapshot') or {}
+    recorded = [str(row.get('id') or '') for row in snapshot.get('libraries', ()) if isinstance(row, dict)]
+    recorded = [key for key in recorded if key]
+    return (tuple(dict.fromkeys(recorded)), 'recognition') if recorded else ((), '')
+
+
 @dataclass(frozen=True)
 class GlossaryBinding:
     id: str

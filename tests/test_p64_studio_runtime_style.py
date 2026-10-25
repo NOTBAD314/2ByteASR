@@ -160,12 +160,16 @@ def test_clip_assistant_is_compact_and_candidate_actions_are_buttons():
     app.processEvents()
     assert panel.active_stage() == "candidates"
     card = panel.results.itemWidget(panel.results.item(0))
-    # 2026-10-23 (design C): 预览 is an icon button named by its accessible name.
+    # 2026-10-24 (clip evidence ADR, Codex): 预览片段 is the primary action, 加入待生成 adds to the
+    # list, 查看前后内容 opens the context; 忽略 moved into the 更多操作 menu.
     buttons = {button.text() or button.accessibleName(): button for button in card.findChildren(QPushButton)}
-    assert {"预览", "加入剪辑", "忽略", "详情"} <= set(buttons)
-    assert buttons["加入剪辑"].objectName() == "studioPrimary"
-    assert all(button.cursor().shape() == Qt.CursorShape.PointingHandCursor for button in buttons.values())
-    assert all(card.rect().contains(button.geometry()) for button in buttons.values())
+    assert {"预览片段", "加入待生成", "查看前后内容"} <= set(buttons)
+    assert buttons["预览片段"].objectName() == "studioPrimary"
+    # 查看前后内容 sits in the collapsed details: only the buttons on the card face are laid out.
+    shown = [button for button in buttons.values() if button.isVisibleTo(card)]
+    assert buttons["预览片段"] in shown and buttons["加入待生成"] in shown
+    assert all(button.cursor().shape() == Qt.CursorShape.PointingHandCursor for button in shown)
+    assert all(card.rect().contains(button.geometry()) for button in shown)
     assert panel.results.horizontalScrollBar().maximum() == 0
     assert panel.results.height() / panel.height() >= 0.55
     assert panel.bin.isHidden()

@@ -1,14 +1,16 @@
-# OpenRouter 语音转文字（进阶，不建议一般使用者）
+# OpenRouter 语音转文字：MAI-Transcribe 2（进阶）
 
-最后核对：2026-10-14。来源见文末。标“待核实”的地方需要登录才能确认。
+最后核对：2026-10-14（MAI-Transcribe 2 部分 2026-10-25 更新）。来源见文末。标“待核实”的地方需要登录才能确认。
 
 ## 先说结论
 
-- **一般使用者请不要选这一项**，改用列表里的官方云端服务（MOSS Pro 云端、阿里云百炼、Qwen Cloud 等）或本地模型。
-- 兔白把这一项标成“MAI 2.1”，**这与官方现状不符**：2026-10-14 查 OpenRouter 公开的语音转文字模型列表，微软的转写模型只有 `microsoft/mai-transcribe-2` 和 `microsoft/mai-transcribe-1.5`，没有叫 MAI 2.1 的转写模型。名字带 2.1 的 `microsoft/mai-voice-2.1` 是“文字变语音”的模型，不能转写。
-- 兔白目前会**拒绝** `microsoft/mai-transcribe-2`（提示“旧 MAI 2 模型不能作为新版运行……”），而它正是 OpenRouter 现在的 MAI 转写模型。这条规则和官方现状不符，已记入已知问题，本轮没有改程序。
-- 所以现在只能填其他转写模型的 ID。这些模型兔白都没有实测过，能不能拿到时间，以“试识别一小段…”的结果为准。
-- 兔白验证状态：已有接入；本轮未用真实密钥重新实测。
+- 这一项预设微软 **MAI-Transcribe 2**（模型 ID `microsoft/mai-transcribe-2`，$0.10 / 小时音频）：返回字级时间，并区分说话人。
+- 兔白验证状态：2026-10-25 用真实 Key 识别了一段 20 秒的中英两人合成录音，字级时间和两位说话人都对。
+- 词库：兔白把已确认的词库专名（排在前面的最多 100 个）作为“短语列表”（Azure 的 `phraseList`）交给 MAI-Transcribe 2，帮它认对游戏名、角色名。2026-10-25 实测：一句含“鸣潮、今汐、长离、无妄者、守岸人”的合成录音，不给短语列表时写成“明朝、金犀、长离、无望者、守暗人”，给了之后五个都对。
+- 转写风格：跟随识别设置里的“转写风格”（默认“清爽”= `clean`，“逐字”= `verbatim`）。2026-10-25 实测清爽会去掉口误重复（“I- I think”→“I think”），但“嗯、呃、um、uh”这类语气词不一定去掉，兔白后面的成片规则会再处理。2026-10-25 之前兔白把这个选项放错了位置，服务商一直按逐字处理。
+- OpenRouter 上没有叫“MAI 2.1”的转写模型（2026-10-25 再查：微软的转写模型只有 `microsoft/mai-transcribe-2` 和 `microsoft/mai-transcribe-1.5`）；名字带 2.1 的 `microsoft/mai-voice-2.1` 是“文字变语音”的模型。兔白以前把这一项标成 MAI 2.1、还拒绝 MAI-Transcribe 2，2026-10-25 起改正。
+- 需要先在 OpenRouter 用美元充值；中国大陆用户一般更适合 MOSS Pro 云端、阿里云百炼或千问AI平台。
+- 也可以改填其他转写模型的 ID，兔白都没有实测过，能不能拿到时间以“试识别一小段…”的结果为准。
 
 ## 它在兔白里做什么
 
@@ -49,9 +51,8 @@
 | 栏位 | 用途 | 例子 | 从哪里拿 |
 | --- | --- | --- | --- |
 | API Key | 证明是你的账户在付费 | 整串贴上，前后不要有空格 | OpenRouter 的 Keys 页面 |
-| 模型 ID | 要用哪个转写模型，必须填 | `openai/whisper-large-v3-turbo`（兔白未实测） | 语音转文字模型列表，复制“厂商/模型”格式的 ID |
+| 模型 ID | 要用哪个转写模型 | 已预填 `microsoft/mai-transcribe-2`，一般不用改 | 想换别的模型时，从语音转文字模型列表复制“厂商/模型”格式的 ID |
 
-- 不能填 `microsoft/mai-transcribe-2`：兔白目前会拒绝（见“先说结论”）。
 - `microsoft/mai-transcribe-1.5` 可以填，但 OpenRouter 说明它不接受带时间信息的回传格式；兔白会退回只要文字，结果没有可用的时间。
 
 ## 已预填、不用改
@@ -80,15 +81,16 @@
 
 - OpenRouter 官方：逐词时间只在 `verbose_json` 回传格式下提供，而且取决于实际转给的服务商；`openai/gpt-4o-transcribe` 和 `microsoft/mai-transcribe-1.5` 会拒绝这种格式。
 - 被拒时兔白退回只要文字。这时一整段（主力转写最长约 3 分钟）只有一个起止时间，不适合直接做字幕。
-- 说话人：兔白只向 Azure 提供的模型请求说话人区分，而 Azure 提供的 MAI-Transcribe 2 目前被兔白拒绝。其他模型：官方文件未写明，兔白未实测。
+- 说话人：兔白向 Azure 提供的模型请求说话人区分；MAI-Transcribe 2 由 Azure 提供，2026-10-25 实测能分出两位说话人。其他模型：官方文件未写明，兔白未实测。
+- MAI-Transcribe 2 的逐词结果常常不带标点，兔白按词拼成一行（中文字直接相连，英文词之间加空格），标点由后面的断句步骤补上。
 
 ## 费用
 
-按模型单价计费，美元，2026-10-14 从 OpenRouter 公开模型列表读取，以账单为准：
+按模型单价计费，美元，2026-10-14 从 OpenRouter 公开模型列表读取（MAI-Transcribe 2 于 2026-10-25 再核对），以账单为准：
 
 | 模型 ID | 单价 | 在兔白里 |
 | --- | --- | --- |
-| `microsoft/mai-transcribe-2` | $0.10 / 小时音频 | 目前被拒绝 |
+| `microsoft/mai-transcribe-2` | $0.10 / 小时音频 | 预设；2026-10-25 实测可用 |
 | `microsoft/mai-transcribe-1.5` | $0.36 / 小时 | 拿不到时间 |
 | `openai/whisper-large-v3-turbo` | $0.00000333 / 秒（约 $0.012 / 小时） | 未实测 |
 | `openai/whisper-1` | $0.0001 / 秒（约 $0.36 / 小时） | 未实测 |
@@ -108,8 +110,7 @@
 
 | 现象 | 可能原因 | 下一步 |
 | --- | --- | --- |
-| 提示“旧 MAI 2 模型不能作为新版运行……” | 填了 `microsoft/mai-transcribe-2`，兔白目前拒绝 | 换其他模型 ID，或改用列表里的官方云端服务 |
-| 提示“ASR API 缺少模型名称。” | 模型 ID 空着 | 从语音转文字模型列表复制一个 ID 贴上 |
+| 提示“ASR API 缺少模型名称。” | 模型 ID 被清空了 | 填回 `microsoft/mai-transcribe-2`，或从语音转文字模型列表复制一个 ID 贴上 |
 | 指定模型可用 ✗“模型列表里没有 …” | 兔白查的列表不含转写模型（已知问题） | 确认 ID 与官方列表完全一致（含斜杠、大小写），然后用“试识别一小段…”判断 |
 | 认证成功 显示 ? | OpenRouter 模型列表公开，无法验证 Key | 正常，用“试识别一小段…”确认 |
 | HTTP 401 | Key 无效、被停用或没复制完整 | 回 Keys 页面确认 Key 状态，重新复制整串贴上 |
@@ -123,15 +124,16 @@
 
 ## 进阶（一般使用者可跳过）
 
-- 兔白的请求：`POST https://openrouter.ai/api/v1/audio/transcriptions`，头 `Authorization: Bearer <Key>`，JSON 正文含 `model`、`input_audio`（`data` 为 WAV 的 base64，`format: "wav"`）、`response_format: "verbose_json"`、`timestamp_granularities: ["segment", "word"]`，以及 `provider.options.azure`（`diarization.enabled: true`；`modelOptions.transcribeStyle` 取兔白的转写风格设置，默认 `clean`）。
-- 遇到 HTTP 400 依次退回：去掉 `timestamp_granularities` → 改用 `json` → 去掉 `provider` 选项。
+- 兔白的请求：`POST https://openrouter.ai/api/v1/audio/transcriptions`，头 `Authorization: Bearer <Key>`，JSON 正文含 `model`、`input_audio`（`data` 为 WAV 的 base64，`format: "wav"`）、`response_format: "verbose_json"`、`timestamp_granularities: ["segment", "word"]`，以及 `provider.options.azure`：`diarization.enabled: true`；`enhancedMode.modelOptions.transcribeStyle` 取兔白的转写风格设置，默认 `clean`；`phraseList.phrases` 为词库专名（只对 `microsoft/mai-transcribe-2` 发送）。写法依据微软 MAI-Transcribe 文档，OpenRouter 原样转给 Azure；2026-10-25 实测 `transcribeStyle` 放在顶层 `modelOptions` 时不生效。
+- 遇到 HTTP 400 依次退回：去掉短语列表 → 去掉 `timestamp_granularities` → 改用 `json` → 去掉 `provider` 选项。
 - 分段：主力转写每段最长 180 秒；文字复核按人声切成最长约 25 秒的段。
 - 兔白读取回应里的 `segments`（`start`、`end`、`text`、`speaker`）和 `words`（顶层或 segment 内；`word`、`start`、`end`、`speaker`）。
 - “免费检查”读的是 `GET https://openrouter.ai/api/v1/models`；这个列表默认不含转写模型（官方说明要加 `output_modalities=transcription` 才列出），所以“指定模型可用”会误报 ✗。
-- 程序位置：请求在 `twobyteasr/asr.py` 的 `call_qwen_asr_api`；拒绝规则在 `twobyteasr/llm_config.py` 的 `validate_qwen_asr_endpoint`；读取设置时 `twobyteasr/settings.py` 会把这一项里的 `microsoft/mai-transcribe-2` 清空。
+- 程序位置：请求在 `twobyteasr/recognition/asr.py` 的 `call_qwen_asr_api`，回应整理成字幕行在同一文件的 `_api_transcription_rows`；预设模型在 `twobyteasr/app/ui.py` 的 `ASR_API_PRESETS["openrouter_word"]`。
 
-## 来源（2026-10-14 核对）
+## 来源（2026-10-14 核对，2026-10-25 补核 MAI-Transcribe 2）
 
+- 微软 MAI-Transcribe 文档（diarization、modelOptions.timestamps / transcribeStyle、phraseList.phrases、locales）：<https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe>
 - OpenRouter 语音转文字说明：<https://openrouter.ai/docs/guides/overview/multimodal/stt>
 - OpenRouter 语音转文字模型列表：<https://openrouter.ai/collections/speech-to-text-models>
 - OpenRouter 转写模型公开清单（JSON）：<https://openrouter.ai/api/v1/models?output_modalities=transcription>；文字变语音清单：<https://openrouter.ai/api/v1/models?output_modalities=speech>；一般模型清单：<https://openrouter.ai/api/v1/models>

@@ -179,6 +179,7 @@ def check_runtime(python: Path, root: Path, *, exact_python: str | None = None) 
         result = subprocess.run([str(python), '-I', '-c', probe], cwd=root, capture_output=True,
                                 text=True, timeout=120, env=_child_environment())
         if result.returncode:
+            print('[运行库探测] 子程序退出码 ' + str(result.returncode) + '：' + (result.stderr or result.stdout)[-600:],flush=True)
             return False
         if exact_python and json.loads(result.stdout.splitlines()[-1])['python'] != exact_python:
             return False
@@ -199,17 +200,70 @@ def _child_environment() -> dict:
     from twobyteasr.system.processes import external_python_environment
     environment = external_python_environment()
     environment.update(PYTHONUTF8='1', PYTHONIOENCODING='utf-8', **{'2BYTEASR_CPU_ONLY': '1'})
+    from ..system.macos_compatibility import MINIMUM_MACOS
+    environment['MACOSX_DEPLOYMENT_TARGET'] = MINIMUM_MACOS
     return environment
+
+
+def verify_runtime_binaries(directory: Path, *, target: str | None = None) -> None:
+    """Check downloaded bytes before executing Python/uv or loading a backend."""
+    from scripts.macos_binary_audit import audit_tree
+    from ..system.macos_compatibility import MINIMUM_MACOS
+    audit = audit_tree(directory, arch='arm64', target=target or MINIMUM_MACOS, allow_external=True)
+    (directory/'binary-compatibility.json').write_text(json.dumps(audit,ensure_ascii=False,indent=2)+'\n','utf8')
+    if not audit['passed']:
+        first = audit['errors'][0]
+        raise RuntimeError('运行环境不符合 macOS 系统或架构要求：' + json.dumps(first,ensure_ascii=False))
+
+
+def mlx_binary_contract_matches(python: Path, *, release: str | None = None) -> bool:
+    """Do not reuse a newer-OS MLX variant after a system downgrade/copy."""
+    from ..system.macos_compatibility import parse_macos_version
+    try:
+        host=parse_macos_version(platform.mac_ver()[0] if release is None else release)
+        audit=json.loads((python.parent.parent/'binary-compatibility.json').read_text('utf8'))
+        if not audit.get('passed') or audit.get('architecture')!='arm64' or not audit.get('objects'):
+            return False
+        for item in audit['objects']:
+            native=[s for s in item['slices'] if s['architecture']=='arm64']
+            if not native or any(parse_macos_version(s['minimum_macos'])>host for s in native):return False
+        return True
+    except (OSError,ValueError,KeyError,TypeError):
+        return False
+
+
+def require_mps_runtime(python: Path, root: Path, *, dtype: str) -> None:
+    """Probe actual Metal allocation in a child before downloading GPU weights."""
+    if dtype not in ('float16','bfloat16'):
+        raise ValueError('Unsupported MPS probe dtype')
+    script = ('import torch,json; assert torch.backends.mps.is_available(), "MPS unavailable"; '
+              f'x=torch.ones(1,device="mps",dtype=torch.{dtype}); '
+              'y=x+x; torch.mps.synchronize(); assert y.cpu().item()==2; '
+              f'print(json.dumps(dict(ok=True,device="mps",dtype="{dtype}",torch=torch.__version__)))')
+    try:
+        result = subprocess.run([str(python),'-I','-c',script],cwd=root,env=_child_environment(),
+                                capture_output=True,text=True,timeout=180)
+    except (OSError,subprocess.TimeoutExpired) as exc:
+        raise RuntimeError('Apple GPU 探测无法完成；尚未下载模型权重，CPU / 云端没有自动启用。') from exc
+    if result.returncode:
+        raise RuntimeError(f'Apple GPU（MPS {dtype}）不可用，探测退出码 {result.returncode}；尚未下载模型权重。'
+                           + (result.stderr or result.stdout)[-500:])
+    print('[后端探测] '+result.stdout.strip(),flush=True)
 
 
 def _bootstrap_interpreter(managed: Path, lock: dict, environment: dict, *, python: str = 'python') -> tuple[Path, Path]:
     """Verified uv and CPython arm64 from the bootstrap lock (``python``: 3.10, ``python312``: MOSS)."""
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('moss' if python == 'python312' else 'main', system=sys.platform)
+    if lock.get('target') != 'darwin-arm64':
+        raise RuntimeError('Bootstrap architecture does not match the native Apple Silicon package')
     emit('tools_preparing')
     uv_root = managed / 'tools' / ('uv-' + lock['uv']['version'])
     # Re-extract from the verified cache before executing a tool;
     # an executable left by a failed attempt is not trusted alone.
     extract_archive(download_archive(lock['uv'], managed / 'bootstrap-cache'), uv_root)
     uv = uv_root / lock['uv']['member']
+    verify_runtime_binaries(uv_root)
     uv.chmod(uv.stat().st_mode | 0o700)
     emit('interpreter_preparing')
     spec = lock[python]
@@ -218,6 +272,7 @@ def _bootstrap_interpreter(managed: Path, lock: dict, environment: dict, *, pyth
     base = python_root / ('python/bin/python' + '.'.join(spec['version'].split('.')[:2]))
     if not base.is_file():
         raise RuntimeError('Verified Python archive has no native interpreter')
+    verify_runtime_binaries(python_root)
     run([base, '-I', '-c', 'import sys,platform; assert platform.machine()=="arm64"; assert platform.python_version()=="' + spec['version'] + '"'], cwd=managed, environment=environment)
     return uv, base
 
@@ -234,7 +289,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     requirements = root / 'packaging/macos/requirements-cpu.txt'
     identity = dict(target=lock['target'], python=lock['python'], uv=lock['uv'],
                     pip=lock['pip'], requirements={path.name: sha256(path) for path in (
-                        requirements, root / 'packaging/macos/requirements-gui.txt',
+                        requirements, root / 'packaging/macos/requirements-gui.txt', root / 'packaging/macos/constraints-cpu.txt', root / 'packaging/macos/source-wheels.lock.json',
                         root / 'packaging/macos/native-dependencies.lock.json')})
     signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
     runtime = managed / 'main' / ('macos-cpu-' + signature)
@@ -249,6 +304,8 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
         print('[运行库] 复用已核对的原生 CPU 环境', flush=True)
         return Path(previous)
     state['phase'] = 'tools_preparing'
+    from ..system.macos_wheels import verify_wheelhouse
+    wheelhouse = verify_wheelhouse(root)
     uv, base = _bootstrap_interpreter(managed, lock, environment)
     state['phase'] = 'dependencies_installing'
     emit(state['phase'])
@@ -261,6 +318,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     # Fresh reports include the critical wheels on retries too;
     # pip's verified cache can reuse completed downloads.
     run([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install', '--force-reinstall', '--report', report,
+         '--only-binary=:all:', '--find-links', wheelhouse,
          '--index-url', 'https://pypi.org/simple', '-r', requirements.name], cwd=requirements.parent, environment=environment)
     from scripts.macos_dependency_contract import verify_native_wheels
     native_lock = root / 'packaging/macos/native-dependencies.lock.json'
@@ -271,6 +329,7 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     pending_proof = proof_path.with_suffix('.pending')
     pending_proof.write_text(json.dumps(proof, indent=2), encoding='utf8')
     os.replace(pending_proof, proof_path)
+    verify_runtime_binaries(runtime)
     if not check_runtime(runtime_python, root, exact_python=lock['python']['version']):
         raise RuntimeError('Native CPU runtime probe failed; previous registration was preserved')
     payload = dict(identity, signature=signature, role='main', models=list(models),
@@ -284,6 +343,8 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
 def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> Path:
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise RuntimeError('SenseVoice CPU preparation requires native Apple Silicon macOS')
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('main', system=sys.platform)
     from twobyteasr.runtime_paths import user_data_root
     from twobyteasr.system.runtime_registry import register_runtime, resolve_runtime_python
     from twobyteasr.repository_download import preparation_lock
@@ -425,7 +486,7 @@ def check_moss_runtime(python: Path, root: Path) -> bool:
             return False
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         print('[运行库] MOSS 运行库：Python ' + payload['python'] + '，Apple GPU（MPS）'
-              + ('可用' if payload['mps'] else '不可用，将用 CPU'), flush=True)
+              + ('可用' if payload['mps'] else '不可用，尚未下载模型权重'), flush=True)
         return True
     except (OSError, ValueError, IndexError, KeyError, subprocess.TimeoutExpired):
         return False
@@ -473,6 +534,7 @@ def ensure_moss_runtime(root: Path, managed: Path, lock: dict, environment: dict
                            cwd=requirements.parent, environment=environment)
     run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
     source_digest = install_moss_source(root, runtime)
+    verify_runtime_binaries(runtime)
     if not check_moss_runtime(runtime_python, root):
         raise RuntimeError('MOSS 运行库检查失败；之前的登记保持不变')
     receipt = runtime / 'managed-runtime.json'
@@ -507,6 +569,8 @@ def prepare_local(root: Path, *, models: Path, source: str, keys, register: bool
         keys = tuple(dict.fromkeys(keys + ('firered_vad', 'speaker_embedding')))
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise RuntimeError('MOSS 与 FireRed 只能在 Apple 芯片（M 系列）的 Mac 上运行')
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('moss', system=sys.platform)
     from twobyteasr.runtime_paths import MODEL_ROOT_ENV, user_data_root
     from twobyteasr.system.runtime_registry import register_runtime
     from twobyteasr.repository_download import preparation_lock
@@ -531,6 +595,11 @@ def prepare_local(root: Path, *, models: Path, source: str, keys, register: bool
                 state['phase'] = 'runtime_installing'
                 emit(state['phase'], device='mps', model='moss')
                 moss_python = ensure_moss_runtime(root, managed, lock, environment, state)
+        state['phase'] = 'backend_checking'
+        if 'firered_aed' in keys:
+            require_mps_runtime(main_python, root, dtype='float16')
+        if moss_python is not None:
+            require_mps_runtime(moss_python, root, dtype='bfloat16')
         state['phase'] = 'weights_downloading'
         from twobyteasr.model_integrity import locked_model, verify_model_files
         from twobyteasr.repository_download import download_model
@@ -582,15 +651,18 @@ def _mlx_worker(root: Path) -> Path:
 
 def check_mlx_runtime(python: Path, root: Path) -> bool:
     """Torch-free MLX runtime: the worker's own import/device probe."""
-    if not python.is_file():
+    if not python.is_file() or not mlx_binary_contract_matches(python):
         return False
     try:
         result = subprocess.run([str(python), '-I', str(_mlx_worker(root)), '--mode', 'probe'], cwd=root,
                                 capture_output=True, text=True, timeout=180, env=_child_environment())
         if result.returncode:
+            print('[MLX 探测] 子程序退出码 ' + str(result.returncode) + '：' + (result.stderr or result.stdout)[-600:],flush=True)
             return False
         payload = json.loads(result.stdout.strip().splitlines()[-1])
-        return bool(payload.get('ok')) and payload.get('machine') == 'arm64'
+        return (bool(payload.get('ok')) and payload.get('machine') == 'arm64'
+                and payload.get('metal_available') is True and payload.get('mlx_version') == '0.32.3'
+                and payload.get('mlx_audio_version') == '0.5.8' and payload.get('mlx_metal_version') == '0.32.3')
     except (OSError, ValueError, IndexError, RuntimeError, subprocess.TimeoutExpired):
         return False
 
@@ -640,11 +712,8 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
     keys = tuple(dict.fromkeys(keys))
     if not keys or not set(keys) <= set(MLX_MODEL_KEYS):
         raise ValueError('unknown MLX model keys: ' + ','.join(keys))
-    if sys.platform != 'darwin' or platform.machine() != 'arm64':
-        raise RuntimeError('MLX 只能在 Apple Silicon（M 系列芯片）的 Mac 上运行')
-    release = tuple(int(part) for part in (platform.mac_ver()[0] or '0').split('.')[:2] if part.isdigit())
-    if release and release < (14,):
-        raise RuntimeError('MLX 运行库需要 macOS 14 或更新版本（当前 ' + platform.mac_ver()[0] + '）')
+    from ..system.macos_compatibility import require_compatible
+    require_compatible('mlx', system=sys.platform)
     from twobyteasr.runtime_paths import user_data_root
     from twobyteasr.system.runtime_registry import register_runtime, resolve_runtime_python
     from twobyteasr.repository_download import preparation_lock
@@ -653,7 +722,7 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
     lock = json.loads((root / 'packaging/macos/bootstrap.lock.json').read_text('utf8'))
     requirements = root / 'packaging/macos/requirements-mlx.txt'
     identity = dict(target=lock['target'], python=lock['python'], uv=lock['uv'], pip=lock['pip'],
-                    requirements={requirements.name: sha256(requirements)})
+                    host_macos=platform.mac_ver()[0],requirements={requirements.name: sha256(requirements)})
     signature = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:20]
     runtime = managed / 'mlx' / ('macos-mlx-' + signature)
     runtime_python = runtime / 'bin/python'
@@ -685,6 +754,9 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
                                         'install', '--require-hashes', '--only-binary', ':all:', '--report', report,
                                         '-r', requirements.name], cwd=requirements.parent, environment=environment)
                 run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
+                # MLX publishes distinct 14/15/26 wheels. The base App remains
+                # 14-compatible; this optional runtime must fit its real host.
+                verify_runtime_binaries(runtime,target=platform.mac_ver()[0])
                 if not check_mlx_runtime(runtime_python, root):
                     raise RuntimeError('MLX 运行库探测失败（需要 Apple Silicon 与 Metal）；之前的登记保持不变')
                 receipt = runtime / 'managed-runtime.json'

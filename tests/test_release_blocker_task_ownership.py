@@ -19,6 +19,7 @@ APP = QApplication.instance() or QApplication([])
 class DeferredWorker(QObject):
     finished_ok = Signal(object)
     failed = Signal(str)
+    progress = Signal(str, int)   # 2026-10-24: the clip analysis reports its stage (Codex)
     finished = Signal()
     def __init__(self, *args):
         super().__init__()
@@ -145,6 +146,7 @@ def test_real_thread_cancel_is_retained_until_finished(host, monkeypatch):
     class WaitingWorker(QThread):
         finished_ok = Signal(object)
         failed = Signal(str)
+        progress = Signal(str, int)
         def __init__(self, *args): super().__init__()
         def run(self):
             while not self.isInterruptionRequested(): self.msleep(2)

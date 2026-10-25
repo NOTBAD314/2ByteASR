@@ -56,6 +56,19 @@ def _format_duration(milliseconds: int) -> str:
     )
 
 
+class _AssetTree(QTreeWidget):
+    """Rows drag the whole source (picture and sound) into the tracks (2026-10-25)."""
+
+    def mimeTypes(self):  # noqa: N802 - Qt API
+        from .studio_source_monitor import MEDIA_PART_MIME
+        return [MEDIA_PART_MIME]
+
+    def mimeData(self, items):  # noqa: N802 - Qt API
+        from .studio_source_monitor import media_part_mime
+        asset_id = str(items[0].data(0, Qt.ItemDataRole.UserRole) or "") if items else ""
+        return media_part_mime(asset_id, "both") if asset_id else None
+
+
 class StudioMediaPoolPanel(QWidget):
     """A project-bound panel. Mutations always enter the page undo stack."""
 
@@ -89,7 +102,7 @@ class StudioMediaPoolPanel(QWidget):
         self.search.textChanged.connect(self._apply_filter)
         layout.addWidget(self.search)
 
-        self.assets = QTreeWidget()
+        self.assets = _AssetTree()
         self.assets.setObjectName("mediaPoolAssets")
         self.assets.setColumnCount(3)
         self.assets.setHeaderLabels(["素材", "状态", "时长"])
@@ -102,7 +115,14 @@ class StudioMediaPoolPanel(QWidget):
         self.assets.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.assets.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.assets.itemSelectionChanged.connect(self._sync_actions)
-        self.assets.itemDoubleClicked.connect(lambda *_args: self._add_selected_to_track())
+        # 2026-10-25: double-click previews the source in the cue-list slot;
+        # rows drag into the tracks; right click adds the picture or sound alone.
+        self.assets.itemDoubleClicked.connect(lambda *_args: self._preview_selected())
+        self.assets.setDragEnabled(True)
+        self.assets.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.assets.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.assets.customContextMenuRequested.connect(self._show_asset_menu)
+        bind_text(self.assets, '双击预览；拖到时间线轨道上加入', property='toolTip')
         layout.addWidget(self.assets, 1)
 
         asset_actions = QHBoxLayout()
@@ -305,6 +325,44 @@ class StudioMediaPoolPanel(QWidget):
         self.page.undo_stack.push(
             media_graph_command(project, "移除未使用素材", remove_unused_media)
         )
+
+    def _preview_selected(self) -> None:
+        asset_id = self.selected_asset_id()
+        if self.page.project is not None and asset_id:
+            from .studio_source_monitor import open_source_monitor
+            open_source_monitor(self.page, asset_id)
+
+    def _show_asset_menu(self, pos) -> None:
+        item = self.assets.itemAt(pos)
+        project = self.page.project
+        if item is None or project is None:
+            return
+        self.assets.setCurrentItem(item)
+        asset_id = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+        asset = next((a for a in project.media_pool if a.asset_id == asset_id), None)
+        if asset is None:
+            return
+        from ..timeline.studio_media_pool import asset_has_audio, asset_has_video
+        from .studio_source_monitor import place_media_part
+        from ..design.studio_theme import create_studio_menu
+        menu = create_studio_menu(self)
+        menu.addAction(tr('预览'), self._preview_selected)
+        menu.addSeparator()
+        for part, label, usable in (("both", '加到播放头（视频+音频）', asset_has_video(asset) or asset_has_audio(asset)),
+                                    ("video", '只加视频到播放头', asset_has_video(asset)),
+                                    ("audio", '只加音频到播放头', asset_has_audio(asset))):
+            action = menu.addAction(tr(label))
+            action.setEnabled(bool(usable and not asset.offline))
+            action.triggered.connect(lambda _=False, value=part: self._report(place_media_part(self.page, asset_id, value)))
+        if asset.offline:
+            menu.addSeparator()
+            menu.addAction(tr('重新定位'), self._relink_selected)
+        self._asset_menu = menu
+        menu.popup(self.assets.viewport().mapToGlobal(pos))
+
+    def _report(self, problem: str) -> None:
+        if problem:
+            QMessageBox.information(self, tr('无法添加片段'), problem)
 
     def _add_track(self) -> None:
         if self.page.project is None:

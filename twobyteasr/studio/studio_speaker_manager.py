@@ -762,6 +762,12 @@ class SpeakerManagerDialog(QDialog):
         speaker = self._speaker(card.key)
         if speaker is None:
             return
+        from ..caption_style.speaker_labels import SetSpeakerLabelCommand
+        label = menu.addAction(tr('在模板中显示姓名'))
+        label.setCheckable(True)
+        label.setChecked(project.studio_state.get('speaker_labels', {}).get(card.key, True))
+        label.toggled.connect(lambda visible: self.page.undo_stack.push(
+            SetSpeakerLabelCommand(project, card.key, visible, self.page._changed)))
         styles = menu.addMenu(tr("默认样式"))
         for style in project.styles:
             action = styles.addAction(style.name or style.id)

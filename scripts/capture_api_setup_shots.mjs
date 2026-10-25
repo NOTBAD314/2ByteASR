@@ -27,6 +27,7 @@ const SHOTS = [
   ['deepseek-1-signin.jpg', 'https://platform.deepseek.com/sign_in', {x: 520, y: 180, width: 700, height: 437.5}],
   ['bailian-1-register.jpg', 'https://account.aliyun.com/register/qr_register.htm', {x: 250, y: 210, width: 780, height: 487.5}],
   ['qwencloud-1-home.jpg', 'https://home.qwencloud.com/', {x: 260, y: 0, width: 1020, height: 637.5}],
+  ['qianwen-1-home.jpg', 'https://platform.qianwenai.com/home', {x: 260, y: 0, width: 1020, height: 637.5}],
   ['spark-1-quickguide.jpg', 'https://www.xfyun.cn/doc/platform/quickguide.html', {x: 290, y: 60, width: 800, height: 500}],
   ['spark-2-product.jpg', 'https://www.xfyun.cn/services/spark_asr_zh_en_v2.0', {x: 0, y: 141, width: 760, height: 475}],
   ['groq-1-login.jpg', 'https://console.groq.com/', {x: 420, y: 286, width: 680, height: 425}],

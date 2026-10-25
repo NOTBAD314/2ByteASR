@@ -775,6 +775,11 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
             if asset is None or not _asset_has_audio(asset):
                 continue
             audio_clip = existing_by_video.get(video_clip.id)
+            if audio_clip is None and not video_clip.audio_enabled:
+                # 2026-10-25: placed as picture only (or its sound was split
+                # off). A clip whose audio was merely switched off keeps the
+                # linked clip it already has.
+                continue
             if audio_clip is None:
                 audio_clip = AudioClip(
                     id=f"audio-{video_clip.id}",
@@ -875,10 +880,12 @@ def _sync_stream_lanes(project: SubtitleProject, assets: Mapping[str, MediaAsset
                   for clip in (primary.clips if primary is not None else ())
                   if clip.linked_video_clip_id}
         lanes = {track.stream_ordinal: track for track in stream_lane_tracks(project, video.id)}
+        # A picture-only clip (2026-10-25) has no sound on any lane.
+        silent = {clip.id for clip in video.clips if not clip.audio_enabled and clip.id not in played}
         for clip in video.clips:
             asset = assets.get(clip.asset_id)
             streams = asset_streams(asset) if asset is not None else []
-            if len(streams) < 2:
+            if len(streams) < 2 or clip.id in silent:
                 continue
             metadata = asset.audio_metadata
             done = [str(item) for item in metadata.get("stream_lanes_for") or [] if str(item)]
@@ -904,7 +911,7 @@ def _sync_stream_lanes(project: SubtitleProject, assets: Mapping[str, MediaAsset
             mirrored = []
             for clip in video.clips:
                 asset = assets.get(clip.asset_id)
-                if asset is None or not _asset_has_audio(asset):
+                if asset is None or not _asset_has_audio(asset) or clip.id in silent:
                     continue
                 if not any(row["ordinal"] == ordinal for row in asset_streams(asset)):
                     continue
@@ -2944,7 +2951,10 @@ def create_studio_outputs(
     if job_id:
         from ..recognition.recognition_result import committed_result_reference
         reference = committed_result_reference(load_project(project_path), project_path)
-    register_recent_project(project_path, source_media=str(Path(media_path).resolve()), cue_count=len(project.cues))
+    if not (recognition_snapshot or {}).get("range_ms"):
+        # A range run's result only feeds the open project's replacement
+        # (2026-10-25); it is not another project in the library.
+        register_recent_project(project_path, source_media=str(Path(media_path).resolve()), cue_count=len(project.cues))
     outputs = {"project": str(project_path), "txt": str(txt_path)}
     if reference is not None:
         outputs["result_ref_json"] = json.dumps(reference, ensure_ascii=False)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ..diagnostics.navigation_timing import timed as navigation_timed
 from ..diagnostics.studio_events import observed
 
 import os
@@ -217,6 +218,9 @@ class SubtitleStudioPage(
     QWidget,
 ):
 
+    workspace_built = Signal()
+    workspace_build_progress = Signal(str)
+    workspace_build_failed = Signal(str)
     return_requested = Signal()
     glossary_proofread_requested = Signal()
 
@@ -471,8 +475,15 @@ class SubtitleStudioPage(
     def undo_stack(self, value: QUndoStack) -> None:
         self.session.undo_stack = value
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    @navigation_timed('studio.construct')
+    def __init__(self, parent=None, *, deferred_build=False):
+        # A native video descendant must be born in its final stack. Moving
+        # the completed page from MainWindow to pages re-created its native
+        # ancestry and cost ~1 s in the measured first-entry path.
+        host = getattr(parent, 'pages', parent) if hasattr(parent, 'built_page') else parent
+        super().__init__(host)
+        from ..design.native_surfaces import isolate_native_children
+        isolate_native_children()
         from .gui_thread_handoff import GuiThreadHandoff
         self._gui_thread_handoff=GuiThreadHandoff()
         self.destroyed.connect(self._gui_thread_handoff.release)
@@ -681,24 +692,12 @@ class SubtitleStudioPage(
         self._close_complete = False
         self._close_thread: threading.Thread | None = None
         self._shortcut_values = self._load_shortcut_values()
-        import weakref
-        from . import shortcut_registry
-        page_ref = weakref.ref(self)
-
-        def _registry_changed(values, page_ref=page_ref):
-            page = page_ref()
-            if page is None:
-                raise RuntimeError("Studio page gone")  # the registry drops this listener
-            page._shortcut_registry_changed(values)
-
-        shortcut_registry.subscribe(_registry_changed)
-        self.destroyed.connect(lambda *_args, callback=_registry_changed: shortcut_registry.unsubscribe(callback))
         from .interaction_runtime import InteractionRuntimeAudit
         self._interaction_runtime_audit = InteractionRuntimeAudit(self)
         self.runtime_settings = getattr(getattr(parent, "legacy", None), "RUNTIME_SETTINGS", {})
         self.setAcceptDrops(True)
         from .studio_workspace import StudioWorkspaceBuilder
-        StudioWorkspaceBuilder(
+        builder = StudioWorkspaceBuilder(
             self,
             advanced_live_canvas_type=AdvancedLiveCanvas,
             cue_badge_delegate_type=CueBadgeDelegate,
@@ -711,7 +710,98 @@ class SubtitleStudioPage(
             icon=_icon,
             icon_label=_icon_label,
             time_spinbox=_time_spinbox,
-        ).build()
+        )
+        self._workspace_ready = False
+        self._workspace_build_profile = []
+        self._workspace_steps = builder.build_steps()
+        self._workspace_build_timer = QTimer(self)
+        self._workspace_build_timer.setSingleShot(True)
+        self._workspace_build_timer.timeout.connect(self._advance_workspace_build)
+        if deferred_build:
+            return
+        for _stage in self._workspace_steps:
+            pass
+        self._finish_workspace_initialization()
+
+    def resume_workspace_construction(self):
+        if not self._workspace_ready:
+            self._workspace_build_timer.start(0)
+
+    def pause_workspace_construction(self):
+        self._workspace_build_timer.stop()
+
+    def finish_workspace_construction(self):
+        """Compatibility for synchronous callers of MainWindow.studio_page."""
+        self._workspace_build_timer.stop()
+        if self._workspace_ready:
+            return
+        for _stage in self._workspace_steps:
+            pass
+        self._finish_workspace_initialization()
+
+    def discard_workspace_construction(self, callback):
+        self._workspace_build_timer.stop()
+        if self._workspace_steps is not None:
+            self._workspace_steps.close()
+            self._workspace_steps = None
+        self._close_requested = True
+        self._construction_close_callback = callback
+        audio = getattr(self, 'audio_engine', None)
+        if audio is not None and audio._thread.isRunning():
+            audio._thread.finished.connect(self._construction_stopped, Qt.ConnectionType.QueuedConnection)
+            audio.request_shutdown()
+        else:
+            QTimer.singleShot(0, self, self._construction_stopped)
+
+    def _construction_stopped(self):
+        self._project_heap.close()
+        self._playback_gc_budget.close()
+        self._gui_thread_handoff.release()
+        callback, self._construction_close_callback = self._construction_close_callback, None
+        self.deleteLater()
+        if callback is not None:
+            callback()
+
+    def _advance_workspace_build(self):
+        from ..diagnostics.navigation_timing import phase
+        if self._workspace_ready or self._workspace_steps is None:
+            return
+        started = perf_counter()
+        try:
+            with phase('studio.construct.section'):
+                stage = next(self._workspace_steps)
+            self._workspace_build_profile.append(dict(completed=stage, ms=round((perf_counter()-started)*1000, 3)))
+            self.workspace_build_progress.emit(stage)
+            self._workspace_build_timer.start(0)
+        except StopIteration:
+            try:
+                self._finish_workspace_initialization()
+                self.workspace_built.emit()
+            except Exception as exc:
+                self.workspace_build_failed.emit(str(exc))
+        except Exception as exc:
+            self._workspace_build_timer.stop()
+            self.workspace_build_failed.emit(str(exc))
+
+    @navigation_timed('studio.construct.finish')
+    def _finish_workspace_initialization(self):
+        # One explicit native group preserves clipping/stacking for the video
+        # and its editor without promoting the surrounding workspace panels.
+        from ..design.native_surfaces import cover_native_video
+        cover_native_video(self.video_overlay_host)
+        cover_native_video(self.subtitle_edit_card)
+        import weakref
+        from . import shortcut_registry
+        page_ref = weakref.ref(self)
+
+        def _registry_changed(values, page_ref=page_ref):
+            page = page_ref()
+            if page is None:
+                raise RuntimeError("Studio page gone")  # the registry drops this listener
+            page._shortcut_registry_changed(values)
+
+        shortcut_registry.subscribe(_registry_changed)
+        self.destroyed.connect(lambda *_args, callback=_registry_changed: shortcut_registry.unsubscribe(callback))
         self._install_shortcuts()
         app = QApplication.instance()
         if app is not None:
@@ -830,6 +920,9 @@ class SubtitleStudioPage(
         # "整个视频层黑屏、约两分钟才开始播放"。改为工程打开确认含特效字幕
         # 且媒体 READY 后再延迟 15s 预热；无特效字幕的工程永不预热。
         QTimer.singleShot(8000, self._maybe_schedule_web_renderer_warm)
+
+        self._workspace_ready = True
+        self._workspace_steps = None
 
     def _maybe_schedule_web_renderer_warm(self, attempts: int = 6) -> None:
         if getattr(self, "_close_requested", False):
@@ -1063,6 +1156,10 @@ class SubtitleStudioPage(
             "review_play_context": self._shortcut_review_play,
             "review_previous": lambda: self._step_priority(-1),
             "review_next": lambda: self._step_priority(1),
+            "review_next_w": lambda: self._step_priority(1),
+            "review_next_a": lambda: self._step_priority(1),
+            "review_previous_s": lambda: self._step_priority(-1),
+            "review_previous_d": lambda: self._step_priority(-1),
             "review_adopt_1": lambda: self._adopt_review_candidate(0),
             "review_adopt_2": lambda: self._adopt_review_candidate(1),
             "review_adopt_3": lambda: self._adopt_review_candidate(2),
@@ -1585,6 +1682,14 @@ class SubtitleStudioPage(
         if focus_window is not self and not self.isAncestorOf(focus_window):
             if not focus_window.isVisible():
                 return False
+        from PySide6.QtWidgets import QTextEdit
+        if isinstance(focus, QTextEdit) and not focus.isReadOnly():
+            return True
+        ancestor = focus
+        while ancestor is not None:
+            if 'WebEngine' in type(ancestor).__name__:
+                return True
+            ancestor = ancestor.parentWidget()
         return (
             isinstance(focus, QLineEdit) and not focus.isReadOnly()
         ) or (
@@ -2525,6 +2630,7 @@ class SubtitleStudioPage(
             return target
 
     def _capture_studio_state(self) -> None:
+        from .studio_context_tabs import context_tab_state
         if not self.project:
             return
         duration = self.project.media.duration_ms or max(
@@ -2550,8 +2656,7 @@ class SubtitleStudioPage(
                     "context_collapsed": not self.context_panel.isVisible(),
                     # Keep the legacy numeric meaning for older readers; new
                     # readers restore by stable identity after tab removal.
-                    "context_tab": self._last_context_tab + (1 if self._last_context_tab else 0),
-                    "context_tab_id": ("ai", "style", "video", "highlight", "media")[self._last_context_tab],
+                    **context_tab_state(self._last_context_tab),
                     "cue_list_visible": self.cue_list_panel.isVisible(),
                     "editor_visible": self.cue_editor.isVisible(),
                     "context_visible": self.context_panel.isVisible(),
@@ -2960,6 +3065,9 @@ class SubtitleStudioPage(
             else:
                 menu.addAction(tr("在播放头设置入点（{key}）", key=self._shortcut_key_text("mark_in")), self._mark_in)
                 menu.addAction(tr("在播放头设置出点（{key}）", key=self._shortcut_key_text("mark_out")), self._mark_out)
+            # 2026-10-25: recognize only the in/out stretch again (studio_range_recognition).
+            from .studio_range_recognition import add_range_action
+            add_range_action(self, menu, _icon("fa5s.redo-alt"))
         menu.exec(global_pos)
 
     def _apply_timing_offset(self, cue_ids: list[str], offset_ms: int) -> None:
@@ -3097,9 +3205,14 @@ class SubtitleStudioPage(
         if preview:
             self.video.load(path, "")
 
+    @navigation_timed('studio.hide')
     def hideEvent(self, event) -> None:
         self._gui_thread_handoff.release()
         self._playback_gc_budget.close()
+        publish = getattr(self, '_advanced_preview_publish_timer', None)
+        if publish is not None and publish.isActive():
+            self._navigation_publish_running = True
+            publish.stop()
         hide_started = perf_counter()
 
         def hide_checkpoint(step: str) -> None:
@@ -3122,6 +3235,7 @@ class SubtitleStudioPage(
         video = getattr(self, "video", None)
         if video is not None:
             video.set_native_subtitle_visible(False)
+            video.set_navigation_visible(False)
         hide_checkpoint("native_subtitle_hidden")
         position_overlay = getattr(self, "position_overlay", None)
         if position_overlay is not None:
@@ -3155,9 +3269,16 @@ class SubtitleStudioPage(
             return
         self.ensure_active_subtitle_renderer(reason=reason)
 
+    @navigation_timed('studio.show')
     def showEvent(self, event) -> None:
         self._gui_thread_handoff.acquire()
         super().showEvent(event)
+        video = getattr(self, 'video', None)
+        if video is not None:
+            video.set_navigation_visible(True)
+        if getattr(self, '_navigation_publish_running', False):
+            self._navigation_publish_running = False
+            self._advanced_preview_publish_timer.start()
         QTimer.singleShot(0,self._reload_ai_provider_selection)
         # Initial project selection often happens before this page is shown;
         # always recompute visibility instead of relying on a prior-visible flag.

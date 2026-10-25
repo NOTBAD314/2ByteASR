@@ -49,6 +49,7 @@
   | `studio_edit_commands.py` | 主影片序列（V1）的剃刀、波紋、產生與還原 |
   | `studio_clip_edit.py` | 多軌片段編輯，含波紋刪除 `ripple_ranges_command` 與播放頭編輯 `playhead_edit_command` |
   | `studio_media_commands.py`、`studio_track_delete.py`、`studio_selection.py` | 素材池與多軌、刪除軌道、跨軌選取的移動／複製／刪除 |
+  | `range_replace.py` | 「只重新識別這一段字幕」的整段替換（字幕、證據、字級回執、來源快照、譯文一步撤銷） |
 
 - **Q／W**：快捷鍵定義在 `studio/shortcut_registry.py`（`trim_start` = Q、`trim_end` = W）。目前選到字幕時走 `studio/studio_cue_controller.py` 的 `trim_to_playhead` → `SetCueFieldsCommand("Adjust timing")`；沒有字幕或在影片模式時走 `studio/studio_video_flow.py` 的 `_ripple_video_to_playhead` → `studio_clip_edit.playhead_edit_command`（撤銷紀錄名稱「Q/W 波纹删除」）。
 - 吸附：`studio_group_snap.snap_group_delta`（整組移動）；時間軸元件內另有 `_snap_time` 等實作。

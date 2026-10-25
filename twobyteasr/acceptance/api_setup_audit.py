@@ -244,6 +244,27 @@ def start(window, output: Path):
     def qwen_cloud(dialog):
         dialog.resize(840, 600)
         settle(300)
+        # 2026-10-25: Simplified Chinese starts on 中国站 (千问AI平台); the switch beside the name goes to 国际站.
+        box = dialog.qwen_site_box
+        check('Qwen: the page opens on 中国站 (千问AI平台) with the site switch beside the name',
+              visible(dialog, box) and box.currentData() == 'cn' and dialog._guide.site_variant == 'cn', box.currentText())
+        shot = page(dialog).findChild(ShotView)
+        check('千问AI平台: step 1 shows its sign-in page', shot is not None and shot.pixmap is not None)
+        grab(dialog, 'Q0-china-step1')
+        topup = dialog._walk[1]
+        check('千问AI平台: step 2 is “认证与充值” on its own billing page',
+              topup.title == '认证与充值' and topup.url.startswith('https://platform.qianwenai.com/'), topup.url)
+        dialog._go(len(dialog._walk) - 1)
+        click(dialog.more_toggle)
+        unlock = next((b for b in dialog.findChildren(QToolButton) if b.text() == '修改' and visible(dialog, b)), None)
+        if unlock is not None:
+            click(unlock)
+        check('千问AI平台: requests go to maas.qianwenaiapi.com',
+              'maas.qianwenaiapi.com' in dialog.address_view.text(), dialog.address_view.text())
+        grab(dialog, 'Q0-china-address')
+        box.setCurrentIndex(box.findData('intl'))
+        settle(300)
+        check('Qwen: switching to 国际站 shows the Qwen Cloud steps', dialog._guide.site_variant == 'intl', dialog._guide.name)
         topup = dialog._walk[1]
         check('Qwen Cloud: step 2 is “补全付款信息” (free quota after payment info)',
               topup.role == 'topup' and topup.title == '补全付款信息', topup.title)
@@ -309,6 +330,68 @@ def start(window, output: Path):
         check('step 1 of Claude, Gemini, xAI, Groq, OpenAI and Qwen Cloud shows the official page', not missing, missing)
         dialog.reject()
 
+    def mai(dialog):
+        """2026-10-25: the MAI card's 配置 opens OpenRouter with MAI-Transcribe 2 filled in, and saving works."""
+        dialog.resize(840, 600)
+        settle(300)
+        model = dialog._fields.get('model')
+        check('MAI card: 配置 opens OpenRouter with microsoft/mai-transcribe-2 already filled in',
+              dialog._guide.key == 'openrouter_word' and model is not None
+              and model.text() == 'microsoft/mai-transcribe-2', model.text() if model is not None else None)
+        dialog._fields['api_key'].setFocus()
+        dialog._fields['api_key'].insert('sk-or-v1-' + 'a' * 48)   # placeholder: nothing is sent in this run
+        settle()
+        grab(dialog, 'M1-mai-filled')
+        status = []
+        click(dialog.save_primary_button)
+        status.append(dialog.status.text())
+        check('MAI card: “保存并用于识别” saves it (no refusal of mai-transcribe-2)',
+              '已保存' in status[0] and wait_for(lambda: not dialog.isVisible(), 5), status[0])
+        if dialog.isVisible():
+            dialog.reject()
+
+    def mai_card():
+        window._open_model_workshop()
+        workshop = window.workshop_page
+        settle(300)
+        card = workshop._cards['mai_latest']
+        check('MAI card is named MAI-Transcribe 2 and waits for a key',
+              card.model.name == 'MAI-Transcribe 2' and workshop._model_state(card.model) == 'configure',
+              (card.model.name, workshop._model_state(card.model)))
+        workshop._view_model('mai_latest')
+        settle(300)
+        grab(window, 'M0-mai-card')
+        done = []
+
+        def poll(deadline=time.monotonic() + 20):
+            found = next((w for w in QApplication.topLevelWidgets()
+                          if isinstance(w, QDialog) and w.isVisible() and w.objectName() == 'apiSetupDialog'), None)
+            if found is None:
+                if time.monotonic() < deadline:
+                    QTimer.singleShot(120, lambda: poll(deadline))
+                else:
+                    result.setdefault('errors', []).append(dict(name='mai', error='dialog did not open'))
+                return
+            try:
+                mai(found)
+            except Exception:  # noqa: BLE001
+                result.setdefault('errors', []).append(dict(name='mai', error=traceback.format_exc()[-2000:]))
+                found.reject()
+            done.append(True)
+        QTimer.singleShot(250, poll)
+        click(workshop.detail_action)
+        wait_for(lambda: bool(done), 30)
+        settle(400)
+        workshop._state_memo = None
+        state = workshop._model_state(card.model, 'primary')
+        check('MAI card: after saving, recognition uses OpenRouter · microsoft/mai-transcribe-2 and the card is in use',
+              window.qwen_asr_api_provider.currentData() == 'openrouter_word'
+              and window.qwen_asr_api_model.text() == 'microsoft/mai-transcribe-2' and state in {'selected', 'configured'},
+              (window.qwen_asr_api_provider.currentData(), window.qwen_asr_api_model.text(), state))
+        workshop._view_model('mai_latest')
+        settle(300)
+        grab(window, 'M2-mai-card-after')
+
     def run_one(act, provider, name, kind='asr', *args):
         done = []
 
@@ -346,6 +429,8 @@ def start(window, output: Path):
                 run_one(act, provider, name)
                 settle(200)
             run_one(deepseek, 'deepseek', 'deepseek', 'text')
+            settle(200)
+            mai_card()
             settle(200)
             expected = {'https://platform.mosi.cn/'}
             check('only the official pages the user clicked were requested (offline run)',

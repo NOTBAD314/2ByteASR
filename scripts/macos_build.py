@@ -36,7 +36,9 @@ def is_macho(path: Path) -> bool:
 def native_host_problem() -> str:
     if sys.platform!="darwin" or platform.machine()!="arm64": return "Native Apple Silicon macOS is required; Windows cannot cross-build this .app."
     if sys.version_info[:2]!=(3,10): return "Use the locked Python 3.10 runtime."
-    if tuple(int(x) for x in platform.mac_ver()[0].split(".")[:2]) < (15,0): return "The selected native media bottles require macOS 15 or newer."
+    from twobyteasr.system.macos_compatibility import compatibility_problem
+    problem = compatibility_problem()
+    if problem: return problem
     return ""
 
 
@@ -232,6 +234,19 @@ def main(argv=None):
     if not args.media_receipt:raise RuntimeError("A verified media installation receipt is required")
     from scripts.macos_media_contract import load_verified_tools
     tools=load_verified_tools(args.media_receipt,LOCK)
+    media_record=json.loads(args.media_receipt.read_text('utf8'))
+    rebuild=media_record.get('compatibility_rebuilds',{}).get('tesseract',{})
+    if rebuild.get('source')!=lock['compatibility_rebuilds']['tesseract'] or not rebuild.get('compiled'):
+        raise RuntimeError('The source-built Tesseract compatibility receipt is missing or stale')
+    compatibility_libraries=rebuild.get('libraries',[])
+    if not compatibility_libraries or any(sha256(Path(item['path']))!=item['sha256'] for item in compatibility_libraries):
+        raise RuntimeError('Compiled compatibility library changed')
+    receipt['compatibility_libraries']=compatibility_libraries
+    receipt['compatibility_rebuilds']=media_record['compatibility_rebuilds']
+    from twobyteasr.system.macos_wheels import verify_wheelhouse
+    wheelhouse=verify_wheelhouse(ROOT,directory=(args.runtime or Path(sys.prefix)).parent/'cpu-wheelhouse')
+    receipt['cpu_wheelhouse']=str(wheelhouse)
+    receipt['cpu_wheelhouse_manifest_sha256']=sha256(wheelhouse/'manifest.json')
     receipt.update(stage="native_media_verified",native_tools=tools,
                    media_install_receipt_sha256=sha256(args.media_receipt))
     receipt['selected_media_libraries']=[dict(path=str(path),sha256=sha256(path))
@@ -260,6 +275,8 @@ def main(argv=None):
     browser=bundled_browser(source/"renderer",platform="darwin",machine="arm64")
     if not browser.is_file() or "arm64" not in subprocess.check_output(["/usr/bin/lipo","-archs",str(browser)],text=True).split(): raise RuntimeError("Native arm64 Chromium was not prepared")
     tools["browser"]={"path":str(browser),"sha256":sha256(browser),"version":subprocess.check_output([str(browser),"--version"],text=True).strip(),"origin":"locked Remotion ensureBrowser"}
+    from scripts.macos_compat_native import install_renderer_media
+    receipt['renderer_media_compatibility']=install_renderer_media(source/'renderer',output,lock['renderer_media_compatibility'])
     tools["node"]={"path":str(node),"sha256":sha256(node),"version":lock["node"]["version"]}
     receipt["native_tools"]=tools
     receipt["app_icon"]=native_brand_icon(source,output)
@@ -284,6 +301,15 @@ def main(argv=None):
                 raise RuntimeError("Unrelocated Homebrew dependency in bundle: "+str(path))
             native_objects.append({"path":path.relative_to(app).as_posix(),"architecture":architectures,"sha256":sha256(path)})
     receipt["native_objects"]=native_objects
+    # A lowered plist cannot make precompiled media, Qt or Python extensions
+    # compatible. Check every final Mach-O before any deliverable is archived.
+    from scripts.macos_binary_audit import audit_tree
+    from twobyteasr.system.macos_compatibility import MINIMUM_MACOS
+    compatibility=audit_tree(app,arch='arm64',target=MINIMUM_MACOS)
+    (output/'binary-compatibility.json').write_text(json.dumps(compatibility,ensure_ascii=False,indent=2)+'\n',encoding='utf8')
+    if not compatibility['passed']:
+        raise RuntimeError('Final app has incompatible native dependencies; see binary-compatibility.json')
+    receipt['native_validation']['binary_compatibility']={'passed':True,'minimum_macos':MINIMUM_MACOS,'execution_verified':False}
     receipt["native_validation"].update(app_built=True,architecture_and_external_linkage_checked=True)
     # Preserve a real built .app before later model/desktop QA. A failed smoke
     # must not discard a usable artifact or turn it into an empty placeholder.

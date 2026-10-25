@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -22,14 +23,24 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if sys.platform!="darwin" or platform.machine()!="arm64" or sys.version_info[:2]!=(3,10):
         raise SystemExit("Use native Apple Silicon Python 3.10; this is not a cross-build.")
+    from twobyteasr.system.macos_compatibility import require_compatible, MINIMUM_MACOS
+    require_compatible('main')
+    os.environ['MACOSX_DEPLOYMENT_TARGET']=MINIMUM_MACOS
     target=args.runtime.expanduser().resolve()
     if target.exists(): raise SystemExit("Runtime target exists; choose a new path. No existing runtime was changed.")
     venv.EnvBuilder(with_pip=True).create(target)
     interpreter=target/"bin/python"
     report=args.receipt.with_suffix(".pip-install.json")
     report.parent.mkdir(parents=True,exist_ok=True)
-    subprocess.run([str(interpreter),"-m","pip","install","--report",str(report),"-r",str(ROOT/"packaging/macos/requirements-cpu.txt")],check=True)
+    from scripts.macos_build_wheels import build_wheelhouse
+    wheelhouse=build_wheelhouse(interpreter,args.receipt.parent/'cpu-wheelhouse')
+    subprocess.run([str(interpreter),"-m","pip","install","--only-binary=:all:","--find-links",str(wheelhouse),"--report",str(report),"-r",str(ROOT/"packaging/macos/requirements-cpu.txt")],check=True)
     subprocess.run([str(interpreter),'-m','pip','check'],check=True)
+    from scripts.macos_binary_audit import audit_tree
+    native_audit=audit_tree(target,arch='arm64',target=MINIMUM_MACOS,allow_external=True)
+    args.receipt.with_suffix('.binary-compatibility.json').write_text(json.dumps(native_audit,indent=2)+'\n','utf8')
+    if not native_audit['passed']:
+        raise RuntimeError('Downloaded Python dependencies exceed the supported macOS target; see binary-compatibility receipt')
     from scripts.macos_dependency_contract import verify_native_wheels
     native_lock=ROOT/'packaging/macos/native-dependencies.lock.json'
     verified=verify_native_wheels(json.loads(report.read_text('utf8')),json.loads(native_lock.read_text('utf8')))

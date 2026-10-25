@@ -278,7 +278,8 @@ class BuiltinGlossarySource:
 
 
 class PastedTextSource:
-    """粘贴资料文本：逐行术语；支持 `名称（类别）`、`类别：A、B、C`。
+    """粘贴资料文本：逐行术语；支持 `名称（类别）`、`类别：A、B、C`，
+    以及制表符分列的表格行（标准词 / 分类 / 别名，别名用 | 分隔）。
 
     候选 status=candidate，source=pasted。不联网。
     """
@@ -292,6 +293,13 @@ class PastedTextSource:
         for raw_line in str(text or "").splitlines():
             line = raw_line.strip().strip("、,，。;；")
             if not line or line.startswith("#"):
+                continue
+            if "\t" in line:
+                # 表格行（Excel / AI 返回的 TSV）：标准词、分类、别名分列；
+                # 2026-10-25 以前整行连同制表符当成一个词。
+                table_row = _table_row_candidate(line, section)
+                if table_row is not None:
+                    candidates.append(table_row)
                 continue
             # 类别段前缀：`角色：xxx` / `技能：xxx`
             prefix_match = re.match(r"^(角色|技能|物品|武器|装备|地点|怪物|敌人|阵营|机制|任务|常用|其它)[：:](.*)$", line)
@@ -324,6 +332,61 @@ class PastedTextSource:
         return candidates
 
 
+_TSV_HEADER_TERMS = {"标准词", "术语", "term", "canonical"}
+
+
+def _tsv_columns(line: str) -> list[str]:
+    return [part.strip() for part in str(line).strip().strip("`").split("\t")]
+
+
+def _tsv_category(term: str, label: str) -> str:
+    return (
+        LABEL_TO_CATEGORY.get(label)
+        or (label if label in CATEGORY_KEYS else None)
+        or infer_category(term, label)
+    )
+
+
+def _tsv_aliases(term: str, value: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            alias.strip()
+            for alias in re.split(r"[|｜、,，;；]+", value or "")
+            if alias.strip() and alias.strip() != term and len(alias.strip()) <= 40
+        )
+    )
+
+
+def _table_row_candidate(line: str, section: str = "") -> GlossaryCandidate | None:
+    columns = _tsv_columns(line)
+    term = columns[0] if columns else ""
+    if term in _TSV_HEADER_TERMS or not (1 <= len(term) <= 40):
+        return None
+    label = columns[1] if len(columns) > 1 else ""
+    return GlossaryCandidate(
+        term=term,
+        category=_tsv_category(term, label) if label else infer_category(term, section),
+        aliases=_tsv_aliases(term, columns[2] if len(columns) > 2 else ""),
+        source="pasted",
+        confidence=0.7,
+        status=STATUS_CANDIDATE,
+    )
+
+
+def is_ai_glossary_tsv(text: str) -> bool:
+    """True when the first content line is the header 「复制 AI 建词提示词」 asks for.
+
+    2026-10-25：用户把 AI 返回的表贴进「粘贴资料」，以前按普通文字拆成坏词。
+    """
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip().strip("`")
+        if not line or line.startswith("#") or line.lower() == "tsv":
+            continue
+        columns = _tsv_columns(line)
+        return len(columns) >= 2 and columns[0] in _TSV_HEADER_TERMS
+    return False
+
+
 def build_ai_glossary_prompt(game_name: str) -> str:
     """Return a provider-neutral prompt whose TSV can be reviewed before import."""
     name = str(game_name or "当前游戏").strip() or "当前游戏"
@@ -341,36 +404,27 @@ def build_ai_glossary_prompt(game_name: str) -> str:
 def parse_ai_glossary_tsv(text: str, *, limit: int = 1000) -> list[GlossaryCandidate]:
     """Parse external-AI TSV into preview-only candidates; this never writes storage."""
     candidates: list[GlossaryCandidate] = []
-    for line_number, raw_line in enumerate(str(text or "").splitlines(), 1):
+    first_content_line = True
+    for raw_line in str(text or "").splitlines():
         line = raw_line.strip().strip("`")
-        if not line or line.startswith("#") or line.lower() in {"tsv", "```tsv"}:
+        if not line or line.startswith("#") or line.lower() == "tsv":
             continue
-        columns = [part.strip() for part in line.split("\t")]
-        if line_number == 1 and columns and columns[0] in {"标准词", "术语", "term", "canonical"}:
+        columns = _tsv_columns(line)
+        # 表头只认第一行内容（前面可能有 ```tsv 围栏）。
+        if first_content_line and columns[0] in _TSV_HEADER_TERMS:
+            first_content_line = False
             continue
+        first_content_line = False
         if len(columns) < 2:
             continue
         term = columns[0]
         if not (1 <= len(term) <= 40):
             continue
-        raw_category = columns[1]
-        category = (
-            LABEL_TO_CATEGORY.get(raw_category)
-            or (raw_category if raw_category in CATEGORY_KEYS else None)
-            or infer_category(term, raw_category)
-        )
-        aliases = tuple(
-            dict.fromkeys(
-                alias.strip()
-                for alias in re.split(r"[|｜、,，;；]+", columns[2] if len(columns) > 2 else "")
-                if alias.strip() and alias.strip() != term and len(alias.strip()) <= 40
-            )
-        )
         candidates.append(
             GlossaryCandidate(
                 term=term,
-                category=category,
-                aliases=aliases,
+                category=_tsv_category(term, columns[1]),
+                aliases=_tsv_aliases(term, columns[2] if len(columns) > 2 else ""),
                 source="ai",
                 confidence=0.65,
                 status=STATUS_AI_SUGGESTED,
@@ -511,11 +565,18 @@ def build_candidates(*sources) -> list[GlossaryCandidate]:
 class AiEnhancementError(Exception):
     """AI 增强失败的结构化错误。基础建词不受影响。"""
 
-    def __init__(self, code: str, detail: str, endpoint: str = ""):
+    def __init__(self, code: str, detail: str, endpoint: str = "", model: str = ""):
         super().__init__(detail)
-        self.code = code          # unauthorized / missing_key / unavailable
+        # unauthorized / missing_key / no_balance / rate_limited / bad_response / unavailable
+        self.code = code
         self.detail = detail
         self.endpoint = endpoint
+        self.model = model
+
+    @property
+    def needs_settings(self) -> bool:
+        """Only a key or account problem is fixed in the AI settings."""
+        return self.code in {"unauthorized", "missing_key", "no_balance"}
 
     @property
     def user_message(self) -> str:
@@ -523,24 +584,53 @@ class AiEnhancementError(Exception):
             return "AI 增强不可用：当前 API 密钥无效或未授权。基础建词仍可继续使用。"
         if self.code == "missing_key":
             return "AI 增强不可用：尚未配置 API 密钥。基础建词仍可继续使用。"
+        if self.code == "no_balance":
+            return "AI 增强不可用：API 账户余额不足。基础建词仍可继续使用。"
+        if self.code == "bad_response":
+            return "AI 增强不可用：AI 没有返回完整的整理结果。基础建词仍可继续使用。"
         return "AI 增强暂时不可用。基础建词仍可继续使用。"
 
 
 def classify_ai_error(exc: Exception, endpoint: dict | None = None) -> AiEnhancementError:
-    """把网络/HTTP 异常分类为友好错误。401 按 HTTPError.response.status_code 判定。"""
+    """把网络/HTTP/模型返回的异常分类为友好错误。
+
+    HTTP 状态取自 ``requests.HTTPError.response`` 或 ``LLMRequestError.diagnostics``。
+    2026-10-25：以前除 401 外一律 unavailable，界面又一律写“密钥无效”；
+    DeepSeek 思考用光输出额度（正文为空）就被说成密钥问题。
+    """
     endpoint = endpoint or {}
     url = str(endpoint.get("url", "") or "")
+    model = str(endpoint.get("model", "") or "")
     if isinstance(exc, AiEnhancementError):
         return exc
+    status = None
     if isinstance(exc, requests.HTTPError) and exc.response is not None:
-        status = getattr(exc.response, "status_code", 0)
-        if status == 401:
-            return AiEnhancementError("unauthorized", f"HTTP 401：API Key 无效或未授权。", url)
-        return AiEnhancementError("unavailable", f"HTTP {status}：{' '.join(str(exc).split())[:160]}", url)
-    text = " ".join(str(exc).split())[:160]
-    if "密钥" in text or "key" in text.lower():
-        return AiEnhancementError("missing_key", text, url)
-    return AiEnhancementError("unavailable", text, url)
+        status = getattr(exc.response, "status_code", None)
+    diagnostics = getattr(exc, "diagnostics", None)
+    if status is None and isinstance(diagnostics, dict):
+        status = diagnostics.get("http_status")
+    category = str(getattr(exc, "category", "") or "")
+    text = " ".join(str(exc).split())[:240]
+    # A 200 answer without usable JSON also carries http_status; only >= 400 is an HTTP failure.
+    status = status if isinstance(status, int) and status >= 400 else None
+    if status and not text.startswith("HTTP"):
+        text = f"HTTP {status}：{text}"[:240]
+    if status in {401, 403} or category == "auth_error":
+        code = "unauthorized"
+    elif status == 402:
+        code = "no_balance"
+    elif status == 429 or category == "rate_limited":
+        code = "rate_limited"
+    elif category == "auth_config":
+        code = "missing_key"
+    elif status or isinstance(exc, requests.RequestException):
+        code = "unavailable"
+    elif (category.startswith("structured_") or category in {"empty_content", "response_json_error", "response_schema_error"}
+          or isinstance(exc, (ValueError, KeyError, TypeError))):
+        code = "bad_response"
+    else:
+        code = "unavailable"
+    return AiEnhancementError(code, text, url, model)
 
 
 _AI_ENHANCE_SYSTEM = (
@@ -553,61 +643,68 @@ _AI_ENHANCE_SYSTEM = (
 )
 
 
-def _parse_ai_enhancement(content: str) -> dict:
-    text = str(content or "").strip()
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("AI 没有返回可读取的增强 JSON。")
-    payload = json.loads(text[start : end + 1])
-    if not isinstance(payload, dict):
-        raise ValueError("AI 增强返回格式错误。")
-    return payload
+_AI_ENHANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "classify": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"term": {"type": "string"}, "category": {"type": "string"}},
+            "required": ["term", "category"], "additionalProperties": False}},
+        "aliases": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"term": {"type": "string"}, "alias": {"type": "string"}},
+            "required": ["term", "alias"], "additionalProperties": False}},
+        "noise": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["classify", "aliases", "noise"],
+    "additionalProperties": False,
+}
+# 120 个候选的分类 + 别名约 3,000 token（关掉思考时实测 23 个约 565）；被截断时加大再试一次。
+_AI_ENHANCE_MAX_TOKENS = 8192
+_AI_ENHANCE_RETRY_MAX_TOKENS = (16384,)
 
 
 def ai_enhance(
     endpoint: dict,
     candidates: list[GlossaryCandidate],
     *,
-    requests_module=requests,
-    timeout: tuple[int, int] = (10, 60),
+    sender=None,
+    timeout: tuple[int, int] = (10, 120),
 ) -> tuple[list[GlossaryCandidate], AiEnhancementError | None]:
     """AI 增强（可选）：分类补全 + 别名建议 + 噪音标记。
 
     返回 (候选列表, 错误)。错误时候选原样返回，调用方继续无 AI 流程。
     AI 建议的别名以 ai_suggested 候选加入，绝不自动 verified。
+
+    请求走与 AI 断句 / 校对相同的 Provider 层（``sender`` 默认
+    ``post_chat_completion``）：DeepSeek 官方地址关掉思考、要 JSON 格式、
+    写调用审计。2026-10-25 以前这里手写 ``requests.post``，DeepSeek 默认先
+    思考，4096 的输出额度被思考用光，正文为空或 JSON 被截断。
     """
     if not endpoint.get("api_key"):
         return candidates, AiEnhancementError("missing_key", "未配置 API 密钥")
+    from ..providers.ai_providers import OpenAICompatibleProvider
+
     prompt_terms = [{"term": c.term} for c in candidates[:120]]
-    payload = {
-        "model": endpoint["model"],
-        "messages": [
-            {"role": "system", "content": _AI_ENHANCE_SYSTEM},
-            {
-                "role": "user",
-                "content": f"候选列表（JSON）：{json.dumps(prompt_terms, ensure_ascii=False)}",
-            },
-        ],
-        "temperature": 0.0,
-        "max_tokens": 4096,
-    }
+    messages = [
+        {"role": "system", "content": _AI_ENHANCE_SYSTEM},
+        {
+            "role": "user",
+            "content": f"候选列表（JSON）：{json.dumps(prompt_terms, ensure_ascii=False)}",
+        },
+    ]
     try:
-        response = requests_module.post(
-            endpoint["url"],
-            headers={
-                "Authorization": f"Bearer {endpoint['api_key']}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
+        result = OpenAICompatibleProvider(endpoint, sender=sender).structured_complete(
+            messages,
+            _AI_ENHANCE_SCHEMA,
+            stage="smart_glossary",
+            max_tokens=_AI_ENHANCE_MAX_TOKENS,
+            temperature=0.0,
             timeout=timeout,
+            structured_retry_system_prompt=_AI_ENHANCE_SYSTEM,
+            structured_retry_max_tokens=_AI_ENHANCE_RETRY_MAX_TOKENS,
         )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
     except Exception as exc:  # noqa: BLE001 - any failure must degrade to no-AI flow
-        return candidates, classify_ai_error(exc, endpoint)
-    try:
-        result = _parse_ai_enhancement(content)
-    except (ValueError, TypeError, KeyError) as exc:
         return candidates, classify_ai_error(exc, endpoint)
 
     by_key = {normalize_term(c.term): c for c in candidates}

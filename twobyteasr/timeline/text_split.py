@@ -41,7 +41,9 @@ class TextSplitPlan:
 
 def _content_starts(text: str) -> list[int]:
     from ..forced_alignment import content_char_map
-    return [start for _char, start, _end in content_char_map(text)]
+    from ..caption_style.text_marks import boundaries
+    edges = set(boundaries(text))
+    return [start for _char, start, _end in content_char_map(text) if start in edges]
 
 
 def _cut_position(text: str, position: int):

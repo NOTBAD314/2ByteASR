@@ -502,6 +502,47 @@ def parse_update_manifest(data: bytes, *, allow_http_local: bool = False) -> Upd
     )
 
 
+def select_macos_installer(manifest: UpdateManifest, *, release: str, machine: str) -> Asset:
+    """Select only an explicitly compatible, signed, complete Mac bundle.
+
+    This additive field leaves the existing Windows component protocol intact.
+    Old clients ignore it; they must migrate manually from their Windows-only
+    update UI. Absence never means that the Windows Setup is a Mac fallback.
+    """
+    from ..system.macos_compatibility import parse_macos_version, normalized_architecture, ARCHITECTURES
+    try:
+        host = parse_macos_version(release)
+    except ValueError as exc:
+        raise ManifestError('无法确认 macOS 版本；保留当前安装。') from exc
+    architecture = normalized_architecture(machine)
+    if architecture not in ARCHITECTURES:
+        raise ManifestError('当前没有 Intel / Rosetta 相容更新包；保留当前安装。')
+    entries = manifest.raw.get('macos_installers', [])
+    if not isinstance(entries, list):
+        raise ManifestError('macOS 安装包相容性清单格式错误')
+    matching = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise ManifestError('macOS 安装包记录格式错误')
+        try:
+            minimum = parse_macos_version(entry.get('minimum_macos'))
+        except ValueError as exc:
+            raise ManifestError('macOS 安装包缺少有效的最低系统版本') from exc
+        if entry.get('architecture') not in ('arm64','x86_64'):
+            raise ManifestError('macOS 安装包架构无效；没有宣称 Universal 2')
+        asset = _asset(entry.get('asset'), allow_http_local=False)
+        if asset is None or not asset.name.endswith('.dmg'):
+            raise ManifestError('macOS 更新必须是完整 DMG')
+        if (entry['architecture'] == architecture and host >= minimum
+                and entry.get('runtime_contract') == 'macos-arm64-sonoma-v1'):
+            matching.append((minimum, asset))
+    if not matching:
+        raise ManifestError(f'此版本没有适用于 macOS {release} / {architecture} 的已声明相容安装包。保留当前程序；不要下载 Windows Setup，可查看发布页的 Mac 支援说明。')
+    if len(matching) > 1:
+        raise ManifestError('macOS 更新包选择不唯一，保留当前程序。')
+    return matching[0][1]
+
+
 def read_archive_index(data: bytes, expected_content: str, component: str) -> list[FileEntry]:
     """Validate the file list stored inside a component archive."""
     try:

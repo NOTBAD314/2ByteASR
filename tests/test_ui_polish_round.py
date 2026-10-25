@@ -14,6 +14,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFrame
@@ -213,7 +214,7 @@ def test_glossary_delete_game_and_delete_term_are_separate():
     _app()
     win = _main_window()
     dialog = _open_terms(win)
-    # 删除游戏按钮只对非保护游戏可用
+    # 2026-10-25（用户）：自带词库也能删除（隐藏，可在「新建」里恢复），但仍不能改名
     def _item_for(name):
         for index in range(dialog.game_list.count()):
             item = dialog.game_list.item(index)
@@ -225,7 +226,8 @@ def test_glossary_delete_game_and_delete_term_are_separate():
     if protected:
         dialog.game_list.setCurrentItem(protected)
         _app().processEvents()
-        assert not dialog.delete_game_button.isEnabled(), "内置/受保护游戏不可删除"
+        assert dialog.delete_game_button.isEnabled(), "自带词库可删除"
+        assert not dialog.rename_game_button.isEnabled(), "自带词库不能改名"
     user_game = _item_for("我的世界")
     if user_game:
         dialog.game_list.setCurrentItem(user_game)
@@ -305,3 +307,119 @@ def test_smart_build_external_ai_prompt_enters_tsv_preview_flow(monkeypatch):
     assert dialog.extract_button.text() == "解析并预览"
     dialog.close()
     win.close()
+
+
+# 2026-10-25 user report: DeepSeek connected, yet 智能建词 said "API 密钥无效" and
+# 「配置 API」 led back to the same dialog.
+
+def _smart_dialog_with_key(monkeypatch, *, startup_page="recognition"):
+    import subtitle_core as legacy
+    from twobyteasr.app.ui import SmartGlossaryDialog
+
+    monkeypatch.setattr("twobyteasr.glossary.main_ui_smart_glossary.validate_endpoint", lambda *a, **k: None)
+    win = MainWindow([], legacy, object(), None, startup_page=startup_page)
+    return win, SmartGlossaryDialog(win, "鸣潮")
+
+
+@pytest.mark.parametrize(
+    ("code", "text", "has_config"),
+    [
+        ("unauthorized", "当前 API 密钥无效或未授权", True),
+        ("no_balance", "余额不足", True),
+        ("rate_limited", "请求太频繁", False),
+        ("bad_response", "没有返回完整的整理结果", False),
+        ("unavailable", "暂时连不上 AI 服务", False),
+    ],
+)
+def test_smart_build_ai_error_box_names_the_actual_cause(monkeypatch, code, text, has_config):
+    _app()
+    from twobyteasr.glossary.smart_glossary import AiEnhancementError
+
+    win, dialog = _smart_dialog_with_key(monkeypatch)
+    shown = {}
+
+    def capture(message):
+        shown["text"] = message.informativeText()
+        shown["buttons"] = [button.text() for button in message.buttons()]
+
+    monkeypatch.setattr(dialog, "_exec_dialog", capture)
+    dialog._show_ai_error(AiEnhancementError(code, "detail", "https://api.deepseek.com/v1/chat/completions", "deepseek-flash"))
+    assert text in shown["text"]
+    if code != "unauthorized":
+        assert "密钥" not in shown["text"]
+    assert ("配置 API" in shown["buttons"]) is has_config
+    assert "查看详情" in shown["buttons"] and "继续无 AI 建词" in shown["buttons"]
+    dialog.close()
+    win.close()
+
+
+@pytest.mark.parametrize("startup_page", ["recognition", "project_library"])
+def test_smart_build_config_api_opens_the_ai_settings_window(monkeypatch, startup_page):
+    app = _app()
+    from twobyteasr.glossary.smart_glossary import AiEnhancementError
+
+    win, dialog = _smart_dialog_with_key(monkeypatch, startup_page=startup_page)
+    dialog.show()
+
+    def click_config(message):
+        next(button for button in message.buttons() if button.text() == "配置 API").click()
+
+    monkeypatch.setattr(dialog, "_exec_dialog", click_config)
+    dialog._show_ai_error(AiEnhancementError("unauthorized", "HTTP 401", "u", "m"))
+    app.processEvents()
+    settings = getattr(win, "_ai_settings_dialog", None)
+    assert settings is not None and settings.objectName() == "aiSettingsDialog"
+    assert settings.isVisible()
+    refreshed = []
+    monkeypatch.setattr(dialog, "_refresh_ai_state", lambda: refreshed.append(True))
+    settings.reject()
+    for _ in range(60):  # SpringDialog animates its close before ``finished``
+        if refreshed:
+            break
+        QTest.qWait(50)
+    assert refreshed == [True], "关掉 AI 设置后智能建词要重新读取 AI 状态"
+    assert win._ai_settings_dialog is None
+    dialog.close()
+    win.close()
+
+
+def test_smart_build_pasted_ai_table_is_parsed_as_table_without_ai_call(monkeypatch):
+    _app()
+    from twobyteasr.glossary import smart_glossary
+    from twobyteasr.glossary.main_ui_smart_glossary import SmartGlossaryWorker
+
+    def no_ai(*_args, **_kwargs):
+        raise AssertionError("贴进来的 AI 表不再二次 AI 增强")
+
+    monkeypatch.setattr(smart_glossary, "ai_enhance", no_ai)
+    text = "标准词\t分类\t别名或常见错写\n玄方地界\t地点\tげんぽうちかい\n今汐\t角色\t金汐\n"
+    worker = SmartGlossaryWorker(_FakeLegacy(), "鸣潮", "pasted", text, {"api_key": "k", "url": "u", "model": "m"})
+    results = []
+    worker.completed.connect(lambda _game, candidates, error: results.append((candidates, error)))
+    worker.failed.connect(lambda _game, message: results.append(("failed", message)))
+    worker.run()
+    (candidates, error), = results
+    assert error is None
+    assert [(c.term, c.category, c.aliases) for c in candidates] == [
+        ("玄方地界", "location", ("げんぽうちかい",)),
+        ("今汐", "character", ("金汐",)),
+    ]
+
+
+def test_smart_build_back_returns_the_stepper_to_step_one(monkeypatch):
+    _app()
+    from twobyteasr.glossary.smart_glossary import GlossaryCandidate
+
+    win, dialog = _smart_dialog_with_key(monkeypatch)
+    dialog._candidates = [GlossaryCandidate("今汐", "character", source="pasted")]
+    dialog._populate_review()
+    assert dialog._step_labels[1].property("active") and dialog.source_summary.isHidden()
+    dialog._back_to_sources()
+    assert dialog._step_labels[0].property("active") and not dialog._step_labels[1].property("active")
+    assert not dialog.source_summary.isHidden()
+    dialog.close()
+    win.close()
+
+
+class _FakeLegacy:
+    pass

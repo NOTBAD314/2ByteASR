@@ -270,10 +270,11 @@ def test_ai_payload_must_be_structured():
             {"title": "翻车反杀", "source_in": 12.0, "source_out": 48.0, "score": 0.92, "reason": "弹幕暴涨", "quotes": ["草"]}
         ]
     })
-    items = parse_highlight_payload(raw, [])
-    assert items[0].title == "翻车反杀"
-    assert items[0].source_in_ms == 12_000
-    assert items[0].source_out_ms == 48_000
+    # 2026-10-24 (clip evidence ADR, Codex): AI boundaries must cite real subtitle IDs of the source
+    # project; bare seconds without that project are refused, never trusted as a cut. The cited path
+    # is tested in tests/test_clip_suggestion_evidence.py.
+    with pytest.raises(ValueError):
+        parse_highlight_payload(raw, [])
 
 
 def test_edl_write(tmp_path):

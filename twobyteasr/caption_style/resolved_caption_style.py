@@ -115,7 +115,8 @@ def resolve_caption_style(styles,speakers,cue,recipes,play_res_x=1920):
     from .visual_snapshot import _materialize_recipe_appearance
     visual=resolve_cue_visual_from_records(styles,speakers,cue)
     style=visual.style
-    payload=recipe_payload_for_style(recipes,cue.style_id)
+    from .style_resolution import recipe_for_cue
+    payload=recipe_for_cue(recipes,cue)
     recipe=StyleRecipe.from_dict(payload) if payload else StyleRecipe(name=style.name,motion={})
     max_width=max(1,float(play_res_x)-max(40,style.margin_l)-max(40,style.margin_r)-2*(max(style.outline_width,style.outline2_width)+style.shadow+4))
     # A derived name-display cue can reserve space around its unchanged
@@ -140,11 +141,18 @@ def resolve_caption_style(styles,speakers,cue,recipes,play_res_x=1920):
         recipe=_materialize_recipe_appearance(recipe,style,visual.appearance_override)
     else:
         recipe.typography.update(fontFamily=family,fontSize=size)
-    recipe.layout.update(singleLine=len(layout.lines)==1,maxWidthPx=max_width,fitLocked=True,
-        lineCount=len(layout.lines),lineHeightPx=line_height)
+    line_count = len(layout.lines)
+    from .text_marks import layer_marks
+    marks = layer_marks(cue)
+    if marks and not recipe.web_theme:
+        from ..rendering.marked_glyphs import wrap_marked_text
+        text,width,line_height,line_count = wrap_marked_text(cue.text,style,marks,max_width)
+        requires_split = width*style.scale_x/100 > max_width+1 or line_count*line_height*style.scale_y/100 > height_limit
+    recipe.layout.update(singleLine=line_count==1,maxWidthPx=max_width,fitLocked=True,
+        lineCount=line_count,lineHeightPx=line_height)
     encode=lambda value:json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
     return ResolvedCaptionStyle(encode(asdict(style)),encode(recipe.to_dict()),text,max_width,width,loaded,requires_split,
-        line_count=len(layout.lines),font_face_json=encode(asdict(face)),font_warning=warning)
+        line_count=line_count,font_face_json=encode(asdict(face)),font_warning=warning)
 
 
 def split_overlong_caption_commands(project,cue_ids,stack,changed=None):

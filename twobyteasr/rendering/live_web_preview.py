@@ -40,6 +40,7 @@ class WebPreviewConfiguration:
     placement: dict
     explicit_motion: bool
     proxy_safe: bool = False
+    translation: str = ""
 
 
 @lru_cache(maxsize=8)
@@ -49,7 +50,7 @@ def _compiled_theme_page(serialized_theme):
         speaker='', duration_seconds=3., auto_replay=False)
 
 
-def prepare_web_configuration(theme, text, speaker='', duration_seconds=3., placement=None):
+def prepare_web_configuration(theme, text, speaker='', duration_seconds=3., placement=None, translation=''):
     """Compile once per theme on the caption preparation worker."""
     from ..caption_style.web_placement import normalize_placement
     text = str(text or '字幕预览ABC123')
@@ -58,10 +59,10 @@ def prepare_web_configuration(theme, text, speaker='', duration_seconds=3., plac
     placement = normalize_placement(placement)
     serialized = json.dumps(document_theme_digest(theme), ensure_ascii=False, sort_keys=True)
     theme_key = hashlib.sha1(serialized.encode('utf8')).hexdigest()[:16]
-    strip_key = _strip_key_for(theme_key, json.dumps([text,speaker,round(duration,3),placement], ensure_ascii=False, sort_keys=True))
+    strip_key = _strip_key_for(theme_key, json.dumps([text,speaker,round(duration,3),placement,str(translation)], ensure_ascii=False, sort_keys=True))
     return WebPreviewConfiguration(_compiled_theme_page(serialized),theme_key,strip_key,text,speaker,duration,
         placement,bool(theme.get('motionSpec')),not bool(str(theme.get('stageHtml','')).strip() or str(theme.get('stageCss','')).strip()
-            or 'animation' in str(theme.get('cueCss','')).lower() or '@keyframes' in str(theme.get('cueCss','')).lower()))
+            or 'animation' in str(theme.get('cueCss','')).lower() or '@keyframes' in str(theme.get('cueCss','')).lower()), str(translation or ''))
 
 
 def document_theme_digest(theme: Mapping[str, Any]) -> dict[str, Any]:
@@ -333,6 +334,7 @@ class LiveWebPreviewWorker(QObject):
         self._strip_key: str = ""
         self._strip_text: str = ""
         self._strip_speaker: str = ""
+        self._strip_translation: str = ""
         self._strip_placement: dict = {}
         self._strip_span_ms: float = 0.0
         self._html_dirty = False
@@ -363,10 +365,11 @@ class LiveWebPreviewWorker(QObject):
         speaker: str = "",
         duration_seconds: float | None = None,
         placement: Mapping[str, Any] | None = None,
+        translation: str = "",
     ) -> str:
         """Compatibility for editors; playback submits an already prepared object."""
         return self.configure_prepared(prepare_web_configuration(theme,text,speaker,
-            duration_seconds if duration_seconds is not None else (self._loop_seconds or 2.4),placement))
+            duration_seconds if duration_seconds is not None else (self._loop_seconds or 2.4),placement,translation))
 
     def configure_prepared(self, prepared: WebPreviewConfiguration) -> str:
         from .caption_proxy import with_quality
@@ -388,6 +391,7 @@ class LiveWebPreviewWorker(QObject):
             self._strip_key = strip_key
             self._strip_text = text
             self._strip_speaker = speaker
+            self._strip_translation = prepared.translation
             self._strip_placement = placement
             if theme_key != self._theme_key:
                 self._html_key = theme_key
@@ -412,7 +416,7 @@ class LiveWebPreviewWorker(QObject):
         with self._html_lock:
             if prepared.theme_key != self._theme_key: return
             self._warm_queue = [item for item in self._warm_queue if item['text'] != prepared.text]
-            self._warm_queue.append({'text':prepared.text,'speaker':prepared.speaker})
+            self._warm_queue.append({'text':prepared.text,'speaker':prepared.speaker,'translation':prepared.translation})
             self._warm_queue = self._warm_queue[-4:]
 
     def mark_dirty(self) -> None:
@@ -487,6 +491,7 @@ class LiveWebPreviewWorker(QObject):
                     generation = self._configuration_generation
                     theme_key, content_key = self._theme_key, self._strip_key
                     html, text, speaker = self._html, self._strip_text, self._strip_speaker
+                    translation = self._strip_translation
                     span, dirty = self._strip_span_ms, self._html_dirty
                     placement = dict(self._strip_placement)
                     explicit_motion = self._explicit_motion_clock
@@ -533,10 +538,10 @@ class LiveWebPreviewWorker(QObject):
                             service.live_set(html, width=self._width, height=self._height)
                             # Theme HTML is shared across cues; bind the first
                             # caption before publishing any generic seed pixels.
-                            service.live_text(text=text, speaker=speaker, duration_ms=span, placement=placement, prepared_cues=upcoming)
+                            service.live_text(text=text, speaker=speaker, duration_ms=span, placement=placement, prepared_cues=upcoming, **({'translation':translation} if translation else {}))
                             phase = "page_load"
                         else:
-                            service.live_text(text=text, speaker=speaker, duration_ms=span, placement=placement, prepared_cues=upcoming)
+                            service.live_text(text=text, speaker=speaker, duration_ms=span, placement=placement, prepared_cues=upcoming, **({'translation':translation} if translation else {}))
                             phase = "cue_dom"
                         self._metric(phase, t0)
                         self.metrics[-1].update(getattr(service,'last_live_text_metrics',{}))

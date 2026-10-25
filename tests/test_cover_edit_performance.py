@@ -59,7 +59,8 @@ def test_edit_defers_persistence_but_save_captures_latest_evidence(monkeypatch):
     assert saved.to_payload()['asr_evidence']==p.asr_evidence
     assert saved.to_payload()['generation_metadata']==p.generation_metadata
     from twobyteasr.projects.studio_revisions import thaw_json
-    assert thaw_json(store.render.generation_metadata)=={'translations':{'a':'Original'}}
+    # Speaker names joined the live view with Codex's speaker-label template (2026-10-24).
+    assert thaw_json(store.render.generation_metadata)=={'translations':{'a':'Original'},'speaker_names':{}}
     from twobyteasr.timeline.studio_commands import SetCueTranslationCommand
     SetCueTranslationCommand(p,'a','Edited').redo()
     assert thaw_json(store.render.generation_metadata)['translations']['a']=='Edited'

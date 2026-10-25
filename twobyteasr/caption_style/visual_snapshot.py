@@ -64,6 +64,8 @@ class VisualCueSnapshot:
     translation: str = ""
     resolved_caption: object = None
     word_animation: object = None
+    text_marks: object = None
+    speaker_label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         # dataclasses.asdict already recursively copies every mutable field.
@@ -90,6 +92,7 @@ class VisualCueSnapshot:
         background = self.style_recipe.get("background", {}) if isinstance(self.style_recipe, Mapping) else {}
         payload = {
             "text": self.text,
+            "text_marks": self.text_marks,
             "translation": getattr(self, "translation", ""),
             "font_family": self.font_family,
             "font_size": self.font_size,
@@ -119,6 +122,7 @@ class VisualCueSnapshot:
         payload = {
             "renderer": str(renderer_version),
             "text": self.text,
+            "text_marks": self.text_marks,
             "font": {
                 "family": self.font_family,
                 "size": self.font_size,
@@ -296,6 +300,15 @@ def _cue_translation(project: SubtitleProject, cue_id: str) -> str:
     return str(translation_for_cue(translations, cue_id) or "")
 
 
+def _display_translation(project, cue):
+    if '_theme_translation' in cue.appearance_override:
+        return str(cue.appearance_override['_theme_translation'])
+    from .bilingual_layout import settings_from_state
+    if not cue.appearance_override.get('_translation_display') and settings_from_state(project.studio_state).mode == 'bilingual':
+        return _cue_translation(project, cue.id)
+    return ''
+
+
 def build_visual_cue_snapshot(
     project: SubtitleProject,
     cue_id: str,
@@ -337,7 +350,8 @@ def build_visual_cue_snapshot(
     playres_y = max(1, int(project.render_settings.get("play_res_y", 1080)))
     output_width = max(1, int(width or project.media.width or playres_x))
     output_height = max(1, int(height or project.media.height or playres_y))
-    payload = recipe_payload_for_style(project.style_recipes, cue.style_id)
+    from .style_resolution import recipe_for_cue
+    payload = recipe_for_cue(project.style_recipes, cue)
     if payload:
         recipe = StyleRecipe.from_dict(payload)
     else:
@@ -452,6 +466,8 @@ def build_visual_cue_snapshot(
         from .web_placement import cue_placement
         recipe.layout['webPlacement'] = cue_placement(project, cue)
     typography = recipe.typography if isinstance(recipe.typography, Mapping) else {}
+    from .text_marks import remap_marks, layer_marks
+    from .speaker_labels import template_speaker
     return VisualCueSnapshot(
         cue_id=cue.id, text=caption.text, start_ms=cue.start_ms, end_ms=cue.end_ms,
         font_family=style.font_family or str(typography.get("fontFamily") or "Microsoft YaHei UI"),
@@ -466,10 +482,12 @@ def build_visual_cue_snapshot(
         scale_x=float(style.scale_x) / 100.0, scale_y=float(style.scale_y) / 100.0,
         rotation=float(cue.transform.get("rotation", recipe.layout.get("rotation", 0)) or 0),
         style_recipe=recipe.to_dict(), motion_recipe=motion_recipe,
+        speaker_label=template_speaker(project, cue),
         speaker=cue.speaker_id, resolution=(output_width, output_height), fps=float(fps),
         appearance_generation=max(0, int(cue.appearance_generation)),
         project_id=str(project.project_id),
-        translation=_cue_translation(project, cue.id),
+        translation=_display_translation(project, cue),
         resolved_caption=caption,
         word_animation=word_animation,
+        text_marks=(remap_marks(cue.text, caption.text, layer_marks(cue)) if not recipe.web_theme else []),
     )

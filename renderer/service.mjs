@@ -17,7 +17,9 @@ const PROTOCOL_VERSION = 1;
 const RENDERER_JOB_KINDS = new Set(['production', 'diagnostic', 'thumbnail', 'card_preview']);
 const rendererRoot = path.dirname(fileURLToPath(import.meta.url));
 const entryPoint = path.join(rendererRoot, 'src', 'index.ts');
-const configuredChrome = process.env.TWOBYTEASR_RENDERER_CHROME;
+// An explicit override wins; otherwise use the bundled, tested headless shell.
+// Treating the installed Chrome as an override bypassed the bundled browser.
+const configuredChrome = process.env.TWOBYTEASR_RENDERER_CHROME || undefined;
 
 // Fonts live canonically in assets/fonts/ (public PR #2 by CODE-A-DUCK). Fill public/fonts/
 // only where a font is missing or differs in size: an installed or signed app already ships
@@ -594,14 +596,14 @@ const handleLivePause = async (message) => {
 const handleLiveText = async (message) => {
   const started = performance.now();
   if (!liveState().page) throw new Error('live page not configured (live_set first)');
-  const metrics = await liveState().page.evaluate((text, speaker, duration, placement, prepared) => {
+  const metrics = await liveState().page.evaluate((text, speaker, duration, placement, prepared, translation) => {
     const fn = window.__2byteSetCue;
     if (typeof fn !== 'function') throw new Error('set-cue driver missing');
-    if (!fn(text, speaker, duration)) throw new Error('cue template missing');
+    if (!fn(text, speaker, duration, translation)) throw new Error('cue template missing');
     if (typeof window.__2byteSetPlacement === 'function') window.__2byteSetPlacement(placement);
-    for(const cue of prepared.slice(0,4)) window.__2bytePrepareCue?.(cue.text, cue.speaker);
+    for(const cue of prepared.slice(0,4)) window.__2bytePrepareCue?.(cue.text, cue.speaker, cue.translation || '');
     return {...window.__2byteMetrics};
-  }, String(message.text || ''), String(message.speaker || ''), Number(message.duration_ms || 2400), message.placement || {}, message.prepared_cues || []);
+  }, String(message.text || ''), String(message.speaker || ''), Number(message.duration_ms || 2400), message.placement || {}, message.prepared_cues || [], String(message.translation || ''));
   liveState().latest = null;
   record('live_text', {total_ms: elapsed(started)});
   send({type: 'result', request_id: message.request_id, status: 'OK', total_ms: elapsed(started), metrics});

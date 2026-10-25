@@ -20,7 +20,7 @@ def test_preview_measure_rejects_black_canvas_despite_coloured_bottom_handles():
     assert image_colour_observation(raster)['colour_fraction'] == 1
 
 
-def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
+def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path,monkeypatch):
     from PySide6.QtGui import QImage, QColor
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
     from twobyteasr.studio.studio_qt_preview import QtEmbeddedVideoController
@@ -34,7 +34,8 @@ def test_preview_requires_composed_pixels_even_when_decoder_is_ready(tmp_path):
     cover = QLabel(canvas); cover.setGeometry(canvas.rect())
     cover.setStyleSheet('background: black'); cover.show(); cover.raise_()
     canvas.show(); app.processEvents()
-    page = SimpleNamespace(video=canvas)
+    page = SimpleNamespace(video=canvas,_caption_sample_ms=lambda:0)
+    monkeypatch.setattr('twobyteasr.rendering.caption_scene.active_cues',lambda page,position:[])
     try:
         blocked = preserve_studio_preview(page, tmp_path, 'ready')
         assert blocked['decoded']['colour_fraction'] == 1
@@ -196,6 +197,8 @@ def test_frozen_native_worker_dispatch_precedes_inherited_gui_audit(monkeypatch,
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, 'platform', 'darwin')
     monkeypatch.setattr(sys, 'argv', ['App', '--studio-'+role+'-worker', 'owned-argument'])
+    monkeypatch.setattr('platform.machine', lambda: 'arm64')
+    monkeypatch.setattr('platform.mac_ver', lambda: ('14.4.1', ('', '', ''), ''))
     monkeypatch.setenv('TWOBYTEASR_ACCEPTANCE_SCENARIO', 'macos-desktop')
     monkeypatch.setattr(platform_macos, 'configure_macos_paths', lambda root: seen.append('resources'))
     monkeypatch.setattr(runtime_paths, 'user_data_root', lambda: tmp_path/'tmp/profile')

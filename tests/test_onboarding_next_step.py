@@ -116,7 +116,8 @@ def test_feature_search_finds_the_places_people_ask_for():
         "_switch_page", "built_page", "_open_subtitle_studio")})
     items = entries(window)
     assert search(items, "标点")[0].title.startswith("字幕标点")
-    assert search(items, "Qwen")[0].title.startswith("Qwen Cloud")
+    assert search(items, "Qwen")[0].title.startswith("Qwen 官方 API")
+    assert search(items, "千问AI平台")[0].title.startswith("Qwen 官方 API")   # 2026-10-25: 中国站 in the same entry
     assert search(items, "快捷键")[0].title == "快捷键"
     assert search(items, "MCP")[0].title.startswith("外部 AI")
     assert search(items, "cuda")[0].title.startswith("识别方式")

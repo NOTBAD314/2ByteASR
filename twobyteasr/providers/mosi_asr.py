@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 import time
 from pathlib import Path
@@ -55,6 +56,13 @@ SINGLE_REQUEST_SECONDS = 25 * 60
 REQUEST_MAX_SECONDS = 22.5 * 60
 # Requests MOSI has at the same time; it accepted four at once (2026-10-23).
 PARALLEL_REQUESTS = 3
+# A request MOSI's content review stopped is sent again only cut into pieces
+# of about 3 minutes, and only when the user asks (2026-10-24): a block then
+# costs a few minutes of subtitles instead of 20. Up to 4 minutes stays one
+# piece, which is never sent again.
+PIECE_SINGLE_SECONDS = 4 * 60
+PIECE_SECONDS = 3 * 60
+PIECE_SEARCH_SECONDS = 30
 MAX_KEYTERMS = 20
 MAX_KEYTERM_CHARS = 30
 PRICE_CNY_PER_HOUR = 2.00
@@ -197,7 +205,10 @@ def classify_http_error(status_code: int, body) -> tuple[str, str]:
     """(category, user message) for a non-success response."""
     error = body.get('error') if isinstance(body, dict) else None
     code = str((error or {}).get('code') or (error or {}).get('type') or '')
-    if status_code in (401, 403) and code not in {'url_not_allowed', 'safety_guardrail_blocked'}:
+    if code == 'safety_guardrail_blocked':
+        return 'content_rejected', (f'MOSI 的内容安全审查拦下了这段音频（HTTP {status_code}：safety_guardrail_blocked），'
+                                    '没有受理。')
+    if status_code in (401, 403) and code != 'url_not_allowed':
         return 'auth_failed', (f'MOSI 拒绝了这个 API Key（HTTP {status_code}）：可能填错、已删除，'
                                '或账户没有该模型权限。请到 MOSI 控制台的 API Key 页面重新复制。')
     if status_code == 402 or code in {'insufficient_credits', 'billing_error'}:
@@ -235,23 +246,94 @@ def _save(path: Path, payload) -> None:
     save(path, payload)
 
 
-def validate_result(payload, duration: float) -> None:
+def validate_result(payload) -> None:
+    """The result's shape. Times are checked per segment by ``usable_segments``."""
     if not isinstance(payload, dict):
         raise ASRProtocolError('MOSS Pro 结果不是 JSON 对象', 'parse_failed')
     segments = payload.get('segments')
-    if segments is None:
-        segments = []
-    if not isinstance(segments, list):
+    if segments is not None and not isinstance(segments, list):
         raise ASRProtocolError('MOSS Pro 结果 segments 不是数组', 'parse_failed')
-    for row in segments:
+
+
+# Ends up to this far past the request's audio are MOSI's usual rounding:
+# clipped without a note.
+END_TOLERANCE_SECONDS = 1.0
+REPAIR_KINDS = ('clipped', 'outside', 'reversed', 'invalid')
+
+
+def _seconds(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def usable_segments(payload, duration: float) -> tuple[list, dict]:
+    """The result's segments with text, placed inside the request's audio,
+    and what was changed (``REPAIR_KINDS`` counts plus a few examples).
+
+    MOSI can finish a task with a few segments timed past the end of the
+    audio it was given, or with a reversed or missing time (2026-10-25: a
+    user's English singing stream). 0.8.4 failed the whole task on one such
+    segment, and as the result was never kept, every retry read the same
+    result and failed again. An end past the audio is clipped to it; a
+    segment that lies outside the audio, ends before it starts or has no
+    usable time is left out, never moved (that would invent timing). Raises
+    only when not one segment with text can be placed.
+    """
+    kept, examples = [], []
+    repair = dict(segments=0, audio_seconds=round(float(duration), 3), latest_end=None,
+                  **{kind: 0 for kind in REPAIR_KINDS})
+    for row in payload.get('segments') or []:
         if not isinstance(row, dict):
-            raise ASRProtocolError('MOSS Pro 句段格式非法', 'parse_failed')
+            repair['segments'] += 1
+            repair['invalid'] += 1
+            continue
+        if not str(row.get('text') or '').strip():
+            continue
+        repair['segments'] += 1
         start, end = row.get('start'), row.get('end')
-        if (isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, (int, float))
-                or not isinstance(end, (int, float)) or not math.isfinite(start) or not math.isfinite(end)):
-            raise ASRProtocolError('MOSS Pro 句段时间缺失或非法', 'invalid_timing')
-        if not 0 <= start <= end <= duration + 1.0:
-            raise ASRProtocolError('MOSS Pro 句段时间越出提交的音频', 'invalid_timing')
+        if not (_seconds(start) and _seconds(end)):
+            kind = 'invalid'
+        else:
+            start, end = float(start), float(end)
+            latest = repair['latest_end']
+            repair['latest_end'] = round(end if latest is None else max(latest, end), 3)
+            if end < start:
+                kind = 'reversed'
+            elif start >= duration - .02 or end <= 0:
+                kind = 'outside'
+            else:
+                kind = ('clipped' if end > duration + END_TOLERANCE_SECONDS or start < -END_TOLERANCE_SECONDS
+                        else '')
+                kept.append(dict(row, start=max(0.0, start), end=min(float(duration), end)))
+        if kind:
+            repair[kind] += 1
+            if len(examples) < 5:
+                examples.append(dict(kind=kind, start=row.get('start'), end=row.get('end'),
+                                     text=str(row.get('text') or '')[:60]))
+    if repair['segments'] and not kept:
+        first = examples[0] if examples else {}
+        raise ASRProtocolError(
+            f'MOSS Pro 返回的 {repair["segments"]} 句都没有落在这段音频里的时间（第一句 {first.get("start")!r}–'
+            f'{first.get("end")!r} 秒，这段音频 {float(duration):.1f} 秒）；多半是服务商的结果格式变了，'
+            '原样重试不会好转，请回报问题。', 'invalid_timing')
+    repair['examples'] = examples
+    return kept, repair
+
+
+def timing_changed(repair: dict) -> bool:
+    return any(repair.get(kind) for kind in REPAIR_KINDS)
+
+
+def _record_event(kind: str, **payload) -> None:
+    """A run event (forwarded by the cloud worker); never breaks a request."""
+    try:
+        import sys
+        core = sys.modules.get('subtitle_core')
+        recorder = getattr(core, 'record_run_event', None) if core is not None else None
+        if not callable(recorder):
+            from ..recognition.cache import record_run_event as recorder
+        recorder(kind, **payload)
+    except Exception:
+        pass
 
 
 def _clock(seconds: float) -> str:
@@ -274,14 +356,18 @@ def remote_reason(body) -> str:
 
     The task query docs only say ``error`` holds the failure information; the
     example is an empty object and no codes are listed (checked 2026-10-23).
-    A string ``error`` was dropped before.
+    A string ``error`` was dropped before. A real failure (2026-10-24) used
+    ``error_msg`` / ``error_code`` and ``internal_error_msg`` /
+    ``internal_error_code``.
     """
     from .provider_diagnostics import redact_diagnostics
     error = body.get('error') if isinstance(body, dict) else None
     text = ''
     if isinstance(error, dict):
-        words = [str(error[key]).strip() for key in ('message', 'msg', 'detail', 'reason') if error.get(key) not in (None, '')]
-        codes = [str(error[key]).strip() for key in ('code', 'type') if error.get(key) not in (None, '')]
+        words = [str(error[key]).strip() for key in ('message', 'msg', 'error_msg', 'internal_error_msg', 'detail', 'reason')
+                 if error.get(key) not in (None, '')]
+        codes = [str(error[key]).strip() for key in ('code', 'type', 'error_code', 'internal_error_code')
+                 if error.get(key) not in (None, '')]
         text = '；'.join(dict.fromkeys(words))
         if codes:
             code = '，'.join(dict.fromkeys(codes))
@@ -296,13 +382,41 @@ def remote_reason(body) -> str:
 
 
 def _saved_reason(state: dict) -> str:
-    if 'remote_reason' in state:
-        return str(state.get('remote_reason') or '')
     try:
-        # Tasks saved before 2026-10-23 kept only the redacted ``error`` JSON.
-        return remote_reason({'error': json.loads(state.get('remote_error') or '{}')})
+        error = json.loads(state.get('remote_error') or '{}')
     except ValueError:
-        return str(state.get('remote_error') or '')
+        # Cut at 500 characters: keep what was worked out at the time.
+        return str(state.get('remote_reason') or state.get('remote_error') or '')
+    # Worked out again from MOSI's own ``error`` (all that tasks saved before
+    # 2026-10-23 kept), so a task saved by an older version also shows fields
+    # learned later: 0.8.4 showed error_msg / error_code as raw JSON.
+    return remote_reason({'error': error}) or str(state.get('remote_reason') or '')
+
+
+# MOSI's content safety review (2026-10-24, a user's English game stream):
+# one request of a task ended FAILED with {"error_code": 17001, "error_msg":
+# "safety policy error", "internal_error_code": 111111004,
+# "internal_error_msg": "safety guardrail blocked"}. The error-code page lists
+# safety_guardrail_blocked as "被安全策略拦截". The same audio sent again
+# meets the same review, so a retry is not suggested.
+_GUARDRAIL = re.compile(r'safety[ _]?(guardrail|policy)', re.I)
+
+
+def guardrail_blocked(error) -> bool:
+    """Whether MOSI's content safety review stopped the request."""
+    if isinstance(error, (dict, list)):
+        error = json.dumps(error, ensure_ascii=False)
+    return bool(_GUARDRAIL.search(str(error or '')))
+
+
+def content_blocked(state: dict) -> bool:
+    """A saved request the safety review stopped: FAILED after MOSI took it
+    (also tasks saved before 2026-10-24, which kept only the ``error`` JSON),
+    or refused at upload."""
+    if state.get('status') == 'REJECTED':
+        return state.get('category') == 'content_rejected'
+    return state.get('status') == 'FAILED' and bool(state.get('remote_blocked') or guardrail_blocked(
+        state.get('remote_error')) or guardrail_blocked(state.get('remote_reason')))
 
 
 def failure_detail(state: dict, segment=None) -> str:
@@ -313,8 +427,23 @@ def failure_detail(state: dict, segment=None) -> str:
     if state.get('status') == 'UNKNOWN':
         return f'{subject}在 MOSI 查不到（不存在或已超过保留期）。'
     reason = _saved_reason(state)
+    if content_blocked(state):
+        return (f'{subject}被 MOSI 的内容安全审查拦下，没有返回这一段的字幕'
+                f'（MOSI 返回的原因：{reason or "safety_guardrail_blocked"}）。')
     return (f'{subject}执行失败，MOSI 返回的原因：{reason}。' if reason else
             f'{subject}执行失败，MOSI 没有说明原因。')
+
+
+def gap_row(start: int, end: int, state: dict, segment) -> dict:
+    """A request MOSI's content review stopped, as a marker among the result
+    rows (2026-10-24): the task finishes with this range uncovered instead of
+    failing, and the pipeline fills it with a local model."""
+    index, total = (segment or (1, 1))[:2]
+    return {'start': start / 16000, 'end': end / 16000, 'text': '',
+            'cloud_gap': {'provider': PROVIDER, 'reason': 'content_blocked', 'segment': [int(index), int(total)],
+                          'task_id': str(state.get('task_id') or ''), 'provider_reason': _saved_reason(state),
+                          'detail': failure_detail(state, segment),
+                          'resplittable': end - start > PIECE_SINGLE_SECONDS * 16000}}
 
 
 def _remote_error(message: str, category: str, state: dict, segment) -> ASRProtocolError:
@@ -394,6 +523,8 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
         definitive = response.status_code in {400, 401, 402, 403, 404, 409, 413, 415, 422, 429}
         state.update(status='REJECTED' if definitive else 'SUBMITTING', http_status=response.status_code,
                      category=category)
+        if category == 'content_rejected':
+            state['remote_reason'] = f'safety_guardrail_blocked（HTTP {response.status_code}）'
         _save(state_path, state)
         if not definitive:
             message += '服务器可能已受理，已阻止自动重复提交。'
@@ -447,14 +578,15 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
             error = body.get('error')
             state['remote_error'] = redact_diagnostics(json.dumps({} if error is None else error, ensure_ascii=False))[:500]
             state['remote_reason'] = details['remote_reason'] = remote_reason(body)
+            state['remote_blocked'] = guardrail_blocked(error)
         _save(state_path, state)
         progress(status, 0, 1, details)
         if status == 'FAILED':
             detail = failure_detail(state, segment)
-            raise _remote_error(detail + '是否扣积分请以 MOSI 控制台的积分账单为准（官方未写明）。', 'remote_terminal',
-                                state, segment)
+            raise _remote_error(detail + '是否扣积分请以 MOSI 控制台的积分账单为准（官方未写明）。',
+                                'content_blocked' if content_blocked(state) else 'remote_terminal', state, segment)
         if status == 'SUCCESS':
-            validate_result(body, duration)
+            validate_result(body)
             return body
         steps = int(interval * 10)
         for _ in range(steps):
@@ -490,6 +622,11 @@ def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> 
         _save(root / ('previous-task-' + uuid.uuid4().hex + '.json'), state)
         state = {}
         progress('retry_incomplete_upload', 0, 1)
+    if content_blocked(state):
+        # Never sent again unchanged, confirmed or not (2026-10-24): only cut
+        # into pieces (``resplit_blocked``), which are requests of their own.
+        raise _remote_error('已保存远端终态 ' + state['status'] + '：' + failure_detail(state, segment),
+                            'content_blocked', state, segment)
     if state.get('status') in {'FAILED', 'UNKNOWN'}:
         if not restart_terminal:
             raise _remote_error('已保存远端终态 ' + state['status'] + '：' + failure_detail(state, segment)
@@ -579,14 +716,16 @@ def _request_dir(root: Path, index: int, start: int, end: int) -> Path:
     return root / f'request-{index:03d}-{start}-{end}'
 
 
-def _request_ranges(samples, root: Path, restart_terminal: bool) -> list:
+def _request_ranges(samples, root: Path, restart_terminal: bool, resplit_blocked: bool = False) -> list:
     """Requests for this task.
 
     A task planned before (until 2026-10-23 in pieces of about 55 minutes)
     keeps every request MOSI has finished or still has, so nothing is
     uploaded or billed twice, and keeps failed or uncertain ones until the
     user confirms resubmitting them. Everything else is planned in the
-    current, shorter requests.
+    current, shorter requests. A request the content review stopped stays as
+    it is, unless the user asked to send it again in pieces
+    (``resplit_blocked``, 2026-10-24).
     """
     fresh = plan_ranges(samples)
     try:
@@ -594,13 +733,21 @@ def _request_ranges(samples, root: Path, restart_terminal: bool) -> list:
                  for row in json.loads((root / 'plan.json').read_text('utf8'))['requests']]
     except (OSError, ValueError, KeyError, TypeError):
         return fresh
-    if (not saved or saved == fresh or saved[0][0] != 0 or saved[-1][1] != len(samples)
+    if (not saved or (saved == fresh and not resplit_blocked) or saved[0][0] != 0 or saved[-1][1] != len(samples)
             or any(a[1] != b[0] for a, b in zip(saved, saved[1:]))):
         return fresh
     ranges = []
     for index, (start, end) in enumerate(saved):
         folder = _request_dir(root, index, start, end)
         state = _load_state(folder)
+        if content_blocked(state):
+            if resplit_blocked and end - start > PIECE_SINGLE_SECONDS * 16000:
+                ranges.extend((start + a, start + b) for a, b in plan_ranges(
+                    samples[start:end], single_seconds=PIECE_SINGLE_SECONDS, max_seconds=PIECE_SECONDS,
+                    search_seconds=PIECE_SEARCH_SECONDS))
+            else:
+                ranges.append((start, end))
+            continue
         status = state.get('status')
         blocked = status in {'FAILED', 'UNKNOWN'} or (status == 'SUBMITTING' and not state.get('task_id'))
         if ((folder / 'result.json').is_file() or (state.get('task_id') and not blocked)
@@ -665,7 +812,7 @@ class _Board:
 
 def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, progress=lambda *a: None,
                sleep=time.sleep, max_wait=7200.0, restart_terminal=False, on_rows=None,
-               parallel=PARALLEL_REQUESTS) -> list:
+               parallel=PARALLEL_REQUESTS, resplit_blocked=False) -> list:
     """Run (or resume) all requests for the task audio; rows on the task clock.
 
     Requests are uploaded in order, one at a time, while at most ``parallel``
@@ -674,6 +821,11 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
     waited for, so its result is kept for a retry; then the first error is
     raised. A request that must not be resent without confirmation stops the
     task before anything new is uploaded.
+
+    A request MOSI's content review stops (now or in a saved state) is no
+    error (2026-10-24): the others go on, and the request comes back as a
+    ``gap_row`` marker in its place. ``resplit_blocked`` sends stopped
+    requests again in pieces of about 3 minutes.
     """
     import numpy as np
     from concurrent.futures import ThreadPoolExecutor
@@ -686,7 +838,7 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
         raise ASRProtocolError('MOSS Pro 云端输入必须是有效的 16kHz 单声道音频。', 'input_limit')
     endpoint = dict(endpoint, url=normalize_api_base(endpoint.get('url')))
     root = job_root(audio, endpoint, cache_root)
-    ranges = _request_ranges(samples, root, restart_terminal)
+    ranges = _request_ranges(samples, root, restart_terminal, resplit_blocked)
     total = len(ranges)
     _save(root / 'plan.json', dict(model=MODEL, requests=[dict(start=s, end=e) for s, e in ranges],
                                    keyterms=endpoint.get('mosi_keyterms') or [],
@@ -696,9 +848,23 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
     lock = threading.Lock()
     converted = [None] * total
 
-    def finish(index, payload):
+    def finish(index, folder, payload):
         start, end = ranges[index]
-        rows = result_rows(payload, offset=start / 16000, duration=(end - start) / 16000)
+        segment = (index + 1, total, start / 16000, end / 16000)
+        try:
+            kept, repair = usable_segments(payload, (end - start) / 16000)
+        except ASRProtocolError as exc:
+            where = segment_label(segment)
+            raise ASRProtocolError((where + '：' if where else '') + str(exc), exc.category) from None
+        if timing_changed(repair):
+            # MOSI's own result stays in result.json; what was clipped or
+            # left out is kept beside it and reported (2026-10-25).
+            _save(folder / 'timing-repair.json', dict(repair, segment=[index + 1, total],
+                                                      range=[start / 16000, end / 16000]))
+            _record_event('cloud_asr_timing_repaired', provider=PROVIDER, segment=[index + 1, total],
+                          start=round(start / 16000, 3), end=round(end / 16000, 3),
+                          **{key: value for key, value in repair.items() if key != 'examples'})
+        rows = result_rows(dict(payload, segments=kept), offset=start / 16000, duration=(end - start) / 16000)
         if any(row.get('speaker') is not None for row in rows):
             # Labels are only meaningful inside one request: S01 of request 1
             # and S01 of request 2 are not assumed to be the same person.
@@ -709,6 +875,13 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
                 on_rows(index, total, rows)
         board.report(index, 'completed')
 
+    def blocked(index, folder, segment):
+        # The content review stopped this request: a gap, the task goes on.
+        start, end = ranges[index]
+        with lock:
+            converted[index] = [gap_row(start, end, _load_state(folder), segment)]
+        board.report(index, 'completed')
+
     jobs = []
     for index, (start, end) in enumerate(ranges):
         check()
@@ -717,18 +890,31 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
         note = (lambda state, done=0, size=0, details=None, index=index: board.report(index, state, done, size, details))
         if (folder / 'result.json').is_file():
             note('cached_result')
-            finish(index, json.loads((folder / 'result.json').read_text('utf8')))
+            finish(index, folder, json.loads((folder / 'result.json').read_text('utf8')))
             continue
-        jobs.append((index, folder, segment, note,
-                     _prepared_state(folder, progress=note, restart_terminal=restart_terminal, segment=segment)))
+        try:
+            state = _prepared_state(folder, progress=note, restart_terminal=restart_terminal, segment=segment)
+        except ASRProtocolError as exc:
+            if exc.category != 'content_blocked':
+                raise
+            blocked(index, folder, segment)
+            continue
+        jobs.append((index, folder, segment, note, state))
     errors, places = [], threading.Semaphore(max(1, int(parallel)))
 
     def wait(job, state):
         index, folder, segment, note, _ = job
         start, end = ranges[index]
         try:
-            finish(index, _wait_request(samples[start:end], endpoint, folder, state, client=client, check=check,
-                                        progress=note, sleep=sleep, max_wait=max_wait, segment=segment))
+            finish(index, folder, _wait_request(samples[start:end], endpoint, folder, state, client=client,
+                                                check=check, progress=note, sleep=sleep, max_wait=max_wait,
+                                                segment=segment))
+        except ASRProtocolError as exc:
+            if exc.category == 'content_blocked':
+                blocked(index, folder, segment)
+            else:
+                with lock:
+                    errors.append(exc)
         except BaseException as exc:  # noqa: BLE001 - every request is waited for; the first error is raised
             with lock:
                 errors.append(exc)
@@ -752,6 +938,14 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
                 except BaseException:
                     places.release()
                     raise
+            except ASRProtocolError as exc:
+                if exc.category == 'content_rejected':
+                    # Refused at upload by the same review: a gap like a block.
+                    blocked(index, folder, segment)
+                    continue
+                with lock:
+                    errors.append(exc)
+                break
             except BaseException as exc:  # noqa: BLE001 - recorded; requests MOSI has are still waited for
                 with lock:
                     errors.append(exc)

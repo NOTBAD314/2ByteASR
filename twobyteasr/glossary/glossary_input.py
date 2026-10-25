@@ -5,6 +5,18 @@ import re
 import shlex
 
 
+_INVISIBLE = re.compile('[\u200b\u200c\u2060\ufeff]')
+
+
+def clean_glossary_term(value) -> str:
+    """A term as the user wrote it: symbols kept, runs of spaces and line breaks become one space.
+
+    2026-10-25: saving once went through the subtitle cleanup, which silently
+    turned 漂泊者·男 into 漂泊者男 and Re:Zero into ReZero.
+    """
+    return re.sub(r'\s+', ' ', _INVISIBLE.sub('', str(value or ''))).strip()
+
+
 def parse_term_line(value: str, *, mapping_mode=False) -> dict:
     raw = str(value).strip(' \r\n')
     row = {'from': raw, 'to': raw, 'category': '其他', 'raw': raw}

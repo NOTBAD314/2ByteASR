@@ -399,9 +399,6 @@ def _merge_known_settings(defaults, payload):
         if url.endswith(suffix):
             cloud["qwen_asr_api_url"] = url[:-len(suffix)] + "/api/v1/services/audio/asr/transcription"
         warnings.append(f"cloud ASR {old_provider} migrated to Qwen Audio 3.1 Filetrans; endpoint ownership retained")
-    if cloud.get("qwen_asr_api_provider") in {"openrouter_word", "azure"} and cloud.get("qwen_asr_api_model") == "microsoft/mai-transcribe-2":
-        cloud["qwen_asr_api_model"] = ""
-        warnings.append("MAI 2.1 requires a provider-confirmed model ID; former 2 ID is not claimed as latest")
     if result["models"]["qwen_asr_api_protocol"] not in allowed_api_protocols:
         result["models"]["qwen_asr_api_protocol"] = defaults["models"]["qwen_asr_api_protocol"]
         warnings.append(

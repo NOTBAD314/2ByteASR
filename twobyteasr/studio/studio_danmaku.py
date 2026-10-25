@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import math
 import statistics
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
@@ -72,34 +73,43 @@ class DanmakuWindow:
     @property
     def effective_count(self) -> int:
         """Count of comments retained after fixed/promotional-message filtering."""
-        return self.usable_count if self.usable_count else max(0, self.count - self.promotional_hits)
+        return self.usable_count if self.usable_count else max(0, self.count - self.promotional_hits - self.routine_hits)
 
 
-def parse_danmaku_xml(path: str | Path) -> DanmakuDocument:
+def parse_danmaku_xml(path: str | Path, *, cancel_check=None, progress=None) -> DanmakuDocument:
     target = Path(path)
-    text = target.read_text(encoding="utf-8-sig", errors="replace")
-    try:
-        root = ET.fromstring(text)
-    except ET.ParseError as exc:
-        raise ValueError(f"不是有效的弹幕 XML：{target.name}: {exc}") from exc
     events: list[DanmakuEvent] = []
-    for node in root.iter("d"):
+    def read_node(node):
         payload = str(node.get("p") or "")
         parts = payload.split(",")
-        if not parts:
-            continue
         try:
             seconds = float(parts[0])
         except (TypeError, ValueError):
-            continue
+            return
+        if not math.isfinite(seconds) or seconds < 0 or seconds > 7 * 24 * 3600:
+            return
         try:
             mode = int(float(parts[1])) if len(parts) > 1 else 1
         except (TypeError, ValueError):
             mode = 1
         body = unescape((node.text or "").strip())
         if not body:
-            continue
+            return
         events.append(DanmakuEvent(time_ms=max(0, round(seconds * 1000)), text=body, mode=mode))
+    try:
+        with target.open('rb') as stream:
+            total = max(1, target.stat().st_size)
+            for index, (_event, node) in enumerate(ET.iterparse(stream, events=('end',))):
+                if index % 512 == 0:
+                    if cancel_check and cancel_check():
+                        raise RuntimeError("分析已取消")
+                    if progress:
+                        progress("正在读取弹幕", min(99, int(stream.tell() * 100 / total)))
+                if node.tag == 'd':
+                    read_node(node)
+                node.clear()
+    except ET.ParseError as exc:
+        raise ValueError(f"不是有效的弹幕 XML：{target.name}: {exc}") from exc
     events.sort(key=lambda item: (item.time_ms, item.text))
     duration = events[-1].time_ms if events else 0
     return DanmakuDocument(path=str(target), events=events, duration_ms=duration)
@@ -228,7 +238,11 @@ def aggregate_danmaku(
                 chaos_count=chaos_count,
                 keywords=_keywords(original_texts),
                 representative_comments=_representatives(original_texts),
-                raw_score=max(0.0, usable_count + funny_hits * 4 + chaos_hits * 3 + positive_spike * 1.5),
+                # Repeated text is still counted in the evidence, but cannot
+                # buy unlimited ranking weight (one spammer, many questions).
+                raw_score=max(0.0, sum(min(3, n) for n in Counter(texts).values())
+                              + min(unique, funny_count) * 2 + min(unique, chaos_count) * 2
+                              + min(unique * 2, positive_spike)),
                 promotional_hits=promotional_hits,
                 usable_count=usable_count,
                 routine_hits=routine_hits,
@@ -262,9 +276,9 @@ def local_spike_windows(
     )
     picked = [
         item for item in ranked
-        if item.spike >= min_spike
+        if item.unique >= 3 and item.effective_count >= 5 and (item.spike >= min_spike
         or item.effective_count >= item.baseline * 2
-        or sum(item.reactions.values()) >= max(0, quality_reactions)
+        or sum(item.reactions.values()) >= max(0, quality_reactions))
     ]
     if not picked and fallback_to_top:
         picked = ranked[:top_k]

@@ -245,7 +245,7 @@ def test_fast_analysis_transcript_path():
     assert context.studio_project_path.endswith(".2byteproj")
 
 
-def test_candidate_expands_signal_window_to_context_range():
+def test_candidate_keeps_its_dialogue_and_does_not_stretch_to_context():
     project = SubtitleProject(
         media=StudioMedia(path="fixture.flv", duration_ms=180_000),
         cues=[
@@ -257,8 +257,9 @@ def test_candidate_expands_signal_window_to_context_range():
     rows = candidates_from_local(project, [LocalCandidate(60_000, 70_000, 0.9, ["signal"])], limit=1, max_seconds=180)
     candidate = rows[0]
     assert (candidate.signal_in_ms, candidate.signal_out_ms) == (60_000, 70_000)
-    assert candidate.source_in_ms < candidate.signal_in_ms
-    assert candidate.source_out_ms > candidate.signal_out_ms
+    # 2026-10-24 (clip evidence ADR, Codex): the context around a signal is for viewing, not a cut;
+    # the range stays on the dialogue the signal covers instead of stretching to its neighbours.
+    assert (candidate.source_in_ms, candidate.source_out_ms) == (60_000, 70_000)
 
 
 def test_generated_ai_style_changes_video_preview(monkeypatch, tmp_path):
@@ -376,7 +377,7 @@ def test_ai_motion_visible_route():
 
 
 def test_candidate_context_expansion():
-    test_candidate_expands_signal_window_to_context_range()
+    test_candidate_keeps_its_dialogue_and_does_not_stretch_to_context()
 
 
 def test_analysis_transcript_mode():

@@ -88,6 +88,24 @@ def test_raw_bridge_premultiplies_alpha_and_video_removal_preserves_web_session(
     assert canvas._web_live_epoch == 7 and canvas._web_live_overlay_active
     assert canvas.VIDEO_OVERLAY_ID < canvas.ADVANCED_OVERLAY_ID < canvas.TRANSFORM_OVERLAY_ID
     assert canvas.TRANSFORM_OVERLAY_ID < canvas.VIDEO_TRANSFORM_OVERLAY_ID
+
+
+def test_selection_handles_queue_io_and_revoke_on_hide(tmp_path):
+    canvas=MpvCanvas();queued=[];revoked=[];direct=[]
+    canvas.controller=SimpleNamespace(running=True,
+        post_raw_overlay=lambda *args,**kwargs:direct.append(args),post_remove_overlay=lambda *args:True)
+    canvas._media_attached=True
+    canvas._subtitle_raster_publisher=SimpleNamespace(
+        submit=lambda *args,**kwargs:queued.append((args,kwargs)) or True,
+        revoke=revoked.append)
+    frame=QImage(40,20,QImage.Format_ARGB32);frame.fill(QColor('red'))
+    assert canvas.publish_compositor_overlay(canvas.TRANSFORM_OVERLAY_ID,frame,QRect(10,30,40,20),
+        context={'caller':'SubtitlePositionOverlay._publish_to_mpv'})
+    assert len(queued)==1 and not direct
+    canvas.remove_compositor_overlay(canvas.TRANSFORM_OVERLAY_ID,force=True)
+    assert canvas.TRANSFORM_OVERLAY_ID in revoked
+    canvas._subtitle_raster_publisher=None;canvas.controller=None
+    canvas.close();canvas.deleteLater()
     canvas.controller = None
     canvas.deleteLater()
 

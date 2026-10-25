@@ -37,7 +37,18 @@ SPECIFIC_TEMPLATES = (
     "出错的位置：视频的 {clock}。原文里的数字是 {expected}，断句后读出来是 {actual}；"
     "这次既没有字级时间轴、也没开 AI 断句，本地规则只能按字数切，最容易出现这种情况。",
     "出错的位置：视频的 {clock}。原文里的数字是 {expected}，断句后读出来是 {actual}。",
+    "被拦下的时间：{ranges}；补识别用的是本地 {model}。",
+    "被拦下的时间：{ranges}。{why}",
+    "所在的段：{ranges}。MOSS Pro 返回的 {segments} 句里，{clipped} 句结尾超出上传的音频、已截到音频结尾，"
+    "{dropped} 句的时间不在这段音频里或起止颠倒、没有放进字幕。",
 )
+# Why a gap the cloud's content review left was not filled (cloud_gap_fill).
+GAP_FILL_REASONS = {
+    "no_local_model": "这台电脑上没有能补这段语言的本地主力模型。",
+    "fill_failed": "本地模型补识别失败。",
+    "no_text": "本地模型没有识别出文字。",
+}
+TRANSLATED_NAMES += tuple(GAP_FILL_REASONS.values())
 
 
 def _name(table: dict, value: str) -> str:
@@ -267,6 +278,9 @@ check("cloud_asr_rate_limited")(_cloud_check(
 check("cloud_asr_network")(_cloud_check(
     "cloud_asr_network", {"network"},
     r"连不上|上传时网络中断|CERTIFICATE_VERIFY_FAILED|ConnectionError|网络"))
+check("cloud_asr_content_blocked")(_cloud_check(
+    "cloud_asr_content_blocked", {"content_blocked"},
+    r"内容安全审查|safety[ _]?guardrail|safety[ _]?policy|\"code\":\s*\"content_(blocked|rejected)\""))
 check("cloud_asr_resubmit")(_cloud_check(
     "cloud_asr_resubmit", {"resubmit_needed"},
     r"是否受理未知|已保存远端终态|查不到这个任务|任务执行失败|本地等待达到时限|本地轮询达到时限|超过安全时限|\"resubmit\":\s*true"))
@@ -279,6 +293,56 @@ check("cloud_asr_hotwords")(_cloud_check(
 check("cloud_asr_upload_setup")(_cloud_check(
     "cloud_asr_upload_setup", {"file_access"},
     r"音频交给服务商的方式|Bucket 或 AccessKey|服务端没能读取上传的音频"))
+# What 0.8.4 and earlier stopped on (2026-10-25); now such sentences are clipped or left out.
+check("cloud_asr_timing_rejected")(_cloud_check(
+    "cloud_asr_timing_rejected", set(), r"句段[时時]间越出提交的音[频訊]"))
+
+
+@check("cloud_asr_timing_repaired")
+def _cloud_timing_repaired(facts: RunFacts):
+    # One row per request, the last one if a request was converted twice.
+    rows = list({tuple(row.get("segment") or ()): row
+                 for row in facts.events_named("cloud_asr_timing_repaired")}.values())
+    if facts.failed or not rows:
+        return None
+
+    def total(*keys):
+        return sum(int(row.get(key) or 0) for row in rows for key in keys)
+
+    dropped = total("outside", "reversed", "invalid")
+    # Only clipped ends: a note. Sentences left out: some subtitles are missing.
+    return found("cloud_asr_timing_repaired", "certain",
+                 [_event_line(row, "segment", "segments", "clipped", "outside", "reversed", "invalid", "latest_end")
+                  for row in rows[:2]],
+                 specific="所在的段：{ranges}。MOSS Pro 返回的 {segments} 句里，{clipped} 句结尾超出上传的音频、已截到音频结尾，"
+                          "{dropped} 句的时间不在这段音频里或起止颠倒、没有放进字幕。",
+                 severity="quality" if dropped else "",
+                 ranges="、".join(f"{_clock(row.get('start'))}–{_clock(row.get('end'))}" for row in rows),
+                 segments=total("segments"), clipped=total("clipped"), dropped=dropped)
+
+
+def _gap_ranges(row: dict) -> str:
+    return "、".join(f"{_clock(start)}–{_clock(end)}" for start, end in row.get("ranges") or ())
+
+
+@check("cloud_asr_gap_filled")
+def _cloud_gap_filled(facts: RunFacts):
+    row = facts.last_event("cloud_asr_gap_fill")
+    if facts.failed or not row or not row.get("filled"):
+        return None
+    return found("cloud_asr_gap_filled", "certain", [_event_line(row, "ranges", "backend", "rows")],
+                 specific="被拦下的时间：{ranges}；补识别用的是本地 {model}。",
+                 ranges=_gap_ranges(row), model=str(row.get("model") or row.get("backend") or "?"))
+
+
+@check("cloud_asr_gap_unfilled")
+def _cloud_gap_unfilled(facts: RunFacts):
+    row = facts.last_event("cloud_asr_gap_fill")
+    if facts.failed or not row or row.get("filled"):
+        return None
+    return found("cloud_asr_gap_unfilled", "certain", [_event_line(row, "ranges", "reason", "error")],
+                 specific="被拦下的时间：{ranges}。{why}", translate=("why",),
+                 ranges=_gap_ranges(row), why=GAP_FILL_REASONS.get(str(row.get("reason") or ""), ""))
 
 
 @check("cloud_asr_failed")
@@ -675,6 +739,12 @@ def _speakers(facts: RunFacts):
 @check("primary_incomplete")
 def _primary_incomplete(facts: RunFacts):
     items = [row for row in facts.review_items if row.get("category") in {"主力转写提前结束", "主力转写不完整"}]
+    # A transcript that stops where a range the cloud's content review stopped
+    # begins is that gap (cloud_asr_gap_unfilled), not a cut-off (2026-10-24).
+    gap = facts.last_event("cloud_asr_gap_fill")
+    unfilled = [] if not gap or gap.get("filled") else gap.get("ranges") or []
+    items = [row for row in items if row.get("category") != "主力转写提前结束" or not any(
+        float(start) - 1.0 <= float(row.get("timestamp") or 0) <= float(end) for start, end in unfilled)]
     coverage = facts.events_named("moss_full_context_coverage")
     if items or coverage:
         evidence = [f"review_items: {row.get('category')} · {clip(row.get('detail'), 160)}" for row in items[:2]]

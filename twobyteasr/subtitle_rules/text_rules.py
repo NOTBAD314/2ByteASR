@@ -66,24 +66,18 @@ def clean_subtitle_text(text):
         # accents, case and punctuation (French "Quoi ?") stay as recognized.
         from twobyteasr.subtitle_rules.european_text import clean as european_clean
         return european_clean(str(text).replace("\r", " ").replace("\n", " "))
-    forbidden = """《》〈〉【】[]（）(){}“”‘’\"`·・•、，。；：:;,—~～"""
-    text = str(text).replace("\r", " ").replace("\n", " ")
-    # Deleting a comma between spoken numbers concatenated independent events
-    # before the Chinese parser (二十，二十 -> 二十二十 -> 40).
-    text = re.sub(r'(?<=[零〇一二两三四五六七八九十百千万亿0-9])[，,、](?=[零〇一二两三四五六七八九十百千万亿0-9])', '\ue000', text)
-    # A ratio separator belongs to the numerical expression. Removing it
-    # before number formatting turns 二:三 into the ambiguous event 二三.
-    text = re.sub(r'(?<=[零〇一二两三四五六七八九十百千万亿0-9])[:：](?=[零〇一二两三四五六七八九十百千万亿0-9])', '\ue001', text)
-    text = text.translate(str.maketrans("", "", forbidden))
-    text = text.replace('\ue000', '，')
-    text = text.replace('\ue001', ':')
-    text = text.replace("……", "...").replace("…", "...")
-    text = re.sub(r"\.{4,}", "...", text)
-    text = re.sub(r"(?<![A-Za-z0-9.])\.(?!\.)", "", text)
-    text = re.sub(r"(?<!\.)\.(?![A-Za-z0-9.])", "", text)
-    text = re.sub(r"(?<![A-Za-z0-9])['-]|['-](?![A-Za-z0-9])", "", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    from twobyteasr.subtitle_rules.chinese_punctuation import clean as chinese_clean
+    return chinese_clean(text, keep=_glossary_spellings_to_keep())
+
+
+def _glossary_spellings_to_keep():
+    """2026-10-25: the run's confirmed terms written with symbols (漂泊者·男) stay as written."""
+    context = get_runtime_context()
+    snapshot = getattr(context, "glossary_snapshot", None)
+    if snapshot is None or not context.enable_domain_terms:
+        return None
+    from twobyteasr.glossary.terminology import symbol_spellings_pattern
+    return symbol_spellings_pattern(snapshot)
 
 
 def format_subtitle_display_text(text):

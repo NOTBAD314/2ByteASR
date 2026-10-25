@@ -186,7 +186,7 @@ def test_workshop_card_registered():
     from twobyteasr.local_models.model_workshop import MODELS
 
     card = next(
-        (m for m in MODELS if m.key == "mai_transcribe_2_word"), None
+        (m for m in MODELS if m.key == "mai_latest"), None
     )
     assert card is not None, "工坊必须有字级通道卡片"
     assert card.api_preset == "openrouter_word"
@@ -194,8 +194,8 @@ def test_workshop_card_registered():
     # 2026-09-18 轮：MAI-Transcribe-2 没有公开可核实的横评数据，
     # 不允许任何占位分数——所有场景都不计分。
     for scene in ("zh", "zh_long", "zh_dialect", "en", "align"):
-        assert best_score("mai_transcribe_2_word", "accuracy", scene) is None
-        assert best_score("mai_transcribe_2_word", "speed", scene) is None
+        assert best_score("mai_latest", "accuracy", scene) is None
+        assert best_score("mai_latest", "speed", scene) is None
 
 
 def test_transcribe_rows_use_word_tokens_for_real_timing(monkeypatch):

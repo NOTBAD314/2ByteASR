@@ -73,7 +73,7 @@ const substitutePlaceholders = (
     .join('')+'</span>';
   const escapedSpeaker = escapeHtml(speaker);
   const escapedTranslation = escapeHtml(translation);
-  return html
+  return (speaker ? html : html.replace(/<([a-zA-Z][\w:-]*)\b[^>]*>\s*\{\{\s*speaker\s*\}\}\s*<\/\1\s*>/gi, ''))
     .replace(/\{\{\s*text\s*\}\}/g, escapedText)
     .replace(/\{\{\s*words\s*\}\}/g, words)
     .replace(/\{\{\s*speaker\s*\}\}/g, escapedSpeaker)
@@ -321,7 +321,7 @@ export const WebThemeCue: React.FC<WebThemeCueProps> = ({
   );
   const html = useMemo(
     () => substitutePlaceholders(String(theme.cueHtml || ''), text, speaker, translation),
-    [theme.cueHtml, text, speaker],
+    [theme.cueHtml, text, speaker, translation],
   );
   if (localMs < 0 || localMs >= durationMs) return null;
   return (

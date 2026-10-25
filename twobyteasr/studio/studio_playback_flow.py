@@ -356,6 +356,9 @@ class StudioPlaybackFlowMixin:
 
     def _apply_project_playhead_frame(self, milliseconds: int, *, defer_follow: bool = False) -> None:
         milliseconds = max(0, int(milliseconds))
+        if getattr(self, '_highlight_preview', None):
+            from .highlight_workflow import tick
+            tick(self, milliseconds)
         if getattr(self, '_review_playback', None) is not None:
             self._review_playback_tick(milliseconds)
         duration = timeline_duration_ms(self.project) if self.project else 0
@@ -610,6 +613,8 @@ class StudioPlaybackFlowMixin:
         if getattr(self, "_empty_playback_state", False) or not self.video.controller:
             return
         timeline_ms = round(seconds * 1000)
+        if not getattr(self, '_highlight_seeking', False):
+            self._highlight_preview = None
         self._invalidate_audio_tail()
         if getattr(self, '_review_playback', None) is not None and not getattr(self, '_review_seeking', False):
             self._release_review_playback()

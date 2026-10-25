@@ -260,11 +260,17 @@ def compile_ass_revision(revision: "SubtitleRenderRevision") -> str:
         language = metadata.get("language") if isinstance(metadata, Mapping) else ""
         language = normalize_language(language.get("code") if isinstance(language, Mapping) else language)
         cues = style_cues_for_state(state, cues, language=language or "", metadata=metadata)
+    if getattr(revision, 'glossary_ids', ()):
+        from types import SimpleNamespace
+        from ..projects.studio_project import StudioCue
+        from ..glossary.visual_emphasis import visual_cues, snapshot_active
+        cues = [StudioCue(**cue.to_dict()) if hasattr(cue,'to_dict') else cue for cue in cues]
+        cues = visual_cues(cues, snapshot_active(SimpleNamespace(glossary_ids=revision.glossary_ids, generation_metadata=metadata)))
     from ..caption_style.speaker_names import enabled
     if (settings.group_transform or (settings.mode != "original" and translations_of(metadata)) or enabled(state)
             or any('language_layers' in (thaw_json(c.transform) or {}) for c in cues)):
         from ..projects.studio_project import StudioCue
-        cues = display_cues([StudioCue(**cue.to_dict()) for cue in cues],
+        cues = display_cues([StudioCue(**cue.to_dict()) if hasattr(cue, "to_dict") else cue for cue in cues],
                             translations=style_translations(state, translations_of(metadata)),
                             settings=settings, styles=revision.styles, speakers=revision.speakers,
                             show_speaker_names=enabled(state),
@@ -361,7 +367,12 @@ def _compile_ass_records(
             style_id = candidate if candidate in known_styles else "default"
         speaker = _ass_name(cue.speaker_id, "S00")
         caption = resolved_captions[cue.id]
-        text = escape_ass_text(caption.text)
+        from ..caption_style.text_marks import remap_marks, layer_marks
+        from .marked_glyphs import marked_ass_text
+        marks = remap_marks(cue.text, caption.text, layer_marks(cue))
+        def escaped_text():
+            return marked_ass_text(caption.text, marks, cue_styles[cue.id]) if marks else escape_ass_text(caption.text)
+        text = escaped_text()
         recipe_payload = recipe_payload_for_style(style_recipes, style_id)
         style_id = cue_styles[cue.id].id
         ass_override = (
@@ -388,8 +399,8 @@ def _compile_ass_records(
             continue
         def animated_text(offset=0):
             if word_part(effect):
-                return compile_word_ass(plan, caption.text, cue_styles[cue.id].primary_color, offset_ms=offset)
-            return _base_motion_tags(compile_effect_text(escape_ass_text(caption.text), effect, cue_duration_ms=cue_duration),cue,cue_styles[cue.id])
+                return compile_word_ass(plan, caption.text, cue_styles[cue.id].primary_color, offset_ms=offset, marks=marks, style=cue_styles[cue.id])
+            return _base_motion_tags(compile_effect_text(escaped_text(), effect, cue_duration_ms=cue_duration),cue,cue_styles[cue.id])
         text = animated_text()
         resolved_style = cue_styles[cue.id]
         lines.append(f"; CaptionStyle cue={cue.id} hash={caption.style_hash} lines={caption.line_count} width={caption.measured_width:g}")

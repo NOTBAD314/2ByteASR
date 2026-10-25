@@ -17,6 +17,7 @@ APPEARANCE_FIELDS = frozenset({
 })
 TRANSFORM_FIELDS = frozenset({
     "position_x", "position_y", "scale_x", "scale_y", "rotation", "font_size",
+    "alignment", "margin_l", "margin_r", "margin_v",
 })
 
 
@@ -42,6 +43,20 @@ def _payload(value: Any) -> dict[str, Any]:
 
 def resolve_cue_visual(project: SubtitleProject, cue: StudioCue) -> ResolvedCueVisual:
     return resolve_cue_visual_from_records(project.styles, project.speakers, cue)
+
+
+def recipe_for_cue(recipes, cue):
+    """A display language layer may carry a private, sparse recipe patch."""
+    from .style_recipe import recipe_payload_for_style
+    payload = recipe_payload_for_style(recipes, cue.style_id)
+    appearance = _payload(getattr(cue, 'appearance_override', {}))
+    if '_recipe_base' in appearance: payload = appearance['_recipe_base'] or None
+    patch = appearance.get('_recipe_patch')
+    if not patch:
+        return payload
+    from .scoped_style import merge_patch
+    result = merge_patch(payload or {'name': '语言层样式'}, patch)
+    return result
 
 
 def resolve_cue_visual_from_records(

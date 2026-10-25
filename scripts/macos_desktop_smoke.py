@@ -102,7 +102,7 @@ def main(argv=None):
     # The Mac CPU route is one model (SenseVoice) with the lightweight energy VAD
     # (no FireRedVAD): the queue rates that degraded_success by design (2026-10-14).
     accept=["success","degraded_success"]
-    (output/"home-flow.json").write_text(json.dumps(dict(model_set["home"],media=str(media),accept_status=accept),ensure_ascii=False),encoding="utf8")
+    (output/"home-flow.json").write_text(json.dumps(dict(model_set["home"],media=str(media),accept_status=accept,bilingual=True),ensure_ascii=False),encoding="utf8")
     guard=output/"guard.2byteproj";guard.write_text("{}",encoding="utf8")
     invoker=output.parents[2]
     # Establish the existing acceptance guard without touching a CI user's

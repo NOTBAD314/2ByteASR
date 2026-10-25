@@ -5,7 +5,7 @@ from __future__ import annotations
 import qtawesome as qta
 from PySide6.QtWidgets import QLabel
 
-from ..design.themed_icons import themed_icon
+from ..design.themed_icons import themed_icon, colored_icon
 from ..design.ui_theme import MUTED
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal
@@ -168,7 +168,7 @@ def _icon(name: str, color: str | None = None):
     # No explicit color means "follow the active theme's primary icon color".
     if color is None:
         return themed_icon(name, "primary")
-    return qta.icon(name, color=color)
+    return colored_icon(name, color)
 
 
 def _time_spinbox() -> QSpinBox:

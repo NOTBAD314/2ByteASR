@@ -14,6 +14,46 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_headless_isolation_does_not_import_visible_broken_frozen_qt(tmp_path):
+    fake=tmp_path/'partial-app-resources'
+    (fake/'PySide6').mkdir(parents=True)
+    (fake/'PySide6/__init__.py').write_text('import os; os._exit(87)',encoding='utf8')
+    program='''
+import sys
+from pathlib import Path
+sys.path[:0]=sys.argv[1:3]
+import twobyteasr
+from twobyteasr.local_models.download_diagnostics import require_isolated_download_path
+assert not any(name.startswith('PySide6') for name in sys.modules)
+require_isolated_download_path(Path(sys.argv[3])/'models/sample')
+'''
+    boundary=tmp_path/'tmp/headless'
+    env=os.environ.copy();env['TWOBYTEASR_TEST_ROOT']=str(boundary)
+    result=subprocess.run([sys.executable,'-I','-c',program,str(ROOT),str(fake),str(boundary)],env=env,
+                          capture_output=True,text=True,timeout=20)
+    assert result.returncode==0,result.stdout+result.stderr
+
+
+def test_later_qt_import_still_writes_qsettings_only_inside_boundary(tmp_path):
+    program='''
+import sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import twobyteasr
+assert 'PySide6.QtCore' not in sys.modules
+from PySide6.QtCore import QSettings
+settings=QSettings('CandidateTest','LazyQt')
+settings.setValue('probe','owned');settings.sync()
+assert Path(settings.fileName()).resolve().is_relative_to(Path(sys.argv[2]).resolve())
+assert settings.value('probe')=='owned'
+'''
+    boundary=tmp_path/'tmp/late-qt'
+    env=os.environ.copy();env['TWOBYTEASR_TEST_ROOT']=str(boundary)
+    result=subprocess.run([sys.executable,'-I','-c',program,str(ROOT),str(boundary)],env=env,
+                          capture_output=True,text=True,timeout=20)
+    assert result.returncode==0,result.stdout+result.stderr
+
+
 @pytest.mark.parametrize("method", ["connect", "connect_ex"])
 @pytest.mark.parametrize("address", [("203.0.113.8", 443), ("example.invalid", 443), ("2001:db8::8", 443)])
 def test_pytest_blocks_external_socket_before_transport(method, address):

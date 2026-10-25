@@ -290,7 +290,7 @@ def run_disclosure(settings: dict) -> dict:
         from urllib.parse import urlsplit
         provider = str(models.get('qwen_asr_api_provider') or '')
         model = str(models.get('qwen_asr_api_model') or '')
-        guide = guide_for(provider, 'asr')
+        guide = guide_for(provider, 'asr', url=str(models.get('qwen_asr_api_url') or ''))
         label = guide.title if guide else provider
         info['engine'] = f"{label} · {model}"
         choice = model_choice(guide, model) if guide else None
@@ -369,7 +369,7 @@ def run_disclosure(settings: dict) -> dict:
         # sends the whole task audio to the saved cloud service once more.
         from ..providers.api_setup_catalog import guide_for
         provider = str(models.get('qwen_asr_api_provider') or '')
-        guide = guide_for(provider, 'asr')
+        guide = guide_for(provider, 'asr', url=str(models.get('qwen_asr_api_url') or ''))
         label = guide.title if guide else (provider or '云端识别服务')
         # Starts with “音频” on purpose: the home page asks once before any
         # “音频…” upload line (``_confirm_run_disclosure``).

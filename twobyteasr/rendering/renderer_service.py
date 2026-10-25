@@ -497,14 +497,14 @@ class RendererService:
 
         return base64.b64decode(data)
 
-    def live_text(self, *, text: str, speaker: str = "", duration_ms: float = 2400,
+    def live_text(self, *, text: str, speaker: str = "", translation: str = "", duration_ms: float = 2400,
                   placement: dict | None = None,
                   prepared_cues: list | None = None,
                   timeout: float = 5.0) -> None:
         """Swap the cue text on the loaded page without a reload (~50ms)."""
         result = self._live_request(
             {"type": "live_text", "text": str(text or ""), "speaker": str(speaker or ""),
-             "duration_ms": max(50, float(duration_ms)), "placement": placement or {},
+             "duration_ms": max(50, float(duration_ms)), "placement": placement or {}, "translation": str(translation or ""),
              "prepared_cues": prepared_cues or []},
             timeout=timeout,
         )

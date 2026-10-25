@@ -175,11 +175,14 @@ def test_every_tutorial_and_explainer_string_has_english_and_japanese():
     catalogs = {language: json.loads((__import__('pathlib').Path(__file__).resolve().parents[1] / 'twobyteasr' / 'locales'
                                       / f'{language}.json').read_text(encoding='utf-8')) for language in ('en', 'ja')}
     texts = set(explainer_strings())
+
+    def template(value):   # a tr() result carries its sentence; key names (2026-10-24) are filled in later
+        return str(getattr(value, 'source', value))
     for step in tutorial_steps(_tour_window()):
-        texts.add(str(step.text() if callable(step.text) else step.text))
+        texts.add(template(step.text() if callable(step.text) else step.text))
         note = step.note() if callable(step.note) else step.note
         if note:
-            texts.add(str(note))
+            texts.add(template(note))
         texts.update(action.label for action in step.actions if action.label)
         texts.add(step.next_label)
     texts.update({'第一次用 API Key？看图解', '需要 API Key（先充值）· 会上传音频',

@@ -173,29 +173,51 @@ class _FakeResponse:
         return {"choices": [{"message": {"content": self._content}}]}
 
 
-class _FakeModule:
-    """requests_module 替身：提供 .post 静态方法。"""
+def _sender(content="", error=None, calls=None):
+    """post_chat_completion 替身：记录参数，返回正文或抛出与真实通道相同的错误。"""
 
-    def __init__(self, post):
-        self.post = staticmethod(post)
+    def send(messages, **kwargs):
+        if calls is not None:
+            calls.append(dict(kwargs, messages=messages))
+        if error is not None:
+            raise error
+        return content
+
+    return send
 
 
-def _unauthorized_response():
-    response = _FakeResponse(status=401)
-    error = requests.HTTPError("401 Client Error: Unauthorized", response=response)
-    return _FakeResponse(401, raise_error=error)
+def _http_error(status, category):
+    from twobyteasr.providers.llm_adapter import LLMRequestError
+
+    return LLMRequestError(f"HTTP {status}：{{}}", category=category, diagnostics={"http_status": status})
 
 
 def test_ai_enhance_401_degrades_without_losing_candidates():
     endpoint = {"url": "https://x/v1", "model": "m", "api_key": "k"}
     candidates = [GlossaryCandidate("芙宁娜", "character", source="pasted")]
-    result, error = ai_enhance(
-        endpoint, candidates, requests_module=_FakeModule(lambda *a, **k: _unauthorized_response())
-    )
+    result, error = ai_enhance(endpoint, candidates, sender=_sender(error=_http_error(401, "auth_error")))
     assert error is not None
-    assert error.code == "unauthorized"
+    assert error.code == "unauthorized" and error.needs_settings
     assert "基础建词仍可继续使用" in error.user_message
     assert result == candidates, "401 时候选必须原样返回"
+
+
+@pytest.mark.parametrize(
+    ("status", "category", "code", "needs_settings"),
+    [
+        (402, "transport_error", "no_balance", True),
+        (429, "rate_limited", "rate_limited", False),
+        (503, "server_error", "unavailable", False),
+    ],
+)
+def test_ai_enhance_http_failures_name_their_cause(status, category, code, needs_settings):
+    endpoint = {"url": "https://x/v1", "model": "m", "api_key": "k"}
+    candidates = [GlossaryCandidate("芙宁娜", source="pasted")]
+    result, error = ai_enhance(endpoint, candidates, sender=_sender(error=_http_error(status, category)))
+    assert error.code == code
+    assert error.needs_settings is needs_settings
+    assert error.model == "m" and error.endpoint == "https://x/v1"
+    assert result == candidates
 
 
 def test_ai_enhance_without_key_returns_missing_key_error():
@@ -227,10 +249,7 @@ def test_ai_enhance_applies_classification_noise_and_alias_as_suggested_only():
         GlossaryCandidate("第五章", source="wiki"),
     ]
 
-    def fake_post(url, **kwargs):
-        return _FakeResponse(200, content)
-
-    result, error = ai_enhance(endpoint, candidates, requests_module=_FakeModule(fake_post))
+    result, error = ai_enhance(endpoint, candidates, sender=_sender(content))
     assert error is None
     by_term = {c.term: c for c in result}
     assert "第五章" not in by_term, "噪音词必须被移除"
@@ -245,13 +264,138 @@ def test_ai_enhance_applies_classification_noise_and_alias_as_suggested_only():
 def test_ai_enhance_garbage_response_degrades_gracefully():
     endpoint = {"url": "https://x/v1", "model": "m", "api_key": "k"}
     candidates = [GlossaryCandidate("三月七", source="wiki")]
-    result, error = ai_enhance(
-        endpoint,
-        candidates,
-        requests_module=_FakeModule(lambda *a, **k: _FakeResponse(200, "not json at all")),
-    )
+    result, error = ai_enhance(endpoint, candidates, sender=_sender("not json at all"))
     assert error is not None
+    assert error.code == "bad_response" and not error.needs_settings
+    assert "密钥" not in error.user_message
     assert result == candidates
+
+
+class _ChatResponse:
+    """network_policy.post 的返回替身（OpenAI 兼容 chat.completions 应答）。"""
+
+    def __init__(self, content, *, reasoning="", finish_reason="stop"):
+        self.status_code = 200
+        self.headers = {"Content-Type": "application/json"}
+        message = {"role": "assistant", "content": content}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        self._payload = {
+            "id": "chatcmpl-test",
+            "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+            "usage": {"prompt_tokens": 480, "completion_tokens": 4096},
+        }
+        self.text = json.dumps(self._payload, ensure_ascii=False)
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _capture_chat_posts(monkeypatch, responses):
+    """Route both the shared network layer and plain requests.post to fakes (never the network)."""
+    from twobyteasr.providers import network_policy
+
+    bodies = []
+
+    def post(url, **kwargs):
+        bodies.append(dict(kwargs.get("json") or {}, _url=url))
+        return responses[min(len(bodies), len(responses)) - 1]
+
+    monkeypatch.setattr(network_policy, "post", post)
+    monkeypatch.setattr(requests, "post", post)
+    return bodies
+
+
+DEEPSEEK = {
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "base_url": "https://api.deepseek.com/v1",
+    "protocol": "openai_compatible_chat",
+    "url": "https://api.deepseek.com/v1/chat/completions",
+    "api_key": "sk-test",
+    "key_source": "test",
+}
+
+
+def test_ai_enhance_turns_deepseek_thinking_off_and_asks_for_json(monkeypatch):
+    """10-25 用户回报：DeepSeek 默认先思考，4096 额度被思考用光，正文为空。"""
+    content = '{"classify":[{"term":"今汐","category":"角色"}],"aliases":[],"noise":[]}'
+    bodies = _capture_chat_posts(monkeypatch, [_ChatResponse(content)])
+    candidates = [GlossaryCandidate("今汐", source="pasted")]
+    result, error = ai_enhance(dict(DEEPSEEK), candidates)
+    assert error is None
+    assert result[0].category == "character"
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert body["_url"] == DEEPSEEK["url"]
+    assert body["model"] == "deepseek-flash"
+    assert body.get("thinking") == {"type": "disabled"}
+    assert body.get("response_format") == {"type": "json_object"}
+    assert body["max_tokens"] >= 8192
+
+
+def test_ai_enhance_when_thinking_used_the_whole_budget_is_not_a_key_error(monkeypatch):
+    """思考用光额度、正文为空：重试加大额度一次，仍失败时说没返回完整结果，不提密钥。"""
+    empty = _ChatResponse("", reasoning="思考" * 2000, finish_reason="length")
+    bodies = _capture_chat_posts(monkeypatch, [empty, empty])
+    candidates = [GlossaryCandidate("今汐", source="pasted")]
+    result, error = ai_enhance(dict(DEEPSEEK), candidates)
+    assert result == candidates
+    assert error is not None and error.code == "bad_response"
+    assert not error.needs_settings
+    assert "密钥" not in error.user_message
+    assert [body["max_tokens"] for body in bodies] == [8192, 16384]
+
+
+def test_classify_ai_error_answer_without_json_is_bad_response_not_unavailable():
+    from twobyteasr.providers.llm_adapter import LLMRequestError
+
+    error = classify_ai_error(
+        LLMRequestError("模型结构化响应为空。", category="structured_empty_response",
+                        diagnostics={"http_status": 200}),
+        {"url": "https://x/v1", "model": "m"},
+    )
+    assert error.code == "bad_response"
+    assert not error.detail.startswith("HTTP")
+
+
+# ---------------------------------------------------------------- 粘贴表格（TSV）
+
+AI_TSV = (
+    "标准词\t分类\t别名或常见错写\n"
+    "玄方地界\t地点\tげんぽうちかい|玄方地界\n"
+    "穗波市\t地点\tほなみし|穗波市|ホナミ市\n"
+    "无冠者\t怪物/Boss\t无关者\n"
+    "角\t怪物/Boss\t\n"
+)
+
+
+def test_pasted_table_rows_split_into_term_category_and_aliases():
+    """10-25：AI 的表贴进「粘贴资料」，以前整行连同制表符成为一个词、表头也成了词。"""
+    candidates = PastedTextSource().collect("鸣潮", AI_TSV)
+    by_term = {c.term: c for c in candidates}
+    assert set(by_term) == {"玄方地界", "穗波市", "无冠者", "角"}
+    assert all("\t" not in c.term for c in candidates)
+    assert by_term["玄方地界"].category == "location"
+    assert by_term["玄方地界"].aliases == ("げんぽうちかい",)
+    assert by_term["穗波市"].aliases == ("ほなみし", "ホナミ市")
+    assert by_term["无冠者"].category == "enemy"
+    assert by_term["角"].aliases == ()
+    assert all(c.source == "pasted" for c in candidates)
+
+
+def test_ai_glossary_tsv_header_is_recognised_even_after_a_fence():
+    from twobyteasr.glossary.smart_glossary import is_ai_glossary_tsv
+
+    assert is_ai_glossary_tsv(AI_TSV)
+    fenced = "```tsv\n" + AI_TSV + "```\n"
+    assert is_ai_glossary_tsv(fenced)
+    assert not is_ai_glossary_tsv("今汐\n长离\n角色：椿、吟霖")
+    terms = [c.term for c in parse_ai_glossary_tsv(fenced)]
+    assert "标准词" not in terms and terms[:2] == ["玄方地界", "穗波市"]
 
 
 # ---------------------------------------------------------------- 组合流程

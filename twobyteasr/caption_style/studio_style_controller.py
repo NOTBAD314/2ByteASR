@@ -35,6 +35,9 @@ from .studio_font_combo import LazyFontComboBox
 
 from ..i18n import bind_text, tr
 
+# Style panel layers (Codex 2026-10-24; Chinese-source catalog keys since 2026-10-25).
+LAYER_TITLES = {"original": "原文", "translation": "译文", "group": "整组"}
+
 
 class _PromptEdit(QPlainTextEdit):
     """二十八轮：AI 修改意见输入框——多行大输入（用户要求"更明显+更大"）。
@@ -231,6 +234,14 @@ class StudioStyleController:
         page._apply_style_recipe(self.session.selected_cue_id, draft)
 
     def _style_panel_p213(self) -> QWidget:
+        steps = self._style_panel_steps()
+        while True:
+            try:
+                next(steps)
+            except StopIteration as done:
+                return done.value
+
+    def _style_panel_steps(self):
         page = self.page
         panel = QWidget()
         layout = QVBoxLayout(panel)
@@ -303,13 +314,13 @@ class StudioStyleController:
         page.style_scope.addItem("当前说话人", "speaker")
         page.style_scope.addItem("全部字幕", "all")
         page.style_scope.set_single_row({"current": "当前", "selected": "已选", "speaker": "说话人", "all": "全部"})
-        page.style_scope.setCurrentIndex(max(0, page.style_scope.findData("all")))
+        page.style_scope.setCurrentIndex(max(0, page.style_scope.findData("selected")))
         bind_text(page.style_scope, '选择后，后续样式调整会自动作用于该范围', property='toolTip')
         scope_row.addWidget(page.style_scope, 1)
         scope_layout.addLayout(scope_row)
         page.style_apply_geometry = QCheckBox("套用样式时包含位置与缩放")
         page.style_apply_geometry.setObjectName("styleInlineCheck")
-        page.style_apply_geometry.setChecked(True)
+        page.style_apply_geometry.setChecked(False)
         bind_text(page.style_apply_geometry, '勾选后，批量应用样式时同步应用当前的位置、边距与缩放；关闭则保留每条字幕各自的几何。', property='toolTip')
         # Under the scope chips it qualifies (control column).
         scope_layout.addLayout(in_control_column(page.style_apply_geometry, extra=STYLE_ROW_INSET))
@@ -326,6 +337,7 @@ class StudioStyleController:
         # preview copies its shadow / glow state.
         page.style_preview.hide()
 
+        yield '字幕预览'
         advanced_card, advanced_layout = page._style_section("复杂视觉效果")
         advanced_top = QHBoxLayout()
         page.advanced_style_badge = QLabel("高保真")
@@ -405,6 +417,7 @@ class StudioStyleController:
         # （工坊）→ 快速修改一行（输入+发送，次级样式）→ 修改意见回显 →
         # 范围/套用/恢复（操作闭环必须留在折叠区之上——展开快速调整也不
         # 会把它们推出滚动视口）→ 最后才是折叠的参数快速调整。
+        yield '高级字幕样式'
         web_card, web_layout = page._style_section("AI 特效字幕调整")
         page.web_adjust_identity = QLabel("当前特效：—")
         page.web_adjust_identity.setObjectName("cardMeta")
@@ -531,6 +544,7 @@ class StudioStyleController:
         page._update_advanced_style_status({})
         page._refresh_saved_ai_styles()
 
+        yield '特效调整'
         preset_card = QFrame()
         preset_card.setObjectName("styleInlineSection")
         preset_layout = QVBoxLayout(preset_card)
@@ -583,6 +597,7 @@ class StudioStyleController:
         preset_layout.addLayout(preset_row)
         layout.addWidget(preset_card)
 
+        yield '样式预设'
         typography_card, typography_layout = page._style_section("文字")
         # Same insets as a property row's content: labels and right edges
         # line up with 外观 (填充…发光).
@@ -646,6 +661,7 @@ class StudioStyleController:
         typography_layout.addLayout(text_grid)
         layout.addWidget(typography_card)
 
+        yield '字幕文字'
         appearance_card, appearance_layout = page._style_section("外观")
         page.style_fill_color = page._new_style_color_edit()
         page.style_outline_color = page._new_style_color_edit()
@@ -1101,6 +1117,7 @@ class StudioStyleController:
         page.motion_jump_button.hide()
         page.motion_jump_button.clicked.connect(lambda: page.context_drawer.setCurrentIndex(page.motion_tab_index))
 
+        yield '字幕动效'
         position_card, position_layout = page._style_section("高级位置与对齐", expanded=False)
         # 2026-10-24 (user): the per-caption 位置与变换 (原文 / 译文 position,
         # scale, rotation, anchor) lives on the 视频 tab, where clips move;
@@ -1169,6 +1186,7 @@ class StudioStyleController:
         position_layout.addLayout(in_control_column(margin_host))
         layout.addWidget(position_card)
 
+        yield '字幕位置'
         current_card, current_layout = page._style_section("当前字幕", expanded=False)
         current_layout.setContentsMargins(STYLE_ROW_INSET, 0, 8, 0)
         page.current_cue_section_button = current_card.findChild(QToolButton, "styleSectionHeader")
@@ -1176,7 +1194,12 @@ class StudioStyleController:
         page.cue_text.setMaximumHeight(64)
         page.translation_text.setMinimumHeight(42)
         page.translation_text.setMaximumHeight(58)
+        from ..studio.caption_text_tools import CaptionTextTools
+        page.original_text_tools = CaptionTextTools(page, page.cue_text, 'original')
+        page.translation_text_tools = CaptionTextTools(page, page.translation_text, 'translation')
+        current_layout.addWidget(page.original_text_tools)
         current_layout.addWidget(page.cue_text)
+        current_layout.addWidget(page.translation_text_tools)
         current_layout.addWidget(page.translation_text)
         current_layout.addWidget(page.editor_metadata)
         layout.addWidget(current_card)
@@ -1217,6 +1240,13 @@ class StudioStyleController:
         page.effect_exit.currentIndexChanged.connect(page._motion_control_changed)
         page.effect_strength.currentIndexChanged.connect(page._motion_control_changed)
         page.effect_curve.currentIndexChanged.connect(page._motion_curve_changed)
+        page.style_layer = QComboBox()
+        for value, title in LAYER_TITLES.items():
+            page.style_layer.addItem(title, value)
+        scope_layout.addWidget(page.style_layer)
+        page.style_scope_summary = QLabel()
+        scope_layout.addWidget(page.style_scope_summary)
+        page.style_layer.currentIndexChanged.connect(lambda index: self._layer_changed(index))
         page.style_scope.currentIndexChanged.connect(page._scope_changed)
         for compact_control in (
             page.style_preset, page.style_font, page.style_font_size, page.style_spacing,
@@ -1250,9 +1280,12 @@ class StudioStyleController:
         page = self.page
         if page._updating_style_ui or getattr(page, '_shadow_polar_syncing', False):
             return
+        targets = tuple(self._style_target_ids())
         self._edit_draft = {
             "project": self.session.project,
             "cue_id": self.session.selected_cue_id,
+            "targets": targets,
+            "layer": page.style_layer.currentData() if hasattr(page, "style_layer") else "original",
             "shadow": self._shadow_from_controls(),
         }
         # Keep the LIVE preview on the pointer/key event path.  The debounced
@@ -1955,79 +1988,16 @@ class StudioStyleController:
         page._apply_fill_spec(fill)
 
     def _apply_fill_spec(self, fill: FillSpec) -> None:
+        from .scoped_style import style_patch_command
         page = self.page
-        """Commit a fill-only edit without round-tripping Inspector geometry."""
-        if not self.session.project:
-            return
-        cue_ids = page._style_target_ids()
-        if not cue_ids:
-            return
-        existing_styles = {style.id: style for style in self.session.project.styles}
-        styles = list(self.session.project.styles)
-        recipes = dict(self.session.project.style_recipes)
-        mapped: dict[str, str] = {}
-        effect_ids: dict[str, str] = {}
-        groups: dict[str, list[str]] = {}
-        for cue_id in cue_ids:
-            cue = cue_by_id(self.session.project, cue_id)
-            groups.setdefault(cue.style_id, []).append(cue_id)
-            effect_ids[cue_id] = cue.effect_id
-        fill_payload = fill.to_dict()
-        fill_digest = hashlib.sha1(
-            json.dumps(fill_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:8]
-        # 2026-09-20：外观颜色必须走 appearance_override——解析层级
-        # （resolve_cue_visual）从 base_preset 读外观，派生 style 只贡献几何；
-        # 只把颜色写进派生样式对解析与 ASS 编译不可见（真机复现：面板/
-        # 样例已黄、视频全白）。
-        appearance_overrides: dict[str, dict[str, object]] = {}
-        for source_id, group_ids in groups.items():
-            source = existing_styles.get(source_id)
-            if source is None:
-                continue
-            target_id = f"{source_id}-fill-{fill_digest}-{hashlib.sha1(chr(0).join(sorted(group_ids)).encode('utf-8')).hexdigest()[:6]}"
-            style = copy.deepcopy(source)
-            style.id = target_id
-            fallback = fill.color if fill.kind == "solid" else str(fill.stops[0].get("color") or style.primary_color)
-            style.primary_color = fallback
-            style.validate()
-            styles = [item for item in styles if item.id != target_id] + [style]
-            source_recipe = recipes.get(source_id)
-            if isinstance(source_recipe, Mapping):
-                recipe = StyleRecipe.from_dict(source_recipe)
-            else:
-                recipe = page._base_recipe_for_style(source)
-            recipe.set_fill(fill)
-            if fill.kind == "solid" and not isinstance(source_recipe, Mapping):
-                recipes.pop(target_id, None)
-            else:
-                recipes[target_id] = recipe.to_dict()
-            for cue_id in group_ids:
-                mapped[cue_id] = target_id
-                merged = dict(cue_by_id(self.session.project, cue_id).appearance_override or {})
-                if fill.kind == "solid":
-                    merged["primary_color"] = fallback
-                else:
-                    merged.pop("primary_color", None)
-                appearance_overrides[cue_id] = merged
-        if not mapped:
-            return
-        first = cue_by_id(self.session.project, cue_ids[0])
-        self.session.undo_stack.push(SetCuesPresentationCommand(
-            self.session.project,
-            cue_ids,
-            style_id=mapped[cue_ids[0]],
-            style_ids=mapped,
-            effect_id=first.effect_id,
-            effect_ids=effect_ids,
-            appearance_overrides=appearance_overrides,
-            styles=styles,
-            effects=self.session.project.effects,
-            style_recipes=recipes,
-            text="修改字幕填充",
-            changed=page._changed,
-            merge_enabled=False,
-        ))
+        if not self.session.project: return
+        layer_control = getattr(page, 'style_layer', None)
+        fields = {'primary_color': fill.color} if fill.kind == 'solid' else {}
+        command = style_patch_command(self.session.project, self._style_target_ids(), fields,
+            recipe_patch={'colors': {'fill': fill.to_dict()}},
+            layer=layer_control.currentData() if layer_control is not None else 'original', changed=page._changed)
+        if command is not None: self.session.undo_stack.push(command)
+        page._load_style_inspector()
 
     def _update_color_swatch(self, button: QToolButton, value: str) -> None:
         page = self.page
@@ -2759,6 +2729,21 @@ class StudioStyleController:
             page._style_dirty = False
             page._update_style_dirty_label()
         style = page._selected_style_source(use_cue_style=_index < 0)
+        layer = getattr(page, 'style_layer', None)
+        cue = self.session._cue_lookup.get(self.session.selected_cue_id)
+        if cue is not None and layer is not None:
+            from .scoped_style import effective_layer_style
+            style = effective_layer_style(self.session.project, cue, layer.currentData())
+            paired = bool(self.session.project.generation_metadata.get('translations', {}).get(cue.id))
+            for name in ('style_position_x','style_position_y','style_alignment','style_margin_l','style_margin_r','style_margin_v'):
+                control = getattr(page,name,None)
+                if control is not None:
+                    control.setEnabled(not paired or layer.currentData() == 'group')
+                    if paired: bind_text(control, '双语位置与对齐：先选择「整组」', property='toolTip')
+        summary = getattr(page, 'style_scope_summary', None)
+        if summary is not None:
+            bind_text(summary, '选中的 {count} 条字幕 · {layer}', count=len(self._style_target_ids()),
+                      layer=tr(LAYER_TITLES.get(layer.currentData(), '原文')))
         if style is None:
             return
         page._updating_style_ui = True
@@ -2843,6 +2828,11 @@ class StudioStyleController:
             cue = self.session._cue_lookup.get(self.session.selected_cue_id)
             recipe_id = cue.style_id if cue is not None and _index < 0 else style.id
             recipe = self.session.project.style_recipes.get(recipe_id, {}) if self.session.project else {}
+            if cue is not None and layer is not None and layer.currentData() == 'translation':
+                from .bilingual_layout import _translation_appearance
+                from .style_resolution import recipe_for_cue
+                shown = _translation_appearance(cue, copy.deepcopy(cue))
+                recipe = recipe_for_cue(self.session.project.style_recipes, shown) or {}
             supports_shadow = not (isinstance(recipe,Mapping) and bool(recipe.get('webTheme')))
             for name in ('style_shadow_distance','style_shadow_angle','style_shadow_angle_value','style_shadow_blur','style_shadow_opacity',
                          'style_shadow_offset_x','style_shadow_offset_y','style_shadow_spread'):
@@ -2919,6 +2909,7 @@ class StudioStyleController:
                     page.motion_preview.set_strokes(style.stroke_layers())
                     page.motion_preview.set_gradient(fill if isinstance(fill, dict) else None)
                     page.motion_preview.set_glow(glow if isinstance(glow, dict) else None)
+            page._style_loaded_values = self._inspector_values(style)
             page._apply_mixed_style_display(
                 style,
                 selected_ids=selected_ids,
@@ -2972,17 +2963,19 @@ class StudioStyleController:
             selected_count = len(ids)
         if selected_count < 2:
             return
-        style_by_id = {item.id: item for item in self.session.project.styles}
-        styles_by_id = {}
-        for cue in cues:
-            source = style_by_id.get(cue.style_id)
-            if source is not None:
-                styles_by_id[source.id] = source
-                if len(styles_by_id) > 1:
-                    break
-        styles = list(styles_by_id.values())
-        if len(styles) < 2:
-            return
+        from .scoped_style import effective_layer_style
+        layer_control = getattr(page, 'style_layer', None)
+        layer = layer_control.currentData() if layer_control is not None else 'original'
+        styles = [effective_layer_style(self.session.project, cue, layer) for cue in cues]
+        names = {'font_family':'字体', 'font_size':'字号', 'primary_color':'颜色', 'bold':'粗体',
+                 'italic':'斜体', 'underline':'下划线', 'outline_width':'描边', 'outline_color':'描边色',
+                 'shadow':'阴影', 'border_style':'背景', 'back_color':'背景色', 'alignment':'对齐', 'spacing':'字距'}
+        mixed = [title for field,title in names.items() if len({str(getattr(item, field)) for item in styles}) > 1]
+        summary = getattr(page, 'style_scope_summary', None)
+        if summary is not None and mixed:
+            from ..i18n import join_text
+            bind_text(summary, '选中的 {count} 条字幕 · 混合值：{fields}', count=selected_count,
+                      fields=join_text([tr(title) for title in mixed]))
         for attribute, control in (("font_size", page.style_font_size), ("spacing", page.style_spacing)):
             values = {getattr(item, attribute) for item in styles}
             if len(values) > 1:
@@ -3063,6 +3056,37 @@ class StudioStyleController:
             changed=page._changed,
         ))
 
+    def _inspector_values(self, style):
+        from dataclasses import asdict
+        values = asdict(self._style_from_controls(style))
+        for key in ('id', 'name'):
+            values.pop(key, None)
+        return {'fields': values, 'recipe': {
+            'outline': {'shadow': self._shadow_from_controls(style.shadow)},
+            'effects': {'glow': normalize_glow_contract({
+                'enabled': bool(self.page.style_glow.isChecked()),
+                'color': self.page.style_glow_color.text(),
+                'radius': float(self.page.style_glow_strength.value())})},
+            'colors': {'fill': self._current_gradient() or self.page._fill_spec.to_dict()},
+        }}
+
+    def _apply_property_changes(self):
+        from .scoped_style import property_patch, style_patch_command
+        page = self.page
+        before = getattr(page, '_style_loaded_values', None)
+        source = page._selected_style_source(use_cue_style=True)
+        if before is None or source is None:
+            return
+        after = self._inspector_values(source)
+        patch = property_patch(before, after)
+        layer_control = getattr(page, 'style_layer', None)
+        command = style_patch_command(self.session.project, self._style_target_ids(),
+            patch.get('fields', {}), recipe_patch=patch.get('recipe', {}),
+            layer=self._edit_draft.get('layer','original') if self._edit_draft is not None else layer_control.currentData() if layer_control is not None else 'original', changed=page._changed)
+        if command is not None:
+            self.session.undo_stack.push(command)
+        page._style_loaded_values = after
+
     def _style_control_changed(self, *_args) -> None:
         page = self.page
         if page._updating_style_ui or not self.session.project or not self.session.selected_cue_id:
@@ -3072,7 +3096,7 @@ class StudioStyleController:
         if hasattr(page, "style_back_button"):
             page._update_color_swatch(page.style_back_button, page.style_back_color.text())
         page._refresh_style_preview()
-        page._apply_style()
+        self._apply_property_changes()
 
     def _glow_toggled(self, enabled: bool) -> None:
         page = self.page
@@ -3080,23 +3104,17 @@ class StudioStyleController:
             page.style_glow_strength.setValue(5.0)
         page._style_control_changed()
 
+    def _layer_changed(self, *_args) -> None:
+        if self.page._updating_style_ui: return
+        if self._edit_draft is not None: self._commit_style_now()
+        self._edit_draft = None
+        self.page._load_style_inspector()
+
     def _scope_changed(self, *_args) -> None:
-        page = self.page
-        if page._updating_style_ui:
-            return
-        page._load_style_inspector()
-        # "选预设 → 点应用范围" 必须立即生效：范围本身是一个应用动作，
-        # 不是"后续编辑的作用域提示"。2026-09-19：扩散源从预设原文改为
-        # 当前有效样式（含控件上的最新修改）——用户套预设后改的颜色/
-        # 位置/缩放不能在切换范围时被预设原值覆盖。
-        scope = str(page.style_scope.currentData() or "current")
-        if scope == "current":
-            return
-        if not self.session.project or not self.session.project.cues:
-            return
-        if str(page.style_preset.currentData() or "") == "":
-            return
-        self._apply_style()
+        if not self.page._updating_style_ui:
+            if self._edit_draft is not None: self._commit_style_now()
+            self._edit_draft = None
+            self.page._load_style_inspector()
 
     def _sync_outline2_controls(self, enabled: bool) -> None:
         page = self.page
@@ -3188,19 +3206,19 @@ class StudioStyleController:
         page = self.page
         if not self.session.project or not self.session.selected_cue_id:
             return []
-        scope = str(page.style_scope.currentData() or "current")
+        if self._edit_draft is not None and self._edit_draft.get('project') is self.session.project:
+            return list(self._edit_draft.get('targets', ()))
+        scope = str(page.style_scope.currentData() or "selected")
         if scope == "all":
             return [cue.id for cue in self.session.project.cues]
         current = cue_by_id(self.session.project, self.session.selected_cue_id)
         if scope == "speaker":
             return [cue.id for cue in self.session.project.cues if cue.speaker_id == current.speaker_id]
         if scope == "selected":
-            rows = page.cue_table.selectionModel().selectedRows()
-            selected = [
-                str(page.cue_model.data(page.cue_model.index(index.row(), 0), Qt.ItemDataRole.UserRole))
-                for index in rows
-            ]
-            return selected or [self.session.selected_cue_id]
+            # 2026-10-24 daily port: with no explicit selection the current subtitle is the target
+            # (as before Codex's scope change); an empty list made every edit a silent no-op.
+            selected = page.selection_model.scope.materialize([c.id for c in self.session.project.cues])
+            return list(selected) or [self.session.selected_cue_id]
         return [self.session.selected_cue_id]
 
     def _copy_subtitle_style(self) -> None:

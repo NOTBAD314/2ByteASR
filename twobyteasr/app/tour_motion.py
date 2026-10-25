@@ -974,6 +974,141 @@ def burn(d: Draw, t: float) -> None:
     d.check(358, 58, shown(t, 2500))
 
 
+# ---------------------------------------------------------------- 2026-10-24: C / B / Shift+Q·W / T
+# Key caps name the keys set in the shortcut settings (read when a step loads its scene).
+_KEYS: dict[str, str] = {}
+
+
+def refresh_keys() -> None:
+    try:
+        from ..studio.shortcut_registry import current_values, display
+        values = current_values()
+        _KEYS.clear()
+        _KEYS.update({action: display(values.get(action, '')) for action in
+                      ('razor_tool', 'merge_tool', 'merge_previous', 'merge_next', 'add_subtitle')})
+    except Exception:  # noqa: BLE001 - the defaults below
+        _KEYS.clear()
+
+
+def key_name(action: str, default: str) -> str:
+    return _KEYS.get(action) or default
+
+
+def _keycap_width(d: Draw, label: str) -> float:
+    return max(30.0, d.measure(label, 13, QFont.Weight.Bold) + 18)
+
+
+def _wide_keycap(d: Draw, x, y, label, down=0.0) -> float:
+    """A key cap as wide as its name (Shift+Q); returns its width."""
+    look = d.look
+    w = _keycap_width(d, label)
+    d.box(x, y + 3, w, 30, faded(look.border, 1.0), None, 7)
+    d.box(x, y + 3 * down, w, 30, mix(look.surface, look.accent, down), look.border, 7)
+    d.text(x + w / 2, y + 3 * down + 15, label, 13, QFont.Weight.Bold, mix(look.text, look.on_accent, down),
+           align='center')
+    return w
+
+
+def _press(t: float, at: float, length: float = 160) -> float:
+    return 1 - abs(t - at) / length if abs(t - at) < length else 0.0
+
+
+def razor(d: Draw, t: float) -> None:
+    """C: the razor shows where it will cut and the words on each side; two clicks make three pieces."""
+    look = d.look
+    d.stage()
+    _workbench_track(d, y0=26)
+    color = look.role['review']
+    x0, x1, y = 60.0, 380.0, 62.0
+    cuts = [x for x, at in ((167.0, 1500), (274.0, 2700)) if t >= at]
+    edges = [x0, *cuts, x1]
+    labels = {2: ('这期纪行的奖励还挺划算',), 3: ('这期纪行', '的奖励还挺划算'),
+              4: ('这期纪行', '的奖励', '还挺划算')}[len(edges)]
+    for index, (a, b) in enumerate(zip(edges, edges[1:])):
+        gap = 3.0 if index else 0.0
+        d.cue(a + gap, y, b - a - gap, 28, color, labels[index])
+    hover = track(t, [(0, 330.0), (500, 330.0), (1200, 167.0), (1900, 167.0), (2400, 274.0), (3600, 274.0)])
+    if 400 <= t <= 3000 and not any(abs(hover - x) < 2 for x in cuts):
+        d.p.setPen(QPen(look.accent, 1.6, Qt.PenStyle.DashLine))
+        d.p.drawLine(QPointF(hover, 54), QPointF(hover, 98))
+        d.icon('fa5s.cut', hover, 46, 12, look.accent)
+    d.keycap(24, 126, key_name('razor_tool', 'C'), _press(t, 250))
+    d.text(64, 141, '剃刀', 12.5, QFont.Weight.DemiBold, look.secondary, ui=True)
+    d.check(400, 132, shown(t, 2900, 3800))
+    d.pointer(t, [(0, 330, 150), (500, 330, 104), (1200, 167, 104), (1900, 167, 104), (2400, 274, 104),
+                  (3600, 274, 104)], (1400, 2600))
+
+
+def merge_tool(d: Draw, t: float) -> None:
+    """B: press on a piece and drag toward its neighbour; the two become one."""
+    look = d.look
+    d.stage()
+    _workbench_track(d, y0=26)
+    color = look.role['review']
+    joined = span(t, 1900, 2150)
+    a_end = 167.0 + (274.0 - 167.0) * joined
+    d.cue(60, 62, a_end - 60, 28, color, '这期纪行' if joined < 0.5 else '这期纪行的奖励',
+          selected=span(t, 700, 850))
+    if joined < 1.0:   # the piece being joined shrinks into its neighbour (no label: it would elide to "…")
+        d.cue(170 + (a_end - 167), 62, max(4.0, 274 - (170 + (a_end - 167))), 28, color,
+              '的奖励' if joined <= 0.0 else '', alpha=1 - joined)
+    d.cue(277, 62, 103, 28, color, '还挺划算')
+    drag = span(t, 900, 1800)
+    if 900 <= t <= 2000:
+        d.p.setPen(QPen(faded(look.accent, 0.9), 2.0))
+        d.p.drawLine(QPointF(110, 76), QPointF(110 + 110 * drag, 76))
+        d.icon('fa5s.arrow-right', 118 + 110 * drag, 76, 11, look.accent, shown(t, 900, 1900))
+    d.keycap(24, 126, key_name('merge_tool', 'B'), _press(t, 300))
+    d.text(64, 141, '合并工具', 12.5, QFont.Weight.DemiBold, look.secondary, ui=True)
+    d.check(400, 132, shown(t, 2300, 3300))
+    d.pointer(t, [(0, 300, 160), (600, 110, 80), (900, 110, 80), (1800, 220, 80), (2600, 220, 80), (3400, 300, 170)],
+              (750,))
+
+
+def ripple(d: Draw, t: float) -> None:
+    """Shift+Q joins the selected piece to the one before it, Shift+W to the one after."""
+    look = d.look
+    d.stage()
+    _workbench_track(d, y0=26)
+    color = look.role['review']
+    joined = span(t, 1300, 1550)
+    edge = 274.0 + (380.0 - 274.0) * joined
+    d.cue(60, 62, edge - 60, 28, color, '这期纪行的奖励' if joined < 0.5 else '这期纪行的奖励还挺划算',
+          selected=joined)
+    if joined < 1.0:
+        d.cue(edge + 3, 62, max(4.0, 380 - edge - 3), 28, color, '还挺划算' if joined <= 0.0 else '',
+              alpha=1 - joined, selected=1 - joined)
+    x = 24.0
+    x += _wide_keycap(d, x, 120, key_name('merge_previous', 'Shift+Q'), _press(t, 1150)) + 8
+    d.text(x, 135, '和上一段', 12, QFont.Weight.DemiBold, look.secondary, ui=True)
+    x = 232.0
+    x += _wide_keycap(d, x, 120, key_name('merge_next', 'Shift+W'), 0.0) + 8
+    d.text(x, 135, '和下一段', 12, QFont.Weight.DemiBold, look.secondary, ui=True)
+    d.check(400, 160, shown(t, 1700, 2900))
+
+
+def add_cue(d: Draw, t: float) -> None:
+    """T: a new two-second line appears at the playhead, ready for typing."""
+    look = d.look
+    d.stage()
+    _workbench_track(d, y0=26)
+    head = 230.0
+    d.cue(40, 62, 150, 28, look.role['primary'], '下次一起去探险')
+    born = span(t, 900, 1150)
+    if born > 0.003:
+        d.cue(head, 62, 110 * born, 28, look.role['primary'], '', alpha=born, selected=1.0)
+        typed = '好啊'[:int(max(0.0, min(1.0, (t - 1500) / 600)) * 2 + 0.001)] if t > 1500 else ''
+        w = d.text(head + 10, 76, typed, 11.5, QFont.Weight.DemiBold, look.text, born)
+        if int(t / 400) % 2 == 0 and t < 3000:
+            d.box(head + 11 + w, 68, 2, 16, look.accent, None, 1, born)
+    d.p.setPen(QPen(look.playhead, 2))
+    d.p.drawLine(QPointF(head, 20), QPointF(head, 98))
+    d.box(head - 5, 18, 10, 6, look.playhead, None, 2)
+    d.keycap(24, 126, key_name('add_subtitle', 'T'), _press(t, 800))
+    d.text(64, 141, '新建字幕', 12.5, QFont.Weight.DemiBold, look.secondary, ui=True)
+    d.check(400, 132, shown(t, 2400, 3300))
+
+
 def plan_compare(d: Draw, t: float) -> None:
     """② Two ways to turn speech into text: 云端 (any computer, uploads) or 本机 (free, needs a graphics card)."""
     look = d.look
@@ -1050,6 +1185,10 @@ SCENES: dict[str, Scene] = {
     'qw': Scene(3200, 0.75, qw),
     'punct': Scene(3600, 0.55, punct),
     'burn': Scene(3400, 0.85, burn),
+    'razor': Scene(4000, 0.8, razor),
+    'merge_tool': Scene(3600, 0.75, merge_tool),
+    'ripple': Scene(3200, 0.7, ripple),
+    'add_cue': Scene(3600, 0.75, add_cue),
 }
 
 

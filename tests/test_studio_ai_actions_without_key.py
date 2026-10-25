@@ -488,17 +488,22 @@ def test_highlights_without_a_key_keep_the_local_result_and_send_nothing(monkeyp
         raise LookupError("the request would be sent here")
 
     monkeypatch.setattr(analyzer, "provider_for_stage", provider)
+    # 2026-10-24 (Codex clip suggestions): no local candidate means nothing to rank or send.
+    assert analyzer.rank_candidates_with_llm(_project(), [], runtime_settings=_settings()) == [] and calls == []
+    local = lambda: [analyzer.LocalCandidate(0, 4000, 0.9, ["字幕"], quotes=["第一句话"])]
     with pytest.raises(RuntimeError, match="没填 API Key"):
-        analyzer.rank_candidates_with_llm(_project(), [], runtime_settings=_settings())
+        analyzer.rank_candidates_with_llm(_project(), local(), runtime_settings=_settings())
     assert calls == []
+    # Only found moments go to the AI; give the two-line project one.
+    monkeypatch.setattr(analyzer, "discover_local_candidates", lambda project, danmaku: local())
     result = analyzer.analyze_highlights(_project(), mode="subtitles", runtime_settings=_settings())
     assert result["llm_status"] == "local_fallback" and result["llm_error"] == "没填 API Key" and calls == []
     # An injected sender (tests, fixtures) and a configured key still reach the provider.
     with pytest.raises(LookupError):
-        analyzer.rank_candidates_with_llm(_project(), [], runtime_settings=_settings(), post=lambda *a, **k: "{}")
+        analyzer.rank_candidates_with_llm(_project(), local(), runtime_settings=_settings(), post=lambda *a, **k: "{}")
     _guard(monkeypatch, missing=False)
     with pytest.raises(LookupError):
-        analyzer.rank_candidates_with_llm(_project(), [], runtime_settings=_settings())
+        analyzer.rank_candidates_with_llm(_project(), local(), runtime_settings=_settings())
     assert len(calls) == 2
 
 

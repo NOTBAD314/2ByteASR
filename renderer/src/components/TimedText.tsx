@@ -4,6 +4,7 @@ type Loop = {type: string; offset?: number; start: number; end: number; duration
   i?: number; a?: number; b?: number};
 export type WordAnimation = {
   mode?: string; color?: string;
+  marks?: {start: number; end: number; bold?: boolean; italic?: boolean; highlight?: boolean; color?: string}[];
   spans?: {char_start: number; char_end: number; start_ms: number; end_ms: number}[];
   channels?: string[];
   units?: {char_start: number; char_end: number; frames: number[][]; shards?: {rect: number[]; x: number; y: number}[];
@@ -119,6 +120,18 @@ export const TimedText: React.FC<{
   text: string; plan?: WordAnimation; milliseconds: number; fill?: boolean; paint?: React.CSSProperties; paintFont?: React.CSSProperties;
 }> = ({text, plan, milliseconds, fill = false, paint, paintFont}) => {
   const letters = Array.from(text);
+  const marked = (a: number, b: number, tint?: string) => {
+    const marks = plan?.marks || [];
+    const edges = [...new Set([a,b,...marks.flatMap(m=>[Math.max(a,m.start),Math.min(b,m.end)]).filter(x=>x>a&&x<b)])].sort((x,y)=>x-y);
+    return edges.slice(0,-1).map((start,i)=>{
+      const end = edges[i+1];
+      const attrs = Object.assign({},...marks.filter(m=>m.start<=start&&m.end>=end));
+      const color = tint || attrs.color || (attrs.highlight ? '#FFD166' : undefined);
+      return <span key={start} style={{fontWeight: attrs.bold===undefined ? undefined : attrs.bold?700:400,
+        fontStyle: attrs.italic===undefined?undefined:attrs.italic?'italic':'normal',
+        ...(fill&&color?{color,WebkitTextFillColor:color}: {})}}>{letters.slice(start,end).join('')}</span>;
+    });
+  };
   const raw = plan?.color || '#FFD166';
   const color = /^#[a-f0-9]{8}$/i.test(raw) ? `#${raw.slice(3)}${raw.slice(1,3)}` : raw;
   if (plan?.units?.length) return <>{plan.units.map((unit,index)=>{
@@ -131,12 +144,14 @@ export const TimedText: React.FC<{
       sx,skew,flash,halo,rgb,ghost,gx,gy,gs,shine,slice,strips,door,cut,caret}=s;
     const parts=letters.slice(unit.char_start,unit.char_end).join('').split('\n');
     return <React.Fragment key={index}>{parts.map((part,line)=>{
+      const partStart=unit.char_start+Array.from(parts.slice(0,line).join('\n')).length+(line?1:0);
+      const partEnd=partStart+Array.from(part).length;
       const slicePaint=fill&&paint?.backgroundImage?paintSlice(text,unit.char_start+
         Array.from(parts.slice(0,line).join('\n')).length+(line?1:0),part,paintFont):{};
       const tile=(extra: React.CSSProperties={},key: React.Key='body')=><span key={key} style={{
         ...(fill?paint:{}),...slicePaint,position:'absolute',inset:0,display:'block',opacity,
         filter:`blur(${blur}em)`,
-        ...extra}}>{part}</span>;
+        ...extra}}>{plan?.marks?.length ? marked(partStart,partEnd,typeof extra.color==='string'?extra.color:undefined) : part}</span>;
       const bands=GLYPH_MODES.includes(plan.mode||'')?null:wipeBands(cut,reveal);
       let body: React.ReactNode;
       if (bands) {
@@ -219,14 +234,15 @@ export const TimedText: React.FC<{
       </React.Fragment>;
     })}</React.Fragment>;
   })}</>;
-  if (!plan?.spans?.length) return <>{text}</>;
-  return <>{letters.slice(0,plan.spans[0].char_start).join('')}{plan.spans.map((span, index) => {
+  if (!plan?.spans?.length) return <>{plan?.marks?.length ? marked(0,letters.length) : text}</>;
+  const lead = plan.spans[0].char_start;
+  return <>{plan?.marks?.length ? marked(0,lead) : letters.slice(0,lead).join('')}{plan.spans.map((span, index) => {
     const started = milliseconds >= span.start_ms;
     const highlight = started && (plan.mode !== 'word_current' || milliseconds < span.end_ms);
     return <span key={index} style={{
       visibility: plan.mode === 'word_reveal' && !started ? 'hidden' : undefined,
       ...(fill && plan.mode !== 'word_reveal' && highlight
         ? {color, WebkitTextFillColor: color} : {}),
-    }}>{letters.slice(span.char_start, span.char_end).join('')}</span>;
+    }}>{plan?.marks?.length ? marked(span.char_start,span.char_end,fill&&plan.mode!=='word_reveal'&&highlight?color:undefined) : letters.slice(span.char_start, span.char_end).join('')}</span>;
   })}</>;
 };

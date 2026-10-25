@@ -9,27 +9,51 @@ from __future__ import annotations
 import threading
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout
 
 from ..i18n import current_language, tr
 from .updater import (
-    automatic_check_due, check_for_update, format_bytes, prepare_update, UpdateCancelled,
+    STARTUP_RECHECK_SECONDS, automatic_check_due, check_for_update, format_bytes, prepare_update, UpdateCancelled,
 )
+
+# How often a waiting reminder looks again whether the user is free, and for
+# how long it keeps looking (2026-10-24).
+REMINDER_RETRY_MS = 15_000
+REMINDER_MAX_TRIES = 240
+
+
+def reminder_action(check, *, enabled: bool, reminded_version: str, busy: bool, tries: int = 0) -> str:
+    """What the start-up reminder does with ``check``: 'show', 'later' (the
+    user is in the middle of something) or '' (nothing to remind of)."""
+    if not enabled or not getattr(check, 'newer', False) or reminded_version == check.latest_version:
+        return ''
+    if busy:
+        return 'later' if tries < REMINDER_MAX_TRIES else ''
+    return 'show'
 
 
 class UpdateCheckWorker(QThread):
-    """Fetch and verify the signed update manifest off the GUI thread."""
+    """Fetch and verify the signed update manifest off the GUI thread.
+
+    ``reminder`` (2026-10-24): the start-up check with the reminder on runs on
+    every start, reusing an answer from the last few minutes; without it the
+    automatic check stays at most once a day.
+    """
 
     result_ready = Signal(object)
     failed = Signal(str)
     skipped = Signal()
 
-    def __init__(self, parent=None, *, automatic: bool = False):
+    def __init__(self, parent=None, *, automatic: bool = False, reminder: bool = False):
         super().__init__(parent)
         self.automatic = automatic
+        self.reminder = automatic and reminder
 
     def run(self):
         try:
+            if self.reminder:
+                self.result_ready.emit(check_for_update(use_cache=True, cache_seconds=STARTUP_RECHECK_SECONDS))
+                return
             if self.automatic and not automatic_check_due():
                 self.skipped.emit()
                 return
@@ -68,9 +92,10 @@ class UpdateDownloadWorker(QThread):
 class UpdateOfferDialog(QDialog):
     """Current/new version, release notes and the real download size."""
 
-    def __init__(self, check, parent=None):
+    def __init__(self, check, parent=None, *, reminder: bool = False):
         super().__init__(parent)
         self.choice = None
+        self.keep_reminding = True
         self.setWindowTitle(tr('发现新版本'))
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
@@ -116,6 +141,18 @@ class UpdateOfferDialog(QDialog):
         detail.setWordWrap(True)
         detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(detail)
+        self.remind_box = None
+        if reminder:
+            # Shown when the dialog opened by itself at start-up (2026-10-24).
+            self.remind_box = QCheckBox(tr('打开软件时自动检查并提醒'))
+            self.remind_box.setObjectName('updateReminderBox')
+            self.remind_box.setChecked(True)
+            self.remind_box.toggled.connect(lambda checked: setattr(self, 'keep_reminding', bool(checked)))
+            layout.addWidget(self.remind_box)
+            hint = QLabel(tr('取消勾选后不再自动弹出；可以在「应用设置 → 关于」里重新打开，顶栏「检查更新」随时可用。'))
+            hint.setObjectName('updateReminderHint')
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
         buttons = QHBoxLayout()
         page = QPushButton(tr('打开发布页'))
         page.clicked.connect(lambda: self._finish('page'))

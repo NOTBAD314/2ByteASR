@@ -32,16 +32,16 @@ def isolated_model_registry(tmp_path, monkeypatch):
     reset_runtime_paths()
 
 
+# 2026-10-25: MAI-Transcribe 2 is OpenRouter's current MAI model; a saved key
+# makes the card usable (it used to be held at “configure” waiting for a “2.1”).
 @pytest.mark.parametrize('saved_model',['','microsoft/mai-transcribe-2'])
-def test_mai_pending_mapping_never_claims_ready_from_a_preserved_key(monkeypatch,saved_model):
-    from twobyteasr.local_models.model_workshop import _metric_evidence
+def test_mai_card_with_a_preserved_key_is_usable(monkeypatch,saved_model):
     monkeypatch.setattr('twobyteasr.providers.llm_config.read_asr_api_key',lambda *a:('preserved-key','test'))
     app=QApplication.instance() or QApplication([])
     page=ModelWorkshopPage(ROOT,{'models':{'qwen_asr_api_provider':'openrouter_word',
                                         'qwen_asr_api_model':saved_model,'primary_asr_backend':'api'}})
     model=page._cards['mai_latest'].model
-    assert page._model_state(model)=='configure'
-    assert not _metric_evidence(model,'accuracy',api_model=saved_model)['available']
+    assert page._model_state(model) in {'selected','configured'}
     page.deleteLater();app.processEvents()
 
 

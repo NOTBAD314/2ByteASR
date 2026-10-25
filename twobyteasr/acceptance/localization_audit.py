@@ -33,6 +33,9 @@ def start(window, output):
 
         def capture(self,name,root):
             root.grab().save(str(output/(name+'.png')))
+            build=getattr(root,'_build_section',None)
+            if callable(build):  # 应用设置 builds a category when first shown (2026-10-25): scan all of them
+                for index in range(len(root._section_builders)):build(index)
             rows=[]
             for w in [root,*root.findChildren(QWidget)]:
                 texts=[]

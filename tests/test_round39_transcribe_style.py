@@ -7,7 +7,8 @@ clean 去语气词适合字幕和纪要；并检查 Qwen-Audio-3.0-ASR 的字级
 官方文档结论（记入 plan）：
 - MAI：Azure Fast Transcription `modelOptions.transcribeStyle`（verbatim|clean，
   官方默认 verbatim → 我们要 clean 必须显式传）；经 OpenRouter
-  `provider.options.azure.*` 原样转发。
+  `provider.options.azure.*` 原样转发。2026-10-25 实测：要放在
+  `enhancedMode.modelOptions` 里才生效（顶层 modelOptions 时两种风格结果相同）。
 - Qwen-Audio-3.0-ASR-Flash：**同步协议（multimodal/OpenAI 兼容）响应无时间戳
   无 speaker**（asr_options 仅 language/enable_itn）；字级时间戳只在异步
   filetrans（parameters.enable_words，且要求公网 file_url——本地应用不适用）。
@@ -64,7 +65,8 @@ def test_openrouter_body_carries_transcribe_style():
     )
     body = calls[0][1]["json"]
     azure = body["provider"]["options"]["azure"]
-    assert azure["modelOptions"]["transcribeStyle"] == "verbatim"
+    assert azure["enhancedMode"]["modelOptions"]["transcribeStyle"] == "verbatim"
+    assert "modelOptions" not in azure   # ignored there (2026-10-25)
     assert azure["diarization"]["enabled"] is True
     assert body["timestamp_granularities"] == ["segment", "word"]
 
@@ -79,7 +81,7 @@ def test_style_defaults_to_clean_explicitly():
     )
     body = calls[0][1]["json"]
     assert (
-        body["provider"]["options"]["azure"]["modelOptions"]["transcribeStyle"]
+        body["provider"]["options"]["azure"]["enhancedMode"]["modelOptions"]["transcribeStyle"]
         == "clean"
     )
 

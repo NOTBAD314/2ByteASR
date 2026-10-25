@@ -33,6 +33,16 @@ the whole tutorial the way a person does and records what was painted:
   home page locks (glossary, web check, translation) are recorded; every show
   and hide of the overlay is logged (no hide while a page opens: the workbench
   flash), and how long each change of step takes.
+* 2026-10-24: the plan (with the language of ``TWOBYTEASR_TOUR_LANGUAGE``, picked
+  in the comparison's language row) is the first step, and does not open again
+  right after the first-run chooser; the bubble's corners are sampled in the
+  overlay during every fade-in and once it is shown (square corners flashed);
+  the workbench steps C / B / Shift+Q / T are done with their keys and real
+  clicks and drags on the timeline (cut into three, merged back twice, a new
+  line typed and kept).
+* 2026-10-24: what the home header's 识别方案 / 当前方案 menus say after the
+  chooser and at every step; once cloud is chosen the menu must name API 转写
+  while its timeline model still downloads (it said 自定义).
 """
 from __future__ import annotations
 
@@ -169,6 +179,40 @@ def start(window, output: Path):
     for _name in ('_poll', '_follow_target', '_glide_step', '_glide_done', '_arrive', '_show_bubble', '_reveal_step',
                   '_reveal_done', '_pulse', 'paintEvent', '_place', '_bubble_picture'):
         setattr(_Tour, _name, timed(_name, getattr(_Tour, _name)))
+    # 2026-10-24 (user: square corners flash at the bubble's corners): what the overlay paints at the
+    # bubble's corners while it fades in and once it is shown, read from the overlay itself.
+    corners: dict = {}
+
+    def corner_sample(tour):
+        from PySide6.QtCore import QRect
+        box = tour.bubble.geometry()
+        if box.width() < 40 or box.height() < 40:
+            return None
+        image = tour.grab(QRect(box)).toImage()
+        w, h = image.width(), image.height()
+        spots = ((3, 3), (w - 4, 3), (3, h - 4), (w - 4, h - 4))
+        return [round(image.pixelColor(x, y).lightness()) for x, y in spots]
+
+    def sampling(name, method):
+        def wrapper(self, *args, **kwargs):
+            value = method(self, *args, **kwargs)
+            try:
+                row = corners.setdefault(self.index, {})
+                if name == '_reveal_step' and 'fading' not in row and 0.35 <= float(self.reveal) <= 0.9:
+                    row['fading'] = corner_sample(self)
+                elif name == '_reveal_done' and 'shown' not in row and self.mode == 'shown':
+                    row['shown'] = corner_sample(self)
+                elif name == '_bubble_picture' and value is not None:
+                    picture = value.toImage()
+                    row['picture_alpha'] = max(picture.pixelColor(x, y).alpha() for x, y in
+                                               ((1, 1), (picture.width() - 2, 1), (1, picture.height() - 2),
+                                                (picture.width() - 2, picture.height() - 2)))
+            except Exception:  # noqa: BLE001 - a missed sample is reported by the check as missing
+                pass
+            return value
+        return wrapper
+    for _name in ('_reveal_step', '_reveal_done', '_bubble_picture'):
+        setattr(_Tour, _name, sampling(_name, getattr(_Tour, _name)))
     shows: list = []
 
     class ShowLog(QObject):
@@ -354,6 +398,13 @@ def start(window, output: Path):
         return next((top for top in QApplication.topLevelWidgets()
                      if isinstance(top, QuickSetupDialog) and top.isVisible() and getattr(top, 'compare', False)), None)
 
+    def plan_menu():
+        """What the home header's 识别方案 · 先选目标 and 当前方案 menus say (2026-10-24)."""
+        combo, profile = window.__dict__.get('recognition_mode_combo'), window.__dict__.get('project_profile_combo')
+        return dict(plan=str(combo.currentData() or '') if combo is not None else '',
+                    text=combo.currentText() if combo is not None else '',
+                    profile=profile.currentText() if profile is not None else '')
+
     def other_window(host):
         """A visible dialog that is not the window the step points into (a guide shown with exec())."""
         return next((top for top in QApplication.topLevelWidgets()
@@ -388,6 +439,87 @@ def start(window, output: Path):
         QToolTip.hideText()
         yield 0.2
 
+    # ---------------------------------------------------------------- 2026-10-24: C / B / Shift+Q / T
+    def pieces(page):
+        return sorted((cue for cue in page.project.cues
+                       if cue.id == 'tutorial-6' or cue.id.startswith('tutorial-6-split-')),
+                      key=lambda cue: (cue.start_ms, cue.end_ms))
+
+    def cue_point(page, cue, ms):
+        """Main window coordinates of time ``ms`` on ``cue``'s row in the timeline."""
+        from PySide6.QtCore import QPoint
+        timeline = page.timeline
+        rows, _track, _wave = timeline._track_layout()
+        band = timeline._cue_band(cue, rows[cue.speaker_id])
+        return timeline.mapTo(window, QPoint(round(timeline._time_to_x(ms)), round(band.center().y())))
+
+    def press_key(widget, action):
+        from PySide6.QtGui import QKeySequence
+        from ..studio.shortcut_registry import current_values
+        combo = QKeySequence(current_values().get(action, ''))[0]
+        QTest.keyClick(widget, combo.key(), combo.keyboardModifiers())
+
+    def workbench_gesture(tour, step, row, before):
+        """What the step asks, done with its key and the mouse on the timeline (no 帮我做)."""
+        page = window.built_page('studio')
+        keys = (step.focus() if step.focus is not None else None) or page.timeline
+        film(f"s{row['index'] + 1:02d}-{step.anim}", 3.5)
+        record = dict(index=row['index'], anim=step.anim, text=tour.text.text(), pieces_before=len(pieces(page)),
+                      cues_before=len(page.project.cues), where=[])
+        handle = window.windowHandle()
+        if step.anim == 'razor':
+            press_key(keys, 'razor_tool')
+            yield 0.3
+            record['tool'] = page.timeline.tool_mode
+            whole = pieces(page)[0]
+            length = whole.end_ms - whole.start_ms
+            for share in (1 / 3, 2 / 3):
+                cue = next(c for c in pieces(page) if c.start_ms < whole.start_ms + length * share < c.end_ms)
+                point = cue_point(page, cue, whole.start_ms + length * share)
+                where = system_window_at(point)
+                record['where'].append(where)
+                send_click(point, where)
+                yield 0.6
+        elif step.anim == 'merge_tool':
+            press_key(keys, 'merge_tool')
+            yield 0.3
+            record['tool'] = page.timeline.tool_mode
+            first, second = pieces(page)[:2]
+            start = cue_point(page, first, (first.start_ms + first.end_ms) // 2)
+            end = cue_point(page, second, (second.start_ms + second.end_ms) // 2)
+            where = system_window_at(start)
+            record['where'].append(where)
+            QApplication.sendEvent(handle, QEnterEvent(QPointF(start), QPointF(start), QPointF(window.mapToGlobal(start))))
+            QTest.mouseMove(handle, start)
+            QTest.mousePress(handle, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, start)
+            from PySide6.QtCore import QPoint
+            for k in range(1, 9):
+                QTest.mouseMove(handle, QPoint(round(start.x() + (end.x() - start.x()) * k / 8),
+                                               round(start.y() + (end.y() - start.y()) * k / 8)))
+                yield 0.03
+            QTest.mouseRelease(handle, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, end)
+            yield 0.6
+        elif step.anim == 'ripple':
+            record['selected'] = str(getattr(getattr(page, 'session', None), 'selected_cue_id', '') or '')
+            for _ in range(3):
+                if len(pieces(page)) <= 1 or tour_alive() is None or tour.index != before:
+                    break
+                press_key(keys, 'merge_previous')
+                yield 0.6
+        elif step.anim == 'add_cue':
+            record['playhead_ms'] = int(page.timeline.playhead_ms)
+            press_key(keys, 'add_subtitle')
+            yield 0.6
+        limit = time.monotonic() + 6
+        yield lambda: tour_alive() is None or tour.index != before or time.monotonic() > limit
+        record.update(advanced=tour_alive() is None or tour.index != before, pieces_after=len(pieces(page)),
+                      cues_after=len(page.project.cues), tool_after=page.timeline.tool_mode)
+        if not record['advanced'] and step.actions:   # reported as failed; 帮我做 so the walk goes on
+            record['helper'] = True
+            QTest.mouseClick(tour.action_buttons[0], Qt.MouseButton.LeftButton)
+            yield lambda: tour_alive() is None or tour.index != before
+        result.setdefault('workbench', []).append(record)
+
     # ---------------------------------------------------------------- the walk
     def run():
         from ..app.quick_setup import QuickSetupDialog
@@ -402,6 +534,9 @@ def start(window, output: Path):
                     shot.save(str(folder / 'chooser.png'))
                     if choose:
                         top.select(choose)
+                        if spoken and spoken in getattr(top, 'spoken_buttons', {}):   # 2026-10-24: its language row
+                            QTest.mouseClick(top.spoken_buttons[spoken], Qt.MouseButton.LeftButton)
+                        result['chooser'].update(spoken=getattr(top, 'spoken', ''))
                         QTest.mouseClick(top.go_button, Qt.MouseButton.LeftButton)
                     else:
                         QTest.mouseClick(top.later_button, Qt.MouseButton.LeftButton)
@@ -424,6 +559,13 @@ def start(window, output: Path):
         yield lambda: tour_alive() is not None and tour_alive().isVisible()
         tour = tour_alive()
         state['tour'] = tour
+        result['plan_menu_after_chooser'] = plan_menu()
+        menu = window.__dict__.get('recognition_mode_combo')
+        if menu is not None:   # the header row, without the overlay (its own window)
+            from PySide6.QtCore import QPoint, QRect
+            row_y = menu.mapTo(window, QPoint(0, 0)).y()
+            window.grab(QRect(0, row_y - 14, window.width(), menu.height() + 28)).save(
+                str(folder / 'plan-menu-after-chooser.png'))
         tour.installEventFilter(paint_log)
         tour.installEventFilter(show_log)
         tour.bubble.installEventFilter(paint_log)
@@ -468,6 +610,7 @@ def start(window, output: Path):
                 row['timeline_card'] = (card.model_label.text(), card.status_badge.text()) if card is not None else None
             hint = window.__dict__.get('subtitle_language_hint')
             row['language_hint'] = hint.text() if hint is not None and hint.isVisible() else ''
+            row['plan_menu'] = plan_menu()
             row['host'] = bool(getattr(step, 'host', None) is not None and tour._step_host() is not None)
             if row['host']:
                 row['host_on_top'] = (tour.isVisible() and tour._foreign_dialog() is None
@@ -514,13 +657,42 @@ def start(window, output: Path):
                     compare.grab().save(str(folder / f"S{row['index'] + 1:02d}-plans.png"))
                     plans.update(cards=list(compare.cards), selected=compare.choice,
                                  points={key: len(card.points) for key, card in compare.cards.items()},
-                                 tour_box=compare.tour_check.isVisible(), go=compare.go_button.text())
+                                 tour_box=compare.tour_check.isVisible(), go=compare.go_button.text(),
+                                 first_spoken=getattr(compare, 'spoken', None))
+                    row_of_languages = getattr(compare, 'spoken_buttons', None)   # older builds have none
+                    if spoken and row_of_languages is not None:   # 2026-10-24: a real click on its button
+                        button = row_of_languages.get(spoken)
+                        if button is not None:
+                            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+                        else:
+                            compare.set_spoken(spoken)
+                        yield 0.5
+                        compare.grab().save(str(folder / f"S{row['index'] + 1:02d}-plans-{spoken}.png"))
                     compare.select(choose or 'cloud')
+                    if row_of_languages is not None:
+                        plans.update(spoken=compare.spoken, advice=compare.spoken_advice.text(),
+                                     backends=list(compare.plan_backends(choose or 'cloud')))
+                    plans.update(models={key: card.models.text() if card.models is not None else ''
+                                         for key, card in compare.cards.items()})
                     QTest.mouseClick(compare.go_button, Qt.MouseButton.LeftButton)
                 yield lambda: tour_alive() is None or tour.index != before
+                models = dict((window.legacy.RUNTIME_SETTINGS or {}).get('models') or {})
                 plans.update(next_index=tour.index if tour_alive() is not None else None,
-                             plan=window._current_plan_key())
+                             plan=window._current_plan_key(),
+                             home_language=str(window.recognition_language.currentData() or ''),
+                             saved_timeline=str(models.get('firered_asr_backend') or ''),
+                             downloads=list((window.__dict__.get('_first_run_downloads') or (None, ()))[1]),
+                             menu=plan_menu())
                 result['plans'] = plans
+            elif step.anim == 'plan_compare' and index == 0:
+                # Right after the first-run chooser the plan was just picked: 下一步, no second comparison.
+                yield 1.2
+                result['plans'] = dict(index=row['index'], just_chosen=True, opened=compare_window() is not None,
+                                       note=tour.note.text(), plan=window._current_plan_key(), menu=plan_menu())
+                QTest.mouseClick(tour.next, Qt.MouseButton.LeftButton)
+                yield lambda: tour_alive() is None or tour.index != before
+            elif step.anim in ('razor', 'merge_tool', 'ripple', 'add_cue') and clicking == 'real':
+                yield from workbench_gesture(tour, step, row, before)
             elif modal_move is not None and getattr(step, 'host', None) is not None and clicking == 'real':
                 # 申请教程 inside AI 设置: the guide opens with exec() - from the timer, never inside this step.
                 film(f's{index + 1:02d}-guide', 3.0)
@@ -626,7 +798,14 @@ def start(window, output: Path):
                 film(f's{index + 1:02d}-click', 2.5)
                 if 'Enter' in raw:
                     how = 'key Enter'
-                    QTest.keyClick(QApplication.focusWidget() or widget, Qt.Key.Key_Return)
+                    focus = QApplication.focusWidget()
+                    if hasattr(focus, 'toPlainText') and not focus.toPlainText().strip():
+                        focus.insertPlainText('教学新字幕')   # T's new line (QTest.keyClicks of CJK crashes Qt)
+                        how = 'typed + key Enter'
+                    elif isinstance(focus, QLineEdit) and not focus.text().strip():
+                        focus.insert('教学新字幕')
+                        how = 'typed + key Enter'
+                    QTest.keyClick(focus or widget, Qt.Key.Key_Return)
                 elif '1 / 2 / 3' in raw or '1/2/3' in raw:
                     how = 'key 1'
                     keys = step.focus() if step.focus is not None else None
@@ -653,6 +832,9 @@ def start(window, output: Path):
                 limit = time.monotonic() + (25 if step.anim == 'studio_open' else 6)
                 yield lambda: tour_alive() is None or tour.index != before or time.monotonic() > limit
                 click['advanced'] = tour_alive() is None or tour.index != before
+                if how.startswith('typed'):   # T's new line: kept with its text (2026-10-24)
+                    studio_page = window.built_page('studio')
+                    click['kept'] = any('教学新字幕' in cue.text for cue in getattr(studio_page.project, 'cues', ()))
                 if not click['advanced'] and getattr(step, 'host', None) is not None and step.show_next:
                     # Inside AI 设置 the click is the user's part (a key pasted, a test run offline);
                     # the step itself waits for 下一步.
@@ -670,7 +852,8 @@ def start(window, output: Path):
                 result['clicks'].append(click)
             else:
                 if step.anim in ('language', 'spoken') and spoken:
-                    label = {'zh': '中文', 'ja': '日本語', 'en': 'English'}[spoken]
+                    # Older builds had language buttons here; since 2026-10-24 the language is picked with the plan.
+                    label = {'zh': '中文', 'ja': '日本語', 'en': 'English'}.get(spoken)
                     pick = next((b for b, a in zip(tour.action_buttons, step.actions) if a.label == label), None)
                     if pick is not None:
                         QTest.mouseClick(pick, Qt.MouseButton.LeftButton)
@@ -762,7 +945,9 @@ def start(window, output: Path):
         native = [s['index'] for s in result['steps'] if s.get('native_child')]
         check('the overlay never becomes a native child window of the main window', not native, native)
         detour = result.get('detour') or {}
-        if detour or not choose:
+        # The detour starts from the 本机 plan's model card (``plan_ok``); with 云端 there is none (2026-10-24:
+        # the comparison picks cloud unless told otherwise, so "no --choose" no longer means a local plan).
+        if detour or (result.get('plans') or {}).get('plan') not in (None, 'cloud'):
             check('a model card opens the workshop; the tutorial waits on its chip and comes back with "回到教学"',
                   detour.get('mode') == 'away' and detour.get('chip') and not detour.get('bubble')
                   and detour.get('chip_where') == 'overlay' and detour.get('back_mode') == 'shown'
@@ -776,11 +961,73 @@ def start(window, output: Path):
                   all(not w.get('overlay_visible') and w.get('mode') == 'dialog' and w.get('back_bubble')
                       for w in windows), windows)
         plans = result.get('plans') or {}
-        check('plan step: the cloud / local comparison opens by itself, each card says what it is good for and '
-              'what to watch out for, no tutorial box in it; the choice is saved and the tutorial goes on',
-              plans.get('opened') and plans.get('cards', [])[:2] in (['cloud', 'local'], ['cloud', 'apple'])
-              and all(count >= 4 for count in (plans.get('points') or {0: 0}).values()) and not plans.get('tour_box')
-              and plans.get('plan') == (choose or 'cloud') and plans.get('next_index') != plans.get('index'), plans)
+        check('plan and language are the first step (2026-10-24)',
+              plans.get('index') == 0 and '主要语言' in str((result['steps'] or [{}])[0].get('text', '')),
+              [plans.get('index'), (result['steps'] or [{}])[0].get('text', '')])
+        if plans.get('just_chosen'):
+            check('right after the first-run chooser the first step does not open the comparison again; '
+                  'it names the plan just chosen', not plans.get('opened') and plans.get('plan') == choose
+                  and '刚才选好了' in str(plans.get('note', '')), plans)
+        else:
+            check('plan step: the cloud / local comparison opens by itself, each card says what it is good for and '
+                  'what to watch out for, no tutorial box in it; the choice is saved and the tutorial goes on',
+                  plans.get('opened') and plans.get('cards', [])[:2] in (['cloud', 'local'], ['cloud', 'apple'])
+                  and all(count >= 4 for count in (plans.get('points') or {0: 0}).values())
+                  and not plans.get('tour_box')
+                  and plans.get('plan') == (choose or 'cloud') and plans.get('next_index') != plans.get('index'), plans)
+        if spoken and not plans.get('just_chosen'):
+            foreign = spoken not in ('zh', 'zh-Hant')
+            check(f'plan window language row: {spoken} picked, the cards name its models and the advice its '
+                  'timeline model; the home page language and the saved timeline follow',
+                  plans.get('spoken') == spoken and plans.get('home_language') == spoken
+                  and (('Qwen3' in plans.get('models', {}).get('cloud', '')
+                        and plans.get('saved_timeline') == 'qwen_aligner' and 'Qwen3' in plans.get('advice', ''))
+                       if foreign else ('FireRedASR2' in plans.get('advice', ''))), plans)
+        # The bubble's corners: what the overlay paints there while the bubble fades in, against once it is shown.
+        flashes_at = []
+        for index, row in sorted(corners.items()):
+            if row.get('fading') and row.get('shown'):
+                lift = max(a - b for a, b in zip(row['fading'], row['shown']))
+                if lift > 30 or row.get('picture_alpha', 0) > 0:
+                    flashes_at.append((index, row))
+        sampled = [index for index, row in corners.items() if row.get('fading') and row.get('shown')]
+        result['corners'] = {str(index): row for index, row in sorted(corners.items())}
+        check('the bubble fades in without square corners (corners of the fade-in picture are transparent; '
+              'what the overlay paints there matches the shown bubble)',
+              len(sampled) >= 10 and not flashes_at, dict(sampled=len(sampled), flashes=flashes_at[:5]))
+        bench = {row['anim']: row for row in result.get('workbench') or ()}
+        check('workbench C: the razor key and two clicks on the line cut it into three',
+              bench.get('razor', {}).get('advanced') and not bench['razor'].get('helper')
+              and bench['razor'].get('tool') == 'razor' and bench['razor'].get('pieces_after') == 3
+              and all(w == 'main' for w in bench['razor'].get('where', ['x'])), bench.get('razor'))
+        check('workbench B: the merge key and a drag from one piece onto the next join them',
+              bench.get('merge_tool', {}).get('advanced') and not bench['merge_tool'].get('helper')
+              and bench['merge_tool'].get('tool') == 'merge' and bench['merge_tool'].get('pieces_after') == 2,
+              bench.get('merge_tool'))
+        check('workbench Shift+Q: the last piece ripple-merges into the one before; the line is whole again',
+              bench.get('ripple', {}).get('advanced') and not bench['ripple'].get('helper')
+              and bench['ripple'].get('pieces_after') == 1, bench.get('ripple'))
+        check('workbench T: a new line opens for typing at the playhead and Enter keeps it',
+              bench.get('add_cue', {}).get('advanced') and not bench['add_cue'].get('helper')
+              and bench['add_cue'].get('cues_after') == bench['add_cue'].get('cues_before', 0) + 1
+              and any(c.get('kept') for c in result['clicks'] if str(c.get('how', '')).startswith('typed')),
+              dict(bench.get('add_cue') or {}, typed=[c for c in result['clicks']
+                                                      if str(c.get('how', '')).startswith('typed')]))
+        names = {row['anim']: row.get('text', '') for row in result.get('workbench') or ()}
+        check('the workbench steps name the keys as set (C, B, Shift+Q / Shift+W, T)',
+              'C' in names.get('razor', '') and 'B' in names.get('merge_tool', '')
+              and 'Shift+Q' in names.get('ripple', '') and 'Shift+W' in names.get('ripple', '')
+              and 'T' in names.get('add_cue', ''), names)
+        # 2026-10-24: cloud's timeline model downloads after the tutorial; the menu fell back to 自定义 meanwhile.
+        after = result.get('plan_menu_after_chooser') or {}
+        named = {s['index']: (s.get('plan_menu') or {}).get('plan') for s in result['steps']
+                 if choose or s['index'] > plans.get('index', len(result['steps']))}
+        check('the header 识别方案 menu names the chosen cloud plan (API 转写) from the choice on, while its '
+              'models are still to download - not 自定义',
+              set(named.values()) == {'moss_pro_qwen'} and (plans.get('menu') or {}).get('plan') == 'moss_pro_qwen'
+              and (not choose or after.get('plan') == 'moss_pro_qwen'),
+              dict(after_chooser=after, after_plan_step=plans.get('menu'),
+                   other=sorted((i, p) for i, p in named.items() if p != 'moss_pro_qwen')))
         inside = [s for s in result['steps'] if s.get('host')]
         check('AI 设置: the tutorial points into the open window (above it, clicks at each outline reach the window)',
               len(inside) >= 4 and all(s.get('host_on_top') and s.get('reaches') for s in inside),

@@ -34,7 +34,7 @@ from ..recognition.run_diagnosis import CONFIDENCE_LABELS, SEVERITY_LABELS
 
 SEVERITY_TONES = {"blocker": "danger", "problem": "warn", "quality": "info", "tip": "accent"}
 # Actions that only make sense on the completion page of this very task.
-TASK_ACTIONS = {"retry", "recover", "studio", "glossary_proofread"}
+TASK_ACTIONS = {"retry", "recover", "studio", "glossary_proofread", "mosi_resplit"}
 AI_STAGE = "polish"  # the 字幕校对 service: the one key AI 断句 / 校对 / 翻译 share
 
 
@@ -816,6 +816,7 @@ def run_diagnosis_action(window, action: str, *, reopen=None) -> bool:
     targets = {
         "cloud_asr_setup": "_open_api_setup_guide", "model_workshop": "_open_model_workshop",
         "retry": "_retry_failed_items", "recover": "_recover_recognition_output",
+        "mosi_resplit": "_resplit_blocked_cloud_segments",
         "glossary_proofread": "_open_glossary_proofread", "studio": "_open_studio_from_result",
         "update": "_check_updates", "support": "_open_support",
     }

@@ -1,6 +1,20 @@
 """Stable tool page identities and migration of the former six-tab layout."""
-CONTEXT_TAB_IDS = ('ai', 'style', 'video', 'highlight', 'media')
+CONTEXT_TAB_IDS = ('ai', 'style', 'motion', 'video', 'highlight', 'media')
 LEGACY_TAB_IDS = ('ai', 'checks', 'style', 'video', 'highlight', 'media')
+
+
+def context_tab_state(index):
+    """Persist one stable identity; unknown/closed tabs fall back to Style.
+
+    Numeric values retain the pre-motion meaning for older project readers.
+    """
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        index = 1
+    value = CONTEXT_TAB_IDS[index] if 0 <= index < len(CONTEXT_TAB_IDS) else 'style'
+    return {'context_tab_id': value,
+            'context_tab': LEGACY_TAB_IDS.index(value) if value in LEGACY_TAB_IDS else 2}
 
 
 def restored_context_tab(layout):

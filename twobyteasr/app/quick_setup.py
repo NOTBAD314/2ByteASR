@@ -14,6 +14,13 @@ is chosen by default and says 推荐. It is MOSS Pro (cloud text and speakers) +
 FireRedASR2 (subtitle times on this computer); FireRed needs an NVIDIA card
 with 4 GB, so without one the times come from Qwen3 对齐 on the CPU (the card
 says so). "完成后带我走一遍新手教学" is ticked by default (``tour``).
+
+2026-10-24 (user): the plan is the tutorial's first step, and with it the
+language the videos mainly speak, which decides the subtitle-time model:
+FireRedASR2 for Chinese, Qwen3 对齐 (Qwen3-ForcedAligner) for Japanese, English,
+Korean and the rest (FireRed only does Chinese; recognition reroutes it anyway,
+see ``recognition_choices.language_timeline``). The cards, their downloads and
+the saved roles follow the language picked in the row above them (``spoken``).
 """
 from __future__ import annotations
 
@@ -22,7 +29,7 @@ import sys
 import threading
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEasingCurve, QObject, QPointF, QRectF, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import QEasingCurve, QObject, QPointF, QRectF, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
@@ -74,6 +81,70 @@ POINTS = {
     'apple': (('免费，不限时长', '影音不离开这台电脑', '用 Apple 芯片加速'),
               ('第一次要下载模型（约 {size} GB）', '速度看电脑配置')),
 }
+
+# 2026-10-24: without FireRed (any language but Chinese) two recognizers check each other.
+FOREIGN_LOCAL_GOOD = ('免费，不限时长', '影音不离开这台电脑', '两个模型互相核对，更准')
+
+# The language row (2026-10-24): the common ones as buttons, the rest in a dropdown.
+SPOKEN_CHOICES = (('zh', '简体中文'), ('zh-Hant', '繁体中文'), ('ja', '日语'), ('en', '英语'), ('ko', '韩语'))
+OTHER_SPOKEN = (('es', '西班牙语'), ('de', '德语'), ('fr', '法语'), ('pt', '葡萄牙语'), ('it', '意大利语'),
+                ('ru', '俄语'))
+SPOKEN_NAMES = dict(SPOKEN_CHOICES + OTHER_SPOKEN)
+
+
+def is_chinese(language: str) -> bool:
+    return str(language or '') in ('zh', 'zh-Hant')
+
+
+def default_spoken(saved: str = '', interface: str = '') -> str:
+    """The language row's first choice: the home page's language, else the interface's (else Chinese)."""
+    for value in (saved, interface):
+        if str(value or '') in SPOKEN_NAMES:
+            return str(value)
+    return 'zh'
+
+
+def plan_backends(key: str, language: str, cloud_timeline_backend: str = '') -> tuple[str, str, str]:
+    """(primary, timeline, review) of a plan for the language the videos speak (2026-10-24).
+
+    The cloud plan's timeline is what this computer can run (``cloud_timeline``).
+    FireRedASR2 times Chinese only: any other language uses Qwen3 对齐, as the
+    recognition plans 日语 / 外语 do.
+    """
+    primary, timeline, review = PLANS[key].backends
+    if key == 'cloud' and cloud_timeline_backend:
+        timeline = cloud_timeline_backend
+    if timeline == 'local' and not is_chinese(language):
+        timeline = 'qwen_aligner'
+    return primary, timeline, review
+
+
+def plan_points(key: str, language: str):
+    """The comparison's (good, care) lines for a plan and language."""
+    good, care = POINTS[key]
+    if key == 'local' and not is_chinese(language):
+        good = FOREIGN_LOCAL_GOOD
+    return good, care
+
+
+def plan_models(key: str, timeline: str) -> tuple[str, ...]:
+    """The model names a card shows for its (language-dependent) timeline."""
+    if key == 'cloud':
+        return {'local': PLANS['cloud'].models, 'off': ('MOSS Pro',)}.get(timeline, ('MOSS Pro', 'Qwen3 对齐'))
+    if key == 'local' and timeline != 'local':
+        return ('MOSS', 'Qwen3', 'Qwen3 对齐')
+    return PLANS[key].models
+
+
+def language_advice(language: str) -> str:
+    """One line under the language row: which model times the subtitles, and why (translated, **marked**)."""
+    name = tr(SPOKEN_NAMES.get(language, '简体中文'))
+    if is_chinese(language):
+        return tr('{value0}：字幕时间用 **FireRedASR2**，每个字的时间最准（要 NVIDIA 显卡，没有就用 Qwen3 对齐）',
+                  value0=name)
+    return tr('{value0}：字幕时间用 **Qwen3 对齐**，每个字词都对得准，不用显卡也能跑（FireRedASR2 只对中文）',
+              value0=name)
+
 
 # Captions of the demonstrations (what the picture is showing right now).
 LOCAL_DEMOS = ('分说话人', '三路审核', '字级时间')
@@ -503,6 +574,11 @@ class PlanCard(QFrame):
         import html
         theme = theme_definition(theme_key())
         layout = self.layout()
+        for label in self.points:   # 2026-10-24: called again when the language (and the download) changes
+            layout.removeWidget(label)
+            label.hide()
+            label.deleteLater()
+        self.points = []
         for lines, mark, color in ((good, '✓', theme.success), (care, '!', theme.warning)):
             for line in lines:
                 words = str(tr(line)).replace('{size}', f'{size:.1f}')
@@ -565,6 +641,15 @@ def card_qss(theme) -> str:
         f"QLabel#quickPlanStatus[tone=\"warn\"] {{ color: {theme.warning}; }}",
         f"QPushButton#quickSetupLink {{ background: transparent; border: 0; color: {theme.text_muted}; padding: 6px 2px; }}",
         f"QPushButton#quickSetupLink:hover {{ color: {theme.accent}; }}",
+        # 2026-10-24: the language row, as tall as the 其他语言 dropdown beside it (the app sheet's
+        # button min-height made the buttons a third taller); radius under half the ~31 px height.
+        f"QLabel#quickLanguageLabel {{ color: {theme.text}; font-size: 14px; font-weight: 700; }}",
+        f"QPushButton#quickLanguage {{ background: {theme.surface}; color: {theme.text}; border: 1.5px solid {theme.border};"
+        f" border-radius: 12px; padding: 4px 14px; min-height: 20px; font-size: 13px; font-weight: 600; }}",
+        f"QPushButton#quickLanguage:hover {{ border-color: {theme.accent}; }}",
+        f"QPushButton#quickLanguage:checked {{ background: {theme.accent_tint}; color: {theme.accent};"
+        f" border: 2px solid {theme.accent}; font-weight: 700; }}",
+        f"QLabel#quickLanguageAdvice {{ color: {theme.text_secondary}; font-size: 13px; }}",
     ]
     for key, color in PLAN_COLORS.items():
         tint = _mix(color, 0.16).name(QColor.NameFormat.HexArgb)
@@ -608,7 +693,7 @@ class QuickSetupDialog(SpringDialog):
     cuda_ready = Signal(object)
 
     def __init__(self, parent=None, *, plan_keys: list[str] | None = None, size_of=None, compare: bool = False,
-                 current: str = ''):
+                 current: str = '', spoken: str = ''):
         super().__init__(parent)
         # 2026-10-22: ``compare`` is the tutorial's plan step: cloud and local side by side with
         # what each is good for, the saved plan (``current``) chosen; no tutorial box, no language.
@@ -628,8 +713,12 @@ class QuickSetupDialog(SpringDialog):
         self.tour = True                  # start the tutorial once the window is back on the home page
         self._size_of = size_of or (lambda backends: 0.0)
         self._cuda = None
+        self._cuda_answered = False                        # the background graphics card check has answered
         self._cloud_timeline = PLANS['cloud'].backends[1]   # until the graphics card check says otherwise
+        # 2026-10-24: the language the videos mainly speak (the row above the cards).
+        self.spoken = default_spoken(spoken, current_language())
         theme = theme_definition(theme_key())
+        self._theme = theme
         self.setStyleSheet(card_qss(theme))
         self.setMinimumWidth(760)
         outer = QVBoxLayout(self)
@@ -656,6 +745,12 @@ class QuickSetupDialog(SpringDialog):
         self.lang_combo.currentIndexChanged.connect(lambda index: save_language(self.lang_combo.itemData(index) or 'zh'))
         header.addWidget(self.lang_combo, 0, Qt.AlignmentFlag.AlignTop)
         outer.addLayout(header)
+        outer.addLayout(self._build_spoken_row())
+        self.spoken_advice = QLabel()
+        self.spoken_advice.setObjectName('quickLanguageAdvice')
+        self.spoken_advice.setTextFormat(Qt.TextFormat.RichText)
+        self.spoken_advice.setWordWrap(True)
+        outer.addWidget(self.spoken_advice)
         row = QHBoxLayout()
         row.setSpacing(14)
         self.cards: dict[str, PlanCard] = {}
@@ -667,7 +762,7 @@ class QuickSetupDialog(SpringDialog):
             row.addWidget(card, 1, Qt.AlignmentFlag.AlignTop)
             self.cards[key] = card
             if self.compare and key in POINTS:
-                card.add_points(*POINTS[key], size=self._size_of(PLANS[key].backends))
+                card.add_points(*plan_points(key, self.spoken), size=self._size_of(self.plan_backends(key)))
         outer.addLayout(row)
         source_row = QHBoxLayout()
         source_label = QLabel()
@@ -725,23 +820,92 @@ class QuickSetupDialog(SpringDialog):
         footer.addWidget(self.go_button)
         outer.addLayout(footer)
         for key, card in self.cards.items():
-            backends = PLANS[key].backends
-            size = self._size_of(backends)
             if key != 'cloud':
-                card.set_status(tr('下载约 {size:.1f} GB', size=size))
+                card.set_status(tr('下载约 {size:.1f} GB', size=self._size_of(self.plan_backends(key))))
         self.cuda_ready.connect(self._cuda_checked)
         if 'cloud' in self.cards:
             self._show_cloud_timeline(cloud_timeline() if sys.platform == 'darwin' else self._cloud_timeline)
         if 'local' in self.cards or ('cloud' in self.cards and sys.platform != 'darwin'):
-            if 'local' in self.cards:
-                self.cards['local'].set_status(tr('正在检查显卡…') + '  ·  ' +
-                                               tr('下载约 {size:.1f} GB', size=self._size_of(PLANS['local'].backends)))
+            self._show_local_status()   # 正在检查显卡… until the check answers
             relay = _CudaRelay(self)   # dies with the dialog; a late result is simply dropped
             relay.finished.connect(self._cuda_checked)
             threading.Thread(target=_probe_cuda, args=(relay,), name='quick-setup-cuda', daemon=True).start()
         start = current if self.compare and current in self.cards else RECOMMENDED
         self.select(start if start in self.cards else next(iter(self.cards)))
+        self.set_spoken(self.spoken)
+        self.lang_combo.currentIndexChanged.connect(lambda _index: QTimer.singleShot(0, self._show_spoken))
         self.resize(940, self.sizeHint().height())
+
+    # ------------------------------------------------------------- language
+    def _build_spoken_row(self) -> QHBoxLayout:
+        """视频里主要说什么话？ The common languages as buttons, the others in a dropdown (2026-10-24)."""
+        from ..design.main_ui_popup import FramelessPopupCombo
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        label = QLabel()
+        bind_text(label, '视频里主要说什么话？')
+        label.setObjectName('quickLanguageLabel')
+        row.addWidget(label)
+        row.addSpacing(4)
+        self.spoken_buttons: dict[str, QPushButton] = {}
+        for code, name in SPOKEN_CHOICES:
+            button = QPushButton()
+            bind_text(button, name)
+            button.setObjectName('quickLanguage')
+            button.setProperty('language', code)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, value=code: self.set_spoken(value))
+            row.addWidget(button)
+            self.spoken_buttons[code] = button
+        self.spoken_other = FramelessPopupCombo()
+        self.spoken_other.setObjectName('quickLanguageOther')
+        self.spoken_other.addItem(tr('其他语言'), '')
+        for code, name in OTHER_SPOKEN:
+            self.spoken_other.addItem(tr(name), code)
+        self.spoken_other.currentIndexChanged.connect(self._other_spoken_picked)
+        row.addWidget(self.spoken_other)
+        row.addStretch(1)
+        return row
+
+    def _other_spoken_picked(self, index: int) -> None:
+        code = self.spoken_other.itemData(index)
+        if code:
+            self.set_spoken(str(code))
+        else:   # back on 其他语言: keep the language until a button is pressed
+            self.set_spoken(self.spoken)
+
+    def set_spoken(self, code: str) -> None:
+        """The videos mainly speak ``code``: the cards show its models, downloads and timeline."""
+        if code not in SPOKEN_NAMES:
+            return
+        self.spoken = code
+        for value, button in self.spoken_buttons.items():
+            button.setChecked(value == code)
+        blocked = self.spoken_other.blockSignals(True)
+        self.spoken_other.setCurrentIndex(0 if code in self.spoken_buttons else max(0, self.spoken_other.findData(code)))
+        self.spoken_other.blockSignals(blocked)
+        self._show_spoken()
+
+    def _show_spoken(self) -> None:
+        from .onboarding import emphasis_html
+        self.spoken_advice.setText(emphasis_html(str(language_advice(self.spoken)), self._theme.accent))
+        if 'cloud' in self.cards:
+            self._show_cloud_timeline(self._cloud_timeline)
+        card = self.cards.get('local')
+        if card is not None:
+            if card.models is not None:
+                card.models.setText(' · '.join(str(tr(name)) for name in
+                                               plan_models('local', self.plan_backends('local')[1])))
+            if self.compare:
+                card.add_points(*plan_points('local', self.spoken), size=self._size_of(self.plan_backends('local')))
+            self._show_local_status()
+        if self.choice is not None:
+            self.select(self.choice)   # the main button names this language's download
+
+    def plan_backends(self, key: str) -> tuple[str, str, str]:
+        """(primary, timeline, review) of ``key`` on this computer for the chosen language."""
+        return plan_backends(key, self.spoken, self._cloud_timeline)
 
     # ------------------------------------------------------------- choice
     def select(self, key: str) -> None:
@@ -759,26 +923,30 @@ class QuickSetupDialog(SpringDialog):
         elif key == 'cloud':
             bind_text(self.go_button, '选好了，开始')
         else:
-            bind_text(self.go_button, '准备并开始（模型约 {size:.1f} GB）', size=self._size_of(PLANS[key].backends))
+            bind_text(self.go_button, '准备并开始（模型约 {size:.1f} GB）', size=self._size_of(self.plan_backends(key)))
 
     def cloud_backends(self) -> tuple[str, str, str]:
-        primary, _timeline, review = PLANS['cloud'].backends
-        return primary, self._cloud_timeline, review
+        return self.plan_backends('cloud')
 
     def _show_cloud_timeline(self, timeline: str) -> None:
-        """FireRedASR2 where it can run, else what replaces it, said on the card (2026-10-21)."""
+        """FireRedASR2 where it can run, else what replaces it, said on the card (2026-10-21).
+
+        ``timeline`` is what this computer can run; 2026-10-24: a language other
+        than Chinese uses Qwen3 对齐 even where FireRedASR2 could run."""
         self._cloud_timeline = timeline
         card = self.cards.get('cloud')
         if card is None:
             return
-        if timeline == 'local':
-            models, line = PLANS['cloud'].models, PLANS['cloud'].line
-        elif timeline == 'off':
-            models, line = ('MOSS Pro',), 'MOSS Pro 在云端把说话变成文字，还分出谁在说'
+        shown = self.cloud_backends()[1]
+        models = plan_models('cloud', shown)
+        if shown == 'local':
+            line = PLANS['cloud'].line
+        elif shown == 'off':
+            line = 'MOSS Pro 在云端把说话变成文字，还分出谁在说'
         else:
-            models = ('MOSS Pro', 'Qwen3 对齐')
             line = ('MOSS Pro 在云端把说话变成文字，Qwen3 对齐在本机对准时间（不用 NVIDIA 显卡）'
-                    if sys.platform != 'darwin' else 'MOSS Pro 在云端把说话变成文字，Qwen3 对齐在本机对准时间')
+                    if sys.platform != 'darwin' and timeline != 'local'
+                    else 'MOSS Pro 在云端把说话变成文字，Qwen3 对齐在本机对准时间')
         if card.models is not None:
             card.models.setText(' · '.join(str(tr(name)) for name in models))
         bind_text(card.line, line)
@@ -798,31 +966,47 @@ class QuickSetupDialog(SpringDialog):
                 self._show_cloud_timeline(cloud_timeline(inventory_from_cuda_status(status)))
             except Exception:  # noqa: BLE001 - keep FireRedASR2; the workshop checks again before downloading
                 pass
+        self._cuda_answered = True
         card = self.cards.get('local')
         if card is None:
             return
-        size = tr('下载约 {size:.1f} GB', size=self._size_of(PLANS['local'].backends))
-        gpu = str(getattr(status, 'gpu_name', '') or '')
-        usable = status is not None and (getattr(status, 'ready', False)
-                                         or (getattr(status, 'code', '') == 'torch_missing' and gpu))
-        if usable:
-            try:
-                _keys, vram = self._local_vram()
-            except Exception:  # noqa: BLE001 - the plain NVIDIA line is still right
-                vram = None
-            from ..system.vram_check import card_summary
-            note = card_summary(vram) if vram is not None else ''
-            if note:
-                # 2026-10-15: an NVIDIA card with too little memory (RTX 2060 6 GB report).
-                card.set_status(note + '  ·  ' + size, 'warn')
-            else:
-                card.set_status('✓ ' + gpu + '  ·  ' + size, 'good')
+        if self._show_local_status():
             return
-        card.set_status(tr('这台电脑没有可用的 NVIDIA 显卡'), 'bad')
         card.setEnabled(False)
         card.setCursor(Qt.CursorShape.ArrowCursor)
         if self.choice == 'local':
             self.select('light' if 'light' in self.cards else 'cloud')
+
+    def _show_local_status(self) -> bool:
+        """The local card's graphics card and download line (False: no usable NVIDIA card).
+
+        2026-10-24: shown again when the language changes, since the download does."""
+        card = self.cards.get('local')
+        if card is None:
+            return False
+        size = tr('下载约 {size:.1f} GB', size=self._size_of(self.plan_backends('local')))
+        if not self._cuda_answered:
+            card.set_status(tr('正在检查显卡…') + '  ·  ' + size)
+            return True
+        status = self._cuda
+        gpu = str(getattr(status, 'gpu_name', '') or '')
+        usable = status is not None and (getattr(status, 'ready', False)
+                                         or (getattr(status, 'code', '') == 'torch_missing' and gpu))
+        if not usable:
+            card.set_status(tr('这台电脑没有可用的 NVIDIA 显卡'), 'bad')
+            return False
+        try:
+            _keys, vram = self._local_vram()
+        except Exception:  # noqa: BLE001 - the plain NVIDIA line is still right
+            vram = None
+        from ..system.vram_check import card_summary
+        note = card_summary(vram) if vram is not None else ''
+        if note:
+            # 2026-10-15: an NVIDIA card with too little memory (RTX 2060 6 GB report).
+            card.set_status(note + '  ·  ' + size, 'warn')
+        else:
+            card.set_status('✓ ' + gpu + '  ·  ' + size, 'good')
+        return True
 
     def _go(self) -> None:
         if self.choice is None:
@@ -842,7 +1026,7 @@ class QuickSetupDialog(SpringDialog):
             self.api_preset = CLOUD_PRESET
             self.backends = self.cloud_backends()
         else:
-            self.backends = PLANS[self.choice].backends
+            self.backends = self.plan_backends(self.choice)
         self.tour = self.tour_check.isChecked()
         self.accept()
 
@@ -851,7 +1035,7 @@ class QuickSetupDialog(SpringDialog):
         """The 本机识别 download keys and how they fit this graphics card (2026-10-15)."""
         from ..system import vram_check
         from .guided_setup_dialog import GuidedSetupDialog
-        keys = GuidedSetupDialog.download_keys_for(*PLANS['local'].backends)
+        keys = GuidedSetupDialog.download_keys_for(*self.plan_backends('local'))
         # The background CUDA check when it has finished, else nvidia-smi alone (under a second).
         inventory = (vram_check.inventory_from_cuda_status(self._cuda) if self._cuda is not None
                      else vram_check.read_gpu_inventory())

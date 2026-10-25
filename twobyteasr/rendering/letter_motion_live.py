@@ -29,7 +29,7 @@ def paint_units(painter, pieces, snapshot, local_bounds, em, type_scale, text_la
         _blurred_layer, _draw_shadow_path, _draw_soft_path)
     static_key = (snapshot.text, snapshot.font_family, snapshot.font_weight, snapshot.italic,
         snapshot.letter_spacing, em, type_scale, str(snapshot.fill), str(snapshot.strokes),
-        str(snapshot.shadow), str(snapshot.glow), text_layer, effects_layer,
+        str(snapshot.shadow), str(snapshot.glow), str(getattr(snapshot, 'text_marks', None)), text_layer, effects_layer,
         getattr(snapshot.resolved_caption, 'style_hash', ''), str(local_bounds))
     mode = snapshot.word_animation['mode']
     accent = _color(snapshot.word_animation.get('color'), '#FFB9DDF6')
@@ -88,6 +88,9 @@ def paint_units(painter, pieces, snapshot, local_bounds, em, type_scale, text_la
                     brush.drawPath(outside_stroke_ring(path,float(stroke.get('width',0))*type_scale))
                 brush.setBrush(resolve_fill_brush(snapshot.fill, local_bounds))
                 brush.drawPath(path)
+                for marked_path, color in unit.get('_marked_colours', ()):
+                    brush.setBrush(_color(color))
+                    brush.drawPath(marked_path)
             brush.end()
             _remember(key,tile)
         else:

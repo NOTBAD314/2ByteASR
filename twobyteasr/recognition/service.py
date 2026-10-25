@@ -687,7 +687,8 @@ def run_media_queue(
                             source_identity["sha256"] = current["sha256"]
                         target["fingerprint"] = digest_payload({k: target[k] for k in
                             ("version", "duration_ms", "audio_graph", "sequence", "sources")
-                            + (("audio_source",) if target.get("audio_source") else ())})
+                            + (("audio_source",) if target.get("audio_source") else ())
+                            + (("range_ms",) if target.get("range_ms") else ())})
                         lane = target.get("audio_source") or {}
                         legacy.record_run_event("timeline_input_preparing", fingerprint=target["fingerprint"],
                                                 duration_ms=target["duration_ms"], audio_lane=lane.get("lane_id", ""),

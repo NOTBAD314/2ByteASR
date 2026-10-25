@@ -104,6 +104,10 @@ def test_binding_of_previous_source_is_not_used_after_media_changes(tmp_path):
     project = _project(first)
     apply_discovery(project, discover_for_source(first))
     project.media.path = str(second)
+    # Current source identity belongs to the retained graph, not just the
+    # legacy project.media display record.
+    for asset in project.media_pool:
+        asset.canonical_source = str(second)
     assert effective_path(project) == ""
     assert needs_discovery(project)
 

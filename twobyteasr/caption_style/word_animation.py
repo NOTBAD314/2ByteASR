@@ -128,25 +128,35 @@ def word_state(plan, milliseconds):
                  for r in plan.get('spans', ()))
 
 
-def compile_word_ass(plan, text, base_color, *, offset_ms=0):
+def compile_word_ass(plan, text, base_color, *, offset_ms=0, marks=None, style=None):
     from ..rendering.ass_compiler import escape_ass_text
     from .effect_dsl import _ass_color
+    from .text_marks import runs
+    from ..rendering.marked_glyphs import marked_ass_text
+    from copy import copy
     plan = remap_word_animation(plan, text)
     if not plan.get('spans'):
-        return escape_ass_text(text)
+        return marked_ass_text(text, marks, style) if marks and style else escape_ass_text(text)
     result = [escape_ass_text(text[:plan.get('static_prefix_length', 0)])]
     for span in plan['spans']:
         start, end = span['start_ms']-offset_ms, span['end_ms']-offset_ms
-        content = escape_ass_text(text[span['char_start']:span['char_end']])
-        if plan['mode'] == 'word_reveal':
-            tags = r'\alpha&H00&' if start <= 0 else rf'\alpha&HFF&\t({start},{start+1},\alpha&H00&)'
-        else:
-            color = _ass_color(plan['color'])
-            normal = _ass_color(base_color)
-            tags = r'\1c'+(color if start <= 0 else normal)
-            if start > 0:
-                tags += rf'\t({start},{start+1},\1c{color})'
-            if plan['mode'] == 'word_current':
-                tags = r'\1c'+normal if end <= 0 else tags+rf'\t({max(0,end)},{max(0,end)+1},\1c{normal})'
-        result.append('{'+tags+'}'+content)
+        segments = [(max(a,span['char_start']),min(b,span['char_end']),attrs)
+                    for a,b,attrs in runs(text,marks) if a<span['char_end'] and b>span['char_start']] if marks and style else [(span['char_start'],span['char_end'],{})]
+        for a,b,attrs in segments:
+            local=copy(style) if marks and style else None
+            normal_color=attrs.get('color') or ('#FFD166' if attrs.get('highlight') else base_color)
+            if local is not None:
+                local.primary_color=normal_color
+                if 'bold' in attrs:local.bold=attrs['bold']
+                if 'italic' in attrs:local.italic=attrs['italic']
+            if plan['mode'] == 'word_reveal':
+                tags = r'\alpha&H00&' if start <= 0 else rf'\alpha&HFF&\t({start},{start+1},\alpha&H00&)'
+            else:
+                color,normal = _ass_color(plan['color']),_ass_color(normal_color)
+                tags = r'\1c'+(color if start <= 0 else normal)
+                if start > 0: tags += rf'\t({start},{start+1},\1c{color})'
+                if plan['mode'] == 'word_current':
+                    tags = r'\1c'+normal if end <= 0 else tags+rf'\t({max(0,end)},{max(0,end)+1},\1c{normal})'
+            result.append(marked_ass_text(text[a:b],[],local,extra_tags=tags) if local is not None
+                          else '{'+tags+'}'+escape_ass_text(text[a:b]))
     return ''.join(result)
