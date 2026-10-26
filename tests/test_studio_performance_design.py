@@ -50,3 +50,20 @@ def test_diagnostics_copy_and_hidden_timer():
     panel.deleteLater()
     parent.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_short_capture_restores_probe_and_never_claims_screen_performance():
+    from twobyteasr.diagnostics import playback_probe
+    parent=QWidget();parent.video=SimpleNamespace(_playback_clock=PlaybackClock());parent.video_compositor=None
+    panel=StudioPerformanceDialog(parent)
+    before=playback_probe.ENABLED
+    panel.start_capture()
+    assert playback_probe.ENABLED and panel._capture_timer.isActive()
+    panel.capture_tick();panel.finish_capture()
+    assert playback_probe.ENABLED==before
+    assert panel._capture_report['performance_pass']=='UNVERIFIED'
+    assert panel._capture_report['measurement_valid']['desktop'] is False
+    assert panel.export_button.isEnabled()
+    panel.deleteLater();parent.deleteLater()
+    from PySide6.QtCore import QCoreApplication,QEvent
+    QCoreApplication.sendPostedEvents(None,QEvent.DeferredDelete)

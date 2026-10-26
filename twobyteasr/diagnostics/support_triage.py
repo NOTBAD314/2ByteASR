@@ -799,6 +799,8 @@ KIND_LABELS = {"act": "错误", "check": "请核对", "stall": "卡顿", "slow":
 def event_title(row):
     """(what happened, technical detail) for one log row."""
     name = str(row.get("event_name") or "")
+    if name == 'window.motion':
+        return tr('窗口移动与位置修正'), ' · '.join(str(row.get(k,'')) for k in ('actor','action','reason'))
     title = tr(EVENT_LABELS[name]) if name in EVENT_LABELS else name
     parts = []
     action = row.get("action")

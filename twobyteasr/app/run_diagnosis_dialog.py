@@ -393,8 +393,8 @@ class AiAnalysisPanel(QFrame):
         except Exception:
             return False, "", "no_key"
         try:
-            from ..providers.ai_connection_record import feature_gate
-            gate = feature_gate(settings)
+            from ..providers.ai_connection_record import service_gate
+            gate = service_gate(settings)
         except Exception:
             gate = ""
         return True, service or str(tr("你设置的 AI")), gate

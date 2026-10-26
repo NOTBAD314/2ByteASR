@@ -969,6 +969,10 @@ def update_active_profile(
 
 
 def endpoint_from_settings(settings: dict, stage: str, *, prefer_role: bool = False) -> dict:
+    from .request_snapshot import endpoint_snapshot
+    request_endpoint = endpoint_snapshot(settings, stage)
+    if request_endpoint is not None:
+        return request_endpoint
     from .asr_provider_snapshot import snapshot_in_settings
     snapshot = snapshot_in_settings(settings)
     if snapshot is not None:

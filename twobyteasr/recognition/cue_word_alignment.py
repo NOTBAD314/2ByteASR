@@ -48,9 +48,13 @@ class AlignedWord:
 
 
 EXACT_OVERRIDES = frozenset({'case_only', 'deletion_only'})
+# Downloaded captions whose source gives each word's start (YouTube automatic
+# captions, 2026-10-26). A word ends where the next one starts.
+DOWNLOADED_WORD_ONSETS = 'downloaded_word_onsets'
 # Reasons whose words are measured token intervals (whole spans for replaced
-# spellings). Anything else is a missing-alignment reason.
-MEASURED_ALIGNMENTS = frozenset({'exact_token_text', 'derived_term_source_span'})
+# spellings), or a source recognizer's word onsets. Anything else is a
+# missing-alignment reason.
+MEASURED_ALIGNMENTS = frozenset({'exact_token_text', 'derived_term_source_span', DOWNLOADED_WORD_ONSETS})
 TERM_PENDING = 'term_local_mapping_requires_acoustic_alignment'
 # A non-exact alignment needs this share of the text heard verbatim, and at
 # least two such characters, before any replaced span is trusted.
@@ -411,6 +415,8 @@ def _independent_words(project, cue, *, allow_realign=True):
             cue.text, _receipt_tokens(stored), (cue.start_ms, cue.end_ms),
             derived=receipt.get('word_alignment') == 'derived_term_source_span')
         if words:
+            if reason == 'exact_token_text' and receipt.get('word_alignment') == DOWNLOADED_WORD_ONSETS:
+                reason = DOWNLOADED_WORD_ONSETS   # edited text keeps its source's basis
             return words, reason
         if reason == 'alignment_complexity_limit':
             return (), reason

@@ -119,20 +119,20 @@ def window(keys, monkeypatch):
     app.processEvents()
 
 
-def test_without_a_connected_ai_the_glossary_and_translation_are_locked_and_come_back(window, keys):
+def test_local_glossary_is_independent_while_translation_waits_for_a_tested_service(window, keys):
     from twobyteasr.providers import ai_connection_record as record
     w = window
     w._refresh_home_process_facts()
     assert w._ai_gate_state == record.NO_KEY
-    assert not w.terms.isEnabled() and not w.terms.isChecked()
+    assert w.terms.isEnabled() and w.terms.isChecked()
     assert not w.term_search.isEnabled() and not w.term_search.isChecked()
-    assert 'API Key' in w.term_state_label.text() and not w.terms_unlock_button.isHidden()
+    assert 'API Key' not in w.term_state_label.text() and not w.terms_unlock_button.isHidden()
     output = w.subtitle_output
     assert output.currentData() == 'original'
     locked = [output.model().item(i).isEnabled() for i in range(output.count())]
-    assert locked == [True, False, False] and 'API Key' in output.itemText(1)
+    assert locked == [True, False, False] and '文字服务未就绪' in output.itemText(1)
     assert w.subtitle_punctuation.isEnabled()                       # punctuation is local: never locked
-    assert w._task_glossary_selection() == ((), False)
+    assert w._task_glossary_selection()[1] is True
     assert w._subtitle_language_options()['subtitle_output'] == 'original'
     # The saved choices are kept while locked, even when something else is saved.
     w.recognition_language.setCurrentIndex(w.recognition_language.findData('en'))
@@ -144,7 +144,7 @@ def test_without_a_connected_ai_the_glossary_and_translation_are_locked_and_come
     keys['deepseek'] = 'sk-home-test'
     w._refresh_home_process_facts()
     assert w._ai_gate_state == record.UNTESTED and not w.home_ai_test_button.isHidden()
-    assert not w.terms.isEnabled()
+    assert w.terms.isEnabled()
     # A passed test (remembered): everything comes back as it was chosen.
     record.remember(w.legacy.RUNTIME_SETTINGS, 'polish', True)
     w._refresh_home_process_facts()

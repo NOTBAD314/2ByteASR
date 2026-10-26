@@ -809,6 +809,10 @@ class _AudioEngineWorker(QObject):
         process_returncode = process.poll() if process is not None else None
         device = self.device
         spec = self._output_spec
+        sampled_from=time.perf_counter()
+        estimated_source_ms=self._estimated_source_ms()
+        clock_monotonic_ts=time.monotonic()
+        sampled_until=time.perf_counter()
         self.telemetry.emit({
             "state": str(state),
             "transport_generation": self._transport_generation,
@@ -826,7 +830,9 @@ class _AudioEngineWorker(QObject):
                 if self.device is not None else None
             ),
             "session_generation": self._session_generation,
-            "estimated_source_ms": round(self._estimated_source_ms(), 3),
+            "estimated_source_ms": round(estimated_source_ms, 3),
+            "clock_perf_counter_ts": (sampled_from+sampled_until)/2,
+            "clock_sample_uncertainty_ms": (sampled_until-sampled_from)*500,
             "effective_rate": round(self._effective_rate, 4),
             "drift_ms": round(self._drift_ms, 3),
             "buffer_bytes": int(device.bytesAvailable()) if device is not None else 0,
@@ -893,7 +899,7 @@ class _AudioEngineWorker(QObject):
             "windows_sink_count": 1 if self.sink is not None else 0,
             "paused": self._paused,
             "clock_sequence": self._clock_sequence,
-            "clock_monotonic_ts": time.monotonic(),
+            "clock_monotonic_ts": clock_monotonic_ts,
             # AudioEngine is an external/secondary sink only.  It never owns
             # the Studio presentation clock, so there is deliberately no
             # timer-based clock sampler here.

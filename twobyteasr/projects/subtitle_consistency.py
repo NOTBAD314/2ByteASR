@@ -90,6 +90,12 @@ def _source_id(cue_id: str, canonical: Mapping) -> str:
 
 def word_receipt_problem(receipt: Mapping, text: str) -> tuple[str, str] | None:
     """Cheap local safety check; never realigns text or writes to the receipt."""
+    if (receipt.get("word_alignment") == "downloaded_sentence_or_segment_start"
+            and receipt.get("words") == [] and isinstance(text, str)):
+        if receipt.get("segment_anchors") and receipt.get("anchor_base_text") != text:
+            return ("stale_subtitle_anchors", "当前文字与原始片段起点不一致；保留句级时间，需要更细切分时重新对齐。")
+        # A sentence-only import never had word indexes to invalidate.
+        return None
     if not isinstance(text, str) or receipt.get("text", text) != text:
         return ("stale_word_alignment",
                 "人工修改后的文字与旧字级记录不同；保留当前文字及句级时间。")

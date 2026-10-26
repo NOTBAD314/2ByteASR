@@ -132,3 +132,42 @@ def test_model_protocol_and_explicit_refusal_are_distinct(local_server,code,cate
     url,state=local_server;state.update(status=400,body={'error':{'code':code}})
     with pytest.raises(LLMRequestError) as info: request_local(url)
     assert info.value.category==category
+
+
+def test_translation_and_search_freeze_service_without_enabling_polish():
+    settings={'switches':{'enable_ai_polish':False,'use_ai_grouping':False}}
+    for options in ({'subtitle_output':'bilingual'},{'enable_term_search':True}):
+        context=RuntimeContext(**options);seen=[]
+        plan=bind_text_ai_snapshots(context,settings,resolver=lambda s,stage:seen.append(stage) or 'frozen-polish')
+        assert not plan.polish and not plan.group
+        assert seen==['polish'] and context.provider_snapshots['polish']=='frozen-polish'
+        assert context.provider_snapshot is None
+
+
+def test_late_translation_uses_the_task_service_snapshot(monkeypatch):
+    from twobyteasr.subtitle_rules.recognition_translation import translate_runtime_cues
+    from twobyteasr.providers import ai_providers,asr_provider_snapshot
+    captured=[]
+    class Captured(Exception):pass
+    frozen=SimpleNamespace(execution_settings=lambda:{'owned':'original-task'})
+    context=RuntimeContext(subtitle_output='bilingual',task_language='en',translation_script='zh-Hans',
+                           provider_snapshots={'polish':frozen})
+    def provider(settings,role,**kwargs):
+        captured.append((settings,role));raise Captured()
+    monkeypatch.setattr(ai_providers,'provider_for_stage',provider)
+    monkeypatch.setattr(asr_provider_snapshot,'resolve_provider_snapshot',lambda *a,**k:pytest.fail('late translation re-resolved mutable credentials'))
+    with pytest.raises(Captured):
+        translate_runtime_cues([SimpleNamespace(start=0,end=1,text='hello',speaker='S01')],context,
+                               SimpleNamespace(RUNTIME_SETTINGS={'owned':'later-save'},record_run_event=lambda *a,**k:None))
+    assert captured==[({'owned':'original-task'},'polish')]
+
+
+def test_translation_snapshot_does_not_enable_optional_term_ai():
+    from twobyteasr.providers.asr_provider_snapshot import task_role_enabled
+    settings={'switches':{'enable_ai_polish':False,'use_ai_grouping':False}}
+    context=RuntimeContext(subtitle_output='bilingual',asr_settings_snapshot=settings)
+    bind_text_ai_snapshots(context,settings,resolver=lambda *a,**k:object())
+    with activate_runtime_context(context):
+        assert not task_role_enabled('polish')
+        context.enable_term_search=True
+        assert task_role_enabled('polish')

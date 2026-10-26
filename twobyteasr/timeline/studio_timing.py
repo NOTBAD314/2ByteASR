@@ -270,6 +270,24 @@ def split_texts_at(text: str, position: int) -> tuple[str, str]:
     return left, right
 
 
+def _spaced_letter(char: str) -> bool:
+    """Part of a space-separated word, its attached punctuation included."""
+    import unicodedata
+    return not char.isspace() and unicodedata.east_asian_width(char) not in ("W", "F")
+
+
+def word_safe_position(text: str, position: int) -> int:
+    """An estimated cut inside a space-separated word moves to the nearest
+    space (2026-10-26, user: English must split by words, not letters).
+    Chinese and Japanese characters are their own units and stay put."""
+    if not (0 < position < len(text)) or not (_spaced_letter(text[position-1]) and _spaced_letter(text[position])):
+        return position
+    import re
+    gaps = [m.start() for m in re.finditer(r"\s+", text)
+            if m.start() > 0 and text[:m.start()].strip() and text[m.end():].strip()]
+    return min(gaps, key=lambda gap: (abs(gap - position), gap)) if gaps else position
+
+
 def describe_split(
     cue: StudioCue,
     split_ms: int,
@@ -299,7 +317,7 @@ def describe_split(
         # as a word-level split.
         duration = max(1, cue.end_ms - cue.start_ms)
         ratio = (clamped - cue.start_ms) / duration
-        position = min(len(cue.text) - 1, max(1, round(len(cue.text) * ratio)))
+        position = word_safe_position(cue.text, min(len(cue.text) - 1, max(1, round(len(cue.text) * ratio))))
         left_text, right_text = split_texts_at(cue.text, position)
         return SplitPreview(clamped, left_text, right_text, cue.start_ms, clamped,
                             clamped, cue.end_ms, ESTIMATED_SPLIT, reason)

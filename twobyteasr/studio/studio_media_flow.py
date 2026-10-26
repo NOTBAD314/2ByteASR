@@ -331,7 +331,10 @@ class StudioMediaFlowMixin:
         )
         try:
             # Resolve locks against the current project after probing finishes.
-            command = MediaDropCommand(project, payload["results"], payload["position_ms"], payload["track_id"])
+            from ..projects.link_import import MediaCompanionCommand
+            has_subtitles = any(r.subtitle_bundle for r in payload["results"])
+            command_type = MediaCompanionCommand if has_subtitles else MediaDropCommand
+            command = command_type(project, payload["results"], payload["position_ms"], payload["track_id"])
             self.undo_stack.push(command)
         except Exception as exc:
             self._set_media_ingest_state("ERROR", str(exc))
@@ -349,6 +352,11 @@ class StudioMediaFlowMixin:
         self._sync_multitrack_preview_at(int(self.timeline.playhead_ms))
         self._generate_project_waveforms()
         bind_text(self.save_state, '素材已加入时间线')
+        if getattr(command, "result", {}).get("cue_count"):
+            self.save_state.setText(tr("已导入 {count} 条配套字幕", count=command.result["cue_count"]))
+        self.video.set_paused(True)
+        from .studio_link_import import offer_companion_choices
+        offer_companion_choices(self, payload["results"])
         dropped_xml = getattr(self, "_pending_drop_xml", "")
         self._pending_drop_xml = ""
         if first_media or dropped_xml:
@@ -463,6 +471,9 @@ class StudioMediaFlowMixin:
         self._studio_mark_startup_milestone("MEDIA_METADATA_READY", media_path=str(result.source_path), elapsed_ms=result.elapsed_ms)
         media = project.media
         pending_mode = self._pending_media_mode
+        if result.subtitle_bundle and pending_mode == "primary" and not project.media.path:
+            return self._finish_media_drop(dict(project_id=project.project_id, generation=result.generation,
+                results=[result], position_ms=0, track_id=""))
         from ..timeline.studio_edit_sequence import identity_sequence, replace_runtime_sequence
         from ..timeline.studio_media_pool import add_media_asset, add_video_clip, create_video_track
         from ..projects.studio_project import hydrate_media_contract
@@ -1112,8 +1123,8 @@ class StudioMediaFlowMixin:
 
         def ai_gate() -> str:
             try:
-                from ..providers.ai_connection_record import feature_gate
-                return str(feature_gate(getattr(getattr(host, "legacy", None), "RUNTIME_SETTINGS", {}) or {}))
+                from ..providers.ai_connection_record import service_gate
+                return str(service_gate(getattr(getattr(host, "legacy", None), "RUNTIME_SETTINGS", {}) or {}))
             except Exception:  # noqa: BLE001 - unknown: never lock anyone out
                 return "ready"
 
@@ -1129,7 +1140,7 @@ class StudioMediaFlowMixin:
                     continue
                 item.setEnabled(ready)
                 label = dict((v, t) for t, v in output_labels)[value]
-                translation_output.setItemText(index, str(tr(label)) if ready else str(tr("{value0}（需要 API Key）", value0=tr(label))))
+                translation_output.setItemText(index, str(tr(label)) if ready else str(tr("{value0}（文字服务未就绪）", value0=tr(label))))
             wanted = str(translation_output.currentData() or "original")
             if initial:
                 wanted = str(language_options.get("subtitle_output") or "original")

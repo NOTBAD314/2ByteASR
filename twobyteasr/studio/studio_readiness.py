@@ -591,7 +591,7 @@ class StudioReadiness(QObject):
             if callable(notifier):
                 notifier('工程载入未完成，字幕已写入工程文件；返回 Studio 将自动重载')
 
-    def cancel(self):
+    def cancel(self, *, navigate: bool = True):
         self.page.video.set_paused(True)
         self.page.timeline.setUpdatesEnabled(True)
         heap = getattr(self.page, '_project_heap', None)
@@ -609,11 +609,11 @@ class StudioReadiness(QObject):
         except Exception:
             pass
         self.overlay.hide()
-        if self.page.project is not None:
+        if navigate and self.page.project is not None:
             self.page._project_view_state = 'open'
             self.page._sync_navigation_chrome()
             self.finished.emit()
-        else:
+        elif navigate:
             self.page.show_project_hub(skip_dirty_guard=True)
 
     def _finish(self):

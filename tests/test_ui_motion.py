@@ -397,7 +397,7 @@ def test_qwen_backend_explains_tradeoffs_and_links_official_api_key_tutorial():
         assert "精度更高" in text
 
 
-def test_combo_popup_uses_stable_opaque_geometry_with_lightweight_motion():
+def test_combo_popup_uses_stable_rounded_geometry_with_lightweight_motion():
     import importlib
     import inspect
     from pathlib import Path
@@ -410,7 +410,10 @@ def test_combo_popup_uses_stable_opaque_geometry_with_lightweight_motion():
     assert _ComboPopup is implementation._ComboPopup
     source = inspect.getsource(implementation._ComboPopup)
     assert "Project-owned popup; never creates Qt's black private combo container" in source
-    assert "self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)" in source
+    # 2026-10-26: transparent around the rounded list (an opaque window showed
+    # square corners); same sheet, rows and placement as every dropdown.
+    assert "self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)" in source
+    assert "below_rect(" in source and "style_popup(self)" in source
     assert "self.clearMask()" in source
     assert "Qt.WindowType.NoDropShadowWindowHint" in source
     facade_source = (Path(__file__).parents[1] / "twobyteasr" / "app" / "main_ui_branding.py").read_text(encoding="utf-8")

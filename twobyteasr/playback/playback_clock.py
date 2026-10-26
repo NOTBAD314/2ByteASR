@@ -441,7 +441,17 @@ class PlaybackClock:
                 # A fresh frame observation must not leave captions behind an
                 # already presented video frame. Late/backward observations
                 # still use the existing monotone drift correction.
-                frame_now=observed+max(0.,current_ts-float(observed_monotonic_ts))*1000*self._playback_rate
+                # Python 3.10 on Windows uses 15.625ms GetTickCount64 for
+                # monotonic(). A 2ms delivery crossing a tick boundary looked
+                # like a whole video frame and the forward-only anchor could
+                # not undo that jump. The actor already supplies QPC; consume
+                # the same high-resolution observation, not another clock.
+                observation_age = (
+                    time.perf_counter()-float(observed_perf_counter_ts)
+                    if observed_perf_counter_ts is not None and now is None
+                    else current_ts-float(observed_monotonic_ts)
+                )
+                frame_now=observed+max(0.,observation_age)*1000*self._playback_rate
                 anchor = max(current_position, frame_now) if align_forward else current_position
                 settle_horizon_s = max(0.35, self._last_source_interval_ms * 4.0 / 1000.0)
                 desired_correction = drift_ms / 1000.0 / settle_horizon_s

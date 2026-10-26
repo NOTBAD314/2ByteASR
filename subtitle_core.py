@@ -503,18 +503,16 @@ def configure_runtime_llms(
         updated['switches']['prefer_arabic_numbers'] = bool(prefer_arabic_numbers)
     # 显式 project_root 只用于源码树；打包模式下让 settings 层自己解析稳定
     # 配置根（%LOCALAPPDATA%\2ByteASR），避免每次构建重置用户 Provider 配置。
-    RUNTIME_SETTINGS, _, warnings = save_runtime_settings(updated)
-    RUNTIME_SETTINGS_WARNINGS = list(warnings)
     if polish_key or group_key:
         save_api_keys(
             polish_key=polish_key,
             group_key=group_key,
             share_key=bool(share_key),
         )
-    LLM_MODEL = RUNTIME_SETTINGS["models"]["polish_model"]
-    POLISH_LLM_BASE_URL_DEFAULT = RUNTIME_SETTINGS["models"]["polish_base_url"]
-    GROUP_LLM_MODEL = RUNTIME_SETTINGS["models"]["group_model"]
-    GROUP_LLM_BASE_URL_DEFAULT = RUNTIME_SETTINGS["models"]["group_base_url"]
+    saved, _, warnings = save_runtime_settings(updated)
+    # Publish only after synchronous credential and settings writes succeed.
+    # Profile application and AI Save share the same legacy-global update.
+    adopt_profile_runtime_settings(saved, warnings)
     DASHSCOPE_API_KEY = get_dashscope_api_key()
     return warnings
 

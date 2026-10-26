@@ -54,6 +54,13 @@ class StudioAdvancedFlowMixin:
     """Feature-domain mixin; host class provides widgets and state."""
 
     def _present_caption_scene(self):
+        sample = getattr(self, '_caption_playhead_sample', None)
+        revision = getattr(getattr(self, '_revision_store', None), 'render', None)
+        key = (id(self.project), getattr(revision, 'visual_revision', None),
+               getattr(revision, 'mapping_revision', None),
+               getattr(self, '_caption_tick_time_ms', None))
+        if sample is not None and sample.get('presented_key') == key:
+            return True
         if self.project is None or not self.isVisible() or getattr(self, '_empty_playback_state', False):
             return False
         from ..rendering.caption_scene import CaptionScene, active_cues
@@ -67,7 +74,10 @@ class StudioAdvancedFlowMixin:
             if len(cues) < 2 and not raster_only and not audio_tail and not independent_captions(self.project) and not getattr(self,'_caption_transform_preview',{}):
                 return False
             scene = self._caption_scene = CaptionScene(self)
-        return scene.present(cues, milliseconds)
+        presented = scene.present(cues, milliseconds)
+        if presented and sample is not None:
+            sample['presented_key'] = key
+        return presented
 
     @measured('prepare_window')
     def _prepare_caption_window(self, milliseconds, *, prepare_pixels=True):

@@ -218,6 +218,13 @@ def export_report(target, *, root, instance=None, scope="recent", start=None, en
         raw=json.dumps(selected,ensure_ascii=False,indent=2).encode("utf8")
         if len(raw)>MAX_ATTACHMENT_BYTES:raise ValueError("選取的內容超過 256 KiB，請縮小範圍")
         files["selected-content.json"]=raw
+    capture=getattr(instance,'playback_capture',None) if instance is not None else None
+    if capture:
+        raw=json.dumps(sanitizer.clean(capture),ensure_ascii=False,indent=2).encode('utf8')
+        if len(raw)<=4*1024*1024:
+            files['playback-diagnostic.json']=raw
+        else:
+            data['missing'].append(dict(reason='playback_capture_exceeds_4MiB'))
     # Crash stacks have no source lines/locals; raw native files are never copied.
     for s in data["sessions"]:
         directory=Path(root)/s["directory"]

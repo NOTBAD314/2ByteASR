@@ -45,7 +45,13 @@ def main():
     (out/'wgc-barcodes.json').write_text(json.dumps(rows),encoding='utf8')
     d['screen']=result
     d['checks']['recording-covers-steady-window']=bool(rows and rows[-1]['at']>=end-.1)
-    for layer in ('V1','V2'):d['checks'][layer+'-visible-30fps']=result[layer]['visible_fps']>=30 and result[layer]['valid_fraction']>.98
+    for layer in ('V1','V2'):d['checks'].pop(layer+'-visible-30fps',None)
+    d['functional_pass']=not d.get('error') and all(d['checks'].values())
+    # This recorder lacks an OS capture-loss count and precise startup clock
+    # alignment. Its decoded content is useful evidence, not a 60Hz PASS.
+    d['measurement_valid']=False
+    d['performance_pass']='UNVERIFIED'
+    d['measurement_reason']='Recorder acquisition loss/clock not calibrated; use verify_playback_cadence.py with DXGI or PID-matched PresentMon'
     (out/'result.json').write_text(json.dumps(d,ensure_ascii=False,indent=2),encoding='utf8')
     print(json.dumps(result,ensure_ascii=False,indent=2))
 

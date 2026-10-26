@@ -36,7 +36,6 @@ class WindowTitleBar(QFrame):
     def __init__(self, window: QWidget):
         super().__init__(window)
         self._window = window
-        self._drag_offset: QPoint | None = None
         self.setObjectName("windowTitleBar")
         self.setFixedHeight(26)
         self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -53,7 +52,7 @@ class WindowTitleBar(QFrame):
         row.addStretch(1)
 
         self.minimize_button = self._control_button(
-            "fa5s.minus", "最小化", self._window.showMinimized
+            "fa5s.minus", "最小化", self.minimize
         )
         self.maximize_button = self._control_button(
             "fa5s.square", "最大化", self.toggle_maximized
@@ -81,11 +80,22 @@ class WindowTitleBar(QFrame):
         self.title.setText(text)
 
     def toggle_maximized(self):
-        if self._window.isMaximized():
+        from .window_constraints import cancel_title_drag
+        cancel_title_drag(self._window, 'maximize-button-or-double-click')
+        if self._window.isFullScreen():
+            # Preserve the existing explicit exit: the maximize control (or
+            # double-click) leaves true fullscreen for maximized mode.
+            self._window.showMaximized()
+        elif self._window.isMaximized():
             self._window.showNormal()
         else:
             self._window.showMaximized()
         self.sync_window_state()
+
+    def minimize(self):
+        from .window_constraints import cancel_title_drag
+        cancel_title_drag(self._window, 'minimize-button')
+        self._window.showMinimized()
 
     def sync_window_state(self):
         maximized = self._window.isMaximized()
@@ -107,28 +117,25 @@ class WindowTitleBar(QFrame):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             global_pos = event.globalPosition().toPoint()
-            if self._window.isMaximized():
-                # 2026-10-15: a click (or the first click of a double-click)
-                # no longer restores the window; dragging past the drag
-                # distance does, under the cursor (window_constraints).
-                from .window_constraints import begin_title_drag
-                self._drag_offset = None
-                begin_title_drag(self._window, global_pos, event.position().y())
-            else:
-                self._drag_offset = global_pos - self._window.frameGeometry().topLeft()
+            from .window_constraints import begin_title_drag
+            begin_title_drag(self._window, global_pos,
+                             global_pos.y()-self._window.frameGeometry().top(), source=self)
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            self._window.move(event.globalPosition().toPoint() - self._drag_offset)
+        drag = getattr(self._window, '_title_drag', None)
+        if drag is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            drag.advance(event.globalPosition().toPoint())
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        self._drag_offset = None
+        drag = getattr(self._window, '_title_drag', None)
+        if drag is not None and drag.phase != 'native':
+            drag.stop('release')
         super().mouseReleaseEvent(event)
 
 
@@ -145,8 +152,8 @@ class _NativeResizeHandle(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and not self.owner.isMaximized():
-            handle = self.owner.windowHandle()
-            if handle is not None and handle.startSystemResize(self.edges):
+            from .window_constraints import start_system_resize
+            if start_system_resize(self.owner, self.edges):
                 event.accept()
                 return
         super().mousePressEvent(event)

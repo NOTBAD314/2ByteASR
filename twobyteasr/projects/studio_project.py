@@ -1745,6 +1745,9 @@ def load_project(path: str | os.PathLike[str]) -> SubtitleProject:
         if isinstance(payload, dict):
             prune_unused_derived_payload(payload)
         project = SubtitleProject.from_dict(payload, owned=True)
+        if project.studio_state.get("link_imports"):
+            from ..media.link_manifest import relocate_project_downloads
+            relocate_project_downloads(project, project_path)
         if expected is not None:
             actual = graph_counts({key: [asdict(x) for x in getattr(project, key)]
                                    for key in ("media_pool", "video_tracks", "audio_tracks", "av_track_groups")})

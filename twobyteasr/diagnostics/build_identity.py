@@ -40,6 +40,7 @@ def is_current_delivery_file(relative: str) -> bool:
             and not normalized.startswith(_RETIRED_DELIVERY_ROOTS))
 
 _SOURCE_EXTENSIONS = {
+    ".cpp",
     ".cs",
     ".css",
     ".html",

@@ -1496,6 +1496,12 @@ class StudioHubMixin:
 
     def _set_hub_toolbar_mode(self, hub: bool) -> None:
         """Keep project-only actions out of the project-free Hub header."""
+        layers = getattr(self, "workspace_layers", None)
+        if layers is not None:
+            layers.setCurrentWidget(self.studio_empty if hub else self.workspace_splitter)
+        video = getattr(self, "video", None)
+        if video is not None:
+            video.set_navigation_visible(not hub and self.isVisible())
         if hub and hasattr(self, "teach_banner"):
             self.teach_banner.hide()
         if hasattr(self, "studio_toolbar"):

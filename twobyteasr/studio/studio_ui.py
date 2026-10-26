@@ -1281,18 +1281,11 @@ class SubtitleStudioPage(
                 if event_type == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                     window = self.window()
                     global_pos = event.globalPosition().toPoint()
-                    if window.isMaximized():
-                        # 2026-10-15: clicking the toolbar of a maximized
-                        # window no longer restores it; a drag does (the
-                        # helper also clamps to the screen, see 2026-09-19).
-                        from ..app.window_constraints import begin_title_drag
-                        begin_title_drag(window, global_pos, 18)
-                        event.accept()
-                        return True
-                    handle = window.windowHandle()
-                    if handle is not None and handle.startSystemMove():
-                        event.accept()
-                        return True
+                    from ..app.window_constraints import begin_title_drag
+                    begin_title_drag(window, global_pos,
+                                     global_pos.y()-window.frameGeometry().top(), source=watched)
+                    event.accept()
+                    return True
         canvas_editor = (
             getattr(self, "_canvas_editor", None)
             if event_type in (QEvent.Type.InputMethodQuery, QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress)
@@ -1514,7 +1507,7 @@ class SubtitleStudioPage(
         # the historic "key consumed" contract.
         return not (handled is False and command_id in self._CONTEXTUAL_SHORTCUTS)
 
-    _CONTEXTUAL_SHORTCUTS = frozenset({"edit_at_playhead", "select_all", "copy_style", "paste_style"})
+    _CONTEXTUAL_SHORTCUTS = frozenset({"edit_at_playhead", "select_all", "copy_style", "paste_style", "paste_link"})
 
     def _shortcut_edit_at_playhead(self):
         if not self.project:
@@ -3245,27 +3238,15 @@ class SubtitleStudioPage(
         hide_checkpoint("complete")
 
     def _ensure_renderer_when_visible(self, *, reason: str, attempt: int = 0) -> None:
-        """Recompute the subtitle foreground owner once the page is visible.
+        """Restore only an active editor; queued work is fenced by the canvas.
 
-        Window activation callbacks and hideEvent/showEvent pairs (minimize,
-        page switches) can fire while the page is still flagged hidden. The
-        ownership commit then evaluates page_ready=False and revokes NATIVE
-        rendering; with playback paused there is no later playhead event to
-        restore it, so a normal subtitle stays invisible until the next seek
-        (三十一轮用户实录：视频层新建字幕后画面无字幕). Wait briefly for the
-        visible state instead of committing a hidden-state verdict.
+        A hidden page or the Library never owns subtitle presentation. Each
+        new visible interval schedules its own restoration callback.
         """
 
         if self._close_requested:
             return
-        if not self.isVisible():
-            if attempt < 40:
-                QTimer.singleShot(
-                    16,
-                    lambda: self._ensure_renderer_when_visible(
-                        reason=reason, attempt=attempt + 1,
-                    ),
-                )
+        if not self.isVisible() or getattr(self, '_project_view_state', '') != 'open':
             return
         self.ensure_active_subtitle_renderer(reason=reason)
 
@@ -3275,7 +3256,7 @@ class SubtitleStudioPage(
         super().showEvent(event)
         video = getattr(self, 'video', None)
         if video is not None:
-            video.set_navigation_visible(True)
+            video.set_navigation_visible(getattr(self, '_project_view_state', '') == 'open')
         if getattr(self, '_navigation_publish_running', False):
             self._navigation_publish_running = False
             self._advanced_preview_publish_timer.start()
@@ -3285,12 +3266,11 @@ class SubtitleStudioPage(
         restore = bool(getattr(self, "_advanced_overlay_restore", False))
         self._advanced_overlay_restore = False
         if restore:
-            QTimer.singleShot(0, self._sync_advanced_cue_overlay)
-        QTimer.singleShot(
-            0,
-            lambda: self._ensure_renderer_when_visible(reason="show_event"),
+            self.video._defer_media_callback(0, self._sync_advanced_cue_overlay, source="show_advanced")
+        self.video._defer_media_callback(
+            0, lambda: self._ensure_renderer_when_visible(reason="show_event"), source="show_renderer",
         )
-        QTimer.singleShot(0, self._activate_selected_advanced_if_needed)
+        self.video._defer_media_callback(0, self._activate_selected_advanced_if_needed, source="show_selected")
 
     def close_page(self) -> None:
         """Compatibility close for tests and standalone pages; waits only bounded time."""

@@ -179,21 +179,28 @@ def test_regex_replaces_trailing_spaces_now_that_text_tidy_is_gone(app, page):
 def test_ai_cleanup_dialog_previews_and_applies(app, page, monkeypatch):
     asked = []
 
-    def cleanup(project, cue_ids, options):
+    def cleanup(project, cue_ids, options, settings=None, **_kwargs):
         asked.append((list(cue_ids), list(options)))
         cue = project.cues[0]
         return [TextOccurrence(cue.id, cue.start_ms, cue.text, "尼奈这波打得很好", (0, len(cue.text)))]
 
-    monkeypatch.setattr(studio_find_replace, "request_text_cleanup", cleanup)
+    # 2026-10-26: AI 清理 runs in the background for every project (batch by batch).
+    from twobyteasr.studio import link_caption_cleanup
+    monkeypatch.setattr(link_caption_cleanup, "request_text_cleanup", cleanup)
     from twobyteasr.app import api_key_explainer
     monkeypatch.setattr(api_key_explainer, "ask_for_key_if_missing", lambda *a, **k: False)
     dialog = AiCleanupDialog(page, page)
     try:
         assert not dialog.findChildren(QTabWidget) and not hasattr(dialog, "find_edit")
         assert [key for key, box in dialog.ai_option_boxes.items() if box.isChecked()] == ["fillers", "repeats", "punctuation"]
-        dialog.ai_option_boxes["particles"].setChecked(True)
+        # 2026-10-26 (design A): 口癖 asks for fillers and particles together.
+        dialog.ai_option_boxes["glossary"].setChecked(True)
         dialog.ai_run_button.click()
-        assert asked == [(["c0", "c1", "c2", "c3"], ["fillers", "repeats", "particles", "punctuation"])]
+        for _ in range(100):
+            if dialog.preview.count() and not dialog._cleanup_running:
+                break
+            QTest.qWait(20)
+        assert asked == [(["c0", "c1", "c2", "c3"], ["fillers", "particles", "repeats", "glossary", "punctuation"])]
         assert dialog.preview.count() == 1 and dialog.all_button.isEnabled()
         dialog.all_button.click()
         assert _texts(page)[0] == "尼奈这波打得很好" and page.session.undo_stack.count() == 1

@@ -45,6 +45,7 @@ for source, destination in (
     ("scripts", "scripts"),
     ("third_party", "third_party"),
     ("tools/ffmpeg", "tools/ffmpeg"),
+    ("tools/yt-dlp", "tools/yt-dlp"),
     ("tools/mpv", "tools/mpv"),
     # mpv's fallback Vulkan loader (2026-10-17). Installed outside tools/ so it
     # belongs to the 主程序 update component: older installs reject a tools/

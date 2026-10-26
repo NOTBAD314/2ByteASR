@@ -57,9 +57,14 @@ def test_menu_and_combobox_popup_share_top_level_theme():
     combo.show()
     combo.showPopup()
     app.processEvents()
-    assert combo.view().minimumWidth() >= combo.width()
-    assert "QAbstractItemView::item:selected" in combo.view().styleSheet()
-    assert combo.view().window().testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    # 2026-10-26: the list sheet, width and placement are shared by every
+    # dropdown and set on the popup window (combo_popup).
+    container = combo.view().window()
+    assert container.width() >= combo.width()
+    assert container.width() >= combo.view().fontMetrics().horizontalAdvance(combo.itemText(1))
+    assert "QAbstractItemView::item:selected" in container.styleSheet()
+    assert container.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert container.windowFlags() & Qt.WindowType.NoDropShadowWindowHint
     combo.hidePopup()
     combo.deleteLater()
     menu.deleteLater()

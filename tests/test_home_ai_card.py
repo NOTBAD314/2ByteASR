@@ -70,8 +70,8 @@ def test_the_card_shows_only_the_way_to_set_it_up_until_connected(window, keys):
     w._refresh_home_process_facts()
     _settle()
     assert card.view.state == record.NO_KEY and card.title_label.text() == 'AI 智能断句'
-    assert w.home_process_card.property('aiLock') is True and w.content_profile_card.property('aiLock') is True
-    assert w.content_frost.isVisible() and w.content_frost.geometry() == w.content_terms_body.geometry()
+    assert w.home_process_card.property('aiLock') is True and w.content_profile_card.property('aiLock') is False
+    assert not w.content_frost.isVisible() and w.terms.isEnabled()
     shown = {name: not getattr(card, name).isHidden()
              for name in ('connect_button', 'test_button', 'settings_button', 'help_button')}
     assert shown == dict(connect_button=True, test_button=False, settings_button=False, help_button=True)
@@ -104,17 +104,16 @@ def test_ai_switched_off_offers_to_turn_it_on(window, keys):
     w._refresh_home_process_facts()
     card = w.setting_tiles['ai']
     assert card.view.state == record.OFF and card.connect_button.text() == '打开 AI'
-    assert w.content_frost.isVisible() and '打开 AI' in w.content_frost.note.text()
+    assert not w.content_frost.isVisible() and '已配置' in card.state_chip.text()
 
 
-def test_a_click_on_the_frosted_glass_opens_the_ai_settings(window):
+def test_the_service_setup_button_remains_available_without_covering_local_fields(window):
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
     w = window
     w._refresh_home_process_facts()
     _settle()
-    QTest.mouseClick(w.content_frost, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                     w.content_frost.rect().center())
+    QTest.mouseClick(w.setting_tiles["ai"].connect_button, Qt.MouseButton.LeftButton)
     _settle()
     dialog = w.__dict__.get('_ai_settings_dialog')
     assert dialog is not None and dialog.isVisible() and dialog.isAncestorOf(w.ai_panel)

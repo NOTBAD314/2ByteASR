@@ -45,6 +45,27 @@
       "license": "Apache-2.0 AND MIT AND HPND-Kevlin-Henney",
       "install_path": "third_party/vulkan-loader/vulkan-1.dll",
       "purpose": "mpv.exe imports vulkan-1.dll; Studio appends this folder to the END of mpv's PATH so PCs without a GPU driver can start mpv while a driver's own loader in System32 still wins"
+    },
+    "yt_dlp": {
+      "version": "2026.10.21",
+      "ejs_version": "0.8.0",
+      "node_min_major": 22,
+      "license": "GPL-3.0-or-later (official bundled executable); Unlicense (yt-dlp source), upstream component notices retained",
+      "purpose": "YouTube single-video and exact subtitle-track downloads",
+      "files": {
+        "windows": {
+          "name": "yt-dlp.exe",
+          "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp.exe",
+          "sha256": "33121d192d706e62f684a06f80918e3f3a8ba52ac3a65213b6951c39c7d9f555",
+          "bytes": 17880111
+        },
+        "macos": {
+          "name": "yt-dlp_macos",
+          "url": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.21/yt-dlp_macos",
+          "sha256": "7a6fe71d7d680f1fb0ac18d4949873d77db2859e90017c0f44bd94b23be4ee40",
+          "bytes": 37180736
+        }
+      }
     }
   },
   "sources": {

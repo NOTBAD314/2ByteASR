@@ -449,37 +449,60 @@ def parse_cleanup_payload(raw: object, project: SubtitleProject) -> list[TextOcc
     return hits
 
 
-def request_text_cleanup(
-    project: SubtitleProject,
-    cue_ids: Iterable[str],
-    options: Iterable[str],
-    runtime_settings: dict | None = None,
-    *,
-    post: Callable[..., str] | None = None,
-    cancel_check: Callable[[], bool] | None = None,
-) -> list[TextOccurrence]:
-    from ..providers.ai_providers import provider_for_stage
+# 2026-10-26 (user: AI 清理 on a whole project stopped with "模型结构化输出达到
+# 长度上限"): one request held the first 80 captions and every change repeats a
+# caption twice, so the answer overflowed. Batches keep each answer small; a
+# batch that still overflows is split in half and asked again.
+CLEANUP_BATCH_CUES = 24
+CLEANUP_BATCH_CHARS = 1200
+CLEANUP_PARALLEL = 3
+_TRUNCATED = {"structured_output_truncated", "structured_output_truncated_before_answer"}
 
-    wanted = [cue for cue in project.cues if cue.id in set(cue_ids)]
-    if not wanted:
-        return []
-    settings = runtime_settings if isinstance(runtime_settings, dict) else {}
-    if not settings.get("models"):
-        from ..storage.settings import load_runtime_settings
-        loaded = load_runtime_settings()
-        settings = loaded[0] if isinstance(loaded, tuple) else loaded
-    option_labels = [label for key, label in AI_CLEANUP_OPTIONS if key in set(options)]
+
+class CleanupResult(list):
+    """Suggestions from every finished batch; ``error`` names a batch that failed."""
+
+    def __init__(self, hits=(), *, batches=0, done=0, error="", skipped=0):
+        super().__init__(hits)
+        self.batches, self.done, self.error, self.skipped = batches, done, error, skipped
+
+
+def cleanup_batches(cues: list[StudioCue], *, size: int = CLEANUP_BATCH_CUES,
+                    chars: int = CLEANUP_BATCH_CHARS) -> list[list[StudioCue]]:
+    """Consecutive captions, at most ``size`` of them and about ``chars`` characters."""
+    batches: list[list[StudioCue]] = []
+    current: list[StudioCue] = []
+    length = 0
+    for cue in cues:
+        if current and (len(current) >= size or length + len(cue.text) > chars):
+            batches.append(current)
+            current, length = [], 0
+        current.append(cue)
+        length += len(cue.text)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _cleanup_request(project, batch, option_labels, settings, post, cancel_check):
+    """One model call for ``batch``; returns its parsed suggestions."""
+    from ..providers.ai_providers import provider_for_stage
+    from ..subtitle_rules.math_text import FORMULA_RULE, mask_formulas, project_enabled
     # 2026-10-16 (ADR 0124): formulas travel as ⟦Fn⟧ placeholders when the
     # project's math switch is on; a suggestion that loses one is dropped.
-    from ..subtitle_rules.math_text import FORMULA_RULE, mask_formulas, project_enabled
-    masks = {cue.id: mask_formulas(cue.text) for cue in wanted[:80]} if project_enabled(project) else {}
+    masks = {cue.id: mask_formulas(cue.text) for cue in batch} if project_enabled(project) else {}
     user_payload = {
         "tasks": option_labels or ["清理口癖", "删除无意义重复"],
         "cues": [{"cue_id": cue.id, "text": masks[cue.id][0] if cue.id in masks else cue.text}
-                 for cue in wanted[:80]],
-        "rule": "不要改变原意。只返回 JSON。",
+                 for cue in batch],
+        "rule": "不要改变原意。只返回 JSON。只列出真的需要改的字幕，不需要改的不要返回。",
     }
     system = _AI_CLEANUP_SYSTEM + (FORMULA_RULE if any(formulas for _text, formulas in masks.values()) else "")
+    if project.studio_state.get("link_imports"):
+        system += ("本次处理下载字幕，默认轻度校对：只执行 tasks 中明确勾选的操作，"
+                   "保持原意、内容覆盖与句子对应；不扩写或补写不确定内容。"
+                   "未勾选口癖或重复清理时，不删除真实重复、口吃或语气词。"
+                   "不得修改时间、字幕 ID、语言来源；original 必须完整逐字对应输入原文。")
     schema = {
         "type": "object",
         "properties": {
@@ -506,7 +529,7 @@ def request_text_cleanup(
             {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
         ],
-        max_tokens=2200,
+        max_tokens=3000,
         temperature=0.1,
         timeout=(10, 90),
         enable_thinking=False,
@@ -518,7 +541,87 @@ def request_text_cleanup(
     )
     if masks:
         content = _unmask_cleanup_payload(content, masks)
+    if project.studio_state.get("link_imports"):
+        from ..projects.link_cleanup_validation import validate_cleanup_response
+        content = validate_cleanup_response(content, batch)
     return parse_cleanup_payload(content, project)
+
+
+def _cleanup_batch(project, batch, option_labels, settings, post, cancel_check, skipped):
+    """``batch``'s suggestions, halving it while the answer overflows; a single
+    caption whose answer still overflows is skipped (counted in ``skipped``)."""
+    try:
+        return _cleanup_request(project, batch, option_labels, settings, post, cancel_check)
+    except Exception as exc:
+        if getattr(exc, "category", "") not in _TRUNCATED:
+            raise
+        if len(batch) == 1:
+            skipped.append(batch[0].id)
+            return []
+        middle = len(batch) // 2
+        return (_cleanup_batch(project, batch[:middle], option_labels, settings, post, cancel_check, skipped)
+                + _cleanup_batch(project, batch[middle:], option_labels, settings, post, cancel_check, skipped))
+
+
+def request_text_cleanup(
+    project: SubtitleProject,
+    cue_ids: Iterable[str],
+    options: Iterable[str],
+    runtime_settings: dict | None = None,
+    *,
+    post: Callable[..., str] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    progress: Callable[[dict], None] | None = None,
+    parallel: int = CLEANUP_PARALLEL,
+) -> CleanupResult:
+    """AI cleanup suggestions for every caption in ``cue_ids``, batch by batch.
+
+    ``progress`` gets ``{"done", "total", "found"}`` after each batch. A failed
+    batch stops the run but keeps the suggestions already found (``error``)."""
+    wanted_ids = set(cue_ids)
+    wanted = [cue for cue in project.cues if cue.id in wanted_ids]
+    if not wanted:
+        return CleanupResult()
+    settings = runtime_settings if isinstance(runtime_settings, dict) else {}
+    if not settings.get("models"):
+        from ..storage.settings import load_runtime_settings
+        loaded = load_runtime_settings()
+        settings = loaded[0] if isinstance(loaded, tuple) else loaded
+    option_labels = [label for key, label in AI_CLEANUP_OPTIONS if key in set(options)]
+    batches = cleanup_batches(wanted)
+    results: dict[int, list[TextOccurrence]] = {}
+    skipped: list[str] = []
+    error = ""
+    found = 0
+
+    def cancelled() -> bool:
+        return bool(cancel_check and cancel_check())
+
+    def run(index):
+        if cancelled():
+            return index, []
+        return index, _cleanup_batch(project, batches[index], option_labels, settings, post, cancel_check, skipped)
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=max(1, min(int(parallel), len(batches)))) as pool:
+        pending = {pool.submit(run, index): index for index in range(len(batches))}
+        for future in as_completed(pending):
+            try:
+                index, hits = future.result()
+            except Exception as exc:
+                if not error:
+                    error = str(exc) or type(exc).__name__
+                for other in pending:
+                    other.cancel()
+                continue
+            results[index] = hits
+            found += len(hits)
+            if progress is not None:
+                progress(dict(done=len(results), total=len(batches), found=found))
+    ordered = [hit for index in sorted(results) for hit in results[index]]
+    if cancelled() and not error:
+        error = "已取消"
+    return CleanupResult(ordered, batches=len(batches), done=len(results), error=error, skipped=len(skipped))
 
 
 def _unmask_cleanup_payload(raw: object, masks: Mapping[str, tuple[str, tuple[str, ...]]]) -> object:

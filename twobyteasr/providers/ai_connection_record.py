@@ -50,6 +50,11 @@ def fingerprint(settings: dict, stage: str = 'polish') -> str:
     key = str(endpoint.get('api_key') or '').strip()
     parts = [transport, str(endpoint.get('provider') or ''), endpoint_identity(str(endpoint.get('base_url') or '')),
              str(endpoint.get('model') or ''), hashlib.sha256(key.encode('utf-8')).hexdigest() if key else '']
+    # Preserve existing chat-completions checks. Other protocols need their
+    # own evidence; a successful chat request does not verify Responses etc.
+    protocol = str(endpoint.get('protocol') or '')
+    if protocol not in ('', 'auto', 'openai_compatible_chat'):
+        parts.append(protocol)
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode('utf-8')).hexdigest()
 
 
@@ -97,7 +102,7 @@ def checked_at(settings: dict, stage: str = 'polish') -> str:
     return str(entry.get('at') or '') if isinstance(entry, dict) else ''
 
 
-def feature_gate(settings: dict) -> str:
+def feature_gate(settings: dict, stage: str = 'polish', *, require_enabled: bool = True) -> str:
     """May the AI-only features (translation, 术语库校对, 联网补充核验) be used? One of the constants above.
 
     They all use the 字幕校对 (polish) service, so that is the one checked; an
@@ -106,7 +111,7 @@ def feature_gate(settings: dict) -> str:
     from .ai_providers import AITransport
     from .llm_config import effective_ai_identity, endpoint_requires_key
     try:
-        identity = effective_ai_identity(settings, 'polish')
+        identity = effective_ai_identity(settings, stage)
     except (OSError, RuntimeError, TypeError, ValueError, KeyError):
         return NO_KEY
     # No key says so even with AI switched off (switches may be off *because* there is no key).
@@ -115,9 +120,14 @@ def feature_gate(settings: dict) -> str:
             and endpoint_requires_key({'provider': identity.get('provider'), 'base_url': identity.get('base_url')})):
         return NO_KEY
     switches = dict((settings or {}).get('switches') or {})
-    if not (switches.get('enable_ai_polish', True) or switches.get('use_ai_grouping', True)):
+    if require_enabled and not switches.get('enable_ai_polish' if stage == 'polish' else 'use_ai_grouping', True):
         return OFF
-    result = result_for(settings, 'polish')
+    result = result_for(settings, stage)
     if result is None:
         return UNTESTED
     return READY if result else FAILED
+
+
+def service_gate(settings: dict, stage: str = 'polish') -> str:
+    """Translation/search need a tested service, independently of segmentation/polish switches."""
+    return feature_gate(settings, stage, require_enabled=False)

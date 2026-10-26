@@ -73,6 +73,14 @@ def _when_project(page, callback):
     return run
 
 
+def _paste_link(page):
+    """Ctrl+V: open the link quick card when the clipboard holds a video link.
+
+    Returns False otherwise, so the key reaches the focused widget."""
+    from ..app.link_download_controller import paste_link
+    return paste_link(page)
+
+
 def extra_command_callbacks(page) -> dict:
     return {
         'jump_start': lambda: _jump_edge(page, False),
@@ -98,6 +106,7 @@ def extra_command_callbacks(page) -> dict:
         'clear_in_out': page._clear_range,
         'open_project': page.open_project_dialog,
         'import_media': page.import_media_dialog,
+        'paste_link': lambda: _paste_link(page),
         'export_subtitles': page.export_subtitles,
         'export_video': page._open_render_dialog,
         'toggle_cue_list': page._toggle_cue_list,

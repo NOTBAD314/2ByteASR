@@ -100,11 +100,12 @@ def test_windows_native_event_reads_the_msg_hwnd_field(monkeypatch):
             assert hwnd == 123
             return 168
 
-    monkeypatch.setattr(
-        ctypes,
-        "windll",
-        SimpleNamespace(user32=FakeUser32()),
-    )
+        @staticmethod
+        def IsZoomed(hwnd):
+            return 0
+
+    from twobyteasr.app import window_constraints
+    monkeypatch.setattr(window_constraints, '_user32', lambda: FakeUser32())
     msg = wintypes.MSG()
     msg.hWnd = 123
     msg.message = 0x0084  # WM_NCHITTEST
@@ -115,5 +116,31 @@ def test_windows_native_event_reads_the_msg_hwnd_field(monkeypatch):
         b"windows_generic_MSG", ctypes.addressof(msg)
     ) == (True, 10)  # HTLEFT
 
+    window.close()
+    window.deleteLater()
+
+
+@pytest.mark.parametrize('scale',[1.0,1.25,1.5,1.75])
+def test_native_work_area_is_physical_and_only_minimum_size_is_scaled(scale):
+    from twobyteasr.app.window_native_frame import MINMAXINFO,fill_minmax
+    info=MINMAXINFO()
+    fill_minmax(info,(-1440,-521,0,2869),(-1440,-521,0,2919),(700,500),scale)
+    assert (info.ptMaxPosition.x,info.ptMaxPosition.y)==(0,0)
+    assert (info.ptMaxSize.x,info.ptMaxSize.y)==(1440,3390)
+    assert (info.ptMinTrackSize.x,info.ptMinTrackSize.y)==(min(1440,round(700*scale)),round(500*scale))
+
+
+def test_true_fullscreen_cannot_start_manual_edge_resize():
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    app=QApplication.instance() or QApplication([])
+    window=MainWindow([],legacy,object(),None)
+    window.showFullScreen()
+    app.processEvents()
+    geometry=window.geometry()
+    QTest.mousePress(window,Qt.LeftButton,Qt.NoModifier,QPoint(1,1))
+    QTest.mouseMove(window,QPoint(40,40))
+    QTest.mouseRelease(window,Qt.LeftButton)
+    assert not getattr(window,'_resize_dragging',False) and window.geometry()==geometry and window.isFullScreen()
     window.close()
     window.deleteLater()

@@ -263,15 +263,17 @@ def test_home_navigation_keeps_project_session_and_pauses_playback():
 
 def test_navigation_polling_restores_only_previously_running_timers(app):
     from twobyteasr.studio.studio_video_canvas import MpvCanvas
-    canvas=SimpleNamespace(_timer=QTimer(),_sync_timer=QTimer())
+    canvas=MpvCanvas()
+    canvas._media_attached=True
     canvas._timer.start(17);canvas._sync_timer.setInterval(150)
-    MpvCanvas.set_navigation_visible(canvas,False)
-    MpvCanvas.set_navigation_visible(canvas,False)
+    canvas.set_navigation_visible(False)
+    canvas.set_navigation_visible(False)
     assert not canvas._timer.isActive() and not canvas._sync_timer.isActive()
-    MpvCanvas.set_navigation_visible(canvas,True)
+    canvas.set_navigation_visible(True)
     assert canvas._timer.isActive() and canvas._timer.interval()==17
     assert not canvas._sync_timer.isActive()
     canvas._timer.stop()
+    canvas.deleteLater()
 
 
 def test_incremental_shortcuts_preserve_imports_and_defaults_before_rows_exist(app,tmp_path):

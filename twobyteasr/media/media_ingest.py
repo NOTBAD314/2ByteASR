@@ -48,6 +48,9 @@ class MediaIngestResult:
     auto_xml_path: str = ""
     error: str = ""
     elapsed_ms: float = 0.0
+    subtitle_candidates: tuple[str, ...] = ()
+    subtitle_bundle: dict | None = None
+    subtitle_error: str = ""
 
 
 def _normalized_stem(value: str) -> str:
@@ -79,6 +82,7 @@ def ingest_media(
     generation: int,
     project_token: str,
     probe: Callable[[str | Path], Mapping[str, object]] = probe_media_identity,
+    discover_subtitles: bool = True,
 ) -> MediaIngestResult:
     """Probe one media source for a background Page worker."""
     started = time.perf_counter()
@@ -87,6 +91,19 @@ def ingest_media(
         stat = source.stat()
         identity = dict(probe(source))
         candidates, automatic = discover_same_stem_xml(source)
+        subtitle_candidates, subtitle_bundle, subtitle_error = (), None, ""
+        if discover_subtitles:
+            from .link_manifest import discover_companions, load_bundle, local_subtitle_bundle
+            try:
+                companions = discover_companions(source)
+                subtitle_candidates = tuple(companions["candidates"])
+                subtitle_error = companions["error"]
+                if companions["automatic"]:
+                    chosen = Path(companions["automatic"])
+                    subtitle_bundle = (load_bundle(chosen) if chosen.name.endswith(".2byte-download.json")
+                                       else local_subtitle_bundle(source, chosen))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                subtitle_error = str(exc)
         return MediaIngestResult(
             generation=int(generation),
             project_token=str(project_token),
@@ -120,6 +137,9 @@ def ingest_media(
             xml_candidates=candidates,
             auto_xml_path=automatic,
             elapsed_ms=round((time.perf_counter() - started) * 1000, 1),
+            subtitle_candidates=subtitle_candidates,
+            subtitle_bundle=subtitle_bundle,
+            subtitle_error=subtitle_error,
         )
     except Exception as exc:
         return MediaIngestResult(

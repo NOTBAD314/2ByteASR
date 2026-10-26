@@ -39,13 +39,10 @@ class VideoCompositionWorker:
 
     def _run(self):
         from .video_compositor import layer_geometry,apply_chroma_key,_BLEND_COMPOSITION_MODES
-        last=0
         while True:
             with self.condition:
                 self.condition.wait_for(lambda:self.closed or (self.state is not None and self.dirty))
                 if self.closed:return
-                delay=.016-(time.perf_counter()-last)
-                if delay>0:self.condition.wait(delay)
                 if not self.state:continue
                 state=self.state;frames=dict(self.frames);version=self.version;self.dirty=False
             width,height=state['size'];start=time.perf_counter()
@@ -74,7 +71,7 @@ class VideoCompositionWorker:
                 with self.condition:
                     if not self.closed and self.state is not None and version==self.version:
                         self.publish(image,QRect(*state['display_rect']),context);self.samples.append(context)
-                last=time.perf_counter();continue
+                continue
             image=QImage(width,height,QImage.Format_ARGB32_Premultiplied)
             image.fill(Qt.black if state['base'] else Qt.transparent)
             painter=QPainter(image);painter.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -109,4 +106,3 @@ class VideoCompositionWorker:
                     # an old raster cannot acquire the next visibility epoch.
                     self.publish(image,QRect(*state['display_rect']),context)
                     self.samples.append(context)
-            last=time.perf_counter()

@@ -307,6 +307,7 @@ def open_application_settings(
         for name, key in (('refresh_polish', 'force_refresh_polish'), ('refresh_group', 'force_refresh_group')):
             runtime.setdefault('cache', {})[key] = getattr(advanced_owner, name).isChecked()
         advanced_owner.legacy.RUNTIME_SETTINGS, _, _ = save_runtime_settings(runtime)
+        advanced_owner._apply_saved_ai_configuration(source='application_settings')
     if callable(on_saved):
         on_saved()
     # A moved project root invalidates the visible library; refresh it only

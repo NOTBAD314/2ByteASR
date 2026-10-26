@@ -89,6 +89,16 @@ def run(output, *, window):
         return str(target)
 
     def open_project(path):
+        if page.project_path is not None and Path(page.project_path).resolve()==path.resolve():
+            # Opening the active path intentionally resumes its existing undo
+            # session. Verify disk reload through a real intervening project.
+            from ..projects.studio_project import SubtitleProject,StudioMedia
+            empty=output/'reload-interlude.2byteproj'
+            if not empty.exists():save_project(SubtitleProject(media=StudioMedia(path='')),empty)
+            previous=page.project
+            window.open_studio_project(str(empty),mode='edit',source='editor_workflow_reload_interlude')
+            wait(lambda:page.project is not None and page.project is not previous and page._readiness.ready,
+                 'reload interlude did not complete')
         previous = page.project
         window.open_studio_project(str(path), mode="edit", source="editor_workflow_audit")
         wait(lambda: page.project is not None and page.project is not previous

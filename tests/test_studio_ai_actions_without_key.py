@@ -367,19 +367,34 @@ def _find_replace(project, **extra):
 
 @pytest.mark.parametrize("missing", [True, False])
 def test_find_replace_ai_cleanup(monkeypatch, missing):
-    from twobyteasr.studio import studio_find_replace
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QWidget
+    from twobyteasr.studio import link_caption_cleanup
+    from twobyteasr.studio.ai_cleanup_dialog import AiCleanupDialog
+    app = QApplication.instance() or QApplication([])
     asked, checked = _guard(monkeypatch, missing=missing)
-    calls, filled = [], []
-    monkeypatch.setattr(studio_find_replace, "request_text_cleanup", lambda *a, **kw: calls.append(a) or [])
-    monkeypatch.setattr(studio_find_replace, "_scope_cue_ids", lambda page, scope: ["c1"])
-    dialog = _find_replace(_project(), _fill_preview=lambda hits, binding: filled.append(hits))
-    studio_find_replace.AiCleanupDialog._do_ai_preview(dialog)
-    assert checked == ["polish"]
-    if missing:
-        assert len(asked) == 1 and calls == [] and filled == []
-        assert dialog.status_label.text() == "AI 清理没有运行：还没填 API Key"
-    else:
-        assert asked == [] and len(calls) == 1 and filled == [[]]
+    calls = []
+    monkeypatch.setattr(link_caption_cleanup, "request_text_cleanup", lambda *a, **kw: calls.append(a) or [])
+    page = QWidget()
+    page.session = SimpleNamespace(project=_project(), selected_cue_id="c1")
+    page.selected_cue_ids = lambda: ["c1"]
+    dialog = AiCleanupDialog(page, page)
+    try:
+        dialog._do_ai_preview()
+        for _ in range(500):
+            if not dialog._cleanup_running:
+                break
+            QTest.qWait(20)
+        assert checked == ["polish"]
+        if missing:
+            assert len(asked) == 1 and calls == [] and not dialog._cleanup_running
+            assert dialog.status_label.text() == "AI 清理没有运行：还没填 API Key"
+        else:
+            assert asked == [] and len(calls) == 1 and dialog.status_label.text() == "没有需要整理的地方。"
+    finally:
+        dialog.reject()
+        page.deleteLater()
+        app.processEvents()
 
 
 def test_find_replace_glossary_ai_preview_without_a_key(monkeypatch):

@@ -432,10 +432,10 @@ class StudioReviewMixin:
 
 
     _QC_SCAN_CHUNK = 400
-    _QC_SCAN_MINI = 16
+    _QC_SCAN_MINI = 1
     _QC_SCAN_BUDGET_S = 0.012
 
-    def _start_chunked_qc_scan(self, *, sync: bool = False) -> None:
+    def _start_chunked_qc_scan(self, *, sync: bool = False, _fallback: bool = False) -> None:
         """全量 QC 分片执行：每片 400 cue，QTimer 链让事件循环呼吸。
 
         2026-09-18 进入路径实测（3839 cue 真实工程）：同步全扫即使有
@@ -452,6 +452,22 @@ class StudioReviewMixin:
         self._qc_scan_started_at = perf_counter()
         engine = self._qc_engine
         terminology = tuple(self._qc_terminology or ())
+        store = getattr(self, '_revision_store', None)
+        if not sync and not _fallback and store is not None and store.project is project:
+            from .studio_qc_worker import StudioQCWorker
+            from ..projects.studio_runtime_state import state_for
+            worker = getattr(self, '_qc_worker', None)
+            if worker is None:
+                worker = self._qc_worker = StudioQCWorker(self)
+                worker.ready.connect(self._background_qc_ready)
+                worker.failed.connect(self._background_qc_failed)
+            capture_started = perf_counter()
+            snapshot = store.persistence
+            identity = (id(project), self.session.generation,
+                        state_for(project).playback_revision, token)
+            self._qc_worker_snapshot_ms = (perf_counter()-capture_started)*1000
+            worker.submit(snapshot,engine.config,terminology,identity)
+            return
         context = engine.build_context(project, terminology=terminology)
         ordered = list(context.ordered)
         collected: dict[str, tuple] = {}
@@ -474,6 +490,8 @@ class StudioReviewMixin:
             started = perf_counter()
             limit = cursor + self._QC_SCAN_CHUNK
             while cursor < min(limit, len(ordered)):
+                # Check the budget after each cue: sixteen evidence-heavy cues
+                # exceeded two seconds on the reported 134-cue project.
                 chunk = ordered[cursor:cursor + self._QC_SCAN_MINI]
                 cursor += len(chunk)
                 collected.update(engine.evaluate_cues(context, chunk))
@@ -496,6 +514,29 @@ class StudioReviewMixin:
             timer.stop()
             return
         timer.start(0)
+
+    def _background_qc_current(self, identity):
+        return (self.project is not None and identity[0] == id(self.project)
+                and identity[1] == self.session.generation
+                and identity[3] == getattr(self, '_qc_scan_token', 0))
+
+    def _background_qc_ready(self, identity, result, timings):
+        if not self._background_qc_current(identity):
+            return
+        from ..projects.studio_runtime_state import state_for
+        if identity[2] != state_for(self.project).playback_revision:
+            self._start_chunked_qc_scan()
+            return
+        began = perf_counter()
+        self._finish_chunked_qc_scan(self.project,result)
+        self._qc_worker_timings = {**timings,'snapshot_ms':self._qc_worker_snapshot_ms,
+                                   'gui_commit_ms':(perf_counter()-began)*1000}
+
+    def _background_qc_failed(self, identity, error):
+        if not self._background_qc_current(identity):
+            return
+        self._studio_trace('QC_WORKER_FAILED', error=error, fallback='budgeted_gui_scan')
+        self._start_chunked_qc_scan(_fallback=True)
 
     def _finish_chunked_qc_scan(self, project, result: QCResult) -> None:
         if self.project is not project:

@@ -1274,10 +1274,11 @@ class StudioVideoFlowMixin:
                 self.video._duration = int(sequence.source_duration_ms) / 1000.0
         self._playback_mode = "source" if linear else "mapped"
 
-    def _multitrack_preview_target(self, timeline_ms: int) -> dict[str, object] | None:
+    def _multitrack_preview_target(self, timeline_ms: int, *, layers=None, audio_layers=None) -> dict[str, object] | None:
         """Resolve the bottom composition layer used as the mpv clock/base."""
 
-        layers = self._multitrack_preview_layers(timeline_ms)
+        if layers is None:
+            layers = self._multitrack_preview_layers(timeline_ms)
         if layers:
             return layers[0]
         # Audio-only projects may retain a disabled legacy V1 clip after a
@@ -1285,7 +1286,8 @@ class StudioVideoFlowMixin:
         # linked A/V audio layer and a standalone A-track as a first-class
         # ProjectClock source; otherwise the graph reports no audible owner
         # and a valid 20-minute audio project is suspended at open.
-        audio_layers = self._multitrack_audio_layers(timeline_ms)
+        if audio_layers is None:
+            audio_layers = self._multitrack_audio_layers(timeline_ms)
         # Prefer an explicit standalone A-track when a migrated project also
         # carries a disabled linked V1 copy of the same asset.
         audio_layer = next(
@@ -1523,20 +1525,16 @@ class StudioVideoFlowMixin:
         project = self.project
         if project is None:
             return []
-        from ..timeline.studio_media_pool import (
-            active_video_clips,
-            asset_by_id,
-            primary_video_track_id,
-        )
-
-        from ..timeline.studio_transitions import transition_windows, transition_effect, transition_fx_active
-        windows = transition_windows(project, "video")
-        primary_id = primary_video_track_id(project)
+        from ..playback.playback_plan import playback_plan
+        from ..timeline.studio_transitions import transition_effect, transition_fx_active
+        plan = playback_plan(project)
+        windows = plan.windows
+        primary_id = plan.primary_track_id
+        primary_path = self._preview_media_path(project.media.path)
         layers: list[dict[str, object]] = []
-        for track, clip in active_video_clips(project, timeline_ms):
-            try:
-                asset = asset_by_id(project, clip.asset_id)
-            except KeyError:
+        for track, clip in plan.video_at(timeline_ms):
+            asset = plan.assets.get(clip.asset_id)
+            if asset is None:
                 continue
             # An enabled V1 clip can be the legacy projection of an audio
             # source. It must not become a visual mpv layer or clock owner.
@@ -1563,7 +1561,6 @@ class StudioVideoFlowMixin:
                 )
             )
             source_path = self._preview_media_path(asset.canonical_source)
-            primary_path = self._preview_media_path(project.media.path)
             primary_route = track.id == primary_id and source_path == primary_path
             if not primary_route:
                 # 与主画面同源的叠加层强制走代理（force），否则 compositor 按
@@ -1622,14 +1619,10 @@ class StudioVideoFlowMixin:
         return layers
 
     def _multitrack_audio_layers(self, timeline_ms: int) -> list[dict[str, object]]:
-        from ..playback.audio_graph import audio_graph_signature, capture_audio_graph, preview_audio_layers
+        from ..playback.playback_plan import playback_plan
         if self.project is None:
             return []
-        signature = audio_graph_signature(self.project)
-        if signature != getattr(self, '_audio_contract_signature', None):
-            self._audio_contract = capture_audio_graph(self.project)
-            self._audio_contract_signature = signature
-        layers = preview_audio_layers(self._audio_contract, timeline_ms)
+        layers = playback_plan(self.project).audio_at(timeline_ms)
         overrides = getattr(self, '_gain_preview_values', {})
         # Reuse only the lossless index already selected by this project's
         # video preview. Audio never creates an index or changes the graph.
@@ -1660,26 +1653,21 @@ class StudioVideoFlowMixin:
         else:
             self.audio_engine.synchronize(layers[0] if layers else None, audible=bool(layers), **args)
 
-    def _sync_video_compositor(self, timeline_ms: int) -> None:
+    def _sync_video_compositor(self, timeline_ms: int, *, layers=None, audio_layers=None) -> None:
         scene = getattr(self, "video_compositor", None)
         if scene is not None and self.project is not None:
-            from ..timeline.studio_media_pool import primary_video_track_id
-            base_id = primary_video_track_id(self.project)
-            assets = {asset.asset_id: asset for asset in self.project.media_pool}
+            from ..playback.playback_plan import playback_plan
+            plan = playback_plan(self.project)
             warm = []
-            for track in self.project.video_tracks:
-                if not track.enabled or track.id == base_id:
-                    continue
-                for clip in track.clips:
-                    if clip.enabled and 0 < clip.timeline_in_ms - timeline_ms <= 1500:
-                        asset = assets.get(clip.asset_id)
-                        if asset is not None and not asset.offline:
-                            warm.append({'clip_id': clip.id, 'source_ms': clip.source_in_ms,
-                                'source_path': self._overlay_playback_path(self._preview_media_path(asset.canonical_source), asset=asset),
-                                'seek_token':self.video.playback_position_snapshot().playback_generation})
+            for _, track, clip, asset in plan.prewarm_at(timeline_ms):
+                warm.append({'clip_id': clip.id, 'source_ms': clip.source_in_ms,
+                    'source_path': self._overlay_playback_path(self._preview_media_path(asset.canonical_source), asset=asset),
+                    'seek_token':self.video.playback_position_snapshot().playback_generation})
             scene.prewarm(warm)
-        audio_layers = self._multitrack_audio_layers(timeline_ms)
-        layers = self._multitrack_preview_layers(timeline_ms)
+        if audio_layers is None:
+            audio_layers = self._multitrack_audio_layers(timeline_ms)
+        if layers is None:
+            layers = self._multitrack_preview_layers(timeline_ms)
         if layers and hasattr(self,'media_availability'):
             self.media_availability.clear_gap()
         self._multitrack_composition_active = False
@@ -1708,7 +1696,6 @@ class StudioVideoFlowMixin:
         if hasattr(self, "position_overlay"):
             scene.set_video_size(self.position_overlay.video_width, self.position_overlay.video_height)
         base_track_id = str(layers[0].get("track_id") or "")
-        audio_layers = self._multitrack_audio_layers(timeline_ms)
         # Consume the same resolved graph as export. Re-selecting a master
         # from selected_video_clip_id here disagreed with the persisted track
         # selection and silenced the only surviving input when V2 was selected.
@@ -1811,7 +1798,11 @@ class StudioVideoFlowMixin:
     ) -> tuple[dict[str, object], bool] | None:
         if self.project is None:
             return None  # A queued playback callback may arrive after returning to Library.
-        target = self._multitrack_preview_target(timeline_ms)
+        # One resolved sample is shared by route selection and composition.
+        # Continuous transforms/envelopes are still sampled at this exact time.
+        layers = self._multitrack_preview_layers(timeline_ms)
+        audio_layers = self._multitrack_audio_layers(timeline_ms)
+        target = self._multitrack_preview_target(timeline_ms, layers=layers, audio_layers=audio_layers)
         if target is None:
             from ..timeline.studio_media_pool import media_graph_duration_ms
             if self.project and timeline_ms >= media_graph_duration_ms(self.project) > 0 and bool(getattr(self.video, "_media_attached", False)):
@@ -1911,12 +1902,8 @@ class StudioVideoFlowMixin:
         # audio-only sources.  AudioEngine is reserved for a non-primary
         # external lane and must never become a second master clock.
         mapping = dict(getattr(self.project, "studio_state", {}).get("media_time_mapping", {}))
-        asset = next(
-            (item for item in getattr(self.project, "media_pool", ())
-             if (str(getattr(item, "asset_id", "")) == str(target.get("asset_id") or "")
-                 or str(getattr(item, "canonical_source", "")) == source_path)),
-            None,
-        )
+        from ..playback.playback_plan import playback_plan
+        asset = playback_plan(self.project).assets.get(str(target.get('asset_id') or ''))
         if asset is not None:
             video_meta = dict(getattr(asset, "video_metadata", {}) or {})
             audio_meta = dict(getattr(asset, "audio_metadata", {}) or {})
@@ -1982,6 +1969,8 @@ class StudioVideoFlowMixin:
                     )
                     target["source_ms"] = int(adopted)
                     timeline_ms = optimistic_ms
+                    layers = self._multitrack_preview_layers(timeline_ms)
+                    audio_layers = self._multitrack_audio_layers(timeline_ms)
             self._studio_trace('VIDEO_PREVIEW_REBIND',previous_key=self._active_video_preview_key,
                 preview_key=key,source_path=source_path,project_ms=int(timeline_ms),
                 playback_generation=self.video.playback_position_snapshot().playback_generation)
@@ -2063,7 +2052,7 @@ class StudioVideoFlowMixin:
         self._active_video_preview_timeline_in_ms = int(target["timeline_in_ms"])
         target["switch_seek_posted"] = switch_seek_posted
         self._composition_keep_resynced = False
-        self._sync_video_compositor(timeline_ms)
+        self._sync_video_compositor(timeline_ms, layers=layers, audio_layers=audio_layers)
         self._apply_active_video_track_volume(str(target["track_id"]))
         return target, switched
 

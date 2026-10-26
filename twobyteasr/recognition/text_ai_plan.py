@@ -32,6 +32,14 @@ def bind_text_ai_snapshots(context, settings: dict, *, resolver=None) -> TextAIP
     from ..providers.asr_provider_snapshot import resolve_provider_snapshot
     plan = text_ai_plan(settings, purpose=context.recognition_purpose)
     resolver = resolver or resolve_provider_snapshot
-    context.provider_snapshots = {role: resolver(settings, stage=role) for role in plan.roles}
+    roles = list(plan.roles)
+    # Translation/search borrow the polish service, not the proofreading switch.
+    # Freeze their credentials at task creation even if proofreading is disabled.
+    if (context.recognition_purpose != 'analysis' and
+            (getattr(context, 'subtitle_output', 'original') != 'original' or
+             bool(getattr(context, 'enable_term_search', False)))):
+        if 'polish' not in roles:
+            roles.append('polish')
+    context.provider_snapshots = {role: resolver(settings, stage=role) for role in roles}
     context.provider_snapshot = context.provider_snapshots.get("group")
     return plan

@@ -88,8 +88,8 @@ def _run():
         now=time.monotonic()
         if not _poll_due(owned,now,last):continue
         last=now
-        # 2026-10-22: children(recursive=True) takes a full system process
-        # snapshot per call, holding the GIL; one per tick serves every child.
+        # One shared native census serves every child. On Windows it releases
+        # the GIL during the system walk, like the resource sampler.
         tree=_process_tree(psutil)
         for pid,(process,path,payload,_started) in list(owned.items()):
             try:
@@ -128,9 +128,17 @@ def _run():
 
 def _process_tree(psutil):
     """{parent pid: [child pids]} from one system snapshot, or None."""
-    snapshot=getattr(psutil,'_ppid_map',None)
-    if not callable(snapshot):return None
-    try:parents=snapshot()
+    try:
+        if os.name == 'nt':
+            # Share the existing GIL-releasing census used by resource
+            # diagnostics. psutil's system-wide C snapshot held the GUI and
+            # the video receiver/compositor Python threads for 30-40 ms.
+            from ..system.process_snapshot import process_snapshot
+            parents={pid:row[0] for pid,row in process_snapshot().items()}
+        else:
+            snapshot=getattr(psutil,'_ppid_map',None)
+            if not callable(snapshot):return None
+            parents=snapshot()
     except Exception:return None
     tree={}
     for child,parent in parents.items():

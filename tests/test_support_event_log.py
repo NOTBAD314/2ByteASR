@@ -9,6 +9,19 @@ import pytest
 from twobyteasr.diagnostics.event_log import EventStore, Sanitizer, exception_info
 from twobyteasr.diagnostics.support_bundle import collect, export_report, maintain_sessions, summary
 
+def test_short_playback_capture_is_included_and_sanitized(tmp_path):
+    store=EventStore(tmp_path/'logs')
+    try:
+        store.record('playback.short_capture',dict(seconds=15))
+        store.playback_capture={'performance_pass':'UNVERIFIED','api_key':'FAKE_CAPTURE_SECRET',
+            'identity':{'git_sha':'candidate'},'ui_delay_ms':{'p95':2.0}}
+        result=export_report(tmp_path/'capture.zip',root=store.root,instance=store,scope='session')
+        with zipfile.ZipFile(result['target']) as archive:
+            body=archive.read('playback-diagnostic.json')
+            assert b'FAKE_CAPTURE_SECRET' not in body
+            assert json.loads(body)['performance_pass']=='UNVERIFIED'
+    finally:store.close_store(clean=True)
+
 
 def test_http_header_spellings_and_full_auth_lines_are_private_on_disk_and_in_zip(tmp_path):
     store=EventStore(tmp_path/'logs')

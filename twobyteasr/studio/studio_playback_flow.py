@@ -344,6 +344,8 @@ class StudioPlaybackFlowMixin:
         # geometry once, without caching across edits, resizes or queued work.
         previous=getattr(self,'_caption_tick_geometry',None)
         previous_time=getattr(self,'_caption_tick_time_ms',None)
+        previous_scene=getattr(self,'_caption_playhead_sample',None)
+        self._caption_playhead_sample={}
         sampler=getattr(self,'_caption_sample_ms',None)
         self._caption_tick_time_ms=sampler(milliseconds) if callable(sampler) else milliseconds
         size=getattr(self,'_advanced_preview_size',None)
@@ -353,6 +355,7 @@ class StudioPlaybackFlowMixin:
         finally:
             self._caption_tick_geometry=previous
             self._caption_tick_time_ms=previous_time
+            self._caption_playhead_sample=previous_scene
 
     def _apply_project_playhead_frame(self, milliseconds: int, *, defer_follow: bool = False) -> None:
         milliseconds = max(0, int(milliseconds))
@@ -361,7 +364,8 @@ class StudioPlaybackFlowMixin:
             tick(self, milliseconds)
         if getattr(self, '_review_playback', None) is not None:
             self._review_playback_tick(milliseconds)
-        duration = timeline_duration_ms(self.project) if self.project else 0
+        from ..playback.playback_plan import playback_plan
+        duration = playback_plan(self.project).duration_ms if self.project else 0
         if duration and milliseconds >= duration and not self.video._paused and not self._loop_enabled:
             milliseconds = duration
             self._finish_project_playback()
@@ -396,10 +400,13 @@ class StudioPlaybackFlowMixin:
             self.advanced_cue_overlay.sync_time(
                 milliseconds, paused=bool(getattr(self.video, "_paused", True)),
             )
-        self.position_label.setText(format_timeline_timecode(milliseconds))
+        display_time = format_timeline_timecode(milliseconds)
+        if self.position_label.text() != display_time:
+            self.position_label.setText(display_time)
         timecode_input = getattr(self, "timecode_input", None)
         if timecode_input is not None and not timecode_input.hasFocus():
-            timecode_input.setText(format_timeline_timecode(milliseconds))
+            if timecode_input.text() != display_time:
+                timecode_input.setText(display_time)
         self._update_active_cues(milliseconds)
         deferred_follow = bool(
             defer_follow
@@ -426,10 +433,11 @@ class StudioPlaybackFlowMixin:
                 self.timeline.reveal_playhead(milliseconds)
         elif not self.follow_playhead_toggle.isChecked():
             self.timeline.page_playhead(milliseconds)
-        duration = timeline_duration_ms(self.project) if self.project else 0
         self._sync_timeline_duration_label(duration)
         if duration and not self.position_slider.isSliderDown():
-            self.position_slider.setValue(round(milliseconds * 1000 / duration))
+            value = round(milliseconds * 1000 / duration)
+            if self.position_slider.value() != value:
+                self.position_slider.setValue(value)
         # Playback never enters the formal editor selection/transaction path.
         # Follow affects the timeline viewport only, never cue-list scrolling.
 

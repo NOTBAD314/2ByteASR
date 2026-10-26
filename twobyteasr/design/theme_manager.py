@@ -7,7 +7,7 @@ import time
 
 from PySide6.QtCore import QEvent, QObject, QSettings
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QWidget
 
 from .ui_theme import DEFAULT_THEME_KEY, THEMES, ThemeDefinition, theme_definition
 from ..app.lazy_pages import existing_page
@@ -76,6 +76,12 @@ class _ThemeRootFilter(QObject):
             if widget.isWindow():
                 from ..app.ui_zoom import window_shown
                 window_shown(widget)
+                if widget.metaObject().className() == "QComboBoxPrivateContainer":
+                    from .combo_popup import place_native_popup
+                    place_native_popup(widget)
+            elif isinstance(widget, QComboBox):
+                from .combo_popup import prepare_combo
+                prepare_combo(widget)
             if widget.metaObject().className() == "QTipLabel":
                 _fit_tooltip(widget)
         return False
@@ -204,6 +210,9 @@ def _global_qss(theme: ThemeDefinition) -> str:
     media_ready_edge = blend_hex(theme.surface, theme.success, 0.55)
     media_empty_edge = blend_hex(theme.surface, theme.accent_text, 0.45)
     return f"""
+/* Every dropdown opens a list, not Fusion's menu that centres the current row
+   on the box and ignores the row limit (2026-10-26, see combo_popup). */
+QComboBox {{ combobox-popup: 0; }}
 QMainWindow, QWidget#appRoot, QWidget#appContent, QStackedWidget,
 QStackedWidget > QWidget, QScrollArea, QAbstractScrollArea,
 QAbstractScrollArea::viewport, QWidget#qt_scrollarea_viewport {{
@@ -391,6 +400,9 @@ def apply_application_theme(app: QApplication | None = None, key: str | None = N
         if not getattr(app, "_theme_fusion_installed", False):
             app.setStyle("Fusion")
             app._theme_fusion_installed = True
+            # The roll-down effect animates a grab of the popup on an opaque
+            # window: black corners around the rounded list (combo_popup).
+            app.setEffectEnabled(Qt.UIEffect.UI_AnimateCombo, False)
         app.setPalette(_palette(theme))
         t = _trace_mark("app.setPalette", t)
         from .glossary_page_qss import build_glossary_page_qss

@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--profile-paints', type=int, default=0, help='cProfile every Nth full timeline repaint')
     parser.add_argument('--profile-speaker', action='store_true', help='cProfile the speaker manager opens')
     parser.add_argument('--settle', type=float, default=45.0, help='seconds to wait after opening (caches build)')
+    parser.add_argument('--functional-only',action='store_true',help='Allow exit zero for functional checks only; display performance stays UNVERIFIED')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     out = args.output.resolve()
@@ -58,6 +59,10 @@ def main():
     after = Path(media).stat() if media and Path(media).is_file() else None
     result['process_exit'] = code
     result['media_unchanged'] = bool(before and after and (before.st_size, before.st_mtime_ns) == (after.st_size, after.st_mtime_ns))
+    result['functional_pass']=bool(result.get('passed') and code==0 and result.get('gui_shutdown') and result['media_unchanged'])
+    result['measurement_valid']=False
+    result['performance_pass']='UNVERIFIED'
+    result['performance_scope']='Qt callback gaps and backend counters; no calibrated visible/system display cadence'
     (out / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2), 'utf-8')
     print(json.dumps(dict(output=str(out), checks=[(x['name'], x['passed']) for x in result.get('checks', [])],
                           playback=[{k: r[k] for k in ('segment', 'media_rate', 'boundaries', 'near', 'far')} for r in result.get('playback', [])],
@@ -65,7 +70,7 @@ def main():
                           timeline={k: v for k, v in (result.get('timeline') or {}).items() if k != 'invalidated_by'},
                           speaker_manager_ms=result.get('speaker_manager_ms'), error=(result.get('error') or '')[-800:], exit=code,
                           media_unchanged=result['media_unchanged']), ensure_ascii=False, indent=1))
-    return 0 if result.get('passed') and code == 0 and result.get('gui_shutdown') else 1
+    return 0 if args.functional_only and result['functional_pass'] else 1
 
 
 if __name__ == '__main__':

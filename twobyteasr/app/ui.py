@@ -703,13 +703,13 @@ def persist_ai_configuration(
     group_key = str(group.get("key", "") or "").strip()
     existing_polish_key = read_api_key(
         polish.get("provider", "custom"), polish.get("base_url", "")
-    )[0] if enable_ai_polish else ""
-    if enable_ai_polish and not existing_polish_key and polish.get("provider") in {"bailian", "dashscope"}:
+    )[0] if enable_ai_polish and polish.get('key_state') != 'clear' else ""
+    if enable_ai_polish and polish.get('key_state') != 'clear' and not existing_polish_key and polish.get("provider") in {"bailian", "dashscope"}:
         existing_polish_key = resolve_api_key("polish")[0]
     existing_group_key = read_api_key(
         group.get("provider", "custom"), group.get("base_url", "")
-    )[0] if use_ai_grouping or unified else ""
-    if use_ai_grouping and not existing_group_key and group.get("provider") in {"bailian", "dashscope"}:
+    )[0] if (use_ai_grouping or unified) and group.get('key_state') != 'clear' else ""
+    if use_ai_grouping and group.get('key_state') != 'clear' and not existing_group_key and group.get("provider") in {"bailian", "dashscope"}:
         existing_group_key = resolve_api_key("group")[0]
     effective_polish_key = (
         group_key or existing_group_key
@@ -785,6 +785,10 @@ def persist_ai_configuration(
     if dry_run:
         return {"models": models, "unified": unified, "missing_keys": tuple(missing_keys),
                 "local_roles": tuple(local_roles)}
+    # Validate first. A failed secret write is a failed save, never swallowed.
+    for values in (polish, group):
+        if values.get('key_state') == 'clear':
+            delete_api_key_for(values.get('provider', 'custom'), values.get('base_url', ''))
     if polish_key and models["polish_transport"] == AITransport.OPENAI_COMPATIBLE.value:
         save_api_key_for(polish["provider"], polish["base_url"], polish_key)
     if group_key and models["group_transport"] == AITransport.OPENAI_COMPATIBLE.value:
@@ -805,6 +809,8 @@ def persist_ai_configuration(
     live_runtime = getattr(legacy, "RUNTIME_SETTINGS", None)
     if isinstance(live_runtime, dict):
         GLOBAL_PROVIDER_REGISTRY.bind(live_runtime)
+        from ..providers.ai_config_state import trace_configuration
+        trace_configuration('persisted', live_runtime)
     # 结构化留痕（绝不含密钥）：对照 UI 展示值与磁盘/运行时实际生效值。
     try:
         print(
@@ -1144,7 +1150,7 @@ class MainWindow(QWidget):
 
         if not self._recognition_page_deferred:
             self._refresh_media_summary()
-            self._refresh_ai_summary()
+            self._apply_saved_ai_configuration(source='startup')
         self._create_resize_handles()
         self._apply_ui_language()
         self._encoder_capability_cancel = threading.Event()
@@ -1313,7 +1319,7 @@ class MainWindow(QWidget):
         if previous is not None:
             previous.deleteLater()
         self._refresh_media_summary()
-        self._refresh_ai_summary()
+        self._apply_saved_ai_configuration(source='home_created')
         self._apply_ui_language()
         self._restore_last_project_profile()
         QTimer.singleShot(0, self, self._background_preload)
@@ -1625,6 +1631,29 @@ class MainWindow(QWidget):
             # Start with no control focused; the first Tab reaches the header.
             QTimer.singleShot(0, self, lambda: self.setFocus(Qt.FocusReason.OtherFocusReason))
 
+    def showNormal(self):
+        from .window_constraints import restore_normal_window
+        restore_normal_window(self)
+
+    def showMaximized(self):
+        from .window_constraints import maximize_window
+        maximize_window(self)
+
+    def normalGeometry(self):
+        from .window_constraints import normal_restore_geometry, _special_window_state
+        if _special_window_state(self):
+            return normal_restore_geometry(self)
+        return QWidget.normalGeometry(self)
+
+    def showFullScreen(self):
+        from .window_constraints import remember_normal_geometry
+        remember_normal_geometry(self)
+        self._window_geometry_transition=True
+        try:
+            QWidget.showFullScreen(self)
+        finally:
+            self._window_geometry_transition=False
+
     def changeEvent(self, event):
         if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "window_title_bar"):
             self.window_title_bar.sync_window_state()
@@ -1794,7 +1823,7 @@ class MainWindow(QWidget):
                 g.moveCenter(avail.center())
                 self.setGeometry(g)
             from .window_constraints import install_window_bounds
-            install_window_bounds(self)
+            install_window_bounds(self, native_events=True)
             if maximize:
                 self.showMaximized()
             # Persist on close
@@ -2049,6 +2078,7 @@ class MainWindow(QWidget):
     @navigation_timed('home.return')
     def _return_to_settings(self):
         self._ensure_recognition_page()
+        self._apply_saved_ai_configuration(source='home')
         self._refresh_available_asr_choices()
         self._restore_global_recognition_plan_for_home()
         self._switch_page(self.settings_scroll)
@@ -3267,6 +3297,13 @@ class MainWindow(QWidget):
         install_themed_icon(self.choose_media_button, "fa5s.folder-open")
         self.choose_media_button.clicked.connect(self._choose_media)
         media_row.addWidget(self.choose_media_button)
+        self.link_download_button = AnimatedButton("链接下载")
+        self.link_download_button.setObjectName("softAction")
+        bind_text(self.link_download_button, "链接下载")
+        install_themed_icon(self.link_download_button, "fa5s.link")
+        from .link_download_controller import show_link_download
+        self.link_download_button.clicked.connect(lambda: show_link_download(self))
+        media_row.addWidget(self.link_download_button)
         self.clear_single_media_button = QToolButton()
         self.clear_single_media_button.setAutoRaise(True)
         install_themed_icon(self.clear_single_media_button, "fa5s.times")
@@ -3892,6 +3929,9 @@ class MainWindow(QWidget):
         self.ai_key_off_note = QLabel()
         self.ai_key_off_note.setObjectName("statusWarn")
         self.ai_key_off_note.setWordWrap(True)
+        # It wraps to the column's width and never widens it (2026-10-25: the AI
+        # settings must be as wide with and without a key).
+        self.ai_key_off_note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.ai_key_off_note.hide()
         self.prefer_arabic_numbers = SwitchControl('数字规范化')
         self.prefer_arabic_numbers.setChecked(settings['switches'].get('prefer_arabic_numbers', True))
@@ -3916,7 +3956,7 @@ class MainWindow(QWidget):
         # 2026-10-22 (design D2 refined): the guide column (what to do now, the
         # three steps, the lent 「申请教程」) beside the form; everything else is
         # folded into 「更多选项」, whose closed line says what is set inside.
-        from .ai_settings_widgets import AiGuidePanel
+        from .ai_settings_widgets import AiGuidePanel, NoteLabel, YieldingBox, keep_label_width
         split = QHBoxLayout()
         split.setSpacing(16)
         self.ai_guide = AiGuidePanel()
@@ -3946,11 +3986,13 @@ class MainWindow(QWidget):
         self.ai_advanced_toggle.setArrowType(Qt.ArrowType.RightArrow)
         bind_text(self.ai_advanced_toggle, '更多选项')
         advanced_head.addWidget(self.ai_advanced_toggle)
-        self.ai_advanced_summary = QLabel()
+        # The notes in 更多选项 wrap when the dialog is narrow (NoteLabel, 2026-10-25).
+        self.ai_advanced_summary = NoteLabel()
         self.ai_advanced_summary.setObjectName("aiAdvancedSummary")
         advanced_head.addWidget(self.ai_advanced_summary, 1)
         advanced_head.addStretch(0)
         panel_layout.addLayout(advanced_head)
+        self._ai_advanced_head = advanced_head   # how wide 更多选项 will open (fit)
         self.ai_advanced_box = QFrame()
         self.ai_advanced_box.setObjectName("aiAdvancedBox")
         advanced_layout = QVBoxLayout(self.ai_advanced_box)
@@ -3972,8 +4014,8 @@ class MainWindow(QWidget):
                 ("numbers", self.prefer_arabic_numbers, "“十二个”写成“12 个”")):
             line_row = QHBoxLayout()
             line_row.setSpacing(10)
-            line_row.addWidget(switch)
-            line = QLabel()
+            line_row.addWidget(keep_label_width(switch))
+            line = NoteLabel()
             bind_text(line, note)
             line.setObjectName("aiDutyNote")
             line_row.addWidget(line, 1)
@@ -3983,11 +4025,21 @@ class MainWindow(QWidget):
             switch.toggled.connect(self._refresh_ai_dialog_state)
         duties.addWidget(self.ai_key_off_note)
         duties.addStretch(1)
-        options_row.addLayout(duties, 2)
+        # 2026-10-25: both sides first get what they ask for — the notes their
+        # one line, the model group its minimum (YieldingBox) — then share the
+        # rest. (A stretch factor would let Qt squeeze the notes to their minimum.)
+        duties_host = QWidget()
+        duties.setContentsMargins(0, 0, 0, 0)
+        duties_host.setLayout(duties)
         self.ai_advanced_editor_slot = QVBoxLayout()
         self.ai_advanced_editor_slot.setContentsMargins(0, 0, 0, 0)
-        options_row.addLayout(self.ai_advanced_editor_slot, 3)
+        editor_host = YieldingBox()
+        editor_host.setLayout(self.ai_advanced_editor_slot)
+        for side in (duties_host, editor_host):
+            side.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            options_row.addWidget(side)
         advanced_layout.addLayout(options_row)
+        self._ai_options_row = options_row   # the dialog's comfortable width (fit)
         advanced_rule = QFrame()
         advanced_rule.setObjectName("aiAdvancedRule")
         advanced_rule.setFixedHeight(1)
@@ -3998,8 +4050,8 @@ class MainWindow(QWidget):
         self.separate_group_service = SwitchControl("断句另用一个服务")
         self.separate_group_service.setChecked(not self.unified_glm.isChecked())
         self.separate_group_service.toggled.connect(lambda on: self.unified_glm.setChecked(not on))
-        separate_row.addWidget(self.separate_group_service)
-        self.separate_group_note = QLabel()
+        separate_row.addWidget(keep_label_width(self.separate_group_service))
+        self.separate_group_note = NoteLabel()
         bind_text(self.separate_group_note, '关着时断句、校对和翻译共用上面的服务和 Key')
         self.separate_group_note.setObjectName("aiDutyNote")
         separate_row.addWidget(self.separate_group_note)
@@ -4026,7 +4078,7 @@ class MainWindow(QWidget):
         self.save_ai_button.clicked.connect(
             lambda: self._save_ai_configuration(show_feedback=True)
         )
-        separate_row.addWidget(self.share_key)
+        separate_row.addWidget(keep_label_width(self.share_key))
         separate_row.addStretch(1)
         separate_row.addWidget(prompt_button)
         separate_row.addWidget(self.save_ai_button)
@@ -4071,6 +4123,10 @@ class MainWindow(QWidget):
         for editor in (self.polish_editor, self.group_editor):
             editor.key.textChanged.connect(self._sync_ai_switches_with_keys)
             editor.base_url.textChanged.connect(self._sync_ai_switches_with_keys)
+            editor.service.currentIndexChanged.connect(self._sync_ai_switches_with_keys)
+            editor.configuration_edited.connect(self._sync_ai_switches_with_keys)
+            editor.configuration_edited.connect(self._mark_ai_configuration_dirty)
+            editor.configuration_edited.connect(self._refresh_ai_dialog_state)
         for control in (self.ai_polish, self.ai_grouping, self.unified_glm, self.share_key):
             control.toggled.connect(self._sync_ai_switches_with_keys)
         self._apply_ai_grouping_mode(self.ai_grouping.isChecked())
@@ -4376,13 +4432,13 @@ class MainWindow(QWidget):
         self.home_ai_test_button = tile.test_button
         self.home_ai_connect_button = tile.connect_button
         tile.clicked.connect(lambda _checked=False: self._open_ai_settings_dialog())
-        tile.connect_requested.connect(lambda: self._open_ai_settings_dialog())
+        tile.connect_requested.connect(lambda: self._open_ai_settings_dialog(enable_grouping=True))
         tile.settings_requested.connect(lambda: self._open_ai_settings_dialog())
         tile.test_requested.connect(self._test_ai_connection_from_home)
         tile.help_requested.connect(lambda: self._open_api_key_explainer())
         from .home_ai_widgets import FrostOverlay
         self.content_frost = FrostOverlay(self.content_terms_body, self.content_profile_card)
-        self.content_frost.activated.connect(lambda: self._open_ai_settings_dialog())
+        self.content_frost.activated.connect(lambda: self._open_ai_settings_dialog(enable_grouping=True))
         self._refresh_home_process_facts()
 
     def _open_api_key_explainer(self) -> None:
@@ -4393,6 +4449,33 @@ class MainWindow(QWidget):
         """The AI card's facts, then what they unlock on the home page (2026-10-22)."""
         self._refresh_home_ai_chips()
         self._apply_ai_feature_gate()
+
+    def _apply_saved_ai_configuration(self, *, source, saved=False):
+        """Startup and Save publish one effective state before notifying views.
+
+        Existing requests retain their own snapshots; only idle UI references
+        and clients created later observe this publication.
+        """
+        settings = self.legacy.RUNTIME_SETTINGS
+        GLOBAL_PROVIDER_REGISTRY.bind(settings)
+        if getattr(self, '_recognition_page_deferred', False):
+            return
+        for editor in (self.polish_editor, self.group_editor):
+            editor._settings_ref = settings
+        if saved:
+            for editor in (self.polish_editor, self.group_editor):
+                editor.accept_saved_configuration(settings)
+        self._sync_ai_switches_with_keys()
+        self._refresh_ai_advanced_summary()
+        self._refresh_ai_summary()
+        studio = self.built_page('studio')
+        if studio is not None:
+            studio.runtime_settings = settings
+            refresh = getattr(studio, '_reload_ai_provider_selection', None)
+            if callable(refresh):
+                refresh(probe=False)
+        from ..providers.ai_config_state import trace_configuration
+        trace_configuration(source, settings)
 
     def _refresh_home_ai_chips(self) -> None:
         """The AI card's state (2026-10-22, design B): the AI gate, a test
@@ -4409,43 +4492,46 @@ class MainWindow(QWidget):
         switches = saved.get("switches", {})
         polish_on = bool(switches.get("enable_ai_polish", True))
         group_on = bool(switches.get("use_ai_grouping", True))
+        stage = 'polish' if polish_on else 'group'
         try:
-            gate = record.feature_gate(saved)
-        except Exception:  # noqa: BLE001 - unknown: never lock anyone out
-            gate = record.READY
-        view = AiCardView(gate, polish_on=polish_on, group_on=group_on)
-        tester = getattr(self._primary_ai_editor(), "_tester", None)
-        if gate in (record.UNTESTED, record.FAILED) and tester is not None and tester.isRunning():
+            gate = record.feature_gate(saved, stage)
+        except Exception:  # noqa: BLE001 - unknown is not connection evidence
+            gate = record.UNTESTED
+        configured = record.service_gate(saved, stage) != record.NO_KEY
+        view = AiCardView(gate, polish_on=polish_on, group_on=group_on, configured=configured, auxiliary_ready=record.service_gate(saved) == record.READY)
+        if self._primary_ai_editor().connection_test_running(saved):
             view = AiCardView(TESTING, polish_on=polish_on, group_on=group_on)
         elif gate == record.READY:
             try:
                 identity = effective_ai_identity(saved, "polish" if polish_on else "group")
             except (OSError, RuntimeError, TypeError, ValueError, KeyError):
                 identity = {}
-            checked = record.checked_at(saved, "polish")
+            checked = record.checked_at(saved, stage)
             view = AiCardView(record.READY, service=tr(str(identity.get("label") or "AI")),
                               model=str(identity.get("model") or ""),
                               tested_at=checked[5:16].replace("T", " ") if len(checked) >= 16 else "",
-                              polish_on=polish_on, group_on=group_on)
+                              polish_on=polish_on, group_on=group_on,
+                              auxiliary_ready=record.service_gate(saved) == record.READY)
         tile.set_view(view)
-        self._apply_ai_zone_lock(view.locked, gate)
+        self._apply_ai_zone_lock(view.locked, record.service_gate(saved))
 
     def _apply_ai_zone_lock(self, locked: bool, gate: str) -> None:
         """Blue-grey AI card and 内容与术语 while the AI is not connected; the
         content columns under frosted glass (2026-10-22, user)."""
-        frames = [frame for frame in (self.__dict__.get("home_process_card"),
-                                      self.__dict__.get("content_profile_card")) if frame is not None]
-        for frame in frames:
-            if frame.property("aiLock") == locked:
+        frames = ((self.__dict__.get("home_process_card"), locked),
+                  (self.__dict__.get("content_profile_card"), False))
+        for frame, frame_locked in frames:
+            if frame is None or frame.property("aiLock") == frame_locked:
                 continue
-            frame.setProperty("aiLock", locked)
+            frame.setProperty("aiLock", frame_locked)
             for widget in (frame, *frame.findChildren(QWidget)):
                 widget.style().unpolish(widget)
                 widget.style().polish(widget)
         frost = self.__dict__.get("content_frost")
         if frost is not None:
             frost.set_gate(gate)
-            frost.set_active(locked)
+            # Local glossary/name fields remain available; online controls own their gates.
+            frost.set_active(False)
             if gate != self.__dict__.get("_ai_zone_gate"):
                 frost.refresh()  # the columns' lock lines change with the gate
         self._ai_zone_gate = gate
@@ -4483,10 +4569,10 @@ class MainWindow(QWidget):
         the subtitle output) are kept and come back once the AI is connected.
         """
         try:
-            from ..providers.ai_connection_record import feature_gate
-            gate = feature_gate(self.legacy.RUNTIME_SETTINGS)
-        except Exception:  # noqa: BLE001 - unknown: never lock anyone out
-            gate = "ready"
+            from ..providers.ai_connection_record import service_gate
+            gate = service_gate(self.legacy.RUNTIME_SETTINGS)
+        except Exception:  # noqa: BLE001 - unknown is not connection evidence
+            gate = "untested"
         was = self.__dict__.get("_ai_gate_state")
         self._ai_gate_state = gate
         ready = gate == "ready"
@@ -4495,9 +4581,9 @@ class MainWindow(QWidget):
         if terms is not None:
             saved = bool((self.legacy.RUNTIME_SETTINGS.get("glossary") or {}).get("enable_domain_terms", False))
             with QSignalBlocker(terms):
-                terms.setChecked(saved and ready)
-            terms.setEnabled(ready)
-            bind_text(terms, '使用本批已确认词库进行本地匹配和文字校对；联网核验独立选择' if ready else line,
+                terms.setChecked(saved)
+            terms.setEnabled(True)
+            bind_text(terms, '使用本批已确认词库进行本地匹配；不需要启用 AI 断句。AI 校对与联网核验独立选择',
                       property='toolTip')
         search = self.__dict__.get("term_search")
         if search is not None:
@@ -4534,7 +4620,7 @@ class MainWindow(QWidget):
                 continue
             item.setEnabled(ready)
             label = labels.get(value, combo.itemText(index))
-            combo.setItemText(index, str(tr(label)) if ready else str(tr("{value0}（需要 API Key）", value0=tr(label))))
+            combo.setItemText(index, str(tr(label)) if ready else str(tr("{value0}（文字服务未就绪）", value0=tr(label))))
         saved = str(((self.legacy.RUNTIME_SETTINGS or {}).get("subtitle_language") or {}).get("output") or "original")
         wanted = saved if ready else "original"
         index = combo.findData(wanted)
@@ -4609,7 +4695,7 @@ class MainWindow(QWidget):
 
     @observed('settings.ai_open')
     @_owned_settings('ai')
-    def _open_ai_settings_dialog(self, on_finished=None) -> None:
+    def _open_ai_settings_dialog(self, on_finished=None, *, enable_grouping: bool = False) -> None:
         """AI segmentation & proofreading settings (2026-10-08): fixed title,
         close, Cancel and Save; the form scrolls between them. Cancel restores
         every control; the home page's media, settings and scroll stay put."""
@@ -4627,11 +4713,16 @@ class MainWindow(QWidget):
         from ..design.presentation import button_role
         panel = self.ai_panel
         snapshot = self._ai_settings_snapshot()
+        # Only the explicit Home enable action changes the draft switch. Cancel
+        # restores the snapshot; ordinary settings preserve the saved OFF choice.
+        if enable_grouping:
+            self.ai_grouping.setChecked(True)
         dialog = SpringDialog(self)
         dialog.ENTRY_ANIMATED = False
         from .settings_lifecycle import retain, trace
         retain(self, dialog, 'ai')
         dialog.setObjectName("aiSettingsDialog")
+        dialog.setProperty("enableGroupingIntent", enable_grouping)
         bind_text(dialog, 'AI 文字服务设置', property='windowTitle')
         dialog.setWindowIcon(_app_icon())
         # 2026-10-22 (design D2 refined): narrow and as tall as its content (fit()).
@@ -4699,7 +4790,7 @@ class MainWindow(QWidget):
         foot.addStretch(1)
         cancel = button_role(QPushButton("取消"), "secondary")
         cancel.clicked.connect(dialog.reject)
-        save = QPushButton("保存设置")
+        save = QPushButton("保存并启用断句" if enable_grouping else "保存设置")
         save.setObjectName("primary")
         button_role(save, "primary")
         for button in (cancel, save):   # as tall as the fields and 测试连接 beside them
@@ -4711,7 +4802,9 @@ class MainWindow(QWidget):
         self._refresh_ai_advanced_summary()
 
         def fit():
-            """As tall as the form (2026-10-22: no empty band under it), within the window."""
+            """As tall as the form (2026-10-22: no empty band under it) and never
+            narrower than it (2026-10-25, user: with 更多选项 open its right side
+            was cut off — the form has no horizontal scroll bar), within the window."""
             if not dialog.isVisible():
                 return
 
@@ -4720,14 +4813,53 @@ class MainWindow(QWidget):
                 value = widget.heightForWidth(width) if widget.hasHeightForWidth() else -1
                 return value if value > 0 else widget.sizeHint().height()
 
-            want = height_of(header, dialog.width()) + height_of(body, scroll.viewport().width()) + 6
+            from .window_constraints import available_rect
+            bounds = available_rect(dialog, within_parent=True)   # the main window, on its screen
+            bar = scroll.verticalScrollBar().sizeHint().width()
+            need = max(header.minimumSizeHint().width(), body.minimumSizeHint().width() + bar)
+            # Room permitting, wide enough for 「让 AI 负责」 to keep its notes on one
+            # line (longer languages wrapped them into narrow columns) — already
+            # while 更多选项 is closed, so opening it does not make the dialog jump.
+            body.layout().activate()
+            row, box, line = self._ai_options_row, self.ai_advanced_box, self._ai_advanced_head
+            if box.isVisible() and row.geometry().width() > 0:
+                room = row.geometry().width()
+                self._ai_options_inset = line.geometry().width() - room   # the box's margins and border
+            else:
+                box.ensurePolished()   # its notes measure with their own fonts
+                # A closed box keeps the sizes of texts it had before (a language
+                # switch); nested rows refresh only when they are laid out.
+                for owner in (box, *box.findChildren(QWidget)):
+                    stack = [owner.layout()] if owner.layout() is not None else []
+                    while stack:
+                        layout = stack.pop()
+                        layout.invalidate()
+                        stack.extend(item.layout() for item in (layout.itemAt(i) for i in range(layout.count()))
+                                     if item.layout() is not None)
+                margins = box.layout().contentsMargins()
+                room = line.geometry().width() - (self.__dict__.get("_ai_options_inset")
+                                                  or margins.left() + margins.right() + 2)
+            comfortable = max(need, dialog.width() + row.sizeHint().width() - room) if room > 0 else need
+            width = max(dialog.width(), min(comfortable, bounds.width()))
+            # Only a main window narrower than the form makes it scroll sideways.
+            sideways = need > width
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if sideways
+                                                else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            inner = max(body.minimumSizeHint().width(),
+                        width - (bar if scroll.verticalScrollBar().isVisible() else 0))
+            want = height_of(header, width) + height_of(body, inner) + 6
+            if sideways:
+                want += scroll.horizontalScrollBar().sizeHint().height()
             screen = dialog.screen().availableGeometry() if dialog.screen() is not None else None
             limit = min(max(520, self.height() - 80), screen.height() - 60 if screen is not None else 10_000)
             height = max(300, min(limit, want))
-            if height != dialog.height():
+            if (width, height) != (dialog.width(), dialog.height()):
                 center = self.geometry().center()
-                dialog.setGeometry(center.x() - dialog.width() // 2, max(0, center.y() - height // 2),
-                                   dialog.width(), height)
+                x = max(bounds.left(), min(center.x() - width // 2, bounds.right() + 1 - width))
+                grew = width > dialog.width()
+                dialog.setGeometry(x, max(0, center.y() - height // 2), width, height)
+                if grew:   # the taller form may now have a scroll bar that takes some width back
+                    QTimer.singleShot(0, fit)
 
         self._ai_dialog_fit = fit
         saved = [False]
@@ -5290,6 +5422,8 @@ class MainWindow(QWidget):
         switches = settings.setdefault("switches", {})
         for role in getattr(self, "_text_ai_local_roles", ()) or ():
             switches[{"polish": "enable_ai_polish", "group": "use_ai_grouping"}[role]] = False
+        from ..providers.ai_config_state import trace_configuration
+        trace_configuration('task_snapshot', settings)
         return settings
 
     def _text_ai_local_note(self) -> str:
@@ -6692,7 +6826,24 @@ class MainWindow(QWidget):
         WM_NCHITTEST and GetWindowRect both use physical screen pixels.  They
         must not pass through Qt's logical-coordinate mapFromGlobal().
         """
-        if os.name == "nt" and not (self.isMaximized() or self.isFullScreen()):
+        if os.name == "nt":
+            try:
+                import ctypes
+                from ctypes import wintypes
+                msg = wintypes.MSG.from_address(int(message))
+                bounds = getattr(self, '_window_bounds', None)
+                if bounds is not None:
+                    result=bounds.native_message(int(msg.message), int(msg.wParam), int(msg.lParam))
+                    if result is not None:
+                        return True,result
+                if msg.message in (0x0083,0x0024):
+                    from .window_native_frame import handle_message
+                    result = handle_message(self,int(msg.message),int(msg.wParam),int(msg.lParam))
+                    if result is not None:
+                        return True,result
+            except (ValueError, TypeError, OSError):
+                pass
+        if os.name == "nt" and not self.isFullScreen():
             try:
                 import ctypes
                 from ctypes import wintypes
@@ -6703,7 +6854,8 @@ class MainWindow(QWidget):
                     screen_x = ctypes.c_short(packed & 0xFFFF).value
                     screen_y = ctypes.c_short((packed >> 16) & 0xFFFF).value
                     window_rect = wintypes.RECT()
-                    user32 = ctypes.windll.user32
+                    from .window_constraints import _user32
+                    user32 = _user32()
                     get_window_rect = user32.GetWindowRect
                     get_window_rect.argtypes = [
                         wintypes.HWND,
@@ -6720,7 +6872,7 @@ class MainWindow(QWidget):
                         dpi = int(get_dpi_for_window(msg.hWnd))
                         if dpi > 0:
                             device_pixel_ratio = dpi / 96.0
-                    edge = self._native_resize_edge_at(
+                    edge = None if self.isMaximized() or user32.IsZoomed(msg.hWnd) else self._native_resize_edge_at(
                         screen_x,
                         screen_y,
                         (
@@ -6745,6 +6897,9 @@ class MainWindow(QWidget):
                     }
                     if edge in hit_codes:
                         return True, hit_codes[edge]
+                    from .window_native_frame import caption_hit
+                    if caption_hit(self,screen_x,screen_y,device_pixel_ratio):
+                        return True,2  # HTCAPTION: Windows owns threshold, restore and drag
             except Exception:
                 # A malformed native message must never break ordinary input;
                 # Qt's existing manual fallback remains available.
@@ -6769,6 +6924,10 @@ class MainWindow(QWidget):
             self._perform_resize_drag(event.globalPosition().toPoint())
             event.accept()
             return
+        if self.isMaximized() or self.isFullScreen():
+            self.unsetCursor()
+            super().mouseMoveEvent(event)
+            return
         edge = self._resize_edge_at(event.position().toPoint())
         self._apply_resize_cursor(edge)
         super().mouseMoveEvent(event)
@@ -6776,7 +6935,19 @@ class MainWindow(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             edge = self._resize_edge_at(event.position().toPoint())
-            if edge and not self.isMaximized():
+            if edge and not (self.isMaximized() or self.isFullScreen()):
+                from .window_constraints import start_system_resize
+                edges = Qt.Edge(0)
+                if edge in ('left','tl','bl'): edges |= Qt.LeftEdge
+                if edge in ('right','tr','br'): edges |= Qt.RightEdge
+                if edge in ('top','tl','tr'): edges |= Qt.TopEdge
+                if edge in ('bottom','bl','br'): edges |= Qt.BottomEdge
+                if start_system_resize(self, edges):
+                    event.accept()
+                    return
+                bounds = getattr(self, '_window_bounds', None)
+                if bounds is not None:
+                    bounds.begin_interaction('manual-resize')
                 self._resize_edge = edge
                 self._resize_start_geom = self.geometry()
                 self._resize_start_pos = event.globalPosition().toPoint()
@@ -6794,6 +6965,9 @@ class MainWindow(QWidget):
             self._resize_start_pos = None
             self.releaseMouse()
             self.unsetCursor()
+            bounds = getattr(self, '_window_bounds', None)
+            if bounds is not None:
+                bounds.end_interaction('resize-release')
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -7305,6 +7479,7 @@ class MainWindow(QWidget):
             self.ai_save_status.style().unpolish(self.ai_save_status)
             self.ai_save_status.style().polish(self.ai_save_status)
         bind_text(self.profile_recommendation, translate('已应用：', getattr(self, '_ui_language', current_language())) + profile.name + usage_warning)
+        self._apply_saved_ai_configuration(source='profile_applied')
         return True
 
     def _project_profile_selected(self, _index: int = -1) -> None:
@@ -7657,7 +7832,7 @@ class MainWindow(QWidget):
     def _restore_glossary_switch(self):
         settings = self.legacy.RUNTIME_SETTINGS.get("glossary", {})
         with QSignalBlocker(self.terms):
-            self.terms.setChecked(bool(settings.get("enable_domain_terms", False)) and _ai_unlocked(self))
+            self.terms.setChecked(bool(settings.get("enable_domain_terms", False)))
         self._refresh_glossary_chips()
 
     def _task_glossary_selection(self):
@@ -7666,8 +7841,6 @@ class MainWindow(QWidget):
             ids = tuple(context["enabled_glossary_ids"])
             checked = bool(context.get("enable_domain_terms", bool(ids)))
             return ids if checked else (), checked
-        if not _ai_unlocked(self):   # 2026-10-22: 术语库校对 needs a connected AI
-            return (), False
         ids = tuple(self._enabled_glossary_ids())
         checked = self.terms.isChecked()
         return ids if checked else (), checked
@@ -9154,8 +9327,7 @@ class MainWindow(QWidget):
                 widget.deleteLater()
         enabled = self._enabled_glossary_ids()
         effective = bool(getattr(getattr(self, "terms", None), "isChecked", lambda: False)())
-        unlocked = _ai_unlocked(self)
-        for identity in enabled if unlocked else ():
+        for identity in enabled:
             chip = AnimatedButton("")
             chip.setObjectName("glossaryChip")
             display = self._glossary_display_name(identity)
@@ -9191,11 +9363,7 @@ class MainWindow(QWidget):
             bind_text(self.add_glossary_button, translate('管理术语库', current_language()))
         state = getattr(self, "term_state_label", None)
         if state is not None:
-            if not unlocked:
-                gate = self.__dict__.get("_ai_gate_state", "no_key")
-                bind_text(state, self.AI_LOCK_LINES.get(gate, self.AI_LOCK_LINES["no_key"]))
-                tone = "warn"
-            elif enabled and effective:
+            if enabled and effective:
                 count = self._home_term_summary['effective_terms']
                 reason = ('；存在冲突，请检查术语库' if self._home_term_summary['conflicts'] else
                           '；所选词库只有参考项、无已确认词，或词库已不存在' if count == 0 else '')
@@ -9232,8 +9400,7 @@ class MainWindow(QWidget):
         try:
             self.legacy.RUNTIME_SETTINGS.setdefault("glossary", {})
             self.legacy.RUNTIME_SETTINGS["glossary"]["enabled_glossary_ids"] = self._enabled_glossary_ids()
-            if _ai_unlocked(self):   # locked (no connected AI): the switch only looks off
-                self.legacy.RUNTIME_SETTINGS["glossary"]["enable_domain_terms"] = bool(self.terms.isChecked())
+            self.legacy.RUNTIME_SETTINGS["glossary"]["enable_domain_terms"] = bool(self.terms.isChecked())
             save_runtime_settings(self.legacy.RUNTIME_SETTINGS)
         except Exception as exc:
             if hasattr(self, "term_hint"):
@@ -9436,27 +9603,14 @@ class MainWindow(QWidget):
 
     def _save_ai_configuration(self, *, show_feedback: bool, require_ready: bool = False,
                                local_without_key: bool = False) -> bool:
+        from ..providers.ai_config_state import trace_configuration
+        trace_configuration('before_save', self.legacy.RUNTIME_SETTINGS)
         self._text_ai_local_roles = ()
         try:
             p = self.polish_editor.values()
             g = self.group_editor.values()
             _secret_save_trace("before_save", self.polish_editor, p, extra={"editor": "polish"})
             _secret_save_trace("before_save", self.group_editor, g, extra={"editor": "group"})
-            # P8C-R3.1 三态语义：REPLACE 覆写、CLEAR 显式删除、UNCHANGED 完全
-            # 不触碰已存密钥。空输入框不再是“删除”。
-            try:
-                pk = (p.get("key") or "").strip()
-                gk = (g.get("key") or "").strip()
-                if p.get("key_state") == "clear":
-                    delete_api_key_for(p.get("provider", "custom"), p.get("base_url", ""))
-                elif pk:
-                    save_api_key_for(p.get("provider", "custom"), p.get("base_url", ""), pk)
-                if g.get("key_state") == "clear":
-                    delete_api_key_for(g.get("provider", "custom"), g.get("base_url", ""))
-                elif gk:
-                    save_api_key_for(g.get("provider", "custom"), g.get("base_url", ""), gk)
-            except Exception:
-                pass
             result = persist_ai_configuration(
                 self.legacy,
                 p,
@@ -9482,14 +9636,7 @@ class MainWindow(QWidget):
             if show_feedback:
                 QMessageBox.warning(self, tr('AI 配置未保存'), str(exc))
             return False
-        self.polish_editor.key.clear()
-        self.group_editor.key.clear()
-        self.polish_editor._key_state = "unchanged"
-        self.group_editor._key_state = "unchanged"
-        self.polish_editor.refresh_secret_status()
-        self.group_editor.refresh_secret_status()
-        for editor in (self.polish_editor, self.group_editor):
-            editor._settings_ref = self.legacy.RUNTIME_SETTINGS
+        self._apply_saved_ai_configuration(source='applied', saved=True)
         # 方案书签同步：保存 AI 配置是唯一权威写入时刻。不同步的话，识别
         # 方案快照里的旧 llm_config_ref 会在下次启动/切方案时把已保存的
         # 模型选择覆盖回去（vision-exp 反复复活的第二环）。
@@ -9623,12 +9770,13 @@ class MainWindow(QWidget):
         from .ai_settings_widgets import FAILED, NO_KEY, OFF, READY, UNTESTED
         from .home_ai_widgets import STATE_CHIP
         editor = self.__dict__.get("_ai_main_editor") or self._primary_ai_editor()
+        stage = "group" if editor is self.group_editor else "polish"
         draft = bool(getattr(self, "_ai_has_draft", False))
         result = getattr(editor, "last_connection_ok", None)
         try:
-            gate = record.feature_gate(self.legacy.RUNTIME_SETTINGS)
-        except Exception:  # noqa: BLE001 - unknown: say nothing alarming
-            gate = record.READY
+            gate = record.feature_gate(self.legacy.RUNTIME_SETTINGS, stage)
+        except Exception:  # noqa: BLE001 - unknown is not connection evidence
+            gate = record.UNTESTED
         if not (self.ai_polish.isChecked() or self.ai_grouping.isChecked()):
             state = OFF
         elif result is True:
@@ -9647,7 +9795,7 @@ class MainWindow(QWidget):
             detail = ""
             if state == READY:
                 # When it passed; the model is on the 更多选项 line below.
-                checked = record.checked_at(self.legacy.RUNTIME_SETTINGS, "polish") if not draft else ""
+                checked = record.checked_at(self.legacy.RUNTIME_SETTINGS, stage) if not draft else ""
                 if result is True:
                     detail = str(tr("刚刚测试通过"))
                 elif len(checked) >= 16 and checked[:10] == time.strftime("%Y-%m-%d"):
@@ -9680,6 +9828,9 @@ class MainWindow(QWidget):
         editor.test_button.setEnabled(editor.has_key() or state == READY)
         save = self.__dict__.get("ai_dialog_save_button")
         if save is not None:
+            dialog = self.__dict__.get("_ai_settings_dialog")
+            if dialog is not None and dialog.property("enableGroupingIntent"):
+                bind_text(save, "保存并启用断句" if self.ai_grouping.isChecked() else "保存设置")
             from ..design.presentation import button_role
             role = "primary" if state == READY else "secondary"
             if save.property("buttonRole") != role:
@@ -11823,7 +11974,11 @@ def _offer_first_run_setup(window) -> None:
 
 
 def _ai_unlocked(owner) -> bool:
-    """The home page's last AI gate answer; owners that never computed one (tests, stand-ins) are unlocked."""
+    """Decide from live configuration; a task must not inherit a stale UI gate."""
+    settings = getattr(getattr(owner, 'legacy', None), 'RUNTIME_SETTINGS', None)
+    if isinstance(settings, dict):
+        from ..providers.ai_connection_record import service_gate
+        return service_gate(settings) == 'ready'
     return getattr(owner, "__dict__", {}).get("_ai_gate_state", "ready") == "ready"
 
 

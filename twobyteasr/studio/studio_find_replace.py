@@ -3,6 +3,8 @@
 2026-10-21 (user): 批量替换 is find/replace only (no tabs); AI 清理 opens from the
 cue list beside AI 校对; 文本整理 is no longer offered, and 应用术语库 only reviews
 the completion page's retries. All three share one checked preview and one undo step.
+2026-10-26: AI 清理 is its own one-page window in ``ai_cleanup_dialog`` (still
+importable from here).
 """
 
 from __future__ import annotations
@@ -41,7 +43,6 @@ from PySide6.QtWidgets import (
 from ..i18n import apply_ui_language, current_language
 from ..timeline.studio_commands import BatchReplaceTextCommand, MutationOrigin, SetCueFieldsCommand
 from .studio_text_tools import (
-    AI_CLEANUP_OPTIONS,
     SCOPE_ALL,
     SCOPE_CURRENT,
     SCOPE_RANGE,
@@ -52,7 +53,6 @@ from .studio_text_tools import (
     clock_ms,
     find_occurrences,
     format_preview_row,
-    request_text_cleanup,
     scope_cue_ids,
     values_from_occurrences,
     occurrence_conflicts,
@@ -962,99 +962,6 @@ class FindReplaceDialog(_TextPreviewDialog):
         self._do_apply_preview()
 
 
-class AiCleanupDialog(_TextPreviewDialog):
-    """AI 清理: AI-suggested cleanup, each change checked before one undo step."""
-
-    _title = "AI 清理"
-
-    def __init__(self, page, parent=None):
-        super().__init__(page, parent)
-        self.setMinimumSize(560, 460)
-        self.resize(720, 600)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 12)
-        layout.setSpacing(10)
-        note = QLabel("AI 只建议文本清理，不会偷偷改字幕意思。每条都可接受或拒绝。")
-        note.setWordWrap(True)
-        note.setObjectName("cardMeta")
-        layout.addWidget(note)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        scope_label = QLabel("范围")
-        scope_label.setObjectName("findFieldLabel")
-        row.addWidget(scope_label)
-        self.ai_scope = self._scope_box()
-        row.addWidget(self.ai_scope)
-        row.addStretch(1)
-        self.ai_run_button = QPushButton("生成 AI 预览")
-        self.ai_run_button.setMinimumHeight(34)
-        self.ai_run_button.clicked.connect(self._do_ai_preview)
-        row.addWidget(self.ai_run_button)
-        layout.addLayout(row)
-        self.ai_option_boxes: dict[str, QPushButton] = {}
-        for key, label in AI_CLEANUP_OPTIONS:
-            self.ai_option_boxes[key] = _option_chip(label, checked=key in {"fillers", "repeats", "punctuation"})
-        layout.addWidget(_chip_row(self.ai_option_boxes.values()))
-        self._add_results(layout)
-        self.all_button = QPushButton("应用所选预览")
-        self.all_button.setProperty("studioPrimary", True)
-        self.all_button.clicked.connect(self._do_apply_preview)
-        self._add_footer(layout, trailing=(self.all_button,))
-        self._finish_setup()
-        bind_text(self.status_label, '选好清理项后点「生成 AI 预览」')
-        self.select_all_button.hide()
-        self.select_none_button.hide()
-
-    def _current_scope(self) -> str:
-        return str(self.ai_scope.currentData() or SCOPE_ALL)
-
-    def _refresh_status(self, *_args) -> None:
-        super()._refresh_status()
-        if hasattr(self, "select_all_button"):
-            has_rows = self.preview.count() > 0
-            self.select_all_button.setVisible(has_rows)
-            self.select_none_button.setVisible(has_rows)
-
-    def _after_apply(self, total: int, cue_count: int) -> None:
-        # The applied rows are done; a new preview asks the AI again.
-        self._preview_hits = []
-        self._preview_binding = None
-        self.preview.clear()
-        self._refresh_status()
-        if total:
-            bind_text(self.status_label, '已替换 {value0} 处，涉及 {value1} 条字幕（可 Ctrl+Z 一次撤销）',
-                      value0=total, value1=cue_count)
-
-    @observed('cue.ai_apply')
-    def _do_apply_preview(self) -> None:
-        self._apply_checked()
-
-    def _do_ai_preview(self) -> None:
-        project = self._page.session.project
-        if project is None:
-            return
-        options = [key for key, box in self.ai_option_boxes.items() if box.isChecked()]
-        from ..app.api_key_explainer import ask_for_key_if_missing
-        from ..storage.settings import load_runtime_settings
-        settings = load_runtime_settings()
-        settings = settings[0] if isinstance(settings, tuple) else settings
-        if ask_for_key_if_missing(self, settings, "polish", status=lambda: bind_text(
-                self.status_label, 'AI 清理没有运行：还没填 API Key')):
-            return
-        binding = PreviewBinding.capture(project)
-        bind_text(self.status_label, '正在调用已配置的 AI…')
-        try:
-            hits = request_text_cleanup(
-                project,
-                _scope_cue_ids(self._page, self._current_scope()),
-                options,
-            )
-        except Exception as exc:
-            bind_text(self.status_label, 'AI 清理无法调用：{exc}', exc=exc)
-            return
-        self._fill_preview(hits, binding)
-
-
 class GlossaryReviewDialog(_TextPreviewDialog):
     """应用术语库: the selected libraries' local and AI review of existing text.
 
@@ -1431,3 +1338,11 @@ class TermAssociationDialog(QDialog):
             self.status.setText('未保存：'+str(exc));return
         self.saved.emit(identity,source,canonical)
         self.accept()
+
+
+def __getattr__(name):
+    # AI 清理 lives in ai_cleanup_dialog, which imports this module (2026-10-26).
+    if name == "AiCleanupDialog":
+        from .ai_cleanup_dialog import AiCleanupDialog
+        return AiCleanupDialog
+    raise AttributeError(name)

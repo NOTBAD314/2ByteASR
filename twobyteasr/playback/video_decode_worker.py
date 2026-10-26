@@ -70,6 +70,18 @@ def open_decoder(path, backend='auto'):
     raise RuntimeError('; '.join(errors))
 
 
+def next_publication_deadline(previous, now, interval=1/60):
+    """Advance the existing conversion budget without accumulating wake latency.
+
+    This never selects source time: demand/PTS still do that. A late worker
+    skips missed deadlines instead of queueing catch-up conversions.
+    """
+    import math
+    if previous <= 0:
+        return now + interval
+    return previous + max(1, math.floor((now-previous)/interval)+1)*interval
+
+
 def source_pts_ms(frame, container_start_us=0):
     if frame.pts is None or frame.time_base is None:
         raise ValueError('decoded frame has no timestamp')
@@ -199,19 +211,39 @@ def main():
     frames = deque()
     head = -1
     published_pts = -1
-    last_publish = last_heartbeat = 0.
+    next_publish = last_heartbeat = 0.
     failed_epoch = None
+    previous_transport = None
     try:
         while not closed.is_set():
             with demand_condition:
                 request = latest[0]
                 if not request or request.get('cancel') or request['epoch'] == failed_epoch:
+                    if request and request.get('cancel') and container is not None:
+                        # A canceled follower must release its native decode
+                        # surfaces/context, even while its bounded process is
+                        # retained for reuse. Keeping CUDA frames pinned while
+                        # mpv owns both lanes wastes the previous backend.
+                        frames.clear();candidates=[];frame=None
+                        decoder=stream=None
+                        container.close();container=None;path=''
+                        stats.update(state='IDLE',queue_frames=0,
+                                     decoder_releases=stats.get('decoder_releases',0)+1)
                     if request and time.perf_counter()-last_heartbeat > .5:
                         publish(dict(epoch=request['epoch'], heartbeat=True))
                         last_heartbeat = time.perf_counter()
                     demand_condition.wait(.05)
                     continue
             try:
+                transport = (bool(request['paused']), float(request['rate']))
+                if transport != previous_transport:
+                    # A paused raster or another rate must not choose the
+                    # phase of the next continuous conversion budget. Rebase
+                    # at its first eligible source frame; preserve decoder,
+                    # source PTS, epoch and the existing PlaybackClock demand.
+                    next_publish = 0.
+                    previous_transport = transport
+                    stats['publication_transport_resets'] = stats.get('publication_transport_resets', 0) + 1
                 new_epoch = epoch != request['epoch']
                 if path != request['path'] or container is None:
                     if container is not None: container.close()
@@ -232,6 +264,7 @@ def main():
                     decoder = iter(container.decode(stream))
                     frames.clear()
                     head = published_pts = -1
+                    next_publish = 0.
                     stats.update(seeks=stats['seeks']+1, seek_ms=(time.perf_counter()-start)*1000,
                                  eof=False, error='', state='PREROLL')
                 target_ms = request['source_ms']
@@ -279,7 +312,7 @@ def main():
                 if not candidates and frames and target_ms == 0:
                     candidates = [frames[0]]
                 if candidates and candidates[-1][0] != published_pts and (
-                        request['paused'] or now-last_publish >= 1/60):
+                        request['paused'] or now >= next_publish):
                     pts, frame, codec_decoded_at = candidates[-1]
                     sar = float(stream.sample_aspect_ratio or 1)
                     started = time.perf_counter()
@@ -291,7 +324,8 @@ def main():
                         time_base=str(frame.time_base), width=width, height=height,
                         decoded_at=now, codec_decoded_at=codec_decoded_at, published_at=time.perf_counter()), pixels)
                     published_pts = pts
-                    last_publish = now
+                    next_publish = (now+1/60 if request['paused'] else
+                                    next_publication_deadline(next_publish,now))
                 elif now-last_heartbeat > .5:
                     publish(dict(epoch=epoch, heartbeat=True))
                     last_heartbeat = now
@@ -302,7 +336,7 @@ def main():
                     if head < target_ms+ahead_ms and len(frames)<16 and not stats.get('eof'):
                         continue
                     if latest[0] is request:
-                        demand_condition.wait(max(.001,min(.01,1/60-(time.perf_counter()-last_publish))))
+                        demand_condition.wait(max(.001,min(.01,next_publish-time.perf_counter())))
             except Exception as exc:
                 failed_epoch = request['epoch']
                 stats.update(error=f'{type(exc).__name__}: {exc}', state='FAILED', failures=1)

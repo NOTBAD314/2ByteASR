@@ -114,6 +114,9 @@ ACTIONS: tuple[ShortcutAction, ...] = (
     _a('save', '保存工程', 'Ctrl+S', category='文件'),
     _a('open_project', '打开工程', 'Ctrl+O', category='文件'),
     _a('import_media', '导入媒体', 'Ctrl+I', category='文件'),
+    # 2026-10-26: only when the clipboard holds a video link; otherwise the
+    # key goes to the focused widget as before.
+    _a('paste_link', '粘贴视频链接下载（剪贴板是视频链接时）', 'Ctrl+V', category='文件'),
     _a('export_subtitles', '导出字幕文件', 'Ctrl+E', category='文件'),
     _a('export_video', '导出视频', 'Ctrl+Shift+E', category='文件'),
     _a('save_current_frame', '保存当前帧', 'Ctrl+Alt+F', category='文件'),

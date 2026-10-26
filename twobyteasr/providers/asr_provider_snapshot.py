@@ -177,10 +177,14 @@ def task_role_enabled(stage) -> bool:
     """
     from ..recognition.run_context import get_runtime_context
     context = get_runtime_context()
-    if stage in context.provider_snapshots or not context.asr_settings_snapshot:
+    if not context.asr_settings_snapshot:
         return True
     from ..recognition.text_ai_plan import text_ai_plan
-    return stage in text_ai_plan(context.asr_settings_snapshot, purpose=context.recognition_purpose).roles
+    plan = text_ai_plan(context.asr_settings_snapshot, purpose=context.recognition_purpose)
+    # A translation-only task also freezes a polish-service snapshot. Having
+    # credentials available must not silently enable other optional operations.
+    return (stage in plan.roles or (stage == 'polish' and context.recognition_purpose != 'analysis'
+                                   and bool(getattr(context, 'enable_term_search', False))))
 
 
 def task_provider_snapshot(stage="group") -> ProviderSnapshot:

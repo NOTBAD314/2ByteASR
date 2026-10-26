@@ -47,6 +47,7 @@ _PUBLIC_HEADERS = {"contenttype","contentlength","requestid","xrequestid","xmsre
                    "xamznrequestid","xcorrelationid","traceparent","date","retryafter"}
 _PATH = re.compile(r'''(?i)(?:[a-z]:[\\/]|\\\\)[^\r\n"<>|]*|(?<![\w:])/(?:home|Users|tmp|var|mnt|media|opt)/[^\r\n"<>|]*''')
 _LABELS = {
+    "window.motion": "窗口移动与位置修正",
     "session.start": "診斷會話開始", "session.end": "診斷會話結束",
     "operation.start": "開始操作", "operation.end": "操作結束",
     "command.received": "收到應用程式命令", "command.result": "命令處理結果",

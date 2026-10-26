@@ -2969,7 +2969,9 @@ class WaveformTimeline(QWidget):
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, tr('空白 · {key} 闭合', key=self._delete_key_text()))
         self._paint_edge_feedback(painter, palette)
         # 右侧统一控制区：泳道分界把手（滚动/调高同列，直绘在滚动条列）。
-        self._paint_track_height_grips(painter, palette)
+        if event.region().intersects(QRect(self.width()-self._track_height_strip_width(),0,
+                                           self._track_height_strip_width(),self.height())):
+            self._paint_track_height_grips(painter, palette)
         if self.tool_mode == "razor":
             # Dynamic layer over the cached raster; never dirties the base.
             from . import timeline_razor

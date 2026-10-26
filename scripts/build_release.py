@@ -50,6 +50,11 @@ def main():
     sample = ROOT / 'assets/diagnostics/speech_en.wav'
     if not sample.is_file():
         raise FileNotFoundError('Required workshop sample: assets/diagnostics/speech_en.wav')
+    download_spec = json.loads((ROOT / 'dependencies.lock.json').read_text('utf8'))['tools']['yt_dlp']['files']['windows']
+    downloader = ROOT / 'tools/yt-dlp' / download_spec['name']
+    if (not downloader.is_file() or downloader.stat().st_size != download_spec['bytes']
+            or digest(downloader) != download_spec['sha256']):
+        raise ValueError('Required application-owned yt-dlp does not match dependencies.lock.json')
     stage = out / 'source'; stage.mkdir(parents=True)
     evidence = out / 'evidence'; evidence.mkdir()
     sys.path.insert(0, str(ROOT))
@@ -65,7 +70,7 @@ def main():
     # docs/api-setup: the in-app 「申请与设置 API」 tutorials are read at runtime (2026-10-14).
     for folder in ('assets', 'licenses', 'lexicons', 'renderer', 'scripts', 'twobyteasr', 'packaging', '.github/workflows',
                    'installer', 'launcher', 'third_party', 'tools/ffmpeg', 'tools/mpv', 'tools/vulkan-loader',
-                   'tools/node', 'docs/api-setup'):
+                   'tools/node', 'tools/yt-dlp', 'docs/api-setup'):
         for current, dirs, names in os.walk(ROOT / folder):
             dirs[:] = [n for n in dirs if n.lower() not in EXCLUDED and not n.endswith('.egg-info')]
             for name in names:

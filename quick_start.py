@@ -241,6 +241,9 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == '--studio-audio-worker':
         from twobyteasr.playback.audio_process import main as audio_main
         return audio_main(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == '--studio-qc-worker':
+        from twobyteasr.subtitle_rules.qc_process import main as qc_main
+        return qc_main()
     if len(sys.argv) == 2 and sys.argv[1] == '--asr-api-worker':
         # Cloud recognition request process (2026-10-13): runs with the app's
         # own executable so cloud-only users need no local model runtime.

@@ -1,5 +1,12 @@
 # 第三方组件、许可与来源声明
 
+## 2026-10-26 链接下载开发功能
+
+- 参考并移植 [imsyy/yt-dlp-gui](https://github.com/imsyy/yt-dlp-gui/tree/e3cd1df342c1dd0f543b309cf305210a588a461c) 的字幕来源分组、排除 live_chat、独立工具管理与阶段通知模式。固定 commit：e3cd1df342c1dd0f543b309cf305210a588a461c。实际改写位置：twobyteasr/media/link_catalog.py、link_download.py、link_tools.py 与 app/link_download_dialog.py；未引入 Vue/Tauri 运行时。版权与 [MIT 全文](licenses/yt-dlp-gui-MIT.txt) 保留。
+- 已阅读的参考文件：src/components/home/SubtitleCard.vue、src/pages/toolbox/Subtitles.vue、src/utils/subtitle.ts、src-tauri/src/commands/toolbox/subtitles.rs、commands/download/arguments.rs、commands/external_tools/ytdlp.rs。主要差异：原语/自动翻译分开；同语言人工/自动用实际端点选择；不聚合列表轨道；不按行号合并双语；不把回退格式改扩展名；原稿、标准化和工程编辑三层分开。
+- 下载引擎为 [yt-dlp 2026.10.21](https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.21)，EJS 0.8.0（官方可执行文件内置）。源码 [Unlicense](licenses/yt-dlp-Unlicense.txt)，官方 PyInstaller 可执行文件整体为 GPL-3.0-or-later，内含组件分别保留 [上游完整第三方声明](licenses/yt-dlp-THIRD_PARTY_LICENSES.txt)；不可把独立 EXE 只标成 Unlicense。EJS 的 [许可](licenses/yt-dlp-ejs-Unlicense.txt) 另存，内含 astring/Meriyah 的 MIT/ISC 原文也在上游第三方声明内。
+- Windows/macOS 文件 URL、大小、SHA-256 固定在 dependencies.lock.json 的 tools.yt_dlp；原文件不修改，通过参数数组作为独立进程使用。Node 与 FFmpeg 复用应用受管版本及既有声明。工具随应用锁表更新；首次缺失时从官方地址安装到私有运行库，可校验/修复。没有发布或替换日常包，本次源码验证不能替代新的安装包验收。
+
 > 2026-10-14：0.7.1 的 Windows 安装包随附第三方组件与 0.7.0 相同；第一次附带的 macOS DMG（Apple Silicon）媒体工具来自固定 Homebrew 提交，现状与仍缺的材料见 [分发状态](licenses/DISTRIBUTION-STATUS.md) 的 0.7.1 节。
 >
 > 2026-10-13：0.7.0 新增随安装包附带的组件与可下载模型见文末“0.7.0 新增”一节；下方原有记录与证据等级不变。

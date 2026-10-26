@@ -83,6 +83,45 @@ def test_child_kill_recovers_and_buffer_is_bounded(media):
         assert pipe.close()
 
 
+def test_cancel_releases_decoder_and_resume_reuses_the_bounded_process(media):
+    pipe=VideoDecodePipe(FFMPEG)
+    try:
+        pipe.request(media,200,1,True,1.)
+        wait_for(lambda:pipe.snapshot().get('pts_ms')==200)
+        pid=pipe.snapshot()['pid']
+        pipe.cancel()
+        wait_for(lambda:pipe.snapshot().get('state')=='IDLE' and pipe.snapshot().get('decoder_releases',0)==1)
+        assert pipe.take_frame() is None
+        pipe.request(media,1500,2,True,1.)
+        wait_for(lambda:pipe.snapshot().get('pts_ms')==1500)
+        frame=pipe.take_frame()
+        assert frame and frame.generation==2 and frame.pixels[0]>240
+        assert pipe.snapshot()['pid']==pid and pipe.snapshot()['opens']==2
+    finally:
+        assert pipe.close()
+
+
+def test_pause_and_rate_changes_preserve_the_worker_epoch_and_source_progress(media):
+    pipe=VideoDecodePipe(FFMPEG)
+    try:
+        pipe.request(media,200,7,True,1.)
+        wait_for(lambda:pipe.snapshot().get('pts_ms')==200)
+        initial=pipe.snapshot()
+        pipe.request(media,200,7,False,1.)
+        wait_for(lambda:pipe.snapshot().get('pts_ms',0)>=250)
+        paused_at=pipe.snapshot()['pts_ms']
+        pipe.request(media,paused_at,7,True,1.)
+        pipe.request(media,paused_at,7,False,4.)
+        wait_for(lambda:pipe.snapshot().get('pts_ms',0)>=paused_at+150)
+        current=pipe.snapshot();frame=pipe.take_frame()
+        assert current['pid']==initial['pid'] and current['epoch']==initial['epoch']
+        assert current['opens']==initial['opens']==1
+        assert frame and frame.generation==7 and frame.pts_ms>=paused_at+150
+        assert current['mailbox_frames']<=1
+    finally:
+        assert pipe.close()
+
+
 def test_clock_pause_resume_does_not_become_a_seek(media):
     app = QApplication.instance() or QApplication([])
     source = SecondaryVideoSource()

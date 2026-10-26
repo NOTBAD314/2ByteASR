@@ -165,6 +165,9 @@ class ProjectStateRuntime:
 
     def __init__(self, project: "SubtitleProject") -> None:
         self.revision = 0
+        self.playback_revision = 0
+        self.playback_invalidation = 'project_open'
+        self._playback_plan = None
         self.content_revisions: dict[str, int] = {}
         self.commit_count = 0
         self.last_delta: StateDelta | None = None
@@ -184,6 +187,9 @@ class ProjectStateRuntime:
         clone = object.__new__(type(self))
         memo[id(self)] = clone
         clone.revision = self.revision
+        clone.playback_revision = self.playback_revision
+        clone.playback_invalidation = 'project_copy'
+        clone._playback_plan = None
         clone.content_revisions = dict(self.content_revisions)
         clone.commit_count = self.commit_count
         clone.last_delta = self.last_delta
@@ -531,6 +537,11 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             self.project.av_track_groups = copy.deepcopy(self._av_track_groups_snapshot)
         self.state.selected_cue_id = self.selection_before
         self.state.reindex_cues(self.project)
+        # Rollback replaces canonical objects; derived indexes must not retain
+        # the objects from the failed transaction even though no commit emits.
+        self.state.playback_revision += 1
+        self.state.playback_invalidation = 'transaction_rollback'
+        self.state._playback_plan = None
 
     def _validate_and_commit(self) -> StateDelta:
         if self.dirty & SEQUENCE_DOMAINS:
@@ -573,6 +584,14 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             self.state.reindex_cues(self.project)
         self.state.selected_cue_id = self.selection_after
         self.state.revision += 1
+        # A committed edit is the invalidation boundary, including undo/redo.
+        # Selection, paint, QC and autosave alone do not rebuild media indexes.
+        if self.dirty & (MEDIA_DOMAINS | SEQUENCE_DOMAINS | CUE_DOMAINS
+                         | DirtyDomain.PROJECT_METADATA | DirtyDomain.AUDIO_GAIN
+                         | DirtyDomain.TRANSFORM):
+            self.state.playback_revision += 1
+            self.state.playback_invalidation = self.action_id
+            self.state._playback_plan = None
         if self.dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_MODEL):
             for cue_id in self.affected_cue_ids:
                 self.state.content_revisions[cue_id] = self.state.revision

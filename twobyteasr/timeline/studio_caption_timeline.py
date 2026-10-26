@@ -239,11 +239,13 @@ def caption_replacement_receipts(project, removed, inserted):
     keys={c.id for c in (*removed,*inserted)}
     before={key:copy.deepcopy(receipts.get(key)) for key in keys}
     after=copy.deepcopy(before)
-    stream=[];tokens=[];cursor=0;derived=False
+    from ..recognition.cue_word_alignment import DOWNLOADED_WORD_ONSETS
+    stream=[];tokens=[];cursor=0;derived=False;downloaded=False
     for cue in removed:
         positions=content_positions(cue.text);stream.extend(char for _,char in positions)
         words,source_reason=_words(project,cue)
         derived=derived or source_reason=='derived_term_source_span'
+        downloaded=downloaded or (bool(words) and source_reason==DOWNLOADED_WORD_ONSETS)
         for word in words:
             lo=cursor+sum(index<word['char_start'] for index,_ in positions)
             hi=cursor+sum(index<word['char_end'] for index,_ in positions)
@@ -275,6 +277,10 @@ def caption_replacement_receipts(project, removed, inserted):
                     spans.append(copy.deepcopy(span))
         if spans:
             receipt['source_spans'] = spans
+        translation_parents = list(dict.fromkeys(parent_id for original in removed
+            for parent_id in receipts.get(original.id, {}).get("translation_parent_ids", ())))
+        if translation_parents:
+            receipt["translation_parent_ids"] = translation_parents
         clocks={receipts.get(c.id,{}).get(CLOCK) for c in removed}
         if len(clocks)==1 and None not in clocks:
             receipt[CLOCK]=next(iter(clocks))
@@ -282,7 +288,9 @@ def caption_replacement_receipts(project, removed, inserted):
             receipt.pop(CLOCK,None)
         # A split keeps the measured basis of its parent words, including
         # whole replaced spans; it never re-allocates them.
-        reason=('derived_term_source_span' if derived else 'exact_token_text') if words else 'structural_edit_requires_acoustic_alignment'
+        # Downloaded word onsets keep that basis (the weaker one when mixed).
+        reason=('derived_term_source_span' if derived else DOWNLOADED_WORD_ONSETS if downloaded
+                else 'exact_token_text') if words else 'structural_edit_requires_acoustic_alignment'
         receipt.update(text=cue.text,words=words,word_alignment=reason,
             word_base_interval=[cue.start_ms,cue.end_ms],word_base_words=copy.deepcopy(words),
             word_base_alignment=reason,source_cue_ids=ids,word_clock_offset_ms=0)
@@ -299,6 +307,8 @@ def caption_replacement_receipts(project, removed, inserted):
             for key in ('boundaries','boundary_policy','boundary_second'):
                 receipt.pop(key,None)
         after[cue.id]=receipt;cursor=end
+    from .link_timing import inherit_start_anchors
+    inherit_start_anchors(project, removed, inserted, after)
     return before,after
 
 def ripple_caption_range(project, start, end, *, locked=()):

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPalette
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QApplication,
     QAbstractItemView,
     QComboBox,
     QDialog,
     QMenu,
     QMessageBox,
-    QStyle,
     QStyledItemDelegate,
     QWidget,
 )
@@ -501,7 +499,8 @@ class StudioComboBox(QComboBox):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMaxVisibleItems(12)
+        from .combo_popup import MAX_ROWS
+        self.setMaxVisibleItems(MAX_ROWS)
         # 2026-10-23: a styled delegate so the list rows take the soft popup
         # style (rounded rows, the chosen one in the accent wash).
         self.setItemDelegate(QStyledItemDelegate(self.view()))
@@ -540,38 +539,14 @@ class StudioComboBox(QComboBox):
             self.lineEdit().setPalette(palette)
 
     def showPopup(self) -> None:
-        metrics = QFontMetrics(self.view().font())
-        content_width = max(
-            (metrics.horizontalAdvance(self.itemText(index)) for index in range(self.count())),
-            default=0,
-        )
-        scrollbar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
-        self.view().setMinimumWidth(max(self.width(), content_width + scrollbar + 34))
+        # Width, placement, the rounded sheet and the transparent container
+        # are shared by every dropdown (combo_popup, 2026-10-26). The theme
+        # filter does this on show; a box used without it still gets it here.
+        from .combo_popup import place_native_popup, prepare_combo
         self.refresh_theme_palette()
-        apply_secondary_surface_theme(self.view())
-        popup = self.view().window()
-        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        popup.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, False)
-        popup.setAutoFillBackground(True)
-        popup_palette = popup.palette()
-        popup_palette.setColor(QPalette.ColorRole.Window, self.palette().color(QPalette.ColorRole.Base))
-        popup_palette.setColor(QPalette.ColorRole.Base, self.palette().color(QPalette.ColorRole.Base))
-        popup.setPalette(popup_palette)
+        prepare_combo(self)
         super().showPopup()
-        popup = self.view().window()
-        # Mutating native flags after show destroys/recreates the popup HWND,
-        # which caused a visible flash and a mostly transparent paint surface.
-        screen = QApplication.screenAt(QCursor.pos()) or self.screen()
-        if screen is not None:
-            available = screen.availableGeometry()
-            below = self.mapToGlobal(QPoint(0, self.height()))
-            above = self.mapToGlobal(QPoint(0, 0))
-            height = popup.height()
-            x = min(max(available.left(), below.x()), available.right() - popup.width() + 1)
-            if available.bottom() - below.y() + 1 >= height:
-                popup.move(x, below.y())
-            elif above.y() - available.top() >= height:
-                popup.move(x, above.y() - height)
+        place_native_popup(self.view().window())
 
     def wheelEvent(self, event) -> None:
         if self.hasFocus() or self.view().isVisible():

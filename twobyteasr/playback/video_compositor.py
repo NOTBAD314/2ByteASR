@@ -670,12 +670,13 @@ class VideoCompositionScene(QWidget):
         qt_surface_owns_stack = (
             getattr(getattr(owner, 'controller', None), 'backend', '') == 'qt-video-sink'
             and callable(getattr(owner, 'publish_compositor_overlay', None))
-        )
+        ) or self._async_video_active
         # The Mac surface already paints video slot 0, captions 1 and handles
         # 2/3 in order. Repainting video in this higher sibling QWidget hides
         # those captions even though every raster/publication receipt succeeds.
         # Keep this widget for hit testing and publication, without a second
-        # opaque video copy. The Windows mpv paint path is unchanged.
+        # opaque video copy. Windows asynchronous composition likewise owns
+        # its pixels in mpv; a second Qt image must not compete with them.
         if self._rendered_frames is not None and not qt_surface_owns_stack:
             painter = QPainter(self)
             for frame in self._rendered_frames:

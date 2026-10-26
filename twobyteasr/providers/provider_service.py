@@ -137,13 +137,14 @@ class AIClient(AIProvider):
         sender: Callable[..., str] | None = None,
     ) -> None:
         self._service = service
-        self._settings = copy.deepcopy(dict(settings))
+        from .request_snapshot import freeze_request_settings
+        self._settings = freeze_request_settings(settings, stage)
         self._stage = str(stage)
         self._sender = sender
         self.transport = transport_for_stage(settings, stage)
         models = settings.get("models", {}) if isinstance(settings, Mapping) else {}
         from .llm_config import endpoint_from_settings
-        effective_endpoint = endpoint_from_settings(dict(settings), stage)
+        effective_endpoint = endpoint_from_settings(self._settings, stage)
         self.model = str(effective_endpoint.get('model') or '')
         if self.transport is AITransport.ANTIGRAVITY_CLI:
             self.provider_id = "google_antigravity"

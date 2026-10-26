@@ -103,6 +103,11 @@ def main():
                   original_sha256=hashlib.sha256(data).hexdigest(), runner_exe=str(args.exe or "source"))
     result["failed_boolean_checks"] = [name for name, value in result.get("checks", {}).items()
                                        if value is False]
+    result['functional_pass']=bool(code==0 and result.get('finished') and result.get('gui_shutdown')
+        and result.get('original_unchanged') and not result.get('errors') and not result['failed_boolean_checks'])
+    result.setdefault('measurement_valid',False)
+    result.setdefault('performance_pass','UNVERIFIED')
+    result.setdefault('performance_scope','Functional/GUI regression; display cadence requires verify_playback_cadence.py')
     path.write_text(json.dumps(result, ensure_ascii=False, indent=2), "utf8")
     print(json.dumps({k: result.get(k) for k in ("exit_code", "finished", "gui_shutdown", "errors",
                                                  "original_unchanged", "cue_count")}, ensure_ascii=False)[:2000])

@@ -76,6 +76,18 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
+    if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") in {"link-download", "link-download-review", "link-ui"}:
+        from .link_download_audit import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'window-title-mouse':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-configuration':
+        from .ai_configuration_audit import install_guards
+        install_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'runtime-location':
         # Program-folder runtimes are chosen only without TWOBYTEASR_TEST_ROOT (2026-10-17).
         output = audit_directory()
@@ -92,11 +104,15 @@ def isolate_acceptance_settings() -> None:
         from .run_diagnosis_audit import install_guards
         install_guards()
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'playback-cadence':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'update-reminder':
         from .update_reminder_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('workspace-drag', 'caption-workbench', 'export-page', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('preview-lifecycle-performance', 'workspace-drag', 'caption-workbench', 'export-page', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -414,6 +430,36 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'playback-cadence':
+        output = audit_directory()
+        if output is not None:
+            from .playback_cadence_audit import start
+            start(window, output)
+        return
+    if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") == "link-ui":
+        from .link_ui_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") in {"link-download", "link-download-review"}:
+        from .link_download_audit import start, start_review
+        output = audit_directory()
+        if output is not None:
+            runner = start_review if os.environ["TWOBYTEASR_ACCEPTANCE_SCENARIO"] == "link-download-review" else start
+            runner(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'preview-lifecycle-performance':
+        output = audit_directory()
+        if output is not None:
+            from .preview_repair_audit import start
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-configuration':
+        from .ai_configuration_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'open-followup':
         from .open_followup_audit import start
         output = audit_directory()
@@ -494,6 +540,11 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'link-word-razor':
+        from .link_word_razor_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ja-bilingual':
         from .ja_bilingual_audit import start
         output = audit_directory()
@@ -541,6 +592,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-ai-card':
         from .home_ai_card_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-dialog-width':
+        from .ai_dialog_width_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -982,6 +1038,12 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'window-drag':
         from .window_drag_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'window-title-mouse':
+        from .window_title_mouse_audit import start
         output = audit_directory()
         if output is not None:
             start(window, output)

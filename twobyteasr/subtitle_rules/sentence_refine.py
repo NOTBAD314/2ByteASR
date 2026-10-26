@@ -289,7 +289,9 @@ def allocate_split_times(cue, splits, *, project=None):
     words, _reason = cue_words(project, cue)
     pairs = [boundary_words(words, index+1) for index in splits]
     if not words or any(pair is None for pair in pairs):
-        return [], True
+        from ..timeline.link_timing import split_at_source_starts
+        anchored = split_at_source_starts(project, cue, splits)
+        return (anchored, False) if anchored else ([], True)
     starts = [cue.start_ms] + [right.start_ms for left, right in pairs]
     ends = [min(left.end_ms, right.start_ms) for left, right in pairs] + [cue.end_ms]
     if any(end-start < 50 for start, end in zip(starts, ends)):
@@ -426,10 +428,15 @@ def refine_payload(
             measured, _ = cue_words(project, cue)
             item['word_boundaries'] = [dict(after_chars=w.char_end-1, start_ms=w.start_ms, end_ms=w.end_ms)
                                        for w in measured]
+        elif project is not None:
+            from ..timeline.link_timing import cue_start_anchors
+            item["segment_start_anchors"] = [
+                dict(after_chars=a["char_start"]-1,start_ms=a["start_ms"])
+                for a in cue_start_anchors(project,cue) if a["char_start"]>0]
         items.append(item)
     return {
         "cues": items,
-        "rule": "只返回 JSON。action=keep 的 cue 可省略 split/space 字段。",
+        "rule": "只返回 JSON。action=keep 的 cue 可省略 split/space 字段。segment_start_anchors 是原始字幕片段起点，可在其 after_chars 切分，但不代表精确发音词尾；没有时间依据时 keep。",
     }
 
 

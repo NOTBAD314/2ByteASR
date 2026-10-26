@@ -86,7 +86,9 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
         from ..providers.asr_provider_snapshot import resolve_provider_snapshot
         from ..providers.llm_adapter import post_chat_completion
         settings = getattr(runtime_context, "asr_settings_snapshot", None) or getattr(legacy, "RUNTIME_SETTINGS", {})
-        snapshot = resolve_provider_snapshot(settings, stage="polish")
+        snapshot = (getattr(runtime_context, "provider_snapshots", {}) or {}).get("polish")
+        if snapshot is None:
+            snapshot = resolve_provider_snapshot(settings, stage="polish")
         provider = provider_for_stage(snapshot.execution_settings(), "polish", sender=post_chat_completion)
     token = getattr(runtime_context, "cancellation_token", None)
     cache = load_cache()

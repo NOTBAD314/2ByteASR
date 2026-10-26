@@ -36,9 +36,9 @@ READY, OFF, NO_KEY, UNTESTED, FAILED, TESTING = "ready", "off", "no_key", "untes
 STATE_CHIP = {READY: "已连接", NO_KEY: "未连接", UNTESTED: "还没测试", FAILED: "测试没通过",
               OFF: "已关闭", TESTING: "正在测试…"}
 SUMMARY = {
-    NO_KEY: "选一家服务、贴上 Key 就能用（推荐 DeepSeek）。没连也能开始：这批先用本地规则断句。",
-    UNTESTED: "Key 已经填好，测一次连接就能用。测好之前这批先用本地规则断句。",
-    FAILED: "上次测试没通过：检查 Key 或换一家服务再试。连好之前这批先用本地规则断句。",
+    NO_KEY: "这里配置用于断句的文字 AI，与上方转写服务分别设置。未配置时先用本地规则断句。",
+    UNTESTED: "文字 AI 配置已保存，尚未测试连接。本次按已选择的断句开关执行；可先测试服务是否可用。",
+    FAILED: "上次连接测试失败，配置已保留。打开设置查看原因、检查服务地址和模型后重试。",
     OFF: "AI 已关闭，这批用本地规则断句。打开后能按意思断句、校对错字和翻译字幕。",
     TESTING: "正在用已保存的服务和 Key 测试连接…",
 }
@@ -69,6 +69,8 @@ class AiCardView:
     tested_at: str = ""
     polish_on: bool = True
     group_on: bool = True
+    configured: bool = False
+    auxiliary_ready: bool = True
 
     @property
     def locked(self) -> bool:
@@ -219,10 +221,13 @@ class HomeAiCard(QFrame):
         self.setProperty("aiLock", locked)
         self.state_chip.setProperty("state", "ready" if view.state == READY else
                                     "warn" if view.state == FAILED else "lock")
-        bind_text(self.state_chip, STATE_CHIP.get(view.state, "未连接"))
+        chip = "已配置 · 本次未启用" if view.state == OFF and view.configured else STATE_CHIP.get(view.state, "未连接")
+        bind_text(self.state_chip, chip)
         if locked:
             bind_text(self.title_label, 'AI 智能断句')
-            bind_text(self.summary_label, SUMMARY.get(view.state, SUMMARY[NO_KEY]))
+            summary = ("文字 AI 服务已保存，本次仍按本地规则断句。点击打开 AI，在设置中确认启用。"
+                       if view.state == OFF and view.configured else SUMMARY.get(view.state, SUMMARY[NO_KEY]))
+            bind_text(self.summary_label, summary)
         else:
             name = view.service or "AI"
             if view.model:
@@ -230,13 +235,13 @@ class HomeAiCard(QFrame):
             else:
                 bind_text(self.title_label, '{service} · 默认模型', service=name)
             if view.tested_at:
-                bind_text(self.summary_label, '{time} 测试通过 · 下面这些都由它负责', time=view.tested_at)
+                bind_text(self.summary_label, '{time} 测试通过 · 按本次开关处理字幕', time=view.tested_at)
             else:
-                bind_text(self.summary_label, '测试通过 · 下面这些都由它负责')
+                bind_text(self.summary_label, '测试通过 · 按本次开关处理字幕')
         self._set_feature("group", view.group_on, '按意思断句', '断句：本地规则')
         self._set_feature("polish", view.polish_on, '字幕校对', '字幕校对：已关闭')
-        self._set_feature("terms", True, '术语库校对', '')
-        self._set_feature("translate", True, '翻译字幕', '')
+        self._set_feature("terms", True, '本地词库匹配', '')
+        self._set_feature("translate", view.auxiliary_ready, '翻译服务就绪', '翻译服务未就绪')
         self.role_label.setVisible(not self._compact)
         self.feature_row.setVisible(not locked and not self._compact)
         self.connect_button.setVisible(view.state in (NO_KEY, OFF))

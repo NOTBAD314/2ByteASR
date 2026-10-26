@@ -161,6 +161,8 @@ class StudioMediaAvailability(QObject):
         page.undo_stack.push(command)
         page._active_video_preview_key = ''
         page._audio_contract_signature = None
+        from ..playback.playback_plan import invalidate_playback_plan
+        invalidate_playback_plan(project, 'media_relink')
         page._sync_multitrack_preview_at(int(page.timeline.playhead_ms))
         page.ensure_active_subtitle_renderer(reason='media_relink')
         page.media_pool_panel.refresh()
@@ -263,6 +265,8 @@ class StudioMediaAvailability(QObject):
         self.refresh()
         page.media_pool_panel.refresh()
         page._audio_contract_signature = None
+        from ..playback.playback_plan import invalidate_playback_plan
+        invalidate_playback_plan(project, 'media_availability')
         page._active_video_preview_key = ''
         page._sync_multitrack_preview_at(int(page.timeline.playhead_ms))
         page.ensure_active_subtitle_renderer(reason='media_availability')

@@ -63,6 +63,8 @@ class MpvCanvas(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.controller: MpvController | None = None
         self._media_path = ""
+        self._navigation_visible = True
+        self._navigation_generation = 0
         self._media_attached = False
         self._clock_only = False
         self._ass_path = ""
@@ -258,6 +260,9 @@ class MpvCanvas(QFrame):
         # Plain int for the stall watchdog's native probe (no Qt off-thread).
         self._embed_hwnd = int(window_id)
         self.controller.start(window_id, log_path=str(log_path))
+        from ..diagnostics.event_log import emit
+        emit("preview.controller_created", module="video_canvas", object_id=id(self),
+             hwnd=window_id, parent_id=id(self.parentWidget()), backend=getattr(self.controller, "backend", "mpv"))
         self._native_subtitle_visibility_controller = None
         self._playback_source_dead = False
         if self._preview_scale < 1.0:
@@ -1042,7 +1047,7 @@ class MpvCanvas(QFrame):
             self._sync_timer.start()
             # Immediately attempt to publish real video display size (dw/dh) so the overlay
             # does not stay stuck on PlayRes fallback while the first reconcile is pending.
-            QTimer.singleShot(80, self._emit_initial_video_size)
+            self._defer_media_callback(80, self._emit_initial_video_size, source="initial_size")
         except (MpvUnavailableError, RuntimeError, OSError) as exc:
             self.error.emit(str(exc))
 
@@ -1215,24 +1220,69 @@ class MpvCanvas(QFrame):
         self._startup_state = "READY"
         self.video_display_size_changed.emit(0, 0)
 
-    def set_navigation_visible(self, visible: bool) -> None:
-        """Suspend only presentation polling while another page is visible.
-
-        The retained controller, project clock and paused position keep their
-        identity. Project close still goes through unload_project_media.
-        """
-        if not visible:
-            if getattr(self, '_navigation_timers', None) is not None:
+    def _defer_media_callback(self, delay: int, callback, *, source: str) -> None:
+        """A queued GUI callback belongs to one load and one visible interval."""
+        identity = (getattr(self, '_load_generation', 0), self._navigation_generation, self.controller, self._media_path)
+        def apply():
+            current = (getattr(self, '_load_generation', 0), self._navigation_generation, self.controller, self._media_path)
+            if identity != current or not self._navigation_visible:
+                from ..diagnostics.event_log import emit
+                emit('preview.callback_discarded', module='video_canvas', source=source,
+                     navigation_generation=self._navigation_generation,
+                     load_generation=getattr(self, '_load_generation', 0))
                 return
-            self._navigation_timers = [timer for timer in (self._timer, self._sync_timer)
-                                       if timer.isActive()]
-            for timer in self._navigation_timers:
+            callback()
+        QTimer.singleShot(delay, apply)
+
+    def hideEvent(self, event) -> None:
+        page = self._studio_page()
+        workspace = getattr(page, 'workspace_splitter', None)
+        # The picture may be hidden by an audio-only/empty-media hint while
+        # the active editor still needs its one project clock. Navigation is
+        # owned by the whole workspace, not by the presence of video pixels.
+        if page is None or not page.isVisible() or (workspace is not None and not workspace.isVisible()):
+            self.set_navigation_visible(False)
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        page = self._studio_page()
+        workspace = getattr(page, 'workspace_splitter', None)
+        self.set_navigation_visible(page is None or (page.isVisible() and (workspace is None or workspace.isVisible())))
+
+    def set_navigation_visible(self, visible: bool) -> None:
+        """Suspend an inactive editor while retaining its single controller.
+
+        QWidget ownership hides the HWND. This method owns playback intent and
+        polling, including the source monitor and the in-page Library switch.
+        """
+        visible = bool(visible)
+        if visible == self._navigation_visible:
+            return
+        self._navigation_visible = visible
+        self._navigation_generation += 1
+        if not visible:
+            self._navigation_timers = [timer for timer in (self._timer, self._sync_timer) if timer.isActive()]
+            self.set_paused(True)
+            self._startup_play_requested = False
+            self._buffered_play_pending = False
+            self._buffered_play_timer.stop()
+            for timer in (self._timer, self._sync_timer):
                 timer.stop()
         else:
             timers = getattr(self, '_navigation_timers', None)
             self._navigation_timers = None
-            for timer in timers or ():
-                timer.start()
+            if self._media_attached or self._clock_only:
+                for timer in timers or ():
+                    timer.start()
+                self._defer_media_callback(0, self._emit_initial_video_size, source='surface_resume')
+        from ..diagnostics.event_log import emit
+        parent = self.parentWidget()
+        emit('preview.surface_visibility', module='video_canvas', active=visible, visible=self.isVisible(),
+             object_id=id(self), parent_id=id(parent) if parent else None,
+             hwnd=self._embed_hwnd, navigation_generation=self._navigation_generation,
+             load_generation=getattr(self, '_load_generation', 0), paused=self._paused,
+             geometry=list(self.geometry().getRect()))
 
     def unload_project_media(self) -> None:
         """Release project state while retaining the one reusable mpv actor."""
@@ -1318,7 +1368,7 @@ class MpvCanvas(QFrame):
         self._set_interpolation_base(0.0, paused=True)
         if self._ass_path and Path(self._ass_path).is_file():
             self._subtitle_load_attempts = 0
-            QTimer.singleShot(0, self._load_subtitle_when_ready)
+            self._defer_media_callback(0, self._load_subtitle_when_ready, source="restore_subtitle")
         self._timer.start()
         self._sync_timer.start()
 
@@ -1604,7 +1654,7 @@ class MpvCanvas(QFrame):
             # _activate_multitrack_preview 的 VIDEO_REBIND_DEFERRED）。
             retry = getattr(page, "_retry_deferred_source_rebind", None)
             if callable(retry):
-                QTimer.singleShot(0, retry)
+                self._defer_media_callback(0, retry, source="deferred_source_rebind")
 
     def startup_state_snapshot(self) -> dict[str, object]:
         return {"state": self._startup_state, "play_requested": self._startup_play_requested,
@@ -2011,6 +2061,9 @@ class MpvCanvas(QFrame):
         return bool(callback()) if callable(callback) else False
 
     def _visual_tick(self) -> None:
+        if not self._navigation_visible:
+            self._timer.stop()
+            return
         page = self._studio_page()
         refresh = getattr(page, '_refresh_audio_tail_clock', None)
         if callable(refresh):
@@ -2071,6 +2124,9 @@ class MpvCanvas(QFrame):
             self._adopt_playback_snapshot(snapshot,emit=False)
 
     def _reconcile_position(self) -> None:
+        if not self._navigation_visible:
+            self._sync_timer.stop()
+            return
         page = self._studio_page()
         refresh = getattr(page, '_refresh_audio_tail_clock', None)
         if callable(refresh):
@@ -2732,7 +2788,7 @@ class MpvCanvas(QFrame):
         def resume():
             if generation == getattr(self, '_load_generation', 0) and self.controller is controller:
                 self.resume_requested_playback()
-        QTimer.singleShot(0, resume)
+        self._defer_media_callback(0, resume, source="startup_play")
 
     def resume_requested_playback(self) -> None:
         page = self._studio_page()
@@ -2750,6 +2806,8 @@ class MpvCanvas(QFrame):
              requested_paused=bool(paused),previous_paused=self._paused,startup_state=self._startup_state,
              startup_play_requested=self._startup_play_requested,buffered_pending=self._buffered_play_pending,
              caller_frames=[dict(module=Path(f.filename).name,function=f.name,line=f.lineno) for f in traceback.extract_stack(limit=7)[:-1]])
+        if not paused and not self._navigation_visible:
+            return
         if paused:
             self._startup_play_requested = False
         elif bool(getattr(getattr(page, '_readiness', None), 'active', False)):
@@ -2911,6 +2969,10 @@ class MpvCanvas(QFrame):
             pass
         detached = self.controller
         self.controller = None
+        if detached is not None:
+            from ..diagnostics.event_log import emit
+            emit("preview.controller_detached", module="video_canvas", object_id=id(self),
+                 hwnd=self._embed_hwnd, navigation_generation=self._navigation_generation)
         leases, self._media_cache_leases = getattr(self, '_media_cache_leases', {}), {}
         def release_after_close():
             deadline = time.monotonic() + 5

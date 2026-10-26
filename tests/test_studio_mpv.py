@@ -466,6 +466,7 @@ def test_transform_chrome_posts_are_deferred_behind_foreground(tmp_path):
 
 def test_actor_keeps_foreground_fifo_ahead_of_deferred_chrome():
     actor = object.__new__(_MpvCommandActor)
+    actor._init_request_metrics()
     actor._condition = threading.Condition()
     actor._requests = deque()
     actor._stopping = False
@@ -482,3 +483,4 @@ def test_actor_keeps_foreground_fifo_ahead_of_deferred_chrome():
     assert [request.callback() for request in actor._requests] == [
         "native-off", "advanced", "seek", "transform",
     ]
+    assert actor.request_metrics()['queue_peak']==4

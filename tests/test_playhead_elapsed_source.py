@@ -15,13 +15,13 @@ def test_flush_uses_same_elapsed_source_as_visual_tick(monkeypatch):
     elapsed = [20]
     received = []
     page = SimpleNamespace(
-        _playhead_ui_pending=(.5, False),
+        _playhead_ui_pending=(.5, False, clock.generation, 'source'),
         video=SimpleNamespace(_playback_clock=clock, _paused=False,
                               _clock=SimpleNamespace(elapsed=lambda: elapsed[0])),
         _position_changed=lambda seconds, **kwargs: received.append(seconds*1000))
     StudioPlaybackFlowMixin._flush_pending_playhead(page)
     elapsed[0] = 24
-    page._playhead_ui_pending=(.5, False)
+    page._playhead_ui_pending=(.5, False, clock.generation, 'source')
     StudioPlaybackFlowMixin._flush_pending_playhead(page)
     assert received == [520., 524.]
     assert clock.generation == 0
@@ -29,8 +29,17 @@ def test_flush_uses_same_elapsed_source_as_visual_tick(monkeypatch):
 
 def test_paused_flush_keeps_exact_pending_position():
     received = []
-    page = SimpleNamespace(_playhead_ui_pending=(1.125, True),
+    page = SimpleNamespace(_playhead_ui_pending=(1.125, True, 0, 'source'),
         video=SimpleNamespace(_playback_clock=PlaybackClock(now=0.), _paused=True),
         _position_changed=lambda seconds, **kwargs: received.append((seconds,kwargs)))
     StudioPlaybackFlowMixin._flush_pending_playhead(page)
     assert received == [(1.125,dict(defer_follow=True,_bypass_throttle=True))]
+
+
+def test_stale_generation_flush_does_not_move_playhead():
+    received=[]
+    page=SimpleNamespace(_playhead_ui_pending=(1.125,True,-1,'source'),
+        video=SimpleNamespace(_playback_clock=PlaybackClock(now=0.),_paused=True),
+        _position_changed=lambda *args,**kwargs:received.append(args))
+    StudioPlaybackFlowMixin._flush_pending_playhead(page)
+    assert not received

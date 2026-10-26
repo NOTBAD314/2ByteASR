@@ -331,7 +331,11 @@ def start(window, out):
             self.result['checks']['actual_rate']=all(abs(r['clock']['playback_rate']-self.rate)<.001 for r in self.result['telemetry'])
             for layer in (() if self.recorder else ('V1','V2')):
                 data=self.result['screen'][layer]
-                self.result['checks'][layer+'-visible-30fps']=data['visible_fps']>=30 and data['valid_fraction']>.98
+                self.result['checks'][layer+'-valid-frame-code']=data['valid_fraction']>.98
+            self.result['functional_pass']=all(self.result['checks'].values())
+            self.result['measurement_valid']=False
+            self.result['performance_pass']='UNVERIFIED'
+            self.result['measurement_reason']='GDI acquisition timing is not calibrated system presentation; use DXGI/PresentMon cadence benchmark'
             self.result['uploads']=list(self.page.video._video_upload_samples)
             self.result['decoder_samples']={key:list(source.samples) for key,source in scene._players.items()}
             self.result['decoder_transport_stats']={key:source._pipe.snapshot() for key,source in scene._players.items() if source._pipe is not None}

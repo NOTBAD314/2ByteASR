@@ -560,10 +560,16 @@ def merged_snapshot(project, sources: Sequence, merged) -> tuple[dict, dict]:
         missing.extend(record.get('merge_missing') or ())
         stale = stale or bool(text.strip() and status_of(record, cue.text, target=target) not in (DONE, MANUAL))
         manual = manual or record.get('origin') == ORIGIN_MANUAL
-        parts.extend(copy.deepcopy(record.get('merge_sources') or [{
+        source_part = {
             'cue_id': cue.id, 'source_text': cue.text, 'text': text,
             'origin': record.get('origin', ''), 'target': record.get('target', target),
-        }]))
+        }
+        if record.get('download_track'):
+            source_part['source_text'] = record.get('source_text', cue.text)
+            for key in ('download_track', 'download_intervals', 'download_indices'):
+                if key in record:
+                    source_part[key] = copy.deepcopy(record[key])
+        parts.extend(copy.deepcopy(record.get('merge_sources') or [source_part]))
     value = ''
     for text in texts:
         if not value:
@@ -798,6 +804,27 @@ def set_manual(project, cue_id: str, text: str) -> tuple[dict, dict]:
     return before, snapshot(project)
 
 
+def import_downloaded_translations(project, mapping: Mapping, *, target: str, track: Mapping) -> None:
+    """Verified time-interval pairs enter the same records as editing/translation.
+
+    Each pair retains its original track/interval receipt. Existing records are
+    protected; edit status still derives from source_sha, so changed source text
+    becomes needs_update. Unmatched source rows are not fabricated here.
+    """
+    container = _ensure_container(project)
+    target = str(target or "")
+    if not container["records"]:
+        container["target"] = target
+    cues = {cue.id: cue for cue in project.cues}
+    for cue_id, item in mapping.items():
+        if cue_id not in cues or cue_id in container["records"]:
+            continue
+        container["records"][cue_id] = _record(str(item["text"]), cues[cue_id].text,
+            origin=ORIGIN_MANUAL, target=target, download_track=dict(track),
+            download_intervals=list(item["source_intervals"]), download_indices=list(item["source_indices"]))
+    _rebuild_view(project)
+
+
 # ---------------------------------------------------------------------------
 # Split / merge semantic mapping
 
@@ -835,6 +862,21 @@ def _candidates(cues: Sequence, records: Mapping, receipts: Mapping, *, target: 
         status = status_of(records.get(cue.id), cue.text, target=target)
         if status not in (NEEDS_UPDATE, UNTRANSLATED) or not normalize_source(cue.text):
             continue
+        receipt = receipts.get(cue.id) if isinstance(receipts, Mapping) else None
+        bound = receipt.get("translation_parent_ids") if isinstance(receipt, Mapping) else None
+        own = records.get(cue.id)
+        # Current daily merges consume old live records and archive their
+        # provenance in merge_sources. Read that archive within the imported
+        # clip's explicit ancestry; do not resurrect consumed subtitle IDs.
+        archived = own.get("merge_sources") if isinstance(own, Mapping) else None
+        if bound and isinstance(archived, list):
+            parents = [_parent_entry(str(part.get("cue_id", "")), part)
+                       for part in archived if isinstance(part, Mapping)
+                       and part.get("cue_id") in bound and has_text(part)]
+            if parents:
+                result.append(dict(cue_id=cue.id, kind="merge", status=status,
+                                   source_text=cue.text, parents=parents))
+                continue
         kind, parents = "", []
         match = _SPLIT_ID.match(cue.id)
         origin = (records.get(cue.id) or {}).get("split_from") if isinstance(records.get(cue.id), Mapping) else None
@@ -864,6 +906,10 @@ def _candidates(cues: Sequence, records: Mapping, receipts: Mapping, *, target: 
             # source texts of its own record and of records whose cues are gone.
             own = records.get(cue.id)
             pool = ([(cue.id, own)] if has_text(own) else []) + orphans
+            receipt = receipts.get(cue.id) if isinstance(receipts, Mapping) else None
+            bound = receipt.get("translation_parent_ids") if isinstance(receipt, Mapping) else None
+            if bound:
+                pool = [(rid, records[rid]) for rid in dict.fromkeys(bound) if has_text(records.get(rid))]
             remainder, chain = normalize_source(cue.text), []
             while remainder and pool:
                 best = None
@@ -880,7 +926,7 @@ def _candidates(cues: Sequence, records: Mapping, receipts: Mapping, *, target: 
                 kind, parents = "merge", chain
             else:
                 receipt = receipts.get(cue.id) if isinstance(receipts, Mapping) else None
-                sources = receipt.get("source_cue_ids") if isinstance(receipt, Mapping) else None
+                sources = (receipt.get("translation_parent_ids") or receipt.get("source_cue_ids")) if isinstance(receipt, Mapping) else None
                 sources = [str(item) for item in sources or () if str(item)]
                 linked = [sid for sid in dict.fromkeys(sources) if has_text(records.get(sid))]
                 if len(sources) >= 2 and linked:

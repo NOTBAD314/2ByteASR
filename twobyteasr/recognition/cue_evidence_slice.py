@@ -3,7 +3,21 @@
 This is text alignment, not a newly measured acoustic timestamp. Original
 segment evidence stays intact; neighboring partial segments cannot vote.
 """
+from functools import lru_cache
+
 from .caption_arbitration import align, content, usable_transcript
+
+
+@lru_cache(maxsize=64)
+def _text_alignment(base: str, reference: str):
+    """Reuse the immutable text map across slices; word times stay uncached.
+
+    Both inputs are already bounded to 512 characters by slice_evidence.
+    A cache entry owns no project, cue, word dictionary or dynamic timing.
+    """
+    if base == reference:
+        return tuple((i, i + 1, char, char) for i, char in enumerate(base))
+    return tuple(align(base, reference))
 
 
 def slice_evidence(row, cue, field):
@@ -36,7 +50,7 @@ def slice_evidence(row, cue, field):
         high += 1
     reference = content(value)
     # Case-fold only for alignment. Emit the original reference's characters.
-    operations = align(base.casefold(), reference.casefold())
+    operations = _text_alignment(base.casefold(), reference.casefold())
     cursor, pieces = 0, []
     for left, right, old, new in operations:
         text = reference[cursor:cursor+len(new)]

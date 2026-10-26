@@ -562,7 +562,8 @@ def start(window, out):
             def cleanup_with_key(dialog):
                 plan.update(note='cancel', label='cleanup-with-key')
                 press(dialog.ai_run_button)
-                pump(.6)
+                wait(lambda: any(row['kind'] == 'cleanup' for row in requests), 20)
+                pump(.3)
                 seen.update(cleanup=dialog.status_label.text())
 
             outcome = with_dialog(AiCleanupDialog, cleanup_with_key, lambda: press(page.cue_cleanup_button))

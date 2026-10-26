@@ -330,12 +330,15 @@ def run(output, *, window):
         cleanup['size'] = (dialog.width(), dialog.height())
         cleanup['options'] = [box.text() for box in dialog.ai_option_boxes.values()]
         cleanup['checked'] = [key for key, box in dialog.ai_option_boxes.items() if box.isChecked()]
+        cleanup['local'] = {key: box.isChecked() for key, box in dialog.local_boxes.items()}
         _capture(dialog, output / 'ai-cleanup.png')
 
     with_dialog(AiCleanupDialog, look, lambda: QTest.mouseClick(page.cue_cleanup_button, Qt.MouseButton.LeftButton))
     result['ai_cleanup'] = cleanup
-    check('AI 清理 opens from the cue list with its options', len(cleanup.get('options', ())) == 7
-          and cleanup.get('checked') == ['fillers', 'repeats', 'punctuation'], cleanup)
+    # 2026-10-26 design A: four AI steps, two local ones (re-break needs a word-timed language).
+    check('AI 清理 opens from the cue list with its options', len(cleanup.get('options', ())) == 4
+          and cleanup.get('checked') == ['fillers', 'repeats', 'punctuation']
+          and cleanup.get('local') == {'labels': True, 'regroup': False}, cleanup)
 
     page.save()
     QTest.qWait(500)

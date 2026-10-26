@@ -61,6 +61,18 @@ def start(window, output):
             super().__init__(window)
             self.result = {'passed': False, 'identity': load_build_identity().to_dict(), 'checks': [],
                            'pid': os.getpid(), 'executable': sys.executable, 'records': []}
+            self.result['geometry_calls']=[]
+            for name in ('resize','setGeometry','showNormal','showMaximized','adjustSize'):
+                original=getattr(window,name)
+                def observed(*args,_name=name,_original=original,**kwargs):
+                    row=dict(method=_name,args=[str(a) for a in args],before=list(window.geometry().getRect()),
+                        at=time.perf_counter(),callers=[dict(file=f.filename.replace('\\','/').split('/')[-1],
+                        function=f.name,line=f.lineno) for f in traceback.extract_stack(limit=8)[:-1]])
+                    self.result['geometry_calls'].append(row)
+                    result=_original(*args,**kwargs)
+                    row['after']=list(window.geometry().getRect())
+                    return result
+                setattr(window,name,observed)
             self.samples = None
             self.samples_in_loop_only = False
             self.sampler = QTimer(self)
@@ -198,7 +210,11 @@ def start(window, output):
 
         def fits_work(self):
             native = self.native()
-            return bool(native) and max(abs(a - b) for a, b in zip(native['rect'], native['work'])) <= 2
+            # A native maximized sizing frame may extend invisibly outside
+            # the screen. Verify the usable client AND the production guard.
+            from ..app.window_constraints import special_geometry_broken
+            rect=native.get('client') if getattr(window,'_native_frame_active',False) else native.get('rect')
+            return bool(rect) and max(abs(a-b) for a,b in zip(rect,native['work']))<=2 and not special_geometry_broken(window)
 
         def title_buttons_on_screen(self):
             bar = window.window_title_bar
@@ -236,8 +252,14 @@ def start(window, output):
                 window.setGeometry(avail.x() + 40, avail.y() + 40, min(1100, avail.width() - 80),
                                    min(760, avail.height() - 80))
                 yield .5
+                normal_before=QRect(window.geometry())
+                minimum_before=[window.minimumWidth(),window.minimumHeight()]
+                handle_min_before=list(window.windowHandle().minimumSize().toTuple())
                 window.showMaximized()
                 yield .9
+                self.check(f'qt_and_native_maximized_{screen.name()}',
+                           window.isMaximized() and self.native().get('zoomed'),self.native())
+                cache_after_max=list(window._normal_window_placement[0].getRect())
                 window.showMinimized()
                 yield .8
                 restore_minimized_window(window)
@@ -246,6 +268,26 @@ def start(window, output):
                 self.result['records'].append(row)
                 self.check(f'min_restore_keeps_{screen.name()}',
                            window.screen() is screen and window.isMaximized() and self.fits_work(), row)
+                cache_before_normal=list(window._normal_window_placement[0].getRect())
+                window.showNormal()
+                normal_immediate=list(window.geometry().getRect())
+                from PySide6.QtCore import Qt
+                sized_immediate=window.testAttribute(Qt.WA_Resized)
+                yield .7
+                row = dict(tag=f'normal-after-min-restore-{screen.name()}',
+                           screen=window.screen().name(), maximized=window.isMaximized(),
+                           normal_before=list(normal_before.getRect()),normal_after=list(window.geometry().getRect()),
+                           minimum_before=minimum_before,minimum_after=[window.minimumWidth(),window.minimumHeight()],
+                           handle_min_before=handle_min_before,handle_min_after=list(window.windowHandle().minimumSize().toTuple()),
+                           hint_after=list(window.minimumSizeHint().toTuple()),sized_immediate=sized_immediate,
+                           sized_after=window.testAttribute(Qt.WA_Resized),
+                           cache_after_max=cache_after_max,cache_before_normal=cache_before_normal,
+                           normal_immediate=normal_immediate,saved_normal=list(window._normal_window_placement[0].getRect()),**self.native())
+                self.result['records'].append(row)
+                self.check(f'normal_after_min_restore_clears_hwnd_zoom_{screen.name()}',
+                           not window.isMaximized() and not row.get('zoomed')
+                           and window.screen() is screen and self.title_buttons_on_screen(), row)
+                self.check(f'normal_restore_keeps_size_{screen.name()}',window.size()==normal_before.size(),row)
 
         def run(self):
             yield 1.0

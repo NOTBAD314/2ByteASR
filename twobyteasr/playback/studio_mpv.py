@@ -241,6 +241,7 @@ class _MpvActorRequest:
     __slots__ = (
         "callback", "coalesce_key", "foreground", "deferred", "done",
         "result", "error", "on_discard",
+        "submitted_at",
     )
 
     def __init__(
@@ -254,6 +255,7 @@ class _MpvActorRequest:
         on_discard=None,
     ) -> None:
         self.callback = callback
+        self.submitted_at = time.perf_counter()
         self.coalesce_key = str(coalesce_key)
         self.foreground = bool(foreground)
         self.deferred = bool(deferred)
@@ -298,7 +300,8 @@ class _MpvCommandActor:
         "audio-pts",
         "avsync",
         "audio-delay",
-        "video-sync",
+        "display-sync-active",
+        "video-speed-correction",
         "estimated-frame-number",
         "sid",
         "sub-visibility",
@@ -328,6 +331,7 @@ class _MpvCommandActor:
         self._last_error = ""
         self._command_error_count = 0
         self._last_command_error = ""
+        self._init_request_metrics()
         self._properties: dict[str, Any] = {}
         self._properties_lock = threading.Lock()
         self._property_sequence = 0
@@ -355,6 +359,11 @@ class _MpvCommandActor:
     def is_actor_thread(self) -> bool:
         return threading.current_thread() is self._thread
 
+    def _init_request_metrics(self):
+        self._request_samples = deque(maxlen=512)
+        self._submitted_count = self._coalesced_count = self._completed_count = 0
+        self._queue_peak = 0
+
     def post(
         self,
         callback: Callable[[], Any],
@@ -378,6 +387,7 @@ class _MpvCommandActor:
             if request.coalesce_key:
                 for item in self._requests:
                     if item.done is None and item.coalesce_key == request.coalesce_key:
+                        self._coalesced_count += 1
                         item.discard()
                 self._requests = deque(
                     item
@@ -406,6 +416,8 @@ class _MpvCommandActor:
                     len(self._requests),
                 )
                 self._requests.insert(insert_at, request)
+            self._submitted_count += 1
+            self._queue_peak = max(self._queue_peak,len(self._requests))
             self._condition.notify()
         return True
 
@@ -417,6 +429,8 @@ class _MpvCommandActor:
             if self._stopping:
                 raise RuntimeError("mpv actor is stopping")
             self._requests.append(request)
+            self._submitted_count += 1
+            self._queue_peak = max(self._queue_peak,len(self._requests))
             self._condition.notify()
         if request.done is None or not request.done.wait(max(0.1, timeout) + 0.5):
             raise RuntimeError("mpv actor request timed out")
@@ -729,6 +743,7 @@ class _MpvCommandActor:
                 elif self._stopping:
                     break
             if request is not None:
+                request_started = time.perf_counter()
                 try:
                     # A newer media event may already be waiting in the pipe.
                     # Consume it before an old GUI raster's valid_when guard.
@@ -737,6 +752,11 @@ class _MpvCommandActor:
                 except BaseException as exc:
                     request.error = exc
                 finally:
+                    ended = time.perf_counter()
+                    with self._condition:
+                        self._completed_count += 1
+                        self._request_samples.append((1000*(request_started-request.submitted_at),
+                            1000*(ended-request_started),request.error is not None))
                     if request.done is not None:
                         request.done.set()
             now = time.monotonic()
@@ -752,6 +772,18 @@ class _MpvCommandActor:
                 self._heartbeat()
                 next_heartbeat = now + interval
         self._drop_pipe()
+
+    def request_metrics(self):
+        from ..diagnostics.playback_metrics import distribution
+        with self._condition:
+            samples=list(self._request_samples)
+            counters=dict(submitted=self._submitted_count,completed=self._completed_count,
+                coalesced=self._coalesced_count,queue_depth=len(self._requests),queue_peak=self._queue_peak,
+                retained_samples=len(samples),sample_capacity=self._request_samples.maxlen)
+        return {**counters,'clock':'perf_counter / QPC',
+            'queue_ms':distribution([r[0] for r in samples]),
+            'execute_ack_ms':distribution([r[1] for r in samples]),
+            'sample_errors':sum(r[2] for r in samples)}
 
     def close(self) -> None:
         with self._condition:
@@ -1159,6 +1191,7 @@ class MpvController:
             result = self._send(command)
             if value and position_seconds is not None:
                 self._send(["seek", max(0., position_seconds), "absolute+exact"])
+            playback_mark("mpv_pause_applied",paused=value,source_epoch=self._source_epoch)
             return result
 
         self._remember_desired("pause", command)

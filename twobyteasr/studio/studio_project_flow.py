@@ -60,7 +60,7 @@ class StudioProjectFlowMixin:
         # another project / application exit still own their dirty-save guards.
         readiness = getattr(self, '_readiness', None)
         if readiness is not None and readiness.active:
-            readiness.cancel()
+            readiness.cancel(navigate=False)
         self.video.set_paused(True)
         self._close_export_workspace()
         self._studio_trace('PROJECT_SUSPENDED', project_path=str(self.project_path or ''))
@@ -74,14 +74,30 @@ class StudioProjectFlowMixin:
         from ..diagnostics.runtime_trace import GLOBAL_STUDIO_TRACE
 
         close_t0 = perf_counter()
+        readiness = getattr(self, "_readiness", None)
+        # During hydration, project_switch retires the old project inside
+        # the NEW readiness request. That request must remain active.
+        if readiness is not None and readiness.active and reason != "project_switch":
+            readiness.cancel(navigate=False)
         previous_path = str(self.project_path or "")
         if getattr(self, '_canvas_editor', None) is not None:
             self._cancel_canvas_inline_edit()
+        from .studio_source_monitor import close_source_monitor
+        close_source_monitor(self)
+        for name in ('_highlight_source_view', '_highlight_range_editor'):
+            dialog = getattr(self, name, None)
+            if dialog is not None and self._widget_alive(dialog):
+                dialog.close()
         self._review_edit_lock = None
         release_review = getattr(self, '_release_review_playback', None)
         if callable(release_review):
             release_review()
         self._qc_scan_token = getattr(self, '_qc_scan_token', 0) + 1
+        worker = getattr(self, '_qc_worker', None)
+        if worker is not None:
+            worker.close()
+            worker.deleteLater()
+            self._qc_worker = None
         scan = getattr(self, '_qc_scan_timer', None)
         if scan is not None:
             scan.stop()
@@ -389,7 +405,7 @@ class StudioProjectFlowMixin:
                     self._begin_media_drop(media, max(0, position), track or "")
             else:
                 self.project_controller.create_blank_project(on_ready=lambda: self._begin_media_drop(media, 0))
-        if subtitles:
+        if subtitles and not media:
             self._import_subtitle_file(subtitles[0])
         event.acceptProposedAction()
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPointF, QParallelAnimationGroup,
+    QEasingCurve, QEvent, QParallelAnimationGroup,
     QPropertyAnimation, QRect, QSize, Qt,
 )
 from PySide6.QtGui import QColor, QPalette
@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..app.main_ui_branding import _icon
+from ..app.ui_zoom import px
+from .combo_popup import MAX_ROWS, MIN_ROWS, PAD, READY, ROW, below_rect, content_width, style_popup
 from .ui_motion import MOTION_STANDARD_MS, motion_duration
 from .widget_teardown import delete_tree_before_collection
 
@@ -48,8 +50,11 @@ class _ComboPopup(QFrame):
         )
         self.combo = combo
         self.setObjectName("comboPopupWindow")
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setAutoFillBackground(True)
+        # 2026-10-26: transparent around the rounded list (an opaque window
+        # showed square corners). Same sheet, rows and placement as every
+        # other dropdown (combo_popup).
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.listing = QListWidget(self)
@@ -127,7 +132,7 @@ class _ComboPopup(QFrame):
             model_index = model.index(index, self.combo.modelColumn())
             if not model.flags(model_index) & Qt.ItemFlag.ItemIsEnabled:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-            item.setSizeHint(QSize(0, 40))
+            item.setSizeHint(QSize(0, px(ROW)))
             self.listing.addItem(item)
         self.listing.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -138,22 +143,12 @@ class _ComboPopup(QFrame):
             self.listing.setCurrentRow(self.combo.currentIndex())
 
     def _target_geometry(self):
-        screen = self.combo.screen().availableGeometry()
-        metrics = self.combo.fontMetrics()
-        content_width = max(
-            (metrics.horizontalAdvance(self.combo.itemText(i)) for i in range(self.combo.count())),
-            default=0,
-        )
-        width = min(max(self.combo.width(), content_width + 64), screen.width() - 20)
+        width = max(self.combo.width(), content_width(self.combo, self.combo.fontMetrics()))
         visible = min(max(1, self.combo.maxVisibleItems()), max(1, self.combo.count()))
-        height = min(visible * 40 + 10, screen.height() - 20)
-        below = self.combo.mapToGlobal(self.combo.rect().bottomLeft()) + QPointF(0, 5).toPoint()
-        x = min(max(screen.left() + 5, below.x()), screen.right() - width - 5)
-        y = below.y()
-        if y + height > screen.bottom() - 5:
-            above = self.combo.mapToGlobal(self.combo.rect().topLeft()).y() - height - 5
-            y = max(screen.top() + 5, above)
-        return QRect(x, y, width, height)
+        chrome = 2 * (px(PAD) + 1)
+        height = visible * px(ROW) + chrome
+        least = min(visible, MIN_ROWS) * px(ROW) + chrome
+        return below_rect(self.combo, width, height, least)
 
     def _stop_animation(self):
         if self._animation is not None:
@@ -205,6 +200,7 @@ class _ComboPopup(QFrame):
         self.rebuild()
         if not self.listing.count():
             return
+        style_popup(self)
         app = QApplication.instance()
         if app is not None and not self._outside_filter_installed:
             app.installEventFilter(self)
@@ -251,6 +247,8 @@ class FramelessPopupCombo(QComboBox):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setProperty(READY, True)   # owns its popup: no Qt list container
+        self.setMaxVisibleItems(MAX_ROWS)
         self._popup = _ComboPopup(self)
         self._suppress_show_until_click_release = False
         # 2026-09-17：selectedFirst 只在每个 widget 生命周期内生效一次（首次
@@ -342,7 +340,6 @@ class EditableHistoryCombo(FramelessPopupCombo):
         super().__init__(parent)
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.setMaxVisibleItems(9)
         self.setMinimumHeight(42)
         self.lineEdit().setClearButtonEnabled(True)
         # Theme-driven chevron (refresh_themed_icons re-rasterizes line-edit

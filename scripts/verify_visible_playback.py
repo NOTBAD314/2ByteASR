@@ -7,16 +7,16 @@ import sys
 import time
 
 
-def make_media(root):
+def make_media(root, folder=None, *, duration=30, with_loop=True):
     from twobyteasr.system.processes import run_hidden_subprocess
-    folder = root/'tmp/visible-playback-v2/media/subtitle-safe'
+    folder = Path(folder) if folder is not None else root/'tmp/visible-playback-v2/media/subtitle-safe'
     folder.mkdir(parents=True, exist_ok=True)
     ffmpeg = str(root/'tools/ffmpeg/bin/ffmpeg.exe')
     for layer, color in ((1, '0x126879'), (2, '0xb64928')):
-        short = folder/f'V{layer}-30s.mp4'
+        short = folder/f'V{layer}-{duration}s.mp4'
         long = folder/f'V{layer}-120s.mp4'
         if not short.exists():
-            filters = [f'testsrc2=s=1920x1080:r=60:d=30',
+            filters = [f'testsrc2=s=1920x1080:r=60:d={duration}',
                 f'drawbox=x=0:y=560:w=1920:h=250:color={color}:t=fill',
                 'drawbox=x=96:y=650:w=1056:h=130:color=black:t=fill',
                 "drawtext=fontfile='C\\:/Windows/Fonts/consola.ttf':text='V%d  FRAME %%{n}  %%{pts\\:hms}':x=100:y=580:fontsize=64:fontcolor=white" % layer]
@@ -25,11 +25,11 @@ def make_media(root):
                 condition = f'mod(floor(n/{2**bit}),2)' if bit < 12 else str((0b1010 >> (bit-12)) & 1)
                 filters.append(f"drawbox=x={100+64*bit}:y=660:w=56:h=100:color=white:t=fill:enable='{condition}'")
             run_hidden_subprocess([ffmpeg, '-v', 'error', '-y', '-f', 'lavfi', '-i', ','.join(filters),
-                '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '30',
+                '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', str(duration),
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-g', '60',
                 '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '96k', str(short)],
                 purpose='silent 1080p60 frame-code fixture', check=True, timeout=120)
-        if not long.exists():
+        if with_loop and not long.exists():
             run_hidden_subprocess([ffmpeg, '-v', 'error', '-y', '-stream_loop', '3', '-i', str(short),
                 '-c', 'copy', str(long)], purpose='lossless repeat for twenty seconds at 4x', check=True, timeout=30)
     return folder
@@ -124,7 +124,8 @@ def main():
         run_hidden_subprocess([sys.executable,'-B',str(root/'scripts/analyze_visible_playback.py'),str(out)],purpose='count actual frames from short WGC recording',check=True,timeout=40)
     report = json.loads((out/'result.json').read_text('utf8'))
     print(json.dumps({k:report.get(k) for k in ('error','screen','checks')}, ensure_ascii=False), flush=True)
-    if result.returncode or report.get('error') or not all(report.get('checks',{}).values()): raise SystemExit(1)
+    if (result.returncode or report.get('error') or not all(report.get('checks',{}).values())
+            or args.mode=='playback' and report.get('performance_pass') is not True): raise SystemExit(1)
 
 
 if __name__ == '__main__': main()

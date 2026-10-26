@@ -212,6 +212,14 @@ class StudioWorkspaceBuilder:
         import_media = page._tool_button("fa5s.plus", "导入媒体", page.import_media_dialog)
         page.studio_import_media_button = import_media
         nav_track.add(import_media)
+        from ..app.link_download_controller import show_link_download
+        page.studio_link_download_button = page._tool_button("fa5s.download", "链接下载", lambda: show_link_download(page))
+        nav_track.add(page.studio_link_download_button)
+        # 2026-10-26 (user's design B): running link downloads show here; the
+        # controller attaches it the first time it is used.
+        from ..app.link_quick_card import ProgressCapsule
+        page.studio_link_capsule = ProgressCapsule()
+        nav_track.add(page.studio_link_capsule)
         page.studio_hub_settings_button = page._tool_button(
             "fa5s.cog", "应用设置", page._show_hub_preferences
         )
@@ -1424,7 +1432,10 @@ class StudioWorkspaceBuilder:
         yield '时间轴'
         workspace_layers = QStackedLayout(page.workspace_host)
         workspace_layers.setContentsMargins(0, 0, 0, 0)
-        workspace_layers.setStackingMode(QStackedLayout.StackingMode.StackAll)
+        # These pages are mutually exclusive. A raised alien QWidget cannot
+        # occlude the native mpv child on Windows. Hide the inactive subtree.
+        workspace_layers.setStackingMode(QStackedLayout.StackingMode.StackOne)
+        page.workspace_layers = workspace_layers
         workspace_layers.addWidget(page.workspace_splitter)
         outer.addWidget(page.workspace_host, 1)
         page.export_workspace = None

@@ -425,7 +425,7 @@ class StudioAIFlowMixin:
             GLOBAL_PROVIDER_REGISTRY.bind(live)
         self._reload_ai_provider_selection()
 
-    def _reload_ai_provider_selection(self):
+    def _reload_ai_provider_selection(self, *, probe=True):
         live=getattr(getattr(self.window(),"legacy",None),"RUNTIME_SETTINGS",self.runtime_settings)
         if not isinstance(live,dict) or not hasattr(self,"ai_model"):return
         self.runtime_settings=live
@@ -440,7 +440,8 @@ class StudioAIFlowMixin:
         self.ai_model.setCurrentText(str(values.get("model") or ""))
         self.ai_model.blockSignals(False)
         self._refresh_ai_design_provider_summary()
-        self._start_ai_provider_probe(service)
+        if probe:
+            self._start_ai_provider_probe(service)
 
     def _ai_operation_registry(self):
         from ..providers.request_operations import RequestOperations

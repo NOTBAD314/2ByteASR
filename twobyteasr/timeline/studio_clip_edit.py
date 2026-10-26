@@ -103,6 +103,9 @@ def _finalize_edit(project, working, label, *, page=None, playhead_after=None,
         sequence.video_track_locked = primary.locked
     sequence.validate()
     working._edit_sequence_runtime.reindex()
+    if project.studio_state.get("link_imports"):
+        from .link_timing import remap_download_captions
+        remap_download_captions(project, working)
     sync_linked_av_contract(working)
     try:
         from .studio_transitions import reconcile_transitions
@@ -463,6 +466,9 @@ class ClipEditCommand(QUndoCommand):
             if self.skipped_caption_speakers and hasattr(page, 'save_state'):
                 from ..i18n import tr
                 page.save_state.setText(tr('部分字幕轨已锁定或关闭波纹同步，保持原位'))
+            if project.studio_state.get("link_import_clip_review") and hasattr(page, "save_state"):
+                from ..i18n import tr
+                page.save_state.setText(tr("部分下载字幕跨越剪切边界；已保留文字，请重新对齐或检查。"))
 
     def redo(self):
         self._apply(self.after, self.playhead_after, self.after_cues, self.after_settings, self.after_state)

@@ -155,6 +155,26 @@ function Install-VulkanLoader {
 }
 
 
+function Install-YtDlpTool {
+    $lock = Get-Content -LiteralPath (Join-Path $ProjectRoot "dependencies.lock.json") -Raw | ConvertFrom-Json
+    $spec = $lock.tools.yt_dlp
+    $file = $spec.files.windows
+    $targetDir = Join-Path $ToolsDir "yt-dlp"
+    $target = Join-Path $targetDir $file.name
+    if ((Test-Path -LiteralPath $target) -and
+        (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -eq $file.sha256) { return }
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    $partial = Join-Path $targetDir ($file.name + ".partial")
+    Invoke-Download $file.url $partial
+    if ((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256) {
+        throw "yt-dlp 校验失败；未替换现有工具。"
+    }
+    Move-Item -LiteralPath $partial -Destination $target -Force
+    Write-Host "[工具] yt-dlp $($spec.version)（含 EJS $($spec.ejs_version)）校验通过。"
+}
+
+Install-YtDlpTool
+
 $coreReady = (Test-Path (Join-Path $ToolsDir "ffmpeg\bin\ffmpeg.exe")) -and
          (Test-Path (Join-Path $ToolsDir "ffmpeg\bin\ffprobe.exe")) -and
          (Test-Path (Join-Path $ToolsDir "git\cmd\git.exe")) -and

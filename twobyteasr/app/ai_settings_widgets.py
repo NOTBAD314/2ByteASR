@@ -18,7 +18,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel,
-                               QVBoxLayout, QWidget)
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from ..i18n import bind_text
 from . import ui_zoom
@@ -43,6 +43,41 @@ FEATURES = (
     ("terms", "术语校对", "fa5s.book", "游戏名词不写错", "术语库校对、联网补充核验"),
     ("translate", "翻译字幕", "fa5s.language", "一键出双语字幕", "在字幕编辑器里一键翻译"),
 )
+
+
+class NoteLabel(QLabel):
+    """A note beside a switch or a field (2026-10-25): one line while there is
+    room, wrapped when there is not. As one fixed line, the notes in 更多选项
+    made the form wider than the dialog and its right side was cut off (user,
+    0.8.5); a plain wrapping label would break even when the line fits."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+
+    def sizeHint(self):
+        margins = self.contentsMargins()
+        width = (self.fontMetrics().horizontalAdvance(self.text()) + margins.left() + margins.right()
+                 + 2 * self.margin() + 2)
+        return QSize(width, self.heightForWidth(width))
+
+
+class YieldingBox(QWidget):
+    """Asks for no more width than its minimum (2026-10-25). Beside 「让 AI 负责」
+    it holds the model and address group: a row short of room otherwise takes
+    the shortfall from both columns alike and the notes on the left wrap
+    while this side still has room to spare."""
+
+    def sizeHint(self):
+        return QSize(self.minimumSizeHint().width(), super().sizeHint().height())
+
+
+def keep_label_width(widget: QWidget) -> QWidget:
+    """A row may not squeeze ``widget`` below its size hint (a switch's label was cut, 2026-10-25)."""
+    policy = widget.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Policy.Minimum)
+    widget.setSizePolicy(policy)
+    return widget
 
 
 class SuccessBadge(QWidget):
@@ -163,6 +198,9 @@ class AiGuidePanel(QFrame):
         self.win_heading.setWordWrap(True)
         self.win_meta = QLabel()
         self.win_meta.setObjectName("aiWinMeta")
+        # The column has a fixed width: longer languages wrap here instead of
+        # being cut off (2026-10-25: Spanish / Russian test times, French caption).
+        self.win_meta.setWordWrap(True)
         titles.addWidget(self.win_eyebrow)
         titles.addWidget(self.win_heading)
         titles.addWidget(self.win_meta)
@@ -171,6 +209,7 @@ class AiGuidePanel(QFrame):
         layout.addSpacing(2)
         self.win_caption = QLabel()
         self.win_caption.setObjectName("aiWinCaption")
+        self.win_caption.setWordWrap(True)
         layout.addWidget(self.win_caption)
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)

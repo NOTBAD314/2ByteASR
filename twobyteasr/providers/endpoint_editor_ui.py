@@ -100,7 +100,8 @@ class ProviderConnectionTester(QThread):
         force_refresh: bool = False,
     ):
         super().__init__()
-        self.settings = settings
+        from .request_snapshot import freeze_request_settings
+        self.settings = freeze_request_settings(settings, stage)
         self.stage = stage
         self.prompt_test = bool(prompt_test)
         self.force_refresh = bool(force_refresh)
@@ -477,6 +478,7 @@ class PromptDialog(SpringDialog):
 
 class EndpointEditor(QFrame):
     connection_tested = Signal(bool)   # 测试连接 finished (2026-10-22: the home page unlocks the AI-only features)
+    configuration_edited = Signal()  # explicit Clear can leave the text already empty
     advanced_wanted = Signal()         # a custom service needs its Base URL (the dialog opens 高级设置)
     key_help_requested = Signal()      # 「API Key 是什么？」 beside the key box
 
@@ -791,9 +793,6 @@ class EndpointEditor(QFrame):
         self.discover_models_button.setObjectName("endpointSecondary")
         bind_text(self.discover_models_button, '后台获取模型列表；不支持时仍可手动输入', property='toolTip')
         model_row.addWidget(self.discover_models_button)
-        model_row.addSpacing(12)
-        model_row.addWidget(self.protocol_label)
-        model_row.addWidget(self.protocol)
         # 已下线模型的显式提示位：不静默换模型，也绝不把墓碑 id 当正常选项。
         self.model_warning = QLabel()
         self.model_warning.setObjectName("fieldHint")
@@ -811,7 +810,9 @@ class EndpointEditor(QFrame):
         advanced_layout = QVBoxLayout(self.advanced_box)
         advanced_layout.setContentsMargins(0, 4, 0, 0)
         advanced_layout.setSpacing(8)
-        # One grid, so model, address and output line up (2026-10-22).
+        # One grid, so model, address and output line up (2026-10-22). 协议 has
+        # its own row (2026-10-25): at the end of the model row it made the AI
+        # settings dialog wider than its window and cut off its right side.
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(12)
@@ -820,12 +821,14 @@ class EndpointEditor(QFrame):
         grid.addWidget(self.model_label, 0, 0)
         grid.addLayout(model_row, 0, 1)
         grid.addWidget(self.model_warning, 1, 1)
-        grid.addWidget(self.base_url_label, 2, 0)
-        grid.addWidget(self.base_url, 2, 1)
-        grid.addWidget(self.endpoint_hint, 3, 1)
-        grid.addWidget(self.capabilities_label, 4, 0)
-        grid.addWidget(self.capabilities_host, 4, 1)
-        grid.addWidget(self.json_capability_status, 5, 1)
+        grid.addWidget(self.protocol_label, 2, 0)
+        grid.addWidget(self.protocol, 2, 1, Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(self.base_url_label, 3, 0)
+        grid.addWidget(self.base_url, 3, 1)
+        grid.addWidget(self.endpoint_hint, 4, 1)
+        grid.addWidget(self.capabilities_label, 5, 0)
+        grid.addWidget(self.capabilities_host, 5, 1)
+        grid.addWidget(self.json_capability_status, 6, 1)
         grid.setColumnStretch(1, 1)
         advanced_layout.addLayout(grid)
         self.advanced_box.hide()
@@ -1206,6 +1209,7 @@ class EndpointEditor(QFrame):
             self.refresh_secret_status()
 
     def _request_key_clear(self) -> None:
+        self._invalidate_endpoint_tasks()
         self._key_state = "clear"
         self.key.clear()
         bind_text(self.key, '将在保存时清除已保存的密钥（环境变量不受影响）', property='placeholderText')
@@ -1214,6 +1218,7 @@ class EndpointEditor(QFrame):
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
         self._clear_action.setVisible(False)
+        self.configuration_edited.emit()
 
     def refresh_secret_status(self):
         prov, burl = self._current_provider_base()
@@ -1228,6 +1233,44 @@ class EndpointEditor(QFrame):
         (bind_text(self.status, credential_storage_notice() if session_credentials_enabled() else '密钥已保存，测一次就好') if existing else bind_text(self.status, '贴上 Key 后就能测试'))
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
+
+    def accept_saved_configuration(self, settings):
+        """Publish before notifications; clearing a saved key is not an edit.
+
+        A test for the same effective configuration may finish after Save.
+        Its request snapshot remains private and is checked by the callback.
+        """
+        from PySide6.QtCore import QSignalBlocker
+        from .ai_connection_record import fingerprint, result_for
+        self._settings_ref = settings
+        with QSignalBlocker(self.key):
+            self.key.clear()
+            self._key_state = 'unchanged'
+        if fingerprint(self._provider_settings(), self.stage) != fingerprint(settings, self.stage):
+            # Unified Save also changes the hidden polish form. Leaving that
+            # form stale resurrected its old service as soon as either switch
+            # was toggled off, even though the settings file already held B.
+            from .asr_provider_snapshot import resolve_provider_snapshot
+            snapshot = resolve_provider_snapshot(settings, stage=self.stage)
+            endpoint = snapshot.endpoint()
+            self.restore_profile_values({
+                'service': snapshot.profile_id, 'provider': snapshot.provider,
+                'transport': snapshot.transport, 'model': snapshot.model,
+                'base_url': endpoint.get('base_url', ''), 'protocol': snapshot.protocol,
+                'json_mode': snapshot.json_mode, 'structured_output': snapshot.structured_output,
+            }, settings)
+        tester = getattr(self, '_tester', None)
+        if tester is not None and fingerprint(tester.settings, self.stage) != fingerprint(self._provider_settings(), self.stage):
+            self._invalidate_endpoint_tasks()
+        self.last_connection_ok = result_for(self._provider_settings(), self.stage)
+        self.refresh_secret_status()
+
+    def connection_test_running(self, settings=None):
+        from .ai_connection_record import fingerprint
+        tester = getattr(self, '_tester', None)
+        return bool(tester is not None and tester.isRunning()
+                    and fingerprint(tester.settings, self.stage)
+                    == fingerprint(settings if settings is not None else self._provider_settings(), self.stage))
 
     def _provider_or_url_changed(self):
         prov, burl = self._current_provider_base()
@@ -1708,9 +1751,13 @@ class EndpointEditor(QFrame):
     def _endpoint_callback(self, worker, slot, callback):
         epoch = getattr(self, '_endpoint_epoch', 0)
         identity = self.values()
+        from .ai_connection_record import fingerprint
+        tested = fingerprint(worker.settings, self.stage) if hasattr(worker, 'settings') else None
         def deliver(*args):
             if (epoch == getattr(self, '_endpoint_epoch', 0)
-                    and getattr(self, slot, None) is worker and self.values() == identity):
+                    and getattr(self, slot, None) is worker
+                    and (fingerprint(self._provider_settings(), self.stage) == tested
+                         if tested is not None else self.values() == identity)):
                 callback(*args)
         return deliver
 
@@ -1719,7 +1766,9 @@ class EndpointEditor(QFrame):
         # 2026-10-22: remembered across restarts; the AI-only features on the home page wait for it.
         try:
             from .ai_connection_record import remember
-            remember(self._provider_settings(), self.stage, ok)
+            tester = getattr(self, '_tester', None)
+            tested = tester.settings if tester is not None else self._provider_settings()
+            remember(tested, self.stage, ok)
         except Exception:  # noqa: BLE001 - a record that cannot be written only means "test again"
             pass
         self.connection_tested.emit(bool(ok))
