@@ -15,15 +15,15 @@
 
 ## ダウンロード
 
-現在のバージョン：**0.8.5**（2026-10-25）。お使いのコンピューターに合うインストーラーをひとつ選んでください。
+現在のバージョン：**0.8.6**（2026-10-26）。お使いのコンピューターに合うインストーラーをひとつ選んでください。
 
 | お使いのコンピューター | ダウンロード |
 | --- | --- |
-| **Windows 10 1809 以降（64 ビット）**<br>正式版 | **[2ByteASR-Setup-0.8.5.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.5/2ByteASR-Setup-0.8.5.exe)**（約 1 GB）<br>インストーラーにはコード署名がないため、「不明な発行元」と表示されることがあります。[Windows へのインストール](docs/product-guide.ja.md#windows-へのインストール)を参照してください。 |
-| **Apple シリコン（M1 以降）の Mac、macOS 14 以降**<br>**実験版** | **[2ByteASR-0.8.5-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.5/2ByteASR-0.8.5-macos-arm64-Setup.dmg)**（約 0.5 GB）<br>GitHub の仮想 Mac でのみ確認しています。**Intel Mac には対応していません。** Apple の公証を受けていないため、初回の開き方は [Mac へのインストール](docs/product-guide.ja.md#mac-へのインストール実験版)を参照してください。 |
+| **Windows 10 1809 以降（64 ビット）**<br>正式版 | **[2ByteASR-Setup-0.8.6.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-Setup-0.8.6.exe)**（約 1 GB）<br>インストーラーにはコード署名がないため、「不明な発行元」と表示されることがあります。[Windows へのインストール](docs/product-guide.ja.md#windows-へのインストール)を参照してください。 |
+| **Apple シリコン（M1 以降）の Mac、macOS 14 以降**<br>**実験版** | **[2ByteASR-0.8.6-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)**（約 0.5 GB）<br>GitHub の仮想 Mac でのみ確認しています。**Intel Mac には対応していません。** Apple の公証を受けていないため、初回の開き方は [Mac へのインストール](docs/product-guide.ja.md#mac-へのインストール実験版)を参照してください。 |
 
-- **中国本土でダウンロードが遅い・できない場合：** まず GitCode のミラーから [Windows 版](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.5/2ByteASR-Setup-0.8.5.exe) · [Mac 版](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.5/2ByteASR-0.8.5-macos-arm64-Setup.dmg)。それでも駄目なら第三者の高速化サービス gh-proxy から [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.5/2ByteASR-Setup-0.8.5.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.5/2ByteASR-0.8.5-macos-arm64-Setup.dmg)。どこから取得してもファイルは同じで、`SHA256SUMS.txt` で確認できます。
-- **0.6.5 / 0.7.x / 0.8.0〜0.8.4 をお使いの場合：** アプリ右上の「更新を確認」から、変わった部分だけをダウンロードできます。0.6.0 以前は、アンインストールせずに新しいインストーラーで上書きしてください。
+- **中国本土でダウンロードが遅い・できない場合：** まず GitCode のミラーから [Windows 版](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-Setup-0.8.6.exe) · [Mac 版](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)。それでも駄目なら第三者の高速化サービス gh-proxy から [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-Setup-0.8.6.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)。どこから取得してもファイルは同じで、`SHA256SUMS.txt` で確認できます。
+- **0.6.5 / 0.7.x / 0.8.0〜0.8.6 をお使いの場合：** アプリ右上の「更新を確認」から、変わった部分だけをダウンロードできます。0.6.0 以前は、アンインストールせずに新しいインストーラーで上書きしてください。
 - **ほかの添付ファイルは不要です。** [Releases ページ](https://github.com/NOTBAD314/2ByteASR/releases/latest)の `Source`、`ThirdParty`、`update`、`.sig` などは、ソースコード、ライセンス資料、アプリ内更新のためのものです。`SHA256SUMS.txt` でダウンロードしたファイルが完全かどうか確認できます。
 
 ### Docker（Linux amd64 / CPU）
@@ -157,7 +157,7 @@
 - [使い方ガイド](docs/product-guide.ja.md)：インストール、初回起動、認識方法の選び方、費用とプライバシー、更新、よくある質問、ソースからの実行
 - [画面紹介](docs/product-demo.ja.md)：認識の進行、完了画面、モデルワークショップ、書き出し、テーマなど（0.7.1 の画面）
 - [API の申請と設定](docs/api-setup/README.md)（中国語）：各クラウド認識・テキスト AI の申請手順と料金の注意
-- [Mac 版の説明](docs/deployment/macos-experimental.zh-CN.md)（中国語）· [更新方法](UPDATING.md)（中国語）· [0.8.5 リリースノート](docs/releases/0.8.5.md)（中国語・英語・日本語・韓国語）· [変更履歴](CHANGELOG.md) · [貢献ガイド](CONTRIBUTING.md)
+- [Mac 版の説明](docs/deployment/macos-experimental.zh-CN.md)（中国語）· [更新方法](UPDATING.md)（中国語）· [0.8.6 リリースノート](docs/releases/0.8.6.md)（中国語・英語・日本語・韓国語）· [変更履歴](CHANGELOG.md) · [貢献ガイド](CONTRIBUTING.md)
 
 ## 認識の流れ
 
@@ -216,4 +216,4 @@ AI 校正（任意）
 
 プロジェクト独自のコードは **GPL-3.0-only** です（[英語の正式な条文](LICENSE)／[適用範囲](PROJECT_LICENSE.md)）。公式版は無料で提供されます。GPL に従えば商用利用、改変、有償での再配布が可能で、配布時には対応するソースコードの提供などの条件を満たす必要があります。私的な改変は公開する必要はなく、通常の字幕、動画、画像は本ソフトで作成したという理由だけで GPL の対象になることはありません。サードパーティーのコンポーネントにはそれぞれのライセンスがあります。高品質レンダラーで使う Remotion は個人と従業員 3 人以下の営利団体は無料ですが、それより大きい営利団体は別途 Company License が必要です。GSAP は標準ライセンスに従います。詳しくは[サードパーティー通知](THIRD_PARTY_NOTICES.md)と[モデルライセンス一覧](licenses/MODELS.md)を参照してください。完全版インストーラーの配布資料は整備中です（[配布状況](licenses/DISTRIBUTION-STATUS.md)）。
 
-ソースコード：`main` ブランチがアプリのソースです。0.8.5 のインストーラーに対応するビルド元はタグ `v0.8.5` で、完全なビルド入力はリリースの `2ByteASR-Source-0.8.5.zip` にあります（[0.8.5 リリースノート](docs/releases/0.8.5.md#ソースと検証)の「ソースと検証」を参照）。[SOURCE_DELIVERY.md](SOURCE_DELIVERY.md) は 0.5.0 の時点で書かれたもので、0.8.5 向けには更新されていません。
+ソースコード：`main` ブランチがアプリのソースです。0.8.6 のインストーラーに対応するビルド元はタグ `v0.8.6` で、完全なビルド入力はリリースの `2ByteASR-Source-0.8.6.zip` にあります（[0.8.6 リリースノート](docs/releases/0.8.6.md#ソースと検証)の「ソースと検証」を参照）。[SOURCE_DELIVERY.md](SOURCE_DELIVERY.md) は 0.5.0 の時点で書かれたもので、0.8.6 向けには更新されていません。
