@@ -243,6 +243,49 @@ def main(output: str) -> int:
               and abs(float(controller.observed_property('video-frame-info', {}).get('pts', -1))-.4)<.085),
               applied=controller.applied_seek_state())
         controller.screenshot_to_file(folder/'after-eof.png')
+        # Studio's cold load can hold the GUI thread while the muted preroll
+        # runs (macOS 14 CI, 2026-10-27: a 671 ms gap). Frames queued behind
+        # the target frame once replaced it for good: frame 21 at time-pos 0,
+        # 准备超时. Hold the GUI thread the same way, between the renderer
+        # presenting the first frame and the controller handling it, open
+        # with Studio's load-at-start call, and require Studio's own gate.
+        # (A Python slot run directly on the renderer thread deadlocks with
+        # QMediaPlayer.stop(); this one is queued like the controller's.)
+        from types import SimpleNamespace
+        from PySide6.QtCore import QObject
+        from ..studio.studio_readiness import player_surface_ready
+        class BusyGui(QObject):
+            def __init__(self):
+                super().__init__()
+                self.held = []
+            def frame(self, frame):
+                if frame.isValid() and controller._loaded and not self.held:
+                    self.held.append(controller._frame_sequence)
+                    time.sleep(.7)  # The muted preroll keeps presenting meanwhile.
+                controller._frame(frame)
+        busy = BusyGui()
+        canvas.set_speed(1.0)
+        resettles = controller.actor_status()['paused_target_resettles']
+        controller.sink.videoFrameChanged.disconnect(controller._frame)
+        controller.sink.videoFrameChanged.connect(busy.frame)
+        try:
+            canvas.load(str(media), start_seconds=0.0)
+            gate = SimpleNamespace(video=canvas)
+            ready = wait(lambda: player_surface_ready(gate), 10)
+            pump(.3)
+            frame = controller.observed_property('video-frame-info', {}) or {}
+            receipt['busy_gui_preroll'] = details = dict(
+                pts=frame.get('pts'), time_pos=controller.observed_property('time-pos'),
+                gui_held=bool(busy.held),
+                frames_after_hold=controller._frame_sequence-(busy.held[0] if busy.held else 0),
+                resettles=controller.actor_status()['paused_target_resettles']-resettles,
+                applied=controller.applied_seek_state())
+            check('busy_gui_preroll_settles_on_paused_target', ready and bool(busy.held)
+                  and player_surface_ready(gate) and abs(float(frame.get('pts', -1))) < .085, **details)
+        finally:
+            controller.sink.videoFrameChanged.disconnect(busy.frame)
+            controller.sink.videoFrameChanged.connect(controller._frame)
+        controller.screenshot_to_file(folder/'after-busy-preroll.png')
         receipt['actor'] = controller.actor_status()
         receipt['canvas_errors'] = errors
         check('no_canvas_runtime_errors', not errors)

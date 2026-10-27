@@ -92,6 +92,7 @@ class QtEmbeddedVideoController(QObject):
         self._seek_applied = {}
         self._settle_target = None
         self._settle_attempts = 0
+        self._resettles = 0
         self._desired_paused = True
         self._loaded = False
         self._first_frame = False
@@ -271,6 +272,7 @@ class QtEmbeddedVideoController(QObject):
         if self._settle_attempts >= SETTLE_ATTEMPTS:
             return False
         self._settle_attempts += 1
+        self._resettles += 1
         self._seek(target, self._source_epoch, settle=True)
         return True
 
@@ -489,6 +491,7 @@ class QtEmbeddedVideoController(QObject):
         return {'backend': self.backend, 'degraded': bool(self._last_error),
                 'last_error': self._last_error, 'thread_alive': self.running, 'pipe_open': False,
                 'gui_thread': True, 'frame_sequence': self._frame_sequence,
+                'paused_target_resettles': self._resettles,
                 'painted_frames': self.surface.painted_frames,
                 'audio_output_attached': self.player.audioOutput() is not None}
 

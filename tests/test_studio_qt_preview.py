@@ -230,6 +230,7 @@ def test_frames_queued_behind_a_busy_gui_preroll_resettle_the_paused_target(cont
     assert shown['video-frame-info']['pts'] == 0.0 and shown['time-pos'] == 0.0
     assert controller.surface.frame.pixelColor(0, 0).name() == '#0000ff'
     assert controller.applied_seek_state()['generation'] == 2
+    assert controller.actor_status()['paused_target_resettles'] == 1
     assert player_surface_ready(page)
 
 
