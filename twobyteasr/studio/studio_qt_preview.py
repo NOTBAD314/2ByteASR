@@ -20,6 +20,11 @@ from PySide6.QtMultimedia import QMediaPlayer, QMediaMetaData, QVideoSink
 from PySide6.QtWidgets import QApplication, QWidget
 
 
+# A paused target that keeps drifting is reported by Studio readiness rather
+# than chased forever.
+SETTLE_ATTEMPTS = 3
+
+
 class EmbeddedVideoSurface(QWidget):
     """One normal child widget: decoded video below existing bitmap slots."""
     def __init__(self, parent):
@@ -85,6 +90,8 @@ class QtEmbeddedVideoController(QObject):
         self._seek_target = None
         self._seek_pending = False
         self._seek_applied = {}
+        self._settle_target = None
+        self._settle_attempts = 0
         self._desired_paused = True
         self._loaded = False
         self._first_frame = False
@@ -222,6 +229,8 @@ class QtEmbeddedVideoController(QObject):
             duration = max(1, frame.endTime()-frame.startTime())/1_000_000.0
             # Reject a late pre-seek frame rather than rebadging its epoch.
             if abs(pts-self._seek_target) > max(.05, duration*2): return
+        elif self._resettle_after_late_frame(pts):
+            return
         self.surface.frame = image.copy()
         self.surface.update()
         self._first_frame = True
@@ -236,8 +245,34 @@ class QtEmbeddedVideoController(QObject):
             self._properties['seeking'] = False
             self._seek_applied = {'generation': self._source_epoch, 'target': self._seek_target,
                                   'perf_counter': time.perf_counter(), 'frame_pts': pts}
+            self._settle_target = self._seek_target if self._desired_paused else None
         if self._desired_paused: self.player.pause()
         self._publish_position(self.player.position(), 'qt-decoded-video-frame')
+
+    def _resettle_after_late_frame(self, pts):
+        """Seek the paused target again when a muted run kept decoding past it.
+
+        Preroll plays muted until the target frame reaches this GUI-thread
+        slot, which then pauses. While a cold Studio load keeps the GUI thread
+        busy, the renderer goes on presenting frames that queue up behind the
+        target frame, and QMediaPlayer.pause() stops its position timer
+        without refreshing position(). macOS 14 CI (2026-10-27) kept frame 21
+        (pts 0.667) at time-pos 0 and Studio timed out at 准备播放器. A paused
+        seek renders exactly one frame and refreshes position(); the remaining
+        queued frames are rejected by the pending-seek rule above.
+        """
+        target = self._settle_target
+        if not self._desired_paused or target is None or pts is None:
+            return False
+        # Same rule as studio_readiness.player_surface_ready (24 fps default).
+        fps = float(self._properties.get('container-fps') or 24.0)
+        if abs(pts-target) <= max(.05, 1.5/max(1., fps)):
+            return False
+        if self._settle_attempts >= SETTLE_ATTEMPTS:
+            return False
+        self._settle_attempts += 1
+        self._seek(target, self._source_epoch, settle=True)
+        return True
 
     def post_load_at(self, media_path, seconds, *, generation):
         return self._post(lambda: self._load(media_path, seconds, generation), 'loadfile')
@@ -260,6 +295,7 @@ class QtEmbeddedVideoController(QObject):
         self._last_activity = time.monotonic()
         self._seek_target = max(0, float(seconds))
         self._seek_pending = True
+        self._settle_target, self._settle_attempts = None, 0
         self._properties.update({'path': str(source), 'time-pos': None,
                                  'idle-active': True, 'eof-reached': False,
                                  'seeking': True, 'video-frame-info': {}, 'video-out-params': {}})
@@ -283,11 +319,13 @@ class QtEmbeddedVideoController(QObject):
     def seek(self, seconds, *, accurate=True):
         self._seek(seconds, self._source_epoch)
 
-    def _seek(self, seconds, generation):
+    def _seek(self, seconds, generation, *, settle=False):
         self._require_gui()
         self._advance_source_epoch(generation)
         self._seek_target = max(0, float(seconds))
         self._seek_pending = True
+        self._settle_target = None
+        if not settle: self._settle_attempts = 0
         self._properties.update({'seeking': True, 'eof-reached': False, 'video-frame-info': {}})
         self.player.setPosition(round(self._seek_target*1000))
         if self.player.playbackState() == QMediaPlayer.StoppedState:
@@ -306,7 +344,9 @@ class QtEmbeddedVideoController(QObject):
         self._properties['pause'] = bool(paused)
         if paused:
             if self._first_frame: self.player.pause()
-        elif self._loaded:
+            return
+        self._settle_target = None  # Playing frames are meant to move on.
+        if self._loaded:
             if self._properties['eof-reached']:
                 self._seek(0, self._source_epoch)
             self._properties['eof-reached'] = False
@@ -351,6 +391,7 @@ class QtEmbeddedVideoController(QObject):
         self._load_serial += 1
         self._loaded = self._first_frame = False
         self._seek_pending = False
+        self._settle_target, self._settle_attempts = None, 0
         self._properties.update({'path': '', 'time-pos': None, 'pause': True,
                                  'idle-active': True, 'eof-reached': False, 'seeking': False,
                                  'video-frame-info': {}, 'video-out-params': {}})
