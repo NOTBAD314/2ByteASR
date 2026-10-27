@@ -303,6 +303,16 @@ jobs:
           MODEL_REQUESTED: ${{ inputs.run_model_smoke }}
           CLOUD_MLX_REQUESTED: ${{ inputs.run_cloud_mlx_smoke }}
         run: python scripts/macos_ci_status.py --qa-root "$MAC_QA_ROOT"
+      - name: Keep receipts small enough for the DMG (0.8.7 CI branch)
+        if: always()
+        run: |
+          set -euo pipefail
+          test -n "${MAC_QA_ROOT:-}" || exit 0
+          mov="$MAC_QA_ROOT/renderer-smoke/animation.mov"
+          if [ -f "$mov" ]; then
+            { shasum -a 256 "$mov"; stat -f '%z bytes' "$mov"; } > "$MAC_QA_ROOT/renderer-smoke/animation.mov.sha256.txt"
+            rm "$mov"
+          fi
       - name: Bound artifact storage before upload
         if: always()
         run: |
