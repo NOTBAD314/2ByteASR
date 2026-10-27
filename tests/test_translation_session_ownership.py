@@ -9,7 +9,8 @@ from twobyteasr.subtitle_rules.subtitle_translation import TranslationResult, Tr
 
 
 @pytest.mark.parametrize('mode', ['switch', 'close', 'new_session'])
-def test_late_result_after_project_switch_or_close_is_not_applied(monkeypatch, mode):
+@pytest.mark.parametrize('atomic_display', [False, True])
+def test_late_result_after_project_switch_or_close_is_not_applied(monkeypatch, mode, atomic_display):
     app = QApplication.instance() or QApplication([])
     from twobyteasr.caption_design import studio_ai
     from twobyteasr.studio.studio_translation_dialog import SubtitleTranslationDialog
@@ -19,7 +20,7 @@ def test_late_result_after_project_switch_or_close_is_not_applied(monkeypatch, m
     original.validate()
     page = SimpleNamespace(project=original, selected_cue_ids=lambda: ['c0'], undo_stack=QUndoStack(),
                            session=SimpleNamespace(generation=7))
-    dialog = SubtitleTranslationDialog(page)
+    dialog = SubtitleTranslationDialog(page, atomic_display=atomic_display)
     before = copy.deepcopy(original.generation_metadata)
     other = SubtitleProject(media=StudioMedia(''), cues=[StudioCue('c0', 0, 1000, 'New project')])
     other.validate()

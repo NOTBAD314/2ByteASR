@@ -178,7 +178,8 @@ class VideoCompositionScene(QWidget):
         self._async_compositor = None
         self._async_video_active = False
         self._drag: dict[str, Any] | None = None
-        self._secondary_frame_timestamps_ns: list[int] = []
+        self._secondary_frame_timestamps_ns: deque[int] = deque(maxlen=1200)
+        self._secondary_frame_total = 0
         self._samples: deque[CompositionSample] = deque(maxlen=512)
         self._project_ms = 0
         # ADR-0005：色键结果按 (clip, pts, 参数签名) LRU——暂停/往复 scrub 命中。
@@ -271,10 +272,9 @@ class VideoCompositionScene(QWidget):
 
     def _secondary_frame_arrived(self) -> None:
         self._secondary_frame_timestamps_ns.append(perf_counter_ns())
+        self._secondary_frame_total += 1
         if self._async_video_active:
             return
-        if len(self._secondary_frame_timestamps_ns) > 1_200:
-            del self._secondary_frame_timestamps_ns[:200]
         if self.isVisible() and callable(getattr(self.parentWidget(), 'publish_compositor_overlay', None)):
             # WM_PAINT is coalesced with the rest of the editor and can run
             # at 30–40Hz even when QVideoSink delivers 60Hz. Native video
@@ -317,13 +317,19 @@ class VideoCompositionScene(QWidget):
 
     def reset_performance_samples(self) -> None:
         self._secondary_frame_timestamps_ns.clear()
+        self._secondary_frame_total = 0
         self._native_publish_ms.clear()
         self._native_publish_times.clear()
         self._composition_render_ms.clear()
+        if self._async_compositor is not None:
+            with self._async_compositor.condition:
+                self._async_compositor.samples.clear()
+                self._async_compositor.submitted_count = 0
 
     def performance_snapshot(self) -> dict[str, object]:
-        async_samples=list(self._async_compositor.samples) if self._async_compositor else []
-        timestamps = self._secondary_frame_timestamps_ns
+        from ..diagnostics.publication_metrics import event_rate, percentile95
+        async_samples=list(self._async_compositor.samples.copy()) if self._async_compositor else []
+        timestamps = list(self._secondary_frame_timestamps_ns)
         intervals = [
             (right - left) / 1_000_000.0
             for left, right in zip(timestamps, timestamps[1:])
@@ -340,25 +346,37 @@ class VideoCompositionScene(QWidget):
         )
         fps = (len(timestamps) - 1) / duration_seconds if duration_seconds > 0 else 0.0
         now = perf_counter()
-        recent_publishes = [ts for ts in self._native_publish_times if ts >= now - 2.]
+        submitted = ([row.get('submitted_at', row['compose_end']) for row in async_samples]
+                     if self._async_video_active else list(self._native_publish_times))
+        submission = event_rate(submitted, now)
+        submission['measurement'] = 'composition mailbox submission; not native ACK or display'
+        render_p95 = (percentile95(row['composition_ms'] for row in async_samples)
+                      if self._async_video_active else percentile95(self._composition_render_ms))
         return {
             'composition_thread': 'worker' if self._async_video_active else 'gui',
-            'worker_composition_p95_ms': round(float(np.percentile([row['composition_ms'] for row in async_samples],95)),3) if async_samples else None,
+            'worker_composition_p95_ms': percentile95(row['composition_ms'] for row in async_samples),
             'worker_submitted_frames': len(async_samples),
+            'worker_submitted_total': self._async_compositor.submitted_count if self._async_compositor else 0,
+            'composition_submission': submission,
             "frame_count": len(timestamps),
+            "frame_count_total": self._secondary_frame_total,
+            "frame_samples_overwritten": max(0, self._secondary_frame_total - len(timestamps)),
+            "frame_sample_capacity": self._secondary_frame_timestamps_ns.maxlen,
             "duration_seconds": round(duration_seconds, 3),
             "fps": round(fps, 3),
             "interval_p95_ms": round(p95, 3) if p95 is not None else None,
             "players": len(self._players),
             "layers": len(self._layers),
-            "native_publish_count": len(self._native_publish_ms),
+            "native_publish_count": len(submitted),
             "native_publish_window_seconds": 2.,
-            "native_publish_fps": round((len(recent_publishes)-1)/(recent_publishes[-1]-recent_publishes[0]), 3)
-            if len(recent_publishes)>1 and now-recent_publishes[-1] < .5 else 0.,
+            # Compatibility field for existing diagnostic readers. Its scope
+            # is now explicit and both composition paths feed the same value.
+            "native_publish_fps": submission['events_per_second'],
+            "native_publish_status": submission['status'],
+            "native_publish_measurement": submission['measurement'],
             "native_publish_p95_ms": round(float(np.percentile(self._native_publish_ms, 95)), 3)
             if self._native_publish_ms else None,
-            "render_p95_ms": round(float(np.percentile(self._composition_render_ms, 95)), 3)
-            if self._composition_render_ms else None,
+            "render_p95_ms": render_p95,
         }
 
     def telemetry(self) -> list[dict[str, object]]:

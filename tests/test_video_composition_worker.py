@@ -47,6 +47,9 @@ def test_single_plain_follower_keeps_owned_pixels_for_native_gpu_scaling():
         frame,rect,context=delivered[-1]
         assert context['direct_gpu_scale'] and frame.size()==image.size()
         assert rect.getRect()==(4,8,640,360) and bytes(frame.constBits())==bytes(payload)
+        assert context['raster']==dict(width=160,height=90,stride=640,bytes=160*90*4,
+                                      display_rect=(4,8,640,360))
+        assert context['submitted_at'] >= context['compose_end']
         worker.configure(None);del payload
         assert frame.pixelColor(10,10).blue()==172
     finally:worker.close();worker.thread.join(2)

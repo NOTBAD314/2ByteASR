@@ -34,6 +34,16 @@ def annotate_measurement_scope(result):
     return result
 
 
+def require_visible_capture(result, spec):
+    if spec.get('desktop','foreground')!='foreground':return result
+    evidence=result.get('visibility')
+    if not isinstance(evidence,dict) or evidence.get('measurement_valid') is not True:
+        result['measurement_valid']=False
+        result['performance_pass']='UNVERIFIED'
+        result['measurement_reason']='missing or invalid native foreground/ROI visibility observations'
+    return result
+
+
 def annotate_transport_evidence(result, spec):
     """A same-file cut changes source time without changing the media binding."""
     clips={r.get('audio_request',{}).get('clip_id') for r in result.get('telemetry',[])
@@ -125,6 +135,24 @@ def annotate_phase_evidence(result, target, spec):
         result['whole_window_video_performance_pass']=result.get('performance_pass','UNVERIFIED')
         result['performance_pass']='UNVERIFIED'
         result['performance_scope']='discrete-operation run; inspect operation windows, not an uninterrupted steady-playback pass'
+    if spec.get('phase')=='resize':
+        from twobyteasr.diagnostics.playback_interaction_metrics import resize_results
+        evidence=resize_results(result,target,spec)
+        result['resize_evidence']=evidence
+        result['measurement_valid']=evidence['measurement_valid']
+        result['performance_pass']=evidence['performance_pass']
+        result['performance_scope']=evidence['scope']
+    elif spec.get('phase')=='seek':
+        from twobyteasr.diagnostics.playback_interaction_metrics import seek_results
+        evidence=seek_results(result,target,spec)
+        result['seek_evidence']=evidence
+        result['measurement_valid']=evidence['measurement_valid']
+        result['performance_pass']=evidence['performance_pass']
+        result['performance_scope']=evidence['scope']
+        if int((result.get('media') or {}).get('tracks',1))>1:
+            result['primary_seek_performance_pass']=evidence['performance_pass']
+            result['performance_pass']='UNVERIFIED'
+            result['follower_seek_status']='UNVERIFIED: per-follower target PTS matching is not part of this primary probe'
 
 
 def run_manifest(args,out):
@@ -142,13 +170,14 @@ def run_manifest(args,out):
         if len(kinds)!=1:raise ValueError('each case requires exactly one project or media')
         kind=kinds[0];path=(manifest.parent/str(case[kind])).resolve()
         if not path.is_file():raise FileNotFoundError(str(path))
-        command=[sys.executable,'-X','utf8',str(Path(__file__).resolve()),'--output',str(out/name),'--'+kind,str(path)]
-        for key in ('seconds','repeat','rate','start','phase','captions','diagnostics','desktop','zoom','frame_code_period'):
+        from twobyteasr.diagnostics.playback_diagnostic import runner_command
+        command=[*runner_command(Path(__file__).resolve()),'--output',str(out/name),'--'+kind,str(path)]
+        for key in ('seconds','repeat','rate','start','settle','phase','captions','diagnostics','desktop','zoom','frame_code_period'):
             command.extend(['--'+key.replace('_','-'),str(case.get(key,getattr(args,key)))])
         for key in ('source','exe','capture','presentmon'):
             value=getattr(args,key)
             if value:command.extend(['--'+key,str(value.resolve())])
-        for key in ('elevate_presentmon','maximized','follow','audible'):
+        for key in ('elevate_presentmon','maximized','follow','audible','wait_foreground'):
             if case.get(key,getattr(args,key)):command.append('--'+key.replace('_','-'))
         if case.get('barcode_y',args.barcode_y)>=0:command.extend(['--barcode-y',str(case.get('barcode_y',args.barcode_y))])
         for region in case.get('regions',[]):command.extend(['--region',str(region)])
@@ -173,7 +202,8 @@ def main():
     p.add_argument('--zoom',type=int,choices=[80,90,100,110,120,135,150,175,200],default=100,help='Isolated interface zoom; system DPI is measured separately')
     p.add_argument('--phase',choices=['steady','background','seek','resize'],default='steady')
     p.add_argument('--desktop',choices=['foreground','private'],default='foreground',help='private validates GUI/control only, never screen cadence')
-    p.add_argument('--seconds',type=float,default=20);p.add_argument('--repeat',type=int,default=3)
+    p.add_argument('--wait-foreground',action='store_true',help='write PID/HWND request and wait for matching foreground-approved.json plus real unobscured foreground')
+    p.add_argument('--seconds',type=float,default=20,help='steady wall duration; resize divides this stable sample budget over three windows and records handoff time separately');p.add_argument('--repeat',type=int,default=3)
     p.add_argument('--rate',type=float,default=1);p.add_argument('--start',type=float,default=5)
     p.add_argument('--captions',choices=['none','plain','bilingual','motion'],default='plain')
     p.add_argument('--barcode-y',type=int,default=-1);p.add_argument('--settle',type=float,default=5)
@@ -182,10 +212,14 @@ def main():
     p.add_argument('--follow',action='store_true');p.add_argument('--audible',action='store_true')
     p.add_argument('--compare',type=Path,help='Previous summary.json, all repeats retained')
     a=p.parse_args();out=a.output.resolve()
-    if out.exists() or not out.is_relative_to(ROOT/'tmp'):p.error('use a fresh output under this checkout/tmp')
+    from twobyteasr.diagnostics.playback_diagnostic import output_root
+    permitted = out.is_relative_to(ROOT/'tmp') or (getattr(sys,'frozen',False) and out.is_relative_to(output_root()))
+    if out.exists() or not permitted:p.error('use a fresh output under checkout/tmp (or the packaged diagnostics temporary folder)')
     if not 16<=a.seconds<=180 or not 1<=a.repeat<=10:p.error('seconds 16..180; repeat 1..10')
+    if a.phase=='resize' and a.maximized:p.error('resize capture uses a restored window; omit --maximized')
     if not 1<=a.frame_code_period<=4096:p.error('frame-code-period must be 1..4096')
     if a.desktop=='private' and (a.capture or a.presentmon):p.error('display capture requires the foreground desktop')
+    if a.desktop=='private' and a.wait_foreground:p.error('--wait-foreground requires the interactive desktop')
     if a.region and (not a.capture or a.desktop!='foreground'):p.error('additional regions require foreground desktop capture')
     if len(a.region)>4 or len({r['name'] for r in a.region})!=len(a.region):p.error('at most four uniquely named regions')
     out.mkdir(parents=True)
@@ -202,7 +236,10 @@ def main():
     if a.generate_media:
         import math
         from verify_visible_playback import make_media
-        duration=max(30,math.ceil(a.start+a.seconds*a.rate+2))
+        # Resize uses three stable windows plus explicitly excluded collector
+        # handoffs. The continuous source must also cover that extra wall time.
+        playback_seconds=a.seconds+(30 if a.phase=='resize' else 0)
+        duration=max(30,math.ceil(a.start+playback_seconds*a.rate+2))
         media=make_media(ROOT,out/'media',duration=duration,with_loop=False)/f'V1-{duration}s.mp4';a.barcode_y=710
     elif a.media:media=a.media.resolve()
     else:
@@ -232,7 +269,8 @@ def main():
           'settle':a.settle,'follow':a.follow,'audio':'audible' if a.audible else 'muted',
           'capture':str(a.capture.resolve()) if a.capture else '', 'diagnostics':a.diagnostics,
           'presentmon':str(a.presentmon.resolve()) if a.presentmon else '',
-          'elevate_presentmon':a.elevate_presentmon,'maximized':a.maximized,'phase':a.phase,'desktop':a.desktop,'interface_zoom_percent':a.zoom}
+          'elevate_presentmon':a.elevate_presentmon,'maximized':a.maximized,'phase':a.phase,'desktop':a.desktop,'interface_zoom_percent':a.zoom,
+          'wait_foreground':a.wait_foreground}
     spec['regions']=a.region
     spec['capture_capabilities']=capabilities
     spec['capture_sha256']=hashlib.sha256(a.capture.read_bytes()).hexdigest() if a.capture else None
@@ -281,6 +319,9 @@ def main():
     from twobyteasr.acceptance import studio_acceptance_audit
     metric_spec=importlib.util.spec_from_file_location('twobyteasr.diagnostics.playback_metrics',os.environ['CADENCE_METRICS'])
     metric=importlib.util.module_from_spec(metric_spec);sys.modules[metric_spec.name]=metric;metric_spec.loader.exec_module(metric)
+    for name,key in [('twobyteasr.acceptance.playback_interactions','CADENCE_INTERACTIONS'),('twobyteasr.diagnostics.playback_interaction_metrics','CADENCE_OPERATION_METRICS'),('twobyteasr.acceptance.loading_native_probe','CADENCE_NATIVE_PROBE'),('twobyteasr.acceptance.playback_visibility','CADENCE_VISIBILITY')]:
+        helper_spec=importlib.util.spec_from_file_location(name,os.environ[key])
+        helper=importlib.util.module_from_spec(helper_spec);sys.modules[name]=helper;helper_spec.loader.exec_module(helper)
     spec=importlib.util.spec_from_file_location('twobyteasr.acceptance.playback_cadence_audit',os.environ['CADENCE_AUDIT'])
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     studio_acceptance_audit.start_acceptance=lambda window:module.start(window,studio_acceptance_audit.audit_directory())
@@ -288,7 +329,12 @@ def main():
     return quick_start.main()
 if __name__=='__main__':raise SystemExit(main())
 ''','utf8')
-            env.update(CADENCE_SOURCE=str(source),CADENCE_AUDIT=str(ROOT/'twobyteasr/acceptance/playback_cadence_audit.py'),CADENCE_METRICS=str(ROOT/'twobyteasr/diagnostics/playback_metrics.py'),TWOBYTEASR_ACCEPTANCE_SCENARIO='workbench-performance')
+            env.update(CADENCE_SOURCE=str(source),CADENCE_AUDIT=str(ROOT/'twobyteasr/acceptance/playback_cadence_audit.py'),CADENCE_METRICS=str(ROOT/'twobyteasr/diagnostics/playback_metrics.py'),
+                CADENCE_INTERACTIONS=str(ROOT/'twobyteasr/acceptance/playback_interactions.py'),
+                CADENCE_OPERATION_METRICS=str(ROOT/'twobyteasr/diagnostics/playback_interaction_metrics.py'),
+                CADENCE_NATIVE_PROBE=str(ROOT/'twobyteasr/acceptance/loading_native_probe.py'),
+                CADENCE_VISIBILITY=str(ROOT/'twobyteasr/acceptance/playback_visibility.py'),
+                TWOBYTEASR_ACCEPTANCE_SCENARIO='workbench-performance')
             command=[sys.executable,'-B',str(driver)]
         entry_cwd=entry_working_directory(a.source,a.exe)
         region_evidence={'regions':[],'errors':[]}
@@ -299,16 +345,17 @@ if __name__=='__main__':raise SystemExit(main())
           with (target/'application.log').open('wb') as log:
             process=subprocess.Popen(command,cwd=entry_cwd,env=env,stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
             try:
-                code=process.wait(timeout=a.seconds+180)
+                code=process.wait(timeout=a.seconds+180+(300 if a.wait_foreground else 60))
                 if a.region:region_evidence={'regions':a.region,'errors':[],'single_duplication':True,'protocol':capabilities.get('protocol')}
             except subprocess.TimeoutExpired:
                 subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW);code=-1
         path=target/'result.json';result=json.loads(path.read_text('utf8')) if path.exists() else {'functional_pass':False,'measurement_valid':False,'performance_pass':'UNVERIFIED','errors':['no completed result']}
         annotate_transport_evidence(result,spec)
         annotate_measurement_scope(result)
-        if a.region:attach_region_results(result,a.region,region_evidence,target,source_fps=fps,rate=a.rate)
+        if a.region and a.phase!='resize':attach_region_results(result,a.region,region_evidence,target,source_fps=fps,rate=a.rate)
         annotate_phase_evidence(result,target,spec)
-        if capabilities.get('ready_after_first_frame'):
+        require_visible_capture(result,spec)
+        if capabilities.get('ready_after_first_frame') and a.phase!='resize':
             names=['desktop.csv',*[r['name']+'-desktop.csv' for r in a.region]]
             ready={}
             for name in names:

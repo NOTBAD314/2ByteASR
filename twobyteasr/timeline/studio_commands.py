@@ -481,6 +481,43 @@ class ReplaceCuesCommand(QUndoCommand):
         self._apply(self.before, self._selection_before if self._selection_after is not None else None)
 
 
+class CleanupCuesCommand(ReplaceCuesCommand):
+    """One validated cleanup, one state revision and one undo/redo notification."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # QUndoStack owns/deletes the C++ command after push, including obsolete
+        # failed commands. Callers retain this plain receipt, never a Qt handle.
+        self.outcome = {"applied": False, "error": None}
+
+    def _apply(self, cues, selection_override=None):
+        state = state_for(self.project)
+        with state.transaction(
+            self.project, action_id="caption_cleanup",
+            dirty=(DirtyDomain.CUE_MODEL | DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING
+                   | DirtyDomain.PROJECT_METADATA | DirtyDomain.ADVANCED_PREVIEW),
+            affected_cue_ids=(cue.id for cue in (*self.before, *self.after)),
+        ):
+            super()._apply(cues, selection_override)
+
+    def redo(self):
+        self.outcome.update(applied=False, error=None)
+        try:
+            self._apply(self.after, self._selection_after)
+        except Exception as exc:
+            # PySide's virtual redo boundary can swallow a Python exception.
+            # The existing transaction already restored the project; marking
+            # this push obsolete prevents a phantom undo entry after failure.
+            self.outcome["error"] = exc
+            self.setObsolete(True)
+            return
+        self.outcome["applied"] = True
+
+    def undo(self):
+        self._apply(self.before, self._selection_before if self._selection_after is not None else None)
+        self.outcome["applied"] = False
+
+
 class SpliceCuesCommand(QUndoCommand):
     """O(affected) structural cue edit that splices a contiguous list range.
 
@@ -923,6 +960,8 @@ class RecoverSpeakersCommand(SpeakerStateCommand):
         self.after_evidence = copy.deepcopy(recovered.asr_evidence)
         self.before_order = list(project.studio_state.get("speaker_track_order", []))
         self.after_order = list(recovered.studio_state.get("speaker_track_order", []))
+        self.before_order_present = "speaker_track_order" in project.studio_state
+        self.after_order_present = "speaker_track_order" in recovered.studio_state
         self.error = ""
         self._committed = False
 
@@ -933,7 +972,10 @@ class RecoverSpeakersCommand(SpeakerStateCommand):
         try:
             self.project.generation_metadata = copy.deepcopy(self.after_metadata if forward else self.before_metadata)
             self.project.asr_evidence = copy.deepcopy(self.after_evidence if forward else self.before_evidence)
-            self.project.studio_state["speaker_track_order"] = list(self.after_order if forward else self.before_order)
+            if (self.after_order_present if forward else self.before_order_present):
+                self.project.studio_state["speaker_track_order"] = list(self.after_order if forward else self.before_order)
+            else:
+                self.project.studio_state.pop("speaker_track_order", None)
             self._apply(forward)
             self._committed = True
         except Exception as exc:

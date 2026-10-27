@@ -84,8 +84,14 @@ def test_success_still_validates_payload(tmp_path):
 def test_real_child_exit_keeps_cause_and_full_diagnostics(tmp_path, monkeypatch):
     # A real subprocess emits progress, saves failure evidence, then raises.
     import numpy as np
-    import torch
     from types import SimpleNamespace
+    try:
+        import torch
+    except ModuleNotFoundError:
+        # This fixture exercises subprocess failure handling, not CUDA. The
+        # production managed model runtime may be separate from the test venv.
+        torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+        monkeypatch.setitem(sys.modules, 'torch', torch)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     worker = tmp_path / "failed_worker.py"
     worker.write_text('''import json, sys

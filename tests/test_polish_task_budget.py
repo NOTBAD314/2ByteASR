@@ -319,7 +319,7 @@ def test_null_position_is_still_rejected(context, monkeypatch):
     monkeypatch.setattr('twobyteasr.providers.ai_providers.provider_for_stage', lambda *a, **k: provider)
     result = polishing.call_correction_api([cue(1, '上风好爽')], [], '', '', '夹具', '', [], [], [],
                                            _retry_budget=RetryBudget(0, total_seconds=30))
-    assert not result.succeeded and result.failures == {1: 'request_error'}
+    assert not result.succeeded and result.failures == {1: 'structured_schema_error'}
     assert polishing._without_null_optional_fields(
         {'suspect_results': [{'suspect_id': 's1', 'disposition': 'keep', 'candidate_id': None,
                               'evidence': None}]}) == {

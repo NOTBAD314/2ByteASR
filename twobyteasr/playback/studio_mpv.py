@@ -349,6 +349,9 @@ class _MpvCommandActor:
             "observed_monotonic_ts": time.monotonic(),
             "position": None,
         }
+        self._frame_observation: dict[str, Any] = {'status': 'unobserved'}
+        self._frame_witness_request = None
+        self._frame_ack_before_seek = None
         self._thread = threading.Thread(
             target=self._run,
             daemon=True,
@@ -361,6 +364,18 @@ class _MpvCommandActor:
 
     def _init_request_metrics(self):
         self._request_samples = deque(maxlen=512)
+        self._ipc_sleep_samples = deque(maxlen=1200)
+        self._ipc_sleep_count = 0
+        self._ipc_timer_samples = deque(maxlen=1200)
+        self._ipc_timer_count = 0
+        self._poll_wait_requested = os.environ.get('TWOBYTEASR_MPV_POLL_WAIT','sleep').strip().lower()
+        self._poll_timer = None
+        self._poll_timer_error = ''
+        if self._poll_wait_requested not in {'sleep','highres_timer'}:
+            self._poll_timer_error='unrecognized poll wait option; retaining time.sleep'
+        elif self._poll_wait_requested=='highres_timer' and os.name!='nt':
+            self._poll_timer_error='high-resolution poll timer unsupported on this platform'
+        self._last_poll_wait_kind = 'not_sampled'
         self._submitted_count = self._coalesced_count = self._completed_count = 0
         self._queue_peak = 0
 
@@ -512,10 +527,145 @@ class _MpvCommandActor:
 
     def begin_seek(self, generation: int, target: float) -> None:
         """Advance the controller-owned epoch before the matching command."""
+        self._frame_ack_before_seek = self.controller.applied_seek_state().get('perf_counter')
         self.controller._advance_source_epoch(int(generation))
         self._source_generation = self.controller.source_epoch
         self._seek_target = max(0.0, float(target))
         self._seek_poll_until = time.monotonic()+.35
+        self._frame_witness_request = None
+        with self._properties_lock:
+            self._frame_observation = {'status': 'awaiting_restart',
+                                      'source_generation': self._source_generation}
+
+    def frame_observation(self) -> dict[str, Any]:
+        with self._properties_lock:
+            return dict(self._frame_observation)
+
+    def _queue_frame_witness(self) -> None:
+        """Start a bounded witness after a real, acknowledged restart.
+
+        An event received before the matching seek/load ACK cannot certify
+        that request. The queued query is fenced again before and after IPC.
+        """
+        generation = self._source_generation
+        media_epoch = self.controller._subtitle_binding_epoch
+        seek = self.controller.applied_seek_state()
+        restarted = time.perf_counter()
+        if (getattr(self, '_stopping', False) or seek.get('generation') != generation
+                or not seek.get('perf_counter')
+                or seek.get('perf_counter') == getattr(self, '_frame_ack_before_seek', None)):
+            return
+        request = dict(generation=generation, media_epoch=media_epoch, seek=seek,
+                       restarted=restarted, attempts=0, queued=False, signature=None)
+        self._frame_witness_request = request
+        self._schedule_frame_witness(request)
+
+    FRAME_WITNESS_QUERY_LIMIT = 4
+
+    def _frame_witness_current(self, request):
+        applied = self.controller.applied_seek_state()
+        return (not getattr(self, '_stopping', False)
+                and getattr(self, '_frame_witness_request', None) is request
+                and request['generation'] == self._source_generation == self.controller.source_epoch
+                and request['media_epoch'] == self.controller._subtitle_binding_epoch
+                and applied.get('generation') == request['generation']
+                and applied.get('perf_counter') != getattr(self, '_frame_ack_before_seek', None)
+                and applied.get('perf_counter') == request['seek'].get('perf_counter'))
+
+    def _schedule_frame_witness(self, request):
+        if not self._frame_witness_current(request):
+            if getattr(self, '_frame_witness_request', None) is request:
+                self._frame_witness_request = None
+            return
+        if request['queued'] or request['attempts'] >= self.FRAME_WITNESS_QUERY_LIMIT:
+            return
+        def query():
+            request['queued'] = False
+            if not self._frame_witness_current(request):
+                if getattr(self, '_frame_witness_request', None) is request:
+                    self._frame_witness_request = None
+                return
+            # Count work at execution, not each coalesced property notification.
+            request['attempts'] += 1
+            self._capture_frame_witness(request['generation'], request['media_epoch'],
+                                        request['seek'], request['restarted'])
+            if (self.frame_observation().get('status') == 'ready'
+                    or request['attempts'] >= self.FRAME_WITNESS_QUERY_LIMIT
+                    or not self._frame_witness_current(request)):
+                if getattr(self, '_frame_witness_request', None) is request:
+                    self._frame_witness_request = None
+        request['queued'] = True
+        if not self.post(query, coalesce_key='frame-readiness', deferred=True):
+            request['queued'] = False
+            if getattr(self, '_frame_witness_request', None) is request:
+                self._frame_witness_request = None
+
+    def _refresh_frame_witness(self):
+        """A late frame/property may finish an earlier qualified restart.
+
+        Cached metadata merely schedules a fresh actor query; it never marks
+        ready. No polling, screenshots, or new restart/seek attribution.
+        """
+        request = getattr(self, '_frame_witness_request', None)
+        if request is None:
+            return
+        if not self._frame_witness_current(request):
+            self._frame_witness_request = None
+            return
+        state = self.properties()
+        frame = state.get('video-frame-info')
+        from .frame_readiness import same_media_path
+        if (not isinstance(frame, dict) or not frame or state.get('seeking')
+                or state.get('time-pos') is None
+                or not same_media_path(state.get('path'), self.controller._subtitle_media_path)):
+            return
+        signature = (state.get('path'), state.get('time-pos'), repr(frame))
+        if signature != request['signature']:
+            request['signature'] = signature
+            self._schedule_frame_witness(request)
+
+    def _capture_frame_witness(self, generation, media_epoch, seek, restarted):
+        def current():
+            applied = self.controller.applied_seek_state()
+            return (not getattr(self, '_stopping', False)
+                    and generation == self._source_generation == self.controller.source_epoch
+                    and media_epoch == self.controller._subtitle_binding_epoch
+                    and applied.get('generation') == generation
+                    and applied.get('perf_counter') != getattr(self, '_frame_ack_before_seek', None)
+                    and applied.get('perf_counter') == seek.get('perf_counter'))
+        if not current():
+            return
+        started = time.perf_counter()
+        witness = {'status': 'unavailable', 'source_generation': generation,
+            'media_epoch': media_epoch, 'seek_target': seek.get('target'),
+            'command_ack_at': seek['perf_counter'], 'restart_at': restarted,
+            'measurement': 'playback-restart + current VO frame metadata; ready to present, not scanout'}
+        try:
+            state = {name: self.exchange(['get_property', name], timeout=.5).get('data')
+                     for name in ('path', 'seeking', 'time-pos', 'video-frame-info')}
+            witness.update(path=state['path'], position=state['time-pos'],
+                           seeking=state['seeking'], frame_info=state['video-frame-info'])
+            position = state['time-pos']
+            frame = state['video-frame-info']
+            from .frame_readiness import same_media_path
+            fps = float(self.property('container-fps') or self.property('estimated-vf-fps') or 24.)
+            tolerance = max(.050, 1.5/max(1., fps))
+            if not self.property('pause', True):
+                tolerance += max(0., time.perf_counter()-seek['perf_counter']) * float(self.property('speed',1.) or 1.)
+            witness['target_tolerance_seconds'] = tolerance
+            if (isinstance(frame, dict) and frame and position is not None and not state['seeking']
+                    and same_media_path(state['path'], self.controller._subtitle_media_path)
+                    and abs(float(position)-float(seek['target'])) <= tolerance):
+                witness['status'] = 'ready'
+            else:
+                witness['status'] = 'frame_or_target_not_ready'
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            witness['error'] = str(exc)
+        witness['queried_at'] = time.perf_counter()
+        witness['query_ms'] = (witness['queried_at']-started)*1000
+        if current():
+            with self._properties_lock:
+                self._frame_observation = witness
 
     def _handle_event(self, payload: dict[str, Any]) -> None:
         name=payload.get('event')
@@ -525,10 +675,14 @@ class _MpvCommandActor:
                  reason=payload.get('reason'),result='failed' if payload.get('error') else 'observed',source_epoch=self.controller.source_epoch)
         if payload.get('event') == 'file-loaded':
             self.controller._subtitle_file_loaded()
+        if name == 'playback-restart':
+            self._queue_frame_witness()
         if payload.get("event") == "property-change" and payload.get("name"):
             self._remember_property(
                 str(payload["name"]), payload.get("data"), source="property_change"
             )
+            if payload['name'] in {'video-frame-info', 'seeking', 'time-pos', 'path'}:
+                self._refresh_frame_witness()
 
     def _open_pipe(self, timeout: float) -> None:
         if self._pipe is not None:
@@ -568,11 +722,12 @@ class _MpvCommandActor:
             except OSError:
                 pass
 
-    def _readline_with_timeout(self, timeout: float) -> bytes:
+    def _readline_with_timeout(self, timeout: float, *, deadline=None) -> bytes:
         pipe = self._pipe
         if pipe is None:
             raise RuntimeError("mpv IPC pipe is not open")
-        deadline = time.monotonic() + max(0.01, timeout)
+        if deadline is None:
+            deadline = time.monotonic() + max(0.01, timeout)
         while not self._stopping:
             if b"\n" in self._read_buffer:
                 line, self._read_buffer = self._read_buffer.split(b"\n", 1)
@@ -615,8 +770,87 @@ class _MpvCommandActor:
             # visible twice in the Native-off -> Advanced-overlay ownership
             # handoff; 1 ms keeps that acknowledged swap within the live gate
             # without adding any idle polling.
-            time.sleep(min(0.001, remaining))
+            self._sleep_for_response(min(0.001, remaining))
         raise RuntimeError("mpv actor is stopping")
+
+    def _sleep_for_response(self, requested):
+        """One bounded poll quantum; the optional timer is not pipe readiness."""
+        if getattr(self,'_poll_wait_requested','sleep') == 'highres_timer' and os.name == 'nt':
+            from .windows_poll_timer import HighResolutionPollTimer, TimerCancelled
+            if self._poll_timer is None:
+                try:self._poll_timer=HighResolutionPollTimer()
+                except OSError as error:
+                    self._poll_timer_error=f'{type(error).__name__}: {error}'
+                    self._poll_timer=False
+            if self._poll_timer is not False:
+                started=time.perf_counter()
+                try:
+                    outcome=self._poll_timer.wait(requested)
+                except TimerCancelled:
+                    self._record_timer_poll(started,requested,'cancelled')
+                    raise
+                except OSError as error:
+                    self._record_timer_poll(started,requested,'failed')
+                    self._poll_timer_error=f'{type(error).__name__}: {error}'
+                    self._poll_timer.close()
+                    self._poll_timer=False
+                else:
+                    self._record_timer_poll(started,requested,outcome)
+                    return
+        started = time.perf_counter()
+        time.sleep(requested)
+        finished = time.perf_counter()
+        samples = getattr(self, '_ipc_sleep_samples', None)
+        if samples is not None:
+            samples.append((started, (finished-started)*1000, requested*1000))
+            self._ipc_sleep_count += 1
+        self._last_poll_wait_kind='time_sleep'
+        receipt = getattr(self, '_active_poll_receipt', None)
+        if receipt is not None:
+            elapsed = (finished-started)*1000
+            receipt['calls'] += 1
+            receipt['wall_ms'] += elapsed
+            receipt['requested_ms'] += requested*1000
+            receipt['max_wall_ms'] = max(receipt['max_wall_ms'], elapsed)
+
+    def _record_timer_poll(self,started,requested,outcome):
+        wall=(time.perf_counter()-started)*1000
+        self._ipc_timer_samples.append((started,wall,requested*1000,outcome))
+        self._ipc_timer_count+=1
+        self._last_poll_wait_kind='highres_timer_poll'
+        receipt=getattr(self,'_active_poll_receipt',None)
+        if receipt is not None:
+            receipt['timer_poll_calls']+=1
+            receipt['timer_poll_wall_ms']+=wall
+            receipt['timer_poll_requested_ms']+=requested*1000
+            receipt['timer_poll_max_wall_ms']=max(receipt['timer_poll_max_wall_ms'],wall)
+            receipt['timer_poll_last_outcome']=outcome
+
+    @staticmethod
+    def _poll_summary(attempts):
+        if not attempts:
+            return dict(status='not_sampled', attempts=[], calls=None, wall_ms=None,
+                        requested_ms=None, max_wall_ms=None,timer_poll_calls=None,
+                        timer_poll_wall_ms=None,timer_poll_requested_ms=None,timer_poll_max_wall_ms=None)
+        return dict(status='measured', attempts=[dict(row) for row in attempts],
+                    calls=sum(row['calls'] for row in attempts),
+                    wall_ms=sum(row['wall_ms'] for row in attempts),
+                    requested_ms=sum(row['requested_ms'] for row in attempts),
+                    max_wall_ms=max(row['max_wall_ms'] for row in attempts),
+                    wait_measurements='calls/wall_ms are time.sleep; timer_poll_* are timer polling, not pipe readiness',
+                    timer_poll_calls=sum(row.get('timer_poll_calls',0) for row in attempts),
+                    timer_poll_wall_ms=sum(row.get('timer_poll_wall_ms',0.) for row in attempts),
+                    timer_poll_requested_ms=sum(row.get('timer_poll_requested_ms',0.) for row in attempts),
+                    timer_poll_max_wall_ms=max(row.get('timer_poll_max_wall_ms',0.) for row in attempts))
+
+    @contextmanager
+    def _poll_attempt_scope(self, attempts):
+        previous = getattr(self, '_poll_attempt_sink', None)
+        self._poll_attempt_sink = attempts
+        try:
+            yield
+        finally:
+            self._poll_attempt_sink = previous
 
     def _exchange_on_pipe(
         self,
@@ -629,21 +863,43 @@ class _MpvCommandActor:
             raise RuntimeError("mpv IPC pipe is not open")
         self.controller._request_id += 1
         request_id = self.controller._request_id
-        payload = {"command": list(command), "request_id": request_id}
-        pipe.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+        values = list(command)
+        payload = {"command": values, "request_id": request_id}
+        category = values[0] if values and values[0] in {
+            'overlay-add', 'overlay-remove', 'get_property', 'set_property',
+            'loadfile', 'seek', 'stop'} else 'other'
+        receipt = dict(request_id=request_id, category=category, status='failed',
+                       calls=0, wall_ms=0., requested_ms=0., max_wall_ms=0.,
+                       timer_poll_calls=0,timer_poll_wall_ms=0.,timer_poll_requested_ms=0.,
+                       timer_poll_max_wall_ms=0.,poll_wait_requested=getattr(self,'_poll_wait_requested','sleep'))
+        previous = getattr(self, '_active_poll_receipt', None)
+        self._active_poll_receipt = receipt
         # Named-pipe reads are blocking, but mpv always returns one response for
         # every command. The actor owns that wait; the GUI never does for posts.
-        while True:
-            response = self._readline_with_timeout(timeout)
-            parsed = json.loads(response.decode("utf-8")) if response else {}
-            if parsed.get("request_id") == request_id:
-                if parsed.get("error") not in {None, "success"}:
-                    error = MpvCommandError(command, parsed.get("error"))
-                    self._command_error_count += 1
-                    self._last_command_error = str(error)
-                    raise error
-                return parsed
-            self._handle_event(parsed)
+        deadline=time.monotonic()+max(.01,timeout)
+        try:
+            pipe.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+            while True:
+                if time.monotonic()>=deadline:
+                    raise MpvIPCTimeoutError(f'mpv response deadline expired after {timeout:.3f}s')
+                response = self._readline_with_timeout(timeout,deadline=deadline)
+                if time.monotonic()>=deadline:
+                    raise MpvIPCTimeoutError(f'mpv response deadline expired after {timeout:.3f}s')
+                parsed = json.loads(response.decode("utf-8")) if response else {}
+                if parsed.get("request_id") == request_id:
+                    if parsed.get("error") not in {None, "success"}:
+                        error = MpvCommandError(values, parsed.get("error"))
+                        self._command_error_count += 1
+                        self._last_command_error = str(error)
+                        raise error
+                    receipt['status'] = 'acknowledged'
+                    return parsed
+                self._handle_event(parsed)
+        finally:
+            self._active_poll_receipt = previous
+            sink = getattr(self, '_poll_attempt_sink', None)
+            if sink is not None:
+                sink.append(dict(receipt))
 
     def exchange(
         self,
@@ -654,10 +910,15 @@ class _MpvCommandActor:
         if not self.is_actor_thread():
             raise RuntimeError("mpv IPC exchange attempted outside actor")
         values = list(command)
+        attempts = []
         for attempt in range(2):
             try:
-                self._open_pipe(timeout)
-                response = self._exchange_on_pipe(values, timeout=timeout)
+                with self._poll_attempt_scope(None):
+                    self._open_pipe(timeout)
+                # Reconnect replay in _open_pipe has its own commands. Only
+                # this exchange's attempts belong to its independent receipt.
+                with self._poll_attempt_scope(attempts):
+                    response = self._exchange_on_pipe(values, timeout=timeout)
                 if values[:1] == ["get_property"] and len(values) > 1:
                     self._remember_property(
                         str(values[1]), response.get("data"), source="heartbeat"
@@ -665,17 +926,19 @@ class _MpvCommandActor:
                 self._degraded = False
                 self._last_error = ""
                 self._last_exchange_ok_ts = time.monotonic()
-                return response
-            except MpvCommandError:
+                return {**response, '_ipc_poll_receipt': self._poll_summary(attempts)}
+            except MpvCommandError as exc:
                 # The pipe delivered a complete response. Reconnecting cannot
                 # make a command valid (for example, seeking while mpv is
                 # idle at EOF) and would starve later actor requests.
+                exc._ipc_poll_receipt = self._poll_summary(attempts)
                 raise
             except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
                 self._degraded = True
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 self._drop_pipe()
                 if attempt or self._stopping or not self.controller.running:
+                    exc._ipc_poll_receipt = self._poll_summary(attempts)
                     raise
                 self._reconnect_attempts += 1
                 time.sleep(0.05)
@@ -726,8 +989,12 @@ class _MpvCommandActor:
         try:
             self._run_loop()
         finally:
-            if timer_period:
-                ctypes.windll.winmm.timeEndPeriod(1)
+            timer=getattr(self,'_poll_timer',None)
+            try:
+                if timer is not None and timer is not False:timer.close()
+            finally:
+                if timer_period:
+                    ctypes.windll.winmm.timeEndPeriod(1)
 
     def _run_loop(self) -> None:
         next_heartbeat = time.monotonic()
@@ -773,24 +1040,50 @@ class _MpvCommandActor:
                 next_heartbeat = now + interval
         self._drop_pipe()
 
-    def request_metrics(self):
+    def request_metrics(self, *, include_raw=False):
         from ..diagnostics.playback_metrics import distribution
+        from ..diagnostics import playback_probe
         with self._condition:
             samples=list(self._request_samples)
+            waits=list(self._ipc_sleep_samples.copy())
+            timer_waits=list(self._ipc_timer_samples.copy())
             counters=dict(submitted=self._submitted_count,completed=self._completed_count,
                 coalesced=self._coalesced_count,queue_depth=len(self._requests),queue_peak=self._queue_peak,
                 retained_samples=len(samples),sample_capacity=self._request_samples.maxlen)
         return {**counters,'clock':'perf_counter / QPC',
+            'ipc_read_transport':'windows-peek-sync' if os.name=='nt' else 'posix-select',
+            'poll_wait_requested':self._poll_wait_requested,
+            'poll_wait_last_observed':self._last_poll_wait_kind,
+            'poll_timer_error':self._poll_timer_error or None,
             'queue_ms':distribution([r[0] for r in samples]),
             'execute_ack_ms':distribution([r[1] for r in samples]),
+            'ipc_response_poll_sleep_ms':distribution([r[1] for r in waits]),
+            'ipc_response_poll_sleep_calls':self._ipc_sleep_count,
+            'ipc_response_poll_sleep_capacity':self._ipc_sleep_samples.maxlen,
+            'ipc_timer_poll_wait_ms':distribution([r[1] for r in timer_waits]),
+            'ipc_timer_poll_calls':self._ipc_timer_count,
+            'ipc_timer_poll_capacity':self._ipc_timer_samples.maxlen,
+            'ipc_timer_poll_measurement':'high-resolution timer quantum; not pipe readiness',
+            'ipc_timer_poll_samples':[dict(at=r[0],wall_ms=r[1],requested_ms=r[2],outcome=r[3]) for r in timer_waits]
+                if include_raw and playback_probe.ENABLED and not playback_probe.LIGHT else None,
+            'ipc_response_poll_sleep_samples':[
+                {'at':r[0],'wall_ms':r[1],'requested_ms':r[2]} for r in waits]
+                if include_raw and playback_probe.ENABLED and not playback_probe.LIGHT else None,
+            'ipc_response_poll_sleep_raw_status': ('sampled' if include_raw and playback_probe.ENABLED
+                and not playback_probe.LIGHT else 'not_requested'),
             'sample_errors':sum(r[2] for r in samples)}
 
     def close(self) -> None:
+        self._frame_witness_request = None
         with self._condition:
             self._stopping = True
             pending = tuple(self._requests)
             self._requests.clear()
             self._condition.notify_all()
+        timer=getattr(self,'_poll_timer',None)
+        if timer is not None and timer is not False:
+            try:timer.close()
+            except (OSError,RuntimeError) as error:self._poll_timer_error=f'close: {error}'
         self._drop_pipe()
         for request in pending:
             request.error = RuntimeError("mpv actor stopped")
@@ -974,6 +1267,10 @@ class MpvController:
             "observed_monotonic_ts": time.monotonic(),
             "position": None,
         }
+
+    def observed_frame(self) -> dict[str, Any]:
+        actor = self._actor
+        return actor.frame_observation() if actor is not None else {'status': 'unobserved'}
 
     def _record_visual_applied(self, target: str | int, visible: bool) -> None:
         """Record compositor state only after mpv acknowledges the mutation."""
@@ -1274,6 +1571,7 @@ class MpvController:
         valid_when=None,
         on_applied=None,
         on_started=None,
+        on_metrics=None,
         coalesce_key=None,
         **geometry: Any,
     ) -> bool:
@@ -1292,23 +1590,36 @@ class MpvController:
             ])
         def publish():
             applied=False
+            receipt=None
             try:
                 if valid_when is not None and not valid_when():return
                 boundary=getattr(self,'_caption_boundary_publisher',None)
                 cue_id=geometry.get('cue_id')
                 if boundary is not None and cue_id and not boundary.allows(cue_id):return
                 if on_started is not None:on_started()
-                self._send(command)
+                response = self._send(command)
+                receipt = response.get('_ipc_poll_receipt') if isinstance(response, dict) else None
                 self._record_visual_applied(overlay, True)
                 applied=True
+            except BaseException as error:
+                receipt = getattr(error, '_ipc_poll_receipt', None)
+                raise
             finally:
-                if on_applied is not None:on_applied(applied)
+                try:
+                    if on_metrics is not None:on_metrics(receipt)
+                finally:
+                    if on_applied is not None:on_applied(applied)
+        def discarded():
+            try:
+                if on_metrics is not None:on_metrics(None)
+            finally:
+                if on_applied is not None:on_applied(False)
         return self._post(
             publish,
             coalesce_key=coalesce_key or f"overlay:{overlay}",
             foreground=overlay == ADVANCED_OVERLAY_ID,
             deferred=overlay != ADVANCED_OVERLAY_ID,
-            on_discard=(lambda:on_applied(False)) if on_applied is not None else None,
+            on_discard=discarded if on_applied is not None or on_metrics is not None else None,
         )
 
     def post_remove_overlay(self, overlay_id: int, *, cue_id=None) -> bool:

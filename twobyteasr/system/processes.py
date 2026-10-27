@@ -215,6 +215,7 @@ def run_speaker_embed_worker(
     worker_path: str,
     main_python: str,
     manifest: dict,
+    cancel_check=None,
 ) -> dict:
     """Run speaker_embed_worker.py in the main runtime venv (P8C-R3.1).
 
@@ -225,35 +226,43 @@ def run_speaker_embed_worker(
     import json
     import tempfile
 
-    work_dir = Path(tempfile.mkdtemp(prefix="ecapa_embed_")).resolve()
-    manifest_path = (work_dir / "manifest.json").resolve()
-    output_path = (work_dir / "embeddings.json").resolve()
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-    command = python_utf8_command([
-        os.path.abspath(os.fspath(main_python)),
-        "-I",
-        str(Path(worker_path).resolve()),
-        "--manifest",
-        str(manifest_path),
-        "--output",
-        str(output_path),
-    ])
-    completed = run_hidden_subprocess(
-        command,
-        purpose="ECAPA speaker embeddings",
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=900,
-        cwd=str(Path(os.path.abspath(os.fspath(main_python))).parent),
-        env=utf8_worker_environment(),
-        shell=False,
-    )
-    tail = ((completed.stderr or "") + (completed.stdout or ""))[-600:]
-    if completed.returncode != 0 or not output_path.is_file():
-        raise RuntimeError(f"ECAPA 声纹子进程失败：{tail}")
-    return json.loads(output_path.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="ecapa_embed_") as folder:
+        work_dir = Path(folder).resolve()
+        manifest_path = work_dir / "manifest.json"
+        output_path = work_dir / "embeddings.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        command = python_utf8_command([
+            os.path.abspath(os.fspath(main_python)), "-B", "-I", str(Path(worker_path).resolve()),
+            "--manifest", str(manifest_path), "--output", str(output_path),
+        ])
+        options = dict(purpose="ECAPA speaker embeddings", text=True, encoding="utf-8", errors="replace",
+                       cwd=str(Path(os.path.abspath(os.fspath(main_python))).parent),
+                       env=utf8_worker_environment(), shell=False)
+        if cancel_check is None:
+            completed = run_hidden_subprocess(command, capture_output=True, timeout=900, **options)
+            stdout, stderr, code = completed.stdout, completed.stderr, completed.returncode
+        else:
+            process = popen_hidden_subprocess(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
+            deadline = time.monotonic() + 900
+            try:
+                while True:
+                    try:
+                        stdout, stderr = process.communicate(timeout=.2)
+                        code = process.returncode
+                        break
+                    except subprocess.TimeoutExpired:
+                        if cancel_check():
+                            from ..recognition.service import CancelledError
+                            raise CancelledError('声纹分析已取消')
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError('声纹分析超时')
+            finally:
+                if process.poll() is None:
+                    stop_process_tree(process)
+        tail = ((stderr or "") + (stdout or ""))[-600:]
+        if code != 0 or not output_path.is_file():
+            raise RuntimeError(f"ECAPA 声纹子进程失败：{tail}")
+        return json.loads(output_path.read_text(encoding="utf-8"))
 
 
 def _hidden_launch(options: dict[str, Any]) -> bool:

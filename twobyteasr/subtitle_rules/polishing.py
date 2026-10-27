@@ -1,5 +1,6 @@
 ﻿"""Cloud polishing orchestration and post-correction boundary cleanup."""
 
+import copy
 import json
 import re
 import threading
@@ -146,9 +147,9 @@ POLISH_SCHEMA = {
                         'type': {'type': 'string', 'enum': ['alias_normalization', 'phonetic_correction', 'id_spelling',
                                                             'asr_correction', 'pronoun_gender']},
                         'evidence': {'type': 'string'},
-                    }, 'required': ['from', 'to'],
+                    }, 'required': ['from', 'to'], 'additionalProperties': False,
                 }},
-            }, 'required': ['id', 'edits'],
+            }, 'required': ['id', 'edits'], 'additionalProperties': False,
         }},
     }, 'required': ['checked_ids', 'cues'],
 }
@@ -175,6 +176,145 @@ def _without_null_optional_fields(value):
                          for cue in value['cues']]
     if isinstance(value.get('suspect_results'), list):
         value['suspect_results'] = prune(value['suspect_results'], _NULLABLE_SUSPECT_FIELDS)
+    return value
+
+
+def _normalize_verified_keep_edits(value, segments):
+    """Remove only legacy no-ops whose cue, span, source and overlaps are proven.
+
+    The wire schema continues to reject ``type=keep``. Some JSON-mode models
+    return it anyway; ambiguous responses remain invalid and follow fallback.
+    """
+    if not isinstance(value, dict) or not isinstance(value.get('cues'), list):
+        return value, []
+    expected = [segment.segment_id for segment in segments]
+    if value.get('checked_ids') != expected or any(type(x) is not int for x in value.get('checked_ids', [])):
+        return value, []
+    originals = {segment.segment_id: segment.text for segment in segments}
+    rows = value['cues']
+    ids = [row.get('id') if isinstance(row, dict) else None for row in rows]
+    if any(type(i) is not int or i not in originals for i in ids) or len(set(ids)) != len(ids):
+        return value, []
+    normalized, accepted = [], []
+    for row in rows:
+        edits = row.get('edits')
+        if not isinstance(edits, list) or not any(isinstance(edit, dict) and edit.get('type') == 'keep' for edit in edits):
+            normalized.append(row)
+            continue
+        original = originals[row['id']]
+        spans = []
+        valid = True
+        for edit in edits:
+            if not isinstance(edit, dict):
+                valid = False
+                break
+            start, end, source = edit.get('start'), edit.get('end'), edit.get('from')
+            if (type(start) is not int or type(end) is not int or not isinstance(source, str)
+                    or not source or not 0 <= start < end <= len(original)
+                    or original[start:end] != source):
+                valid = False
+                break
+            if edit.get('type') == 'keep' and edit.get('to') != source:
+                valid = False
+                break
+            if edit.get('type') == 'keep':
+                # Do not discard hidden fields or malformed metadata together
+                # with the no-op. Validate everything except its legacy type.
+                from jsonschema import Draft202012Validator
+                edit_schema = POLISH_SCHEMA['properties']['cues']['items']['properties']['edits']['items']
+                if not Draft202012Validator(edit_schema).is_valid({**edit, 'type': 'asr_correction'}):
+                    valid = False
+                    break
+            spans.append((start, end))
+        spans.sort()
+        if any(right[0] < left[1] for left, right in zip(spans, spans[1:])):
+            valid = False
+        if not valid:
+            normalized.append(row)
+            continue
+        kept = [edit for edit in edits if edit.get('type') != 'keep']
+        accepted.append({'cue_id': row['id'], 'count': len(edits) - len(kept)})
+        normalized.append({**row, 'edits': kept})
+    return {**value, 'cues': normalized}, accepted
+
+
+def _validate_polish_response(value, segments, batch_index, quarantined=None):
+    from jsonschema import ValidationError, validate
+    from ..providers.ai_providers import AIProviderError
+    value = _without_null_optional_fields(value)
+    value, noops = _normalize_verified_keep_edits(value, segments)
+    try:
+        validate(value, POLISH_SCHEMA)
+    except ValidationError as exc:
+        if quarantined is None:
+            raise AIProviderError('校对返回的 JSON 字段不符合契约：' + exc.message,
+                                  category='structured_schema_error') from exc
+        # The receipt and all non-cue fields must be valid globally before an
+        # independent cue can be isolated. Unknown/duplicate IDs fail the
+        # whole batch because ownership is ambiguous.
+        envelope = copy.deepcopy(POLISH_SCHEMA)
+        cue_schema = envelope['properties']['cues']['items']
+        envelope['properties']['cues']['items'] = {'type': 'object', 'properties': {
+            'id': {'type': 'integer'}}, 'required': ['id']}
+        try:
+            validate(value, envelope)
+        except ValidationError as envelope_error:
+            raise AIProviderError('校对返回的 JSON 字段不符合契约：' + envelope_error.message,
+                                  category='structured_schema_error') from envelope_error
+        expected = [segment.segment_id for segment in segments]
+        checked = value.get('checked_ids', [])
+        if checked != expected or any(type(item) is not int for item in checked):
+            raise AIProviderError('校对检查回执缺失、重复、调序或含有未知 ID。',
+                                  category='coverage_mismatch')
+        rows = value['cues']
+        ids = [row.get('id') for row in rows]
+        if any(type(item) is not int or item not in expected for item in ids) or len(ids) != len(set(ids)):
+            raise AIProviderError('校对返回了未知或重复字幕 ID。', category='semantic_validation')
+        good = []
+        for row in rows:
+            try:
+                validate(row, cue_schema)
+            except ValidationError:
+                quarantined[row['id']] = 'structured_schema_error'
+            else:
+                good.append(row)
+        if not quarantined:
+            raise AIProviderError('校对返回的 JSON 字段不符合契约：' + exc.message,
+                                  category='structured_schema_error') from exc
+        value = {**value, 'cues': good}
+        validate(value, POLISH_SCHEMA)
+        noops = [row for row in noops if row['cue_id'] not in quarantined]
+    if quarantined is not None and isinstance(value, dict):
+        expected = [segment.segment_id for segment in segments]
+        originals = {segment.segment_id: segment.text for segment in segments}
+        rows = value.get('cues', [])
+        ids = [row.get('id') for row in rows]
+        if (value.get('checked_ids') == expected and all(type(item) is int for item in ids)
+                and len(ids) == len(set(ids)) and all(item in originals for item in ids)):
+            good = []
+            for row in rows:
+                spans, invalid = [], False
+                for edit in row['edits']:
+                    if 'start' not in edit and 'end' not in edit:
+                        continue  # legacy edits still go through correction_safety
+                    start, end = edit.get('start'), edit.get('end')
+                    original = originals[row['id']]
+                    if (type(start) is not int or type(end) is not int or not 0 <= start < end <= len(original)
+                            or original[start:end] != edit['from']):
+                        invalid = True
+                        break
+                    spans.append((start, end))
+                spans.sort()
+                invalid |= any(right[0] < left[1] for left, right in zip(spans, spans[1:]))
+                if invalid:
+                    quarantined[row['id']] = 'semantic_validation'
+                else:
+                    good.append(row)
+            value = {**value, 'cues': good}
+            noops = [row for row in noops if row['cue_id'] not in quarantined]
+    if noops:
+        record_run_event('polishing_legacy_noop_normalized', batch_index=batch_index,
+                         cue_counts=noops, protocol=POLISH_PROMPT_VERSION)
     return value
 
 
@@ -813,7 +953,7 @@ def call_correction_api(
 当前场景见content_scene：domain/source/language/content_type/glossary_versions/normalization_policy统一决定领域；unknown或mixed不猜游戏。speaker_cue_ids标说话者，不是被提到的选手，不能改speaker、ID、时间或跨说话人重写。suspects/context_terms/matches按对应fields字段顺序；candidate_ids若是字符串，查candidate_sets；context_terms仅语义候选，公共词库来源见term_defaults。
 先结合邻句理解疑似词是选手、战队、角色、技能、物品、位置还是动作。合法中文也可能是谐音；电竞口语不书面不等于错误。实体类别/语义流畅/近音任一项单独均不证明修改。再比较ASR和候选：来源码查asr_sources，asr每项为[来源码列表,原文]；asr_equal_primary列出逐字等于主稿的来源。primary_source取cue内或cue_defaults；缺来源不计票，派生文本不算独立来源。matches的cue_ids限定作用范围；overlap表示重叠说话人须冻结跨人替换。
 优先适用且无歧义的confirmed别名→规范名称，这是用户名称统一，不要求另一ASR直接写出英文ID，不受字符变长限制；普通动画/电影等话题不能机械套选手昵称。规范词逐字使用canonical，包括大小写和数字，不按记忆换成其他拼写。reference/ambiguous/context-only只提供候选，近音或英文错拼修改仍需局部来源与语境证据；非音近昵称必须有明确别名关联。完整Latin ID允许有据有限拼写修正，两字母普通英文/单字音译不能仅凭词表改名。approved_global_term_mappings保持。
-只改目标词或必要错断词跨度，保留语气、重复、代词、原意及数字事件顺序；不把‘一个’改为‘1个’，不合并重复数字。编辑给from/to、原文start/end（左闭右开）、candidate_id（适用时）、type=alias_normalization|phonetic_correction|id_spelling|asr_correction|pronoun_gender及简短evidence；basis用真实输入来源+context，别名用glossary+context。不声称听过未提供音频。疑似词suspects每项必须在suspect_results给suspect_id、disposition=replace|keep|review|missing_candidate和短evidence；空edits不代表已经审查。两个候选合理、证据冲突或缺项时保留并待确认；新疑似词用new_suspects(id,start,end,surface,evidence)，不编造candidate_id。固定规则：{editorial_rule}"""
+只改目标词或必要错断词跨度，保留语气、重复、代词、原意及数字事件顺序；不把‘一个’改为‘1个’，不合并重复数字。编辑给from/to、原文start/end（左闭右开）、candidate_id（适用时）、type=alias_normalization|phonetic_correction|id_spelling|asr_correction|pronoun_gender及简短evidence；basis用真实输入来源+context，别名用glossary+context。不修改时输出空edits或省略该cue，绝不要在编辑type中写keep；keep只用于suspect_results的disposition。不声称听过未提供音频。疑似词suspects每项必须在suspect_results给suspect_id、disposition=replace|keep|review|missing_candidate和短evidence；空edits不代表已经审查。两个候选合理、证据冲突或缺项时保留并待确认；新疑似词用new_suspects(id,start,end,surface,evidence)，不编造candidate_id。固定规则：{editorial_rule}"""
     from twobyteasr.subtitle_rules.language_rules import is_english, is_european, is_japanese, is_korean
     if is_japanese():
         # Japanese subtitles: same edit contract, but never translate, never
@@ -920,15 +1060,14 @@ def call_correction_api(
                 cancel_check=lambda: cancelled() or bool(abort_event is not None and abort_event.is_set()),
                 enable_thinking=False, on_stream_event=on_stream_event)
             structured = getattr(provider, 'structured_complete', None)
+            quarantined = {}
             if callable(structured):
                 value = structured(working_messages, POLISH_SCHEMA, **options)
                 if _retry_budget.expired:
                     from ..providers.ai_providers import AIProviderError
                     raise AIProviderError('校对任务总时限已用完，丢弃迟到结果。', category='total_timeout')
-                from jsonschema import validate
-                value = _without_null_optional_fields(value)
-                validate(value, POLISH_SCHEMA)
-                return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+                value = _validate_polish_response(value, segment_batch, batch_index, quarantined)
+                return json.dumps(value, ensure_ascii=False, separators=(',', ':')), quarantined
             # Legacy injectable providers still receive the same schema. The
             # production AIClient always owns structured_complete.
             content = provider.complete(
@@ -941,14 +1080,17 @@ def call_correction_api(
                 enable_thinking=False, response_format={"type": "json_object"}, json_schema=POLISH_SCHEMA,
                 on_stream_event=on_stream_event,
             )
-            from jsonschema import validate
             if _retry_budget.expired:
                 from ..providers.ai_providers import AIProviderError
                 raise AIProviderError('校对任务总时限已用完，丢弃迟到结果。', category='total_timeout')
-            parsed = parse_qwen_object(content)
-            value = _without_null_optional_fields(parsed)
-            validate(value, POLISH_SCHEMA)
-            return content if value == parsed else json.dumps(value, ensure_ascii=False, separators=(',', ':'))
+            try:
+                parsed = parse_qwen_object(content)
+            except (ValueError, TypeError) as exc:
+                from ..providers.ai_providers import AIProviderError
+                raise AIProviderError('校对返回的 JSON 无法解析：' + str(exc),
+                                      category='structured_json_parse_error') from exc
+            value = _validate_polish_response(parsed, segment_batch, batch_index, quarantined)
+            return (content if value == parsed else json.dumps(value, ensure_ascii=False, separators=(',', ':'))), quarantined
         finally:
             diag["total_duration_ms"] = round((time.perf_counter()-started)*1000, 3)
             record_run_event("asr_provider_request", **diag)
@@ -959,7 +1101,7 @@ def call_correction_api(
     for attempt in range(1, API_RETRIES + 1):
         content = ""
         try:
-            content = _send(working_messages, attempt)
+            content, quarantined = _send(working_messages, attempt)
             expected_ids = [segment.segment_id for segment in segment_batch]
             parsed=parse_qwen_object(content)
             if parsed.get('checked_ids') != expected_ids or any(type(x) is not int for x in parsed.get('checked_ids',[])):
@@ -1001,10 +1143,11 @@ def call_correction_api(
                 len(returned_ids) != len(set(returned_ids))
                 or any(item_id not in expected_set for item_id in returned_ids)
             ):
-                raise ValueError(
+                from ..providers.ai_providers import AIProviderError
+                raise AIProviderError(
                     "云端校对模型返回了未知或重复字幕 ID："
                     f"期望 {expected_ids[0]}-{expected_ids[-1]}，"
-                    f"实际 {returned_ids[:5]}...{returned_ids[-5:]}"
+                    f"实际 {returned_ids[:5]}...{returned_ids[-5:]}", category='semantic_validation'
                 )
 
             validated = {}
@@ -1012,6 +1155,18 @@ def call_correction_api(
                 int(item["id"]): item for item in returned_items
             }
             for segment in segment_batch:
+                if segment.segment_id in quarantined:
+                    receipt = segment.caption_arbitration.setdefault('terminology_polish', {})
+                    receipt.update(response_state='fallback', failure_category=quarantined[segment.segment_id],
+                                   validated_text=baseline[segment.segment_id])
+                    validated[segment.segment_id] = baseline[segment.segment_id]
+                    add_review_item(segment.start, '校对回退', '该条校对结果字段或编辑范围无效，已保留原文，可单独重试。',
+                                    segment.text, priority=3, severity='warning', batch_index=batch_index,
+                                    batch_total=batch_total, cue_id=segment.segment_id)
+                    record_run_event('polishing_api_fallback', batch_index=batch_index, batch_total=batch_total,
+                                     category=quarantined[segment.segment_id], cue_ids=[segment.segment_id],
+                                     error='cue_validation_failed; original_retained')
+                    continue
                 item = returned_by_id.get(segment.segment_id, {"edits": []})
                 first_independent_reference = (
                     segment.firered_text or segment.alternate_text
@@ -1124,7 +1279,8 @@ def call_correction_api(
                 validation_scope='mandatory_checked_ids_cues_edits',
                 rejected_optional_new_suspects=invalid_optional_count,
                 unassigned_new_suspect_count=len(unassigned_new_suspects))
-            return PolishBatchResult(validated, details={x.segment_id:
+            return PolishBatchResult(validated, succeeded=set(validated) - set(quarantined), failures=quarantined,
+                details={x.segment_id:
                 x.caption_arbitration['terminology_polish'] for x in segment_batch},
                 unassigned_new_suspects=unassigned_new_suspects)
         except Exception as exc:
@@ -1151,7 +1307,9 @@ def call_correction_api(
                     exc = ValueError("JSON 输出被截断（finish_reason=length）。")
                     last_error = exc
                 else:
-                    category = classify_structured_output_failure(exc, diagnostics)
+                    category = (exc.category if getattr(exc, 'category', '') in
+                                {'coverage_mismatch', 'semantic_validation'}
+                                else classify_structured_output_failure(exc, diagnostics))
                 last_category = category
                 try:
                     record_structured_output_failure(

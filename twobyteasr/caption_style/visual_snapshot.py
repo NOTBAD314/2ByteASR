@@ -92,6 +92,7 @@ class VisualCueSnapshot:
         background = self.style_recipe.get("background", {}) if isinstance(self.style_recipe, Mapping) else {}
         payload = {
             "text": self.text,
+            "caption_layout": getattr(self.resolved_caption, 'layout_json', '{}'),
             "text_marks": self.text_marks,
             "translation": getattr(self, "translation", ""),
             "font_family": self.font_family,
@@ -122,6 +123,7 @@ class VisualCueSnapshot:
         payload = {
             "renderer": str(renderer_version),
             "text": self.text,
+            "caption_layout": getattr(self.resolved_caption, 'layout_json', '{}'),
             "text_marks": self.text_marks,
             "font": {
                 "family": self.font_family,
@@ -316,9 +318,14 @@ def build_visual_cue_snapshot(
     width: int | None = None,
     height: int | None = None,
     fps: float = 30.0,
+    resolved_cue: StudioCue | None = None,
 ) -> VisualCueSnapshot:
     runtime = getattr(project, '_studio_state_runtime', None)
-    cue = runtime.cue_by_id.get(cue_id) if runtime is not None else None
+    # Export/active-interval callers already own the exact projected row. Do
+    # not scan the entire project again for each row in a frozen batch.
+    if resolved_cue is not None and resolved_cue.id != cue_id:
+        raise ValueError('Resolved cue identity does not match the snapshot request')
+    cue = resolved_cue if resolved_cue is not None else (runtime.cue_by_id.get(cue_id) if runtime is not None else None)
     if cue is None:
         # 2026-09-19 P0：剪辑视图的派生 id（"源id#段id"）解析回源 cue；
         # 视图重建间隙里已消失的陈旧 id 返回 None（预热器跳过即可）。
@@ -340,7 +347,8 @@ def build_visual_cue_snapshot(
     style = resolved.style
     from .resolved_caption_style import resolve_caption_style
     caption = resolve_caption_style(project.styles, project.speakers, cue,
-        project.style_recipes, int(project.render_settings.get("play_res_x", 1920)))
+        project.style_recipes, int(project.render_settings.get("play_res_x", 1920)),
+        int(project.render_settings.get("play_res_y", 1080)))
     style = caption.style
     style_ids = {item.id for item in project.styles}
     appearance_base_resolved = bool(
@@ -466,7 +474,7 @@ def build_visual_cue_snapshot(
         from .web_placement import cue_placement
         recipe.layout['webPlacement'] = cue_placement(project, cue)
     typography = recipe.typography if isinstance(recipe.typography, Mapping) else {}
-    from .text_marks import remap_marks, layer_marks
+    from .text_marks import remap_caption_marks, layer_marks
     from .speaker_labels import template_speaker
     return VisualCueSnapshot(
         cue_id=cue.id, text=caption.text, start_ms=cue.start_ms, end_ms=cue.end_ms,
@@ -489,5 +497,5 @@ def build_visual_cue_snapshot(
         translation=_display_translation(project, cue),
         resolved_caption=caption,
         word_animation=word_animation,
-        text_marks=(remap_marks(cue.text, caption.text, layer_marks(cue)) if not recipe.web_theme else []),
+        text_marks=(remap_caption_marks(cue.text, caption, layer_marks(cue)) if not recipe.web_theme else []),
     )

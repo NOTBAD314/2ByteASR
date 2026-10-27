@@ -522,6 +522,7 @@ def snapshot(project) -> dict[str, Any]:
 
 
 def restore_snapshot(project, state: Mapping[str, Any]) -> None:
+    old_records = _json_copy(records_of(project))
     meta = _metadata(project)
     for key in (RECORDS_KEY, RENDER_KEY):
         value = state.get(key)
@@ -529,6 +530,24 @@ def restore_snapshot(project, state: Mapping[str, Any]) -> None:
             meta.pop(key, None)
         else:
             meta[key] = _json_copy(value)
+    new_records = records_of(project)
+    for cue_id in old_records.keys() | new_records.keys():
+        if old_records.get(cue_id) != new_records.get(cue_id):
+            mark_manual_intent(project, cue_id)
+
+
+def translation_revisions(project) -> dict[str, int]:
+    """Session-only monotonic edits; undo must not resurrect an in-flight request."""
+    revisions = getattr(project, "_translation_revisions", None)
+    if revisions is None:
+        revisions = {}
+        project._translation_revisions = revisions
+    return revisions
+
+
+def mark_manual_intent(project, cue_id: str) -> None:
+    revisions = translation_revisions(project)
+    revisions[str(cue_id)] = revisions.get(str(cue_id), 0) + 1
 
 
 def merged_snapshot(project, sources: Sequence, merged) -> tuple[dict, dict]:
@@ -778,7 +797,21 @@ def split_snapshot(project, parent, left, right) -> tuple[dict, dict]:
     return before, snapshot(shadow)
 
 
-def set_manual(project, cue_id: str, text: str) -> tuple[dict, dict]:
+def translation_revisions(project) -> dict[str, int]:
+    """Session-only monotonic edits; undo must not resurrect an in-flight request."""
+    revisions = getattr(project, "_translation_revisions", None)
+    if revisions is None:
+        revisions = {}
+        project._translation_revisions = revisions
+    return revisions
+
+
+def mark_manual_intent(project, cue_id: str) -> None:
+    revisions = translation_revisions(project)
+    revisions[str(cue_id)] = revisions.get(str(cue_id), 0) + 1
+
+
+def set_manual(project, cue_id: str, text: str, *, target: str | None = None) -> tuple[dict, dict]:
     """A person's translation of the current Japanese; returns (before, after).
 
     An empty text clears the translation (status becomes untranslated); the
@@ -789,17 +822,25 @@ def set_manual(project, cue_id: str, text: str) -> tuple[dict, dict]:
     if cue is None:
         raise KeyError(cue_id)
     before = snapshot(project)
+    if target is not None and normalize_target(target) != container_target(project):
+        raise ValueError("译文语言已切换，请重新选择字幕后编辑")
+    value = clean_translation(text)
+    if not value and not records_of(project).get(cue_id):
+        return before, before
     container = _ensure_container(project)
     records = container["records"]
     old = records.get(cue_id)
-    value = clean_translation(text)
     if (isinstance(old, Mapping) and old.get("origin") == ORIGIN_MANUAL and str(old.get("text") or "") == value
             and old.get("source_sha") == source_sha(cue.text) and old.get("status") != FAILED
+            and old.get("target") == container_target_value(container)
             and not old.get("legacy")):
         _rebuild_view(project)
         return before, snapshot(project)
     records[cue_id] = _record(value, cue.text, origin=ORIGIN_MANUAL, target=container_target_value(container),
                               previous=_pushed_previous(old), cleared=True if not value else None)
+    mark_manual_intent(project, cue_id)
+    _append_history(container, {"kind": "manual", "cue_id": cue_id,
+                               "target": container_target_value(container), "cleared": not bool(value)})
     _rebuild_view(project)
     return before, snapshot(project)
 
@@ -985,6 +1026,8 @@ class TranslationSource:
     project_id: str = ''
     project_instance: int = 0
     content_revisions: Mapping[str, int] = field(default_factory=dict)
+    revisions: Mapping[str, int] = field(default_factory=dict)
+    target_at_start: str | None = None
 
     def cue(self, cue_id: str) -> SourceCue | None:
         return self._index().get(cue_id)
@@ -1020,7 +1063,8 @@ def translation_source(project) -> TranslationSource:
     revisions = dict(state_for(project).content_revisions) if editable else {}
     return TranslationSource(cues, records, references, language, math_formulas=project_enabled(project),
                              project_id=str(getattr(project, 'project_id', '')), project_instance=id(project) if editable else 0,
-                             content_revisions=revisions)
+                             content_revisions=revisions, revisions=dict(translation_revisions(project)),
+                             target_at_start=container_target(project))
 
 
 def _as_source(project_or_source) -> TranslationSource:
@@ -1307,6 +1351,47 @@ def _letters(text: str) -> dict[str, int]:
     return counts
 
 
+def _source_technical_latin_tokens(text: str) -> tuple[set[str], bool]:
+    """Recognize source identifiers and multiword names for script validation.
+
+    This only exempts spelling already present in the source; it does not
+    claim that a translation is semantically correct.
+    """
+    matches = list(re.finditer(r'[A-Za-z][A-Za-z0-9]*', text))
+    words = [match.group() for match in matches]
+    stop = {'the', 'and', 'for', 'but', 'not', 'this', 'that', 'with', 'from',
+            'you', 'your', 'our', 'are', 'was', 'were', 'have', 'has', 'will', 'can',
+            'we', 'to', 'of', 'in', 'is', 'it', 'do', 'get', 'need', 'ready', 'be',
+            'as', 'an', 'or', 'on', 'at', 'up', 'by', 'my', 'me', 'he', 'she', 'next',
+            'grab', 'first', 'make', 'choose', 'select', 'want', 'go', 'know', 'about'}
+    proper = [len(word) > 1 and word[0].isupper() and any(c.islower() for c in word[1:])
+              and word.casefold() not in stop for word in words]
+    intrinsic = [any(c.isdigit() for c in word) or
+                 (len(word) > 1 and any(c.isupper() for c in word[1:]) and not word.isupper()) or
+                 (2 <= len(word) <= 6 and word.isupper() and word.casefold() not in stop)
+                 for word in words]
+    allowed = set()
+    for index, word in enumerate(words):
+        adjacent_name = False
+        if proper[index]:
+            for other in (index - 1, index + 1):
+                if 0 <= other < len(matches) and proper[other]:
+                    left, right = sorted((index, other))
+                    gap = text[matches[left].end():matches[right].start()]
+                    adjacent_name |= bool(re.fullmatch(r'[\s-]+', gap))
+        if intrinsic[index] or adjacent_name:
+            allowed.add(word.casefold())
+    return allowed, any(intrinsic)
+
+
+def _nontechnical_latin_letters(output: str, allowed: set[str]) -> int:
+    total = _letters(output)['latin'] + _letters(output)['cyrillic']
+    exempt = sum(sum(char.isalpha() for char in match.group())
+                 for match in re.finditer(r'[A-Za-z][A-Za-z0-9]*', output)
+                 if match.group().casefold() in allowed)
+    return max(0, total - exempt)
+
+
 def validate_translation(source_text: str, text: str, target: str = DEFAULT_TARGET,
                          source_language: str = "") -> str | None:
     """Reason a single translation is unusable, or None when acceptable."""
@@ -1340,11 +1425,14 @@ def validate_translation(source_text: str, text: str, target: str = DEFAULT_TARG
         if latin < 12 or len(source.split()) < 3:
             return None
         out = script_counts(output)
+        technical, has_identifier = _source_technical_latin_tokens(source)
+        residual_latin = _nontechnical_latin_letters(output, technical)
         if not out["han"]:
+            if (has_identifier and not residual_latin and len(source.split()) <= 8
+                    and _content(output) == _content(source)):
+                return None
             return "echo_source" if _content(output) == _content(source) else "no_chinese"
-        out_letters = _letters(output)
-        out_latin = out_letters["latin"] + out_letters["cyrillic"]
-        if out_latin > 2 * out["han"] and out_latin >= 12:
+        if residual_latin > 2 * out["han"] and residual_latin >= 12:
             return "english_output"
         return None
     katakana_name = src["katakana"] > 0 and not src["hiragana"] and not src["han"]
@@ -1597,6 +1685,10 @@ class TranslationResult:
     project_id: str = ''
     project_instance: int = 0
     content_revisions: dict[str, int] = field(default_factory=dict)
+    revisions: dict[str, int] = field(default_factory=dict)
+    baseline_records: dict | None = None
+    source_bounds: dict[str, tuple] = field(default_factory=dict)
+    target_at_start: str | None = None
     discarded: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -1618,7 +1710,7 @@ class TranslationResult:
 def _protected(record: Mapping | None, overwrite_manual: bool, overwrite_legacy: bool) -> bool:
     if overwrite_manual or not isinstance(record, Mapping):
         return False
-    if record.get("origin") != ORIGIN_MANUAL or not str(record.get("text") or "").strip():
+    if record.get("origin") != ORIGIN_MANUAL:
         return False
     return not (overwrite_legacy and record.get("legacy"))
 
@@ -1700,6 +1792,10 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     result.project_id = source.project_id
     result.project_instance = source.project_instance
     result.content_revisions = dict(source.content_revisions)
+    result.revisions = dict(source.revisions)
+    result.baseline_records = _json_copy(dict(source.records))
+    result.source_bounds = {cue.id: (cue.start_ms, cue.end_ms, cue.speaker_id) for cue in source.cues}
+    result.target_at_start = source.target_at_start
     protected = [cue_id for cue_id in requested
                  if _protected(source.records.get(cue_id), overwrite_manual, overwrite_legacy)]
     result.skipped_manual = tuple(protected)
@@ -1925,7 +2021,37 @@ def _discard_stale(project, result):
             result.failed.pop(cue_id, None)
 
 
-def apply_translation_result(project, result: TranslationResult) -> tuple[dict, dict]:
+def _discard_translation_edits(project, result):
+    """Extend the existing per-cue stale-result gate to manual drafts and language changes."""
+    effective, _ = _migrated_container(_metadata(project), list(project.cues))
+    records = effective["records"] if effective else {}
+    revisions = translation_revisions(project)
+    cues = {cue.id: cue for cue in project.cues}
+    def content(record):
+        return {key: value for key, value in record.items() if key != "updated_at"} if isinstance(record, Mapping) else record
+    for cue_id in set(result.translations) | set(result.suggestions) | set(result.failed):
+        cue = cues.get(cue_id)
+        bounds = result.source_bounds.get(cue_id)
+        reason = ("target_changed" if result.target_at_start is not None and result.target_at_start != container_target(project) else
+                  "timing_changed" if cue is not None and bounds is not None and bounds != (cue.start_ms, cue.end_ms, cue.speaker_id) else
+                  "translation_revision_changed" if result.baseline_records is not None and revisions.get(cue_id, 0) != result.revisions.get(cue_id, 0) else
+                  "translation_record_changed" if result.baseline_records is not None and content(records.get(cue_id)) != content(result.baseline_records.get(cue_id)) else "")
+        if reason:
+            result.discarded[cue_id] = reason
+            item = result.translations.pop(cue_id, None)
+            # A direct record edit (without a Studio transaction) may retain
+            # the candidate for inspection, never apply it. The existing
+            # content-revision gate already discards stale committed UI work.
+            if (item is not None and reason in {"translation_revision_changed", "translation_record_changed"}
+                    and records.get(cue_id, {}).get("origin") == ORIGIN_MANUAL
+                    and cue is not None and source_sha(cue.text) == item.source_sha):
+                result.suggestions.setdefault(cue_id, item)
+            else:
+                result.suggestions.pop(cue_id, None)
+            result.failed.pop(cue_id, None)
+
+
+def apply_translation_result(project, result: TranslationResult, *, commit=True) -> tuple[dict, dict]:
     """Write a run's results into records + render view; returns (before, after).
 
     Records that became manual while the run was in flight are not replaced;
@@ -1934,25 +2060,33 @@ def apply_translation_result(project, result: TranslationResult) -> tuple[dict, 
     """
     before = snapshot(project)
     _discard_stale(project, result)
-    if result.discarded and not (result.translations or result.failed or result.suggestions):
+    _discard_translation_edits(project, result)
+    if result.discarded and not (result.translations or result.failed):
         return before, before
+    if not commit:
+        # Check live project/instance/content revisions first, then prepare only
+        # independent metadata. The GUI command owns the eventual transaction.
+        from types import SimpleNamespace
+        project = SimpleNamespace(generation_metadata=_json_copy(_metadata(project)), cues=project.cues)
     container = _ensure_container(project)
     records = container["records"]
     container["target"] = result.target
     meta_common = dict(target=result.target, model=result.model, provider=result.provider,
                        prompt_version=result.prompt_version, glossary=result.glossary_digest)
     applied = 0
-    for cue_id, item in result.translations.items():
+    for cue_id, item in list(result.translations.items()):
         old = records.get(cue_id)
         if _protected(old, result.overwrite_manual, result.overwrite_legacy):
             result.suggestions.setdefault(cue_id, item)
+            result.translations.pop(cue_id)
             continue
         records[cue_id] = _record(item.text, item.source_text, origin=ORIGIN_AI, context_sha=item.context_sha,
                                   previous=_pushed_previous(old), **meta_common)
         applied += 1
-    for cue_id, reason in result.failed.items():
+    for cue_id, reason in list(result.failed.items()):
         old = records.get(cue_id)
         if _protected(old, result.overwrite_manual, result.overwrite_legacy):
+            result.failed.pop(cue_id)
             continue
         source_text = result.sources.get(cue_id, "")
         if (isinstance(old, Mapping) and str(old.get("text") or "").strip() and old.get("status") != FAILED
@@ -1984,6 +2118,7 @@ def accept_suggestions(project, result: TranslationResult, cue_ids: Iterable[str
     chosen = None if cue_ids is None else {str(item) for item in cue_ids}
     before = snapshot(project)
     _discard_stale(project, result)
+    _discard_translation_edits(project, result)
     container = _ensure_container(project)
     records = container["records"]
     meta_common = dict(target=result.target, model=result.model, provider=result.provider,
@@ -1992,9 +2127,13 @@ def accept_suggestions(project, result: TranslationResult, cue_ids: Iterable[str
     for cue_id, item in result.suggestions.items():
         if chosen is not None and cue_id not in chosen:
             continue
+        cue = next((cue for cue in project.cues if cue.id == cue_id), None)
+        if cue is None or cue.text != item.source_text or result.target != container_target(project):
+            continue
         old = records.get(cue_id)
-        records[cue_id] = _record(item.text, item.source_text, origin=ORIGIN_AI, context_sha=item.context_sha,
+        records[cue_id] = _record(item.text, item.source_text, origin=ORIGIN_MANUAL, context_sha=item.context_sha,
                                   previous=_pushed_previous(old), **meta_common)
+        mark_manual_intent(project, cue_id)
         accepted += 1
     if accepted:
         _append_history(container, {"kind": "accept_suggestions", "accepted": accepted})

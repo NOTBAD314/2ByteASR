@@ -9,6 +9,46 @@ def normalized_caption_text(text):
     return str(text).replace('\r\n','\n').replace('\r','\n').replace('\u2028','\n').replace('\u2029','\n')
 
 
+def line_source_ranges(source, lines):
+    """Map display-only line breaks back to unchanged source code points.
+
+    Offsets use Python/Unicode code points, as the word-animation contract
+    does. CRLF and Unicode paragraph separators remain identifiable in the
+    original source; an inserted soft break consumes no source character.
+    """
+    source = str(source)
+    normalized, starts, ends = [], [], []
+    index = 0
+    while index < len(source):
+        start = index
+        char = source[index]
+        index += 1
+        if char == '\r' and index < len(source) and source[index] == '\n':
+            index += 1
+        normalized.append('\n' if char in '\r\n\u2028\u2029' else char)
+        starts.append(start)
+        ends.append(index)
+    text = ''.join(normalized)
+    result, cursor, display_start = [], 0, 0
+    for number, line in enumerate(lines):
+        stop = cursor + len(line)
+        if text[cursor:stop] != line:
+            raise ValueError('Caption layout must preserve every source character')
+        manual = stop < len(text) and text[stop] == '\n'
+        result.append({
+            'sourceStart': starts[cursor] if cursor < len(starts) else len(source),
+            'sourceEnd': ends[stop - 1] if stop > cursor else (starts[cursor] if cursor < len(starts) else len(source)),
+            'displayStart': display_start,
+            'displayEnd': display_start + len(line),
+            'breakAfter': 'manual' if manual else ('automatic' if number + 1 < len(lines) else 'none'),
+        })
+        cursor = stop + int(manual)
+        display_start += len(line) + 1
+    if cursor != len(text):
+        raise ValueError('Caption layout omitted source characters')
+    return result
+
+
 def graphemes(text):
     clusters=[]
     for char in text:

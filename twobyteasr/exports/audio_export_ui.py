@@ -118,6 +118,8 @@ def change_mode(workspace):
     w.advanced_panel.setVisible(not audio and w.advanced_button.isChecked())
     if hasattr(w, 'advanced_card'): w.advanced_card.setVisible(not audio)
     w.preview_host.setVisible(not audio)
+    if hasattr(w, 'output_layout_preview') and audio:
+        w.output_layout_preview.hide()
     for widget in (w.preview_play_button,w.preview_time,w.preview_scrub,w.duration_label):
         widget.setVisible(not audio)
     bind_text(w.preview_title,'音频导出范围' if audio else '导出预览')

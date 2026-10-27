@@ -89,7 +89,7 @@ def speaker_ids(manager):
 def test_pending_cards_show_banner_role_buttons_and_representative_line(manager):
     assert list(manager.cards) == ["API_S01", "API_S02", "API_S03"]
     assert manager.banner.isVisible()
-    assert "3 位待确认" in manager.banner_text.text()
+    assert "3 个待确认" in manager.banner_text.text()
     card = manager.cards["API_S01"]
     assert card.pill.isVisible() and card.pill.text() == "待确认"
     assert card.roles.isVisible() and card.roles.role() == ""
@@ -106,7 +106,7 @@ def test_role_click_applies_at_once_and_one_undo_restores(manager):
     folded = manager.cards["API_S02"]
     assert folded.data["present"] is False and folded.status_label.text() == "已归入游戏背景声。"
     assert folded.roles.role() == "game" and not folded.name_edit.isEnabled()
-    assert "2 位待确认" in manager.banner_text.text()
+    assert "2 个待确认" in manager.banner_text.text()
     manager.page.undo_stack.undo()
     assert speaker_ids(manager) == ["API_S01", "API_S02", "API_S03"]
     assert list(manager.cards) == ["API_S01", "API_S02", "API_S03"]

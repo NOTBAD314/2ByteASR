@@ -21,6 +21,7 @@ def _gate(*, last_progress_age, completed=(), reader=None):
     now = time.perf_counter()
     failures = []
     gate = SimpleNamespace(
+        active=True, generation=1, _owns_request=lambda *a, **k: True,
         page=SimpleNamespace(video=SimpleNamespace(controller=None)),
         completed=set(completed), started=now - 500, last_tick=now,
         last_progress=now - last_progress_age, _reader=reader,
@@ -72,6 +73,7 @@ def test_captions_prepared_one_by_one_count_as_progress():
     page = SimpleNamespace(project=SimpleNamespace(media=SimpleNamespace(path=''), cues=[object()]),
                            video=SimpleNamespace(_paused=True, controller=None), _caption_scene=scene,
                            _preview_path='ready.ass', audio_engine=SimpleNamespace(telemetry_snapshot=lambda: {}),
+                           _playback_buffers_ready=lambda: True,
                            _present_caption_scene=lambda: None, _studio_trace=lambda *a, **k: None)
     gate, failures = _gate(last_progress_age=20, completed={'读取工程', '建立时间轴', '准备播放器', '准备音频'})
     gate.page, gate.hydrated, gate.painted, gate.generation = page, True, False, 1

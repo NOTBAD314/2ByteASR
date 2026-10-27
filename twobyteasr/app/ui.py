@@ -29,7 +29,7 @@ Shared widgets live in design/.
 
 from __future__ import annotations
 
-from ..diagnostics.navigation_timing import timed as navigation_timed
+from ..diagnostics.navigation_timing import phase as navigation_phase, timed as navigation_timed
 from ..diagnostics.studio_events import observed
 
 import os
@@ -44,7 +44,7 @@ import threading
 import traceback
 import uuid
 from dataclasses import dataclass, replace
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import qtawesome as qta
@@ -452,6 +452,17 @@ def populate_available_asr_choices(primary, review, timeline, settings, root=APP
         "off",
     )
     return tuple(missing)
+
+
+def _language_preflight_values(values: dict, spoken: str, settings: dict) -> dict:
+    """Check the effective timeline without rewriting the user's saved choice."""
+    from ..recognition.recognition_choices import language_timeline
+    result = dict(values)
+    timeline = str(result.get('firered_asr_backend', 'off'))
+    resolved = language_timeline(timeline, spoken, settings or {})
+    if resolved is not None and resolved['rerouted']:
+        result['firered_asr_backend'] = 'qwen_aligner'
+    return result
 
 
 def missing_selected_local_models(values: dict, root=APP_ROOT) -> tuple[str, ...]:
@@ -1009,6 +1020,11 @@ class MainWindow(QWidget):
 
     def __init__(self, media_paths, legacy, pipeline, startup_self_test, *, startup_page="recognition"):
         super().__init__()
+        # The light loading surface now exists before Studio. Establish the
+        # existing native-child policy before any shell child becomes native,
+        # otherwise Qt promotes its ordinary siblings into separate HWNDs.
+        from ..design.native_surfaces import isolate_native_children
+        isolate_native_children()
         self._onboarding_facts_ready.connect(self._onboarding_facts_received)
         self._sample_ready.connect(self._sample_project_ready)
         self._workshop_page_instance = None
@@ -1101,7 +1117,10 @@ class MainWindow(QWidget):
             self.window_title_bar.setMouseTracking(True)
         except Exception:
             pass
-        self.pages = QStackedWidget()
+        self.pages = QStackedWidget(content_host)
+        if sys.platform == 'win32':
+            self.pages.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors)
+            self.pages.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
         self.settings_scroll = self._scrollable(
             QWidget() if self._recognition_page_deferred else self._settings_page())
         self.pages.addWidget(self.settings_scroll)
@@ -1228,18 +1247,10 @@ class MainWindow(QWidget):
         self._studio_page_instance = page
 
     def _build_lazy_page(self, name: str):
-        partial = self.__dict__.get('_studio_page_building') if name == 'studio' else None
-        if partial is not None:
-            partial.finish_workspace_construction()
-            self._studio_construction_finished()
-            return self.built_page('studio')
-        # A queued entry whose construction has not started yet (it waits for
-        # the loading page to paint): a caller needs the page now. Build it
-        # here, keep the queued start from building a second page, and serve
-        # the queued request as a finished construction would (2026-10-25).
-        queued = name == 'studio' and self.__dict__.get('_studio_entry_pending') is not None
-        if queued:
-            self._studio_entry_start_queued = False
+        if name == 'studio' and (self.__dict__.get('_studio_page_building') is not None
+                                  or self.__dict__.get('_studio_entry_pending') is not None):
+            raise RuntimeError('Studio construction is pending; use built_page() or the ready callback')
+        queued = False
         # First visit builds the page (0.5-2 s with many reports): show the
         # busy cursor at once instead of an unexplained pause after the click.
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -1709,7 +1720,8 @@ class MainWindow(QWidget):
                 QTimer.singleShot(500, self._start_home_tour)
         completion = current.objectName() == 'completionScroll'
         studio = existing_page(self, "studio")
-        in_studio = studio is not None and current is studio
+        loading = self.__dict__.get('_studio_loading_session')
+        in_studio = (studio is not None and current is studio) or bool(loading and loading.state in {'preparing', 'failed'})
         self.content_layout.setContentsMargins(*( (0, 0, 0, 0) if in_studio
             else (18, 0, 18, 14) if completion else (18, 12, 18, 14) ))
         self.content_layout.setSpacing(0 if in_studio else 12)
@@ -1729,15 +1741,67 @@ class MainWindow(QWidget):
             )
         # Resident pages are translated once per language. Walking the entire
         # MainWindow tree on every switch caused a visible 50-140 ms stall.
+        self._prepare_page_presentation(current)
+        self._update_bottom_bar_visibility(index)
+
+    def _prepare_page_presentation(self, current):
         language = getattr(self, "_ui_language", current_language())
         if current.property("_2b_language_applied") != language:
-            apply_ui_language(current, language)
-            current.setProperty("_2b_language_applied", language)
+            with navigation_phase('navigation.language'):
+                apply_ui_language(current, language)
+                current.setProperty("_2b_language_applied", language)
         # Interface zoom: pages built or changed since the last zoom step
         # catch up here (no-op at 100%; Studio keeps its own size).
         from .ui_zoom import apply_to_changed as _apply_ui_zoom
-        _apply_ui_zoom(current)
-        self._update_bottom_bar_visibility(index)
+        with navigation_phase('navigation.zoom'):
+            _apply_ui_zoom(current)
+
+    def _native_video_handoff(self):
+        """Hold only this editor's existing Qt native child visibility."""
+        loading = self.__dict__.get('_studio_loading_session')
+        if loading is not None and getattr(loading, 'uses_native_cover', False):
+            # The cover owns the handoff. Holding a video HWND while its native
+            # pages parent moves to Home carries old pixels over the new page.
+            return nullcontext()
+        studio = self.built_page('studio')
+        if studio is None:
+            return nullcontext()
+        from ..design.native_visibility_commit import NativeVisibilityCommit
+        from ..studio.studio_video_canvas import MpvCanvas
+        from shiboken6 import isValid
+        coordinator = self.__dict__.get('_studio_native_visibility')
+        if coordinator is None:
+            coordinator = self._studio_native_visibility = NativeVisibilityCommit(
+                self, after_commit=self._flush_native_page_presentation)
+        widgets = [getattr(studio, 'video_overlay_host', None),
+                   getattr(studio, 'subtitle_edit_card', None)]
+        for canvas in studio.findChildren(MpvCanvas):
+            widget = canvas
+            while widget is not None and widget is not studio and widget is not self.pages:
+                if widget not in widgets:
+                    widgets.append(widget)
+                widget = widget.parentWidget()
+        return coordinator.scope([widget for widget in widgets if widget is not None
+            and isValid(widget) and not widget.isWindow() and widget.window() is self])
+
+    def _flush_native_page_presentation(self, _receipt):
+        """Submit already-painted pixels after the outer native visibility commit.
+
+        The earlier Raster flush can be clipped by the still-visible video
+        child. This completes that same paint, including nested loader scopes;
+        it does not create a second image, window, layout pass, or frame clock.
+        """
+        from ..design.backing_store_flush import flush_existing_widget_backing_store
+        result = flush_existing_widget_backing_store(self, self.pages)
+        if result.get('status') != 'submitted':
+            from shiboken6 import isValid
+            if (isValid(self) and isValid(self.pages)
+                    and not getattr(self, '_studio_close_pending', False)
+                    and not getattr(self, '_studio_close_finalizing', False)):
+                self.pages.repaint()
+                self.repaint()
+                result['fallback'] = 'repaint_requested'
+        return result
 
     @navigation_timed('navigation.layout')
     def _switch_page(self, target) -> None:
@@ -1749,14 +1813,63 @@ class MainWindow(QWidget):
             return
         if widget is self.pages.widget(2) and hasattr(self, 'result_preview'):
             self._refresh_completion_preview()
-        from ..design.ui_motion import atomic_layout, reveal_cue
-        with atomic_layout(self):
+        with navigation_phase('navigation.prepare_target'):
+            self._prepare_page_presentation(widget)
             widget.ensurePolished()
-            self.pages.setCurrentWidget(widget)
-            self.pages.layout().activate()
-            if hasattr(self, "content_layout"):
-                self.content_layout.activate()
+        from ..design.ui_motion import atomic_layout, reveal_cue
         studio = self.built_page("studio")
+        from shiboken6 import isValid
+        surfaces = []
+        if studio is not None:
+            from ..studio.studio_video_canvas import MpvCanvas
+            surfaces = studio.findChildren(MpvCanvas)
+        departing = self.pages.currentWidget() is studio and widget is not studio
+        loading = self.__dict__.get('_studio_loading_session')
+        native_cover_mode = bool(loading is not None and getattr(loading, 'uses_native_cover', False))
+        with ExitStack() as presentation:
+            if native_cover_mode:
+                # Retire native video before changing its parent's rectangle.
+                # During loading the separately held card already covers this.
+                if not departing:
+                    # A retained hot editor can enter without showing the card.
+                    # Its showEvent must not expose pixels over the old Home.
+                    for surface in surfaces:
+                        surface.set_presentation_blocked('page-handoff', True)
+                        presentation.callback(lambda item=surface:
+                            item.set_presentation_blocked('page-handoff', False) if isValid(item) else None)
+            elif departing:
+                # Retire requests immediately, but commit region changes with
+                # the destination paint instead of blanking the old editor.
+                for surface in surfaces:
+                    presentation.enter_context(surface.defer_presentation_changes())
+                presentation.enter_context(self._native_video_handoff())
+            else:
+                # showEvent may release navigation ownership while entering.
+                # Keep the incoming native video gated through the first paint.
+                presentation.enter_context(self._native_video_handoff())
+                for surface in surfaces:
+                    surface.set_presentation_blocked('page-handoff', True)
+                    presentation.callback(lambda item=surface:
+                        item.set_presentation_blocked('page-handoff', False) if isValid(item) else None)
+            with atomic_layout(self):
+                with navigation_phase('navigation.set_current'):
+                    self.pages.setCurrentWidget(widget)
+                with navigation_phase('navigation.activate'):
+                    self.pages.layout().activate()
+                    if hasattr(self, "content_layout"):
+                        self.content_layout.activate()
+            # Native pages have their own paint target. Repainting only the
+            # shell can leave their previous pixels beneath the resumed video.
+            if native_cover_mode:
+                with navigation_phase('navigation.paint_shell'):
+                    self.repaint()
+                with navigation_phase('navigation.paint_pages'):
+                    self.pages.repaint()
+            else:
+                with navigation_phase('navigation.paint_pages'):
+                    self.pages.repaint()
+                with navigation_phase('navigation.paint_shell'):
+                    self.repaint()
         reveal_cue(self.app_header if self.app_header.isVisible() or studio is None else studio.studio_toolbar)
 
     def _update_bottom_bar_visibility(self, index: int = None):
@@ -1765,7 +1878,9 @@ class MainWindow(QWidget):
         try:
             idx = self.pages.currentIndex() if index is None else index
             if hasattr(self, "bottom_bar") and self.bottom_bar is not None:
-                self.bottom_bar.setVisible(self.pages.widget(idx) is self.settings_scroll)
+                loading = self.__dict__.get('_studio_loading_session')
+                busy = loading is not None and loading.state in {'preparing', 'failed'}
+                self.bottom_bar.setVisible(self.pages.widget(idx) is self.settings_scroll and not busy)
         except Exception:
             pass
 
@@ -1844,6 +1959,15 @@ class MainWindow(QWidget):
     @navigation_timed('studio.entry.dispatch')
     def open_studio_project(self, project_path=None, *, mode="edit", source="canonical", on_ready=None, expected_result_ref=None):
         """Canonical Studio navigation entry for every project-opening source."""
+        if getattr(self, '_studio_close_pending', False) or getattr(self, '_studio_close_finalizing', False):
+            return
+        studio = self.built_page('studio')
+        if studio is not None:
+            from ..projects.studio_save import cancel_navigation_after_save, defer_navigation_until_saved
+            if defer_navigation_until_saved(studio, lambda: self.open_studio_project(
+                    project_path, mode=mode, source=source, on_ready=on_ready, expected_result_ref=expected_result_ref)):
+                return
+            cancel_navigation_after_save(studio)
         if self.built_page('studio') is None:
             self._queue_studio_construction(project_path, mode=mode, source=source,
                 on_ready=on_ready, expected_result_ref=expected_result_ref)
@@ -1852,6 +1976,9 @@ class MainWindow(QWidget):
         if proofread is not None and project_path and not proofread.settle_writes(project_path):
             # The proofreading edits of this file are not saved yet; Studio
             # would load (and later save over) the older file.
+            loading = self.__dict__.get('_studio_loading_session')
+            if loading is not None and loading.active and loading.path == str(Path(project_path).resolve()):
+                self._reject_studio_loading()
             return
         if (source == "external" and project_path and self.built_page("studio") is not None
                 and self.studio_page.project is not None):
@@ -1874,31 +2001,195 @@ class MainWindow(QWidget):
             skip_dirty_guard=source == 'studio_recognition', on_ready=on_ready,
             expected_result_ref=expected_result_ref)
 
+    def _loading_surface_painted(self):
+        if self.__dict__.get('_studio_entry_start_queued', False):
+            session = self.__dict__.get('_studio_loading_session')
+            if session is None or not session.active:
+                return
+            if (getattr(session, 'uses_native_cover', False)
+                    and not session.native_cover_state().get('verified')):
+                return
+            self._studio_entry_start_queued = False
+            QTimer.singleShot(0, self, self._start_studio_construction)
+
+    def _prepare_studio_loading(self, path, **options):
+        """Own the loading surface before construction, hydration or native video."""
+        from ..studio.studio_loading import StudioLoadingSession
+        session = self.__dict__.get('_studio_loading_session')
+        if session is None:
+            # The native-child experiment keeps a real, opaque loading surface
+            # above a visible editor. Ordinary platforms retain StackOne.
+            native_cover = (os.name == 'nt' and QApplication.platformName() == 'windows'
+                and os.environ.get('TWOBYTEASR_NATIVE_LOADING_COVER', '1') == '1')
+            session = self._studio_loading_session = StudioLoadingSession(
+                self.pages, self, page_stack=True, native_cover=native_cover,
+                input_host=self.pages if native_cover else None)
+            if session.uses_native_cover:
+                session.on_present = self._present_native_loading_destination
+                session.on_retired = self._paint_loading_destination
+                session.handoff_scope = self._loading_cover_handoff
+            else:
+                self.pages.addWidget(session.view)
+                session.on_present = lambda: self._switch_page(session.view)
+                session.handoff_scope = self._native_video_handoff
+            session.on_reveal = self._reveal_prepared_studio
+            session.view.painted.connect(self._loading_surface_painted)
+            session.view.geometry_changed.connect(self._queue_hidden_studio_geometry)
+            # Compatibility name for instrumentation, never a separate page.
+            self._studio_entry_loading = session.view
+            self._studio_entry_status = session.view.label
+        target = str(Path(path).resolve()) if path else ''
+        studio = self.built_page('studio')
+        if studio is not None:
+            session.attach_surface(studio.video)
+        if not session.active or session.path != target:
+            continuation = session.active or (session.state == 'failed' and session.path == target)
+            previous_origin = session.return_target if continuation else None
+            origin = previous_origin or ('hub' if self.pages.currentWidget() is self.built_page('studio') else 'home')
+            origin_widget = getattr(session, 'origin_widget', None) if continuation else self.pages.currentWidget()
+            session.begin(target, on_cancel=self._cancel_studio_construction,
+                on_retry=lambda: self.open_studio_project(path, **options), return_target=origin, present=False)
+            session.origin_widget = origin_widget
+        self._page_changed(self.pages.currentIndex())
+        self.layout().activate()
+        self.pages.layout().activate()
+        session.present()
+        return session
+
+    def _present_native_loading_destination(self):
+        """Only a verified native child cover may expose its editor behind it."""
+        session = self.__dict__.get('_studio_loading_session')
+        if (session is None or not session.active or not session.uses_native_cover
+                or not session.native_cover_state().get('verified')):
+            return
+        studio = self.built_page('studio')
+        if studio is not None:
+            if not studio.video._paused:
+                studio.video.set_paused(True)
+            self._switch_page(studio)
+        session.view.raise_()
+        self._loading_surface_painted()
+
+    def _paint_loading_destination(self):
+        # The card is logically hidden but its own native layer is still held.
+        # Paint the enabled destination before that layer's final HIDE.
+        self._page_changed(self.pages.currentIndex())
+        self.layout().activate()
+        self.pages.layout().activate()
+        self.repaint()
+        # Native pages are the final backing-store writer for their rectangle.
+        self.pages.repaint()
+
+    @contextmanager
+    def _loading_cover_handoff(self):
+        """Commit video changes first; retire the opaque card native layer last."""
+        session = self.__dict__.get('_studio_loading_session')
+        if session is None or not session.uses_native_cover:
+            with self._native_video_handoff():
+                yield
+            return
+        from ..design.native_visibility_commit import NativeVisibilityCommit
+        coordinator = self.__dict__.get('_studio_cover_visibility')
+        if coordinator is None:
+            coordinator = self._studio_cover_visibility = NativeVisibilityCommit(self)
+        with coordinator.scope([session.view]):
+            with self._native_video_handoff():
+                yield
+
+    def _reveal_prepared_studio(self):
+        studio = self.built_page('studio')
+        if studio is None:
+            raise RuntimeError('cannot reveal an unconstructed Studio')
+        self._switch_page(studio)
+
+    def _prepare_hidden_studio_geometry(self, page, *, force_settle=False):
+        """Resolve the loading owner's final rectangle before restoring splits.
+
+        StackOne does not size an inactive page. Restoring splitters against
+        its 100x30 placeholder both distorts defaults and triggers recovery
+        for perfectly valid saved sidebars. Keep the editor hidden and use
+        the already-visible loading page's final stack geometry.
+        """
+        from shiboken6 import isValid
+        session = self.__dict__.get('_studio_loading_session')
+        if (page is None or not isValid(page)
+                or getattr(self, '_studio_close_pending', False)
+                or getattr(self, '_studio_close_finalizing', False)
+                or getattr(page, '_close_requested', False)
+                or page is not self.built_page('studio') or page.isVisible()
+                or page.parentWidget() is not self.pages or session is None
+                or not session.active or self.pages.currentWidget() is not session.view):
+            return False
+        generation = getattr(session, 'generation', None)
+        self.layout().activate()
+        self.pages.layout().activate()
+        if (self.__dict__.get('_studio_loading_session') is not session
+                or getattr(session, 'generation', None) != generation or not session.active
+                or self.pages.currentWidget() is not session.view or page.isVisible()):
+            return False
+        target = self.pages.contentsRect()
+        if target.isEmpty():
+            return False
+        same_rectangle = page.geometry() == target
+        if same_rectangle and not force_settle:
+            return True  # Ordinary LayoutRequest must not walk the tree again.
+        before = page.size()
+        timeline = getattr(page, 'timeline', None)
+        timeline_before = timeline.size() if isinstance(timeline, QWidget) else None
+        if not same_rectangle:
+            page.setGeometry(target)
+        from ..design.ui_motion import settle_layout
+        # The first restore may follow a root-only Hub resize. Its newly
+        # exposed workspace still needs one pass even at the same outer size.
+        settle_layout(page)
+        if (page.size() != before or (timeline_before is not None
+                and isValid(timeline) and timeline.size() != timeline_before)):
+            gate = getattr(page, '_readiness', None)
+            invalidate = getattr(gate, 'invalidate_surface_geometry', None)
+            if callable(invalidate):
+                invalidate()
+        return True
+
+    def _queue_hidden_studio_geometry(self):
+        """Coalesce one stack-geometry update for this exact loading request."""
+        from shiboken6 import isValid
+        session = self.__dict__.get('_studio_loading_session')
+        page = self.built_page('studio')
+        if (session is None or not session.active or page is None or not isValid(page)
+                # The initial Hub still hides the workspace subtree. Its
+                # placeholder must not consume the first project-layout pass.
+                or getattr(page, 'project', None) is None
+                or getattr(self, '_studio_close_pending', False)
+                or getattr(self, '_studio_close_finalizing', False)
+                or getattr(page, '_close_requested', False)
+                or self.pages.currentWidget() is not session.view or page.isVisible()
+                or page.parentWidget() is not self.pages):
+            return
+        generation = session.generation
+        pending = self.__dict__.get('_studio_hidden_geometry_pending')
+        if (pending is not None and pending[0] is session
+                and pending[1] == generation and pending[2] is page):
+            return
+        request = (session, generation, page)
+        self._studio_hidden_geometry_pending = request
+        def synchronize():
+            if self.__dict__.get('_studio_hidden_geometry_pending') is not request:
+                return
+            self._studio_hidden_geometry_pending = None
+            if (self.__dict__.get('_studio_loading_session') is not session
+                    or session.generation != generation or self.built_page('studio') is not page):
+                return
+            self._prepare_hidden_studio_geometry(page)
+        QTimer.singleShot(0, self, synchronize)
+
     def _queue_studio_construction(self, project_path, **options):
-        """Cancellable GUI construction; only the latest project request wins."""
+        """One request owns construction and the subsequent project preparation."""
         self._studio_entry_pending = (project_path, options)
-        loading = self.__dict__.get('_studio_entry_loading')
-        if loading is None:
-            loading = QFrame(self.pages)
-            loading.setObjectName('studioEntryLoading')
-            layout = QVBoxLayout(loading)
-            layout.addStretch()
-            self._studio_entry_status = QLabel(tr('正在创建工作台界面…'), loading)
-            self._studio_entry_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(self._studio_entry_status)
-            cancel = QPushButton(tr('返回主页'), loading)
-            cancel.clicked.connect(self._cancel_studio_construction)
-            layout.addWidget(cancel, 0, Qt.AlignmentFlag.AlignCenter)
-            layout.addStretch()
-            self.pages.addWidget(loading)
-            self._studio_entry_loading = loading
-            def painted(event):
-                QFrame.paintEvent(loading, event)
-                if self.__dict__.get('_studio_entry_start_queued', False):
-                    self._studio_entry_start_queued = False
-                    QTimer.singleShot(0, self, self._start_studio_construction)
-            loading.paintEvent = painted
-        self._switch_page(loading)
+        session = self._prepare_studio_loading(project_path, **options)
+        if not session.active:
+            self._studio_entry_pending = None
+            return
+        session.stage('创建工作台界面')
         if self.__dict__.get('_studio_entry_discarding', False):
             return
         building = self.__dict__.get('_studio_page_building')
@@ -1906,26 +2197,44 @@ class MainWindow(QWidget):
             building.resume_workspace_construction()
         elif not self.__dict__.get('_studio_entry_start_queued', False):
             self._studio_entry_start_queued = True
+            session.view.update()
 
     def _start_studio_construction(self):
         self._studio_entry_start_queued = False
         if self.__dict__.get('_studio_entry_pending') is None:
+            return
+        if (self.__dict__.get('_studio_page_building') is not None
+                or self.__dict__.get('_studio_entry_discarding', False)):
+            return  # A queued start cannot overlap construction/disposal.
+        session = self.__dict__.get('_studio_loading_session')
+        if session is not None and getattr(session, 'uses_native_cover', False):
+            if not session.active:
+                self._studio_entry_pending = None
+                return
+            if not session.native_cover_state().get('verified'):
+                self._studio_entry_start_queued = True
+                return
+        if self.built_page('studio') is not None:
+            request, self._studio_entry_pending = self._studio_entry_pending, None
+            path, options = request
+            self.open_studio_project(path, **options)
             return
         try:
             from ..studio.studio_ui import SubtitleStudioPage
             page = SubtitleStudioPage(self, deferred_build=True)
             self._studio_page_building = page
             page.workspace_build_progress.connect(
-                lambda stage: self._studio_entry_status.setText(tr('已准备：{stage}；正在继续创建界面…', stage=tr(stage))))
+                lambda stage: self._studio_loading_session.stage('创建工作台界面', stage)
+                if self.__dict__.get('_studio_page_building') is page else None)
             page.workspace_build_failed.connect(self._studio_construction_failed)
             page.workspace_built.connect(self._studio_construction_finished)
             page.resume_workspace_construction()
         except Exception as exc:
-            self._studio_entry_status.setText(tr('工作台界面创建失败：{error}', error=str(exc)))
+            self._studio_construction_failed(str(exc))
 
     def _studio_construction_failed(self, error):
         self._studio_entry_pending = None
-        self._studio_entry_status.setText(tr('工作台界面创建失败：{error}', error=error))
+        self._studio_loading_session.fail('创建工作台界面', error)
         page = self.__dict__.get('_studio_page_building')
         if page is None:
             return
@@ -1938,7 +2247,8 @@ class MainWindow(QWidget):
                 self.close()
             elif self.__dict__.get('_studio_entry_pending') is not None:
                 self._studio_entry_start_queued = True
-                self._studio_entry_status.setText(tr('正在创建工作台界面…'))
+                self._studio_loading_session.stage('创建工作台界面')
+                self._studio_loading_session.view.update()
         page.discard_workspace_construction(disposed)
 
     def _studio_construction_finished(self):
@@ -1946,19 +2256,72 @@ class MainWindow(QWidget):
         if page is None:
             return
         self._studio_page_building = None
+        self._studio_loading_session.attach_surface(page.video)
         self._construct_lazy_page('studio', prepared=page)
+        self._studio_loading_session.mark('创建工作台界面')
         request, self._studio_entry_pending = self.__dict__.get('_studio_entry_pending'), None
         if request is not None:
             path, options = request
             self.open_studio_project(path, **options)
 
+    def _cancel_pending_studio_entries(self):
+        self._studio_navigation_cancel_generation = int(getattr(self, '_studio_navigation_cancel_generation', 0)) + 1
+        from ..projects.studio_save import cancel_navigation_after_save
+        cancel_navigation_after_save(self.built_page('studio'))
+
     def _cancel_studio_construction(self):
+        self._cancel_pending_studio_entries()
+        session = self.__dict__.get('_studio_loading_session')
+        destination = session.return_target if session is not None else 'home'
+        if session is not None:
+            session.hold_navigation()
         self._studio_entry_pending = None
         self._studio_entry_start_queued = False
         page = self.__dict__.get('_studio_page_building')
         if page is not None:
             page.pause_workspace_construction()
-        self._switch_page(self.settings_scroll)
+        studio = self.built_page('studio')
+        gate = getattr(studio, '_readiness', None)
+        if studio is not None:
+            block = getattr(studio.video, 'set_presentation_blocked', None)
+            if callable(block):
+                block('navigation', True)
+        def reveal():
+            if destination == 'hub' and studio is not None:
+                studio.show_project_hub(skip_dirty_guard=True)
+                self._switch_page(studio)
+            else:
+                self._switch_page(self.settings_scroll)
+            # A same-page switch is a no-op, but cancelling loading still
+            # restores Home's chrome before the native card can disappear.
+            self._page_changed(self.pages.currentIndex())
+            self.layout().activate()
+            self.pages.layout().activate()
+        if gate is not None:
+            gate.cancel(navigate=False, reveal=reveal)
+        elif session is not None:
+            session.abort(reveal=reveal)
+        else:
+            reveal()
+
+    def _reject_studio_loading(self):
+        """Declining the dirty guard cancels the request, never the old project."""
+        session = self.__dict__.get('_studio_loading_session')
+        if session is None:
+            return
+        self._cancel_pending_studio_entries()
+        origin = getattr(session, 'origin_widget', None)
+        studio = self.built_page('studio')
+        if studio is not None and studio.project is not None:
+            studio._project_view_state = 'open'
+            studio._sync_navigation_chrome()
+        def reveal():
+            if origin is not None:
+                self._switch_page(origin)
+            self._page_changed(self.pages.currentIndex())
+            self.layout().activate()
+            self.pages.layout().activate()
+        session.abort(reveal=reveal)
 
     def _retry_pending_recognition_reload(self):
         """Reload a recognition handoff that failed to land earlier.
@@ -2001,8 +2364,35 @@ class MainWindow(QWidget):
             try:
                 verify_result_reference(expected_result_ref, project_path=project_path)
             except (OSError, ValueError, TypeError) as exc:
-                QMessageBox.warning(self, tr('无法确认本次识别工程'), str(exc))
+                loading = self.__dict__.get('_studio_loading_session')
+                if loading is not None and loading.active and loading.path == str(Path(project_path).resolve()):
+                    loading.fail('核对识别结果', str(exc))
+                else:
+                    QMessageBox.warning(self, tr('无法确认本次识别工程'), str(exc))
                 return
+        candidate = str(project_path or self.studio_page.project_path or '') if self.studio_page.project is not None else str(project_path or '')
+        gate = getattr(self.studio_page, '_readiness', None)
+        from ..studio.studio_readiness import project_file_identity
+        hot = bool(candidate and gate is not None and gate.ready and gate.path == str(Path(candidate).resolve())
+                   and gate.loaded_file_identity == project_file_identity(candidate))
+        loading = None if hot else self._prepare_studio_loading(candidate, mode=mode,
+            source='studio_recognition' if skip_dirty_guard else 'canonical', on_ready=on_ready,
+            expected_result_ref=expected_result_ref)
+        if loading is not None and getattr(loading, 'uses_native_cover', False):
+            if not loading.active:
+                return
+            if not loading.native_cover_state().get('verified'):
+                self._studio_entry_pending = (project_path, dict(mode=mode,
+                    source='studio_recognition' if skip_dirty_guard else 'canonical',
+                    on_ready=on_ready, expected_result_ref=expected_result_ref))
+                self._studio_entry_start_queued = True
+                loading.view.update()
+                return
+            self._studio_entry_pending = None
+            self._studio_entry_start_queued = False
+            # The same card may have been presented before Studio existed.
+            # Its once-per-request presentation callback is not a new open.
+            self._present_native_loading_destination()
         transition_started = time.perf_counter()
         if self.pages.currentWidget() is not self.studio_page and not self._recognition_page_deferred:
             current = self.current_project_profile
@@ -2015,7 +2405,8 @@ class MainWindow(QWidget):
         if hasattr(self, "bottom_bar"):
             self.bottom_bar.hide()
         self.layout().activate()
-        self._switch_page(self.studio_page)
+        if loading is None:
+            self._switch_page(self.studio_page)
         self.pages.layout().activate()
         self.last_studio_transition_profile = {
             "request_to_layout_settled_ms": round((time.perf_counter() - transition_started) * 1000, 3)
@@ -2026,18 +2417,8 @@ class MainWindow(QWidget):
         if not candidate and self.studio_page.project is not None:
             candidate = str(self.studio_page.project_path or '')
         if candidate and not Path(candidate).is_file():
-            self.studio_page._studio_trace(
-                "OPEN_FAILED",
-                stage="VALIDATE",
-                source="canonical",
-                project_path=candidate,
-                message="Project file not found",
-            )
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Icon.Critical)
-            bind_text(box, '无法打开工程', property='windowTitle')
-            box.setText(f"Project file not found:\n{candidate}")
-            box.exec()
+            if loading is not None:
+                loading.fail('读取工程', tr('工程文件不存在：{path}', path=candidate))
             return
         if candidate and Path(candidate).is_file():
             def ready():
@@ -2073,10 +2454,31 @@ class MainWindow(QWidget):
                 expected_result_ref=expected_result_ref)
         else:
             self.studio_page.show_project_hub()
+            if loading is not None:
+                for stage in loading.view.steps_view.tasks:
+                    if stage == '创建工作台界面':
+                        loading.mark(stage)
+                    elif stage == '首屏绘制':
+                        self.studio_page.grab()
+                        loading.mark(stage)
+                    else:
+                        loading.skip(stage, '进入工程库，没有载入工程')
+                epoch = loading.generation
+                def hub_ready():
+                    if (loading.deliver(epoch) and loading.generation == epoch
+                            and loading.state == 'ready' and on_ready is not None):
+                        on_ready(self.built_page('studio'))
+                QTimer.singleShot(0, self, hub_ready)
             self._retry_pending_recognition_reload()
 
     @navigation_timed('home.return')
     def _return_to_settings(self):
+        loading = self.__dict__.get('_studio_loading_session')
+        if loading is not None and (loading.active or loading.state == 'failed'):
+            loading.return_target = 'home'
+            self._cancel_studio_construction()
+        else:
+            self._cancel_pending_studio_entries()
         self._ensure_recognition_page()
         self._apply_saved_ai_configuration(source='home')
         self._refresh_available_asr_choices()
@@ -2103,6 +2505,7 @@ class MainWindow(QWidget):
         media = Path(str(media_path or ""))
         project = Path(str(project_path or ""))
         if not media.is_file() or not project.is_file():
+            self.studio_page.fail_recognition_runtime('当前工程或媒体文件已移动，请重新关联后再试。')
             QMessageBox.warning(
                 self,
                 tr('无法开始识别'),
@@ -2118,6 +2521,7 @@ class MainWindow(QWidget):
         try:
             self.studio_page.save()
         except Exception as exc:
+            self.studio_page.fail_recognition_runtime('工程保存失败：' + str(exc))
             QMessageBox.critical(self, tr('工程保存失败'), str(exc))
             return
         request_options = self.studio_page.recognition_request_options()
@@ -2183,7 +2587,13 @@ class MainWindow(QWidget):
             # 且早退后无人复位弹窗状态。现在：识别弹窗已在 dispatch 里先关闭，
             # 警告框正常可见；未启动成功则把原因落到左侧字幕列表芯片。
             self._run_block_reason = ""
-            self._start_run()
+            try:
+                self._start_run()
+            except Exception as exc:
+                self._studio_recognition_context = None
+                self.studio_page.fail_recognition_runtime('启动识别失败：' + str(exc))
+                QMessageBox.critical(self, tr('无法开始识别'), str(exc))
+                return
             if not self._run_in_progress:
                 self.studio_page.fail_recognition_runtime(
                     str(self._run_block_reason or "识别未能启动，请查看运行日志")
@@ -6831,6 +7241,14 @@ class MainWindow(QWidget):
                 import ctypes
                 from ctypes import wintypes
                 msg = wintypes.MSG.from_address(int(message))
+                from .window_constraints import existing_native_handle
+                hwnd = int(msg.hWnd or 0)
+                if msg.message in (0x0002, 0x0082):  # WM_DESTROY / WM_NCDESTROY
+                    if hwnd == getattr(self, '_native_frame_hwnd', hwnd):
+                        self._native_frame_active = self._native_caption_active = False
+                    return super().nativeEvent(event_type, message)
+                if not existing_native_handle(self, hwnd=hwnd):
+                    return super().nativeEvent(event_type, message)
                 bounds = getattr(self, '_window_bounds', None)
                 if bounds is not None:
                     result=bounds.native_message(int(msg.message), int(msg.wParam), int(msg.lParam))
@@ -6838,11 +7256,11 @@ class MainWindow(QWidget):
                         return True,result
                 if msg.message in (0x0083,0x0024):
                     from .window_native_frame import handle_message
-                    result = handle_message(self,int(msg.message),int(msg.wParam),int(msg.lParam))
+                    result = handle_message(self,int(msg.message),int(msg.wParam),int(msg.lParam),hwnd=hwnd)
                     if result is not None:
                         return True,result
-            except (ValueError, TypeError, OSError):
-                pass
+            except (ValueError, TypeError, OSError, RuntimeError):
+                return super().nativeEvent(event_type, message)
         if os.name == "nt" and not self.isFullScreen():
             try:
                 import ctypes
@@ -6898,7 +7316,7 @@ class MainWindow(QWidget):
                     if edge in hit_codes:
                         return True, hit_codes[edge]
                     from .window_native_frame import caption_hit
-                    if caption_hit(self,screen_x,screen_y,device_pixel_ratio):
+                    if caption_hit(self,screen_x,screen_y,device_pixel_ratio,hwnd=int(msg.hWnd or 0)):
                         return True,2  # HTCAPTION: Windows owns threshold, restore and drag
             except Exception:
                 # A malformed native message must never break ordinary input;
@@ -10102,7 +10520,9 @@ class MainWindow(QWidget):
                 if message.clickedButton() is open_workshop:
                     self._open_model_workshop()
                 return
-            missing_models = missing_selected_local_models(self._asr_values())
+            effective = _language_preflight_values(self._asr_values(),
+                self._subtitle_language_options()['recognition_language'], self.legacy.RUNTIME_SETTINGS)
+            missing_models = missing_selected_local_models(effective)
             if missing_models:
                 self._run_block_reason = "所选模型尚未下载完整：" + "、".join(missing_models)
                 message = QMessageBox(self)
@@ -11656,14 +12076,50 @@ class MainWindow(QWidget):
         self._studio_close_finalizing = True
         QTimer.singleShot(0, self, self.close)
 
+    def _retire_studio_loading_for_close(self):
+        self._cancel_pending_studio_entries()
+        native_visibility = self.__dict__.get('_studio_native_visibility')
+        if native_visibility is not None:
+            native_visibility.close()
+        cover_visibility = self.__dict__.get('_studio_cover_visibility')
+        if cover_visibility is not None:
+            cover_visibility.close()
+        loading = self.__dict__.get('_studio_loading_session')
+        if loading is not None and (loading.active or loading.state == 'failed'):
+            self._studio_entry_pending = None
+            self._studio_entry_start_queued = False
+            gate = getattr(self.built_page('studio'), '_readiness', None)
+            if gate is not None:
+                gate.cancel(navigate=False)
+            else:
+                loading.abort()
+
+    def _confirm_application_close(self, studio, worker_running):
+        gate = getattr(studio, '_readiness', None)
+        waiting = gate.confirmation_wait() if gate is not None and gate.active else nullcontext()
+        with waiting:
+            if not self._prepare_glossary_for_task():
+                return False
+            if worker_running:
+                answer = QMessageBox.question(
+                    self, tr('任务仍在运行'), tr('要安全取消当前任务并关闭窗口吗？'),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No)
+                if answer != QMessageBox.StandardButton.Yes:
+                    return False
+            guard = getattr(getattr(studio, 'project_controller', None), 'dirty_guard', None)
+            return guard is None or guard.confirm('退出应用')
+
     def closeEvent(self, event):
         if self.__dict__.get('_studio_entry_discarding', False):
+            self._retire_studio_loading_for_close()
             self._studio_entry_pending = None
             self._close_after_studio_discard = True
             event.ignore()
             return
         partial = self.__dict__.get('_studio_page_building')
         if partial is not None:
+            self._retire_studio_loading_for_close()
             event.ignore()
             if not self.__dict__.get('_studio_construction_discarding', False):
                 self._studio_construction_discarding = True
@@ -11679,21 +12135,14 @@ class MainWindow(QWidget):
         ):
             event.ignore()
             return
-        if not getattr(self, "_studio_close_finalizing", False) and not self._prepare_glossary_for_task():
-            event.ignore()
-            return
         worker_running = bool(self.worker and self.worker.isRunning())
-        if worker_running:
-            answer = QMessageBox.question(
-                self,
-                tr('任务仍在运行'),
-                tr('要安全取消当前任务并关闭窗口吗？'),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+        studio = self.built_page('studio')
+        if not getattr(self, '_studio_close_finalizing', False):
+            if not self._confirm_application_close(studio, worker_running):
                 event.ignore()
                 return
+            self._retire_studio_loading_for_close()
+        if worker_running:
             self.token.cancel()
             self.worker.requestInterruption()
             self._worker_close_cleanup_done = False
@@ -11703,12 +12152,7 @@ class MainWindow(QWidget):
             QTimer.singleShot(5_000, self, self._force_close_worker)
         else:
             self._worker_close_cleanup_done = True
-        studio = self.built_page("studio")
         if studio is not None and not getattr(self, "_studio_close_finalizing", False):
-            guard = getattr(getattr(studio, "project_controller", None), "dirty_guard", None)
-            if guard is not None and not guard.confirm("退出应用"):
-                event.ignore()
-                return
             encoder_cancel = getattr(self, "_encoder_capability_cancel", None)
             if encoder_cancel is not None:
                 encoder_cancel.set()

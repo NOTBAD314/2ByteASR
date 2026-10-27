@@ -258,7 +258,7 @@ def initialize_project_layout(project, *, cue_ids=None, replace=False):
     rendered = list(projected_cues(local))
     resolved = {}
     for c in rendered:
-        item = resolve_caption_style(local.styles, local.speakers, c, local.style_recipes, width)
+        item = resolve_caption_style(local.styles, local.speakers, c, local.style_recipes, width, height)
         resolved[c.id] = item
     layout = compute_stack_layout(rendered, resolve_one=lambda c: resolved[c.id],
         play_res_y=height, play_res_x=width,

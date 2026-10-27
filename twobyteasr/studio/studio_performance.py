@@ -8,7 +8,7 @@ from pathlib import Path
 from collections import deque
 from time import perf_counter
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel,
                               QPlainTextEdit, QPushButton, QVBoxLayout, QFileDialog)
 
@@ -32,6 +32,8 @@ def performance_snapshot(page, *, compact=False) -> dict:
         "captured_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         "clock": asdict(clock.snapshot()) if clock else None,
         "compositor": scene.performance_snapshot() if scene else None,
+        "native_overlay": _native_overlay_snapshot(canvas),
+        "render_geometry": _render_geometry(canvas, scene),
         "decoders": decoders,
         "audio": engine.telemetry_snapshot() if engine else None,
         "audio_request": dict(getattr(engine,'_last_payload',{})),
@@ -44,7 +46,7 @@ def performance_snapshot(page, *, compact=False) -> dict:
         "autosave": list(getattr(page, "_autosave_profile", ()))[-8:],
         "gui_loop": _gui_loop_stats(),
         "pending": _pending_work(page),
-        "ipc": _ipc_snapshot(canvas),
+        "ipc": _ipc_snapshot(canvas, compact=compact),
         "primary_backend": _primary_backend_snapshot(canvas),
         "playback_plan": _playback_plan_snapshot(page),
         "qc_worker": getattr(page,'_qc_worker').snapshot() if getattr(page,'_qc_worker',None) else None,
@@ -52,10 +54,31 @@ def performance_snapshot(page, *, compact=False) -> dict:
     }
 
 
-def _ipc_snapshot(canvas):
+def _native_overlay_snapshot(canvas):
+    from ..diagnostics.publication_metrics import upload_snapshot
+    samples = getattr(canvas, '_video_upload_samples', None)
+    rows = list(samples.copy())[-1200:] if samples is not None else []
+    return upload_snapshot(rows, perf_counter())
+
+
+def _render_geometry(canvas, scene):
+    """Record the actual Qt canvas and raster mapping, never monitor resolution."""
+    result = {}
+    for name, widget in (('canvas', canvas), ('compositor', scene)):
+        if widget is None or not callable(getattr(widget, 'devicePixelRatioF', None)):
+            continue
+        ratio = float(widget.devicePixelRatioF())
+        top = widget.mapToGlobal(QPoint(0, 0))
+        result[name] = {'logical_size': [widget.width(), widget.height()], 'dpr': ratio,
+            'physical_size': [round(widget.width()*ratio), round(widget.height()*ratio)],
+            'global_logical_origin': [top.x(), top.y()], 'visible': widget.isVisible()}
+    return result
+
+
+def _ipc_snapshot(canvas, *, compact=False):
     actor=getattr(getattr(canvas,'controller',None),'_actor',None)
     snapshot=getattr(actor,'request_metrics',None)
-    return snapshot() if callable(snapshot) else None
+    return snapshot(include_raw=not compact) if callable(snapshot) else None
 
 
 def _primary_backend_snapshot(canvas):
@@ -65,7 +88,9 @@ def _primary_backend_snapshot(canvas):
     keys=('mpv-version','current-vo','hwdec-current','video-codec','video-sync','display-sync-active','video-speed-correction',
           'display-fps','estimated-display-fps','container-fps','video-params',
           'decoder-frame-drop-count','frame-drop-count','vo-delayed-frame-count','speed','pause')
+    frame = getattr(controller, 'observed_frame', None)
     return {'measurement':'cached backend observations; no synchronous IPC',
+            'frame_ready_witness': frame() if callable(frame) else {'status':'unsupported'},
             **{key:values.get(key) for key in keys}}
 
 
@@ -136,7 +161,7 @@ class StudioPerformanceDialog(QDialog):
         self.summary = QLabel(self)
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
-        note = QLabel("每 0.5 秒更新。合成层提交次数不等于屏幕帧率。记录 15 秒可保存主线程、播放回调和音频遥测；实际显示节奏需使用桌面／系统呈现基准。", self)
+        note = QLabel("每 0.5 秒更新。合成提交与播放器命令确认按次/秒计；它们不代表屏幕帧率。记录 15 秒会保存播放、音频和像素处理耗时；未采集到的项目显示 —。", self)
         note.setWordWrap(True)
         layout.addWidget(note)
         self.details = QPlainTextEdit(self)
@@ -197,7 +222,10 @@ class StudioPerformanceDialog(QDialog):
         def number(key):
             value = comp.get(key)
             return "—" if value is None else f"{value:.1f}"
-        bind_text(self.summary, '{state}  ·  {value1:g}×  ·  {value2} 个解码器\n发布 {value3} fps    合成 P95 {value4} ms    发布 P95 {value5} ms', state=state, value1=clock.get('playback_rate', 1), value2=len(self._snapshot['decoders']), value3=number('native_publish_fps'), value4=number('render_p95_ms'), value5=number('native_publish_p95_ms'))
+        native = self._snapshot['native_overlay']
+        ack = native['ack']['events_per_second']
+        ack_text = '—' if ack is None else f'{ack:.1f}'
+        bind_text(self.summary, '{state}  ·  {value1:g}×  ·  {value2} 个解码器\n合成提交 {value3} 次/秒    播放器确认 {value4} 次/秒    合成 P95 {value5} ms', state=state, value1=clock.get('playback_rate', 1), value2=len(self._snapshot['decoders']), value3=number('native_publish_fps'), value4=ack_text, value5=number('render_p95_ms'))
         scroll = self.details.verticalScrollBar().value()
         # Keep selection stable so the user can inspect/copy a specific value.
         if not self.details.textCursor().hasSelection():
@@ -254,6 +282,13 @@ class StudioPerformanceDialog(QDialog):
             'probe':playback_probe.counters(),'heartbeat':list(self._capture_rows),
             'telemetry':list(self._capture_snapshots),'events':events[-10000:],
             'events_omitted':max(0,len(events)-10000)}
+        samples = getattr(getattr(self.page, 'video', None), '_video_upload_samples', None)
+        uploads = list(samples.copy()) if samples is not None else []
+        uploads = [row for row in uploads if begin <= row.get('started', 0) <= end]
+        report['pixel_pipeline'] = {'measurement': 'QPC stage timestamps; native ACK is not GPU completion',
+            'status': 'measured' if uploads else 'not_sampled', 'samples': uploads[-2400:],
+            'samples_omitted': max(0, len(uploads)-2400),
+            'gpu_time_status': 'unsupported: current external mpv IPC has no GPU timestamps'}
         self._capture_report=report
         instance=recorder()
         if instance is not None:instance.playback_capture=report

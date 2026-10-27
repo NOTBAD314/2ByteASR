@@ -1446,6 +1446,15 @@ class StudioMediaFlowMixin:
                     modal.hide_content()
                 self.recognition_requested.emit(action, media_path, project_path)
                 return
+            if getattr(self, "_recognition_running", False):
+                bind_text(problem, '已有识别任务正在运行，请等待完成或取消后再试。')
+                problem.show()
+                return
+            if (self.project is not project or str(self.project_path or '') != project_path
+                    or str(project.media.path or '') != media_path):
+                bind_text(problem, '工程或媒体已变化，请关闭窗口后重新开始识别。')
+                problem.show()
+                return
             if local_analysis.isChecked():
                 if (str(primary_model.currentData()) not in {'moss','firered','qwen_local','whisper_turbo','paraformer'}
                         or str(timeline_model.currentData()) == 'api'):

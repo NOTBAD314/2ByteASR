@@ -121,13 +121,15 @@ def test_cleanup_keeps_accents_case_and_french_spacing():
 
 def test_european_finalize_uses_its_lengths():
     from twobyteasr.recognition.pipeline_runtime import finalize_cues
+    from twobyteasr.subtitle_rules.timing import relock_display_timing
     from twobyteasr.recognition.transcript_data import SubtitleCue
     events = []
     legacy = SimpleNamespace(
         record_run_event=lambda name, **payload: events.append((name, payload)),
         snap_cue_starts_to_vad_onsets=lambda cues, *_a: cues,
         extend_cue_tails_by_speaker=lambda cues, *_a: cues,
-        bridge_short_display_gaps=lambda cues, *_a: cues)
+        bridge_short_display_gaps=lambda cues, *_a: cues,
+        relock_display_timing=relock_display_timing)
     cues = [SubtitleCue(1, 0.0, 0.5, "Сегодня мы попробуем победить босса", speaker="S01")]
     with language_scope("ru"):
         done = finalize_cues(cues, [], [], [], 10.0, 30, legacy)

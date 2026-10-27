@@ -942,6 +942,9 @@ class StudioPlaybackFlowMixin:
         thumbnails = getattr(getattr(self, 'timeline', None), '_thumbnails', None)
         if callable(getattr(thumbnails, 'set_paused', None)):
             thumbnails.set_paused(not paused)
+        selection_state = getattr(getattr(self, 'timeline', None), 'playback_selection_state_changed', None)
+        if callable(selection_state):
+            selection_state()
         self._sync_play_button(paused)
         self._resource_governor.set_playback(not paused)
         if paused and self.selected_cue_id and getattr(self, '_selection_needs_hydration', False):

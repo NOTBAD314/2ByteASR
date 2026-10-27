@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from .link_catalog import language_matches, preferred_track, youtube_url
+from .link_catalog import language_matches, preferred_track, media_url
 
 MODES = (("both", "视频＋字幕"), ("video", "仅视频"), ("audio", "仅音频"), ("subtitles", "仅字幕"))
 MODE_NOTES = {"both": "推荐，字幕直接可编辑", "video": "之后自己识别",
@@ -31,18 +31,19 @@ CODEC_NAMES = (("avc", "H.264"), ("h264", "H.264"), ("hev", "H.265"), ("hvc", "H
 
 
 def find_video_link(text: str) -> str:
-    """The first YouTube single-video link in pasted text, normalized; "" if none.
+    """The first HTTP(S) video candidate in pasted text, normalized; "" if none.
 
     Only the start of the clipboard is read: a huge paste must not stall the
     key press that triggered the check."""
-    for token in re.split(r"\s+", str(text or "")[:4096].strip())[:40]:
+    for token in re.split(r"[\s【】（）<>\"]+", str(text or "")[:4096].strip())[:40]:
         token = token.strip("<>\"'()[]（）【】「」,，。")
         if not token.lower().startswith(("http://", "https://")):
-            if not token.lower().startswith(("youtu.be/", "youtube.com/", "www.youtube.com/", "m.youtube.com/")):
+            if not token.lower().startswith(("youtu.be/", "youtube.com/", "www.youtube.com/", "m.youtube.com/",
+                    "bilibili.com/", "www.bilibili.com/", "m.bilibili.com/", "b23.tv/")):
                 continue
             token = "https://" + token
         try:
-            return youtube_url(token)[0]
+            return media_url(token)
         except ValueError:
             continue
     return ""
@@ -108,6 +109,8 @@ def fps_text(value) -> str:
 
 
 def video_label(fmt: dict, unknown: str = "大小未知") -> str:
+    if not fmt.get("height") and not fmt.get("fps") and fmt.get("vcodec") == "unknown":
+        return f"{str(fmt.get('ext') or 'HTTP').upper()} · {size_text(size_bytes(fmt), unknown)}"
     return (f"{fmt.get('height') or '?'}p · {fps_text(fmt.get('fps'))} fps · {codec_name(fmt.get('vcodec'))}"
             f" · {size_text(size_bytes(fmt), unknown)}")
 
@@ -174,7 +177,7 @@ def available_modes(catalog: dict) -> set[str]:
 
 def quality_summary(catalog: dict) -> str:
     videos = video_formats(catalog)
-    if not videos:
+    if not videos or not videos[0].get("height"):
         return ""
     top = videos[0]
     return f"{top.get('height') or '?'}p" + (f" · {fps_text(top['fps'])} fps" if top.get("fps") else "")
@@ -186,6 +189,8 @@ def upload_date_text(value: str) -> str:
 
 
 def duration_text(seconds) -> str:
+    if not seconds:
+        return "—"
     total = int(round(float(seconds or 0)))
     hours, rest = divmod(total, 3600)
     minutes, secs = divmod(rest, 60)

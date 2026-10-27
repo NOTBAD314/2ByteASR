@@ -11,7 +11,7 @@ import math
 import threading
 import time
 
-from PySide6.QtCore import QObject, Signal, QRect, Qt
+from PySide6.QtCore import QEvent, QObject, Signal, QRect, Qt
 from PySide6.QtGui import QImage, QPainter
 
 from ..i18n import bind_text
@@ -181,13 +181,25 @@ class SceneRasterizer:
         from .advanced_live_renderer import (render_live_snapshot, render_live_layers,
             composite_live_scene_layers, composition_pivot_for_snapshot)
         from .studio_live_canvas import compiled_scene_for_snapshot
-        output = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
-        output.fill(Qt.transparent)
-        painter = QPainter(output)
+        output = painter = None
+        def canvas():
+            nonlocal output, painter
+            if output is None:
+                output = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+                output.fill(Qt.transparent)
+            if painter is None:
+                painter = QPainter(output)
+            return painter
         evidence = []
         # Every prepared snapshot already carries its saved initial/manual
         # anchor. Visible peers never change a cue's placement during playback.
         from .caption_playback_cache import FailedCaption as _FailedCaption
+        prepared_cues = tuple(prepared_cues)
+        single = prepared_cues[0][1] if len(prepared_cues) == 1 else None
+        share_single = bool(single is not None and not isinstance(single, _FailedCaption)
+            and single.web is None and getattr(single.route, 'engine', None) == 'native'
+            and not getattr(single, 'preview_error', '') and not getattr(single, 'interaction_transform', None)
+            and not animated_caption(single))
         prepared_cues = tuple((key, p.fallback if isinstance(p, _FailedCaption) and p.fallback else p)
                              for key, p in prepared_cues)
 
@@ -225,16 +237,26 @@ class SceneRasterizer:
                 if image.isNull():
                     raise ValueError('empty raster')
                 gesture=getattr(prepared,'interaction_transform',None)
-                painter.save()
-                if gesture:
-                    px=width/max(1,snapshot.playres_x);py=height/max(1,snapshot.playres_y)
-                    painter.translate(gesture['position_x']*px,gesture['position_y']*py)
-                    painter.rotate(gesture.get('rotation',snapshot.rotation)-snapshot.rotation)
-                    painter.scale(gesture['scale_x']/100/max(.0001,snapshot.scale_x),
-                                  gesture['scale_y']/100/max(.0001,snapshot.scale_y))
-                    painter.translate(-snapshot.position_x*px,-snapshot.position_y*py)
-                painter.drawImage(output.rect(), image)
-                painter.restore()
+                if (share_single and image.width() == width and image.height() == height
+                        and image.format() == QImage.Format_ARGB32_Premultiplied
+                        and image.devicePixelRatio() == 1.0 and not image.colorSpace().isValid()):
+                    # Both 64 MiB caches retain their existing entries/budgets,
+                    # but a single immutable raster need not own two buffers.
+                    # A NEW wrapper preserves Qt copy-on-write isolation from
+                    # the inner cache; never return its mutable wrapper itself.
+                    output = QImage(image)
+                else:
+                    paint = canvas()
+                    paint.save()
+                    if gesture:
+                        px=width/max(1,snapshot.playres_x);py=height/max(1,snapshot.playres_y)
+                        paint.translate(gesture['position_x']*px,gesture['position_y']*py)
+                        paint.rotate(gesture.get('rotation',snapshot.rotation)-snapshot.rotation)
+                        paint.scale(gesture['scale_x']/100/max(.0001,snapshot.scale_x),
+                                      gesture['scale_y']/100/max(.0001,snapshot.scale_y))
+                        paint.translate(-snapshot.position_x*px,-snapshot.position_y*py)
+                    paint.drawImage(output.rect(), image)
+                    paint.restore()
                 import numpy as np
                 packed = image.convertToFormat(QImage.Format_RGBA8888)
                 alpha = np.ndarray((packed.height(), packed.width(), 4), dtype=np.uint8,
@@ -254,10 +276,13 @@ class SceneRasterizer:
                     basic = replace(snapshot, style_recipe={}, motion_recipe={'mode':'none'},
                                     shadow={}, glow={}, fill='#FFFFFFFF',
                                     strokes=({'width':2, 'color':'#FF000000', 'alignment':'OUTSIDE'},))
-                    painter.drawImage(output.rect(), render_live_snapshot(basic, width=width, height=height))
+                    canvas().drawImage(output.rect(), render_live_snapshot(basic, width=width, height=height))
                 except Exception as fallback_error:
                     row.update(status='failed', fallback_error=str(fallback_error))
-        painter.end()
+        if output is None:
+            canvas()
+        if painter is not None:
+            painter.end()
         return output, evidence
 
     def native_frame(self, prepared, relative, width, height):
@@ -354,18 +379,46 @@ class CaptionScene(QObject):
         self._hold_timer = QTimer(self)
         self._hold_timer.setSingleShot(True)
         self._hold_timer.timeout.connect(self._hold_expired)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.wake = threading.Event()
         self.ready.connect(self.accept)
         self.web_ready.connect(self.refresh_web)
-        self.web_cache = WebSceneCache(self.web_ready.emit)
+        self.web_cache = WebSceneCache(self._notify_web_ready)
         self.thread = threading.Thread(target=self.work, name='caption-scene', daemon=True)
         overlay_folder = getattr(self.page.video, '_compositor_overlay_dir', None)
+        self._raw_folder = overlay_folder / 'caption-scenes' if overlay_folder is not None else None
         if overlay_folder is not None:
             from .overlay_session import register_overlay_worker
             register_overlay_worker(overlay_folder, self.thread)
         self.thread.start()
-        page.destroyed.connect(self.close)
+        page.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
+        self.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
+
+    def event(self, event):
+        if event.type() == QEvent.Type.DeferredDelete:
+            self.close()
+        return super().event(event)
+
+    def _notify_web_ready(self):
+        with self.lock:
+            if self.closed:
+                return
+            try:
+                self.web_ready.emit()
+            except RuntimeError:
+                return
+
+    def _notify_ready(self, token, pixels, trace):
+        # close()/DeferredDelete and worker emission share one short gate.
+        # It never covers rasterization, storage I/O, or waiting for a worker.
+        with self.lock:
+            if self.closed:
+                return False
+            try:
+                self.ready.emit(token, pixels, trace)
+            except RuntimeError:
+                return False
+            return not self.closed
 
     def refresh_web(self):
         if self.closed or self.page.project is not self.project:
@@ -680,26 +733,33 @@ class CaptionScene(QObject):
                         # wakes us with both language layers; never publish a
                         # transparent/half-built replacement as "ready".
                         continue
-                    pixels = prepared_pixels(image, None, started, self.page.video._compositor_overlay_dir/'caption-scenes')
+                    with self.lock:
+                        if self.closed:
+                            return
+                    pixels = prepared_pixels(image, None, started, self._raw_folder)
                 except Exception as exc:
                     # A transient raster/upload failure gets one retry, then
                     # yields native ownership for this revision instead of
                     # leaving a dead worker holding a permanently blank layer.
-                    try: self.ready.emit(token, None, dict(error=f'{type(exc).__name__}: {exc}'))
-                    except RuntimeError: return
+                    if not self._notify_ready(token, None, dict(error=f'{type(exc).__name__}: {exc}')):
+                        return
                     continue
                 trace = dict(expected_cue_ids=[key for key, _ in cues], cue_pixels=rows,
                              sample_ms=float(milliseconds), duration_ms=(time.perf_counter()-started)*1000)
-                if all(row['status']!='pending' for row in rows) and not any(animated_caption(p) for _,p in cues):
-                    with self.lock:
+                with self.lock:
+                    if self.closed:
+                        # Dropping the unadopted PreparedPixels releases its
+                        # file lease; an IPC-owned earlier frame keeps its own
+                        # reference until ACK and is unaffected.
+                        return
+                    if all(row['status']!='pending' for row in rows) and not any(animated_caption(p) for _,p in cues):
                         key=self.frame_key(token)
                         self.frames[key]=(pixels,trace)
                         self.frames.move_to_end(key)
                         while len(self.frames)>1 and (len(self.frames)>32 or sum(v[0].image.sizeInBytes() for v in self.frames.values())>FRAME_CACHE_BYTES):
                             self.frames.popitem(last=False)
-                if not self.closed:
-                    try: self.ready.emit(token, pixels, trace)
-                    except RuntimeError: return
+                if not self._notify_ready(token, pixels, trace):
+                    return
         finally:
             rasterizer.close()
 
@@ -777,15 +837,10 @@ class CaptionScene(QObject):
                     owner='caption_scene')
 
     def close(self, *_):
-        self.active = False
-        self._hold = None
-        try:
-            self._hold_timer.stop()
-        except RuntimeError:
-            pass
-        self.web_cache.close()
         with self.lock:
             self.closed = True
+            self.active = False
+            self._hold = None
             self.pending = None
             self.warm_pending.clear();self.frames.clear()
             self.published = None
@@ -794,3 +849,8 @@ class CaptionScene(QObject):
             self.project = None
             self.last_request = None
             self.wake.set()
+        try:
+            self._hold_timer.stop()
+        except RuntimeError:
+            pass
+        self.web_cache.close()

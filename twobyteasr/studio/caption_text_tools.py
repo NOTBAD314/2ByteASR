@@ -62,6 +62,8 @@ class CaptionInputEdit(InputLatencyTextEdit):
         tools.page.undo_stack.beginMacro('粘贴字幕与局部格式')
         try:
             self.insertPlainText(markdown_text(text,marks) if tools.mode.currentIndex() else text)
+            if tools.layer == 'translation' and callable(getattr(self, 'commit', None)):
+                self.commit()  # the bound draft must exist before pasted marks target its text
             cue = tools.current()
             if cue is not None:
                 kept=[m for m in layer_marks(cue,tools.layer) if not (start<=m['start'] and m['end']<=start+len(text))]
@@ -101,6 +103,7 @@ class CaptionTextTools(QWidget):
         super().__init__(page)
         self.page, self.editor, self.layer = page, editor, layer
         self._last_raw = editor.toPlainText()
+        self._last_mode = 0
         self._pending_edit = None
         editor.document().contentsChange.connect(self.content_change)
         self.highlighter = MarkHighlighter(editor)
@@ -121,6 +124,10 @@ class CaptionTextTools(QWidget):
         self.mode.currentIndexChanged.connect(self.change_mode)
 
     def current(self):
+        binding = getattr(self.editor, "binding", None)
+        if self.layer == "translation" and binding is not None:
+            return (next((cue for cue in binding[0].cues if cue.id == binding[1]), None)
+                    if self.page.project is binding[0] else None)
         return self.page.session._cue_lookup.get(self.page.selected_cue_id)
 
     def content_change(self, position, removed, added):
@@ -165,6 +172,13 @@ class CaptionTextTools(QWidget):
         finally: del blocker
 
     def change_mode(self, index):
+        if self.layer == 'translation' and getattr(self.editor, 'dirty', False):
+            blocker = QSignalBlocker(self.mode)
+            self.mode.setCurrentIndex(self._last_mode)
+            self.editor.commit()
+            self.mode.setCurrentIndex(index)
+            del blocker
+        self._last_mode = index
         self.editor.setProperty('captionMarkdown', bool(index))
         cue = self.current()
         if cue is not None: self.hydrate(cue, self.body(cue))
@@ -199,6 +213,12 @@ class CaptionTextTools(QWidget):
         self.apply(body, marks)
 
     def apply(self, body, marks):
+        binding = getattr(self.editor, 'binding', None)
+        if self.layer == 'translation' and binding is not None:
+            from ..subtitle_rules.subtitle_translation import container_target
+            if self.page.project is not binding[0] or container_target(self.page.project) != binding[2]:
+                self.page.save_state.setText(tr("译文语言或工程已切换，请重新选择字幕后编辑"))
+                return
         from ..timeline.studio_commands import SetCueFieldsCommand
         cue = self.current()
         if cue is None: return

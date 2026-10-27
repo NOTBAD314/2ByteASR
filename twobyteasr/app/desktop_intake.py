@@ -20,6 +20,7 @@ class DesktopIntake(QObject):
         self.window = window
         self.requests = deque()
         self.active = False
+        self._studio_wait = None
         self.validated.connect(self._apply)
         self.timer = QTimer(self)
         self.timer.setInterval(250)
@@ -46,28 +47,96 @@ class DesktopIntake(QObject):
                 media.append(path)
             else:
                 if media:
-                    self.requests.append(('media', media, replace))
+                    self.requests.append(('media', media, replace, None))
                     media = []
-                self.requests.append((kind, [path], False))
+                self.requests.append((kind, [path], False,
+                    getattr(self.window, '_studio_navigation_cancel_generation', 0)))
         if media:
-            self.requests.append(('media', media, replace))
+            self.requests.append(('media', media, replace, None))
         bind_text(self.window.header_status, '已收到文件，正在打开…')
         self.timer.start()
         self._next()
 
     def _busy(self):
         w = self.window
-        gate = getattr(existing_page(w, 'studio'), '_readiness', None)
+        page = existing_page(w, 'studio')
+        gate = getattr(page, '_readiness', None)
+        loading = getattr(w, '_studio_loading_session', None)
         return bool(w._run_in_progress or (w.worker and w.worker.isRunning())
-                    or (gate is not None and gate.active))
+                    or (gate is not None and gate.active)
+                    or (loading is not None and loading.active)
+                    or getattr(w, '_studio_entry_pending', None) is not None
+                    or getattr(w, '_studio_entry_discarding', False)
+                    or getattr(w, '_studio_construction_discarding', False)
+                    or getattr(w, '_studio_close_pending', False)
+                    or getattr(page, '_manual_save_in_progress', False))
+
+    def _wait_for_studio_subtitle(self, request):
+        """Construct via the normal loading owner, never via a lazy accessor."""
+        token = object()
+        self.active = True
+        self._studio_wait = (token, None, None)
+        def release():
+            pending, self._studio_wait = self._studio_wait, None
+            if pending is not None and pending[1] is not None:
+                pending[1].changed.disconnect(pending[2])
+        def ready(page):
+            if self._studio_wait is None or self._studio_wait[0] is not token:
+                return
+            release()
+            if self.requests and self.requests[0] is request:
+                self.requests.popleft()
+            try:
+                self.window._switch_page(page)
+                page._import_subtitle_file(Path(request[1][0]))
+            finally:
+                self.active = False
+        try:
+            self.window.open_studio_project(None, source='external', on_ready=ready)
+            loading = getattr(self.window, '_studio_loading_session', None)
+            if loading is None:
+                raise RuntimeError('工作台没有建立载入会话')
+            generation = loading.generation
+            def changed():
+                if loading.generation != generation or loading.state in {'failed', 'cancelled'}:
+                    release()
+                    if self.requests and self.requests[0] is request:
+                        self.requests.popleft()
+                    self.active = False
+                    bind_text(self.window.header_status, '字幕未导入：工作台准备已取消或失败。')
+            self._studio_wait = (token, loading, changed)
+            loading.changed.connect(changed)
+            changed()
+        except Exception as exc:
+            release()
+            self.active = False
+            if self.requests and self.requests[0] is request:
+                self.requests.popleft()
+            bind_text(self.window.header_status, '字幕未导入：{error}', error=str(exc))
 
     def _next(self):
+        generation = getattr(self.window, '_studio_navigation_cancel_generation', 0)
+        cancelled = 0
+        while (self.requests and self.requests[0][0] in {'project', 'subtitle'}
+               and self.requests[0][3] != generation):
+            self.requests.popleft()
+            cancelled += 1
+        if cancelled:
+            from ..diagnostics.event_log import emit
+            emit('desktop.open_cancelled', result='cancelled', requests=cancelled,
+                 cancel_generation=generation)
+            bind_text(self.window.header_status, '已取消此前的工程／字幕打开请求。')
         if self.active or self._busy():
             return
         if not self.requests:
             self.timer.stop()
             return
-        kind, paths, replace = self.requests.popleft()
+        request = self.requests[0]
+        kind, paths, replace, _generation = request
+        if kind == 'subtitle' and existing_page(self.window, 'studio') is None:
+            self._wait_for_studio_subtitle(request)
+            return
+        self.requests.popleft()
         if kind == 'project':
             self.active = True
             try:
@@ -80,8 +149,9 @@ class DesktopIntake(QObject):
         if kind == 'subtitle':
             self.active = True
             try:
-                self.window._switch_page(self.window.studio_page)
-                self.window.studio_page._import_subtitle_file(Path(paths[0]))
+                page = existing_page(self.window, 'studio')
+                self.window._switch_page(page)
+                page._import_subtitle_file(Path(paths[0]))
             finally:
                 self.active = False
             return

@@ -22,9 +22,10 @@ import json
 import sys
 import traceback
 
-if len(sys.argv) >= 2 and sys.argv[1] == '--mcp-stdio':
-    # The MCP stdio server starts once per client session: no startup trace
-    # line (importing startup_trace appends one) and no other log writes.
+if len(sys.argv) >= 2 and sys.argv[1] in {'--mcp-stdio', '--playback-diagnostic'}:
+    # No ordinary startup log before these isolated/windowless entry points.
+    # The diagnostic coordinator installs its temporary profile first; audited
+    # GUI children then use normal startup logging inside their own profiles.
     def _startup_mark(*_args, **_details):
         return None
 else:
@@ -195,6 +196,9 @@ def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == '--data-roots-inspect':
         from twobyteasr.diagnostics.data_roots_inspect import main as inspect_data_roots
         return inspect_data_roots(sys.argv[2])
+    if len(sys.argv) > 1 and sys.argv[1] == '--playback-diagnostic':
+        from twobyteasr.diagnostics.playback_diagnostic import main as playback_diagnostic
+        return playback_diagnostic(sys.argv[2:])
     from twobyteasr.acceptance.offline_audit_io import install as install_offline_audit_io
     install_offline_audit_io()
     if len(sys.argv) == 3 and sys.argv[1] == '--cover-font-self-test':

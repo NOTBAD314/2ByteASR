@@ -6,7 +6,13 @@ import {WebThemeCue, WebThemeStage} from './components/WebThemeSubtitle';
 import {bundledThemeFontCss} from './webThemeFonts';
 import type {WordAnimation} from './components/TimedText';
 
-export type Cue = {id: string; text: string; speaker?: string; translation?: string; startMs: number; endMs: number; localOffsetMs?: number; cueDurationMs?: number; styleId: string; visual?: Recipe; snapshotHash?: string};
+export type CaptionLayout = {
+  version: number; playResX: number; playResY: number; lineCount: number; lineHeightPx: number;
+  maxWidthPx: number; availableHeightPx: number; overflow: boolean; boundsPx: number[];
+  lines: {text: string; sourceStart: number; sourceEnd: number; displayStart: number; displayEnd: number;
+    breakAfter: 'manual'|'automatic'|'none'; widthPx: number; baselinePx: number}[];
+};
+export type Cue = {id: string; text: string; speaker?: string; translation?: string; startMs: number; endMs: number; localOffsetMs?: number; cueDurationMs?: number; styleId: string; visual?: Recipe; snapshotHash?: string; lineCount?: number; layout?: CaptionLayout};
 export type Recipe = {
   wordAnimation?: WordAnimation;
   name: string;
@@ -28,7 +34,8 @@ export type Recipe = {
   mask: {type: string; softness: number; direction: string};
   decorations: string[];
   motion: {mode?: 'none'|'explicit'; entrance?: Record<string, unknown>; hold?: Record<string, unknown>; exit?: Record<string, unknown>; entry?: string; duration?: number};
-  layout: {alignment: number; marginV?: number; positionX?: number; positionY?: number; playResX?: number; playResY?: number; anchorX?: number; anchorY?: number; scaleX?: number; scaleY?: number; rotation?: number};
+  layout: {alignment: number; marginV?: number; positionX?: number; positionY?: number; playResX?: number; playResY?: number; anchorX?: number; anchorY?: number; scaleX?: number; scaleY?: number; rotation?: number;
+    singleLine?: boolean; fitLocked?: boolean; lineCount?: number; lineHeightPx?: number; maxWidthPx?: number; captionLayout?: CaptionLayout};
   visualGraph?: any;
   webTheme?: any;
 };

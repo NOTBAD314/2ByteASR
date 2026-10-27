@@ -29,11 +29,10 @@ def record(window, event, *, actor, reason, **fields):
     if not enabled():
         return
     try:
-        from PySide6.QtCore import Qt
         from PySide6.QtGui import QCursor
         from shiboken6 import isValid
         from .event_log import emit
-        from ..app.window_constraints import native_frame
+        from ..app.window_constraints import existing_native_handle, native_frame
         if not isValid(window):
             return
         now = time.monotonic()
@@ -47,7 +46,8 @@ def record(window, event, *, actor, reason, **fields):
         screen = window.screen()
         cursor = QCursor.pos()
         native = native_frame(window)
-        details = dict(window_id=hex(int(window.winId())) if window.testAttribute(Qt.WA_WState_Created) else 'uncreated',
+        hwnd = existing_native_handle(window)
+        details = dict(window_id=hex(hwnd) if hwnd else 'uncreated',
             operation_generation=getattr(bounds, 'generation', 0), owner=getattr(bounds, 'owner', 'idle'),
             maximized=window.isMaximized(), fullscreen=window.isFullScreen(), minimized=window.isMinimized(),
             visible=window.isVisible(), cursor_logical=[cursor.x(),cursor.y()],
@@ -63,7 +63,7 @@ def record(window, event, *, actor, reason, **fields):
             u.GetCursorPos(ctypes.byref(point))
             details['cursor_physical'] = [point.x,point.y]
             u.GetDpiForWindow.argtypes = [wintypes.HWND]
-            details['dpi'] = int(u.GetDpiForWindow(int(window.winId())))
+            details['dpi'] = int(u.GetDpiForWindow(hwnd))
         if event in {'press','gesture-end','state-change','interaction-end','repair','return-screen'}:
             from PySide6.QtWidgets import QWidget
             details['video_children'] = [dict(visible=child.isVisible(),

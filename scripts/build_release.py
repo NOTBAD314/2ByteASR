@@ -70,7 +70,7 @@ def main():
     # docs/api-setup: the in-app 「申请与设置 API」 tutorials are read at runtime (2026-10-14).
     for folder in ('assets', 'licenses', 'lexicons', 'renderer', 'scripts', 'twobyteasr', 'packaging', '.github/workflows',
                    'installer', 'launcher', 'third_party', 'tools/ffmpeg', 'tools/mpv', 'tools/vulkan-loader',
-                   'tools/node', 'tools/yt-dlp', 'docs/api-setup'):
+                   'tools/node', 'tools/yt-dlp', 'tools/diagnostics', 'docs/api-setup'):
         for current, dirs, names in os.walk(ROOT / folder):
             dirs[:] = [n for n in dirs if n.lower() not in EXCLUDED and not n.endswith('.egg-info')]
             for name in names:

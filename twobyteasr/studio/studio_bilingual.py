@@ -91,20 +91,26 @@ def sync_controls(page, settings: BilingualSettings | None = None) -> None:
         timeline.set_bilingual(shown)
 
 
-def apply_display(page, **changes) -> bool:
-    """User change of display mode/order/fonts: one undoable visual edit."""
-    if not page.project:
-        return False
-    current = current_settings(page)
+def settings_for_changes(project, **changes) -> BilingualSettings:
+    """Resolve one display choice without mutating the project or its history."""
+    current = settings_from_state(project.studio_state)
     values = current.to_dict()
     values.update({key: value for key, value in changes.items() if value is not None})
     if current.legacy and "mode" in changes and set(changes) == {"mode"}:
         # First explicit choice on an old project starts from the new defaults.
         values.update(BilingualSettings(mode=values["mode"]).to_dict())
-    if "bilingual" not in page.project.studio_state and not current.legacy and "layout" not in changes:
+    if "bilingual" not in project.studio_state and not current.legacy and "layout" not in changes:
         # A project's first bilingual state uses the compact group layout.
         values.update(compact_defaults())
-    settings = settings_from_state({"bilingual": values})
+    return settings_from_state({"bilingual": values})
+
+
+def apply_display(page, **changes) -> bool:
+    """User change of display mode/order/fonts: one undoable visual edit."""
+    if not page.project:
+        return False
+    current = current_settings(page)
+    settings = settings_for_changes(page.project, **changes)
     if settings.to_dict() == current.to_dict() and not current.legacy:
         sync_controls(page, current)
         return False
@@ -166,6 +172,9 @@ def build_menu(page, menu) -> None:
     note = menu.addAction(tr('普通合并会在本机保留并合并已有译文，不发送请求。'))
     note.setEnabled(False)
     menu.aboutToShow.connect(lambda: (sync_controls(page), translate_all.setEnabled(bool(page.project))))
+    if not getattr(page, "_bilingual_history_connected", False):
+        page.undo_stack.indexChanged.connect(lambda _index: sync_controls(page))
+        page._bilingual_history_connected = True
     sync_controls(page)
 
 
@@ -238,40 +247,88 @@ def open_style_dialog(page) -> None:
 class ApplyTranslationSnapshotCommand(QUndoCommand):
     """One undo step for translation records + render view (AI batch or manual edit)."""
 
-    def __init__(self, project, before, after, cue_ids=(), label="翻译字幕", changed=None):
+    def __init__(self, project, before, after, cue_ids=(), label="翻译字幕", changed=None, *, display_settings=None):
         super().__init__(label)
         self.project = project
         self.before, self.after = copy.deepcopy(before), copy.deepcopy(after)
         self.cue_ids = tuple(str(item) for item in cue_ids)
         self.changed = changed
+        self.display_before = self.display_after = None
+        if display_settings is not None:
+            self.display_before = (copy.deepcopy(project.studio_state.get("bilingual")),
+                                   project.studio_state.get("bilingual_mode"))
+            self.display_after = (display_settings.to_dict(), display_settings.mode != "original")
+        self.outcome = {"applied": False, "error": None}
 
     def _apply(self, state):
         from ..timeline.studio_commands import _commit_mutation
         from ..projects.studio_runtime_state import DirtyDomain
         from ..subtitle_rules.subtitle_translation import restore_snapshot
+        def mutate():
+            restore_snapshot(self.project, state)
+            display = self.display_after if state is self.after else self.display_before
+            if display is not None:
+                for key, value in zip(("bilingual", "bilingual_mode"), display):
+                    if value is None:
+                        self.project.studio_state.pop(key, None)
+                    else:
+                        self.project.studio_state[key] = copy.deepcopy(value)
         _commit_mutation(self.project, action_id=self.text(),
                          dirty=(DirtyDomain.CUE_CONTENT | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE
-                                | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.QC | DirtyDomain.AUTOSAVE),
-                         cue_ids=self.cue_ids, mutate=lambda: restore_snapshot(self.project, state),
+                                | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.QC | DirtyDomain.AUTOSAVE
+                                | DirtyDomain.PROJECT_METADATA),
+                         cue_ids=self.cue_ids, mutate=mutate,
                          changed=self.changed)
 
     def redo(self):
-        self._apply(self.after)
+        self.outcome.update(applied=False, error=None)
+        try:
+            self._apply(self.after)
+        except Exception as exc:
+            self.outcome["error"] = exc
+            self.setObsolete(True)
+            return
+        self.outcome["applied"] = True
 
     def undo(self):
         self._apply(self.before)
+        self.outcome["applied"] = False
 
 
-def set_manual_translation(page, cue_id, text, changed=None) -> bool:
-    """Inline translation edit: a manual record (protected from AI overwrite)."""
-    from ..subtitle_rules.subtitle_translation import migrate, set_manual
+def set_manual_translation(page, cue_id, text, changed=None, *, target=None) -> bool:
+    """One manual text transaction, preserving/remapping the daily's local formatting."""
+    from ..subtitle_rules.subtitle_translation import migrate, set_manual, clean_translation
+    from ..caption_style.text_marks import layer_marks, remap_marks, with_marks
+    from ..timeline.studio_commands import SetCueFieldsCommand
     project = page.session.project if hasattr(page, "session") else page.project
     if not project:
         return False
     migrate(project)
-    before, after = set_manual(project, str(cue_id), str(text or ""))
-    if before == after:
+    cue = next((cue for cue in project.cues if cue.id == str(cue_id)), None)
+    if cue is None:
         return False
-    page.session.undo_stack.push(ApplyTranslationSnapshotCommand(project, before, after, (cue_id,),
-                                                                  label="编辑译文", changed=changed))
+    old = project.generation_metadata.get("translations", {}).get(cue.id, "")
+    value = clean_translation(text)
+    override = copy.deepcopy(cue.appearance_override)
+    if value != old:
+        marks = layer_marks(cue, "translation")
+        if marks:
+            override = with_marks(cue, remap_marks(old, value, marks), "translation")
+        override.pop("translation_group", None)
+    before, after = set_manual(project, str(cue_id), value, target=target)
+    style_changed = override != cue.appearance_override
+    if before == after and not style_changed:
+        return False
+    stack = page.session.undo_stack
+    if style_changed:
+        stack.beginMacro("编辑译文")
+    try:
+        if before != after:
+            stack.push(ApplyTranslationSnapshotCommand(project, before, after, (cue_id,),
+                                                       label="编辑译文", changed=changed))
+        if style_changed:
+            stack.push(SetCueFieldsCommand(project, cue.id, {"appearance_override": override}, "保留译文局部格式", changed))
+    finally:
+        if style_changed:
+            stack.endMacro()
     return True

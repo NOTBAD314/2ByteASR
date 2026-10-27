@@ -3,6 +3,7 @@ import {useVideoConfig} from 'remotion';
 import type {Recipe} from '../SubtitleComposition';
 import {OutsideStrokeText} from './OutsideStrokeText';
 import {TimedText} from './TimedText';
+import {captionInkAnchor} from './captionInkAnchor';
 
 type Keyframe = {timeMs:number; value:number; easing:string};
 type MotionTrack = {target:string; property:string; keyframes:Keyframe[]; postBehavior?:'HOLD'|'RESET'};
@@ -193,13 +194,20 @@ export const VisualDesignGraphSubtitle:React.FC<{text:string; recipe:Recipe; gra
     clipPath:panelClip,
     transform:layerTransform(panelValues),opacity:panelOpacity,filter:layerFilter(panelValues),...layerClip(panelValues),
   };
-  const groupTransform = `translate(calc(-${anchorX}% + ${(group.x ?? 0)+(impactValues.shake_x ?? 0)}px),calc(-${anchorY}% + ${(group.y ?? 0)+(impactValues.shake_y ?? 0)}px)) rotate(${(recipe.layout.rotation ?? 0)+(group.rotation ?? 0)}deg) scale(${(recipe.layout.scaleX ?? 1)*(group.scale_x ?? group.scale ?? 1)},${(recipe.layout.scaleY ?? 1)*(group.scale_y ?? group.scale ?? 1)})`;
+  const ink = recipe.layout.fitLocked ? captionInkAnchor({text,
+    family:stringValue(textLayer.font.family,recipe.typography.fontFamily),
+    size:numberValue(textLayer.font.size,recipe.typography.fontSize)*scale,
+    weight:numberValue(textLayer.font.weight,recipe.typography.bold?800:500), italic:recipe.typography.italic,
+    spacing:numberValue(textLayer.letterSpacing,recipe.typography.spacing)*scale,
+    lineHeight:recipe.layout.lineHeightPx ? recipe.layout.lineHeightPx*scale : numberValue(textLayer.lineSpacing,1.08)*numberValue(textLayer.font.size,recipe.typography.fontSize)*scale,
+    anchorX:anchorX/100, anchorY:anchorY/100, plan:recipe.wordAnimation}) : {x:0,y:0};
+  const groupTransform = `translate(calc(-${anchorX}% + ${ink.x+(group.x ?? 0)+(impactValues.shake_x ?? 0)}px),calc(-${anchorY}% + ${ink.y+(group.y ?? 0)+(impactValues.shake_y ?? 0)}px)) rotate(${(recipe.layout.rotation ?? 0)+(group.rotation ?? 0)}deg) scale(${(recipe.layout.scaleX ?? 1)*(group.scale_x ?? group.scale ?? 1)},${(recipe.layout.scaleY ?? 1)*(group.scale_y ?? group.scale ?? 1)})`;
   const rgbOffset = glitchValues.rgb_offset ?? 0;
   const sliceOffset = glitchValues.slice_offset ?? 0;
   const tracking = (textValues.tracking ?? 0)*scale;
   const charReveal = Math.max(0,Math.min(1,textValues.char_reveal ?? 1));
   const splitAlpha = glitch && glitch.primitive === 'RGB_SPLIT' ? .34 : .48;
-  const textStyle:React.CSSProperties = {position:'absolute',left:`${px}%`,top:`${py}%`,transform:groupTransform,transformOrigin:`${anchorX}% ${anchorY}%`,opacity:Math.max(0,Math.min(1,(group.opacity ?? 1)*(1-(glitchValues.flicker ?? 0)))) ,whiteSpace:'pre-wrap',wordBreak:'normal',overflowWrap:'anywhere',width:'max-content',maxWidth:((recipe.layout as Record<string, unknown>).maxWidthPx as number ?? 1804.8)*scale,textAlign:'center',fontFamily:stringValue(textLayer.font.family,recipe.typography.fontFamily),fontSize:numberValue(textLayer.font.size,recipe.typography.fontSize)*scale,fontWeight:numberValue(textLayer.font.weight,recipe.typography.bold?800:500),letterSpacing:numberValue(textLayer.letterSpacing,recipe.typography.spacing)*scale,lineHeight:(recipe.layout as Record<string, unknown>).lineHeightPx ? `${Number((recipe.layout as Record<string, unknown>).lineHeightPx)*scale}px` : numberValue(textLayer.lineSpacing,1.08)};
+  const textStyle:React.CSSProperties = {position:'absolute',left:`${px}%`,top:`${py}%`,transform:groupTransform,transformOrigin:`${anchorX}% ${anchorY}%`,opacity:Math.max(0,Math.min(1,(group.opacity ?? 1)*(1-(glitchValues.flicker ?? 0)))) ,whiteSpace:recipe.layout.fitLocked?'pre':'pre-wrap',wordBreak:'normal',overflowWrap:recipe.layout.fitLocked?'normal':'anywhere',width:'max-content',maxWidth:(recipe.layout.maxWidthPx ?? 1804.8)*scale,textAlign:anchorX===0?'left':anchorX===100?'right':'center',fontFamily:stringValue(textLayer.font.family,recipe.typography.fontFamily),fontSize:numberValue(textLayer.font.size,recipe.typography.fontSize)*scale,fontWeight:numberValue(textLayer.font.weight,recipe.typography.bold?800:500),letterSpacing:numberValue(textLayer.letterSpacing,recipe.typography.spacing)*scale,lineHeight:recipe.layout.lineHeightPx ? `${recipe.layout.lineHeightPx*scale}px` : numberValue(textLayer.lineSpacing,1.08)};
   void tracking;
   const revealClip = charReveal < .999 ? {clipPath:`inset(0 ${((1-charReveal)*100).toFixed(2)}% 0 0)`} : undefined;
   const textReveal = {...revealClip, ...layerClip(textValues)};

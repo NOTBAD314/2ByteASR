@@ -12,6 +12,7 @@ class VideoCompositionWorker:
         self.publish=publish;self.condition=threading.Condition();self.state=None;self.frames={}
         self.dirty=False;self.closed=False;self.version=0;self.signature=None
         self.samples=deque(maxlen=1200)
+        self.submitted_count = 0
         self.thread=threading.Thread(target=self._run,daemon=True,name='video-raster-compositor');self.thread.start()
 
     def configure(self,state):
@@ -36,6 +37,25 @@ class VideoCompositionWorker:
 
     def close(self):
         with self.condition:self.closed=True;self.state=None;self.frames={};self.condition.notify()
+
+    def _submit(self, image, rect, context):
+        context['raster'] = dict(width=image.width(), height=image.height(),
+            stride=image.bytesPerLine(), bytes=image.sizeInBytes(), display_rect=rect.getRect())
+        context['submitted_at'] = time.perf_counter()
+        if self.publish(image, rect, context) is not False:
+            self.submitted_count += 1
+            self.samples.append(context)
+
+    @staticmethod
+    def _frame_context(layer, frame):
+        result = dict(clip_id=layer['clip_id'],pts_ms=frame.pts_ms,generation=frame.generation,
+            requested_ms=frame.requested_ms,
+            decode_epoch=frame.epoch,codec_decoded_at=frame.codec_decoded_at,
+            decoded_at=frame.decoded_at,received_at=frame.received_at,
+            published_at=frame.published_at,write_started_at=frame.write_started_at)
+        if frame.costs:
+            result['pixel_costs'] = frame.costs
+        return result
 
     def _run(self):
         from .video_compositor import layer_geometry,apply_chroma_key,_BLEND_COMPOSITION_MODES
@@ -66,11 +86,10 @@ class VideoCompositionWorker:
                 image=QImage(frame.pixels,frame.width,frame.height,frame.width*4,QImage.Format_ARGB32)
                 context=dict(caller='video_compositor_worker',project_ms=state['project_ms'],publication_epoch=state.get('publication_epoch'),
                     compose_start=start,compose_end=time.perf_counter(),composition_ms=(time.perf_counter()-start)*1000,
-                    direct_gpu_scale=True,layers=[dict(clip_id=layer['clip_id'],pts_ms=frame.pts_ms,generation=frame.generation,
-                        decode_epoch=frame.epoch,codec_decoded_at=frame.codec_decoded_at,decoded_at=frame.decoded_at,received_at=frame.received_at)])
+                    direct_gpu_scale=True,layers=[self._frame_context(layer,frame)])
                 with self.condition:
                     if not self.closed and self.state is not None and version==self.version:
-                        self.publish(image,QRect(*state['display_rect']),context);self.samples.append(context)
+                        self._submit(image,QRect(*state['display_rect']),context)
                 continue
             image=QImage(width,height,QImage.Format_ARGB32_Premultiplied)
             image.fill(Qt.black if state['base'] else Qt.transparent)
@@ -93,9 +112,7 @@ class VideoCompositionWorker:
                     painter.save();painter.setOpacity(max(0,min(1,float(layer['transform'].get('opacity',1)))))
                     painter.setCompositionMode(mode)
                     painter.setTransform(matrix);painter.drawImage(local,pixels);painter.restore()
-                presented.append(dict(clip_id=layer['clip_id'],pts_ms=frame.pts_ms,generation=frame.generation,decode_epoch=frame.epoch,
-                    codec_decoded_at=frame.codec_decoded_at,
-                    decoded_at=frame.decoded_at,received_at=frame.received_at))
+                presented.append(self._frame_context(layer,frame))
             painter.end();rendered=time.perf_counter()
             with self.condition:
                 if not self.closed and self.state is not None and version==self.version and presented:
@@ -104,5 +121,4 @@ class VideoCompositionWorker:
                         compose_start=start,compose_end=rendered,layers=presented,composition_ms=(rendered-start)*1000)
                     # The queue put is nonblocking. Serialize it with revoke so
                     # an old raster cannot acquire the next visibility epoch.
-                    self.publish(image,QRect(*state['display_rect']),context)
-                    self.samples.append(context)
+                    self._submit(image,QRect(*state['display_rect']),context)

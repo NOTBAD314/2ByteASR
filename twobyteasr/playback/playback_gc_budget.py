@@ -24,6 +24,38 @@ _applied = None
 _collector = None
 
 
+def _collect_observed(generation=None, *, owner, reason, counts=None, thresholds=None, decision=None):
+    """Record one actual full collection without adding a memory query.
+
+    The decision uses the caller's already-read counts/private-byte predicate.
+    Event serialization/logging occurs afterwards. Existing GC_PAUSE remains
+    the GC callback measurement.
+    """
+    counts=gc.get_count() if counts is None else counts
+    thresholds=gc.get_threshold() if thresholds is None else thresholds
+    selected_at=time.perf_counter()
+    holders=len(_holders)
+    collected=None
+    completed=False
+    try:
+        collected=gc.collect() if generation is None else gc.collect(generation)
+        completed=True
+        return collected
+    finally:
+        ended=time.perf_counter()
+        try:
+            from ..diagnostics.event_log import emit
+            emit('gc.collection_decision',module='playback',
+                result='completed' if completed else 'failed',
+                owner=owner,reason=reason,generation=2 if generation is None else generation,
+                counts=counts,thresholds=thresholds,full_gc_holders=holders,
+                decision_qpc=selected_at,completed_qpc=ended,
+                collector_call_wall_ms=(ended-selected_at)*1000,collected=collected,
+                recorded_after_collection=True,**(decision or {}))
+        except Exception:
+            pass  # Diagnostics cannot alter collection or lifecycle policy.
+
+
 def collection_enabled():
     """Automatic collection runs: Python's own, or the GUI-thread collector."""
     return gc.isenabled() or (_collector is not None and _collector.active)
@@ -143,9 +175,21 @@ class GuiThreadCollector(QObject):
     def full_due(self):
         current = self._memory_reader()
         if current is None or self._baseline is None:
-            return self._clock() - self._last_full >= self.FULL_FALLBACK_S
+            elapsed=self._clock() - self._last_full
+            due=elapsed >= self.FULL_FALLBACK_S
+            if due:
+                self._full_decision=dict(private_bytes=current,baseline_private_bytes=self._baseline,
+                    full_due_branch='unavailable_memory_elapsed',elapsed_since_full_s=elapsed,
+                    full_growth_threshold_bytes=None)
+            return due
         grown = current - self._baseline
-        return grown >= max(self.FULL_GROWTH_MIN, self._baseline * self.FULL_GROWTH_SHARE)
+        threshold=max(self.FULL_GROWTH_MIN, self._baseline * self.FULL_GROWTH_SHARE)
+        due=grown >= threshold
+        if due:
+            self._full_decision=dict(private_bytes=current,baseline_private_bytes=self._baseline,
+                private_growth_bytes=grown,full_due_branch='private_growth',
+                full_growth_threshold_bytes=threshold)
+        return due
 
     def tick(self):
         if not self.active or gc.isenabled():
@@ -159,7 +203,11 @@ class GuiThreadCollector(QObject):
                 continue
             if generation == 2 and not self.full_due():
                 continue
-            gc.collect(generation)
+            if generation==2:
+                _collect_observed(generation,owner='gui_thread_collector',reason='threshold_and_full_due',
+                    counts=counts,thresholds=thresholds,decision=getattr(self,'_full_decision',None))
+            else:
+                gc.collect(generation)
             self.collections[generation] += 1
             return
 
@@ -269,7 +317,7 @@ class PlaybackGcBudget(QObject):
         # the heap or disable collection during a long edit.
         if self.busy() or due is None or gc.get_stats()[2]['collections'] != due:
             return
-        gc.collect(2)
+        _collect_observed(2,owner='playback_paused_sweep',reason='paused_growth_and_idle')
 
     def close(self):
         self.playing = False
@@ -332,7 +380,7 @@ class ProjectHeapPolicy(QObject):
         if self.busy() or _holders:
             self.settle_timer.start()  # pointer down, playing: try again later
             return
-        gc.collect()
+        _collect_observed(owner='project_heap_policy',reason='project_settle_idle')
         self.settles += 1
         mark('project_load_collected')
 

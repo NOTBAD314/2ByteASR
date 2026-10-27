@@ -72,7 +72,9 @@ def atomic_layout(root: QWidget):
         root.setUpdatesEnabled(False)
     try:
         yield
-        settle_layout(root)
+        from ..diagnostics.navigation_timing import phase
+        with phase('navigation.settle'):
+            settle_layout(root)
     finally:
         if enabled:
             root.setUpdatesEnabled(True)

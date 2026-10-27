@@ -5,6 +5,7 @@ import threading
 import os
 import sys
 import time
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (QFrame, QLabel, QPushButton, QProgressBar, QVBoxL
                                QApplication, QWidget)
 
 from ..i18n import bind_text
+from .studio_loading import StudioLoadingSession, ReadinessSteps, TASKS
 
 
 def project_file_identity(path):
@@ -46,82 +48,131 @@ def caption_scene_ready(state):
             and all(row.get('status') != 'pending' for row in rows))
 
 
-class ReadinessSteps(QWidget):
-    """The real opening stages: done ✓, current ●, waiting ○, failed ✕."""
+def first_frame_caption_cues(page):
+    """Use the renderer's current target; None means no target evidence yet."""
+    project = getattr(page, 'project', None)
+    if project is None:
+        return None
+    if not project.cues or getattr(page, '_empty_playback_state', False):
+        return ()
+    sample = getattr(page, '_caption_sample_ms', None)
+    if not callable(sample):
+        return None
+    from ..rendering.caption_scene import active_cues
+    return active_cues(page, sample())
 
-    ROW = 30
 
-    def __init__(self, tasks, parent=None):
-        super().__init__(parent)
-        self.tasks = tuple(tasks)
-        self.completed: set[str] = set()
-        self.current = ''
-        self.failed = ''
-        self.setMinimumHeight(self.ROW * len(self.tasks))
+def owns_hidden_preparation(page):
+    """Only the hydrated, current loading request may prepare a hidden editor."""
+    gate = getattr(page, '_readiness', None)
+    owns = getattr(gate, '_owns_request', None)
+    return bool(gate is not None and getattr(gate, 'active', False) and getattr(gate, 'hydrated', False)
+        and not getattr(page, '_close_requested', False)
+        and callable(owns) and owns() and getattr(page, 'project', None) is not None
+        and getattr(page, 'project_path', None) is not None
+        and os.path.normcase(str(page.project_path)) == os.path.normcase(str(gate.path)))
 
-    def sizeHint(self):
-        return QSize(360, self.ROW * len(self.tasks))
 
-    def set_state(self, completed, current='', failed=''):
-        self.completed, self.current, self.failed = set(completed), str(current or ''), str(failed or '')
-        self.update()
+def player_surface_ready(page):
+    """Readiness is a current source/frame observation, never an IPC ACK."""
+    video = page.video
+    if getattr(video, '_clock_only', False) or getattr(page, '_empty_playback_state', False):
+        return True  # The existing canvas owns the explicit gap/empty placeholder.
+    project = getattr(page, 'project', None)
+    if (project is not None and not getattr(video, '_media_path', '')
+            and not getattr(video, '_media_attached', False)
+            and not any(getattr(track, 'enabled', True) and any(getattr(clip, 'enabled', True)
+                for clip in track.clips) for track in getattr(project, 'video_tracks', ()))):
+        # Subtitle-only / audio-only placeholders have no video frame to await.
+        # An empty legacy primary path never skips an enabled video clip.
+        return True
+    if getattr(video, '_startup_state', '') != 'READY':
+        return False
+    clock = getattr(video, '_playback_clock', None)
+    if clock is not None and clock.exact_seek_pending:
+        return False
+    if not getattr(video, '_media_has_video', True):
+        # For audio-only media READY belongs to the existing PCM clock. mpv is
+        # intentionally aid=no, so it may have no time-pos or video property.
+        # The separate audio buffer gate below still requires actual data.
+        return True
+    controller = getattr(video, 'controller', None)
+    if callable(getattr(controller, 'observed_frame', None)):
+        from ..playback.frame_readiness import video_frame_witness
+        return video_frame_witness(video)['ready']
+    # QVideoSink owns an explicit decoded-frame timestamp. The mpv backend
+    # instead needs the generation-scoped playback-restart witness above;
+    # its picture-type/timecode properties alone do not prove a fresh frame.
+    if getattr(controller, 'backend', '') != 'qt-video-sink':
+        return False
+    if clock is not None:
+        if getattr(controller, 'source_epoch', None) != clock.generation:
+            return False
+        applied = getattr(controller, 'applied_seek_state', lambda: {})()
+        if applied.get('generation') != clock.generation:
+            return False
+    surface = getattr(controller, 'surface', None)
+    if surface is None or surface.frame.isNull():
+        return False
+    observe = getattr(controller, 'observed_properties', None)
+    if not callable(observe):
+        return not getattr(video, '_media_has_video', True)
+    state = observe()
+    source, current = str(getattr(video, '_media_path', '') or ''), str(state.get('path') or '')
+    if not source or not current or os.path.normcase(os.path.abspath(source)) != os.path.normcase(os.path.abspath(current)):
+        return False
+    if state.get('seeking') or state.get('idle-active'):
+        return False
+    frame = state.get('video-frame-info') or {}
+    if not any(frame.get(key) is not None for key in ('pts', 'estimated-frame-number', 'picture-type')):
+        return False
+    pts, position = frame.get('pts'), state.get('time-pos')
+    if pts is not None and position is not None:
+        fps = float(state.get('container-fps') or state.get('estimated-vf-fps') or 24.0)
+        if abs(float(pts)-float(position)) > max(.050, 1.5/max(1., fps)):
+            return False
+    return True
 
-    def paintEvent(self, _event):
-        from ..i18n import current_language, translate
-        from ..design.theme_manager import theme_key
-        from ..design.ui_theme import theme_definition
-        theme = theme_definition(theme_key())
-        language = current_language()
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        for index, task in enumerate(self.tasks):
-            top = index * self.ROW
-            dot = QRectF(4, top + (self.ROW - 16) / 2, 16, 16)
-            if task == self.failed:
-                state, color = 'failed', QColor(theme.danger)
-            elif task in self.completed:
-                state, color = 'done', QColor(theme.success)
-            elif task == self.current:
-                state, color = 'active', QColor(theme.accent_text)
-            else:
-                state, color = 'waiting', QColor(theme.border_strong)
-            if state == 'waiting':
-                painter.setPen(QPen(color, 1.6))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(dot.adjusted(1.5, 1.5, -1.5, -1.5))
-            else:
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(color)
-                painter.drawEllipse(dot)
-                painter.setPen(QPen(QColor(theme.on_vivid), 1.8, Qt.PenStyle.SolidLine,
-                                    Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-                c = dot.center()
-                if state == 'done':
-                    painter.drawLine(c.x() - 3.8, c.y() + 0.2, c.x() - 1.0, c.y() + 3.0)
-                    painter.drawLine(c.x() - 1.0, c.y() + 3.0, c.x() + 4.0, c.y() - 2.6)
-                elif state == 'failed':
-                    painter.drawLine(c.x() - 3, c.y() - 3, c.x() + 3, c.y() + 3)
-                    painter.drawLine(c.x() - 3, c.y() + 3, c.x() + 3, c.y() - 3)
-                else:
-                    painter.setBrush(QColor(theme.on_vivid))
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.drawEllipse(c, 3, 3)
-            font = QFont(self.font())
-            font.setPixelSize(14)
-            font.setWeight(QFont.Weight.DemiBold if state == 'active' else QFont.Weight.Medium)
-            painter.setFont(font)
-            painter.setPen(QColor(theme.text if state in {'active', 'failed'} else
-                                  theme.text_secondary if state == 'done' else theme.text_muted))
-            label = translate(task, language) if language != 'zh' else task
-            painter.drawText(QRectF(32, top, self.width() - 32, self.ROW),
-                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, label)
+
+def player_wait_snapshot(page):
+    """Cached observations only: diagnostics must not create the missing frame."""
+    from dataclasses import asdict
+    video = page.video
+    controller = getattr(video, 'controller', None)
+    def cached(name):
+        reader = getattr(controller, name, None)
+        return reader() if callable(reader) else {}
+    properties = cached('observed_properties')
+    clock = getattr(video, '_playback_clock', None)
+    clock_state = asdict(clock.snapshot()) if callable(getattr(clock, 'snapshot', None)) else {}
+    engine = getattr(page, 'audio_engine', None)
+    audio = engine.telemetry_snapshot() if engine is not None else {}
+    return dict(measurement='cached observations; no screenshot or synchronous IPC',
+        observed_frame=cached('observed_frame'), applied_seek_state=cached('applied_seek_state'),
+        observed_properties={key: properties.get(key) for key in (
+            'path', 'time-pos', 'playback-time', 'pause', 'seeking', 'idle-active', 'eof-reached',
+            'core-idle', 'video-frame-info', 'video-params', 'container-fps', 'current-vo')},
+        clock=dict(clock_state, generation=getattr(clock, 'generation', None),
+                   exact_seek_pending=getattr(clock, 'exact_seek_pending', None)),
+        target=dict(media_path=getattr(video, '_media_path', ''),
+            preview_source=getattr(page, '_active_video_preview_source_path', ''),
+            preview_key=getattr(page, '_active_video_preview_key', ''),
+            preview_clip=getattr(page, '_active_video_preview_clip_id', ''),
+            pending_seek_target=getattr(video, '_pending_seek_target', None),
+            startup_state=getattr(video, '_startup_state', ''),
+            media_has_video=getattr(video, '_media_has_video', None),
+            clock_only=getattr(video, '_clock_only', False),
+            source_epoch=getattr(controller, 'source_epoch', None),
+            media_epoch=getattr(controller, '_subtitle_binding_epoch', None)),
+        audio={key: audio.get(key) for key in ('state', 'buffer_bytes', 'decoded_bytes',
+            'decoder_startup_pending', 'decoder_error', 'source_generation', 'transport_generation', 'paused')})
 
 
 class StudioReadiness(QObject):
     loaded = Signal(int, object, str)
     player_loaded = Signal(int, object, str)
     finished = Signal()
-    TASKS = ('读取工程', '建立时间轴', '准备播放器', '准备音频', '准备字幕', '首屏绘制')
+    TASKS = TASKS
     # The audio engine rebuilds a failed endpoint at the current position by
     # itself. While opening, a failure only fails the gate if it is not
     # recovered within this time (macOS reopen, 2026-10-14: the endpoint
@@ -139,72 +190,15 @@ class StudioReadiness(QObject):
         self.profile = {}
         self.on_ready = None
         self.completed = set()
-        self.overlay = QFrame(page)
-        self.overlay.setObjectName('studioLoadingSurface')
-        self.overlay.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, sys.platform == 'win32')
-        # A native CHILD can cover mpv while loading without reparenting mpv
-        # or creating a flashing top-level splash window.
-        self.overlay.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
-        outer = QVBoxLayout(self.overlay)
-        outer.addStretch(1)
-        # 2026-10-08: a centred card shows which project opens and the real
-        # opening stages, instead of a bare label over an empty page.
-        self.card = QFrame(self.overlay)
-        self.card.setObjectName('studioLoadingCard')
-        self.card.setFixedWidth(460)
-        outer.addWidget(self.card, 0, Qt.AlignmentFlag.AlignHCenter)
-        outer.addStretch(1)
-        layout = QVBoxLayout(self.card)
-        layout.setContentsMargins(28, 26, 28, 24)
-        layout.setSpacing(14)
-        head = QHBoxLayout()
-        head.setSpacing(14)
-        self.icon = QLabel(self.card)
-        self.icon.setObjectName('studioLoadingIcon')
-        self.icon.setFixedSize(48, 48)
-        self.icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        head.addWidget(self.icon, 0, Qt.AlignmentFlag.AlignTop)
-        heading = QVBoxLayout()
-        heading.setSpacing(4)
-        title = QLabel('准备工作台', self.card)
-        title.setObjectName('studioLoadingTitle')
-        from ..design.elided_label import ElidedLabel
-        self.project_name = ElidedLabel('', self.card, minimum=40)
-        self.project_name.setObjectName('studioLoadingProject')
-        heading.addWidget(title)
-        heading.addWidget(self.project_name)
-        head.addLayout(heading, 1)
-        layout.addLayout(head)
-        self.bar = QProgressBar(self.card)
-        self.bar.setRange(0, len(self.TASKS))
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(6)
-        layout.addWidget(self.bar)
-        self.steps_view = ReadinessSteps(self.TASKS, self.card)
-        layout.addWidget(self.steps_view)
-        self.label = QLabel('', self.card)
-        self.label.setObjectName('studioLoadingStatus')
-        self.label.setTextFormat(Qt.TextFormat.PlainText)
-        self.label.setWordWrap(True)
-        layout.addWidget(self.label)
-        actions = QHBoxLayout()
-        actions.setSpacing(10)
-        actions.addStretch()
-        self.retry = QPushButton('重试')
-        self.retry.setObjectName('studioLoadingRetry')
-        self.retry.clicked.connect(lambda: self.begin(self.path, skip_dirty_guard=True,expected_result_ref=self.expected_result_ref))
-        self.copy_error = QPushButton('复制错误信息')
-        self.copy_error.setObjectName('studioLoadingCopyError')
-        self.copy_error.clicked.connect(lambda: QApplication.clipboard().setText(self.label.text()))
-        self.copy_error.hide()
-        back = self.back = QPushButton('返回主页')
-        back.setObjectName('studioLoadingBack')
-        back.clicked.connect(self.cancel)
-        actions.addWidget(back)
-        actions.addWidget(self.copy_error)
-        actions.addWidget(self.retry)
-        layout.addLayout(actions)
-        self.overlay.hide()
+        owner = page.window()
+        session = getattr(owner, '_studio_loading_session', None)
+        if session is None:
+            session = StudioLoadingSession(page)
+        self.loading = session
+        session.attach_surface(page.video)
+        self.overlay = session.view
+        for name in ('card', 'icon', 'project_name', 'bar', 'steps_view', 'label', 'retry', 'copy_error', 'back'):
+            setattr(self, name, getattr(self.overlay, name))
         page.installEventFilter(self)
         page.timeline.installEventFilter(self)
         self.loaded.connect(self._loaded)
@@ -215,15 +209,37 @@ class StudioReadiness(QObject):
         self.timer.timeout.connect(self._tick)
 
     def eventFilter(self, watched, event):
-        if watched is self.page and event.type() == QEvent.Type.Resize:
-            self.overlay.setGeometry(self.page.rect())
         if self.active and watched is self.page.timeline and event.type() == QEvent.Type.Paint:
             self.painted = True
         return False
 
+    def invalidate_surface_geometry(self):
+        """A paint at the previous size cannot witness this request's first screen."""
+        if not self._owns_request():
+            return False
+        self.painted = False
+        self.completed.discard('首屏绘制')
+        self.profile.pop('timeline_surface_prepared', None)
+        self.profile.pop('timeline_prepared_hidden', None)
+        return True
+
     def mark(self, name):
         if name not in self.completed:
-            self.completed.add(name)
+            project = self.page.project
+            reason = ''
+            if name == '准备字幕':
+                reason = getattr(self, '_caption_skip_reason', '')
+                if not reason and project is not None and not project.cues:
+                    reason = '工程没有字幕'
+            elif name == '准备音频' and project is not None and not any(
+                track.enabled and not track.muted and track.clips for track in project.audio_tracks):
+                reason = '没有启用的音轨'
+            elif name == '准备播放器' and project is not None and not project.media.path and not project.video_tracks:
+                reason = '空工程使用占位画面'
+            if reason:
+                self.loading.skip(name, reason)
+            else:
+                self.loading.mark(name)
             self.last_progress = time.perf_counter()
             self.profile['stages_ms'][name] = round((time.perf_counter()-self.started)*1000, 3)
             self.bar.setValue(len(self.completed))
@@ -244,39 +260,69 @@ class StudioReadiness(QObject):
                 self.profile['user_wait_ms'] = round(self.profile.get('user_wait_ms', 0.0) + waited * 1000, 1)
 
     def _set_stage_label(self, stage: str) -> None:
-        """阶段文案带已用时间（用户要求：显示真实阶段，可附已用时间）。"""
-        try:
-            from ..i18n import translate, current_language
-            language = current_language()
-        except Exception:
-            language = "zh"
-        elapsed = time.perf_counter() - self.started
-        text = translate(str(stage), language) if language != "zh" else str(stage)
-        self.label.setText(f"{text} · {elapsed:.1f}s")
-        self.steps_view.set_state(self.completed, str(stage))
-        self._fit_card()
+        self.loading.stage(str(stage))
 
     def _fit_card(self) -> None:
-        """Grow the card to its wrapped text. It is sized once for a one-line
-        status; a multi-line failure text then squeezed the layout so the
-        message was drawn over the last step (2026-10-14)."""
-        layout = self.card.layout()
-        width = self.card.width() or self.card.minimumWidth()
-        height = (layout.totalHeightForWidth(width) if layout.hasHeightForWidth()
-                  else layout.totalSizeHint().height())
-        if height > 0 and self.card.minimumHeight() != height:
-            self.card.setMinimumHeight(height)
+        self.overlay.fit_card()
 
     def _failed_stage(self) -> str:
         return self.steps_view.current or next((task for task in self.TASKS if task not in self.completed), '')
 
+    def _owns_request(self, epoch=None, *, allow_ready=False):
+        loading = self.loading
+        state_ok = (self.active and loading.active and loading.state == 'preparing')
+        if allow_ready:
+            state_ok = state_ok or (self.ready and loading.state in {'preparing', 'ready'})
+        return bool(state_ok and not getattr(self.page, '_close_requested', False)
+                    and (epoch is None or epoch == self.generation)
+                    and self.generation == getattr(self, 'loading_generation', self.generation) == loading.generation
+                    and self.path == loading.path)
+
+    def _retire_preparation(self):
+        """Stop an old gate without cancelling a newer shared loading session."""
+        self.active = self.ready = False
+        self.steps = None
+        timer = getattr(self, 'timer', None)
+        if timer is not None: timer.stop()
+        timeline = getattr(self.page, 'timeline', None)
+        if timeline is not None: timeline.setUpdatesEnabled(True)
+        heap = getattr(self.page, '_project_heap', None)
+        if heap is not None: heap.load_finished(settle=False)
+
+    @contextmanager
+    def confirmation_wait(self):
+        running = self.timer.isActive()
+        self.timer.stop()
+        try:
+            with self.user_wait():
+                yield
+        finally:
+            if running and self._owns_request():
+                self.timer.start()
+
     def begin(self, path, *, skip_dirty_guard=False,expected_result_ref=None):
         page = self.page
+        intent_generation = self.loading.generation
         self.expected_result_ref = expected_result_ref
         path = str(Path(path).resolve())
         file_identity = project_file_identity(path)
+        if (self.active and StudioReadiness._owns_request(self) and self.path == path
+                and getattr(self, 'requested_file_identity', None) == file_identity):
+            # A repeated same-file request joins the current preparation. The
+            # controller already replaced on_ready with the latest callback.
+            return
+        replacing_same_path = self.active and self.path == path
         if (self.ready and self.path == path and page.project is not None
+                and not self.loading.active and page.project_path is not None
+                and (getattr(self, '_ready_project', None) is None or self._ready_project() is page.project)
+                and str(Path(page.project_path).resolve()) == path
                 and file_identity is not None and self.loaded_file_identity == file_identity):
+            if not StudioReadiness._owns_request(self, allow_ready=True):
+                resumed_generation = self.loading.resume_ready(path)
+                if self.loading.generation != resumed_generation:
+                    return  # Retirement may have rebound this same gate to a newer request.
+                self.generation = self.loading_generation = resumed_generation
+                self.completed = self.loading.completed
             self.profile = {'kind': 'hot', 'total_ms': 0., 'stages_ms': {}, 'gui_gaps_ms': []}
             self._finish()
             return
@@ -284,56 +330,65 @@ class StudioReadiness(QObject):
             page._studio_trace('PROJECT_RELOAD_REQUIRED', project_path=path,
                 reason='saved_file_changed', previous_identity=self.loaded_file_identity,
                 current_identity=file_identity)
+        # A dirty/recovery prompt runs a nested event loop. The old reader/tick
+        # must lose authority before that loop can process another callback.
+        if self.active:
+            StudioReadiness._retire_preparation(self)
         if page.project is not None and not skip_dirty_guard:
-            if not page.project_controller.dirty_guard.confirm('打开工程'):
+            confirmed = page.project_controller.dirty_guard.confirm('打开工程')
+            if self.loading.generation != intent_generation:
+                return  # A newer request/cancel won during the modal prompt.
+            if not confirmed:
+                if self.loading.active:
+                    reject = getattr(page.window(), '_reject_studio_loading', None)
+                    if callable(reject):
+                        reject()
+                    else:
+                        self.loading.abort()
+                self.on_ready = None
                 return
-        self.generation += 1
+        if replacing_same_path:
+            self.loading.begin(path, on_cancel=self.loading.on_cancel,
+                               return_target=self.loading.return_target)
+        if not self.loading.active or self.loading.path != path:
+            owner = page.window()
+            prepare = getattr(owner, '_prepare_studio_loading', None)
+            if callable(prepare) and getattr(owner, '_studio_loading_session', None) is self.loading:
+                prepare(path)
+            else:
+                self.loading.begin(path, on_cancel=self.cancel, return_target='hub')
+        callback = self.on_ready
+        def retry():
+            self.on_ready = callback
+            self.begin(path, skip_dirty_guard=True, expected_result_ref=expected_result_ref)
+        self.loading.on_retry = retry
+        self.loading.mark('创建工作台界面')
+        self.generation = self.loading.generation
+        self.loading_generation = self.generation
         epoch = self.generation
         self.path, self.active, self.ready = path, True, False
         page.video.set_paused(True)
+        from ..design.ui_motion import settle_layout
+        settle_layout(page)
         heap = getattr(page, '_project_heap', None)
         if heap is not None:
             heap.load_started()
         self.requested_file_identity = file_identity
-        self.started = self.last_tick = self.last_progress = time.perf_counter()
+        self.started = self.loading.started
+        self.last_tick = self.last_progress = time.perf_counter()
         self._caption_rows_prepared = 0
+        self._caption_skip_reason = ''
         self._reader = None
         self.profile = {'kind': 'warm' if getattr(self, '_ever_ready', False) else 'cold',
                         'stages_ms': {}, 'gui_gaps_ms': []}
-        self.completed = set()
+        self.completed = self.loading.completed
         self._audio_failed_since = None
+        self._player_wait_next = self.started + 1.0
         self.painted = False
         self.steps = None
         self.next_stage = ''
         self.hydrated = False
-        self.retry.hide()
-        self.copy_error.hide()
-        bind_text(self.back, '返回当前工程' if page.project is not None else '返回工程库')
-        self.bar.setValue(0)
-        bind_text(self.label, '读取工程')
-        self.project_name.setText(Path(path).stem)
-        self.steps_view.set_state((), '读取工程')
-        from ..design.theme_manager import theme_key, theme_definition
-        theme = theme_definition(theme_key())
-        self.overlay.setStyleSheet(
-            f'QFrame#studioLoadingSurface {{background:{theme.app_background};}}'
-            f'QFrame#studioLoadingCard {{background:{theme.surface};border:1px solid {theme.border};border-radius:16px;}}'
-            f'QLabel {{color:{theme.text};background:transparent;}}'
-            f'QLabel#studioLoadingIcon {{background:{theme.accent_tint};border-radius:12px;}}'
-            f'QLabel#studioLoadingTitle {{font-size:18px;font-weight:600;}}'
-            f'QLabel#studioLoadingProject {{color:{theme.text_secondary};font-size:13px;}}'
-            f'QLabel#studioLoadingStatus {{color:{theme.text_muted};font-size:13px;}}'
-            f'QProgressBar {{border:0;background:{theme.panel};border-radius:3px;}}'
-            f'QProgressBar::chunk {{background:{theme.accent};border-radius:3px;}}'
-            f'QPushButton#studioLoadingBack {{background:transparent;color:{theme.text_secondary};'
-            f'border:1px solid {theme.border_strong};border-radius:8px;padding:6px 16px;}}'
-            f'QPushButton#studioLoadingBack:hover {{background:{theme.selected};color:{theme.text};}}'
-            f'QPushButton#studioLoadingRetry {{background:{theme.accent};color:{theme.text_on_accent};'
-            f'border:0;border-radius:8px;padding:6px 18px;font-weight:600;}}')
-        import qtawesome as qta
-        self.icon.setPixmap(qta.icon('fa5s.closed-captioning', color=theme.accent_text).pixmap(QSize(22, 22)))
-        self.overlay.setGeometry(page.rect())
-        self.overlay.show()
+        self.loading.stage('读取工程')
         self.overlay.raise_()
         self.page.timeline.setUpdatesEnabled(False)
         self.timer.start()
@@ -375,6 +430,7 @@ class StudioReadiness(QObject):
         from ..playback.studio_mpv import MpvController
         from ..projects.studio_project import studio_data_root
         hwnd = int(page.video.winId())
+        page.video._embed_hwnd = hwnd
         log_path = studio_data_root()/'logs/mpv.log'
         previous = page.video.controller
         def player():
@@ -392,7 +448,7 @@ class StudioReadiness(QObject):
         threading.Thread(target=player,name='studio-player-start',daemon=True).start()
 
     def _player_loaded(self, epoch, controller, error):
-        if epoch != self.generation or not self.active:
+        if not self._owns_request(epoch):
             if controller is not None:
                 threading.Thread(target=controller.close,daemon=True).start()
             return
@@ -407,7 +463,7 @@ class StudioReadiness(QObject):
         self.profile['player_process_ready_ms']=round((time.perf_counter()-self.started)*1000,3)
 
     def _loaded(self, epoch, project, error):
-        if epoch != self.generation or not self.active:
+        if not self._owns_request(epoch):
             return
         if error:
             self.fail('读取工程', error)
@@ -417,11 +473,18 @@ class StudioReadiness(QObject):
                 show_load_failure(self.page, self.path, project)
             return
         self.mark('读取工程')
+        if not self._owns_request(epoch):
+            return
         self.steps = self.page.project_controller._open_project_steps(
             self.path, single_shot_fn=QTimer.singleShot, skip_dirty_guard=True, loaded_project=project,
             expected_result_ref=self.expected_result_ref)
 
     def _tick(self):
+        if not self._owns_request():
+            if self.active:
+                self._retire_preparation()
+            return
+        tick_epoch = self.generation
         now = time.perf_counter()
         self.profile['gui_gaps_ms'].append(round((now-self.last_tick)*1000, 3))
         self.last_tick = now
@@ -446,16 +509,23 @@ class StudioReadiness(QObject):
                     self._set_stage_label(self.next_stage or '准备播放器')
                     return
                 try:
-                    stage = next(self.steps)
+                    epoch, steps = self.generation, self.steps
+                    stage = next(steps)
+                    if not self._owns_request(epoch):
+                        return
                     self.last_progress = time.perf_counter()
                     self.next_stage = stage
                     self._set_stage_label(str(stage))
                     self.overlay.raise_()
                     return
                 except StopIteration:
+                    if not self._owns_request(epoch):
+                        return
                     self.steps = None
                     self.hydrated = True
                     self.page.timeline.setUpdatesEnabled(True)
+                    from ..design.ui_motion import settle_layout
+                    settle_layout(self.page)
                     self.page.timeline.update()
                     if (self.page.project is None or self.page.project_path is None
                             or Path(self.page.project_path).resolve() != Path(self.path).resolve()):
@@ -466,6 +536,18 @@ class StudioReadiness(QObject):
             if not self.hydrated:
                 return
             page = self.page
+            # A ready tick can run before the queued resize callback. Resolve
+            # the current owner's rectangle before checking its frame/paint
+            # witnesses; the helper is constant-time when it already matches.
+            owner = page.window() if callable(getattr(page, 'window', None)) else None
+            prepare_geometry = getattr(owner, '_prepare_hidden_studio_geometry', None)
+            if callable(prepare_geometry) and not page.isVisible():
+                prepared_geometry = prepare_geometry(page)
+                if prepared_geometry is False or not self._owns_request(tick_epoch):
+                    return
+            prepare_frame = getattr(page.video, 'prepare_loading_frame', None)
+            if os.environ.get("TWOBYTEASR_DIAGNOSTIC_NO_PLAYER") != "1" and callable(prepare_frame):
+                prepare_frame()
             if os.environ.get("TWOBYTEASR_DIAGNOSTIC_NO_PLAYER") == "1":
                 for skipped in ("准备播放器", "准备音频", "准备字幕"):
                     self.mark(skipped)
@@ -480,19 +562,31 @@ class StudioReadiness(QObject):
                     return
             else:
                 self._audio_failed_since = None
-            from ..media.media_availability import media_available
-            has_media = bool(page.project.media.path and
-                             media_available(page.project, page.project.media.path))
-            if not has_media or page.video._startup_state == 'READY':
+            surface_ready = player_surface_ready(page)
+            if surface_ready:
                 self.mark('准备播放器')
-            if '准备播放器' in self.completed and (not has_media or page._playback_buffers_ready()):
+            elif '准备播放器' not in self.completed:
+                StudioReadiness._record_player_wait(self)
+            if '准备播放器' in self.completed and page._playback_buffers_ready():
                 self.mark('准备音频')
+            opening_cues = first_frame_caption_cues(page) if surface_ready else None
+            no_caption_target = opening_cues is not None and not opening_cues
+            if no_caption_target and '准备字幕' not in self.completed:
+                StudioReadiness._retire_empty_caption_target(self)
+                self._caption_skip_reason = ('工程没有字幕' if not page.project.cues else '首屏没有可显示字幕')
+                self.mark('准备字幕')
+            prepared_renderer = True
+            if ('准备播放器' in self.completed and '准备字幕' not in self.completed
+                    and owns_hidden_preparation(page) and not page.isVisible()):
+                prepare_caption = getattr(page, '_prepare_loading_subtitles', None)
+                if callable(prepare_caption):
+                    prepared_renderer = prepare_caption()
             # ASS/LIVE initialization is complete only after the initial job
             # and visible renderer have a result, not after their scheduling.
             worker = getattr(page, '_web_live_worker', None)
-            web_ready = worker is None or bool(getattr(page.video, '_web_last_decoded', None))
+            web_ready = prepared_renderer and (worker is None or bool(getattr(page.video, '_web_last_decoded', None)))
             scene = getattr(page, '_caption_scene', None)
-            if getattr(scene, 'active', False):
+            if not no_caption_target and getattr(scene, 'active', False):
                 # A cache-ready signal can arrive while project hydration is
                 # suppressing presentation. A paused project has no following
                 # playback tick to submit that prepared scene. Reconcile the
@@ -509,12 +603,19 @@ class StudioReadiness(QObject):
                 # a #tr companion pixel row. Row-count equality would leave a
                 # paused bilingual frame loading forever until playback left it.
                 web_ready = caption_scene_ready(state)
+                current = getattr(scene, 'still_current', None)
+                if callable(current):
+                    token = getattr(scene, 'token', None)
+                    web_ready = web_ready and token is not None and current(token)
                 if not web_ready and now-self.started > 2 and 'caption_wait' not in self.profile:
                     self.profile['caption_wait'] = state
                     page._studio_trace('STUDIO_CAPTION_WAIT', generation=self.generation, **state)
-            if page._preview_path is not None or not page.project.cues:
+            if not no_caption_target and (page._preview_path is not None or not page.project.cues):
                 if web_ready:
                     self.mark('准备字幕')
+            resources_ready = all(stage in self.completed for stage in self.TASKS if stage != '首屏绘制')
+            if resources_ready and not self.painted and not StudioReadiness._prepare_timeline_surface(self):
+                return
             if self.painted:
                 self.mark('首屏绘制')
             pending = [x for x in self.TASKS if x not in self.completed]
@@ -522,13 +623,12 @@ class StudioReadiness(QObject):
                 self._set_stage_label(pending[0])
                 return
             self.active, self.ready = False, True
+            self._ready_project = weakref.ref(page.project)
             self.loaded_file_identity = self.requested_file_identity
             self._ever_ready = True
             self.timer.stop()
             self.profile['total_ms'] = round((time.perf_counter()-self.started)*1000, 3)
             self.profile['open_phases'] = dict(getattr(page, 'last_open_profile', {}))
-            self.overlay.hide()
-            page._studio_trace('STUDIO_READY_GATE', **self.profile)
             heap = getattr(page, '_project_heap', None)
             if heap is not None:
                 heap.load_finished()
@@ -540,7 +640,57 @@ class StudioReadiness(QObject):
             epoch = self.generation
             QTimer.singleShot(1500, lambda: self._warm_text_analysis(epoch))
         except Exception as exc:
-            self.fail(self._failed_stage(), str(exc))
+            if self._owns_request(tick_epoch, allow_ready=True):
+                self.fail(self._failed_stage(), str(exc))
+
+    def _retire_empty_caption_target(self):
+        """Retire old tokens/producers once; no current cue must become READY."""
+        page = self.page
+        scene = getattr(page, '_caption_scene', None)
+        if scene is not None:
+            scene.close()  # Reject in-flight accepts before retiring its Qt owner.
+            scene.deleteLater()
+            page._caption_scene = None
+        revoke = getattr(page, '_revoke_advanced_preview', None)
+        if callable(revoke):
+            revoke(reason='loading_no_caption_target')
+        video = page.video
+        clear = getattr(video, 'clear_caption_boundaries', None)
+        if callable(clear):
+            clear()
+        remove = getattr(video, 'remove_compositor_overlay', None)
+        if callable(remove):
+            remove(video.ADVANCED_OVERLAY_ID, force=True)
+        sample = getattr(page, '_caption_playhead_sample', None)
+        if isinstance(sample, dict):
+            sample.pop('presented_key', None)
+        ownership = getattr(page, '_visual_ownership', None)
+        if ownership is not None:
+            from ..rendering.visual_runtime import VisualOwner
+            ownership.commit(VisualOwner.NONE)
+        page._advanced_active_cue_id = ''
+        self.profile['caption_target_skipped'] = True
+
+    def _prepare_timeline_surface(self):
+        """Render the owned Qt timeline once, including behind a StackOne page."""
+        if self.painted:
+            return True
+        timeline = getattr(self.page, 'timeline', None)
+        if timeline is None or not timeline.updatesEnabled():
+            self.fail('首屏绘制', '时间轴尚未启用绘制')
+            return False
+        # QWidget.grab renders a hidden widget without showing it. This is
+        # timeline preparation, never a screenshot request to the mpv actor.
+        epoch = self.generation
+        timeline.grab()
+        if not self._owns_request(epoch):
+            return False
+        self.profile['timeline_surface_prepared'] = True
+        self.profile['timeline_prepared_hidden'] = not timeline.isVisible()
+        if not self.painted:
+            self.fail('首屏绘制', '时间轴首屏准备未完成')
+            return False
+        return True
 
     def _warm_text_analysis(self, epoch):
         if epoch != self.generation or not self.ready or getattr(self.page, '_close_requested', False):
@@ -558,7 +708,23 @@ class StudioReadiness(QObject):
         controller = getattr(self.page.video, 'controller', None)
         return startup_failure_message(getattr(controller, 'exit_code', None))
 
+    def _record_player_wait(self, *, failed=False):
+        now = time.perf_counter()
+        rows = self.profile.setdefault('player_wait', [])
+        if not failed and (now < getattr(self, '_player_wait_next', self.started + 1.) or len(rows) >= 7):
+            return
+        self._player_wait_next = now + 5.
+        try:
+            snapshot = player_wait_snapshot(self.page)
+            row = dict(elapsed_ms=round((now-self.started)*1000, 3), failed=failed, **snapshot)
+            rows.append(row)
+            self.page._studio_trace('STUDIO_PLAYER_WAIT', generation=self.generation, **row)
+        except (RuntimeError, AttributeError, TypeError, ValueError):
+            pass  # Diagnostics never alter readiness or the failure being reported.
+
     def fail(self, stage, error):
+        if stage == '准备播放器':
+            StudioReadiness._record_player_wait(self, failed=True)
         self.page.video.set_paused(True)
         self.on_ready = None
         self.generation += 1
@@ -570,14 +736,7 @@ class StudioReadiness(QObject):
         self.timer.stop()
         self.steps = None
         self.profile['error'] = {'stage': stage, 'message': error}
-        bind_text(self.label, '{stage}失败\n{error}\n工程文件仍保留，可重试载入：\n{value2}', stage=stage, error=error, value2=self.path)
-        self._fit_card()
-        # Mark the stage that failed. The first unfinished one was wrong when a
-        # stage fails early (2026-10-17: mpv refused while 读取工程 was still running).
-        failed = stage if stage in self.TASKS else next((task for task in self.TASKS if task not in self.completed), '')
-        self.steps_view.set_state(self.completed, '', failed)
-        self.retry.show()
-        self.copy_error.show()
+        self.loading.fail(stage, error)
         # 2026-09-17：识别交接的 reload 在此静默失败过——字幕已写入工程文件
         # 但 Studio 保持旧数据，用户只能回工程库重开。失败必须可见且可重试。
         try:
@@ -591,7 +750,7 @@ class StudioReadiness(QObject):
             if callable(notifier):
                 notifier('工程载入未完成，字幕已写入工程文件；返回 Studio 将自动重载')
 
-    def cancel(self, *, navigate: bool = True):
+    def cancel(self, *, navigate: bool = True, reveal=None):
         self.page.video.set_paused(True)
         self.page.timeline.setUpdatesEnabled(True)
         heap = getattr(self.page, '_project_heap', None)
@@ -608,7 +767,10 @@ class StudioReadiness(QObject):
                                     had_pending_recognition_reload=bool(pending))
         except Exception:
             pass
-        self.overlay.hide()
+        if reveal is None:
+            self.loading.abort()
+        else:
+            self.loading.abort(reveal=reveal)
         if navigate and self.page.project is not None:
             self.page._project_view_state = 'open'
             self.page._sync_navigation_chrome()
@@ -617,6 +779,8 @@ class StudioReadiness(QObject):
             self.page.show_project_hub(skip_dirty_guard=True)
 
     def _finish(self):
+        if not self._owns_request(allow_ready=True):
+            return
         if self.expected_result_ref:
             from ..recognition.recognition_result import verify_result_reference
             try:
@@ -625,9 +789,22 @@ class StudioReadiness(QObject):
                 self.fail('核对识别结果', str(exc))
                 return
         callback, self.on_ready = self.on_ready, None
+        if self.loading.active:
+            if not self.loading.deliver(self.loading_generation):
+                return
+            if not self._owns_request(allow_ready=True):
+                return
+            self.profile['loading_session'] = self.loading.snapshot()
+            self.page._studio_trace('STUDIO_READY_GATE', **self.profile)
         if callback is not None:
             callback()
+        # A ready callback is allowed to navigate again. The retired request
+        # then has no right to resume playback or reclaim window focus.
+        if not self._owns_request(allow_ready=True):
+            return
         self.finished.emit()
+        if not self._owns_request(allow_ready=True):
+            return
         self.page.video.resume_requested_playback()
         # 2026-09-19：open 过程中创建/销毁的原生子窗口（mpv、overlay、内嵌
         # 预览）会把 Win32 焦点打到 NULL——Qt activeWindow=None 后快捷键全

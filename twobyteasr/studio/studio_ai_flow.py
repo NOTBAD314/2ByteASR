@@ -783,7 +783,7 @@ class StudioAIFlowMixin:
         elif text == "COMPLETE":
             bar.setValue(100)
 
-    def _open_translation_dialog(self, *, scope=None, auto_start=False) -> None:
+    def _open_translation_dialog(self, *, scope=None, auto_start=False, cue_ids=None, target=None) -> None:
         """Open the AI subtitle translation dialog (bilingual workflow)."""
         from .studio_translation_dialog import SubtitleTranslationDialog
 
@@ -791,14 +791,17 @@ class StudioAIFlowMixin:
         from shiboken6 import isValid
         existing = getattr(self, '_translation_dialog', None)
         if existing is not None and isValid(existing):
-            changed = existing.project is not self.project or set(existing._selected) != set(self.selected_cue_ids())
+            selected = self.selected_cue_ids() if cue_ids is None else cue_ids
+            changed = (existing.project is not self.project or set(existing._selected) != set(selected)
+                       or (target is not None and existing._target() != target))
             if scope == 'selected' and changed and existing._thread is None:
                 existing.close()
             elif activate(existing):
                 return
         if self.project is None:
             return
-        dialog = SubtitleTranslationDialog(self, self.window() or self, scope=scope)
+        dialog = SubtitleTranslationDialog(self, self.window() or self, scope=scope, cue_ids=cue_ids, target=target,
+                                           atomic_display=cue_ids is not None)
         self._translation_dialog = dialog
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dialog.translation_finished.connect(

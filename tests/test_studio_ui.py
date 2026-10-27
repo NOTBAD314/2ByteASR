@@ -1212,7 +1212,9 @@ def test_style_position_and_common_color_survive_save_and_compile(tmp_path, monk
     assert (style.position_x, style.position_y, style.primary_color) == (730, 880, "#F2A65A")
     from twobyteasr.rendering.ass_compiler import compile_ass
     from twobyteasr.rendering.ass_font_units import ass_font_style
-    native=ass_font_style(style,1920,1080)
+    from twobyteasr.caption_style.resolved_caption_style import resolve_caption_style
+    caption=resolve_caption_style(loaded.styles,loaded.speakers,loaded.cues[0],loaded.style_recipes,1920,1080)
+    native=ass_font_style(caption.style,1920,1080,layout=caption.layout)
     assert f"\\pos({round(native.position_x,2):g},{round(native.position_y,2):g})" in compile_ass(loaded)
     page.close_page()
     page.deleteLater()

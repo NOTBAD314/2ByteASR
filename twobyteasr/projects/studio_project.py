@@ -54,7 +54,8 @@ def parse_ass_dialogue_line(line: str) -> tuple[int, int, str, str, str] | None:
     end_ms = parse_subtitle_timecode_ms(fields[2])
     if start_ms is None or end_ms is None:
         return None
-    text = _ASS_OVERRIDE_TAG_RE.sub("", fields[9]).replace(r"\N", " ").strip()
+    text = re.sub(r'\\(\\|N|n|h)', lambda match: '\\' if match[1] == '\\' else ' ',
+                  _ASS_OVERRIDE_TAG_RE.sub("", fields[9])).strip()
     return start_ms, end_ms, fields[3].strip(), fields[4].strip(), text
 
 

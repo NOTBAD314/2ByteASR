@@ -842,7 +842,8 @@ def render_live_snapshot(
         float(snapshot.letter_spacing) * type_scale,
     )
     metrics = QFontMetricsF(font)
-    line_height = max(1.0, metrics.height())
+    resolved_layout = snapshot.style_recipe.get('layout', {})
+    line_height = max(1.0, float(resolved_layout.get('lineHeightPx') or metrics.height()/type_scale)*type_scale)
     path = QPainterPath()
     lines=str(snapshot.text).split('\n') or ['']
     widths=[metrics.horizontalAdvance(line) for line in lines]
@@ -853,7 +854,7 @@ def render_live_snapshot(
     marked_pieces = []
     if getattr(snapshot, 'text_marks', None):
         from .marked_glyphs import shape_marked_text
-        path, marked_pieces = shape_marked_text(snapshot.text, font, snapshot.text_marks, float(snapshot.anchor_x))
+        path, marked_pieces = shape_marked_text(snapshot.text, font, snapshot.text_marks, float(snapshot.anchor_x), line_height)
     bounds = path.boundingRect()
     local_x = -bounds.left() - bounds.width() * float(snapshot.anchor_x)
     local_y = -bounds.top() - bounds.height() * float(snapshot.anchor_y)

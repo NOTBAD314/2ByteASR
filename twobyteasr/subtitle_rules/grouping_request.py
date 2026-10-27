@@ -18,7 +18,7 @@ GROUPING_PROMPT_VERSION = "protected-boundaries-v4-source-contract"
 # phrase is a cut and short lines are for standalone replies.
 JAPANESE_GROUPING_PROMPT_VERSION = GROUPING_PROMPT_VERSION + "-ja2"
 # v2 (2026-10-21): a subtitle holds two lines (84 characters, 7 s); keep whole sentences.
-ENGLISH_GROUPING_PROMPT_VERSION = "english-word-breaks-v2"
+ENGLISH_GROUPING_PROMPT_VERSION = "english-word-breaks-v3-phrase-boundaries"
 GROUPING_PROMPT_LANGUAGES = ("zh", "ja", "en")
 CUSTOM_GUIDANCE_MAX_CHARS = 4000
 SHORT_GROUP_MAX_ROWS = 64
@@ -85,7 +85,7 @@ where each number n means "a new subtitle starts after word n". Never change, ad
    Keep a whole sentence or clause in one subtitle whenever it fits; use as few subtitles as these limits allow.
 2. Prefer breaking after . ! ? first, then after , ; : — , then before and/but/or/so/because/when/which/who, then before a preposition.
 3. Never end a subtitle with an article or determiner (a, an, the, this, my, your…), a preposition, a conjunction, an auxiliary verb (is, was, can, will, have…) or a subject pronoun waiting for its verb.
-4. Never split a name, a number from its unit (10 minutes, 50%), "not" from its verb, or a phrasal verb (pick up, log in).
+4. Never split a name, a number from its unit (10 minutes, 50%), "not" from its verb, or a phrasal verb (set up, pick up). Keep "going to", "talk to you", "color space", "timeline color space", "DaVinci Resolve", "DaVinci Wide Gamut" and "Resolve Color Management" together.
 5. Keep a short utterance whole; avoid one- or two-word pieces when a balanced split exists.
 """
     return head, guidance, "Utterances that already fit need no breaks: return [] for them."

@@ -42,7 +42,7 @@ def catalog(**extra):
     ("看这个 https://www.youtube.com/watch?v=BaW_jenozKc&list=PL1 很好", "https://www.youtube.com/watch?v=BaW_jenozKc"),
     ("youtube.com/shorts/BaW_jenozKc", "https://www.youtube.com/watch?v=BaW_jenozKc"),
     ("（https://youtu.be/BaW_jenozKc）", "https://www.youtube.com/watch?v=BaW_jenozKc"),
-    ("https://www.bilibili.com/video/BV1xx411c7mD", ""),
+    ("https://www.bilibili.com/video/BV1xx411c7mD", "https://www.bilibili.com/video/BV1xx411c7mD?p=1"),
     ("普通的一句字幕文字", ""),
     ("", ""),
 ])
@@ -251,6 +251,20 @@ def test_window_audio_mode_and_pages(controller):
         assert dialog.pages.currentIndex() == ("home", "queue", "tools", "settings").index(key)
     dialog.show_page("queue")
     wait_for(lambda: task["task_id"] in dialog._cards)
+
+
+def test_multisite_quick_card_shows_incomplete_subtitles(controller):
+    controller.quick_paste(controller.test_page, "https://www.bilibili.com/video/BV1JZnr6TEMd?p=1")
+    wait_for(lambda: controller.card.state == "ready")
+    cat = catalog(subtitles={}, automatic={})
+    cat["tracks"] = []
+    cat["subtitle_status"] = "incomplete"
+    controller.card.set_catalog(cat)
+    assert controller.card.summary.text() == "字幕列表不完整"
+    assert "Cookie" in controller.card.chip_layout.itemAt(0).widget().text()
+    controller.show()
+    controller.dialog.set_catalog(cat)
+    assert "Cookie" in controller.dialog.subtitle_status.text()
 
 
 def test_chip_and_full_list_stay_in_step(controller):

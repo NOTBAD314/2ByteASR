@@ -3,6 +3,7 @@ import {interpolate} from 'remotion';
 import type {Recipe} from '../SubtitleComposition';
 import {OutsideStrokeText} from './OutsideStrokeText';
 import {TimedText} from './TimedText';
+import {captionInkAnchor} from './captionInkAnchor';
 
 const KNOWN_DECORATIONS = new Set(['corner_brackets','left_bracket','right_bracket','scanline','side_line','underline','accent_line','particle_lite']);
 
@@ -116,13 +117,18 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
   const maskProgress = entranceActive && (entranceType === 'wipe' || entranceType === 'mask_reveal') ? entryProgress : 1;
   const closeProgress = exitActive && (exitType === 'wipe' || exitType === 'mask_close') ? exitProgress : 0;
   const clipProgress = Math.max(0, Math.min(1, maskProgress * (1-closeProgress)));
+  const ink = recipe.layout.fitLocked ? captionInkAnchor({text, family: recipe.typography.fontFamily, size: recipe.typography.fontSize,
+    weight: recipe.typography.fontWeight ?? (recipe.typography.bold ? 700 : 400), italic: recipe.typography.italic,
+    spacing: recipe.typography.spacing, lineHeight: recipe.layout.lineHeightPx ?? recipe.typography.fontSize*1.12,
+    anchorX: anchorX/100, anchorY: anchorY/100, plan: recipe.wordAnimation,
+    perLetter: (entranceActive && entranceType === 'letter_stagger') || (holdActive && holdType === 'per_letter_bounce')}) : {x:0, y:0};
   const base: React.CSSProperties = {
     position:'absolute', left:`${px}%`, top:`${py}%`,
-    translate:`calc(-${anchorX}% + ${jitter + entryX + holdX + exitX}px) calc(-${anchorY}% + ${rise}px)`,
+    translate:`calc(-${anchorX}% + ${ink.x + jitter + entryX + holdX + exitX}px) calc(-${anchorY}% + ${ink.y + rise}px)`,
     scale:`${scaleX} ${scaleY}`,
     rotate:`${(recipe.layout.rotation ?? 0) + entryRotate}deg`,
     transformOrigin:`${anchorX}% ${anchorY}%`,
-    whiteSpace: 'pre-wrap', wordBreak: 'normal', overflowWrap: 'anywhere', width: 'max-content', textAlign: 'center', fontFamily: recipe.typography.fontFamily,
+    whiteSpace: recipe.layout.fitLocked ? 'pre' : 'pre-wrap', wordBreak: 'normal', overflowWrap: recipe.layout.fitLocked ? 'normal' : 'anywhere', width: 'max-content', textAlign: anchorX === 0 ? 'left' : anchorX === 100 ? 'right' : 'center', fontFamily: recipe.typography.fontFamily,
     fontSize: recipe.typography.fontSize, fontWeight: recipe.typography.fontWeight ?? (recipe.typography.bold ? 700 : 400),
     fontStyle: recipe.typography.italic ? 'italic' : 'normal', letterSpacing: recipe.typography.spacing,
     lineHeight: (recipe.layout as Record<string, unknown>).lineHeightPx ? `${(recipe.layout as Record<string, unknown>).lineHeightPx}px` : numberValue((recipe.layout as Record<string, unknown>).lineGap, 1.12), opacity,
@@ -132,10 +138,29 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
   };
   const visibleText = entranceActive && entranceType === 'type_on' ? text.slice(0, Math.ceil(text.length * entryProgress)) : text;
   const perLetter = (entranceActive && entranceType === 'letter_stagger') || (holdActive && holdType === 'per_letter_bounce');
-  const textContent = (recipe.wordAnimation?.spans?.length || recipe.wordAnimation?.units?.length)
+  const characters = Array.from(visibleText);
+  const glyphCount = characters.filter(character => character !== '\n').length;
+  const marks = recipe.wordAnimation?.marks || [];
+  const letterContent = (fill: boolean) => {
+    let glyphIndex = 0;
+    return characters.map((character, index) => {
+      // A line break is layout, never a moving/vanishing glyph. Keeping it in
+      // an inline-block swallowed the canonical break during letter effects.
+      if (character === '\n') return <br key={`line-${index}`}/>;
+      const order = glyphIndex++;
+      const attrs = Object.assign({}, ...marks.filter(mark => mark.start <= index && mark.end > index));
+      const color = attrs.color || (attrs.highlight ? '#FFD166' : undefined);
+      return <span key={`${character}-${index}`} style={{display:'inline-block',
+        fontWeight: attrs.bold === undefined ? undefined : attrs.bold ? 700 : 400,
+        fontStyle: attrs.italic === undefined ? undefined : attrs.italic ? 'italic' : 'normal',
+        ...(fill && color ? {color, WebkitTextFillColor: color, backgroundImage:'none'} : {}),
+        opacity:Math.max(0,Math.min(1,entryProgress*glyphCount-order)),translate:`0 ${holdType === 'per_letter_bounce' ? Math.sin(frame*.28+order*.7)*3 : (1-entryProgress)*12}px`}}>{character}</span>;
+    });
+  };
+  const timedText = Boolean(recipe.wordAnimation?.spans?.length || recipe.wordAnimation?.units?.length || (!perLetter && marks.length));
+  const textContent = timedText
     ? <TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000}/>
-    : perLetter
-    ? Array.from(visibleText).map((character, index) => <span key={`${character}-${index}`} style={{display:'inline-block',opacity:Math.max(0,Math.min(1,entryProgress*text.length-index)),translate:`0 ${holdType === 'per_letter_bounce' ? Math.sin(frame*.28+index*.7)*3 : (1-entryProgress)*12}px`}}>{character}</span>)
+    : perLetter ? letterContent(false)
     : visibleText;
   const panelGradient = panel.gradient.colors.length >= 2
     ? `linear-gradient(${panel.gradient.angle}deg,${panel.gradient.colors.join(',')})`
@@ -168,7 +193,7 @@ export const TrustedSubtitle: React.FC<{text: string; recipe: Recipe; frame: num
       filter:shadow.blur > 0 ? `blur(${shadow.blur}px)` : undefined,
     }}>{textContent}</span>}
     {[...recipe.strokes].reverse().map((stroke, index) => <OutsideStrokeText key={`stroke-${index}`} radius={stroke.width} color={cssColor(stroke.color)} style={{position:'absolute',inset:0,zIndex:2}}>{textContent}</OutsideStrokeText>)}
-    <span data-layer="fill" style={{...(recipe.wordAnimation?.units?.length?{}:fillStyle),position:'relative',zIndex:3,display:'inline-block',backgroundSize:'100% 100%',WebkitTextStroke:'0 transparent'}}>{(recipe.wordAnimation?.spans?.length || recipe.wordAnimation?.units?.length) ? <TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000} fill paint={fillStyle} paintFont={base}/> : textContent}</span>
+    <span data-layer="fill" style={{...(recipe.wordAnimation?.units?.length?{}:fillStyle),position:'relative',zIndex:3,display:'inline-block',backgroundSize:'100% 100%',WebkitTextStroke:'0 transparent'}}>{timedText ? <TimedText text={text} plan={recipe.wordAnimation} milliseconds={frame/fps*1000} fill paint={fillStyle} paintFont={base}/> : perLetter ? letterContent(true) : textContent}</span>
     {activeGlitch && <>
       {Array.from({length:sliceCount}).map((_,index) => <span key={`slice-${index}`} style={{...fillStyle,position:'absolute',inset:0,opacity:.54,transform:`translateX(${Math.sin(index*7+frame)*chromaticOffset*(1-entryProgress)}px)`,clipPath:`inset(${index/sliceCount*100}% 0 ${100-(index+1)/sliceCount*100}% 0)`,WebkitTextStroke:`1px ${index%2?'#ff4db8':'#20d6e8'}`}}>{text}</span>)}
     </>}

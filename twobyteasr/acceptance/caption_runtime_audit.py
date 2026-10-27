@@ -11,6 +11,9 @@ from PySide6.QtWidgets import QApplication
 
 
 def start(window, out):
+    if os.environ.get('TWOBYTEASR_CAPTION_AUDIT_MODE') == 'layout-export':
+        from .caption_layout_audit import start as start_layout
+        return start_layout(window, out)
     if os.environ.get('TWOBYTEASR_CAPTION_AUDIT_MODE') == 'boundary-tail':
         from .playback_tail_audit import start as start_tail
         return start_tail(window, out)

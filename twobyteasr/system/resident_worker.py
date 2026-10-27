@@ -24,6 +24,10 @@ from multiprocessing.connection import Connection
 _PREFIX = "twobyteasr."
 
 
+class ResidentJobCancelled(Exception):
+    """A caller retired its in-flight request."""
+
+
 def _worker_main(connection: Connection) -> None:
     os.environ["TWOBYTEASR_PROCESS_ROLE"] = "resident-worker"
     try:
@@ -84,23 +88,42 @@ class ResidentWorker:
         self._process, self._connection = process, parent
         return True
 
-    def call(self, job: str, payload, *, wait: bool = True):
+    def call(self, job: str, payload, *, wait: bool = True, cancel_check=None):
         """``job(payload)`` in the worker, or None. ``wait=False`` gives up when busy."""
-        if not self._lock.acquire(blocking=wait):
+        if wait and cancel_check is not None:
+            while True:
+                if cancel_check():
+                    return None
+                if self._lock.acquire(timeout=0.05):
+                    break
+        elif not self._lock.acquire(blocking=wait):
             return None
         try:
+            if cancel_check is not None and cancel_check():
+                return None
             if not self._ensure_process():
                 return None
             self._token += 1
             token = self._token
             connection, process = self._connection, self._process
             try:
-                self._send(connection, process, (token, job, payload), time.monotonic() + self.SEND_TIMEOUT_S)
+                if cancel_check is None:
+                    self._send(connection, process, (token, job, payload), time.monotonic() + self.SEND_TIMEOUT_S)
+                else:
+                    self._send(connection, process, (token, job, payload), time.monotonic() + self.SEND_TIMEOUT_S,
+                               cancel_check=cancel_check)
                 deadline = time.monotonic() + self.CALL_TIMEOUT_S
                 while not connection.poll(0.05):
+                    if cancel_check is not None and cancel_check():
+                        raise ResidentJobCancelled()
                     if self._closed or not process.is_alive() or time.monotonic() > deadline:
                         raise RuntimeError("resident worker unavailable")
                 reply_token, result, elapsed_ms, error = connection.recv()
+            except ResidentJobCancelled:
+                # This job holds the worker lock. Retire its process so a late
+                # reply cannot be mistaken for a later task's response.
+                self._stop(force=True)
+                return None
             except (BrokenPipeError, EOFError, OSError, RuntimeError, ValueError, TypeError) as exc:
                 self.failures.append(f"{job}: {type(exc).__name__}: {exc}")
                 del self.failures[:-32]
@@ -110,13 +133,15 @@ class ResidentWorker:
                 self.failures.append(f"{job}: {error or 'stale reply'}")
                 del self.failures[:-32]
                 return None
+            if cancel_check is not None and cancel_check():
+                return None
             self.calls += 1
             self.last_ms = elapsed_ms
             return result
         finally:
             self._lock.release()
 
-    def _send(self, connection, process, message, deadline) -> None:
+    def _send(self, connection, process, message, deadline, *, cancel_check=None) -> None:
         """``connection.send`` that cannot block past ``deadline``.
 
         A large message fills the pipe; a worker that never reads (stuck, or
@@ -135,6 +160,8 @@ class ResidentWorker:
         sender.start()
         while sender.is_alive():
             sender.join(0.05)
+            if sender.is_alive() and cancel_check is not None and cancel_check():
+                raise ResidentJobCancelled()
             if sender.is_alive() and (self._closed or not process.is_alive() or time.monotonic() > deadline):
                 raise RuntimeError("resident worker does not read its requests")
         if failure:

@@ -60,7 +60,16 @@ def test_advanced_route_compiles_only_safe_composition_data():
         "blur": 2.0,
         "spread": 0.0,
     }
-    assert "code" not in str(payload).lower()
+    def keys(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield str(key).lower()
+                yield from keys(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                yield from keys(child)
+    # Descriptive data such as "unicode-code-point" is not executable code.
+    assert 'code' not in set(keys(payload))
 
 
 def test_first_advanced_visual_batch_routes_to_remotion():

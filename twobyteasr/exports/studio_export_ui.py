@@ -1824,6 +1824,10 @@ class StudioExportWorkspace(QWidget):
         self.duration_label = QLabel(_clock(self._duration_ms(), True)); self.duration_label.setObjectName("exportPreviewTime")
         controls.addWidget(self.duration_label)
         layout.addLayout(controls)
+        from .output_caption_layout import OutputCaptionLayoutPreview
+        self.output_layout_preview = OutputCaptionLayoutPreview(panel)
+        self.output_layout_preview.hide()
+        layout.addWidget(self.output_layout_preview)
         # One row when wide; the choice above the points when narrow
         # (_apply_responsive_layout).
         range_row = self._range_grid = QGridLayout()
@@ -2020,6 +2024,8 @@ class StudioExportWorkspace(QWidget):
             value = mapped.timeline_ms
         value = max(0, min(self._duration_ms(), value))
         self.preview_scrub.setValue(value); self.preview_time.setText(_clock(value, True))
+        if hasattr(self, 'output_layout_preview'):
+            self.output_layout_preview.set_time(value)
 
     def _preview_state_changed(self, paused: bool) -> None:
         # A round accent button: the icon shows the action, the name says it.
@@ -2040,6 +2046,8 @@ class StudioExportWorkspace(QWidget):
         callback = getattr(self.parentWidget(), "_seek", None)
         if callable(callback): callback(max(0, int(milliseconds)) / 1000.0)
         self.preview_time.setText(_clock(milliseconds, True))
+        if hasattr(self, 'output_layout_preview'):
+            self.output_layout_preview.set_time(milliseconds)
 
     def _set_in(self) -> None:
         if self._running or self.pages.currentWidget() is not self.setup_page: return
@@ -2413,7 +2421,18 @@ class StudioExportWorkspace(QWidget):
         effective = self._render_settings(commit=False)
         self._effective_export_settings = effective
         from .export_timeline import export_project_snapshot
-        frozen = export_project_snapshot(self.project, start_ms=self.in_ms, end_ms=self.out_ms)
+        frozen = export_project_snapshot(self.project, start_ms=self.in_ms, end_ms=self.out_ms,
+                                         width=effective.width or self.project.media.width,
+                                         height=effective.height or self.project.media.height)
+        self._output_layout_project = frozen
+        if hasattr(self, 'output_layout_preview'):
+            canvas = getattr(frozen, '_output_canvas', {})
+            width, height = canvas.get('output', (1920, 1080))
+            self.output_layout_preview.setVisible(bool(canvas.get('relayout')))
+            if canvas.get('relayout'):
+                self.output_layout_preview.set_project(frozen, width, height, self.preview_scrub.value())
+            else:
+                self.output_layout_preview.clear_view()
         advanced = project_requires_advanced(frozen)
         subtitle_text = tr('跟随工程可见性：烧录 {count} 条字幕', count=len(frozen.cues)) if frozen.cues else tr('跟随工程可见性：不烧录字幕')
         route = ("字幕样式：合成烧录" if advanced else "普通字幕：直接烧录") if frozen.cues else tr('无字幕处理')
@@ -2468,11 +2487,18 @@ class StudioExportWorkspace(QWidget):
             if name not in values:
                 continue
             widget = getattr(self, name)
-            value = tuple(values[name]) if name == 'resolution' else values[name]
-            index = widget.findData(value)
             if name == 'resolution':
+                raw = values[name]
+                # Old/invalid combo state can have been saved as null. Keep
+                # the current valid default instead of throwing in a Qt slot.
+                if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+                    continue
+                value = tuple(raw)
                 index = next((i for i in range(widget.count())
-                    if tuple(widget.itemData(i) or ()) == tuple(value)), -1)
+                    if isinstance(widget.itemData(i), (list, tuple)) and tuple(widget.itemData(i)) == value), -1)
+            else:
+                value = values[name]
+                index = widget.findData(value)
             if index >= 0:
                 blocked = widget.blockSignals(name == 'preset')
                 widget.setCurrentIndex(index)
@@ -2578,7 +2604,9 @@ class StudioExportWorkspace(QWidget):
         settings = replace(settings or self._render_settings())
         export_ass = cover_dir / (uuid.uuid4().hex + '.ass')
         self._export_project = write_export_ass(self.project, export_ass, fps=settings.fps or None,
-            skip_empty=True, start_ms=round((start or 0)*1000), end_ms=round(((start or 0)+effective)*1000))
+            skip_empty=True, start_ms=round((start or 0)*1000), end_ms=round(((start or 0)+effective)*1000),
+            width=settings.width or self.project.media.width, height=settings.height or self.project.media.height,
+            require_layout_fit=True)
         project_data = self._export_project.to_dict()
         revision = hashlib.sha256(json.dumps(project_data, ensure_ascii=False, sort_keys=True,
             separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -2588,6 +2616,7 @@ class StudioExportWorkspace(QWidget):
             video_graph=capture_video_graph(self._export_project),
             export_project_data=project_data,
             export_context=dict(job_id=uuid.uuid4().hex, project_revision='sha256:' + revision,
+                caption_canvas=getattr(self._export_project, '_output_canvas', {}),
                 project_path=str(self.project_path or ''), requested_encoder=str(self.encoder.currentData() or 'auto'),
                 requested_settings=asdict(settings)),
             completion_preview_path=str(cover_dir/(uuid.uuid4().hex+'.jpg')),

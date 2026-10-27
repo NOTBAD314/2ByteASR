@@ -167,6 +167,8 @@ class StudioCueController:
     def _mirror_clock_selection(self, cue_id: str) -> None:
         """Lightweight selection only: no editor hydration, focus, seek or dirty state."""
         page = self.page
+        if page.timeline.active_subtitle_layer == "translation":
+            return
         if getattr(page.timeline,"_unified_selection",False) and page.timeline.clip_selection().count:
             return
         self.session.selected_cue_id = cue_id
@@ -315,6 +317,7 @@ class StudioCueController:
 
     def table_selection_changed(self) -> None:
         page = self.page
+        page.timeline.set_subtitle_layer("original")
         rows = page.cue_table.selectionModel().selectedRows()
         selected = [
             str(page.cue_model.data(
@@ -327,6 +330,7 @@ class StudioCueController:
         active = str(page.cue_model.data(page.cue_model.index(index.row(), 0), Qt.ItemDataRole.UserRole) or '') if index.isValid() else ''
         if active not in selected:
             active = next((item for item in selected if item), '')
+        page.timeline.explicit_subtitle_id = active
         scope = SelectionScope.explicit(selected, active)
         page._manual_selection_hold = bool(scope.active_id)
         cue = self.session._cue_lookup.get(scope.active_id)
@@ -522,6 +526,7 @@ class StudioCueController:
             if not project or not cue_id:
                 if not playing_follow:
                     page.cue_text.clear()
+                    page.translation_text.clear_binding()
                 if hasattr(page, "position_overlay"):
                     page.position_overlay.hide()
                 return
@@ -546,7 +551,7 @@ class StudioCueController:
                     if isinstance(translations, dict)
                     else ""
                 )
-                hydrate_editor(page.translation_text, cue, translation)
+                page.translation_text.bind(project, cue.id, translation)
                 if editor_had_focus and not getattr(page, '_text_input_in_progress', False):
                     cursor = page.cue_text.textCursor()
                     cursor.setPosition(min(cursor_position, len(cue.text)))
@@ -618,6 +623,8 @@ class StudioCueController:
                 mark("review_context")
         finally:
             page._updating_editor = False
+        from .studio_translation_edit import sync_editor_layer
+        sync_editor_layer(page)
         recipe_payload = project.style_recipes.get(cue.style_id) if project and cue_id else None
         if getattr(page,'_review_fast_select',False):
             row=page.cue_model.row_for_cue_id(cue_id)
@@ -1002,23 +1009,22 @@ class StudioCueController:
         self.page._manual_learning_timer.start()
 
     @observed('cue.translation')
-    def set_translation(self, cue_id: str, value: str) -> bool:
+    def set_translation(self, cue_id: str, value: str, *, target=None) -> bool:
         project = self.session.project
         if not project:
             return False
-        translations = project.generation_metadata.get("translations", {})
-        current = (
-            str(translations.get(cue_id, "") or "")
-            if isinstance(translations, dict)
-            else ""
-        )
-        if str(value) == current:
+        if not any(cue.id == cue_id for cue in project.cues):
             return False
         # A typed translation is a manual record: protected from AI batches and
         # kept with its history (the render view follows the records).
         from .studio_bilingual import set_manual_translation
-        return set_manual_translation(self, cue_id, str(value),
-                                      lambda cue_id=cue_id: self.cue_changed(cue_id, columns=()))
+        try:
+            return set_manual_translation(self, cue_id, str(value),
+                                          lambda cue_id=cue_id: self.cue_changed(cue_id, columns=()),
+                                          target=target)
+        except ValueError as exc:
+            self.page.save_state.setText(str(exc))
+            return False
 
     @observed('cue.speaker')
     def set_speaker(self, cue_id: str, speaker_id: str) -> bool:
@@ -1167,6 +1173,10 @@ class StudioCueController:
         if not project:
             return
         page = self.page
+        if page.timeline.active_subtitle_layer == "translation":
+            from .studio_translation_edit import edit_translation
+            edit_translation(page)
+            return
         start = max(0, int(page.timeline.playhead_ms))
         duration = 2_000
         from ..timeline.studio_edit_sequence import timeline_duration_ms
@@ -1244,6 +1254,7 @@ class StudioCueController:
     ) -> None:
         if not self.session.project:
             return
+        self.page.timeline.set_subtitle_layer("translation" if translation else "original")
         self.select_cue(cue_id)
         if translation:
             self.set_translation(cue_id, value)

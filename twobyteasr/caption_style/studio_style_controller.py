@@ -1194,13 +1194,22 @@ class StudioStyleController:
         page.cue_text.setMaximumHeight(64)
         page.translation_text.setMinimumHeight(42)
         page.translation_text.setMaximumHeight(58)
+        page.current_text_layer_label = QLabel(tr("当前操作：原文"))
+        current_layout.addWidget(page.current_text_layer_label)
         from ..studio.caption_text_tools import CaptionTextTools
         page.original_text_tools = CaptionTextTools(page, page.cue_text, 'original')
         page.translation_text_tools = CaptionTextTools(page, page.translation_text, 'translation')
+        current_layout.addWidget(QLabel(tr("原文")))
         current_layout.addWidget(page.original_text_tools)
         current_layout.addWidget(page.cue_text)
+        current_layout.addWidget(QLabel(tr("译文")))
         current_layout.addWidget(page.translation_text_tools)
         current_layout.addWidget(page.translation_text)
+        page.translation_style_button = QPushButton(tr("译文显示样式…"))
+        from ..studio.studio_bilingual import open_style_dialog
+        page.translation_style_button.clicked.connect(lambda: open_style_dialog(page))
+        page.translation_style_button.hide()
+        current_layout.addWidget(page.translation_style_button)
         current_layout.addWidget(page.editor_metadata)
         layout.addWidget(current_card)
         # 二十七轮：原生参数分区宿主登记——当前 cue 是 AI 特效字幕时整组
@@ -2925,7 +2934,16 @@ class StudioStyleController:
             page._updating_style_ui = False
             _refresh_appearance_summaries(page)
             if hasattr(page,'caption_transform_panel'):
-                page.caption_transform_panel.refresh()
+                panel = page.caption_transform_panel
+                panel._needs_refresh = True
+                page._sync_video_tab_selection()
+                if panel.isVisible():
+                    panel.refresh()
+                else:
+                    # The hidden video tab need not lay out every caption on
+                    # selection. Keep the active canvas overlay current; the
+                    # panel refreshes when its tab becomes visible.
+                    panel.sync_overlay()
 
     def _apply_mixed_style_display(
         self,

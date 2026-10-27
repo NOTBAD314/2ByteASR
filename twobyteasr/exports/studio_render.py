@@ -669,6 +669,15 @@ def build_render_command(
     if job.ass_path:
         ass_filter += f":fontsdir={_filter_path(font_directory)}"
     scale = f"scale={settings.width}:{settings.height}" if settings.width and settings.height else ""
+    canvas = (job.export_context or {}).get('caption_canvas', {})
+    if scale and canvas.get('relayout') and not job.direct_video_graph:
+        # The caption was laid out for the output canvas. Burning it into the
+        # old-aspect source and stretching afterwards squashes the glyphs.
+        # Normal Studio media graphs already perform this contain/pad step.
+        fit = (f'{scale}:force_original_aspect_ratio=decrease,'
+               f'pad={settings.width}:{settings.height}:(ow-iw)/2:(oh-ih)/2,setsar=1')
+        ass_filter = f'{fit},{ass_filter}'
+        scale = ''
     if job.direct_video_graph:
         from .export_filtergraph import compile_video_filtergraph
         command.extend(compile_video_filtergraph(ffmpeg_path, job, ass_filter))

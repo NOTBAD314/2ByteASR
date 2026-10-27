@@ -172,7 +172,7 @@ def find_occurrences(
     return hits
 
 
-def values_from_occurrences(project: SubtitleProject, hits: Iterable[TextOccurrence]) -> dict[str, str]:
+def values_from_occurrences(project: SubtitleProject, hits: Iterable[TextOccurrence], *, strict=False) -> dict[str, str]:
     grouped: dict[str, list[TextOccurrence]] = {}
     for hit in hits:
         grouped.setdefault(hit.cue_id, []).append(hit)
@@ -181,11 +181,15 @@ def values_from_occurrences(project: SubtitleProject, hits: Iterable[TextOccurre
     for cue_id, items in grouped.items():
         cue = lookup.get(cue_id)
         if cue is None:
+            if strict:
+                raise ValueError("字幕已删除，整批清理没有应用。")
             continue
         text = cue.text
         for hit in sorted(items, key=lambda item: item.span[0], reverse=True):
             start, end = hit.span
-            if text[start:end] != hit.original:
+            if not 0 <= start <= end <= len(text) or text[start:end] != hit.original:
+                if strict:
+                    raise ValueError("字幕原文已改变，整批清理没有应用。")
                 continue
             text = text[:start] + hit.replacement + text[end:]
         if text != cue.text:

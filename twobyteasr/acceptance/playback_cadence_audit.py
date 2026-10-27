@@ -18,18 +18,29 @@ def video_viewport(controller):
     user.GetWindowThreadProcessId.argtypes=[W.HWND,ctypes.POINTER(W.DWORD)]
     found=[];callback=ctypes.WINFUNCTYPE(W.BOOL,W.HWND,W.LPARAM)
     pid=controller._process.pid
+    # Re-read the native rectangle, not a cached ROI. Retain only its HWND so
+    # the 10Hz geometry guard need not enumerate the entire desktop each time.
+    cached=getattr(controller,'_cadence_probe_hwnd',None)
+    if cached and cached[0]==pid:
+        owner=W.DWORD();user.GetWindowThreadProcessId(cached[1],ctypes.byref(owner))
+        rect=W.RECT()
+        if owner.value==pid and user.IsWindowVisible(cached[1]) and user.GetWindowRect(cached[1],ctypes.byref(rect)):
+            if rect.right>rect.left and rect.bottom>rect.top:
+                return [rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top]
     def visit(hwnd,_):
         owner=W.DWORD();user.GetWindowThreadProcessId(hwnd,ctypes.byref(owner))
         if owner.value==pid and user.IsWindowVisible(hwnd):
             r=W.RECT();user.GetWindowRect(hwnd,ctypes.byref(r))
-            if r.right>r.left and r.bottom>r.top:found.append([r.left,r.top,r.right-r.left,r.bottom-r.top])
+            if r.right>r.left and r.bottom>r.top:found.append((hwnd,[r.left,r.top,r.right-r.left,r.bottom-r.top]))
         return True
     user.EnumWindows(callback(visit),0)
     # Embedded windows are children of Qt top levels, not EnumWindows entries.
     def children(hwnd,_):user.EnumChildWindows(hwnd,callback(visit),0);return True
     user.EnumWindows(callback(children),0)
     if not found:raise RuntimeError('No visible native window belonging to the audited mpv PID')
-    return max(found,key=lambda r:r[2]*r[3])
+    hwnd,rect=max(found,key=lambda row:row[1][2]*row[1][3])
+    controller._cadence_probe_hwnd=(pid,hwnd)
+    return rect
 
 def start(window,out):
     from PySide6.QtCore import QTimer,Qt,qVersion
@@ -47,10 +58,16 @@ def start(window,out):
             'screens':[{'name':s.name(),'geometry':s.geometry().getRect(),'refresh_hz':s.refreshRate(),
                         'dpr':s.devicePixelRatio()} for s in QApplication.screens()]}}
     heartbeat=[];telemetry=[];previous=[time.perf_counter()];phase=[''];owned=[];page=[None]
+    visibility=[None]
+    visibility_timer=QTimer(window);visibility_timer.setTimerType(Qt.PreciseTimer);visibility_timer.setInterval(100)
+    visibility_timer.timeout.connect(lambda:visibility[0].sample() if visibility[0] is not None else None)
     beat=QTimer(window);beat.setTimerType(Qt.PreciseTimer);beat.setInterval(8)
     def on_beat():
         now=time.perf_counter()
         if phase[0]:heartbeat.append({'at':now,'phase':phase[0],'delay_ms':max(0,(now-previous[0])*1000-8)})
+        if phase[0]=='seek' and page[0] is not None:
+            from .playback_interactions import sample_seek_witness
+            sample_seek_witness(page[0],result,now)
         previous[0]=now
     beat.timeout.connect(on_beat)
     snapshots=QTimer(window);snapshots.setInterval(500)
@@ -62,9 +79,6 @@ def start(window,out):
     def steps():
         window.showNormal();window.resize(*spec.get('size',[1440,900]));window.move(30,30);window.show()
         if spec.get('maximized'):window.showMaximized()
-        user=ctypes.WinDLL('user32',use_last_error=True)
-        user.SetWindowPos.argtypes=[W.HWND,W.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,W.UINT]
-        user.SetWindowPos(int(window.winId()),W.HWND(-1),0,0,0,0,0x0001|0x0002|0x0040)
         window.open_studio_project(str(out/'project.2byteproj'),mode='edit',source='cadence-audit')
         yield lambda:window.built_page('studio') is not None and window.built_page('studio')._readiness.ready
         p=page[0]=window.built_page('studio')
@@ -79,6 +93,15 @@ def start(window,out):
         yield lambda:not p.video._playback_clock.exact_seek_pending
         yield 1.
         c=p.video.controller
+        if spec.get('desktop','foreground')=='foreground':
+            from .playback_visibility import PlaybackVisibility
+            visibility[0]=PlaybackVisibility(window,out,lambda:video_viewport(c),
+                manual=spec.get('wait_foreground',False),fixed_roi=spec.get('phase')!='resize')
+            result['foreground_gate']=visibility[0].request
+            result['visibility_samples']=visibility[0].samples
+            save()
+            yield visibility[0].ready
+            result['foreground_gate_accepted_qpc']=time.perf_counter()
         result['mpv_pid']=c._process.pid;result['viewport']=video_viewport(c)
         result['window']={'logical_size':[window.width(),window.height()],'dpr':window.devicePixelRatioF(),'screen':window.screen().name()}
         result['before']=c.observed_properties()
@@ -89,7 +112,7 @@ def start(window,out):
         presentmon=None
         if spec.get('presentmon'):
             args=['--process_id',str(c._process.pid),'--session_name','2ByteASR-cadence-'+str(os.getpid()),
-                '--timed',str(round(spec['seconds']+6)),'--terminate_after_timed','--no_console_stats',
+                '--timed',str(round(spec['seconds']+(30 if spec.get('phase')=='resize' else 6))),'--terminate_after_timed','--no_console_stats',
                 '--qpc_time_ms','--v2_metrics','--output_file',str(out/'presentmon.csv')]
             log=(out/'presentmon-launch.log').open('wb')
             if spec.get('elevate_presentmon'):
@@ -107,8 +130,21 @@ def start(window,out):
             yield 2.
             if presentmon.poll() is not None:
                 result['presentmon_error']=(out/'presentmon-launch.log').read_text('utf8',errors='replace')
-        capture=None
-        if spec.get('capture'):
+        if visibility[0] is not None:
+            yield visibility[0].ready
+            result['viewport']=video_viewport(c)
+            result['window']={'logical_size':[window.width(),window.height()],'dpr':window.devicePixelRatioF(),'screen':window.screen().name()}
+            visibility[0].sample();visibility_timer.start()
+        capture=None;resize_capture=None
+        if spec.get('phase')=='resize':
+            from .playback_interactions import ResizeCapture
+            resize_capture=ResizeCapture(window,p,out,spec,owned,lambda:video_viewport(c))
+            result['capture_segments']=resize_capture.segments
+            result['operations']=resize_capture.operations
+            result['uncaptured_intervals']=resize_capture.gaps
+            result['resize_stable_seconds_per_segment']=resize_capture.stable_seconds
+            yield from resize_capture.prepare()
+        elif spec.get('capture'):
             log=(out/'capture.log').open('wb')
             capture=subprocess.Popen([spec['capture'],*map(str,result['viewport']),str(spec['seconds']+3),str(spec.get('barcode_y',-1)),str(out/'desktop.csv')],stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW)
             owned.append((capture,log))
@@ -117,10 +153,14 @@ def start(window,out):
             if spec.get('capture_capabilities',{}).get('multi_region'):
                 yield lambda:all((out/(r['name']+'-desktop.csv.ready')).exists() for r in spec.get('regions',[])) or capture.poll() is not None
         result['checks']['correct_speed']=abs(float(c.observed_property('speed',0))-float(spec.get('rate',1)))<.001
+        if visibility[0] is not None and not visibility[0].observe()['valid']:
+            visibility[0].sample()
+            raise RuntimeError('foreground or native ROI changed while collector initialized; playback did not start')
         beat.start();snapshots.start();phase[0]='start';begin=time.perf_counter();p._toggle_playback()
         result['play_start_qpc']=begin
         yield 1.
-        phase[0]='steady';steady=time.perf_counter()
+        phase[0]=spec.get('phase') if spec.get('phase') in {'seek','resize'} else 'steady'
+        steady=time.perf_counter()
         saved_text=None
         if spec.get('phase')=='background':
             def background():
@@ -129,16 +169,28 @@ def start(window,out):
                 result.setdefault('operations',[]).append({'kind':'full_qc_request','at':began,'gui_ms':(time.perf_counter()-began)*1000})
             QTimer.singleShot(3000,background)
         elif spec.get('phase')=='seek':
-            for index in range(4):
-                def seek(index=index):
-                    began=time.perf_counter();p._seek(10+index*2)
-                    result.setdefault('operations',[]).append({'kind':'seek','target':10+index*2,'at':began,'gui_ms':(time.perf_counter()-began)*1000})
-                QTimer.singleShot(3000+index*2000,seek)
-        elif spec.get('phase')=='resize':
-            for index in range(6):
-                QTimer.singleShot(3000+index*1000,lambda index=index:window.resize(1360+(index%2)*80,860+(index%2)*40))
-        yield float(spec['seconds'])-1
+            from .playback_interactions import record_seek
+            # Two latest-wins bursts plus a separate final backward seek.
+            # Superseded requests retain evidence but have no latency obligation.
+            for delay,target in ((3000,10),(3060,12),(3120,14),(6000,8),(6060,16),(9000,6)):
+                QTimer.singleShot(delay,lambda target=target:record_seek(p,result,target))
+        if resize_capture is not None:
+            yield from resize_capture.run(begin)
+            result['checks']['resize_changes_observed']=all(row.get('geometry_changed') for row in resize_capture.operations)
+            result['checks']['resize_segments_finished']=len(resize_capture.segments)==3
+        else:
+            yield float(spec['seconds'])-1
         end=time.perf_counter();phase[0]=''
+        if visibility[0] is not None:
+            from .playback_visibility import visibility_summary
+            visibility[0].sample();visibility_timer.stop()
+            result['visibility']=visibility_summary(visibility[0].samples,begin,end)
+        result['actual_play_wall_seconds']=end-begin
+        if resize_capture is not None:
+            result['uncaptured_intervals'].insert(0,{'start':begin,
+                'end':resize_capture.segments[0]['sample_start_qpc'],'reason':'initial playback warmup excluded'})
+            result['uncaptured_intervals'].append({'start':resize_capture.segments[-1]['sample_end_qpc'],
+                'end':end,'reason':'collector completion outside declared stable sample windows'})
         # Pausing aligns the paused frame with the presentation cursor via a
         # seek. Read the running backend first, or that seek can hide a slow
         # decoder behind an optimistically advanced UI cursor.
@@ -185,13 +237,16 @@ def start(window,out):
                 result['measurement_valid']=result['system_present']['measurement_valid']
                 result['performance_pass']=result['system_present']['performance_pass']
         result['physical_scanout']='UNVERIFIED';result['human_audio']='UNVERIFIED'
+        if visibility[0] is not None and not result['visibility']['measurement_valid']:
+            result['measurement_valid']=False;result['performance_pass']='UNVERIFIED'
+            result['measurement_reason']='foreground/ROI coverage invalid; inspect visibility observations'
         result['telemetry']=telemetry;result['heartbeat']=heartbeat
         (out/'playback-probe.json').write_text(json.dumps(events,default=str),'utf8')
         result['finished']=True;save()
-    sequence=steps();waiting=[None];deadline=[time.perf_counter()+180];busy=[False]
+    sequence=steps();waiting=[None];deadline=[time.perf_counter()+float(spec['seconds'])+180+(300 if spec.get('wait_foreground') else 60)];busy=[False]
     driver=QTimer(window);driver.setInterval(15)
     def finish(error=None):
-        driver.stop();beat.stop();snapshots.stop()
+        driver.stop();beat.stop();snapshots.stop();visibility_timer.stop()
         if error:result['errors'].append(error);save()
         for process,log in owned:
             if process.poll() is None:process.terminate()
@@ -212,4 +267,4 @@ def start(window,out):
         except StopIteration:finish()
         except Exception:finish(traceback.format_exc())
         finally:busy[0]=False
-    driver.timeout.connect(advance);driver.start();window._cadence_audit_timers=(driver,beat,snapshots)
+    driver.timeout.connect(advance);driver.start();window._cadence_audit_timers=(driver,beat,snapshots,visibility_timer)

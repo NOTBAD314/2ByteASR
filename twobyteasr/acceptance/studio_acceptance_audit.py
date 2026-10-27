@@ -76,11 +76,19 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
-    if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") in {"link-download", "link-download-review", "link-ui"}:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'manual-translation':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") in {"link-download", "link-download-review", "link-ui", "link-multisite"}:
         from .link_download_audit import install_guards
         install_guards()
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'window-title-mouse':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-cleanup-apply':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -116,7 +124,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('speaker-export','speaker-name-render'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('speaker-export','speaker-name-render','scoped-voiceprint'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -191,7 +199,7 @@ def isolate_acceptance_settings() -> None:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'navigation-performance':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in {'navigation-performance', 'studio-loading'}:
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -436,6 +444,12 @@ def start_acceptance(window) -> None:
             from .playback_cadence_audit import start
             start(window, output)
         return
+    if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") == "link-multisite":
+        from .link_multisite_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
     if os.environ.get("TWOBYTEASR_ACCEPTANCE_SCENARIO") == "link-ui":
         from .link_ui_audit import start
         output = audit_directory()
@@ -454,6 +468,11 @@ def start_acceptance(window) -> None:
         if output is not None:
             from .preview_repair_audit import start
             start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-cleanup-apply':
+        from .ai_cleanup_apply_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'ai-configuration':
         from .ai_configuration_audit import start
@@ -512,6 +531,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-regression':
         from .perf_regression_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'studio-loading':
+        from .studio_loading_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -916,6 +940,12 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
 
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'manual-translation':
+        from .manual_translation_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-recovery':
         from .editor_recovery_audit import start
         output = audit_directory()
@@ -1254,7 +1284,15 @@ def start_acceptance(window) -> None:
         from .user_acceptance_audit import start
         start(window, output)
         return
-    gate = getattr(window.studio_page, '_readiness', None)
+    studio = window.built_page('studio')
+    if studio is None and (window.__dict__.get('_studio_entry_pending') is not None
+                           or window.__dict__.get('_studio_page_building') is not None):
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(20, window, lambda: start_acceptance(window))
+        return
+    if studio is None:
+        studio = window.studio_page
+    gate = getattr(studio, '_readiness', None)
     if gate is not None and gate.active:
         from PySide6.QtCore import QTimer
         QTimer.singleShot(20, lambda: start_acceptance(window))
@@ -1278,6 +1316,11 @@ def start_acceptance(window) -> None:
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'caption-runtime':
         from .caption_runtime_audit import start
         start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'scoped-voiceprint':
+        from .scoped_voiceprint_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'speaker-workflow':
         from .speaker_workflow_audit import start

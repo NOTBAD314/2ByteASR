@@ -48,7 +48,12 @@ def configure(window):
             or not window.testAttribute(Qt.WA_WState_Created)):
         return
     api = _api()
-    hwnd = int(window.winId())
+    from .window_constraints import existing_native_handle
+    hwnd = existing_native_handle(window)
+    if not hwnd:
+        window._native_frame_active = window._native_caption_active = False
+        return
+    window._native_frame_hwnd = hwnd
     current = api.GetWindowLongPtrW(hwnd,GWL_STYLE)
     wanted = (current | WS_THICKFRAME) & ~WS_CAPTION
     window._native_frame_active = True  # before the synchronous NCCALCSIZE
@@ -77,11 +82,15 @@ def fill_minmax(info, work, monitor, minimum, dpr):
     info.ptMinTrackSize.y = max(1,min(height,round(minimum[1]*dpr)))
 
 
-def handle_message(window, message, wparam, lparam):
+def handle_message(window, message, wparam, lparam, *, hwnd=None):
     if not getattr(window,'_native_frame_active',False):
         return None
+    from .window_constraints import existing_native_handle
+    hwnd = existing_native_handle(window, hwnd=hwnd)
+    if not hwnd:
+        return None
     if message == 0x0083:  # WM_NCCALCSIZE: entire rect stays our Qt client area
-        if wparam and lparam and not window.isFullScreen() and _api().IsZoomed(int(window.winId())):
+        if wparam and lparam and not window.isFullScreen() and _api().IsZoomed(hwnd):
             # Native maximization includes an invisible sizing border beyond
             # the work area. Keep the Qt client (and title controls) inside it.
             # Select by the proposed physical rect, not the old Qt screen.
@@ -100,10 +109,10 @@ def handle_message(window, message, wparam, lparam):
         return 0
     if message == 0x0024 and lparam and not window.isFullScreen():  # WM_GETMINMAXINFO
         from .window_constraints import native_frame
-        native = native_frame(window)
+        native = native_frame(window, hwnd=hwnd)
         if native is None:
             return None
-        dpi = _api().GetDpiForWindow(int(window.winId())) or 96
+        dpi = _api().GetDpiForWindow(hwnd) or 96
         info = MINMAXINFO.from_address(lparam)
         fill_minmax(info,native['work'],native['monitor'],
                     (window.minimumWidth(),window.minimumHeight()),dpi/96)
@@ -132,11 +141,15 @@ def caption_target(window, point):
     return None
 
 
-def caption_hit(window, screen_x, screen_y, dpr):
-    if not getattr(window,'_native_caption_active',False) or window.isFullScreen():
+def caption_hit(window, screen_x, screen_y, dpr, *, hwnd=None):
+    if not getattr(window,'_native_caption_active',False):
+        return False
+    from .window_constraints import existing_native_handle
+    hwnd = existing_native_handle(window, hwnd=hwnd)
+    if not hwnd or window.isFullScreen():
         return False
     origin=wintypes.POINT()
-    if not _api().ClientToScreen(int(window.winId()),ctypes.byref(origin)):
+    if not _api().ClientToScreen(hwnd,ctypes.byref(origin)):
         return False
     point=QPoint(round((screen_x-origin.x)/dpr),round((screen_y-origin.y)/dpr))
     target=caption_target(window,point)

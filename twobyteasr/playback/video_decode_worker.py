@@ -90,7 +90,7 @@ def source_pts_ms(frame, container_start_us=0):
     return round(float(frame.pts * frame.time_base) * 1000 - container_start_us / 1000)
 
 
-def display_bgra(frame, sar, max_size):
+def display_bgra(frame, sar, max_size, *, costs=None):
     """Apply container display geometry after bounded conversion, like autorotate.
 
     Ordinary landscape frames keep the zero-array fast path. DISPLAYMATRIX also
@@ -111,7 +111,9 @@ def display_bgra(frame, sar, max_size):
     if not hasattr(_conversion,'reformatter'):
         from av.video.reformatter import VideoReformatter
         _conversion.reformatter=VideoReformatter()
+    reformat_started = time.perf_counter()
     converted = _conversion.reformatter.reformat(frame,width=width,height=height,format='bgra',threads=2)
+    reformatted = time.perf_counter()
     plane = converted.planes[0]
     # Arbitrary viewport widths often have a padded libav stride. Calling
     # to_ndarray here lazily loads NumPy/OpenBLAS in the frozen child and can
@@ -119,8 +121,17 @@ def display_bgra(frame, sar, max_size):
     view = memoryview(plane)
     packed = (bytes(view) if plane.line_size == width*4 else
               b''.join(view[y*plane.line_size:y*plane.line_size+width*4] for y in range(height)))
+    if costs is not None:
+        costs.update(input_pixels=[frame.width, frame.height], input_format=frame.format.name,
+            raster_pixels=[width, height], pixel_bytes=len(packed),
+            reformat_ms=(reformatted-reformat_started)*1000,
+            pack_copy_ms=(time.perf_counter()-reformatted)*1000,
+            reformat_scope='device download, scaling and BGRA conversion combined by PyAV',
+            gpu_download_ms=None, gpu_download_status='not_separately_exposed',
+            rotation_copy_ms=0.)
     if (a, b, c, d) == (1., 0., 0., 1.):
         return width, height, packed
+    rotation_started = time.perf_counter()
     from PIL import Image
     # Only move pixels: channel names do not matter, the byte order stays BGRA.
     image = Image.frombytes('RGBA', (width, height), packed)
@@ -144,7 +155,11 @@ def display_bgra(frame, sar, max_size):
         image = image.transform(size, Image.Transform.AFFINE,
             (ia,ic,ia*low_x+ic*low_y,ib,id_,ib*low_x+id_*low_y),
             resample=Image.Resampling.BICUBIC)
-    return image.width, image.height, image.tobytes()
+    packed = image.tobytes()
+    if costs is not None:
+        costs.update(raster_pixels=[image.width, image.height], pixel_bytes=len(packed),
+                     rotation_copy_ms=(time.perf_counter()-rotation_started)*1000)
+    return image.width, image.height, packed
 
 
 def main():
@@ -193,8 +208,9 @@ def main():
                     item, outgoing[0] = outgoing[0], None
                 if item is None: continue
                 header, pixels = item
-                encoded = json.dumps(header, separators=(',', ':')).encode('utf8')
                 start = time.perf_counter()
+                header['write_started_at'] = start
+                encoded = json.dumps(header, separators=(',', ':')).encode('utf8')
                 sys.stdout.buffer.write(struct.pack('!I', len(encoded)))
                 sys.stdout.buffer.write(encoded)
                 if pixels: sys.stdout.buffer.write(pixels)
@@ -268,12 +284,14 @@ def main():
                     stats.update(seeks=stats['seeks']+1, seek_ms=(time.perf_counter()-start)*1000,
                                  eof=False, error='', state='PREROLL')
                 target_ms = request['source_ms']
+                target_computed_at = None
                 if not request['paused'] and request.get('clock_observed_at'):
                     # Extrapolate the received PlaybackClock anchor, never a
                     # separate playback clock. Cover a bounded GUI cue swap
                     # while audio/native V1 keep running; explicit pause/seek
                     # arrives on the control channel and cancels this anchor.
-                    age=max(0,min(.5,time.perf_counter()-request['clock_observed_at']))
+                    target_computed_at = time.perf_counter()
+                    age=max(0,min(.5,target_computed_at-request['clock_observed_at']))
                     target_ms+=age*1000*request['rate']
                 # Retain one latest past frame plus a bounded native lookahead.
                 while len(frames) > 1 and frames[1][0] <= target_ms:
@@ -316,16 +334,31 @@ def main():
                     pts, frame, codec_decoded_at = candidates[-1]
                     sar = float(stream.sample_aspect_ratio or 1)
                     started = time.perf_counter()
-                    width, height, pixels = display_bgra(frame, sar, request.get('max_size') or (1920,1080))
-                    stats.update(converted=stats['converted']+1, convert_ms=(time.perf_counter()-started)*1000,
+                    costs = {}
+                    width, height, pixels = display_bgra(frame, sar, request.get('max_size') or (1920,1080), costs=costs)
+                    converted_at = time.perf_counter()
+                    stats.update(converted=stats['converted']+1, convert_ms=(converted_at-started)*1000,
+                                 pixel_costs=costs,
                                  queue_frames=len(frames), state='READY')
+                    due_before = next_publish
+                    due_after = (now+1/60 if request['paused'] else
+                                 next_publication_deadline(due_before,now))
                     publish(dict(epoch=epoch, generation=request['generation'], path=path,
                         requested_ms=target_ms, pts_ms=pts, raw_pts=frame.pts, raw_dts=frame.dts,
                         time_base=str(frame.time_base), width=width, height=height,
-                        decoded_at=now, codec_decoded_at=codec_decoded_at, published_at=time.perf_counter()), pixels)
+                        decoded_at=now, codec_decoded_at=codec_decoded_at,
+                        published_at=time.perf_counter(),
+                        costs={**costs, 'convert_started_at': started, 'converted_at': converted_at,
+                               'selection': dict(source_anchor_ms=request['source_ms'],
+                                   clock_observed_at=request.get('clock_observed_at'),
+                                   target_computed_at=target_computed_at, target_ms=target_ms,
+                                   selection_checked_at=now, selected_pts_ms=pts,
+                                   next_candidate_pts_ms=next((item[0] for item in frames if item[0]>pts),None),
+                                   budget_due_before=due_before, budget_due_after=due_after,
+                                   paused=bool(request['paused']), rate=request['rate'])}
+                              if request.get('capture_pixel_costs') else None), pixels)
                     published_pts = pts
-                    next_publish = (now+1/60 if request['paused'] else
-                                    next_publication_deadline(next_publish,now))
+                    next_publish = due_after
                 elif now-last_heartbeat > .5:
                     publish(dict(epoch=epoch, heartbeat=True))
                     last_heartbeat = now

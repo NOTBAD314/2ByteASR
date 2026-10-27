@@ -75,6 +75,21 @@ def anonymous_snapshot(snapshot):
         row.get('speaker_evidence',{}).get('source')=='nemotron' for row in snapshot.get('raw_segments',[]))
 
 
+def confirmation_message(snapshot):
+    """Describe current evidence without treating an anonymous label as a person."""
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    processing = snapshot.get('processing') or {}
+    if processing.get('status') == 'failed':
+        return '说话人识别未能完成，身份需要确认；请打开说话人管理检查可用候选。'
+    rows = snapshot.get('raw_segments') or []
+    labels = {str(row.get('speaker') or '').strip() for row in rows if isinstance(row, dict)} - {''}
+    if len(labels) > 1:
+        return '发现多个说话人标签，需要确认；标签数量不等于真人数量。请打开说话人管理检查候选。'
+    if len(labels) == 1:
+        return '当前只有一个说话人标签，身份尚未确认；这不能证明全片只有一位说话人。请打开说话人管理检查。'
+    return '没有足够的说话人身份信息；请打开说话人管理检查可用候选。'
+
+
 def candidate_snapshot(rows, retained=(), expected=0, *, source=None):
     raw = copy.deepcopy(list(rows))
     for row in raw:

@@ -586,6 +586,17 @@ def normalized_visual_snapshot(snapshot: VisualCueSnapshot) -> dict[str, object]
         "scaleY": snapshot.scale_y,
         "rotation": snapshot.rotation,
     }
+    # The measured display lines belong to the canonical snapshot. Replacing
+    # this object used to discard the width/line height and tell the browser
+    # to independently lay out the same cue a second time.
+    layout = snapshot.style_recipe.get('layout', {})
+    for field in ('singleLine', 'fitLocked', 'lineCount', 'lineHeightPx',
+                  'maxWidthPx'):
+        if field in layout:
+            normalized['layout'][field] = deepcopy(layout[field])
+    caption = getattr(snapshot, 'resolved_caption', None)
+    if caption is not None:
+        normalized['layout']['captionLayout'] = caption.layout
     if snapshot.style_recipe.get('webTheme'):
         normalized['layout']['webPlacement'] = deepcopy(snapshot.style_recipe.get('layout', {}).get('webPlacement', {}))
     normalized["motion"] = normalize_motion_contract(snapshot.motion_recipe)
@@ -679,7 +690,7 @@ def compile_composition_data(
         if not payload or route_recipe(payload).engine != "remotion":
             continue
         snapshot = build_visual_cue_snapshot(
-            project, cue.id, width=width, height=height, fps=fps,
+            project, cue.id, width=width, height=height, fps=fps, resolved_cue=cue,
         )
         visual = scale_visual_for_composition(normalized_visual_snapshot(snapshot), width)
         # recipes 键按样式共享，保持无偏移的样式定义；偏移只进 per-cue visual。
@@ -699,7 +710,8 @@ def compile_composition_data(
             "visual": visual,
             "snapshotHash": snapshot.stable_hash(),
             "resolvedStyleHash": snapshot.resolved_caption.style_hash if snapshot.resolved_caption else "",
-            "lineCount": 1,
+            "lineCount": snapshot.resolved_caption.line_count if snapshot.resolved_caption else len(snapshot.text.split('\n')),
+            "layout": snapshot.resolved_caption.layout if snapshot.resolved_caption else {},
         })
     if not cues:
         used = [cue.style_id for cue in project.cues]

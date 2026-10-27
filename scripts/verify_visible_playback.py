@@ -28,7 +28,7 @@ def make_media(root, folder=None, *, duration=30, with_loop=True):
                 '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', str(duration),
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-g', '60',
                 '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '96k', str(short)],
-                purpose='silent 1080p60 frame-code fixture', check=True, timeout=120)
+                purpose='silent 1080p60 frame-code fixture', check=True, timeout=max(120, duration*3))
         if with_loop and not long.exists():
             run_hidden_subprocess([ffmpeg, '-v', 'error', '-y', '-stream_loop', '3', '-i', str(short),
                 '-c', 'copy', str(long)], purpose='lossless repeat for twenty seconds at 4x', check=True, timeout=30)

@@ -138,6 +138,7 @@ class _TimelineInlineEdit(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._finished = False
+        self._composing = False
         self.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.setTabChangesFocus(False)
 
@@ -150,11 +151,17 @@ class _TimelineInlineEdit(QPlainTextEdit):
         return self.toPlainText()
 
     def event(self, event) -> bool:
+        if event.type() == QEvent.Type.ShortcutOverride:
+            event.accept()
+            return True
         # QWidget consumes Tab for focus traversal before keyPressEvent.
         if event.type() == QEvent.Type.KeyPress and event.key() in {
             Qt.Key.Key_Tab,
             Qt.Key.Key_Backtab,
         }:
+            if self._composing:
+                event.accept()
+                return True
             self._finished = True
             backwards = (
                 event.key() == Qt.Key.Key_Backtab
@@ -167,6 +174,11 @@ class _TimelineInlineEdit(QPlainTextEdit):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._composing:
+                event.accept()
+                return
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                return super().keyPressEvent(event)
             self._finished = True
             if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 from ..caption_style.text_marks import python_offset
@@ -175,14 +187,22 @@ class _TimelineInlineEdit(QPlainTextEdit):
                 self.commit_requested.emit(0)
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Escape:
+        if event.key() == Qt.Key.Key_Escape and not self._composing:
             self._finished = True
             self.cancel_requested.emit()
             event.accept()
             return
         super().keyPressEvent(event)
 
+    def inputMethodEvent(self, event) -> None:
+        self._composing = bool(event.preeditString())
+        super().inputMethodEvent(event)
+
     def focusOutEvent(self, event) -> None:
+        if event.reason() == Qt.FocusReason.PopupFocusReason:
+            return super().focusOutEvent(event)
+        if self._composing:
+            QApplication.inputMethod().commit()
         if not self._finished:
             self._finished = True
             self.commit_requested.emit(0)
@@ -198,7 +218,8 @@ class WaveformTimeline(QWidget):
     timing_edit_started = Signal(object)
     timing_edit_committed = Signal(object)
     timing_edit_finished = Signal(bool)
-    context_menu_requested = Signal(str, object)
+    context_menu_requested = Signal(str, object, str)
+    subtitle_layer_changed = Signal(str)
     razor_split_requested = Signal(str, int)
     merge_pair_requested = Signal(str, str)
     video_razor_requested = Signal(int)
@@ -356,6 +377,11 @@ class WaveformTimeline(QWidget):
         self.vertical_scrollbar.valueChanged.connect(lambda _value: self.update())
         self._inline_editor: _TimelineInlineEdit | None = None
         self._inline_target: tuple[str, bool] | None = None
+        self._inline_binding = None
+        self.active_subtitle_layer = "original"
+        self.subtitle_target_language = ""
+        self.translation_selected_ids: set[str] = set()
+        self.explicit_subtitle_id = ""
         self._cues_by_start: list[StudioCue] = []
         self._timeline_cue_by_id: dict[str, StudioCue] = {}
         self._timeline_row_by_id: dict[str, int] = {}
@@ -1439,6 +1465,10 @@ class WaveformTimeline(QWidget):
             self.update()
 
     def set_project(self, project: SubtitleProject | None) -> None:
+        if project is not self.project:
+            self._cancel_inline_edit()
+            self.set_subtitle_layer("original")
+            self.explicit_subtitle_id = ""
         if project is not None:
             from ..timeline.studio_caption_timeline import ensure_independent_captions
             ensure_independent_captions(project)
@@ -1610,6 +1640,7 @@ class WaveformTimeline(QWidget):
         self.update()
 
     def set_selected(self, cue_id: str) -> None:
+        self.explicit_subtitle_id = str(cue_id)
         if cue_id:
             self.selected_gap = None
         previous_ids = set(self.selected_ids)
@@ -1692,8 +1723,9 @@ class WaveformTimeline(QWidget):
         """
         cached = getattr(self, '_static_timeline_cache', None)
         view = cached[3] if cached is not None and len(cached) > 3 else None
-        drawn_without = (view is not None and view[4] and self._following()
+        drawn_without = (view is not None and view[4] and self._clock_selection_is_dynamic()
                          and not getattr(self, '_static_timeline_dirty', True))
+        old = self.selected_id
         self.selected_gap = None
         self.selection_scope = scope
         if str(scope.active_id) != self.selected_id:
@@ -1702,9 +1734,26 @@ class WaveformTimeline(QWidget):
         self.selected_ids = set(scope.explicit_ids) if scope.mode == SelectionMode.EXPLICIT_IDS else set()
         self._clock_selection = scope
         if drawn_without:
-            QWidget.update(self)
+            # Only the old/new outlines changed; keep the expensive base.
+            region = QRegion()
+            for cue_id in (old, self.selected_id):
+                rect = self._active_cue_rect(cue_id)
+                if not rect.isEmpty():
+                    region |= QRegion(rect.adjusted(-4, -4, 4, 4).toAlignedRect())
+            if not region.isEmpty():
+                QWidget.update(self, region)
         else:
             self.update()
+
+    def _clock_selection_is_dynamic(self) -> bool:
+        # Thumbnail generation is suspended while the media plays, including
+        # when the user has disabled timeline follow.
+        return (bool(getattr(self._thumbnails, 'paused', False))
+                and self._clock_selection is self.selection_scope)
+
+    def playback_selection_state_changed(self) -> None:
+        if self._clock_selection is self.selection_scope:
+            self.update()  # repaint the normal selected appearance on pause
 
     def _following(self) -> bool:
         """Playback is running and the view moved with it in the last 0.5 s.
@@ -1719,6 +1768,9 @@ class WaveformTimeline(QWidget):
         )
 
     def set_bilingual(self, enabled: bool) -> None:
+        if not enabled and self.active_subtitle_layer == "translation":
+            self._cancel_inline_edit()
+            self.set_subtitle_layer("original")
         self.bilingual = bool(enabled)
         self._sync_scrollbars()
         self.updateGeometry()
@@ -1812,6 +1864,64 @@ class WaveformTimeline(QWidget):
         content_width = max(1, self._content_right() - self.TRACK_HEADER_WIDTH)
         return round(self.visible_start_ms + (x - self.TRACK_HEADER_WIDTH) * self.visible_duration_ms / content_width)
 
+    def set_subtitle_layer(self, layer: str) -> None:
+        self.active_subtitle_layer = layer
+        self.selected_lane = "translation" if layer == "translation" else ""
+        if layer != "translation":
+            self.translation_selected_ids.clear()
+        if self.project:
+            from ..subtitle_rules.subtitle_translation import container_target
+            self.subtitle_target_language = container_target(self.project)
+        self.subtitle_layer_changed.emit(layer)
+
+    def _translation_candidates_at(self, point):
+        if not self.project or point.x() < self.TRACK_HEADER_WIDTH or not self._track_viewport().contains(point):
+            return []
+        track = self._track_layout()[1]
+        if track is None or not track.contains(point):
+            return []
+        # Half-open time intervals avoid binding a shared edge to two cues.
+        time_ms = self._x_to_time(point.x())
+        return [cue for cue in self.visible_cues() if cue.start_ms <= time_ms < cue.end_ms]
+
+    def _resolve_translation_at(self, point, *, choose=False):
+        candidates = self._translation_candidates_at(point)
+        selected = next((cue for cue in candidates if cue.id == self.explicit_subtitle_id == self.selected_id
+                         and self.selection_scope.contains(cue.id)), None)
+        if selected is not None:
+            return selected
+        if len(candidates) == 1:
+            return candidates[0]
+        if choose:
+            from .studio_translation_edit import choose_cue
+            return choose_cue(self, candidates if candidates else None)
+        return None
+
+    def select_translation(self, cue_id, *, extend=False, toggle=False, notify=True):
+        ids = set(self.translation_selected_ids) if extend else set()
+        if cue_id:
+            if toggle and cue_id in ids:
+                ids.remove(cue_id)
+            else:
+                ids.add(cue_id)
+        self.set_subtitle_layer("translation")
+        self.translation_selected_ids = ids
+        self._unified_selection = False
+        self.selected_audio_clip_ids.clear()
+        self.selected_segment_ids.clear()
+        self.selected_segment_id = self.selected_video_clip_id = self.selected_video_track_id = ""
+        self.selected_audio_track_id = ""
+        self.selected_track_header = None
+        self.selected_transition_id = ""
+        active = cue_id if cue_id in ids else next(iter(sorted(ids)), "")
+        self.explicit_subtitle_id = active
+        self.set_selected_ids(ids, active)
+        self.selected_lane = "translation" if active else ""
+        if notify:
+            self.cue_selected.emit(active)
+            self.selection_changed.emit(ids)
+        self.update()
+
     def _cue_at(self, point: QPoint) -> tuple[StudioCue | None, str]:
         if not self.project or point.x() < self.TRACK_HEADER_WIDTH:
             return None, ""
@@ -1819,13 +1929,7 @@ class WaveformTimeline(QWidget):
             return None, ""
         speaker_rects, translation, _waveform = self._track_layout()
         if translation and translation.contains(point):
-            translations = self.project.generation_metadata.get("translations", {})
-            if isinstance(translations, dict):
-                for cue in reversed(self.visible_cues()):
-                    if cue.id not in translations:
-                        continue
-                    if self._time_to_x(cue.start_ms) <= point.x() <= self._time_to_x(cue.end_ms):
-                        return cue, "translation"
+            return self._resolve_translation_at(point), "translation"
         visible = self.visible_cues()
         # The active cue wins ties when neighboring blocks touch. This keeps
         # the selected cue recoverable while dragging it back from an overlap.
@@ -2835,7 +2939,7 @@ class WaveformTimeline(QWidget):
         start, duration, right, extra, without_clock_selection = view
         if duration != self.visible_duration_ms or right != self._content_right():
             return None
-        if without_clock_selection and not (self._following() and self._clock_selection is self.selection_scope):
+        if without_clock_selection and not self._clock_selection_is_dynamic():
             return None
         moved = self.visible_start_ms - start
         if moved == 0:
@@ -2868,7 +2972,7 @@ class WaveformTimeline(QWidget):
             image.fill(Qt.GlobalColor.transparent)
             backing = QPainter(image)
             backing.setFont(self.font())
-            without = following and self._clock_selection is self.selection_scope
+            without = self._clock_selection_is_dynamic()
             view = (self.visible_start_ms, self.visible_duration_ms, self._content_right(), extra, without)
             selection = (self.selected_id, self.selected_ids, self.selection_scope)
             duration = self.visible_duration_ms
@@ -3613,21 +3717,25 @@ class WaveformTimeline(QWidget):
             painter.drawText(QRectF(34, translation_rect.top(), 170, translation_rect.height()), Qt.AlignmentFlag.AlignVCenter, str(tr("翻译")))
             translation_font.setBold(False)
             painter.setFont(translation_font)
-            if isinstance(translations, dict) and translations:
+            if isinstance(translations, dict):
                 for cue in visible_cues:
                     text = str(translations.get(cue.id, "") or "")
-                    if not text:
+                    selected = self.active_subtitle_layer == "translation" and cue.id in self.translation_selected_ids
+                    placeholder = not text
+                    if placeholder and cue.id != self.selected_id:
                         continue
+                    if placeholder:
+                        text = str(tr("＋ 添加译文"))
                     left = max(self.TRACK_HEADER_WIDTH, self._time_to_x(cue.start_ms))
                     right = min(self._content_right(), self._time_to_x(cue.end_ms))
                     if right <= self.TRACK_HEADER_WIDTH or left >= self._content_right():
                         continue
                     block = QRectF(left, translation_rect.top() + 6, max(4, right - left), translation_rect.height() - 12)
                     self._count_paint_item('translation_items', bounds=block)
-                    if self.selected_lane == "translation" and cue.id == self.selected_id:
-                        painter.setPen(QPen(QColor(palette.clip_selected_border), 2.4))
-                    else:
-                        painter.setPen(QPen(QColor(palette.translation_clip_border), 1))
+                    border = QPen(QColor(palette.inline_editor_border if selected else palette.translation_clip_border), 2 if selected else 1)
+                    if placeholder:
+                        border.setStyle(Qt.PenStyle.DashLine)
+                    painter.setPen(border)
                     painter.setBrush(QColor(palette.translation_clip))
                     painter.drawRoundedRect(block, 5, 5)
                     painter.setPen(QColor(palette.translation_clip_text))
@@ -4000,6 +4108,21 @@ class WaveformTimeline(QWidget):
         self._selection_before_press = self.clip_selection()
         self.selected_gap = None
         point = event.position().toPoint()
+        translation_track = self._track_layout()[1] if self.project else None
+        if (event.button() == Qt.LeftButton and translation_track is not None
+                and translation_track.contains(point) and self._track_viewport().contains(point)):
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            cue = self._resolve_translation_at(point)
+            modifiers = event.modifiers()
+            self.select_translation(cue.id if cue else "",
+                                    extend=bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier)),
+                                    toggle=bool(modifiers & Qt.ControlModifier))
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton:
+            if self.active_subtitle_layer == "translation":
+                self.set_selected("")
+            self.set_subtitle_layer("original")
         self._seam_candidate = None
         if event.button() == Qt.LeftButton and self.tool_mode == 'selection':
             self._seam_candidate = self._caption_seam_at(point)
@@ -4327,6 +4450,7 @@ class WaveformTimeline(QWidget):
                 self.selected_lane = lane
                 self.invalidate_ranges([(cue.start_ms, cue.end_ms)], {cue.id})
             drag_ids = set(self.selected_ids)
+            self.explicit_subtitle_id = cue.id
             self.cue_selected.emit(cue.id)
             if self.tool_mode == "razor" and mode != "translation":
                 # Press commits what the hover shows; press-and-slide moves the
@@ -4401,6 +4525,18 @@ class WaveformTimeline(QWidget):
         self.update()
 
     def contextMenuEvent(self, event) -> None:
+        translation_track = self._track_layout()[1] if self.project else None
+        if translation_track is not None and translation_track.contains(event.pos()) and self._track_viewport().contains(event.pos()):
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            cue = self._resolve_translation_at(event.pos())
+            candidates = self._translation_candidates_at(event.pos())
+            if cue is None and len(candidates) > 1:
+                from .studio_translation_edit import choose_cue
+                cue = choose_cue(self, candidates)
+            self.select_translation(cue.id if cue else "", extend=bool(cue and cue.id in self.translation_selected_ids))
+            self.context_menu_requested.emit(cue.id if cue else "", event.globalPos(), "translation")
+            return
+        self.set_subtitle_layer("original")
         if event.pos().x() < self.TRACK_HEADER_WIDTH:
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             kind, track_id = '', ''
@@ -4442,12 +4578,21 @@ class WaveformTimeline(QWidget):
             )
             return
         cue, _mode = self._cue_at(event.pos())
-        self.context_menu_requested.emit(cue.id if cue else "", event.globalPos())
+        self.context_menu_requested.emit(cue.id if cue else "", event.globalPos(), "original")
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mouseDoubleClickEvent(event)
         point = event.position().toPoint()
+        translation_track = self._track_layout()[1] if self.project else None
+        if (translation_track is not None and translation_track.contains(point)
+                and point.x() >= self.TRACK_HEADER_WIDTH and self._track_viewport().contains(point)):
+            cue = self._resolve_translation_at(point, choose=True)
+            if cue is not None:
+                self.select_translation(cue.id)
+                self._open_inline_editor(cue, True, self.project.generation_metadata.get("translations", {}).get(cue.id, ""))
+            event.accept()
+            return
         # 分界线/控制区把手双击=恢复该类轨高默认（2026-09-19 P1）。
         boundary = self._track_resize_boundary_at(point)
         if boundary is not None:
@@ -4471,6 +4616,7 @@ class WaveformTimeline(QWidget):
         event.accept()
 
     def _open_inline_editor(self, cue: StudioCue, translation: bool, text: str) -> None:
+        self.set_subtitle_layer("translation" if translation else "original")
         if self._inline_editor is not None:
             self._cancel_inline_edit()
         speaker_rects, translation_rect, _waveform = self._track_layout()
@@ -4488,6 +4634,7 @@ class WaveformTimeline(QWidget):
         editor = _TimelineInlineEdit(self)
         editor.setObjectName("timelineInlineEditor")
         editor.setPlainText(text)
+        editor.setToolTip(tr("Enter 提交 · Shift+Enter 换行 · Esc 取消 · Tab 下一条"))
         editor.selectAll()
         row_height = max(24, round(track.height()))
         font = self._timeline_text_font(row_height, width)
@@ -4507,6 +4654,16 @@ class WaveformTimeline(QWidget):
         editor.split_requested.connect(self._split_inline_at)
         editor.cancel_requested.connect(self._cancel_inline_edit)
         self._inline_target = (cue.id, translation)
+        from ..subtitle_rules.subtitle_translation import container_target, mark_manual_intent
+        self._inline_binding = (self.project, container_target(self.project))
+        if translation:
+            project = self.project
+            marked = []
+            def changed():
+                if not marked:
+                    marked.append(True)
+                    mark_manual_intent(project, cue.id)
+            editor.textChanged.connect(changed)
         self._inline_editor = editor
         editor.show()
         editor.raise_()
@@ -4516,6 +4673,12 @@ class WaveformTimeline(QWidget):
         if self._inline_editor is None or self._inline_target is None:
             return
         cue_id, translation = self._inline_target
+        from ..subtitle_rules.subtitle_translation import container_target
+        if (self._inline_binding is None or self.project is not self._inline_binding[0]
+                or (translation and container_target(self.project) != self._inline_binding[1])):
+            self._cancel_inline_edit()
+            self.edit_blocked.emit(tr("工程或译文语言已切换，请重新选择字幕后编辑"))
+            return
         text = self._inline_editor.toPlainText()
         self._cancel_inline_edit()
         self.text_edit_committed.emit(cue_id, translation, text)
@@ -4567,6 +4730,9 @@ class WaveformTimeline(QWidget):
         if self._inline_editor is None or self._inline_target is None:
             return
         cue_id, translation = self._inline_target
+        if translation:
+            self._commit_inline_edit()
+            return
         editor = self._inline_editor
         point = editor.mapToGlobal(editor.cursorRect().bottomLeft())
         text = editor.toPlainText()
@@ -4606,8 +4772,12 @@ class WaveformTimeline(QWidget):
         if index < 0 or not 0 <= target_index < len(ordered):
             return
         cue = ordered[target_index]
-        self.selected_id = cue.id
-        self.cue_selected.emit(cue.id)
+        if translation:
+            self.select_translation(cue.id)
+        else:
+            self.selected_id = cue.id
+            self.explicit_subtitle_id = cue.id
+            self.cue_selected.emit(cue.id)
         translations = self.project.generation_metadata.get("translations", {})
         text = (
             str(translations.get(cue.id, ""))

@@ -77,6 +77,15 @@ ENGLISH = Lexicon("en", "English", frozenset(CONJUNCTIONS), frozenset(PREPOSITIO
                   frozenset(AUXILIARIES), frozenset(SUBJECTS), frozenset(NEGATIONS), frozenset(UNIT_WORDS),
                   possessives=frozenset({"'s", "s"}), negation_after_verb=True, rules=RULES)
 
+# Short expressions whose meaning is damaged by a cue boundary. These are
+# case-insensitive whole words and never bridge punctuation or speaker turns.
+PROTECTED_ENGLISH_PHRASES = (
+    ('set', 'up'), ('going', 'to'), ('talk', 'to', 'you'),
+    ('color', 'space'), ('colour', 'space'), ('timeline', 'color', 'space'),
+    ('davinci', 'resolve'), ('davinci', 'wide', 'gamut'),
+    ('resolve', 'color', 'management'),
+)
+
 
 def _tools(lexicon):
     """(word core, display length, split, join) for a lexicon's language."""
@@ -98,6 +107,19 @@ def break_scores(tokens: list[str], gaps: list[float] | None = None, lexicon=Non
     core_of = _tools(lex)[0]
     scores = []
     gaps = gaps or [0.0] * max(0, len(tokens) - 1)
+    protected = set()
+    if lex.code == 'en':
+        cores = [core_of(token) for token in tokens]
+        for phrase in PROTECTED_ENGLISH_PHRASES:
+            for start in range(len(tokens) - len(phrase) + 1):
+                if tuple(cores[start:start + len(phrase)]) != phrase:
+                    continue
+                # A sentence/clause mark is stronger evidence than a phrase
+                # string that happens to occur across it.
+                if any(SENTENCE_END.search(tokens[i]) or CLAUSE_END.search(tokens[i])
+                       for i in range(start, start + len(phrase) - 1)):
+                    continue
+                protected.update(range(start, start + len(phrase) - 1))
     for index in range(len(tokens) - 1):
         left, right = tokens[index], tokens[index + 1]
         left_core, right_core = core_of(left), core_of(right)
@@ -137,7 +159,7 @@ def break_scores(tokens: list[str], gaps: list[float] | None = None, lexicon=Non
                 score -= 80
             if lex.clause_final_auxiliaries and right_core in lex.auxiliaries:
                 score -= 60
-        scores.append(score)
+        scores.append(-1000.0 if index in protected else score)
     return scores
 
 

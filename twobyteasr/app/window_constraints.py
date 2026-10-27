@@ -4,12 +4,34 @@ from PySide6.QtWidgets import QApplication, QLayout, QSizeGrip, QWidget
 from ..diagnostics.window_motion import record as trace_motion
 
 
+def existing_native_handle(widget, *, hwnd=None):
+    """Read an already-created native handle; never call QWidget.winId().
+
+    winId() can create a platform window, including while Qt is destroying
+    the previous one. Native callbacks and their diagnostics must only read
+    internalWinId(), and reject messages belonging to another/retired HWND.
+    """
+    try:
+        if (getattr(widget, '_studio_close_pending', False)
+                or getattr(widget, '_studio_close_finalizing', False)
+                or not widget.testAttribute(Qt.WidgetAttribute.WA_WState_Created)):
+            return 0
+        current = int(widget.internalWinId() or 0)
+        if not current or (hwnd is not None and int(hwnd or 0) != current):
+            return 0
+        return current
+    except (RuntimeError, AttributeError, TypeError, ValueError):
+        return 0
+
+
 def _native_window_is_special(widget):
     """Qt may briefly say Normal while the Windows HWND is already maximized."""
     if (QApplication.platformName() != 'windows'
             or not widget.testAttribute(Qt.WidgetAttribute.WA_WState_Created)):
         return False
-    hwnd = int(widget.winId())
+    hwnd = existing_native_handle(widget)
+    if not hwnd:
+        return False
     return bool(_user32().IsZoomed(hwnd) or _user32().IsIconic(hwnd))
 
 
@@ -79,7 +101,7 @@ def restore_normal_window(widget):
         if native and native['zoomed']:
             trace_motion(widget, 'native-restore', actor='normal-command', reason='qt-normal-hwnd-still-zoomed')
             # Native first. Qt-first queues a stale maximized notification.
-            _user32().ShowWindow(int(widget.winId()), 9)
+            _user32().ShowWindow(existing_native_handle(widget), 9)
         QWidget.showNormal(widget)
         if normal.isValid():
             widget.setGeometry(normal)
@@ -110,7 +132,7 @@ def maximize_window(widget):
         native=native_frame(widget)
         if native and not native['zoomed'] and not native['iconic']:
             trace_motion(widget,'native-maximize',actor='maximize-command',reason='qt-frame-needs-native-state')
-            _user32().ShowWindow(int(widget.winId()),3)
+            _user32().ShowWindow(existing_native_handle(widget),3)
         QWidget.showMaximized(widget)
     finally:
         widget._window_geometry_transition=False
@@ -166,7 +188,7 @@ def _user32():
     return _USER32
 
 
-def native_frame(widget):
+def native_frame(widget, *, hwnd=None):
     """Window rect, its monitor's work area and monitor rect (physical pixels).
 
     Returns ``None`` off Windows or before the native window exists.
@@ -177,7 +199,9 @@ def native_frame(widget):
     import ctypes
     from ctypes import wintypes
     user32 = _user32()
-    hwnd = int(widget.winId())
+    hwnd = existing_native_handle(widget, hwnd=hwnd)
+    if not hwnd:
+        return None
     rect = wintypes.RECT()
     if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return None
@@ -219,7 +243,9 @@ def native_move_size_loop(widget):
         return False
     import ctypes
     user32 = _user32()
-    hwnd = int(widget.winId())
+    hwnd = existing_native_handle(widget)
+    if not hwnd:
+        return False
     info = user32.GUITHREADINFO()
     info.cbSize = ctypes.sizeof(info)
     if not user32.GetGUIThreadInfo(user32.GetWindowThreadProcessId(hwnd, None), ctypes.byref(info)):
@@ -281,7 +307,7 @@ def place_on_screen(widget, screen, state):
     native = native_frame(widget)
     if native is not None and native['zoomed']:
         # Qt may already call the window normal while the HWND is still zoomed.
-        _user32().ShowWindow(int(widget.winId()), 9)  # SW_RESTORE
+        _user32().ShowWindow(existing_native_handle(widget), 9)  # SW_RESTORE
     widget.setGeometry(rect)
     if state & Qt.WindowState.WindowFullScreen:
         widget.showFullScreen()
@@ -802,8 +828,8 @@ class WindowBounds(QObject):
                     and QApplication.platformName() == 'windows'):
                 # A queued native restore can leave Qt's flag ahead of the HWND.
                 # Complete this one restore at the OS boundary as well.
-                hwnd = int(self.widget.winId())
-                if not _user32().IsZoomed(hwnd):
+                hwnd = existing_native_handle(self.widget)
+                if hwnd and not _user32().IsZoomed(hwnd):
                     _user32().ShowWindow(hwnd, 3)  # SW_MAXIMIZE
             if wanted and screen is not None:
                 self._queue('return-screen', 200, lambda: self._return_to_screen(screen, wanted))
@@ -979,7 +1005,7 @@ def _watch_move_size(bounds):
             for owner in list(_MOVE_SIZE_OWNERS):
                 widget = owner.widget if owner._alive() else None
                 if (widget is not None and widget.testAttribute(Qt.WidgetAttribute.WA_WState_Created)
-                        and int(widget.winId()) == int(hwnd)):
+                        and existing_native_handle(widget) == int(hwnd)):
                     owner.move_size_event(event == 0x000A)
                     return
 

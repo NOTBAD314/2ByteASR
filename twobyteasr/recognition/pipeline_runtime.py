@@ -259,13 +259,15 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
     The Chinese finalize re-splits any cue over 16 letters, merges single
     characters and repeated short cues and measures reading time in Chinese
     characters; none of that applies to English. Here: frame quantizing, a
-    reading-time floor in English characters per second, at most 6 seconds,
+    reading-time floor in English characters per second, a 6-second reading limit,
     no overlap inside one speaker, then the shared text-free steps (start at
     the voice onset, reading tail, short-gap bridge, display-tail protection).
     Text is never changed. Korean (2026-10-19) uses the same steps with its own
     lengths and reading speed (korean_text: 16 characters, 12 per second), and
     so do the European languages (european_text: 42 characters, Russian 39).
     Since 2026-10-21 a word-language subtitle holds up to two such lines.
+    A final display handoff can extend that reading interval by at most the
+    shared 500ms short-gap threshold, without moving the following start.
     """
     from ..subtitle_rules.display_timing import protect_runtime_display_tails
     from ..subtitle_rules.language_rules import active_task_language, is_european, is_korean
@@ -305,6 +307,10 @@ def finalize_english_cues(cues, segments, speech_regions, audio_seconds, timelin
             cue.end = cue.start + frame
     overlap_audit = protect_runtime_display_tails(finalized, segments)
     legacy.record_run_event('display_overlap_protection', policy_version=4, pairs=overlap_audit)
+    # Length caps and evidence-based tail protection above can reopen a short
+    # blank interval. Finish with the same end-only display rule as Chinese,
+    # including Korean and every European language routed through this path.
+    legacy.relock_display_timing(finalized, audio_seconds, timeline_fps, stage='word_final_display')
     finalized.sort(key=lambda c: (c.start, c.end, c.speaker))
     for index, cue in enumerate(finalized, 1):
         cue.cue_id = index
@@ -380,7 +386,7 @@ def complete_media_run(
     def write_studio_project():
         try:
             from twobyteasr.projects.studio_project import create_studio_outputs
-    
+
             media_path = str(getattr(runtime_context, "media_path", "") or "")
             if not media_path:
                 # Existing RuntimeContext versions do not own the media path. Derive it
@@ -457,7 +463,7 @@ def complete_media_run(
                 provisional = list(getattr(runtime_context, "asr_provisional_cues", ()) or ())
                 if provisional:
                     from twobyteasr.projects.studio_project import load_project
-    
+
                     completed_project = load_project(output_details["project"])
                     legacy.record_run_event(
                         "cue_delta",

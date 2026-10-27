@@ -339,7 +339,10 @@ class LinkQuickCard(_Floating):
         self.cover.set_image(self.thumbnail)
         self.cover.set_badge(choices.duration_text(catalog.get("duration", 0)))
         tracks = catalog["tracks"]
-        if any(t["source"] == "manual" for t in tracks):
+        if catalog.get("subtitle_status") == "incomplete":
+            self.summary.setText(tr("字幕列表不完整"))
+            set_tone(self.summary, "warn")
+        elif any(t["source"] == "manual" for t in tracks):
             self.summary.setText(tr("有人工字幕"))
             set_tone(self.summary, "ok")
         elif tracks:
@@ -378,7 +381,9 @@ class LinkQuickCard(_Floating):
                 item.widget().deleteLater()
         self._chips = {}
         if not self.catalog["tracks"]:
-            self.chip_layout.addWidget(named_label(tr("此视频暂无可用字幕"), "linkHint"))
+            note = ("字幕查询不完整，可在设置选择 Cookie 后重试"
+                    if self.catalog.get("subtitle_status") == "incomplete" else "此视频暂无可用字幕")
+            self.chip_layout.addWidget(named_label(tr(note), "linkHint"))
             return
         for track in choices.chip_tracks(self.catalog, languages, limit=3):
             name = tr(choices.language_name(track["language"], track.get("label", "")))

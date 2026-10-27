@@ -33,6 +33,9 @@ class PipeFrame:
     decoded_at: float = 0.
     received_at: float = 0.
     codec_decoded_at: float = 0.
+    published_at: float = 0.
+    write_started_at: float = 0.
+    costs: dict | None = None
 
 
 def _read_exact(stream, length):
@@ -69,6 +72,7 @@ class VideoDecodePipe:
         self._thread.start()
 
     def request(self, path, source_ms, generation, paused, rate):
+        from ..diagnostics import playback_probe
         with self._condition:
             old = self._request
             discontinuity = (old is None or path != old['path'] or generation != old['generation']
@@ -83,7 +87,7 @@ class VideoDecodePipe:
                 restart=discontinuity))
             self._request = dict(epoch=self._epoch, path=path, source_ms=max(0, source_ms),
                 generation=generation, paused=bool(paused), rate=rate, max_size=self.max_size,
-                clock_observed_at=time.perf_counter())
+                clock_observed_at=time.perf_counter(), capture_pixel_costs=playback_probe.ENABLED)
             self._version += 1
             self._condition.notify_all()
             return self._epoch
@@ -192,13 +196,17 @@ class VideoDecodePipe:
                         if header['epoch'] != self._epoch: continue
                         self._stats.update(header.get('stats', {}))
                         self._stats['read_ms'] = (received-started)*1000
+                        self._stats['transport_bytes'] = size
+                        self._stats['pixel_cost_scope'] = 'last completed frame; not a percentile'
                         if header.get('heartbeat'): continue
                         if self._request is None or self._closed: continue
                         self._last_pts = header['pts_ms']
                         if self._frame is not None: self._stats['replaced'] += 1
                         self._frame = PipeFrame(header['epoch'], header['generation'], header['path'],
                             header['requested_ms'], header['pts_ms'], header['width'], header['height'], pixels,
-                            header['raw_pts'], header['raw_dts'], header['time_base'], header['decoded_at'], received,header.get('codec_decoded_at',0.))
+                            header['raw_pts'], header['raw_dts'], header['time_base'], header['decoded_at'], received,
+                            header.get('codec_decoded_at',0.), header.get('published_at',0.),
+                            header.get('write_started_at',0.), header.get('costs'))
                         frame=self._frame
                     callback=self.on_frame
                     if callback is not None:

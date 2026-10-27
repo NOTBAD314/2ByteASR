@@ -149,13 +149,15 @@ def test_cleanup_inside_a_korean_task_keeps_spaces_chinese_unchanged():
 
 def test_korean_finalize_uses_korean_lengths():
     from twobyteasr.recognition.pipeline_runtime import finalize_cues
+    from twobyteasr.subtitle_rules.timing import relock_display_timing
     from twobyteasr.recognition.transcript_data import SubtitleCue
     events = []
     legacy = SimpleNamespace(
         record_run_event=lambda name, **payload: events.append((name, payload)),
         snap_cue_starts_to_vad_onsets=lambda cues, *_a: cues,
         extend_cue_tails_by_speaker=lambda cues, *_a: cues,
-        bridge_short_display_gaps=lambda cues, *_a: cues)
+        bridge_short_display_gaps=lambda cues, *_a: cues,
+        relock_display_timing=relock_display_timing)
     cues = [SubtitleCue(1, 0.0, 0.4, "오늘 방송 시작합니다", speaker="S01"),
             SubtitleCue(2, 2.0, 3.0, "여러분 안녕하세요", speaker="S01")]
     with language_scope("ko"):

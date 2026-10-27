@@ -83,6 +83,42 @@ def manual_save_scope(page):
         page._manual_save_in_progress = False
 
 
+def cancel_navigation_after_save(page):
+    if page is not None:
+        page._navigation_after_manual_save = None
+
+
+def defer_navigation_until_saved(page, callback):
+    """Keep one latest navigation, resumed after the complete save controller.
+
+    The save's nested event loop may receive external open requests. No loading
+    card starts yet. The completion signal is emitted after success/error UI,
+    then queued once; no polling or repeated zero-timers are needed.
+    """
+    if not getattr(page, '_manual_save_in_progress', False):
+        return False
+    finished = getattr(page, 'manual_save_finished', None)
+    if finished is None:
+        return False
+    session = page.session
+    page._navigation_after_manual_save = (session.project, session.generation, callback)
+    if not getattr(page, '_manual_save_navigation_connected', False):
+        def dispatch():
+            from shiboken6 import isValid
+            if not isValid(page) or getattr(page, '_close_requested', False):
+                page._navigation_after_manual_save = None
+                return
+            if getattr(page, '_manual_save_in_progress', False):
+                return  # A new save has its own completion signal.
+            pending = getattr(page, '_navigation_after_manual_save', None)
+            page._navigation_after_manual_save = None
+            if pending is not None and page.session.project is pending[0] and page.session.generation == pending[1]:
+                pending[2]()
+        finished.connect(dispatch, Qt.ConnectionType.QueuedConnection)
+        page._manual_save_navigation_connected = True
+    return True
+
+
 
 @contextmanager
 def observe_save_edits(runtime):

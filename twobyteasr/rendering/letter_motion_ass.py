@@ -23,21 +23,20 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
     style = caption.style
     from ..projects.studio_revisions import thaw_json
     transform = thaw_json(getattr(cue, 'transform', {}))
-    from ..caption_style.text_marks import layer_marks, remap_marks
+    from ..caption_style.text_marks import layer_marks, remap_caption_marks
     from .marked_glyphs import marked_ass_text
-    marks = remap_marks(cue.text, caption.text, layer_marks(cue))
+    marks = remap_caption_marks(cue.text, caption, layer_marks(cue))
     face,_ = resolve_local_face(style.font_family,style.font_weight,style.font_style_name,style.bold,style.font_file,style.font_face_index)
     font = ImageFont.truetype(face.file,1000,index=face.index)
     em = style.font_size
     sy,sx = style.scale_y/100,style.scale_x/100
     measure = lambda t: font.getlength(t)/1000*em+max(0,len(t)-1)*style.spacing
     rows = caption.text.split('\n')
-    widths = [measure(t) for t in rows]
-    line_height = sum(font.getmetrics())/1000*em
+    layout = caption.layout
+    widths = [float(row['widthPx']) for row in layout['lines']]
+    line_height = float(layout['lineHeightPx'])
     widest = max(widths,default=0)
-    boxes = [font.getbbox(t or ' ') for t in rows]
-    top = min(b[1]/1000*em+i*line_height for i,b in enumerate(boxes))
-    bottom = max(b[3]/1000*em+i*line_height for i,b in enumerate(boxes))
+    ink_left,top,ink_right,bottom = layout['inkBoundsPx']
     ax = float(transform.get('anchor_x',((style.alignment-1)%3)/2))
     ay = float(transform.get('anchor_y',(1,.5,0)[(style.alignment-1)//3]))
     px,py = _style_anchor_position(style,width,height)
@@ -88,7 +87,7 @@ def compile_letter_events(cue, caption, ass_style, plan, width, height, speaker,
                            for m in marks if m['start']<b and m['end']>a]
             if not content.strip():continue
             span_width=measure(content)
-            cx=(widest-widths[row_index])*ax+measure(row[:a-char_offset])+(style.spacing if a>char_offset else 0)+span_width/2-widest*ax
+            cx=(widest-widths[row_index])*ax+measure(row[:a-char_offset])+(style.spacing if a>char_offset else 0)+span_width/2-ink_left-(ink_right-ink_left)*ax
             cy=row_index*line_height-top-(bottom-top)*ay+line_height/2
             bbox=font.getbbox(content)
             left,right=-span_width/2,span_width/2

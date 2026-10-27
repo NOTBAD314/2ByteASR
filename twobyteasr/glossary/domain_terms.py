@@ -637,16 +637,27 @@ class TermVerificationResult(list):
         self.cleanup_pending = bool(cleanup_pending)
 
 
+def _optional_polish_service_snapshot():
+    from ..providers.asr_provider_snapshot import task_provider_snapshot, task_role_enabled
+    if not task_role_enabled('polish'):
+        return None
+    try:
+        return task_provider_snapshot('polish')
+    except RuntimeError as exc:
+        if str(exc) == 'Text AI stage is disabled for this task: polish':
+            return None
+        raise
+
+
 def term_search_capability(snapshot=None):
     """Check the actual executor before creating a client/request/start event."""
-    from ..providers.asr_provider_snapshot import task_provider_snapshot, task_role_enabled
-    if snapshot is None and not task_role_enabled('polish'):
+    snapshot = snapshot or _optional_polish_service_snapshot()
+    if snapshot is None:
         # 2026-10-22 user report: search on with 文字校对 off failed the whole
         # task after six minutes of ASR ("Text AI stage is disabled ...").
         return {'available': False, 'status': 'not_configured',
                 'reason': '文字校对未开启；联网补充核验借用文字校对的服务，本次没有执行。',
                 'provider': '', 'model': '', 'transport': ''}
-    snapshot = snapshot or task_provider_snapshot('polish')
     endpoint = snapshot.endpoint()
     available = (snapshot.kind == 'cli' and snapshot.transport in {'grok_cli', 'antigravity_cli'}) or (
         snapshot.kind == 'http' and endpoint.get('provider') == 'bailian')
@@ -789,7 +800,6 @@ def discover_global_domain_term_mappings(segments, project_context, glossary, ve
                                         unresolved_only=False, total_budget_seconds=OPTIONAL_TERM_SEARCH_SECONDS,
                                         _retry_budget=None, _started_monotonic=None):
     from ..providers.provider_input_budget import pack_items
-    from ..providers.asr_provider_snapshot import task_provider_snapshot, task_role_enabled
     from ..recognition.cache import stable_digest, atomic_write_json
     from pathlib import Path
     owner = get_runtime_context()
@@ -808,7 +818,7 @@ def discover_global_domain_term_mappings(segments, project_context, glossary, ve
         result = TermVerificationResult(status='not_run')
         _publish_term_summary(result, reason='no_candidates')
         return result
-    snapshot = task_provider_snapshot('polish') if task_role_enabled('polish') else None
+    snapshot = _optional_polish_service_snapshot()
     capability = term_search_capability(snapshot)
     if not capability['available']:
         result = TermVerificationResult(status=capability['status'])

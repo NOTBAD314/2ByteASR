@@ -463,6 +463,13 @@ def export_subtitle_artifacts(
     return tuple(artifacts)
 
 
+def _ass_visible_text(text: str) -> str:
+    """Decode visible ASS text once, without treating escaped literals as tags."""
+    text = re.sub(r"\{[^}]*\}", "", text)
+    escapes = {r"\\": "\\", r"\N": "\n", r"\n": "\n", r"\h": " "}
+    return re.sub(r"\\\\|\\[Nnh]", lambda match: escapes[match.group()], text)
+
+
 @service_boundary("subtitle.export_readback")
 def verify_subtitle_artifact(
     artifact: SubtitleExportArtifact,
@@ -506,7 +513,20 @@ def verify_subtitle_artifact(
         speaker_mapping_valid = all(
             any(f",{cue.speaker_id}," in row for row in rows) for cue in expected
         )
-        unicode_valid = all(escape_ass_text(cue.text) in content for cue in expected)
+        # Automatic layout inserts ASS line breaks into long subtitles. Keep
+        # every source character and explicit newline required, while allowing
+        # additional visual breaks; text inside override tags is not evidence.
+        from ..caption_style.caption_text_layout import normalized_caption_text
+        visible = [_ass_visible_text(row.split(",", 9)[-1]) for row in rows]
+        for index, cue in enumerate(expected, 1):
+            source = normalized_caption_text(cue.text).replace("{", "｛").replace("}", "｝")
+            # A hard space is still the source space. Added visual newlines
+            # are allowed between characters, while source newlines remain
+            # required. Never combine separate Dialogue rows into evidence.
+            pattern = r"\n*".join(re.escape(char) for char in source)
+            if not any(re.search(pattern, row) for row in visible):
+                unicode_valid = False
+                mismatch(index, "text", "ASS 可见文字核对不一致")
     elif artifact.format == "txt":
         # TXT stores one LF-delimited row per cue; U+2028/U+2029 are text.
         rows = content.removesuffix("\n").split("\n") if content else []

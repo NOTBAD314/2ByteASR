@@ -204,7 +204,9 @@ def test_style_position_round_trip_emits_ass_override(tmp_path):
     loaded = load_project(save_project(project, tmp_path / "positioned.2byteproj"))
     assert (loaded.styles[0].position_x, loaded.styles[0].position_y) == (731, 882)
     from twobyteasr.rendering.ass_font_units import ass_font_style
-    native=ass_font_style(loaded.styles[0],1920,1080)
+    from twobyteasr.caption_style.resolved_caption_style import resolve_caption_style
+    caption=resolve_caption_style(loaded.styles,loaded.speakers,loaded.cues[0],loaded.style_recipes,1920,1080)
+    native=ass_font_style(caption.style,1920,1080,layout=caption.layout)
     assert f"\\pos({round(native.position_x,2):g},{round(native.position_y,2):g})" in compile_ass(loaded)
 
 
@@ -225,7 +227,9 @@ def test_live_preview_payload_contains_editable_style_values():
         in ass
     )
     from twobyteasr.rendering.ass_font_units import ass_font_style
-    native=ass_font_style(style,1920,1080)
+    from twobyteasr.caption_style.resolved_caption_style import resolve_caption_style
+    caption=resolve_caption_style(project.styles,project.speakers,project.cues[0],project.style_recipes,1920,1080)
+    native=ass_font_style(caption.style,1920,1080,layout=caption.layout)
     assert f"\\pos({round(native.position_x,2):g},{round(native.position_y,2):g})" in ass
     assert "Dialogue: 0,0:00:00.10" in ass
 

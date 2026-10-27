@@ -332,7 +332,7 @@ def test_completed_waveform_drops_late_progress_without_claiming_save_success(ap
     assert label.text()=='正在保存…'
 
 
-def test_studio_needed_before_its_queued_build_starts_is_built_once_and_opens_the_request(app, tmp_path, monkeypatch):
+def test_studio_accessor_does_not_finish_a_pending_build_or_open_twice(app, tmp_path, monkeypatch):
     """2026-10-25 (combined daily): open_studio_project queues the cooperative
     build until the loading page paints. Code that reads studio_page before
     that built Studio the old way, dropped the queued project and left the
@@ -356,10 +356,16 @@ def test_studio_needed_before_its_queued_build_starts_is_built_once_and_opens_th
         target = str(tmp_path / 'p.2byteproj')
         win.open_studio_project(target, source='canonical')
         assert built == [] and win.built_page('studio') is None    # queued, not started
-        page = win.studio_page                                      # needed before the loading page painted
-        win._start_studio_construction()                            # the queued start arrives late
-        app.processEvents()
-        assert built == [False] and win.studio_page is page
+        with pytest.raises(RuntimeError, match='construction is pending'):
+            _ = win.studio_page
+        assert built == []
+        win._start_studio_construction()
+        import time
+        deadline = time.monotonic() + 20
+        while win.built_page('studio') is None and time.monotonic() < deadline:
+            app.processEvents()
+        page = win.built_page('studio')
+        assert page is not None and built == [True] and win.studio_page is page
         assert opened == [target]
     finally:
         win.deleteLater()

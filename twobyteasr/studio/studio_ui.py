@@ -221,6 +221,7 @@ class SubtitleStudioPage(
     workspace_built = Signal()
     workspace_build_progress = Signal(str)
     workspace_build_failed = Signal(str)
+    manual_save_finished = Signal()
     return_requested = Signal()
     glossary_proofread_requested = Signal()
 
@@ -318,6 +319,11 @@ class SubtitleStudioPage(
         cache = getattr(self, '_caption_playback_cache', None)
         if cache is not None:
             cache.close()
+            worker = getattr(cache, 'worker_thread', lambda: None)()
+            retired = [thread for thread in getattr(self, '_retired_caption_threads', ()) if thread.is_alive()]
+            if worker is not None and worker.is_alive():
+                retired.append(worker)
+            self._retired_caption_threads = retired
             cache.deleteLater()
             self._caption_playback_cache = None
         pixels = getattr(self, '_caption_pixel_cache', None)
@@ -1254,6 +1260,8 @@ class SubtitleStudioPage(
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        if event_type == QEvent.Type.FocusIn and watched is getattr(self, "cue_text", None):
+            self.timeline.set_subtitle_layer("original")
         if event_type == QEvent.Type.InputMethod:
             self._studio_ime_composing=bool(event.preeditString())
             return False
@@ -1422,6 +1430,10 @@ class SubtitleStudioPage(
                 and not watched_is_editor
                 and not self._editing_has_focus()
             ):
+                from .studio_translation_edit import handle_key
+                if handle_key(self, event):
+                    event.accept()
+                    return True
                 if event.key() == Qt.Key.Key_Escape and self.timeline.cancel_selection_gesture():
                     event.accept()
                     return True
@@ -1481,6 +1493,9 @@ class SubtitleStudioPage(
                      reason="text_editor_or_ime_owns_command", source="shortcut",
                      project_id=getattr(getattr(self, "project", None), "project_id", None))
             return False
+        from .studio_translation_edit import handle_sequence
+        if handle_sequence(self, sequence):
+            return True
         if sequence.casefold() in ("esc","escape") and self.timeline.cancel_selection_gesture():
             return True
         in_review = bool(self._review_mode)
@@ -1512,6 +1527,10 @@ class SubtitleStudioPage(
     def _shortcut_edit_at_playhead(self):
         if not self.project:
             return False
+        if self.timeline.active_subtitle_layer == "translation":
+            from .studio_translation_edit import edit_translation
+            edit_translation(self)
+            return True
         self._studio_trace(
             "KEY_E",
             key="E",
@@ -1662,6 +1681,9 @@ class SubtitleStudioPage(
         if shortcuts is not None and shortcuts.isVisible():
             return True
         if canvas_editor is not None and canvas_editor.isVisible():
+            return True
+        timeline_editor = getattr(getattr(self, "timeline", None), "_inline_editor", None)
+        if timeline_editor is not None and timeline_editor.isVisible():
             return True
         focus = QApplication.focusWidget()
         if focus is None:
@@ -2404,6 +2426,10 @@ class SubtitleStudioPage(
 
     def _delete_current(self) -> None:
         if self._editing_has_focus():return
+        if self.timeline.active_subtitle_layer == "translation":
+            from .studio_translation_edit import clear_translation
+            clear_translation(self)
+            return
         from .studio_transition_ui import delete_selected
         if delete_selected(self):return
         if self.timeline._unified_selection and self.timeline.clip_selection().count:
@@ -2847,6 +2873,10 @@ class SubtitleStudioPage(
         self._set_major_panel_visible("cue_list", not self.cue_list_panel.isVisible())
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        from .studio_translation_edit import handle_key
+        if handle_key(self, event):
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Escape and not self._editing_has_focus() and self.timeline.cancel_selection_gesture():
             event.accept()
             return
@@ -2991,10 +3021,23 @@ class SubtitleStudioPage(
             details.append(f"媒体指纹：{media.fingerprint}")
         studio_message_box(self, QMessageBox.Icon.Information, tr('媒体信息'), "\n".join(details))
 
-    def _show_timeline_menu(self, cue_id: str, global_pos: QPoint) -> None:
+    def _show_timeline_menu(self, cue_id: str, global_pos: QPoint, layer: str = "original") -> None:
+        self.timeline.set_subtitle_layer(layer)
+        if layer == "translation":
+            if cue_id not in self.timeline.translation_selected_ids:
+                self.timeline.select_translation(cue_id)
+            from .studio_translation_edit import build_menu
+            menu = create_studio_menu(self)
+            build_menu(self, menu, cue_id)
+            menu.exec(global_pos)
+            return
         if cue_id and cue_id not in self.selected_cue_ids():
             self.select_cue(cue_id)
         menu = create_studio_menu(self)
+        if cue_id:
+            from .studio_translation_edit import edit_translation
+            menu.addAction(tr("添加／编辑译文"), lambda: edit_translation(self, cue_id))
+            menu.addSeparator()
         from .translation_actions import add_actions
         add_actions(self, menu)
         menu.addAction(_icon("fa5s.cut"), "拆分当前字幕", self._split_current)
@@ -3298,7 +3341,13 @@ class SubtitleStudioPage(
         self.video.clear_caption_boundaries()
         self._playback_gc_budget.close()
         caption_cache=getattr(self,'_caption_playback_cache',None)
-        if caption_cache is not None:caption_cache.close()
+        caption_threads = [thread for thread in getattr(self, '_retired_caption_threads', ()) if thread.is_alive()]
+        if caption_cache is not None:
+            caption_cache.close()
+            worker = getattr(caption_cache, 'worker_thread', lambda: None)()
+            if worker is not None and worker.is_alive() and worker not in caption_threads:
+                caption_threads.append(worker)
+        self._retired_caption_threads = []
         pixel_cache=getattr(self,'_caption_pixel_cache',None)
         if pixel_cache is not None:pixel_cache.close()
         runner=getattr(self,'_live_raster_runner',None)
@@ -3332,6 +3381,14 @@ class SubtitleStudioPage(
             detached_player = handover_state.get("detached_player")
             phases: dict[str, float | str | bool] = {"analysis_workers_alive": analysis_workers_alive}
             cleanup_started = perf_counter()
+
+            # Retired project previews can still be finishing a font operation.
+            # Wait here, off the GUI thread, before interpreter shutdown.
+            caption_deadline = time.monotonic() + 5.0
+            for worker in caption_threads:
+                if worker is not threading.current_thread() and worker.is_alive():
+                    worker.join(timeout=max(0.0, caption_deadline - time.monotonic()))
+            phases['caption_threads_alive'] = sum(worker.is_alive() for worker in caption_threads)
 
             def cleanup_step(step: str) -> None:
                 # Keep the last safe teardown boundary visible when a native

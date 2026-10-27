@@ -121,7 +121,13 @@ def test_negative_and_subpixel_positions_are_not_clamped_by_legacy_style():
     transform_command(p,['stable-a'],'original',{'position_x':-120.25,'position_y':400.5}).redo()
     snapshot=build_visual_cue_snapshot(p,'stable-a')
     assert snapshot.position_x==-120.25 and snapshot.position_y==400.5
-    assert r'\pos(-120.25,' in compile_ass(p)
+    from twobyteasr.rendering.ass_font_units import ass_font_style
+    from twobyteasr.caption_style.resolved_caption_style import resolve_caption_style
+    shown = next(cue for cue in project_display_cues(p) if cue.id == 'stable-a')
+    caption = resolve_caption_style(p.styles, p.speakers, shown, p.style_recipes, 1920, 1080)
+    native = ass_font_style(caption.style, 1920, 1080, layout=caption.layout)
+    assert native.position_x < 0  # native line-box compensation must not clamp the authored ink point
+    assert f'\\pos({round(native.position_x,2):g},{round(native.position_y,2):g})' in compile_ass(p)
 
 
 def test_rich_line_motion_is_compiled_for_translation_in_both_export_paths():

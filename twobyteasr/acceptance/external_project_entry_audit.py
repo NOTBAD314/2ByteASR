@@ -56,6 +56,19 @@ def start(window, output):
             _capture(window, output/name)
             self.result['screenshots'].append(name)
 
+        def dismiss_failed_loading(self, gate):
+            from ..i18n import tr
+            destination = gate.loading.return_target
+            self.check(gate.back.text() == tr('返回工程库' if destination == 'hub' else '返回主页'),
+                       'failure back label matches the recorded entry destination')
+            QTest.mouseClick(gate.back, Qt.MouseButton.LeftButton)
+            arrived = (window.pages.currentWidget() is self.page and self.page._project_view_state == 'hub'
+                       if destination == 'hub' else window.pages.currentWidget() is window.settings_scroll)
+            self.check(not gate.overlay.isVisible() and arrived,
+                       'failure back returns to its labelled library or home destination')
+            self.check(self.digest(plan['project']) == self.saved_sha,
+                       'failure return preserves the saved project bytes')
+
         def write(self):
             (output/'entry-result.json').write_text(json.dumps(self.result, ensure_ascii=False, indent=2)+'\n','utf8')
 
@@ -169,6 +182,15 @@ def start(window, output):
                     return
                 case = plan['case']
                 if self.step == 0:
+                    loading = window.__dict__.get('_studio_loading_session')
+                    if loading is not None and loading.active:
+                        return
+                    if case == 'project':
+                        intake = window._desktop_intake
+                        if intake.active or intake.requests or self.page.project is None:
+                            return  # The startup Hub may precede the queued explicit argv project.
+                        if loading is not None and loading.state == 'failed':
+                            raise AssertionError('startup project loading failed: ' + loading.view.label.text())
                     if plan.get('bridge')=='startup':
                         guard = QApplication.instance()._instance_guard
                         if not guard._seen_requests:return
@@ -269,17 +291,27 @@ def start(window, output):
                     self.check(self.page.project is self.original,'corrupt external project preserves old usable project')
                     self.check('could not read project' in gate.profile['error']['message'],'corrupt project has loader error rather than media format error')
                     self.shot('02-corrupt-keeps-current.png')
-                    QTest.mouseClick(gate.back,Qt.MouseButton.LeftButton)
-                    self.check(not gate.overlay.isVisible() and self.page.project is self.original,'failure dismissal returns to current workspace')
-                    self.send([plan['future_project']])
-                    self.step = 4
+                    self.dismiss_failed_loading(gate)
+                    # The unified card explicitly returns to Library/Home.
+                    # Reopen the retained file before checking another rejected
+                    # version; do not assume the retired editor still exists.
+                    self.send([plan['project']])
+                    self.step = 31
+                    return
+                if self.step == 31:
+                    if not self.request_done():return
+                    if not self.page.project or path_identity(self.page.session.project_path)!=path_identity(plan['project']):return
+                    self.check(self.page.project.cues[0].text == self.saved_text,
+                               'explicit reopen after failure return restores the saved captions')
+                    self.original = self.page.project
+                    self.send([plan['future_project']]);self.step = 4
                     return
                 if self.step == 4:
                     if self.request is not None and not self.request_done():return
                     if not gate or not gate.profile.get('error'):return
                     self.check('schema_version' in gate.profile['error']['message'],'newer project has version-specific error')
                     self.check(self.page.project is self.original,'newer project preserves current project')
-                    QTest.mouseClick(gate.back,Qt.MouseButton.LeftButton)
+                    self.dismiss_failed_loading(gate)
                     self.send([plan['other_project']])
                     self.step = 5
                     return

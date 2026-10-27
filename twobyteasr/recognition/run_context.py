@@ -78,6 +78,8 @@ class RuntimeContext:
     chinese_script: str = "zh-Hans"
     # Japanese bunsetsu boundaries of this task's segment texts (line breaking).
     japanese_phrases: Any | None = None
+    # Task-private first-pass alignment receipt; never written to settings.
+    segment_alignment_evidence: Any | None = field(default=None, repr=False)
 
     def reset_for_media(self) -> None:
         """Clear output/report state while retaining queue-wide discovered terms."""
@@ -91,6 +93,7 @@ class RuntimeContext:
         self.task_language = ""
         self.language_evidence = {}
         self.japanese_phrases = None
+        self.segment_alignment_evidence = None
 
 
 _CONTEXT_LOCK = threading.RLock()

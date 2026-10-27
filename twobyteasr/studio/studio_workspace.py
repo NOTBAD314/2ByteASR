@@ -836,11 +836,11 @@ class StudioWorkspaceBuilder:
         page._cue_text_split_shortcut.activated.connect(lambda: page.cue_controller.split_at_text(
             page.selected_cue_id, page.cue_text._caption_tools.split_position(),
             page.cue_text.mapToGlobal(page.cue_text.cursorRect().bottomLeft())))
-        page.translation_text = InputLatencyTextEdit(page.cue_editor)
+        from .studio_translation_edit import TranslationTextEdit
+        page.translation_text = TranslationTextEdit(page, page.cue_editor)
         page.translation_text.setObjectName("cueText")
         bind_text(page.translation_text, '第二语言文本', property='placeholderText')
         page.translation_text.setMinimumHeight(54)
-        page.translation_text.textChanged.connect(page._translation_changed)
         page.translation_text.hide()
         # Timeline/List inline editing are the primary paths. The text widgets
         # are reparented into the compact Style panel below, so the central
@@ -1374,6 +1374,8 @@ class StudioWorkspaceBuilder:
         page.timeline.timing_edit_finished.connect(page._cue_timing_preview.finish)
         page.timeline.speaker_changed.connect(page._timeline_speaker_changed)
         page.timeline.context_menu_requested.connect(page._show_timeline_menu)
+        from .studio_translation_edit import sync_editor_layer
+        page.timeline.subtitle_layer_changed.connect(lambda _layer: sync_editor_layer(page))
         page.timeline.razor_split_requested.connect(page._split_at)
         page.timeline.merge_pair_requested.connect(page._merge_pair_clicked)
         page.timeline.video_razor_requested.connect(page._razor_video_at)
@@ -1969,7 +1971,8 @@ class StudioWorkspaceBuilder:
         page.cue_recognize_button = QPushButton("识别字幕")
         page.cue_recognize_button.setObjectName("studioPrimary")
         page.cue_recognize_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        page.cue_recognize_button.clicked.connect(page._open_recognition_sheet)
+        # clicked(bool) is a checked state, not a recognition time range.
+        page.cue_recognize_button.clicked.connect(lambda _checked=False: page._open_recognition_sheet())
         zero_layout.addWidget(page.cue_recognize_button)
         # 四十三轮：识别期间"暂无字幕"区显示运行状态（用户点名——顶部芯片
         # 太难看到）。含取消与"查看详细进度"（跳主页进度页，可返回 Studio）。

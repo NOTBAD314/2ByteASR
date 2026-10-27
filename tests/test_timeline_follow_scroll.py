@@ -119,3 +119,27 @@ def test_selection_that_follows_the_playing_caption_does_not_redraw():
         assert not timeline._static_timeline_cache[3][4]
     finally:
         timeline.close()
+
+
+def test_clock_selection_reuses_static_picture_when_follow_is_disabled():
+    timeline = make_timeline()
+    try:
+        timeline._follow_active_until = 0.0
+        calls = full_redraws(timeline)
+        timeline.set_clock_selection_scope(SelectionScope.explicit(('c3',), 'c3'))
+        APP.processEvents(); timeline.grab()
+        assert timeline._static_timeline_cache[3][4]
+        drawn = len(calls)
+        for index in range(4, 9):
+            timeline.set_clock_selection_scope(SelectionScope.explicit((f'c{index}',), f'c{index}'))
+            APP.processEvents(); timeline.grab()
+        assert len(calls) == drawn and timeline.selected_id == 'c8'
+        timeline._thumbnails.paused = False
+        timeline.playback_selection_state_changed()
+        APP.processEvents(); timeline.grab()
+        assert len(calls) == drawn + 1 and not timeline._static_timeline_cache[3][4]
+        timeline.set_selection_scope(SelectionScope.explicit(('c7',), 'c7'))
+        APP.processEvents(); timeline.grab()
+        assert timeline.selected_id == 'c7' and not timeline._static_timeline_cache[3][4]
+    finally:
+        timeline.close()

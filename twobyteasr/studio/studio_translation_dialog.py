@@ -54,12 +54,13 @@ class _Signals(QObject):
 class SubtitleTranslationDialog(QDialog):
     translation_finished = Signal(bool, dict)
 
-    def __init__(self, page, parent=None, *, scope=None) -> None:
+    def __init__(self, page, parent=None, *, scope=None, cue_ids=None, target=None, atomic_display=False) -> None:
         super().__init__(parent)
         bind_text(self, '翻译 / 生成双语字幕', property='windowTitle')
         self.setMinimumWidth(520)
         self.page = page
         self.project = page.project
+        self._atomic_display = bool(atomic_display)
         self._session_generation = getattr(getattr(page, 'session', None), 'generation', None)
         self._cancel = threading.Event()
         self._thread = None
@@ -91,7 +92,7 @@ class SubtitleTranslationDialog(QDialog):
                                        "这个工程没有记录识别语言，按日语原文处理；请确认原文是日语。"))
         layout.addWidget(self.language_note)
         self.scope_group = QButtonGroup(self)
-        selected = list(getattr(page, "selected_cue_ids", lambda: [])() or [])
+        selected = list(cue_ids if cue_ids is not None else (getattr(page, "selected_cue_ids", lambda: [])() or []))
         self._selected = selected
         scopes = (("pending", tr("只处理未翻译、失败和需要更新的字幕")), ("all", tr("全部字幕（人工译文保留）")),
                   ("selected", tr("选中的 {count} 条字幕", count=len(selected))))
@@ -109,9 +110,9 @@ class SubtitleTranslationDialog(QDialog):
         # Any target in another language than the source (2026-10-14); native names.
         from ..subtitle_rules.subtitle_translation import TARGET_LABELS, targets_for
         self.script = user_text(QComboBox())
-        for target in targets_for(language):
-            self.script.addItem(TARGET_LABELS[target], target)
-        stored = ((self.project.generation_metadata.get("translation_records") or {}).get("target")
+        for language_target in targets_for(language):
+            self.script.addItem(TARGET_LABELS[language_target], language_target)
+        stored = (target or (self.project.generation_metadata.get("translation_records") or {}).get("target")
                   or (self.project.generation_metadata.get("subtitle_output") or {}).get("translation_script")
                   or "zh-Hans")
         self.script.setCurrentIndex(max(0, self.script.findData(stored)))
@@ -290,6 +291,7 @@ class SubtitleTranslationDialog(QDialog):
         self.project.generation_metadata["translation_glossary"] = [list(pair) for pair in pairs]
         self.project.generation_metadata["translation_context"] = self.context.text().strip()
         source = translation_source(self.project)
+        self._session_generation = getattr(getattr(self.page, "session", None), "generation", None)
         try:
             provider = provider_for_stage(GLOBAL_PROVIDER_REGISTRY.settings(), "polish")
         except Exception as exc:
@@ -449,20 +451,34 @@ class SubtitleTranslationDialog(QDialog):
             bind_text(self.status, '目标语言已变化，迟到的翻译结果没有写入。')
             self.translation_finished.emit(False, {})
             return
-        if self.page.project is not self.project:
+        if (self.page.project is not self.project
+                or getattr(self, "_session_generation", None) != getattr(getattr(self.page, "session", None), "generation", None)):
             self._log_disowned_result(result)
             bind_text(self.status, '工程已切换，迟到的翻译结果没有写入。请求用量仍保留在记录中。')
             self.translation_finished.emit(False, {})
             return
         from ..subtitle_rules.subtitle_translation import apply_translation_result
-        from .studio_bilingual import ApplyTranslationSnapshotCommand, apply_display, current_settings
+        from .studio_bilingual import (ApplyTranslationSnapshotCommand, apply_display, current_settings,
+                                      settings_for_changes, sync_controls)
         from ..diagnostics.event_log import context
         with context(**getattr(self, "_diagnostic", {})):
-            before, after = apply_translation_result(self.project, result)
-            changed_ids = list(result.translations)
+            before, after = apply_translation_result(self.project, result, commit=not self._atomic_display)
+            changed_ids = sorted(set(result.translations) | set(result.failed))
             if before != after:
-                self.page.undo_stack.push(ApplyTranslationSnapshotCommand(self.project, before, after, changed_ids,
-                                                                          label="AI 翻译字幕"))
+                display = (settings_for_changes(self.project, mode="bilingual")
+                           if self._atomic_display and result.translations and current_settings(self.page).mode == "original"
+                           else None)
+                command = ApplyTranslationSnapshotCommand(self.project, before, after, changed_ids,
+                                                           label="AI 翻译字幕", display_settings=display)
+                outcome = command.outcome
+                self.page.undo_stack.push(command)
+                if self._atomic_display and not outcome["applied"]:
+                    from ..diagnostics.event_log import emit, exception_info
+                    error = outcome["error"] or RuntimeError("translation transaction was not committed")
+                    emit("translation.failed", level="ERROR", result="failed", exception=exception_info(error))
+                    bind_text(self.status, "翻译结果未写入：{error}", error=str(error))
+                    self.translation_finished.emit(False, {})
+                    return
             decision = ("partially_accepted" if result.discarded and result.translations else
                         "discarded_stale" if result.discarded else
                         "accepted" if result.translations else
@@ -470,7 +486,7 @@ class SubtitleTranslationDialog(QDialog):
                         "cancelled" if result.cancelled else "failed" if result.failed else "skipped")
             background_result(getattr(self,"_diagnostic",{}), self.project, decision=decision,
                               cancelled=result.cancelled, stale_ids=result.discarded,
-                              applied_count=len(changed_ids) if before != after else 0,
+                              applied_count=len(result.translations) if before != after else 0,
                               discard_reasons=result.discarded)
         parts = [tr("成功 {count} 条", count=len(result.translations))]
         if result.discarded:
@@ -492,7 +508,12 @@ class SubtitleTranslationDialog(QDialog):
         bind_text(self.status, "；".join(parts) + "。")
         self.progress.setValue(100)
         self._refresh_counts()
-        if result.translations and current_settings(self.page).mode == "original":
+        if result.translations and self._atomic_display:
+            sync_controls(self.page)
+            for name in ("_refresh_ass_preview", "_present_caption_scene"):
+                callback = getattr(self.page, name, None)
+                if callable(callback): callback()
+        elif result.translations and current_settings(self.page).mode == "original":
             apply_display(self.page, mode="bilingual")
         self.translation_finished.emit(bool(result.translations), dict(result.translations))
 

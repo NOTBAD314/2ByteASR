@@ -9,6 +9,12 @@ organisation sits behind “多选”. Recognition data is never re-requested.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import os
+import queue
+import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QEvent, QTimer, Qt
@@ -113,6 +119,12 @@ class SpeakerManagerDialog(QDialog):
         self._preview_card: SpeakerCard | None = None
         self._preview_video = None
         self._preview_return_rate = 1.0
+        self._voiceprint_mailbox = queue.Queue()
+        self._voiceprint_cancel = threading.Event()
+        self._voiceprint_report = None
+        self._voiceprint_timer = QTimer(self)
+        self._voiceprint_timer.setInterval(150)
+        self._voiceprint_timer.timeout.connect(self._voiceprint_poll)
         bind_text(self, "说话人管理", property="windowTitle")
         self.setObjectName("toolDialog")
         self.setMinimumSize(760, 520)
@@ -126,6 +138,13 @@ class SpeakerManagerDialog(QDialog):
         self.finished.connect(self._stop_preview)
         self._build_ui()
         self._load_snapshot()
+        if self._snapshot:
+            report = self._snapshot.get('processing', {}).get('voiceprint_review')
+            if isinstance(report, dict) and report.get('groups'):
+                from ..recognition.scoped_voiceprint import cue_signature
+                if report.get('cue_signature') == cue_signature(self.page.project.cues):
+                    self._voiceprint_report = report
+                    bind_text(self.voiceprint_button, '查看声纹候选')
         self.refresh()
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
@@ -198,6 +217,12 @@ class SpeakerManagerDialog(QDialog):
         bind_text(self.speaker_filter, "搜索名称或标签", property="placeholderText")
         self.speaker_filter.textChanged.connect(self._filter_rows)
         toolbar.addWidget(self.speaker_filter)
+        self.voiceprint_button = QPushButton()
+        bind_text(self.voiceprint_button, '声纹比对')
+        bind_text(self.voiceprint_button, '比较多个独立语音样本，试听候选后再决定是否合并；字幕可撤销。', property='toolTip')
+        button_role(self.voiceprint_button, 'secondary', size='compact')
+        self.voiceprint_button.clicked.connect(self._voiceprint_clicked)
+        toolbar.addWidget(self.voiceprint_button)
         self.multi_button = QPushButton()
         bind_text(self.multi_button, "多选")
         bind_text(self.multi_button, "勾选几位后批量归入游戏声、合并或删除", property="toolTip")
@@ -571,6 +596,18 @@ class SpeakerManagerDialog(QDialog):
             more = "…" if len(data["intervals"]) > 24 else ""
             data["strip_tip"] = tr("出现在：{times}", times="、".join(times) + more) + "\n" + tr("点一段就从那里试听")
         excerpt = self._representative(key) if stats is not None else None
+        # A voiceprint candidate's preview plays the same excerpt used by the
+        # comparison, rather than an arbitrary start of a long request chunk.
+        voice = next((item for item in (self._voiceprint_report or {}).get('sample_intervals', [])
+                      if isinstance(item, dict) and item.get('label') == key), None)
+        if voice is not None:
+            try:
+                begin,end = round(float(voice['start'])*1000),round(float(voice['end'])*1000)
+                source = next((cue for cue in cues if cue.start_ms <= begin and cue.end_ms >= end), None)
+                if source is not None and begin < end:
+                    excerpt = (begin,end,source.text)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
         if excerpt is None and cues:
             longest = max(cues, key=lambda cue: cue.end_ms - cue.start_ms)
             length = min(4000, max(2000, longest.end_ms - longest.start_ms))
@@ -622,7 +659,7 @@ class SpeakerManagerDialog(QDialog):
                 text = tr("说话人分析失败，已保留字幕文字。{error} 可在「更多工具」里重新识别。",
                           error=str(processing.get("error") or ""))
             elif pending and self._anonymous():
-                text = tr("{origin} 找到 {count} 位说话人，{pending} 位待确认。按 ▶ 试听，再在卡片上选「主要 / 游戏声 / 忽略」；每次选择立即生效，可按 Ctrl+Z 撤销。",
+                text = tr("{origin} 找到 {count} 个说话人标签，{pending} 个待确认。按 ▶ 试听，再在卡片上选「主要 / 游戏声 / 忽略」；每次选择立即生效，可按 Ctrl+Z 撤销。",
                           origin=_source_name(processing), count=len(self._stats), pending=len(pending))
                 tip = tr("标签不等于真人身份，请按原音确认归属。预计说话人数：{expected}。匿名标签均待确认，不按编号或发言量认定主播。",
                          expected=snapshot.get("expected_speakers") or tr("自动"))
@@ -635,8 +672,9 @@ class SpeakerManagerDialog(QDialog):
 
     def _refresh_summary(self) -> None:
         project = self.page.project
-        bind_text(self.summary_label, "{speakers} 位说话人 · {cues} 条字幕",
-                  speakers=len(project.speakers), cues=len(project.cues))
+        pending = self._anonymous() and any(role == 'unconfirmed' for role in self._roles().values())
+        text = "{speakers} 个说话人标签 · {cues} 条字幕" if pending else "{speakers} 位说话人 · {cues} 条字幕"
+        bind_text(self.summary_label, text, speakers=len(project.speakers), cues=len(project.cues))
 
     # --------------------------------------------------------------- names
     def eventFilter(self, watched, event):
@@ -699,9 +737,152 @@ class SpeakerManagerDialog(QDialog):
             self.page.undo_stack.indexChanged.disconnect(self._undo_index_changed)
         except (RuntimeError, TypeError):
             pass
+        self._voiceprint_cancel.set()
+        self._voiceprint_timer.stop()
         self.page._speaker_roles_pending = False
         self.page._populate_speakers()
         super().done(result)
+
+    def _voiceprint_clicked(self):
+        from ..recognition.scoped_voiceprint import cue_signature, sample_windows
+        project = self.page.project
+        if self._voiceprint_report:
+            if self._voiceprint_report.get('cue_signature') != cue_signature(project.cues):
+                self._voiceprint_report = None
+                bind_text(self.voiceprint_button, '声纹比对')
+                self._set_status(tr('字幕或说话人已变化，请重新比对。'))
+                return
+            self._voiceprint_apply()
+            return
+        state = self._snapshot or {}
+        if not self._snapshot_in_project or state.get('confirmed_by'):
+            self._set_status(tr('当前工程没有可安全比对的未确认分片标签；已有人工确认的身份不会被覆盖。'))
+            return
+        from ..timeline.studio_edit_sequence import sequence_of
+        sequence = sequence_of(project)
+        if (not sequence.is_identity() or len([track for track in project.video_tracks if track.clips]) != 1
+                or os.path.normcase(os.path.abspath(str(sequence.source_path))) !=
+                   os.path.normcase(os.path.abspath(str(project.media.path)))):
+            self._set_status(tr('当前时间线已剪辑或有多个视频轨，无法安全对应原始语音；请先试听并手动合并。'))
+            return
+        identity = copy.deepcopy(project.generation_metadata.get('media_identity') or {})
+        if identity.get('selection'):
+            self._set_status(tr('此工程选择过独立音轨；自动声纹取样暂不支持该轨道，请试听后手动合并。'))
+            return
+        media = Path(project.media.path)
+        try:
+            stat = media.stat()
+            if ((identity.get('size') is not None and int(identity['size']) != stat.st_size)
+                    or (identity.get('mtime_ns') is not None and int(identity['mtime_ns']) != stat.st_mtime_ns)):
+                raise ValueError('素材已变化')
+        except (OSError, ValueError):
+            self._set_status(tr('素材缺失或已变化，未执行声纹比对。'))
+            return
+        rows = [{'id':c.id,'speaker':c.speaker_id,'start':c.start_ms/1000,
+                 'end':c.end_ms/1000,'text':c.text} for c in project.cues]
+        samples = sample_windows(rows)
+        if len({item['label'] for item in samples}) < 2:
+            self._set_status(tr('分片中可用的独立语音样本不足，请试听后手动处理。'))
+            return
+        signature = cue_signature(rows)
+        from ..runtime_paths import get_runtime_paths
+        from ..system.runtime_registry import resolve_runtime_python
+        from ..system.processes import main_python_executable
+        from ..system.platform_media import ffmpeg_tool
+        paths = get_runtime_paths()
+        runtime = resolve_runtime_python('main') or main_python_executable()
+        worker = paths.install_root/'workers'/'speaker_embed_worker.py'
+        if not worker.is_file():
+            worker = paths.install_root/'speaker_embed_worker.py'
+        model = paths.model_root/'spkrec-ecapa-voxceleb'
+        ffmpeg = ffmpeg_tool(root=paths.install_root)
+        if not runtime or not Path(runtime).is_file() or not worker.is_file() or not ffmpeg.is_file():
+            self._set_status(tr('本地声纹运行环境或音频工具不可用，原有说话人保持不变。'))
+            return
+        mailbox, cancel = self._voiceprint_mailbox, self._voiceprint_cancel
+        cancel.clear()
+        self.voiceprint_button.setEnabled(False)
+        self._set_status(tr('正在本机比较独立语音样本，完成后可试听并确认候选。'))
+        self._voiceprint_timer.start()
+
+        def work():
+            try:
+                if identity.get('sha256'):
+                    digest = hashlib.sha256()
+                    with media.open('rb') as stream:
+                        for block in iter(lambda:stream.read(2*1024*1024), b''):
+                            if cancel.is_set():
+                                return
+                            digest.update(block)
+                    if digest.hexdigest().lower() != str(identity['sha256']).lower():
+                        raise ValueError('素材内容与识别时不一致')
+                from ..recognition.scoped_voiceprint import analyze_samples, decode_sample_windows
+                parts = decode_sample_windows(media,samples,ffmpeg=ffmpeg,cancel_check=cancel.is_set)
+                report = analyze_samples(rows,samples,parts,model_dir=model,main_python=runtime,
+                                         worker_path=worker,cancel_check=cancel.is_set)
+                current = media.stat()
+                if current.st_size != stat.st_size or current.st_mtime_ns != stat.st_mtime_ns:
+                    raise ValueError('分析期间素材已变化')
+                if not cancel.is_set():
+                    mailbox.put((signature,report,''))
+            except Exception as exc:
+                if not cancel.is_set():
+                    mailbox.put((signature,None,str(exc)))
+        threading.Thread(target=work,name='speaker-voiceprint-review',daemon=True).start()
+
+    def _voiceprint_poll(self):
+        try:
+            signature, report, error = self._voiceprint_mailbox.get_nowait()
+        except queue.Empty:
+            return
+        self._voiceprint_timer.stop()
+        self.voiceprint_button.setEnabled(True)
+        from ..recognition.scoped_voiceprint import cue_signature
+        if error:
+            self._set_status(tr('声纹比对未完成：{error}。原有说话人保持不变。', error=error))
+        elif self.page.project is None or signature != cue_signature(self.page.project.cues):
+            self._set_status(tr('分析期间字幕已变化，已丢弃旧结果；请重新比对。'))
+        elif report and report.get('groups'):
+            self._voiceprint_report = report
+            bind_text(self.voiceprint_button, '查看声纹候选')
+            self.refresh()
+            self._set_status(tr('发现 {count} 组相似声纹候选；卡片的 ▶ 可试听比对样本，尚未修改工程。', count=len(report['groups'])))
+        else:
+            self._set_status(tr('没有足够一致的候选；原有说话人保持不变。'))
+
+    def _voiceprint_apply(self):
+        from ..recognition.scoped_voiceprint import apply_reviewed
+        report = self._voiceprint_report or {}
+        groups = report.get('groups') or []
+        lines = ['、'.join(self._display_name(label) for label in group) for group in groups]
+        message = tr('以下标签的多段语音较相似。请先试听；确认后会按组并入第一位，保留原文和时间，可一次撤销。')
+        message += '\n\n' + '\n'.join(lines)
+        box = QMessageBox(QMessageBox.Icon.Question, tr('确认声纹候选'), message,
+                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self)
+        apply_secondary_surface_theme(box)
+        box.button(QMessageBox.StandardButton.Yes).setText(tr('合并这些候选'))
+        box.button(QMessageBox.StandardButton.No).setText(tr('暂不合并'))
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            result = apply_reviewed(self.page.project,report)
+            command = RecoverSpeakersCommand(self.page.project,result,self.page._speaker_structure_changed)
+            command.setText(tr('校正说话人声纹'))
+            self._applying = True
+            try:
+                self._push(command)
+                if command.error:
+                    raise RuntimeError(command.error)
+            finally:
+                self._applying = False
+            self._load_snapshot()
+            self._voiceprint_report = None
+            bind_text(self.voiceprint_button, '声纹比对')
+            self.refresh()
+            self._set_status(tr('已按确认结果合并；可按 Ctrl+Z 一次撤销。'))
+        except (ValueError, KeyError, TypeError, RuntimeError) as exc:
+            self._set_status(tr('未应用声纹候选：{error}', error=str(exc)))
 
     # ------------------------------------------------------- card actions
     def _push(self, command) -> None:

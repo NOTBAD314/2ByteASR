@@ -69,7 +69,7 @@ def show_link_download(widget):
 
 
 def paste_link(page) -> bool:
-    """Studio Ctrl+V: a YouTube video link on the clipboard opens the quick
+    """Studio Ctrl+V: a video link on the clipboard opens the quick
     card; anything else is left to the focused widget (returns False)."""
     from ..media.link_choices import find_video_link
     clipboard = QApplication.clipboard()
@@ -274,7 +274,7 @@ class LinkDownloadController(QObject):
             raise ValueError("当前没有工程，请选择新建工程。")
         task = make_task(catalog, directory, target=target, **options)
         if thumbnail:
-            self._thumbnails[catalog["video_id"]] = bytes(thumbnail)
+            self._thumbnails[(catalog.get("platform", "Youtube"), catalog["video_id"])] = bytes(thumbnail)
             while len(self._thumbnails) > THUMBNAIL_LIMIT:
                 self._thumbnails.pop(next(iter(self._thumbnails)))
         self.queue.add(task, proxy=proxy, cookie_file=cookie_file)
@@ -282,7 +282,7 @@ class LinkDownloadController(QObject):
         return task
 
     def thumbnail_for(self, task) -> bytes:
-        return self._thumbnails.get(task.get("video_id", ""), b"")
+        return self._thumbnails.get((task.get("platform", "Youtube"), task.get("video_id", "")), b"")
 
     def task(self, task_id):
         return next(t for t in self.queue.snapshots() if t["task_id"] == task_id)

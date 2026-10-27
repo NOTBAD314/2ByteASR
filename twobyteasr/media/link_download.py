@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 
-from .link_catalog import public_track, video_catalog, youtube_url
+from .link_catalog import public_track, video_catalog, youtube_url, media_url, safe_video_filename, YOUTUBE_HOSTS
 from .link_manifest import MANIFEST_NAME, atomic_json, file_receipt, preserve_subtitle, resolve_relative
 from .link_subtitles import MAX_BYTES
 from .link_tools import DownloadCancelled, check_cancel, ensure_tools
@@ -28,14 +28,17 @@ def redact(value) -> str:
 
 
 class LinkDownloadError(RuntimeError):
-    def __init__(self, message, category="download"):
+    def __init__(self, message, category="download", *, subtitle_related=False):
         super().__init__(redact(message))
         self.category = category
+        self.subtitle_related = subtitle_related
 
 
 def classify_error(value: str) -> LinkDownloadError:
     text = value.lower()
     cases = (
+        (("unsupported url", "no suitable extractor"), "unsupported", "下载工具暂不支持此链接，请使用单个视频的页面链接，或检查更新下载工具。"),
+        (("412", "precondition failed", "risk control"), "restricted", "网站暂时拦截了请求，请稍后重试；需要登录时可在设置选择 Cookie 文件。"),
         (("429", "too many requests", "rate-limit"), "rate_limit", "访问过于频繁，请稍后重试。"),
         (("sign in", "login", "cookies", "confirm you"), "login", "此视频需要登录验证；可在高级设置主动选择 Cookie 文件。"),
         (("private video", "not available", "403", "geo", "copyright", "members-only"), "restricted", "视频存在访问限制，请确认账号与所在区域是否可观看。"),
@@ -46,8 +49,9 @@ def classify_error(value: str) -> LinkDownloadError:
     )
     for keys, category, message in cases:
         if any(key in text for key in keys):
-            return LinkDownloadError(message, category)
-    return LinkDownloadError("下载未完成：" + redact(value[-600:]))
+            return LinkDownloadError(message, category, subtitle_related=bool(re.search(r"subtitle|caption", text)))
+    return LinkDownloadError("下载未完成：" + redact(value[-600:]),
+        subtitle_related=bool(re.search(r"subtitle|caption", text)))
 
 
 def base_arguments(tools: dict) -> list[str]:
@@ -188,6 +192,12 @@ def quick_preview(url: str, *, cancel=None, proxy="") -> dict:
     address; no cookies, nothing written. Any failure just means no preview."""
     from ..providers.network_policy import request
     from urllib.parse import urlencode
+    from urllib.parse import urlsplit
+    url = media_url(url)
+    if urlsplit(url).hostname not in YOUTUBE_HOSTS:
+        # Other extractors supply title/cover with the full result. Do not
+        # contact YouTube or fail the quick-card worker for another website.
+        return {}
     url, video = youtube_url(url)
     preview = dict(video_id=video, title="", uploader="", thumbnail=b"")
     cover = {}
@@ -224,25 +234,46 @@ class DownloadEngine:
         return self.tools
 
     def analyze(self, url, *, cancel=None, notify=None, proxy="", cookie_file=""):
-        url, video = youtube_url(url)
+        url = media_url(url)
         if notify:
             notify(dict(stage="parsing"))
         tools = self.ready(cancel, notify, proxy)
         if notify:
             notify(dict(stage="parsing"))
-        output, warnings = run_ytdlp(tools, [
-            "--skip-download", "--dump-single-json", "--", url], cancel=cancel, notify=notify,
-            proxy=proxy, cookie_file=cookie_file, timeout=180)
+        options = dict(cancel=cancel, notify=notify, proxy=proxy, cookie_file=cookie_file, timeout=180)
+        subtitle_failed = False
+        try:
+            output, warnings = run_ytdlp(tools, [
+                "--simulate", "--write-subs", "--write-auto-subs", "--flat-playlist",
+                "--dump-single-json", "--", url], **options)
+        except LinkDownloadError as exc:
+            # Some extractors fetch inline subtitles during metadata extraction
+            # and abort it if that endpoint fails. Retry once without subtitles
+            # so the available video is still offered; never hide the warning.
+            if not exc.subtitle_related:
+                raise
+            check_cancel(cancel)
+            subtitle_failed = True
+            output, warnings = run_ytdlp(tools, [
+                "--simulate", "--no-write-subs", "--no-write-auto-subs", "--flat-playlist",
+                "--dump-single-json", "--", url], **options)
         try:
             info = json.loads(output)
-            if str(info.get("id")) != video:
-                raise ValueError("视频身份与链接不一致。")
-            incomplete = any(re.search(r"(?i)subtitle|caption|po.token", warning) for warning in warnings)
-            return video_catalog(info, subtitle_warning=incomplete)
+            if not isinstance(info, dict):
+                raise ValueError("下载器没有返回单个视频信息。")
+            incomplete = subtitle_failed or any(re.search(r"(?i)warning|error", warning) and
+                re.search(r"(?i)subtitle|caption|po.token", warning) for warning in warnings)
+            return video_catalog(info, subtitle_warning=incomplete, source_url=url)
         except (ValueError, KeyError, TypeError) as exc:
             raise LinkDownloadError(f"视频信息解析失败：{exc}", "parse") from exc
 
     def _subtitle_bytes(self, representation, *, cancel, proxy, cookie_file):
+        check_cancel(cancel)
+        if isinstance(representation.get("data"), str):
+            raw = representation["data"].encode("utf-8")
+            if len(raw) > MAX_BYTES:
+                raise LinkDownloadError("字幕超过 32 MiB。", "parse")
+            return raw
         from ..providers.network_policy import request
         kwargs = dict(stream=True, timeout=(15, 20), headers=representation.get("http_headers") or {})
         if proxy:
@@ -264,17 +295,18 @@ class DownloadEngine:
 
     def download(self, task: dict, *, cancel=None, notify=None, proxy="", cookie_file="", subtitles_only=False):
         """Retry starts by re-extracting signed endpoints; output resumes in the same task directory."""
-        if youtube_url(task["url"])[1] != task["video_id"]:
-            raise LinkDownloadError("任务视频身份与来源链接不一致。", "identity")
+        media_url(task["url"])
+        platform = task.get("platform") or "Youtube"  # existing persisted tasks
         root = Path(task["directory"]).resolve()
         root.mkdir(parents=True, exist_ok=True)
         manifest_path = root/MANIFEST_NAME
         manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else dict(
-            version=1, task_id=task["task_id"], platform="Youtube", video_id=task["video_id"],
+            version=1, task_id=task["task_id"], platform=platform, video_id=task["video_id"],
             source_url=task["url"], title=task.get("title", task["video_id"]), media=None, subtitles=[],
             primary_track_id=task.get("primary_track_id", ""), translation_track_id=task.get("translation_track_id", ""),
             timing_basis="media_elapsed_ms", container_offset_applied=False, stages=[], errors=[])
-        if manifest["task_id"] != task["task_id"] or manifest["video_id"] != task["video_id"]:
+        if (manifest["task_id"] != task["task_id"] or manifest["video_id"] != task["video_id"]
+                or manifest.get("platform", "Youtube").lower() != platform.lower()):
             raise LinkDownloadError("任务目录身份不一致，未覆盖文件。", "identity")
         manifest["errors"] = []
         begun = time.monotonic()
@@ -299,6 +331,12 @@ class DownloadEngine:
 
         try:
             catalog = self.analyze(task["url"], cancel=cancel, notify=event, proxy=proxy, cookie_file=cookie_file)
+            def check_identity(value):
+                if (value["video_id"] != task["video_id"] or
+                        value.get("platform", "Youtube").lower() != platform.lower()):
+                    raise LinkDownloadError("视频或分 P 身份已变化，请重新解析；未下载或混用其他视频的字幕。", "identity")
+            check_identity(catalog)
+            manifest["subtitle_status"] = catalog.get("subtitle_status", "incomplete")
             manifest["tools"] = self.ready()["versions"]
             audio_only = task["mode"] == "audio"
             wanted_formats = [str(task.get(k) or "") for k in ("video_format", "audio_format")]
@@ -321,7 +359,7 @@ class DownloadEngine:
                 event(dict(stage="downloading"))
                 output, _ = run_ytdlp(self.ready(), ["--no-write-subs", "--no-write-auto-subs",
                     "--format", format_ids, "--continue", "--no-overwrites", "--windows-filenames",
-                    "--output", str(root).replace("%", "%%")+"/"+task["video_id"]+".%(ext)s",
+                    "--output", str(root).replace("%", "%%")+"/"+safe_video_filename(task["video_id"])+".%(ext)s",
                     # Native JSON keeps missing fields valid (individual templates
                     # otherwise emit bare NA). run_ytdlp whitelists numeric fields.
                     "--progress-template", "download:2BYTE_PROGRESS:%(progress)j",
@@ -353,6 +391,7 @@ class DownloadEngine:
                     for attempt in range(2):
                         if attempt:
                             catalog = self.analyze(task["url"], cancel=cancel, notify=event, proxy=proxy, cookie_file=cookie_file)
+                            check_identity(catalog)
                         track = next((t for t in catalog["tracks"] if t["track_id"] == track_id), None)
                         if track is None:
                             last_error = LinkDownloadError("选定字幕轨已不可用，请重新解析。", "subtitle_unavailable")
@@ -413,8 +452,9 @@ def make_task(catalog: dict, directory: str, *, mode="both", video_format="", au
     if mode == "subtitles" and not chosen:
         raise ValueError("仅字幕模式需要选择字幕。")
     task_id = uuid.uuid4().hex
-    root = Path(directory).expanduser().resolve() / (catalog["video_id"]+"-"+task_id[:12])
-    return dict(task_id=task_id, video_id=catalog["video_id"], url=catalog["url"], title=catalog["title"],
+    root = Path(directory).expanduser().resolve() / (safe_video_filename(catalog["video_id"])+"-"+task_id[:12])
+    return dict(task_id=task_id, video_id=catalog["video_id"], platform=catalog.get("platform", "Youtube"),
+        url=catalog["url"], title=catalog["title"],
         directory=str(root), mode=mode, video_format=video_format, audio_format=audio_format,
         track_ids=chosen, selected_tracks=[public_track(t) for t in catalog["tracks"] if t["track_id"] in chosen],
         primary_track_id=primary_track_id if chosen else "", translation_track_id=translation_track_id if chosen else "",

@@ -239,7 +239,7 @@ def test_manual_record_is_never_overwritten_by_ai():
     suggested = run(project, FakeProvider(), ["c0"])
     st.accept_suggestions(project, suggested)
     record = st.records_of(project)["c0"]
-    assert record["text"] == "走了！" and record["origin"] == "ai"
+    assert record["text"] == "走了！" and record["origin"] == "manual"
     assert record["previous"][0] == {**record["previous"][0], "text": "冲啊！", "origin": "manual"}
 
 

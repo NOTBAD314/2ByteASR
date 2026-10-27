@@ -38,10 +38,11 @@ def build_display_cues(revision):
     return project_display_cues(source, [StudioCue(**cue.to_dict()) for cue in revision.cues])
 
 
-def build_in_worker(revision):
+def build_in_worker(revision, *, cancel_check=None):
     """Display cues built by the shared resident worker, or None."""
     from ..system.resident_worker import shared_worker
     worker = shared_worker()
     if worker is None:
         return None
-    return worker.call("twobyteasr.rendering.caption_display_actor:build_display_cues", wire_revision(revision))
+    return worker.call("twobyteasr.rendering.caption_display_actor:build_display_cues", wire_revision(revision),
+                       cancel_check=cancel_check)

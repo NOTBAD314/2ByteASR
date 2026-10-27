@@ -258,6 +258,16 @@ def _model_stage_summary(legacy):
     return summarize_model_events(events)
 
 
+def _timing_owners(segments):
+    """Report the owners actually attached to the assembled segments."""
+    counts = {}
+    for segment in segments:
+        owner = str(getattr(segment, 'final_timing_owner', '') or 'unknown')
+        counts[owner] = counts.get(owner, 0) + 1
+    counts = dict(sorted(counts.items()))
+    return (' + '.join(counts) if counts else 'unknown'), counts
+
+
 def _record_fused_review_classification(
     legacy, segments, *, firered_selected, firered_failed, qwen_selected, qwen_failed
 ):
@@ -1260,6 +1270,43 @@ def _speaker_group_signal(chunk, local_speaker, chunk_index, chunk_count, audio_
     signal = np.concatenate(pieces)
     peak = float(np.max(np.abs(signal)))
     return signal / max(peak, 1e-4)
+
+
+def review_scoped_voiceprints(cues, audio, legacy, context, paths, processing, audit_branch):
+    """Keep anonymous labels on failure; save only reviewable comparison evidence."""
+    from twobyteasr.recognition.service import CancelledError
+    token = getattr(context, 'cancellation_token', None)
+    cancelled = lambda: bool(getattr(token, 'is_cancelled', False))
+    try:
+        from twobyteasr.recognition.scoped_voiceprint import analyze_audio, sample_windows
+        windows = sample_windows(cues)
+        if cancelled():
+            raise CancelledError('声纹分析已取消')
+        if len({item['label'] for item in windows}) < 2:
+            legacy.record_run_event('recognition_branch_skipped', branch='voiceprint',
+                                    reason='insufficient_request_scoped_speech_samples')
+            return
+        audit_branch('voiceprint')
+        worker = os.path.join(legacy.SCRIPT_DIR, 'workers', 'speaker_embed_worker.py')
+        if not os.path.isfile(worker):
+            worker = os.path.join(legacy.SCRIPT_DIR, 'speaker_embed_worker.py')
+        review = analyze_audio(cues, audio, model_dir=paths['speaker_embedding'],
+            main_python=paths['main_python'], worker_path=worker, cancel_check=cancelled)
+        if cancelled():
+            raise CancelledError('声纹分析已取消')
+        processing['voiceprint_review'] = review
+        legacy.record_run_event('scoped_voiceprint_review', groups=review.get('groups', []),
+            samples=sum(review.get('sample_counts', {}).values()),
+            excluded=review.get('excluded', {}), conflicts=len(review.get('conflicts', [])),
+            identity_confirmed=False, text_transcription_repeated=False)
+    except CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - preserve original scoped labels on failure
+        processing['voiceprint_review'] = {'status':'unavailable', 'reason':str(exc)[:300]}
+        legacy.record_run_event('scoped_voiceprint_unavailable', error=str(exc)[:300],
+                                original_labels_retained=True)
+        legacy.add_review_item(0.0, '跨片声纹待复核', '声纹比对未完成，已保留原始标签；可在说话人管理中试听和重试。',
+                               priority=2, severity='warning')
 
 
 def _compute_chunk_speaker_embeddings(chunks, shared_audio, audio_seconds, legacy):
@@ -2640,12 +2687,12 @@ def select_host_speakers(
         reverse=True,
     )
     selected = ranked[:max_hosts]
-    from twobyteasr.recognition.speaker_recovery import candidate_snapshot
+    from twobyteasr.recognition.speaker_recovery import candidate_snapshot, confirmation_message
     inventory = candidate_snapshot(moss_segments, selected, requested)
     if inventory["needs_confirmation"]:
         legacy.add_review_item(
             0.0, "说话人需要确认",
-            f"检测到多个持续说话人，需要确认。请在说话人管理中试听全部 {label_source} 标签并选择主要说话人；自动筛选不代表真人身份。",
+            confirmation_message(inventory),
             priority=3,
         )
     detail = "，".join(
@@ -4528,13 +4575,11 @@ def process_media(
 
     firered_early = None
     api_overlap = False
-    from twobyteasr.subtitle_rules.language_rules import AUTO, ZH, normalize_language
-    # The Chinese recognizer may start beside the cloud transcript only while
-    # Chinese is still possible: a manual Chinese task, or Auto (the usual case;
-    # a Japanese/English result discards it below). A manual Japanese/English
-    # task never starts it: its timeline needs the transcript as the forced
-    # aligner's reference (2026-10-18: a Japanese task ran FireRed for 6 min).
-    early_chinese_timeline = normalize_language(runtime_context.requested_language) in (ZH, AUTO)
+    from twobyteasr.subtitle_rules.language_rules import ZH, normalize_language
+    # Auto cannot speculate with a full Chinese AED pass: the primary
+    # transcript decides the language first. VAD can still run alongside a
+    # whole-file API upload below. Explicit Chinese retains GPU overlap.
+    early_chinese_timeline = normalize_language(runtime_context.requested_language) == ZH
     if (primary_backend == "api" and legacy.PARALLEL_GPU_ASR
             and legacy.USE_FIRERED_BOUNDARY_REFINEMENT and legacy.FIRERED_ASR_BACKEND == "local"
             and early_chinese_timeline):
@@ -4672,7 +4717,7 @@ def process_media(
 
     # Capture before host filtering, duplicate cleanup or voiceprint relabeling.
     # This is project evidence, independent of Stage 9 cache identities.
-    from twobyteasr.recognition.speaker_recovery import candidate_snapshot
+    from twobyteasr.recognition.speaker_recovery import candidate_snapshot, confirmation_message
     runtime_context.speaker_recovery = candidate_snapshot(
         moss_payload.get("segments", []), (), runtime_context.expected_speakers, source=speaker_mode,
     ) if moss_payload.get("segments") else {}
@@ -4942,9 +4987,12 @@ def process_media(
     audit_branch("alignment")
     if primary_backend == "moss":
         audit_branch("voiceprint")
+    elif speaker_mode != 'single':
+        legacy.record_run_event('recognition_branch_deferred', branch='voiceprint',
+            reason='compare request-scoped labels after final caption grouping; review before merging')
     else:
         legacy.record_run_event("recognition_branch_skipped", branch="voiceprint",
-            reason="API primary path keeps acoustic candidates for explicit identity confirmation")
+            reason="single speaker strategy selected")
     segments = legacy.run_timed_stage(
         stage_index,
         stage_total,
@@ -5337,6 +5385,7 @@ def process_media(
     timing_ledger = TimingLedger()
     timing_ledger.checkpoint("grouped", cues, reason="captions as line breaking cut them, before the display rules")
     stage_index += 1
+    timing_owner, timing_owner_counts = _timing_owners(segments)
     cues = legacy.run_timed_stage(
         stage_index,
         stage_total,
@@ -5362,7 +5411,8 @@ def process_media(
                 "mode": "vibevoice-native-chunk-measured-words-v1" if primary_backend.startswith('vibevoice_') else "moss-outer-strict-vad-onset-firered-inner-tail200-gap500-turn-protection-v6",
                 "firered_execution": _model_stage_summary(legacy).get("firered", {}),
                 "firered_result_hash": legacy.stable_digest(firered_tokens),
-                "final_timing_owner": "VibeVoice chunks / FireRed measured words" if primary_backend.startswith('vibevoice_') else "FireRed" if not firered_failed else "MOSS_DEGRADED",
+                "final_timing_owner": timing_owner,
+                "timing_owner_counts": timing_owner_counts,
                 "upstream_artifact_hashes": {
                     "firered": legacy.stable_digest(firered_tokens),
                     "firered_primary": legacy.stable_digest(legacy.serialize_segments(segments)),
@@ -5437,6 +5487,11 @@ def process_media(
                                       timeline=str(getattr(legacy, "FIRERED_ASR_BACKEND", "") or ""))
     legacy.record_run_event("timing_ledger", evidence=saved_ledger or "",
                             stages=[row["stage"] for row in timing_ledger.stages])
+    # API speaker labels belong only to their request. Compare independent
+    # speech samples across requests, but keep the raw labels until a person
+    # reviews a candidate in Studio. A model error never loses the transcript.
+    if primary_backend != 'moss' and speaker_mode != 'single' and shared_audio is not None:
+        review_scoped_voiceprints(cues, shared_audio, legacy, runtime_context, paths, speaker_processing, audit_branch)
     save_speaker_evidence(speaker_audit_root, "final", legacy.serialize_cues(cues))
     speaker_processing['stages']['final_cues'] = label_summary(cues)
     legacy.record_run_event('speaker_identity_stages', **speaker_processing)
@@ -5467,7 +5522,7 @@ def process_media(
             runtime_context.speaker_recovery['needs_confirmation'] = True
         if runtime_context.speaker_recovery["needs_confirmation"]:
             legacy.add_review_item(
-                0.0, "说话人需要确认", "检测到多个持续说话人，需要确认；请打开说话人管理恢复候选。", priority=3,
+                0.0, "说话人需要确认", confirmation_message(runtime_context.speaker_recovery), priority=3,
             )
     return complete_media_run(
         cues=cues,
@@ -5488,7 +5543,7 @@ def process_media(
         real_three_source_cues=real_three_source_cues,
         cache_owners={
             "firered_primary": primary_backend.upper() if primary_backend.startswith('vibevoice_') else "FireRed" if not firered_failed else "MOSS_DEGRADED",
-            "final_timing": "VibeVoice chunks / FireRed measured words" if primary_backend.startswith('vibevoice_') else "FireRed" if not firered_failed else "MOSS_DEGRADED",
+            "final_timing": timing_owner,
         },
     )
 

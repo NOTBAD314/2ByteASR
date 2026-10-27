@@ -4,7 +4,7 @@ from collections import OrderedDict
 from dataclasses import asdict, dataclass, replace
 import os
 import threading
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 
 
 def revision_key(revision, width, height):
@@ -153,7 +153,7 @@ def _recipe_keys(style_id: str) -> tuple:
     return tuple(keys)
 
 
-def materialize_captions(revision, previous: MaterializedCaptions | None = None, *, full_builder=None):
+def materialize_captions(revision, previous: MaterializedCaptions | None = None, *, full_builder=None, cancel_check=None):
     """``materialize_caption_project`` that rebuilds only changed source cues.
 
     2026-10-22 (report-eb10 stage 1): every edit rebuilt all display cues
@@ -177,7 +177,12 @@ def materialize_captions(revision, previous: MaterializedCaptions | None = None,
     from ..projects.studio_revisions import thaw_json
     from ..timeline.studio_edit_sequence import source_cue_id_of
     from ..caption_style.bilingual_layout import (
-        COMPANION_SUFFIX, project_display_cues, translation_for_cue, translations_of)
+        COMPANION_SUFFIX, project_display_cues, translation_for_cue, translations_of, _check_preparation_cancelled)
+    def display_for(project, items):
+        if cancel_check is None:
+            return project_display_cues(project, items)
+        return project_display_cues(project, items, cancel_check=cancel_check)
+    _check_preparation_cancelled(cancel_check)
     from ..caption_style.speaker_names import enabled as speaker_names_enabled
     cues = revision.timeline_cues if revision.timeline_cues is not None else revision.cues
     context, per_cue, records = _caption_context(revision)
@@ -249,7 +254,7 @@ def materialize_captions(revision, previous: MaterializedCaptions | None = None,
             elif dto.effect_id in changed_effects:
                 frames_stale.add(id(dto))   # same display cues, different motion
         built = [StudioCue(**cue.to_dict()) for cue in changed]
-        groups = _group_display(project_display_cues(source, built) if built else [],
+        groups = _group_display(display_for(source, built) if built else [],
                                 [cue.id for cue in built], COMPANION_SUFFIX)
         if groups is not None:
             fresh = {id(dto): (dto, group) for dto, group in zip(changed, groups)}
@@ -267,8 +272,10 @@ def materialize_captions(revision, previous: MaterializedCaptions | None = None,
         reason = "ungroupable"
     source = _caption_source_project(revision)
     display = full_builder(revision) if full_builder is not None else None
+    _check_preparation_cancelled(cancel_check)
     if display is None:
-        display = project_display_cues(source, [StudioCue(**cue.to_dict()) for cue in cues])
+        display = display_for(source, [StudioCue(**cue.to_dict()) for cue in cues])
+    _check_preparation_cancelled(cancel_check)
     groups = None if speaker_names_enabled(source.studio_state) else _group_display(
         display, [cue.id for cue in cues], COMPANION_SUFFIX)
     entries = {} if groups is None else {id(dto): (dto, group) for dto, group in zip(cues, groups)}
@@ -349,12 +356,16 @@ class PlaybackCaptionCache(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._lock = threading.Lock()
+        # Only publication/retirement is serialized. Materialization and font
+        # work stay outside this per-cache gate, on the existing worker.
+        self._lock = threading.RLock()
         self._frames = OrderedDict()
         self._failures = OrderedDict()
         self._pending = None
         self._running = False
+        self._thread = None
         self._closed = False
+        self._stop_event = threading.Event()
         self._wake = threading.Event()
         self.prepared_count = 0
         self.rebuilt_cues = 0
@@ -362,6 +373,30 @@ class PlaybackCaptionCache(QObject):
         self.worker_builds = 0
         self._materialized = None
         self._materialized_key = None
+        if parent is not None:
+            parent.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
+        self.destroyed.connect(self.close, Qt.ConnectionType.DirectConnection)
+
+    def event(self, event):
+        # Retire while the QObject still exists, before DeferredDelete destroys
+        # the signal emitter. Parent destruction has the same gate above.
+        if event.type() == QEvent.Type.DeferredDelete:
+            self.close()
+        return super().event(event)
+
+    def _notify(self, *, key=None, cue_ids=(), error=None):
+        with self._lock:
+            if self._closed:
+                return False
+            try:
+                if error is not None:
+                    self.failed.emit(error)
+                else:
+                    self.ready.emit(key, tuple(cue_ids))
+            except RuntimeError:
+                self.close()
+                return False
+            return not self._closed
 
     def snapshot(self, revision, cue_id, width, height):
         prepared = self.prepared(revision,cue_id,width,height)
@@ -391,9 +426,17 @@ class PlaybackCaptionCache(QObject):
             self._wake.set()
             if self._running: return
             self._running = True
-        threading.Thread(target=self._work, name='caption-prepare', daemon=True).start()
+            worker = self._thread = threading.Thread(target=self._work, name='caption-prepare', daemon=True)
+        worker.start()
 
     def _work(self):
+        try:
+            self._prepare_loop()
+        finally:
+            with self._lock:
+                self._running = False
+
+    def _prepare_loop(self):
         materialized = self._materialized
         current = self._materialized_key
         carried = set()
@@ -404,7 +447,6 @@ class PlaybackCaptionCache(QObject):
                 self._pending = None
                 self._wake.clear()
                 if self._closed:
-                    self._running = False
                     return
                 if task is None: continue
             revision, ids, width, height = task
@@ -413,7 +455,11 @@ class PlaybackCaptionCache(QObject):
             try:
                 if current != key:
                     materialized, reused, reason = materialize_captions(
-                        revision, materialized, full_builder=self._full_builder(revision))
+                        revision, materialized, full_builder=self._full_builder(revision),
+                        cancel_check=self._stop_event.is_set)
+                    with self._lock:
+                        if self._closed:
+                            return
                     self.rebuilt_cues += len(materialized.project.cues) - len(reused)
                     if reason:
                         self.full_rebuilds.append(reason)
@@ -422,16 +468,17 @@ class PlaybackCaptionCache(QObject):
                         record('CAPTION_REBUILD', reason=reason, cues=len(materialized.project.cues))
                     carried = set()
                     with self._lock:
-                        if not self._closed:
-                            # A caption whose display cue was reused looks the
-                            # same in the new revision: keep its prepared frame.
-                            if current is not None and current[3:] == key[3:]:
-                                for cue_id in reused:
-                                    prepared = self._frames.get((*current, cue_id))
-                                    if prepared is not None and (*key, cue_id) not in self._frames:
-                                        self._frames[(*key, cue_id)] = prepared
-                                        carried.add(cue_id)
-                            self._materialized, self._materialized_key = materialized, key
+                        if self._closed:
+                            return
+                        # A caption whose display cue was reused looks the
+                        # same in the new revision: keep its prepared frame.
+                        if current is not None and current[3:] == key[3:]:
+                            for cue_id in reused:
+                                prepared = self._frames.get((*current, cue_id))
+                                if prepared is not None and (*key, cue_id) not in self._frames:
+                                    self._frames[(*key, cue_id)] = prepared
+                                    carried.add(cue_id)
+                        self._materialized, self._materialized_key = materialized, key
                     current = key
                 project = materialized.project
                 from ..caption_style.visual_snapshot import build_visual_cue_snapshot
@@ -483,20 +530,29 @@ class PlaybackCaptionCache(QObject):
                         ready_ids.append(cue_id)
                     except Exception as exc:
                         error = f'{type(exc).__name__}: {exc}'
+                        with self._lock:
+                            if self._closed:
+                                return
                         try:
                             fallback = basic_caption(project, cue_id, width, height, error)
                         except Exception:
                             fallback = None
                         with self._lock:
+                            if self._closed:
+                                return
                             self._failures[(*key, cue_id)] = FailedCaption(error, fallback)
                             while len(self._failures)>96:self._failures.popitem(last=False)
                         ready_ids.append(cue_id)
-                        try: self.failed.emit(f'{cue_id}: {type(exc).__name__}: {exc}')
-                        except RuntimeError: pass
-                if ready_ids and not self._closed: self.ready.emit(key, tuple(ready_ids))
+                        if not self._notify(error=f'{cue_id}: {type(exc).__name__}: {exc}'):
+                            return
+                if ready_ids and not self._notify(key=key, cue_ids=ready_ids):
+                    return
             except Exception as exc:
-                try: self.failed.emit(f'{type(exc).__name__}: {exc}')
-                except RuntimeError: pass
+                from ..caption_style.bilingual_layout import CaptionPreparationCancelled
+                if isinstance(exc, CaptionPreparationCancelled):
+                    return
+                if not self._notify(error=f'{type(exc).__name__}: {exc}'):
+                    return
 
     # Full rebuilds of projects this large go to a worker process: in process
     # they hold the GIL for ~1 ms per cue (2-3.5 s on 2090 bilingual cues).
@@ -509,11 +565,12 @@ class PlaybackCaptionCache(QObject):
             return None
         from .caption_display_actor import build_in_worker
         self.worker_builds += 1
-        return build_in_worker
+        return lambda current: build_in_worker(current, cancel_check=self._stop_event.is_set)
 
-    def close(self):
+    def close(self, *_):
         with self._lock:
             self._closed=True
+            self._stop_event.set()
             self._pending=None
             self._frames.clear()
             self._failures.clear()
@@ -521,3 +578,8 @@ class PlaybackCaptionCache(QObject):
             self._materialized=None
             self._materialized_key=None
             self._wake.set()
+
+    def worker_thread(self):
+        """Return the Python thread for asynchronous retirement, not the QObject."""
+        with self._lock:
+            return self._thread

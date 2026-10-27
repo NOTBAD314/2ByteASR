@@ -92,7 +92,7 @@ def observed(action, *, source="application", view=False):
         @wraps(function)
         def run(self,*args,**kwargs):
             if recorder() is None:return function(self,*args,**kwargs)
-            page=getattr(self,"page",self)
+            page=getattr(self,"page",getattr(self,"_page",self))
             if view:
                 # StateDelta already owns the command/transaction. Keep its ID
                 # and one resulting view, instead of serializing four copies.

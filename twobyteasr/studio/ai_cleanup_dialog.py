@@ -26,16 +26,16 @@ import queue
 import threading
 import unicodedata
 
-from PySide6.QtCore import QObject, Qt, QTimer
-from PySide6.QtWidgets import (QApplication, QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QListView,
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, QTimer
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QListView,
                                QListWidget, QListWidgetItem, QProgressBar, QPushButton, QSizePolicy, QVBoxLayout,
                                QWidget)
 
 from ..diagnostics.studio_events import observed
 from ..i18n import bind_text, tr
 from .studio_find_replace import (PREVIEW_HTML_ROLE, PreviewBinding, _PreviewRowDelegate, _TextPreviewDialog,
-                                  _preview_colors, apply_occurrences, occurrence_conflicts)
-from .studio_text_tools import clock_ms, scope_cue_ids
+                                  _preview_colors, occurrence_conflicts)
+from .studio_text_tools import clock_ms, scope_cue_ids, values_from_occurrences
 
 ROW_ROLE = Qt.ItemDataRole.UserRole + 5      # ("ai" | "local", index)
 KIND_ROLE = Qt.ItemDataRole.UserRole + 6     # "break" | "delete" | "text"
@@ -166,20 +166,38 @@ class _Runner(QObject):
         super().__init__(dialog)
         self.dialog = dialog
         self.mailbox = queue.SimpleQueue()
+        self.closed = threading.Event()
+        self.delivery_lock = threading.Lock()
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.poll)
         self.timer.start()
-        dialog.finished.connect(lambda *_: self.cancel())
+        dialog.finished.connect(self.cancel)
         QApplication.instance().aboutToQuit.connect(self.cancel)
 
-    def cancel(self):
+    def cancel(self, *_):
         self.dialog._cleanup_cancel.set()
+        self.dialog._run_generation += 1
+        self.dialog._closed = True
+        with self.delivery_lock:
+            self.closed.set()
+            while not self.mailbox.empty():
+                self.mailbox.get_nowait()
         self.timer.stop()
+        # Closed parent-owned dialogs can outlive their modal exec(). Release
+        # large preview/project references and discard delayed worker payloads.
+        self.dialog._preview_hits = []
+        self.dialog._local_splices = []
+        self.dialog._preview_binding = None
+        self.dialog._project = None
 
     def start(self, source, ids, local, options, settings):
         cancel = self.dialog._cleanup_cancel
         mailbox = self.mailbox
+        closed = self.closed
+        delivery_lock = self.delivery_lock
+        generation = self.dialog._run_generation
+        self.timer.start()
         # Imported before the thread starts: an importing thread waits for the
         # interpreter lock after every file it reads.
         from ..media.link_download import redact
@@ -188,28 +206,38 @@ class _Runner(QObject):
         from ..timeline.caption_tidy import plan_caption_tidy
         from . import link_caption_cleanup as module   # tests replace its request_text_cleanup
 
+        def send(message):
+            with delivery_lock:
+                if not closed.is_set():
+                    mailbox.put((generation, message))
+
         def progress(state):
-            mailbox.put(("progress", state))
+            send(("progress", state))
 
         def work():
             try:
                 if local:
                     plan = plan_caption_tidy(source, ids, labels="labels" in local, regroup="regroup" in local)
-                    mailbox.put(("local", plan))
+                    send(("local", plan))
                 hits, error = None, ""
                 if options and not cancel.is_set():
                     hits = module.request_text_cleanup(source, ids, options, settings, cancel_check=cancel.is_set,
                                                        progress=progress)
                     error = redact(hits.error) if getattr(hits, "error", "") else ""
-                mailbox.put(("done", hits, error))
+                send(("done", hits, error))
             except Exception as exc:
-                mailbox.put(("failed", redact(exc)))
+                send(("failed", redact(exc)))
 
         threading.Thread(target=work, daemon=True, name="caption-cleanup").start()
 
     def poll(self):
-        while not self.mailbox.empty():
-            self.dialog._message(self.mailbox.get())
+        # A long batch must not monopolize the GUI when its progress arrives.
+        for _ in range(64):
+            try:
+                generation, message = self.mailbox.get_nowait()
+            except queue.Empty:
+                break
+            self.dialog._message(message, generation=generation)
 
 
 class AiCleanupDialog(_TextPreviewDialog):
@@ -228,7 +256,12 @@ class AiCleanupDialog(_TextPreviewDialog):
         self._no_word_times = False
         self._cleanup_running = False
         self._cleanup_cancel = threading.Event()
+        self._run_generation = 0
+        self._applying = False
+        self._closed = False
         project = page.session.project if page is not None else None
+        self._project = project
+        self._session_generation = getattr(page.session, "generation", None) if page is not None else None
         imported = bool(project and project.studio_state.get("link_imports"))
         downloads = imported or self._download_defaults
         outer = QVBoxLayout(self)
@@ -296,6 +329,24 @@ class AiCleanupDialog(_TextPreviewDialog):
         cards.setColumnStretch(0, 1)
         cards.setColumnStretch(1, 1)
         body.addLayout(cards)
+
+        translation = QHBoxLayout()
+        translation.addWidget(QLabel(tr("译文语言")))
+        self.translation_target = QComboBox()
+        self.translation_target.setObjectName("cleanupTranslationTarget")
+        from ..subtitle_rules.language_rules import project_language
+        from ..subtitle_rules.subtitle_translation import TARGET_LABELS, targets_for
+        for target in targets_for(project_language(project) if project is not None else ""):
+            self.translation_target.addItem(TARGET_LABELS[target], target)
+        self.translation_target.setCurrentIndex(max(0, self.translation_target.findData("zh-Hans")))
+        translation.addWidget(self.translation_target)
+        self.translation_button = QPushButton(tr("翻译当前范围…"))
+        self.translation_button.setObjectName("cleanupGhost")
+        self.translation_button.clicked.connect(self._open_translation)
+        bind_text(self.translation_button, "在翻译窗口中确认并开始；译文与原文分开保存，可一次撤销。", property="toolTip")
+        translation.addWidget(self.translation_button)
+        translation.addStretch(1)
+        body.addLayout(translation)
 
         self.progress_box = QFrame()
         self.progress_box.setObjectName("cleanupProgress")
@@ -441,6 +492,12 @@ class AiCleanupDialog(_TextPreviewDialog):
         from .studio_text_tools import SCOPE_ALL
         return str(self.ai_scope.currentData() or SCOPE_ALL)
 
+    def _preview_item_clicked(self, item) -> None:
+        from shiboken6 import isValid
+        if (self._owns_project() and not self._applying and self._preview_binding is not None
+                and item is not None and isValid(item)):
+            super()._preview_item_clicked(item)
+
     def _ai_options(self) -> list[str]:
         options = []
         for key, _label, wanted in AI_STEPS:
@@ -451,9 +508,36 @@ class AiCleanupDialog(_TextPreviewDialog):
     def _local_steps(self) -> set[str]:
         return {key for key, box in self.local_boxes.items() if box.isChecked() and box.isEnabled()}
 
+    def _owns_project(self) -> bool:
+        from shiboken6 import isValid
+        return (not self._closed and isValid(self._page)
+                and not getattr(self._page, "_close_requested", False)
+                and self._page.session.project is self._project
+                and getattr(self._page.session, "generation", None) == self._session_generation)
+
+    def _open_translation(self) -> None:
+        if self._cleanup_running or self._applying or not self._owns_project():
+            return
+        page, project = self._page, self._project
+        generation = self._session_generation
+        ids = tuple(scope_cue_ids(page, self._current_scope()))
+        target = str(self.translation_target.currentData())
+        if not ids:
+            bind_text(self.status_label, "当前范围没有字幕可翻译。")
+            return
+        # End the cleanup's modal loop before presenting the existing translator.
+        # This is navigation only; sending the request remains its Start button.
+        self.accept()
+        def open_current():
+            if (page.session.project is project
+                    and getattr(page.session, "generation", None) == generation
+                    and not getattr(page, "_close_requested", False)):
+                page._open_translation_dialog(scope="selected", cue_ids=ids, target=target)
+        QTimer.singleShot(0, page, open_current)
+
     def _do_ai_preview(self) -> None:
         project = self._page.session.project
-        if project is None or self._cleanup_running:
+        if project is None or self._cleanup_running or self._applying or not self._owns_project():
             return
         local = self._local_steps()
         options = self._ai_options()
@@ -474,10 +558,13 @@ class AiCleanupDialog(_TextPreviewDialog):
         self._local_splices = []
         self._local_used = local
         self._no_word_times = False
-        self.preview.clear()
+        self._clear_rows()
+        self._run_generation += 1
         self._cleanup_running = True
         self._cleanup_cancel = threading.Event()
         self.ai_run_button.setEnabled(False)
+        self.translation_button.setEnabled(False)
+        self.all_button.setEnabled(False)
         self.progress.setRange(0, 0)
         self.progress.setVisible(bool(options))
         self.cancel_button.show()
@@ -489,7 +576,10 @@ class AiCleanupDialog(_TextPreviewDialog):
         self._cleanup_cancel.set()
         bind_text(self.status_label, "正在取消…")
 
-    def _message(self, message) -> None:
+    def _message(self, message, *, generation=None) -> None:
+        if ((generation is not None and generation != self._run_generation)
+                or not self._owns_project()):
+            return
         kind = message[0]
         if kind == "progress":
             if not self._cleanup_cancel.is_set():
@@ -500,6 +590,9 @@ class AiCleanupDialog(_TextPreviewDialog):
                           done=state["done"], total=state["total"], found=state["found"])
             return
         if kind == "local":
+            if self._preview_binding is None or not self._preview_binding.matches(self._project):
+                self._cleanup_cancel.set()
+                return
             plan = message[1]
             self._local_splices = list(plan.splices)
             # Projects imported before word times were kept (before 2026-10-26)
@@ -510,6 +603,7 @@ class AiCleanupDialog(_TextPreviewDialog):
         # "done" or "failed": the run is over.
         self._cleanup_running = False
         self.ai_run_button.setEnabled(True)
+        self.translation_button.setEnabled(True)
         self.progress.hide()
         self.cancel_button.hide()
         if kind == "failed":
@@ -520,7 +614,7 @@ class AiCleanupDialog(_TextPreviewDialog):
         project = self._page.session.project
         if project is None or self._preview_binding is None or not self._preview_binding.matches(project):
             self._preview_hits, self._local_splices = [], []
-            self.preview.clear()
+            self._clear_rows()
             self._refresh_status()
             bind_text(self.status_label, "工程或字幕已改变，旧校对预览未应用。")
             return
@@ -627,7 +721,7 @@ class AiCleanupDialog(_TextPreviewDialog):
     def _checked_rows(self):
         for row in range(self.preview.count()):
             item = self.preview.item(row)
-            if item.checkState() == Qt.CheckState.Checked:
+            if item is not None and item.checkState() == Qt.CheckState.Checked:
                 yield item.data(ROW_ROLE)
 
     def _checked_hits(self):
@@ -651,7 +745,7 @@ class AiCleanupDialog(_TextPreviewDialog):
             counts[self.preview.item(row).data(KIND_ROLE)] += 1
         for key, label in FILTERS:
             self.filter_buttons[key].setText(f"{tr(label)} {counts[key]}" if total else tr(label))
-        self.all_button.setEnabled(bool(chosen) and not self._cleanup_running)
+        self.all_button.setEnabled(bool(chosen) and not self._cleanup_running and not self._applying and not self._closed)
         if chosen:
             bind_text(self.all_button, "应用 {count} 处", count=chosen)
         else:
@@ -669,6 +763,11 @@ class AiCleanupDialog(_TextPreviewDialog):
         self._apply_checked()
 
     def _apply_checked(self) -> None:
+        from ..diagnostics.event_log import emit, exception_info
+        from ..projects.studio_runtime_state import state_for
+        if self._applying or self._cleanup_running or not self._owns_project():
+            emit("cleanup.apply", stage="rejected_lifecycle", result="skipped")
+            return
         project = self._page.session.project
         if self._preview_binding is None or project is None or not self._preview_binding.matches(project):
             self.status_label.setText(tr("工程或文字已改变，请重新预览；本次没有修改字幕。"))
@@ -681,36 +780,55 @@ class AiCleanupDialog(_TextPreviewDialog):
         if occurrence_conflicts(hits):
             self.status_label.setText(tr("同一位置选中了不同候选，请只保留一个后再应用；本次没有修改字幕。"))
             return
-        stack = self._page.session.undo_stack
-        total = cue_count = tidied = 0
-        stack.beginMacro(tr(self._title))
+        binding = self._preview_binding
+        self._applying = True
+        self.all_button.setEnabled(False)
+        self.ai_run_button.setEnabled(False)
+        self.translation_button.setEnabled(False)
         try:
-            if hits:
-                total, cue_count = apply_occurrences(self._page, hits, title=self._title,
-                                                     binding=self._preview_binding)
-            if splices:
-                from ..timeline.caption_tidy import TidyPlan, apply_caption_tidy, plan_caption_tidy
-                edited = {hit.cue_id for hit in hits} if total else set()
-                keep = [s for s in splices if not edited & {cue.id for cue in s.removed}]
-                # A caption the AI just edited is planned again on its new text,
-                # so the AI change stays inside the re-broken captions; the rest
-                # apply as shown (AI edits never change the caption count).
-                again = [cue.id for s in splices if s not in keep for cue in s.removed]
-                if again:
-                    keep += plan_caption_tidy(project, again, labels="labels" in self._local_used,
-                                              regroup="regroup" in self._local_used).splices
-                if apply_caption_tidy(stack, project, TidyPlan(splices=keep), getattr(self._page, "_changed", None),
-                                      label=tr("本地整理")):
-                    tidied = len(splices)
+            emit("cleanup.apply", stage="validate", result="started", project_id=project.project_id,
+                 revision_before=state_for(project).revision, ai_changes=len(hits), local_changes=len(splices))
+            from ..timeline.caption_tidy import prepare_cleanup_command
+            values = values_from_occurrences(project, hits, strict=True)
+            command = prepare_cleanup_command(
+                project, values, splices, self._local_used, getattr(self._page, "_changed", None), label=tr(self._title))
+            total, cue_count = len(hits) + len(splices), len(values)
+            if not self._owns_project() or not binding.matches(project):
+                raise ValueError(tr("工程或文字已改变，整批清理没有应用。"))
+            self._preview_binding = None  # Reentrant/rapid apply cannot submit these rows again.
+            emit("cleanup.apply", stage="push", result="started", project_id=project.project_id)
+            outcome = command.outcome
+            self._page.session.undo_stack.push(command)
+            if not outcome["applied"]:
+                raise outcome["error"] or RuntimeError(tr("清理事务没有提交。"))
+            emit("cleanup.apply", stage="committed", result="completed", project_id=project.project_id,
+                 revision_after=state_for(project).revision)
+            self._after_apply(total, cue_count)
+        except Exception as exc:
+            emit("cleanup.apply", stage="failed", result="failed", level="ERROR", exception=exception_info(exc))
+            if self._owns_project() and binding.matches(project):
+                self._preview_binding = binding
+            bind_text(self.status_label, "清理没有完成：{error}", error=str(exc))
         finally:
-            stack.endMacro()
-        self._after_apply(total + tidied, cue_count)
+            self._applying = False
+            if self._owns_project():
+                self.ai_run_button.setEnabled(True)
+                self.translation_button.setEnabled(True)
+                self._refresh_status()
+
+    def _clear_rows(self) -> None:
+        # Clear item/model handles without callbacks inspecting half-deleted rows.
+        blocker = QSignalBlocker(self.preview)
+        self.preview.clear()
+        del blocker
 
     def _after_apply(self, total: int, cue_count: int) -> None:
         self._preview_hits, self._local_splices = [], []
         self._preview_binding = None
-        self.preview.clear()
+        self._clear_rows()
         self._refresh_status()
+        from ..diagnostics.event_log import emit
+        emit("cleanup.apply", stage="rows_cleared", result="completed", applied_count=total)
         if total:
             bind_text(self.status_label, "已应用 {count} 处（可 Ctrl+Z 一次撤销）", count=total)
             hint = getattr(self._page, "_show_studio_hint", None)

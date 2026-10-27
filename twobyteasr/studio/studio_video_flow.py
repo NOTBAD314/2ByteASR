@@ -2025,6 +2025,15 @@ class StudioVideoFlowMixin:
                     ):
                         return None
                 self._deferred_source_rebind = False
+            elif not getattr(self, '_explicit_project_seek', False):
+                # load(start=...) already positioned this source for the
+                # initial graph bind. A redundant seek can reach mpv before
+                # file-loaded, fail, and strand readiness on a newer epoch.
+                consume_load = getattr(self.video, 'consume_initial_load_position', None)
+                if callable(consume_load):
+                    switch_seek_posted = consume_load(
+                        source_path, int(target['source_ms']) / 1000.,
+                        project_ms=int(timeline_ms))
             self._active_video_preview_key = key
             self._active_video_preview_track_id = str(target["track_id"])
             self._active_video_preview_clip_id = str(target["clip_id"])

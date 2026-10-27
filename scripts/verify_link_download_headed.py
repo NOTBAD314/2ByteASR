@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--timeout",type=int,default=360)
     parser.add_argument("--exe",type=Path,help="Validate this frozen EXE or the daily launcher")
     parser.add_argument("--review-project",type=Path)
+    parser.add_argument("--multisite",action="store_true")
     args=parser.parse_args()
     out=args.output.resolve()
     if not out.is_relative_to(ROOT/"tmp") or out.exists():
@@ -45,6 +46,8 @@ def main():
         QT_QPA_PLATFORM="windows",PYTHONUTF8="1",HF_HUB_OFFLINE="1",TRANSFORMERS_OFFLINE="1")
     if args.review_project:
         env["TWOBYTEASR_ACCEPTANCE_SCENARIO"]="link-download-review"
+    if args.multisite:
+        env["TWOBYTEASR_ACCEPTANCE_SCENARIO"]="link-multisite"
     from isolated_windows_desktop import run_on_desktop
     command = [str(args.exe.resolve())] if args.exe else [sys.executable,"-B",str(ROOT/"quick_start.py")]
     code=run_on_desktop(command,cwd=ROOT,env=env,

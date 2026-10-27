@@ -1,8 +1,4 @@
-"""Actual pipeline scheduling: a manual Japanese/English task never launches the Chinese recognizer.
-
-Chinese and Auto tasks keep the 0.8.0 overlap with the cloud transcript (Auto is the default and
-usually Chinese); an Auto task that turns out Japanese/English discards that early result.
-"""
+"""Actual pipeline scheduling: resolve Auto before launching a Chinese AED pass."""
 from types import SimpleNamespace
 from contextlib import nullcontext
 import numpy as np
@@ -16,9 +12,9 @@ class LanguageResolved(BaseException):
 @pytest.mark.parametrize("requested,spoken,early,discarded", [
     ("ja", "今日はいい天気ですね", False, False),
     ("en", "This is an English conversation", False, False),
-    ("auto", "今日はいい天気ですね", True, True),
-    ("auto", "This is an English conversation", True, True),
-    ("auto", "今天天气真好", True, False),
+    ("auto", "今日はいい天気ですね", False, False),
+    ("auto", "This is an English conversation", False, False),
+    ("auto", "今天天气真好", False, False),
     ("zh", "今天天气真好", True, False),
 ])
 def test_cloud_primary_chinese_timeline_follows_requested_language(monkeypatch, tmp_path, requested, spoken, early,

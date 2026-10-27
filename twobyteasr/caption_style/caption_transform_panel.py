@@ -1,7 +1,7 @@
 """Numeric original/translation transforms using Studio's existing scrub fields."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSignalBlocker
+from PySide6.QtCore import QSignalBlocker, QTimer
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QToolButton, QWidget
 from ..studio.studio_widgets import ScrubDoubleSpinBox
 from ..design.studio_theme import StudioComboBox
@@ -24,6 +24,7 @@ class CaptionTransformPanel(FoldCard):
         self.setObjectName('captionTransformCard')
         self.page=page
         self._updating=False
+        self._needs_refresh=False
         self._selection=None
         self.gesture=None
         self.pending={}
@@ -124,6 +125,15 @@ class CaptionTransformPanel(FoldCard):
         width=float(project.render_settings.get('play_res_x',1920) or 1920)
         height=float(project.render_settings.get('play_res_y',1080) or 1080)
         return width/height if width and height else 16/9
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._needs_refresh:
+            QTimer.singleShot(0, self, self._refresh_if_needed)
+
+    def _refresh_if_needed(self):
+        if self._needs_refresh and self.isVisible() and not getattr(self.page, '_close_requested', False):
+            self.refresh()
 
     def targets(self):
         page=self.page
@@ -276,6 +286,7 @@ class CaptionTransformPanel(FoldCard):
 
     def refresh(self):
         if self._updating:return
+        self._needs_refresh=False
         if self.gesture is not None:
             if (self.page.project is not self._gesture_project or self.page.selected_cue_id!=self._gesture_selected
                     or self.page._revision_store.render.visual_revision!=self._gesture_revision):

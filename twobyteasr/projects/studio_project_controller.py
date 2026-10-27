@@ -389,8 +389,16 @@ class StudioProjectController:
         from PySide6.QtWidgets import QApplication
         page=self.page
         if getattr(page, "_manual_save_in_progress", False):
+            from .studio_save import defer_navigation_until_saved
+            defer_navigation_until_saved(page, lambda: self.open_project_entry(
+                path, single_shot_fn=single_shot_fn, skip_dirty_guard=skip_dirty_guard,
+                on_ready=on_ready, expected_result_ref=expected_result_ref))
             return
-        if page.isVisible() and QApplication.platformName()!='offscreen':
+        from .studio_save import cancel_navigation_after_save
+        cancel_navigation_after_save(page)
+        session = getattr(page.window(), '_studio_loading_session', None)
+        explicit_load = session is not None and session.active
+        if explicit_load or (page.isVisible() and QApplication.platformName()!='offscreen'):
             from ..studio.studio_readiness import StudioReadiness
             gate=getattr(page,'_readiness',None)
             if gate is None:gate=page._readiness=StudioReadiness(page)
@@ -700,6 +708,12 @@ class StudioProjectController:
         page._qc_full_scan_pending = False
         mark_hydration("models_timeline_speakers")
         yield '恢复工作区'
+        # The loading owner keeps Studio hidden until its current frame is
+        # ready. Size that inactive stack page before applying either saved
+        # ratios or defaults; visibility and canonical layout stay unchanged.
+        prepare_geometry = getattr(page.window(), '_prepare_hidden_studio_geometry', None)
+        if callable(prepare_geometry):
+            prepare_geometry(page, force_settle=True)
         studio_state = project.studio_state if page._studio_preferences().get("restore_layout", True) is not False else {}
         # Opening a project only reflects its saved display; no undo entry.
         from ..studio.studio_bilingual import sync_controls
@@ -1141,7 +1155,11 @@ class StudioProjectController:
         unapplied = bool(getattr(page, "_speaker_roles_pending", False))
         if hasattr(page, "speaker_manager_button"):
             (bind_text(page.speaker_manager_button, '说话人管理 · 待应用') if unapplied else (bind_text(page.speaker_manager_button, '说话人管理 · 待确认') if pending else bind_text(page.speaker_manager_button, '说话人管理')))
-            (bind_text(page.speaker_manager_button, '检测到多个持续说话人，需要确认。打开全部 MOSS 标签试听并恢复轨道。', property='toolTip') if pending else bind_text(page.speaker_manager_button, '说话人管理与 MOSS 缓存恢复', property='toolTip'))
+            if pending:
+                from ..recognition.speaker_recovery import confirmation_message
+                bind_text(page.speaker_manager_button, confirmation_message(project.generation_metadata['speaker_recovery']), property='toolTip')
+            else:
+                bind_text(page.speaker_manager_button, '说话人管理与 MOSS 缓存恢复', property='toolTip')
         page.speaker.blockSignals(True)
         page.speaker.clear()
         if project:
@@ -1183,6 +1201,12 @@ class StudioProjectController:
             with manual_save_scope(page):
                 if getattr(page, "_canvas_editor", None) is not None:
                     page._commit_canvas_inline_edit()
+                timeline = getattr(page, "timeline", None)
+                if timeline is not None and getattr(timeline, "_inline_editor", None) is not None:
+                    timeline._commit_inline_edit()
+                translation_editor = getattr(page, "translation_text", None)
+                if callable(getattr(translation_editor, "commit", None)):
+                    translation_editor.commit()
                 page._capture_studio_state()
                 page._autosave_timer.stop()
                 generation = self.session.generation
@@ -1223,3 +1247,7 @@ class StudioProjectController:
         except Exception as exc:
             page._schedule_autosave()
             message_box_fn(page, QMessageBox.Icon.Critical, "保存失败", str(exc))
+        finally:
+            finished = getattr(page, 'manual_save_finished', None)
+            if finished is not None:
+                finished.emit()

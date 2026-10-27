@@ -777,6 +777,12 @@ def transcribe_qwen_aligner_reference(audio_source, transcript_segments, *, lang
         else:
             add_review_item(0.0, "时间轴模型失败", str(exc)[:160], priority=2)
         return []
+    if not owns_audio and str(language).casefold() == 'english':
+        # Reuse is task-private and checked again against the exact PCM hash,
+        # model receipt, source text and speaker before any cue is attached.
+        context = get_runtime_context()
+        context.segment_alignment_evidence = {'audio': audio, 'payload': payload,
+                                              'language': language, 'job_id': context.job_id}
     tokens = aligner_tokens(payload)
     from .timing_evidence import save_aligner_payload
     saved = save_aligner_payload(evidence_dir, "segments", language, payload)

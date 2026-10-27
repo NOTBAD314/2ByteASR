@@ -59,6 +59,48 @@ def layout_caption(text,family,bold,size,spacing,max_width,scale_x,weight=0,styl
     return face.full_name,not reason,result,(sum(font.getmetrics())/1000*size)
 
 
+@lru_cache(maxsize=1024)
+def _font_ascent(filename, face_index, size):
+    from PIL import ImageFont
+    return ImageFont.truetype(filename, 1000, index=face_index).getmetrics()[0]/1000*size
+
+
+@lru_cache(maxsize=MEASURE_CACHE_SIZE)
+def _caption_ink_bounds(text, filename, face_index, size, spacing, line_height, ascent, line_widths, anchor_x):
+    """Actual fill bounds in design pixels, without stroke/shadow outsets.
+
+    Pillow's getbbox includes the advance of terminal punctuation/spaces; the
+    nonzero mask bounds distinguish that blank advance from visible glyphs.
+    Limit sampling to 128 px per em and cache only four floats, never bitmaps.
+    """
+    from PIL import ImageFont
+    sample_size = max(16, min(128, round(size)))
+    font = ImageFont.truetype(filename, sample_size, index=face_index)
+    scale = size/sample_size
+    baseline_correction = ascent-font.getmetrics()[0]*scale
+    widest = max(line_widths, default=0.)
+    boxes = []
+    for index, line in enumerate(text.split('\n')):
+        if not line.strip():
+            continue
+        mask, offset = font.getmask2(line, mode='L')
+        box = mask.getbbox()
+        if box is None:
+            continue
+        left_spaces = len(line)-len(line.lstrip())
+        last_visible = len(line.rstrip())-1
+        x = (widest-line_widths[index])*anchor_x
+        y = index*line_height+baseline_correction
+        boxes.append((x+(offset[0]+box[0])*scale+left_spaces*spacing,
+                      y+(offset[1]+box[1])*scale,
+                      x+(offset[0]+box[2])*scale+max(0, last_visible)*spacing,
+                      y+(offset[1]+box[3])*scale))
+    if not boxes:
+        return (0., 0., 0., 0.)
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
 @lru_cache(maxsize=MEASURE_CACHE_SIZE)
 def visible_glyph_size(text, family, bold, size, spacing, weight=0,
                        style_name='', filename='', face_index=0):
@@ -99,11 +141,14 @@ class ResolvedCaptionStyle:
     line_count: int = 1
     font_face_json: str = "{}"
     font_warning: str = ""
+    layout_json: str = "{}"
 
     @property
     def style(self):return SubtitleStyle(**json.loads(self.style_json))
     @property
     def recipe(self):return StyleRecipe.from_dict(json.loads(self.recipe_json))
+    @property
+    def layout(self):return json.loads(self.layout_json)
     @property
     def style_hash(self):
         return hashlib.sha256((self.style_json+self.recipe_json+str(self.max_width)).encode()).hexdigest()
@@ -111,7 +156,7 @@ class ResolvedCaptionStyle:
         return {**asdict(self),'style_hash':self.style_hash}
 
 
-def resolve_caption_style(styles,speakers,cue,recipes,play_res_x=1920):
+def resolve_caption_style(styles,speakers,cue,recipes,play_res_x=1920,play_res_y=None):
     from .visual_snapshot import _materialize_recipe_appearance
     visual=resolve_cue_visual_from_records(styles,speakers,cue)
     style=visual.style
@@ -130,7 +175,10 @@ def resolve_caption_style(styles,speakers,cue,recipes,play_res_x=1920):
     text=layout.text;size=style.font_size;width=round(max(layout.widths,default=0),3)
     # Pathological amounts of text retain the existing explicit split flag;
     # the common long-line case wraps without modifying cue data or size.
-    height_limit=max(1.,float(play_res_x)*9/16-2*max(32,style.margin_v))
+    # Older callers supplied only a width; keep their 16:9 default while all
+    # preview/export entry points pass the actual design canvas explicitly.
+    play_res_y = float(play_res_y if play_res_y is not None else float(play_res_x)*9/16)
+    height_limit=max(1.,play_res_y-2*max(32,style.margin_v))
     requires_split=layout.overflow or len(layout.lines)*line_height*style.scale_y/100>height_limit
     from .font_metadata import resolve_local_face
     face, warning = resolve_local_face(style.font_family, style.font_weight, style.font_style_name,
@@ -142,17 +190,51 @@ def resolve_caption_style(styles,speakers,cue,recipes,play_res_x=1920):
     else:
         recipe.typography.update(fontFamily=family,fontSize=size)
     line_count = len(layout.lines)
+    line_widths = tuple(value / max(.01, style.scale_x/100) for value in layout.widths)
+    ascent = _font_ascent(face.file, face.index, size)
+    line_heights = (line_height,) * line_count
+    line_ascents = (ascent,) * line_count
+    anchor_x = ((style.alignment-1) % 3)/2
+    ink_bounds = None
     from .text_marks import layer_marks
     marks = layer_marks(cue)
     if marks and not recipe.web_theme:
         from ..rendering.marked_glyphs import wrap_marked_text
-        text,width,line_height,line_count = wrap_marked_text(cue.text,style,marks,max_width)
+        text,width,line_height,line_count,line_widths,line_heights,line_ascents,ink_bounds = wrap_marked_text(
+            cue.text,style,marks,max_width,details=True)
         requires_split = width*style.scale_x/100 > max_width+1 or line_count*line_height*style.scale_y/100 > height_limit
+        width = round(width*style.scale_x/100, 3)
+    from .caption_text_layout import line_source_ranges
+    if ink_bounds is None:
+        ink_bounds = _caption_ink_bounds(text, face.file, face.index, size, style.spacing,
+                                         line_height, ascent, tuple(line_widths), anchor_x)
+    lines = text.split('\n')
+    ranges = line_source_ranges(cue.text, lines)
+    baseline = 0.
+    records = []
+    for index, (line, source_range) in enumerate(zip(lines, ranges)):
+        records.append(dict(source_range, text=line, widthPx=line_widths[index],
+                            baselinePx=baseline+line_ascents[index]))
+        baseline += line_height
+    layout_data = {
+        'version': 1, 'playResX': float(play_res_x), 'playResY': play_res_y,
+        'sourceLength': len(cue.text), 'displayLength': len(text),
+        'offsetUnit': 'unicode-code-point', 'lineCount': line_count,
+        'lineHeightPx': line_height, 'lines': records, 'maxWidthPx': max_width,
+        'availableHeightPx': height_limit,
+        'boundsPx': [0., 0., width, baseline*style.scale_y/100],
+        'anchorKind': 'glyph-ink', 'inkBoundsPx': list(ink_bounds),
+        'lineBoxWidthPx': max(line_widths, default=0.), 'lineBoxHeightPx': baseline,
+        'overflow': bool(requires_split),
+        'font': {**asdict(face), 'sizePx': size, 'letterSpacingPx': style.spacing,
+                 'loaded': loaded, 'warning': warning},
+    }
     recipe.layout.update(singleLine=line_count==1,maxWidthPx=max_width,fitLocked=True,
         lineCount=line_count,lineHeightPx=line_height)
     encode=lambda value:json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))
     return ResolvedCaptionStyle(encode(asdict(style)),encode(recipe.to_dict()),text,max_width,width,loaded,requires_split,
-        line_count=line_count,font_face_json=encode(asdict(face)),font_warning=warning)
+        line_count=line_count,font_face_json=encode(asdict(face)),font_warning=warning,
+        layout_json=encode(layout_data))
 
 
 def split_overlong_caption_commands(project,cue_ids,stack,changed=None):
@@ -168,7 +250,7 @@ def split_overlong_caption_commands(project,cue_ids,stack,changed=None):
         cue=next((item for item in project.cues if item.id==cue_id),None)
         if cue is None:continue
         caption=resolve_caption_style(project.styles,project.speakers,cue,project.style_recipes,
-            int(project.render_settings.get('play_res_x',1920)))
+            int(project.render_settings.get('play_res_x',1920)),int(project.render_settings.get('play_res_y',1080)))
         if not caption.requires_split or len(cue.text)<2:continue
         duration=cue.end_ms-cue.start_ms
         if duration<100:continue

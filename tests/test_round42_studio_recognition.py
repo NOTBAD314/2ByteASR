@@ -57,6 +57,37 @@ def _open_sheet(page, tmp_path) -> dict:
     return page._recognition_controls
 
 
+def test_empty_project_recognition_button_opens_sheet(monkeypatch, tmp_path):
+    page = _page(monkeypatch, tmp_path)
+    page.project.cues = []
+    media = tmp_path / 'empty-project.mp4'
+    media.write_bytes(b'fixture')
+    page.project.media.path = str(media)
+    page.project_path = tmp_path / 'empty-project.2byteproj'
+    errors = []
+    monkeypatch.setattr(sys, 'excepthook', lambda kind, value, tb: errors.append((kind, str(value))))
+    page.cue_recognize_button.click()
+    _app().processEvents()
+    assert not errors, errors
+    assert getattr(page, '_recognition_sheet', None) is not None
+    page.close_page()
+
+
+def test_recognition_sheet_rejects_reentry_and_allows_retry(monkeypatch, tmp_path):
+    page = _page(monkeypatch, tmp_path)
+    page.project.cues = []
+    controls = _open_sheet(page, tmp_path)
+    emitted = []
+    page.recognition_requested.connect(lambda action, media, project: emitted.append(action))
+    controls['start'].click()
+    controls['start'].click()
+    assert emitted == ['start_final']
+    page.fail_recognition_runtime('测试失败')
+    controls['start'].click()
+    assert emitted == ['start_final', 'start_final']
+    page.close_page()
+
+
 # ---------------------------------------------------------------- models_url
 
 

@@ -227,3 +227,75 @@ def apply_caption_tidy(stack, project, plan: TidyPlan, changed=None, *, label: s
     finally:
         stack.endMacro()
     return len(plan.splices)
+
+
+def prepare_cleanup_command(project, values, splices, local_steps=(), changed=None, *, label="AI 清理"):
+    """Validate and plan the entire chosen cleanup before touching the live project.
+
+    QUndoStack macros group history, but each child redo still emits a separate
+    project revision. A mixed AI/local cleanup therefore exposed partly edited
+    captions to render workers and could leave half an application on failure.
+    Reuse the normal text/splice rules on an isolated data copy, then publish one
+    ReplaceCuesCommand transaction, with the matching word/translation receipts.
+    """
+    from dataclasses import replace
+    from .studio_commands import BatchReplaceTextCommand, CleanupCuesCommand
+    from .studio_caption_timeline import KEY
+    from ..subtitle_rules.subtitle_translation import snapshot
+    from ..projects.studio_runtime_state import DirtyDomain, _json_snapshot, state_for
+    from ..diagnostics.event_log import context
+
+    values, splices = dict(values), list(splices)
+    lookup = {cue.id: cue for cue in project.cues}
+    if set(values) - set(lookup):
+        raise ValueError("字幕已改变，整批清理没有应用。")
+    occupied = set()
+    for splice in splices:
+        rows = project.cues[splice.index:splice.index + len(splice.removed)]
+        ids = {cue.id for cue in rows}
+        if (splice.index < 0 or not splice.removed or rows != splice.removed
+                or occupied.intersection(ids)):
+            raise ValueError("本地整理的字幕或位置已改变，请重新预览。")
+        occupied.update(ids)
+
+    # replace() copies dataclass fields only: no QObject, runtime subscribers or
+    # caches leak into the planning copy. Evidence/media are read-only here.
+    working = replace(project, cues=copy.deepcopy(project.cues),
+                      studio_state=_json_snapshot(project.studio_state),
+                      generation_metadata=_json_snapshot(project.generation_metadata),
+                      styles=copy.deepcopy(project.styles), effects=copy.deepcopy(project.effects),
+                      style_recipes=copy.deepcopy(project.style_recipes))
+    class Planner:
+        def beginMacro(self, _label): pass
+        def endMacro(self): pass
+        def push(self, command): command.redo()
+
+    # The planning project is disposable. One nested transaction avoids 33
+    # repeated copies of its several-MB metadata and 33 index rebuilds while
+    # retaining the normal splice/word/translation rules (profiled 2026-10-26).
+    with context(source="cleanup_planning", canonical=False), state_for(working).transaction(
+        working, action_id="prepare_caption_cleanup",
+        dirty=DirtyDomain.CUE_MODEL | DirtyDomain.CUE_CONTENT | DirtyDomain.PROJECT_METADATA,
+        snapshot_cues=False,
+    ):
+        if values:
+            BatchReplaceTextCommand(working, values).redo()
+        edited = set(values)
+        keep = [s for s in splices if not edited.intersection(c.id for c in s.removed)]
+        again = [cue.id for s in splices if s not in keep for cue in s.removed]
+        if again:
+            keep += plan_caption_tidy(working, again, labels="labels" in local_steps,
+                                      regroup="regroup" in local_steps).splices
+        apply_caption_tidy(Planner(), working, TidyPlan(splices=keep))
+    for cue in working.cues:
+        cue.validate()
+    if len({cue.id for cue in working.cues}) != len(working.cues):
+        raise ValueError("整理结果包含重复字幕身份，整批清理没有应用。")
+    command = CleanupCuesCommand(project, working.cues, label, changed)
+    command._translation_states = (snapshot(project), snapshot(working))
+    before = project.studio_state.get(KEY, {}).get("instances", {})
+    after = working.studio_state.get(KEY, {}).get("instances", {})
+    ids = {key for key in set(before) | set(after) if before.get(key) != after.get(key)}
+    command._merge_caption_states = ({key: copy.deepcopy(before.get(key)) for key in ids},
+                                     {key: copy.deepcopy(after.get(key)) for key in ids})
+    return command

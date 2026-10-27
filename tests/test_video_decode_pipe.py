@@ -101,6 +101,25 @@ def test_cancel_releases_decoder_and_resume_reuses_the_bounded_process(media):
         assert pipe.close()
 
 
+def test_opt_in_pixel_costs_keep_real_stage_order_and_owned_buffer(media):
+    from twobyteasr.diagnostics import playback_probe
+    token = playback_probe.configure(enabled=True, light=True)
+    pipe = VideoDecodePipe(max_size=(80, 45))
+    try:
+        pipe.request(media, 200, 1, True, 1.)
+        wait_for(lambda: pipe.snapshot().get('pts_ms') == 200)
+        frame = pipe.take_frame()
+        assert frame and frame.costs
+        assert frame.costs['raster_pixels'] == [80, 45]
+        assert frame.costs['pixel_bytes'] == len(frame.pixels) == 80*45*4
+        assert frame.decoded_at <= frame.costs['convert_started_at'] <= frame.costs['converted_at']
+        assert frame.costs['converted_at'] <= frame.published_at <= frame.write_started_at <= frame.received_at
+        assert pipe.snapshot()['pixel_cost_scope'] == 'last completed frame; not a percentile'
+    finally:
+        pipe.close()
+        playback_probe.restore(token)
+
+
 def test_pause_and_rate_changes_preserve_the_worker_epoch_and_source_progress(media):
     pipe=VideoDecodePipe(FFMPEG)
     try:

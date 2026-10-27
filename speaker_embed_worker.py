@@ -55,7 +55,7 @@ def main():
     audio = np.load(audio_npy, mmap_mode="r")
     sample_rate = int(manifest.get("sample_rate") or 16000)
     max_audio_seconds = float(manifest.get("max_audio_seconds") or 14.0)
-    overlap = float(manifest.get("chunk_overlap_seconds") or 20.0)
+    overlap = float(manifest.get("chunk_overlap_seconds", 20.0))
     audio_seconds = float(manifest.get("audio_seconds") or (len(audio) / sample_rate))
     chunks = manifest.get("chunks") or []
     chunk_count = len(chunks)
@@ -77,7 +77,9 @@ def main():
 
         encoder = EncoderClassifier.from_hparams(
             source=str(model_dir),
-            savedir=str(model_dir),
+            # SpeechBrain may materialize helper files in savedir. Keep those
+            # in the caller's temporary work directory, never the model store.
+            savedir=str(output_path.parent / "ecapa-runtime"),
             overrides={"pretrained_path": str(model_dir)},
             local_strategy=LocalStrategy.NO_LINK,
             run_opts={"device": "cpu"},

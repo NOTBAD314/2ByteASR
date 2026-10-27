@@ -93,6 +93,28 @@ def remapped_override(cue, text):
     return value
 
 
+def remap_caption_marks(source, caption, marks):
+    """Map decoration ranges through known layout insertions without guessing.
+
+    Generic edit matching must reject ambiguous repeated phrases. Layout has
+    exact source ranges, so wrapping an emphasized repeated phrase is not an
+    edit and must not silently remove its marks.
+    """
+    layout = getattr(caption, 'layout', {})
+    lines = layout.get('lines', []) if isinstance(layout, dict) else []
+    if not lines:
+        return remap_marks(source, caption.text, marks)
+    result = []
+    for mark in normalize_marks(source, marks):
+        for line in lines:
+            start = max(mark['start'], line['sourceStart'])
+            end = min(mark['end'], line['sourceEnd'])
+            if start < end:
+                result.append(dict(mark, start=line['displayStart']+start-line['sourceStart'],
+                                   end=line['displayStart']+end-line['sourceStart']))
+    return result
+
+
 def edit_marks(before, after, marks, start, end, replacement_end):
     """Rebase an editor's exact edit, including repeated identical words."""
     if before[:start]+after[start:replacement_end]+before[end:] != after:

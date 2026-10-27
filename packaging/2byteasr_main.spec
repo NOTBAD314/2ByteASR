@@ -47,6 +47,7 @@ for source, destination in (
     ("tools/ffmpeg", "tools/ffmpeg"),
     ("tools/yt-dlp", "tools/yt-dlp"),
     ("tools/mpv", "tools/mpv"),
+    ("tools/diagnostics", "tools/diagnostics"),
     # mpv's fallback Vulkan loader (2026-10-17). Installed outside tools/ so it
     # belongs to the 主程序 update component: older installs reject a tools/
     # path inside the app archive, and tools/ itself would re-download ~211 MB.

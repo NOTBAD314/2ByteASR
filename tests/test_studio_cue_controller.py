@@ -284,6 +284,34 @@ def test_10k_ctrl_a_and_bulk_delete_are_one_transaction(tmp_path, monkeypatch):
     _finish(page)
 
 
+def test_hidden_transform_panel_refreshes_current_selection_when_shown(tmp_path, monkeypatch):
+    page = _page(tmp_path, monkeypatch)
+    page.resize(1400, 850)
+    page.show()
+    page.context_stack.setCurrentWidget(page.context_drawer)
+    page.context_panel.show()
+    page.workspace_splitter.show()
+    page.context_drawer.setCurrentIndex(1)  # style tab
+    _app().processEvents()
+    panel = page.caption_transform_panel
+    assert not panel.isVisible()
+    page._select_all_timeline_cues()
+    assert panel._needs_refresh
+    page.context_drawer.setCurrentIndex(page.video_transform_tab_index)
+    QTest.qWait(100)
+    _app().processEvents()
+    parents = []
+    current = panel
+    while current is not None:
+        parents.append((current.objectName(), current.isVisible(), current.isHidden()))
+        current = current.parentWidget()
+    assert panel.isVisible(), '\n'.join(map(str, parents))
+    assert not panel._needs_refresh
+    assert panel.controls['position_x'].isEnabled()
+    assert '2' in page.video_transform_selection_label.text()
+    _finish(page)
+
+
 def test_text_translation_timing_and_speaker_keep_one_undo_each(
     tmp_path, monkeypatch
 ):

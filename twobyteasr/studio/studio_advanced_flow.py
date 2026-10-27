@@ -54,6 +54,12 @@ class StudioAdvancedFlowMixin:
     """Feature-domain mixin; host class provides widgets and state."""
 
     def _present_caption_scene(self):
+        if self.project is None or getattr(self, '_empty_playback_state', False):
+            return False
+        if not self.isVisible():
+            from .studio_readiness import owns_hidden_preparation
+            if not owns_hidden_preparation(self):
+                return False
         sample = getattr(self, '_caption_playhead_sample', None)
         revision = getattr(getattr(self, '_revision_store', None), 'render', None)
         key = (id(self.project), getattr(revision, 'visual_revision', None),
@@ -61,8 +67,6 @@ class StudioAdvancedFlowMixin:
                getattr(self, '_caption_tick_time_ms', None))
         if sample is not None and sample.get('presented_key') == key:
             return True
-        if self.project is None or not self.isVisible() or getattr(self, '_empty_playback_state', False):
-            return False
         from ..rendering.caption_scene import CaptionScene, active_cues
         milliseconds = self._caption_sample_ms()
         cues = active_cues(self, milliseconds)
@@ -78,6 +82,19 @@ class StudioAdvancedFlowMixin:
         if presented and sample is not None:
             sample['presented_key'] = key
         return presented
+
+    def _prepare_loading_subtitles(self):
+        """Prepare current pixels while the loading page owns presentation."""
+        from .studio_readiness import owns_hidden_preparation
+        if not owns_hidden_preparation(self):
+            return False
+        self._activate_selected_advanced_if_needed()
+        evidence = self.ensure_active_subtitle_renderer(reason='loading.prepare')
+        if getattr(getattr(self, '_caption_scene', None), 'active', False):
+            return True  # Readiness separately checks this scene's token/rows.
+        cue_id = str(getattr(self, '_advanced_active_cue_id', '') or '')
+        return not cue_id or bool(evidence.get('foreground_owner_cue_id') == cue_id
+            and (evidence.get('advanced_live_visible') or evidence.get('advanced_fidelity_visible')))
 
     @measured('prepare_window')
     def _prepare_caption_window(self, milliseconds, *, prepare_pixels=True):
@@ -2103,9 +2120,10 @@ class StudioAdvancedFlowMixin:
             and getattr(self, "_audio_only_subtitle_active", False)
             and not canonical_advanced
         )
+        from .studio_readiness import owns_hidden_preparation
         active = bool(
             cue
-            and self.isVisible()
+            and (self.isVisible() or owns_hidden_preparation(self))
             and not getattr(self, "_empty_playback_state", False)
             and (
                 self._selected_cue_is_at_playhead(cue)
@@ -2269,9 +2287,10 @@ class StudioAdvancedFlowMixin:
             and getattr(self, "_audio_only_subtitle_active", False)
             and not advanced
         )
+        from .studio_readiness import owns_hidden_preparation
         page_ready = bool(
             self.project
-            and self.isVisible()
+            and (self.isVisible() or owns_hidden_preparation(self))
             and not getattr(self, "_empty_playback_state", False)
         )
         canvas = getattr(self, "advanced_cue_overlay", None)

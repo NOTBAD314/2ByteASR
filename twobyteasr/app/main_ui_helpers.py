@@ -60,7 +60,9 @@ def polishing_completion_details(report):
         names = {'request_too_large': '请求超过模型预算', 'transport_length': '启动参数超限',
                  'timeout': '超时', 'rate_limited': '限流', 'authentication_required': '需要登录',
                  'permission_denied': '权限拒绝', 'request_error': '请求失败',
-                 'structured_output_truncated': '输出不完整', 'parse_failure': '输出解析失败'}
+                 'structured_output_truncated': '输出不完整', 'parse_failure': '输出解析失败',
+                 'structured_json_parse_error': '输出解析失败', 'structured_schema_error': '输出字段不符合约定',
+                 'coverage_mismatch': '字幕检查回执不完整', 'semantic_validation': '字幕编号或内容不符合约定'}
         if categories:
             reasons = '、'.join(translate('{reason} {count} 条处理记录', language).format(reason=translate(names.get(key, key), language), count=count) for key, count in categories.items())
             lines.append(translate('文字校对失败原因：{reasons}', language).format(reasons=reasons))

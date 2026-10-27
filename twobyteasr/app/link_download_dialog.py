@@ -276,7 +276,7 @@ class LinkDownloadDialog(QDialog):
         head.setContentsMargins(0, 0, 0, 4)
         head.setSpacing(4)
         title = named_label(tr("下载视频与字幕"), "linkHeroTitle")
-        note = named_label(tr("粘贴视频链接，下载完成后字幕直接进入工作台"), "linkHeroNote")
+        note = named_label(tr("支持 Bilibili、YouTube 等视频链接；尝试获取字幕并导入工作台"), "linkHeroNote")
         for label in (title, note):
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             head.addWidget(label)
@@ -288,7 +288,7 @@ class LinkDownloadDialog(QDialog):
         field.setSpacing(10)
         field.addWidget(icon_label("fa5s.link", 15, "muted"))
         self.url = QLineEdit()
-        self.url.setPlaceholderText(tr("粘贴 YouTube 单个视频链接，例如 https://www.youtube.com/watch?v=…"))
+        self.url.setPlaceholderText(tr("粘贴 Bilibili、YouTube 或其他网站的单个视频链接"))
         self.url.returnPressed.connect(self.parse)
         self.url.textChanged.connect(self._url_changed)
         field.addWidget(self.url, 1)
@@ -569,7 +569,7 @@ class LinkDownloadDialog(QDialog):
         self.title.setText(catalog["title"])
         meta = [catalog.get("uploader", ""), choices.upload_date_text(catalog.get("upload_date", "")),
                 choices.duration_text(catalog.get("duration", 0)),
-                {"youtube": "YouTube"}.get(str(catalog.get("platform", "")).lower(), catalog.get("platform", ""))]
+                {"youtube": "YouTube", "bilibili": "Bilibili"}.get(str(catalog.get("platform", "")).lower(), catalog.get("platform", ""))]
         self.meta_label.setText(" · ".join(part for part in meta if part))
         self.cover.set_image(self.thumbnail)
         self.cover.set_badge(choices.duration_text(catalog.get("duration", 0)))
@@ -599,8 +599,8 @@ class LinkDownloadDialog(QDialog):
             item.setCheckState(0, Qt.CheckState.Checked if track["track_id"] == preferred_id else Qt.CheckState.Unchecked)
             item.setToolTip(4, track["track_id"])
             self.tracks.addTopLevelItem(item)
-        messages = dict(none="此视频暂无可用字幕，仍可下载视频；之后可自行选择识别。",
-            incomplete="字幕列表获取不完整，请重试解析；仍可独立下载视频。",
+        messages = dict(none="未发现可下载字幕；画面内嵌字幕不能直接提取。仍可下载视频后选择识别。",
+            incomplete="字幕查询未完成或需要登录；可在设置选择 Cookie 文件后重试，仍可独立下载视频。",
             available="已区分人工、原语自动、自动翻译与来源待确认的字幕。")
         self.subtitle_status.setText(tr(messages[catalog["subtitle_status"]]))
         self.subtitle_status.setVisible(catalog["subtitle_status"] != "available")

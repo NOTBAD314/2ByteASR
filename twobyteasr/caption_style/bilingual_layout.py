@@ -105,11 +105,10 @@ def companion_id(cue_id: str) -> str:
 
 
 def _anchor(style, play_res_x, play_res_y):
-    if style.position_x is not None and style.position_y is not None:
-        return float(style.position_x), float(style.position_y)
     horizontal = (style.margin_l, play_res_x // 2, play_res_x - style.margin_r)
     vertical = (play_res_y - style.margin_v, play_res_y // 2, style.margin_v)
-    return float(horizontal[(style.alignment - 1) % 3]), float(vertical[(style.alignment - 1) // 3])
+    return (float(style.position_x if style.position_x is not None else horizontal[(style.alignment-1) % 3]),
+            float(style.position_y if style.position_y is not None else vertical[(style.alignment-1) // 3]))
 
 
 def _block_height(caption) -> float:
@@ -229,9 +228,18 @@ def theme_owns_translation(recipes, cue):
     return _translation_placeholder(str(theme.get('cueHtml','')))
 
 
+class CaptionPreparationCancelled(Exception):
+    """A retired preview must not return an incomplete display project."""
+
+
+def _check_preparation_cancelled(cancel_check):
+    if cancel_check is not None and cancel_check():
+        raise CaptionPreparationCancelled()
+
+
 def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], settings: BilingualSettings,
                  styles, speakers, style_recipes, play_res_x: int = 1920, play_res_y: int = 1080,
-                 show_speaker_names: bool = False) -> list:
+                  show_speaker_names: bool = False, cancel_check=None) -> list:
     """Cues to draw for ``settings`` (originals possibly adjusted, plus companions)."""
     cues = list(cues)
     from .caption_layer_transform import materialize_layer
@@ -239,10 +247,15 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
     if show_speaker_names:
         cues=constrain_layout(cues,styles,speakers,play_res_x,play_res_y)
     if settings.mode == "original" or not translations:
-        return [materialize_layer(decorate(cue, speakers) if show_speaker_names else cue,'original') for cue in cues]
+        out = []
+        for cue in cues:
+            _check_preparation_cancelled(cancel_check)
+            out.append(materialize_layer(decorate(cue, speakers) if show_speaker_names else cue, 'original'))
+        return out
     from .resolved_caption_style import resolve_caption_style
     out = []
     for cue in cues:
+        _check_preparation_cancelled(cancel_check)
         text = str(translation_for_cue(translations, cue.id) or "").strip()
         group = cue.appearance_override.get('translation_group', {})
         if group: text = str(group.get('text') or text)
@@ -256,7 +269,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
             continue
         if show_speaker_names and settings.mode == 'bilingual' and settings.order == 'original_first':
             cue = decorate(cue, speakers)
-        caption = resolve_caption_style(styles, speakers, cue, style_recipes, play_res_x)
+        caption = resolve_caption_style(styles, speakers, cue, style_recipes, play_res_x, play_res_y)
         base = caption.style
         if settings.mode == "translation":
             shown = copy.deepcopy(cue)
@@ -273,7 +286,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
         original = cue if settings.legacy else _with_transform(
             cue, font_size=cue.appearance_override.get('original', {}).get('font_size', round(base.font_size * settings.original_scale, 2)))
         original_caption = caption if settings.legacy else resolve_caption_style(
-            styles, speakers, original, style_recipes, play_res_x)
+            styles, speakers, original, style_recipes, play_res_x, play_res_y)
         companion = copy.deepcopy(cue)
         companion.id = companion_id(cue.id)
         companion.text = text
@@ -291,7 +304,7 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
         if font:
             companion.appearance_override = dict(cue.appearance_override or {}, font_family=font)
         _translation_appearance(cue, companion)
-        companion_caption = resolve_caption_style(styles, speakers, companion, style_recipes, play_res_x)
+        companion_caption = resolve_caption_style(styles, speakers, companion, style_recipes, play_res_x, play_res_y)
         x, y = _anchor(original_caption.style, play_res_x, play_res_y)
         row = (int(base.alignment) - 1) // 3          # 0 bottom, 1 middle, 2 top
         if settings.layout == "ink_v1" and not settings.legacy:
@@ -331,12 +344,13 @@ def _display_cues(cues: Iterable[Any], *, translations: Mapping[str, str], setti
 
 
 def display_cues(cues, *, translations, settings, styles, speakers, style_recipes,
-                 play_res_x=1920, play_res_y=1080, show_speaker_names=False):
+                 play_res_x=1920, play_res_y=1080, show_speaker_names=False, cancel_check=None):
     source=list(cues)
     defaults=settings.group_transform.get('defaults',{})
     if defaults:
         updated=[]
         for cue in source:
+            _check_preparation_cancelled(cancel_check)
             cue=copy.deepcopy(cue)
             layers=cue.transform.setdefault('language_layers',{})
             for language,fields in defaults.items():
@@ -346,16 +360,18 @@ def display_cues(cues, *, translations, settings, styles, speakers, style_recipe
         source=updated
     rows=_display_cues(source,translations=translations,settings=settings,styles=styles,
         speakers=speakers,style_recipes=style_recipes,play_res_x=play_res_x,play_res_y=play_res_y,
-        show_speaker_names=show_speaker_names)
+        show_speaker_names=show_speaker_names,cancel_check=cancel_check)
+    _check_preparation_cancelled(cancel_check)
     from .caption_group_transform import apply_display
     return apply_display(rows,source,settings.group_transform,styles,speakers,style_recipes,play_res_x,play_res_y)
 
 
-def project_display_cues(project, cues=None) -> list:
+def project_display_cues(project, cues=None, *, cancel_check=None) -> list:
     # The project's punctuation style (保留原文 / 添加标点 / 不加标点) applies to
     # everything drawn: live preview, ASS export and burn-in share this path.
     from ..subtitle_rules.punctuation_style import style_cues, style_translations
     from .speaker_names import enabled
+    _check_preparation_cancelled(cancel_check)
     styled = style_cues(project, cues if cues is not None else project.cues)
     from ..glossary.visual_emphasis import visual_cues, snapshot_active
     snapshot = getattr(project, '_visual_glossary_snapshot', None)
@@ -369,7 +385,7 @@ def project_display_cues(project, cues=None) -> list:
                         show_speaker_names=enabled(project.studio_state),
                         speakers=project.speakers, style_recipes=project.style_recipes,
                         play_res_x=int(project.render_settings.get("play_res_x", 1920)),
-                        play_res_y=int(project.render_settings.get("play_res_y", 1080)))
+                        play_res_y=int(project.render_settings.get("play_res_y", 1080)), cancel_check=cancel_check)
 
 
 def materialize_display_project(project):
@@ -405,7 +421,8 @@ def group_extra_for(project, cue, play_res_x: int = 1920) -> float:
     if settings.mode != "bilingual" or settings.layout != "ink_v1" or settings.legacy or not text:
         return 0.0
     from .resolved_caption_style import resolve_caption_style
-    base = resolve_caption_style(project.styles, project.speakers, cue, project.style_recipes, play_res_x).style
+    play_res_y = int(project.render_settings.get('play_res_y', 1080))
+    base = resolve_caption_style(project.styles, project.speakers, cue, project.style_recipes, play_res_x, play_res_y).style
     original = _with_transform(cue, font_size=round(base.font_size * settings.original_scale, 2))
     companion = copy.deepcopy(cue)
     companion.text = text
@@ -414,8 +431,8 @@ def group_extra_for(project, cue, play_res_x: int = 1920) -> float:
     font = _translation_font(settings, text, base)
     if font:
         companion.appearance_override = dict(cue.appearance_override or {}, font_family=font)
-    original_caption = resolve_caption_style(project.styles, project.speakers, original, project.style_recipes, play_res_x)
-    companion_caption = resolve_caption_style(project.styles, project.speakers, companion, project.style_recipes, play_res_x)
+    original_caption = resolve_caption_style(project.styles, project.speakers, original, project.style_recipes, play_res_x, play_res_y)
+    companion_caption = resolve_caption_style(project.styles, project.speakers, companion, project.style_recipes, play_res_x, play_res_y)
     em = max(float(original_caption.style.font_size), float(companion_caption.style.font_size))
     return group_extra(ink_block(original_caption), ink_block(companion_caption), settings.gap_ratio * em,
                        settings.order == "translation_first")

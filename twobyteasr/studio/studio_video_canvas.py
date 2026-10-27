@@ -14,12 +14,13 @@ import traceback
 import uuid
 from collections import deque
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from time import perf_counter
 
-from PySide6.QtCore import QElapsedTimer, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QElapsedTimer, QRect, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QMouseEvent, QPainter, QPixmap, QRegion
-from PySide6.QtWidgets import QFrame, QSizePolicy
+from PySide6.QtWidgets import QApplication, QFrame, QSizePolicy
 
 from ..timeline.media_time import MediaTimeMapping
 from ..playback.playback_clock import PlaybackClock, PlaybackPositionSnapshot, backward_replay_windows
@@ -62,9 +63,16 @@ class MpvCanvas(QFrame):
         self.setMinimumHeight(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.controller: MpvController | None = None
+        self._submitted_load_position: dict[str, object] | None = None
         self._media_path = ""
         self._navigation_visible = True
         self._navigation_generation = 0
+        self._presentation_block_reasons: set[str] = set()
+        self._presentation_saved_mask: QRegion | None = None
+        self._presentation_parent_mask_active = False
+        self._presentation_defer_depth = 0
+        self._presentation_defer_pending = False
+        self._presentation_retired = False
         self._media_attached = False
         self._clock_only = False
         self._ass_path = ""
@@ -142,6 +150,15 @@ class MpvCanvas(QFrame):
         self._seek_hold_entering = False
         self._seek_hold_token = 0
         self._embed_hwnd = 0
+        self._native_region_gate = None
+        self._native_region_token = None
+        self._native_region_result = None
+        self._native_region_attempts = 0
+        self._native_region_timer = QTimer(self)
+        self._native_region_timer.setInterval(25)
+        self._native_region_timer.timeout.connect(self._sync_native_region)
+        if sys.platform == 'win32' and QApplication.platformName() == 'windows':
+            self._replace_native_region_gate()
         self._buffered_play_timer = QTimer(self)
         self._buffered_play_timer.setInterval(10)
         self._buffered_play_timer.timeout.connect(lambda: self.set_paused(False))
@@ -208,6 +225,8 @@ class MpvCanvas(QFrame):
             "media_attached": bool(self._media_attached),
             "media_path": str(self._media_path or ""),
             "startup_state": str(self._startup_state),
+            "presentation_blocked": self.presentation_blocked,
+            "presentation_owners": sorted(self._presentation_block_reasons),
             "external_clock": self._external_clock_active(),
             "mpv_running": bool(getattr(controller, "running", False)),
             "mpv_pause": observed.get("pause"),
@@ -244,6 +263,7 @@ class MpvCanvas(QFrame):
             return
         if self.controller is not None and self.controller.running:
             return
+        self._submitted_load_position = None
         if self.controller is not None:
             try:
                 self.controller.close()
@@ -260,6 +280,7 @@ class MpvCanvas(QFrame):
         # Plain int for the stall watchdog's native probe (no Qt off-thread).
         self._embed_hwnd = int(window_id)
         self.controller.start(window_id, log_path=str(log_path))
+        self._request_native_region_sync()
         from ..diagnostics.event_log import emit
         emit("preview.controller_created", module="video_canvas", object_id=id(self),
              hwnd=window_id, parent_id=id(self.parentWidget()), backend=getattr(self.controller, "backend", "mpv"))
@@ -435,14 +456,15 @@ class MpvCanvas(QFrame):
 
     def queue_video_raster(self, image, display_rect, context):
         """Thread-safe input; geometry and publisher are prepared by the GUI."""
-        if not self._media_attached or self.controller is None:return
+        if not self._media_attached or self.controller is None:return False
         epoch=context.get('publication_epoch')
-        if epoch is None or epoch!=self._video_overlay_epoch:return
+        if epoch is None or epoch!=self._video_overlay_epoch:return False
         while self._video_fast_queue.qsize() >= 1:
             try:self._video_fast_queue.get_nowait()
             except queue.Empty:break
         self._video_fast_queue.put((int(epoch),VIDEO_OVERLAY_ID,image,
                                     display_rect,context))
+        return True
 
     def _video_overlay_publisher_run(self) -> None:
         """Write one overlay raster + post it per job, newest frame wins.
@@ -492,6 +514,7 @@ class MpvCanvas(QFrame):
                         valid_when=lambda epoch=epoch: epoch == self._video_overlay_epoch,
                         on_applied=applied,
                         on_started=lambda state=outcome:state.update(command_started=perf_counter()),
+                        on_metrics=lambda receipt, state=outcome: state.update(ipc_poll=receipt),
                         x=display_rect.x(), y=display_rect.y(),
                         width=image.width(), height=image.height(),
                         stride=image.bytesPerLine(),
@@ -505,9 +528,11 @@ class MpvCanvas(QFrame):
                     pass
                 self._video_upload_samples.append(dict(**context, overlay_id=overlay_id,
                     epoch=epoch, started=started, write_ms=(written-started)*1000,
+                    raster_queue_ms=(started-context['submitted_at'])*1000 if 'submitted_at' in context else None,
                     applied_at=outcome.get('at'), accepted=outcome.get('ok',False),
                     actor_queue_ms=(outcome['command_started']-written)*1000 if 'command_started' in outcome else None,
                     ipc_ack_ms=(outcome['at']-outcome['command_started'])*1000 if 'command_started' in outcome and 'at' in outcome else None,
+                    ipc_poll=outcome.get('ipc_poll'),
                     total_ms=(perf_counter()-started)*1000, queue_frames=self._video_fast_queue.qsize()))
                 if posted and outcome.get('ok') and epoch == self._video_overlay_epoch:
                     last_frames[overlay_id] = frame_identity
@@ -982,6 +1007,7 @@ class MpvCanvas(QFrame):
         # Opening media is a paused preview. Only a transport/audition action
         # may request playback; readiness itself must never create that intent.
         self._load_generation = getattr(self, '_load_generation', 0) + 1
+        self._submitted_load_position = None
         self._startup_play_requested = False
         self._buffered_play_pending = False
         self._buffered_play_timer.stop()
@@ -1027,9 +1053,28 @@ class MpvCanvas(QFrame):
                 )
                 snapshot = self._playback_clock.begin_seek(int(start_content * 1000))
                 self._adopt_playback_snapshot(snapshot, emit=False)
-                if not self.controller.post_load_at(
+                if self.controller.post_load_at(
                     media_path, target, generation=self._playback_clock.generation
                 ):
+                    # The first media-graph bind runs before file-loaded can
+                    # arrive. Reuse this exact submitted positioning request
+                    # once; posting a second seek can be rejected by mpv while
+                    # already advancing the actor beyond this load's ACK.
+                    media_epoch = getattr(self.controller, '_subtitle_binding_epoch', None)
+                    if media_epoch is not None:
+                        request = getattr(self._studio_page(), '_readiness', None)
+                        self._submitted_load_position = {
+                            'controller': self.controller, 'media_epoch': media_epoch,
+                            'path': os.path.normcase(os.path.realpath(media_path)),
+                            'source_target': float(target),
+                            'clock_target_ms': float(snapshot.presentation_media_ms),
+                            'generation': self._playback_clock.generation,
+                            'load_generation': self._load_generation,
+                            'navigation_generation': self._navigation_generation,
+                            'open_request': request,
+                            'open_generation': getattr(request, 'generation', None),
+                        }
+                else:
                     self.controller.load(media_path)
             self._media_attached = True
             # 控制器跨 reload 存活且 loadfile 不重置 speed：把传输速率显式
@@ -1051,9 +1096,45 @@ class MpvCanvas(QFrame):
         except (MpvUnavailableError, RuntimeError, OSError) as exc:
             self.error.emit(str(exc))
 
+    def consume_initial_load_position(self, media_path: str, seconds: float, *, project_ms: int) -> bool:
+        """Reuse one identical submitted load position, never frame readiness.
+
+        Consuming or rejecting the record is final. A new seek, source load,
+        navigation lifetime or controller cannot borrow an older request.
+        """
+        record = self._submitted_load_position
+        self._submitted_load_position = None
+        controller = self.controller
+        request = getattr(self._studio_page(), '_readiness', None)
+        if (record is None or controller is not record['controller']
+                or not controller.running or not self._media_attached
+                or getattr(controller, '_subtitle_binding_epoch', None) != record['media_epoch']
+                or self._load_generation != record['load_generation']
+                or self._navigation_generation != record['navigation_generation']
+                or request is not record['open_request']
+                or getattr(request, 'generation', None) != record['open_generation']
+                or self._playback_clock.generation != record['generation']
+                or getattr(controller, 'source_epoch', 0) > record['generation']):
+            return False
+        try:
+            path = os.path.normcase(os.path.realpath(media_path))
+            current_path = os.path.normcase(os.path.realpath(self._media_path))
+            requested = float(seconds)
+            mapped = self._content_to_source_seconds(requested)
+            target = max(0., mapped) if self._project_time_mapping_enabled else self._clamp_position(mapped)
+            clock_target = max(0, int(project_ms)) if self._project_time_mapping_enabled else requested * 1000.
+            return (math.isfinite(requested) and requested >= 0 and math.isfinite(mapped)
+                    and not (requested > 1. and mapped < 0.)
+                    and path == current_path == record['path']
+                    and math.isclose(target, record['source_target'], rel_tol=0., abs_tol=1e-6)
+                    and math.isclose(clock_target, record['clock_target_ms'], rel_tol=0., abs_tol=1e-6))
+        except (OSError, TypeError, ValueError):
+            return False
+
     def switch_media_async(self, media_path: str, ass_path: str = "") -> bool:
         """Switch the resident mpv source through the actor without GUI IPC."""
 
+        self._submitted_load_position = None
         self._clock_only = False
         source = str(Path(media_path).absolute())
         self._hold_media_cache(source)
@@ -1090,6 +1171,7 @@ class MpvCanvas(QFrame):
         纠正=用户看到的"UI 1x 画面 8x"。每次换绑后把控制器速度显式压回
         本画布的传输速率。
         """
+        self._submitted_load_position = None
         self._clock_only = False
         controller = self.controller
         post = getattr(controller, "post_load_at", None)
@@ -1142,6 +1224,7 @@ class MpvCanvas(QFrame):
     def suspend_media_async(self, *, reanchor: bool = True) -> bool:
         """Clear a gap/offline frame through the actor without blocking Qt."""
 
+        self._submitted_load_position = None
         controller = self.controller
         post = getattr(controller, "post_clear_media", None)
         if controller is None or not controller.running or not callable(post):
@@ -1186,6 +1269,7 @@ class MpvCanvas(QFrame):
 
     def enter_empty_playback_state(self) -> None:
         """Clear the current frame/subtitles while preserving the mpv process."""
+        self._submitted_load_position = None
         self._clock_only = False
         self._load_generation = getattr(self, '_load_generation', 0) + 1
         self._startup_play_requested = False
@@ -1250,15 +1334,232 @@ class MpvCanvas(QFrame):
         workspace = getattr(page, 'workspace_splitter', None)
         self.set_navigation_visible(page is None or (page.isVisible() and (workspace is None or workspace.isVisible())))
 
+    @property
+    def controller(self):
+        return getattr(self, '_controller', None)
+
+    def _replace_native_region_gate(self):
+        from .native_video_region import NativeVideoRegionGate
+        previous = getattr(self, '_native_region_gate', None)
+        if previous is not None:
+            previous.close()
+            try:
+                self.destroyed.disconnect(previous.close)
+            except (RuntimeError, TypeError):
+                pass
+        self._native_region_gate = NativeVideoRegionGate(previous.api if previous is not None else None)
+        self.destroyed.connect(self._native_region_gate.close)
+        self._native_region_token = None
+        self._native_region_result = None
+
+    @controller.setter
+    def controller(self, value):
+        previous = getattr(self, '_controller', None)
+        self._controller = value
+        if value is not None and previous is not value:
+            self._presentation_retired = False
+        gate = getattr(self, '_native_region_gate', None)
+        if previous is not value and gate is not None:
+            self._native_region_timer.stop()
+            if gate.closed and value is not None:
+                # close_player also serves reusable source-monitor canvases.
+                # A new controller gets a fresh owner; an old gate stays retired.
+                self._replace_native_region_gate()
+            else:
+                gate.reset()
+            self._native_region_token = None
+            self._native_region_result = None
+            self._request_native_region_sync()
+        elif previous is not value and hasattr(self, '_presentation_block_reasons'):
+            # A reusable Qt-only canvas has no native gate to recreate, but
+            # its new controller still owns the pending parent-mask intent.
+            self._request_native_region_sync()
+
+    @contextmanager
+    def defer_presentation_changes(self):
+        """Commit final region ownership after a page transition has painted.
+
+        Navigation generations, pause/cancel and reason membership still
+        change immediately. Only native/parent regions wait for the outer exit.
+        """
+        from shiboken6 import isValid
+        if not isValid(self):
+            raise RuntimeError('video presentation owner was destroyed')
+        if QThread.currentThread() != self.thread():
+            raise RuntimeError('video presentation ownership must change on the GUI thread')
+        self._presentation_defer_depth += 1
+        try:
+            yield self
+        finally:
+            self._presentation_defer_depth -= 1
+            if self._presentation_defer_depth == 0:
+                pending = self._presentation_defer_pending
+                self._presentation_defer_pending = False
+                # Do not call thread(), winId(), mask(), or a retired native
+                # timer on a QObject that was deleted inside the scope.
+                if pending and not self._presentation_retired and isValid(self):
+                    if QThread.currentThread() != self.thread():
+                        raise RuntimeError('video presentation commit must run on the GUI thread')
+                    self._request_native_region_sync(recheck=True)
+
+    def _defer_native_presentation_sync(self):
+        if getattr(self, '_presentation_retired', False):
+            return True
+        if getattr(self, '_presentation_defer_depth', 0):
+            self._presentation_defer_pending = True
+            return True
+        return False
+
+    def _retire_native_presentation(self):
+        self._presentation_retired = True
+        self._presentation_defer_pending = False
+        native_timer = getattr(self, '_native_region_timer', None)
+        if native_timer is not None:
+            native_timer.stop()
+        native_gate = getattr(self, '_native_region_gate', None)
+        if native_gate is not None:
+            native_gate.close()
+        self._native_region_token = self._native_region_result = None
+
+    def _sync_parent_presentation_mask(self):
+        if self._defer_native_presentation_sync():
+            return
+        gate = getattr(self, '_native_region_gate', None)
+        taken = False
+        if self.presentation_blocked and gate is not None:
+            hwnd = int(self.internalWinId() or 0)
+            taken = gate.owns_empty(self.controller, hwnd if hwnd == self._embed_hwnd else 0)
+        fallback = self.presentation_blocked and not taken
+        if fallback == self._presentation_parent_mask_active:
+            return
+        self._presentation_parent_mask_active = fallback
+        if fallback:
+            self._presentation_saved_mask = QRegion(self.mask())
+            self.setMask(QRegion(QRect(-2, -2, 1, 1)))
+        else:
+            saved, self._presentation_saved_mask = self._presentation_saved_mask, None
+            if saved is None or saved.isEmpty():
+                self.clearMask()
+            else:
+                self.setMask(saved)
+
+    def _request_native_region_sync(self, *, recheck=False):
+        if self._defer_native_presentation_sync():
+            return
+        gate = getattr(self, '_native_region_gate', None)
+        if gate is None or gate.closed:
+            self._native_region_result = None
+            self._sync_parent_presentation_mask()
+            return
+        controller = self.controller
+        process = getattr(controller, '_process', None)
+        # This is a read of an existing HWND, never winId()/native promotion.
+        hwnd = int(self.internalWinId() or 0)
+        host = hwnd if hwnd == self._embed_hwnd else 0
+        token = (id(controller), id(process), getattr(process, 'pid', None), host, self.presentation_blocked)
+        if not recheck and token == self._native_region_token:
+            self._sync_parent_presentation_mask()
+            return
+        self._native_region_token = token
+        self._native_region_result = None
+        self._native_region_attempts = 0
+        self._native_region_timer.stop()
+        self._sync_native_region()
+
+    def _sync_native_region(self):
+        if self._defer_native_presentation_sync():
+            from shiboken6 import isValid
+            if isValid(self) and isValid(self._native_region_timer):
+                self._native_region_timer.stop()
+            return
+        gate = self._native_region_gate
+        if gate is None or gate.closed:
+            self._native_region_timer.stop()
+            self._native_region_result = None
+            self._sync_parent_presentation_mask()
+            return
+        self._native_region_attempts += 1
+        hwnd = int(self.internalWinId() or 0)
+        result = gate.sync(self.controller, hwnd if hwnd == self._embed_hwnd else 0,
+                           self.presentation_blocked)
+        retry = result['retry'] and self._native_region_attempts < 120
+        if retry:
+            self._native_region_timer.start()
+        else:
+            self._native_region_timer.stop()
+        if result['retry'] and not retry:
+            result = dict(result, status='binding_timeout', retry=False)
+        # Synchronize the child first: a successful retained binding never
+        # acquires and immediately removes a temporary parent mask.
+        self._sync_parent_presentation_mask()
+        result = dict(result, empty_verified=gate.empty_verified,
+                      parent_fallback=self._presentation_parent_mask_active)
+        if result != self._native_region_result:
+            self._native_region_result = result
+            from ..diagnostics.event_log import emit
+            emit('preview.native_region_gate', module='video_canvas',
+                 reasons=sorted(self._presentation_block_reasons), attempts=self._native_region_attempts, **result)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, '_presentation_block_reasons', None):
+            self._request_native_region_sync(recheck=True)
+
+    @property
+    def presentation_blocked(self) -> bool:
+        return bool(self._presentation_block_reasons)
+
+    def set_presentation_blocked(self, reason: str, blocked: bool) -> None:
+        """Clip the retained video surface without suspending frame preparation.
+
+        Use the verified actual mpv child region on Windows. Keep the parent
+        mask as a fallback until that live child has accepted NULLREGION, and
+        on unsupported/error/retired bindings. Other backends retain the Qt gate.
+        An empty QRegion would REMOVE the mask; the nonempty region below lies
+        wholly outside the client area. No player/window is recreated, hidden,
+        reparented or paused by this presentation gate.
+
+        Each GUI owner releases only its own reason. The original mask is
+        restored after the final owner releases, including a loading/navigation
+        handoff where one reason clears while the other still holds the gate.
+        """
+        if QThread.currentThread() != self.thread():
+            raise RuntimeError('video presentation ownership must change on the GUI thread')
+        reason = str(reason).strip()
+        if not reason:
+            raise ValueError('a presentation owner reason is required')
+        reasons = self._presentation_block_reasons
+        if bool(blocked) == (reason in reasons):
+            status = (self._native_region_result or {}).get('status')
+            self._request_native_region_sync(recheck=status in {'error', 'binding_timeout', 'retired_child'}
+                or (status == 'blocked' and not getattr(self._native_region_gate, 'empty_verified', False)))
+            return
+        if blocked:
+            reasons.add(reason)
+        else:
+            reasons.discard(reason)
+        is_blocked = bool(reasons)
+        self._request_native_region_sync(recheck=True)
+        from ..diagnostics.event_log import emit
+        emit('preview.presentation_gate', module='video_canvas', blocked=is_blocked,
+             reasons=sorted(reasons), changed_owner=reason,
+             deferred=bool(self._presentation_defer_depth),
+             mask_bounds=list(self.mask().boundingRect().getRect()),
+             hwnd=getattr(self, '_embed_hwnd', 0), parent_fallback=self._presentation_parent_mask_active,
+             method='native_child_with_parent_fallback' if self._native_region_gate is not None else 'retained_canvas_region')
+
     def set_navigation_visible(self, visible: bool) -> None:
         """Suspend an inactive editor while retaining its single controller.
 
-        QWidget ownership hides the HWND. This method owns playback intent and
-        polling, including the source monitor and the in-page Library switch.
+        The presentation mask also fences native child pixels. This method
+        retains the existing playback intent and polling policy, including the
+        source monitor and the in-page Library switch.
         """
         visible = bool(visible)
+        self.set_presentation_blocked('navigation', not visible)
         if visible == self._navigation_visible:
             return
+        self._submitted_load_position = None
         self._navigation_visible = visible
         self._navigation_generation += 1
         if not visible:
@@ -1639,6 +1940,8 @@ class MpvCanvas(QFrame):
 
     def _set_startup_state(self, state: str, **details: object) -> None:
         previous, self._startup_state = self._startup_state, str(state)
+        if previous != self._startup_state:
+            self._request_native_region_sync(recheck=True)
         page = self._studio_page()
         trace = getattr(page, "_studio_trace", None)
         if callable(trace) and previous != self._startup_state:
@@ -2123,10 +2426,29 @@ class MpvCanvas(QFrame):
             self._last_mpv_time_pos_ms=float(observation['position'])*1000.
             self._adopt_playback_snapshot(snapshot,emit=False)
 
-    def _reconcile_position(self) -> None:
+    def prepare_loading_frame(self) -> bool:
+        """Consume current cached observations for the owned hidden loading gate."""
+        from .studio_readiness import owns_hidden_preparation
+        if self._navigation_visible or not owns_hidden_preparation(self._studio_page()):
+            return False
+        # load() requests both ordinary timers, but their hidden-page guards
+        # stop them. Remember that request for the real showEvent; do not run
+        # a visual playback clock or pretend this page is visible now.
+        if self._media_attached or self._clock_only:
+            timers = list(getattr(self, '_navigation_timers', None) or ())
+            for timer in (self._timer, self._sync_timer):
+                if not any(timer is previous for previous in timers):
+                    timers.append(timer)
+            self._navigation_timers = timers
+        self._reconcile_position(preparing=True)
+        return True
+
+    def _reconcile_position(self, *, preparing=False) -> None:
         if not self._navigation_visible:
-            self._sync_timer.stop()
-            return
+            from .studio_readiness import owns_hidden_preparation
+            if not preparing or not owns_hidden_preparation(self._studio_page()):
+                self._sync_timer.stop()
+                return
         page = self._studio_page()
         refresh = getattr(page, '_refresh_audio_tail_clock', None)
         if callable(refresh):
@@ -2590,6 +2912,7 @@ class MpvCanvas(QFrame):
         hold reuses the buffered-play gate that already protects play start
         and rate changes, so both clocks resume from the same anchor.
         """
+        self._submitted_load_position = None
         hold = self._should_hold_for_seek()
         if hold:
             self._seek_hold_token += 1
@@ -2948,6 +3271,8 @@ class MpvCanvas(QFrame):
 
     def detach_player_for_close(self) -> MpvController | None:
         """Stop Qt activity and detach the process owner for background shutdown."""
+        self._submitted_load_position = None
+        self._retire_native_presentation()
         self._buffered_play_pending = False
         self._buffered_play_timer.stop()
         self._timer.stop()

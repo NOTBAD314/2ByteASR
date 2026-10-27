@@ -416,17 +416,18 @@ def compile_effect_text(
         return pattern.sub(lambda match: prefix + match.group(0) + "{\\r}", escaped_text)
     if entry["type"] == "karaoke_highlight":
         units = (
-            re.findall(r"\\N|.", escaped_text, re.DOTALL)
+            re.findall(r"\\\\|\\[Nh]|.", escaped_text, re.DOTALL)
             if entry["granularity"] == "character"
-            else re.findall(r"\\N|\s+|[^\s]+", escaped_text)
+            else re.split(r"(\\\\|\\[Nh]|\s+)", escaped_text)
         )
-        visible = [unit for unit in units if unit and not unit.isspace() and unit != r"\N"]
+        whitespace = {r'\N', r'\h'}
+        visible = [unit for unit in units if unit and not unit.isspace() and unit not in whitespace]
         if not visible:
             return escaped_text
         per_unit = max(1, max(1, int(cue_duration_ms)) // 10 // len(visible))
         output = ["{\\1c" + _ass_color(entry["color"]) + "}"]
         for unit in units:
-            output.append(unit if (not unit or unit.isspace() or unit == r"\N") else f"{{\\kf{per_unit}}}{unit}")
+            output.append(unit if (not unit or unit.isspace() or unit in whitespace) else f"{{\\kf{per_unit}}}{unit}")
         output.append("{\\r}")
         return "".join(output)
     return escaped_text

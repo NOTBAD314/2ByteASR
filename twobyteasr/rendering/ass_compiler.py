@@ -76,7 +76,11 @@ def escape_ass_text(value: str) -> str:
     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\\", "\\\\")
     text = text.replace("{", "｛").replace("}", "｝")
-    return text.replace("\n", r"\N")
+    # libass trims ordinary spaces at line edges. They belong to the shared
+    # measured line advance, so encode just those edges as hard spaces.
+    lines = [re.sub(r'(^ +| +$)', lambda match: r'\h'*len(match.group()), line)
+             for line in text.split('\n')]
+    return r'\N'.join(lines)
 
 
 def _style_line(style: SubtitleStyle) -> str:
@@ -175,12 +179,11 @@ def _base_motion_tags(value, cue, style):
 
 def _style_anchor_position(
     style: SubtitleStyle, play_res_x: int, play_res_y: int
-) -> tuple[int, int]:
-    if style.position_x is not None and style.position_y is not None:
-        return style.position_x, style.position_y
+) -> tuple[float, float]:
     horizontal = (style.margin_l, play_res_x // 2, play_res_x - style.margin_r)
     vertical = (play_res_y - style.margin_v, play_res_y // 2, style.margin_v)
-    return (horizontal[(style.alignment - 1) % 3], vertical[(style.alignment - 1) // 3])
+    return (style.position_x if style.position_x is not None else horizontal[(style.alignment-1) % 3],
+            style.position_y if style.position_y is not None else vertical[(style.alignment-1) // 3])
 
 
 def _dialogue_line(
@@ -324,7 +327,7 @@ def _compile_ass_records(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     ]
     from ..caption_style.resolved_caption_style import resolve_caption_style
-    resolved_captions = {cue.id: resolve_caption_style(styles,speakers,cue,style_recipes,play_res_x) for cue in cues}
+    resolved_captions = {cue.id: resolve_caption_style(styles,speakers,cue,style_recipes,play_res_x,play_res_y) for cue in cues}
     # Positions are persisted during generation or an explicit layout edit.
     # libass receives explicit per-event positions and performs no second
     # application-level overlap allocation.
@@ -337,18 +340,17 @@ def _compile_ass_records(
         transform = thaw_json(cue.transform) or {}
         if transform.get('_canvas_transform') and ('anchor_x' in transform or 'anchor_y' in transform):
             from math import cos, sin, radians
-            from ..caption_style.resolved_caption_style import visible_glyph_size
             from ..caption_style.visual_snapshot import _anchor
             x,y,ax,ay = _anchor(authored_style,play_res_x,play_res_y)
-            width,height = visible_glyph_size(caption.text,authored_style.font_family,authored_style.bold,
-                authored_style.font_size,authored_style.spacing,authored_style.font_weight,
-                authored_style.font_style_name,authored_style.font_file,authored_style.font_face_index)
+            ink = caption.layout['inkBoundsPx']
+            width,height = ink[2]-ink[0],ink[3]-ink[1]
             dx=(ax-float(transform.get('anchor_x',ax)))*width*authored_style.scale_x/100
             dy=(ay-float(transform.get('anchor_y',ay)))*height*authored_style.scale_y/100
             angle=radians(float(transform.get('rotation',0)))
             authored_style.position_x=x+cos(angle)*dx-sin(angle)*dy
             authored_style.position_y=y+sin(angle)*dx+cos(angle)*dy
-        effective = ass_font_style(authored_style, play_res_x, play_res_y)
+        rotation = float(transform.get('rotation', 0)) * (1 if transform.get('_canvas_transform') else -1)
+        effective = ass_font_style(authored_style, play_res_x, play_res_y, layout=caption.layout, rotation=rotation)
         effective.id = f"resolved-{caption.style_hash[:20]}"
         cue_styles[cue.id] = effective
     lines.extend(_style_line(style) for style in {style.id:style for style in cue_styles.values()}.values())
@@ -367,9 +369,9 @@ def _compile_ass_records(
             style_id = candidate if candidate in known_styles else "default"
         speaker = _ass_name(cue.speaker_id, "S00")
         caption = resolved_captions[cue.id]
-        from ..caption_style.text_marks import remap_marks, layer_marks
+        from ..caption_style.text_marks import remap_caption_marks, layer_marks
         from .marked_glyphs import marked_ass_text
-        marks = remap_marks(cue.text, caption.text, layer_marks(cue))
+        marks = remap_caption_marks(cue.text, caption, layer_marks(cue))
         def escaped_text():
             return marked_ass_text(caption.text, marks, cue_styles[cue.id]) if marks else escape_ass_text(caption.text)
         text = escaped_text()

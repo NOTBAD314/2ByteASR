@@ -106,9 +106,10 @@ def test_paused_open_reconciles_cache_prepared_during_hydration():
     page = SimpleNamespace(project=SimpleNamespace(media=SimpleNamespace(path=''), cues=[object()]),
         video=SimpleNamespace(_paused=True), _caption_scene=scene, _preview_path='ready.ass',
         audio_engine=SimpleNamespace(telemetry_snapshot=lambda:{}),
-        _present_caption_scene=present)
+        _playback_buffers_ready=lambda:True, _present_caption_scene=present)
     now=time.perf_counter()
     gate = SimpleNamespace(page=page, completed={'准备播放器','准备音频'},
+        active=True,generation=1,_owns_request=lambda *a,**k:True,
         started=now,last_tick=now,profile={'gui_gaps_ms':[]},steps=None,hydrated=True,
         painted=False,TASKS=StudioReadiness.TASKS,_set_stage_label=lambda _:None)
     gate.mark=gate.completed.add

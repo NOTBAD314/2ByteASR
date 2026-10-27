@@ -203,7 +203,54 @@ def alignment_jobs(cues, *, language="Japanese", pad_ms=WINDOW_PAD_MS, speech_re
     return jobs, runs
 
 
-def attach_results(cues, runs, payload):
+def local_alignment_jobs(cues, reused_keys, *, language="English", speech_regions=None):
+    """Bound changed cues to local windows with at most one neighbor of context."""
+    _jobs, full_runs = alignment_jobs(cues, language=language, speech_regions=speech_regions)
+    runs, targets = [], set()
+    for full in full_runs:
+        members = full['members']
+        bad = {index for index, member in enumerate(members) if member['key'] not in reused_keys}
+        if not bad:
+            continue
+        targets.update(members[index]['key'] for index in bad)
+        selected = sorted({neighbor for index in bad for neighbor in (index - 1, index, index + 1)
+                           if 0 <= neighbor < len(members)})
+        groups = []
+        for index in selected:
+            if not groups or index != groups[-1][-1] + 1:
+                groups.append([index])
+            else:
+                groups[-1].append(index)
+        # A narrow gap between two affected regions must not lead to two
+        # overlapping audio windows that independently claim the same words.
+        merged = []
+        for group in groups:
+            if (merged and int(members[merged[-1][-1]]['end_ms']) + WINDOW_PAD_MS
+                    >= int(members[group[0]]['start_ms']) - WINDOW_PAD_MS):
+                merged[-1] = list(range(merged[-1][0], group[-1] + 1))
+            else:
+                merged.append(group)
+        for group in merged:
+            subset = [members[index] for index in group]
+            start, end = min(int(x['start_ms']) for x in subset), max(int(x['end_ms']) for x in subset)
+            left = max(int(full['window_start_ms']), start - WINDOW_PAD_MS)
+            right = min(int(full['window_end_ms']), end + WINDOW_PAD_MS)
+            spans, texts, cursor = [], [], 0
+            for member in subset:
+                text = str(member['text'])
+                spans.append((cursor, cursor + len(text)))
+                texts.append(text)
+                cursor += len(text) + len(RUN_SEPARATOR)
+            runs.append({'speaker': full['speaker'], 'members': subset, 'start_ms': start, 'end_ms': end,
+                         'window_start_ms': left, 'window_end_ms': right,
+                         'text': RUN_SEPARATOR.join(texts), 'spans': spans})
+    jobs = [{'id': f'run-{index}', 'window_start_ms': run['window_start_ms'],
+             'window_end_ms': run['window_end_ms'], 'text': run['text'], 'language': language}
+            for index, run in enumerate(runs, 1)]
+    return jobs, runs, targets
+
+
+def attach_results(cues, runs, payload, *, target_keys=None):
     """Attach each cue's part of its run result as ``cue.forced_alignment``."""
     by_id = {str(row.get("id")): row for row in payload.get("results") or ()}
     meta = {key: payload.get(key) for key in ("model", "model_revision", "code", "unit_policy", "dtype", "torch_version")}
@@ -213,6 +260,8 @@ def attach_results(cues, runs, payload):
         if row is None or row.get("text") != run["text"]:
             continue
         for member, part in zip(run["members"], split_run_row(row, run)):
+            if target_keys is not None and member['key'] not in target_keys:
+                continue
             cue = cues[member["key"] - 1]
             if part["text"] != str(getattr(cue, "text", "")):
                 continue
@@ -241,6 +290,61 @@ def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions
     from concurrent.futures import ThreadPoolExecutor
     from twobyteasr.recognition.asr import AlignerUnavailableError, run_qwen_aligner_worker, summarize_aligner_payload
     from twobyteasr.recognition.service import CancelledError
+    from .run_context import get_runtime_context
+    context = get_runtime_context()
+    evidence = getattr(context, 'segment_alignment_evidence', None)
+    context.segment_alignment_evidence = None  # never leak a receipt into another media item
+    reusable, reasons, targets = {}, {}, None
+    def require_current():
+        if (get_runtime_context() is not context or
+                bool(getattr(context.cancellation_token, 'is_cancelled', False))):
+            raise CancelledError('对齐任务已取消，丢弃迟到的时间证据。')
+    require_current()
+    if (isinstance(evidence, dict) and evidence.get('audio') is audio
+            and evidence.get('job_id') == context.job_id
+            and str(evidence.get('language', '')).casefold() == str(language).casefold()):
+        from .word_evidence_reuse import audio_sha256, plan_reuse
+        try:
+            reusable, reasons = plan_reuse(cues, evidence.get('payload'), language=language,
+                                           audio_digest=audio_sha256(audio), cancel_check=require_current)
+        except CancelledError:
+            raise
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            reasons = {'invalid_receipt': len(cues)}
+            legacy.record_run_event('forced_alignment_reuse_rejected', reason=type(exc).__name__)
+        require_current()
+        for key, alignment in reusable.items():
+            cues[key - 1].forced_alignment = alignment
+        original_job_count = len(jobs)
+        if reusable:
+            jobs, runs, targets = local_alignment_jobs(cues, set(reusable), language=language,
+                                                       speech_regions=speech_regions)
+        legacy.record_run_event('forced_alignment_reuse_plan', language=language,
+            source_jobs=len((evidence.get('payload') or {}).get('results') or ()),
+            reused_cues=len(reusable), reused_words=sum(x['stats']['reused_words'] for x in reusable.values()),
+            invalidated_cues=len(targets) if targets is not None else len(cues),
+            local_jobs=len(jobs), full_final_jobs=original_job_count, reasons=reasons,
+            context_cues=(sum(len(run['members']) for run in runs) - len(targets)) if targets is not None else 0)
+
+    def grade_reused(band=None):
+        if not reusable:
+            return band
+        from .boundary_grades import GRADES, POLICY, SpeechBand, grade_caption
+        band = band or SpeechBand(audio)
+        totals = {grade: 0 for grade in GRADES}
+        for key, alignment in reusable.items():
+            require_current()
+            graded = grade_caption(alignment['text'], alignment['segments'], None, band.pause)
+            alignment.update(boundaries=graded, boundary_policy=POLICY)
+            for item in graded:
+                totals[item['grade']] += 1
+        legacy.record_run_event('forced_alignment_reuse_graded', policy=POLICY,
+                                second='none', **totals)
+        return band
+
+    if not jobs:
+        grade_reused()
+        return len(reusable)
     # 2026-10-22 (user report: a 24-minute MOSS Pro task took 491 s): the
     # second opinion only needs the same jobs, not the first aligner's answer,
     # so it runs beside it (Qwen3 on the GPU while MFA runs on the CPU: 22 s).
@@ -254,7 +358,8 @@ def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions
         except AlignerUnavailableError as exc:
             legacy.add_review_item(0.0, "缺少对齐模型", str(exc), priority=3, severity="warning")
             legacy.record_run_event("forced_alignment_unavailable", stage="final_cues", reason=str(exc))
-            return 0
+            grade_reused()
+            return len(reusable)
         except CancelledError:
             raise
         except Exception as exc:
@@ -262,21 +367,25 @@ def align_final_cues(cues, audio, legacy, *, language="Japanese", speech_regions
             # their recognizer bounds and stay marked as lacking word alignment.
             legacy.add_review_item(0.0, "字级对齐失败", str(exc)[:200], priority=2, severity="warning")
             legacy.record_run_event("forced_alignment_failed", stage="final_cues", reason=str(exc)[:500])
-            return 0
-        attached = attach_results(cues, runs, payload)
+            grade_reused()
+            return len(reusable)
+        require_current()
+        attached = attach_results(cues, runs, payload, target_keys=targets)
         from .timing_evidence import save_aligner_payload
         saved = save_aligner_payload(evidence_dir, "final_cues", language, payload,
                                      runs=[{"id": f"run-{number}", "members": [m["key"] for m in run["members"]],
+                                            "targets": [m['key'] for m in run['members'] if targets is None or m['key'] in targets],
                                             "spans": run["spans"]} for number, run in enumerate(runs, 1)])
         legacy.record_run_event("forced_alignment", stage="final_cues", language=language, attached=attached,
                                 runs=len(runs), **summarize_aligner_payload(payload), **({"evidence": saved} if saved else {}))
+        band = grade_reused()
         if attached:
             matched = early is not None and _second_engine(payload) == predicted
             second = second_opinion(audio, jobs, payload, legacy, attempt=early.result() if matched else None)
             if second is not None:
                 save_aligner_payload(evidence_dir, "final_cues", language, second)
-            grade_final_cues(cues, runs, second, audio, legacy)
-        return attached
+            grade_final_cues(cues, runs, second, audio, legacy, target_keys=targets, band=band)
+        return attached + len(reusable)
     finally:
         if pool is not None:
             pool.shutdown(wait=True)  # never leave an aligner process running into the next stage
@@ -354,10 +463,10 @@ def second_opinion(audio, jobs, payload, legacy, *, attempt=None):
     return value
 
 
-def grade_final_cues(cues, runs, second, audio, legacy):
+def grade_final_cues(cues, runs, second, audio, legacy, *, target_keys=None, band=None):
     """Grade every cut position of the aligned captions (``boundary_grades``) into ``cue.forced_alignment``."""
     from .boundary_grades import GRADES, POLICY, SpeechBand, grade_caption
-    band = SpeechBand(audio)
+    band = band or SpeechBand(audio)
     by_id = {str(row.get("id")): row for row in (second or {}).get("results") or ()}
     engine = ("" if second is None else "mfa" if str(second.get("protocol") or "").startswith("mfa-") else "qwen3")
     totals, reasons = {grade: 0 for grade in GRADES}, {}
@@ -366,6 +475,8 @@ def grade_final_cues(cues, runs, second, audio, legacy):
         parts = (split_run_row(row, run) if row is not None and row.get("text") == run["text"]
                  else [None] * len(run["members"]))
         for member, part in zip(run["members"], parts):
+            if target_keys is not None and member['key'] not in target_keys:
+                continue
             alignment = getattr(cues[member["key"] - 1], "forced_alignment", None)
             if not alignment:
                 continue

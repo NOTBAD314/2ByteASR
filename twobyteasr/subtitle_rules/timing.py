@@ -438,45 +438,18 @@ def bridge_short_display_gaps(
         int(round(SHORT_DISPLAY_GAP_BRIDGE_SECONDS * timeline_fps)),
     )
     audio_end_frame = max(0, int(round(float(audio_seconds) * timeline_fps)))
-    max_duration_frames = max(1, int(round(_max_cue_seconds() * timeline_fps)))
-
-    coverage_owner = rows[0]
-    coverage_end_frame = int(round(rows[0].end * timeline_fps))
-    changed = 0
-    largest_gap_frames = 0
-    for cue in rows[1:]:
-        start_frame = max(0, int(round(cue.start * timeline_fps)))
-        end_frame = max(start_frame, int(round(cue.end * timeline_fps)))
-        if start_frame > coverage_end_frame:
-            gap_frames = start_frame - coverage_end_frame
-            owner_start_frame = max(
-                0,
-                int(round(coverage_owner.start * timeline_fps)),
-            )
-            target_end_frame = min(
-                start_frame,
-                audio_end_frame,
-                owner_start_frame + max_duration_frames,
-            )
-            if gap_frames <= bridge_frames and target_end_frame == start_frame:
-                coverage_owner.end = target_end_frame / timeline_fps
-                coverage_end_frame = target_end_frame
-                changed += 1
-                largest_gap_frames = max(largest_gap_frames, gap_frames)
-        if end_frame > coverage_end_frame:
-            coverage_owner = cue
-            coverage_end_frame = end_frame
-
-    # 2026-10-10 (user): one speaker's caption must not blink off for a
-    # moment while another speaker's caption stays up either.
+    # Reading-duration caps belong to line breaking and tail allocation. A
+    # short display handoff only extends an existing end by <= 500ms; applying
+    # the Chinese five-second cap here left every long English/Korean/European
+    # subtitle unable to meet its next line. Use the same rule as Studio.
     from .display_timing import short_gap_bridges
     frames = [
         (index, cue.speaker or "S00", int(round(cue.start * timeline_fps)), int(round(cue.end * timeline_fps)))
         for index, cue in enumerate(rows)
     ]
-    for index, end_frame in short_gap_bridges(
-        frames, bridge_frames, full_track=False, max_duration=max_duration_frames,
-    ).items():
+    changed = 0
+    largest_gap_frames = 0
+    for index, end_frame in short_gap_bridges(frames, bridge_frames).items():
         if end_frame <= audio_end_frame:
             largest_gap_frames = max(largest_gap_frames, end_frame - frames[index][3])
             rows[index].end = end_frame / timeline_fps
