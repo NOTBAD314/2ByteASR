@@ -123,6 +123,83 @@ def test_home_popup_shares_rows_shape_and_direction(app):
         window.close()
 
 
+# Further right on the screen than the list is wide: a point in the list's
+# own coordinates then never falls inside its screen rectangle.
+RIGHT_OF_ITS_WIDTH = (280, 60, 220, 40)
+
+
+def _press_then_release_on_what_is_shown(popup, fallback, spot):
+    """Press on the popup window, then release on the popup only while it is
+    still shown, otherwise on the window below, where it does not reach the
+    list: what the Mac user saw. (Windows Qt still hands such a release to
+    the row that got the press, so the old code worked there.)"""
+    left, none = Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(popup.windowHandle(), left, none, popup.mapFromGlobal(spot))
+    shown_after_press = popup.isVisible()
+    receiver = popup if shown_after_press else fallback
+    QTest.mouseRelease(receiver.windowHandle(), left, none, receiver.mapFromGlobal(spot))
+    QTest.qWait(30)
+    return shown_after_press
+
+
+def test_home_popup_stays_open_until_the_release_chooses_a_row(app):
+    """2026-10-28 (Mac user: no dropdown option could be chosen). The
+    outside-click check compared a point in the popup's own coordinates with
+    its screen rectangle, so the press on a row hid the list before the
+    release."""
+    from twobyteasr.design.main_ui_popup import FramelessPopupCombo
+    window = host(app)
+    combo = FramelessPopupCombo(window)
+    combo.addItems(["保留原文", "添加标点"])
+    combo.setGeometry(*RIGHT_OF_ITS_WIDTH)
+    chosen = []
+    combo.activated.connect(chosen.append)
+    window.show()
+    QTest.qWait(50)
+    try:
+        combo.showPopup()
+        QTest.qWait(300)
+        popup = combo._popup
+        listing = popup.listing
+        spot = listing.viewport().mapToGlobal(listing.visualItemRect(listing.item(1)).center())
+        assert _press_then_release_on_what_is_shown(popup, window, spot)
+        assert combo.currentIndex() == 1 and chosen == [1]
+        assert not popup.isVisible()
+        # A press outside the list still closes it without choosing.
+        combo.showPopup()
+        QTest.qWait(300)
+        outside = window.mapToGlobal(QPoint(window.width() - 20, window.height() - 20))
+        assert not _press_then_release_on_what_is_shown(popup, window, outside)
+        assert combo.currentIndex() == 1 and chosen == [1]
+    finally:
+        window.close()
+
+
+def test_home_popup_scroll_bar_press_keeps_the_list_open(app):
+    """Same check: a press on a long list's scroll bar closed the list on
+    every platform."""
+    from twobyteasr.design.main_ui_popup import FramelessPopupCombo
+    window = host(app)
+    combo = FramelessPopupCombo(window)
+    combo.addItems([f"model {index}" for index in range(30)])
+    combo.setGeometry(*RIGHT_OF_ITS_WIDTH)
+    window.show()
+    QTest.qWait(50)
+    try:
+        combo.showPopup()
+        QTest.qWait(300)
+        popup = combo._popup
+        bar = popup.listing.verticalScrollBar()
+        assert bar.isVisible()
+        spot = bar.mapToGlobal(QPoint(bar.width() // 2, bar.height() - 20))
+        assert _press_then_release_on_what_is_shown(popup, window, spot)
+        assert popup.isVisible() and bar.value() > 0
+        assert combo.currentIndex() == 0
+        combo.hidePopup()
+    finally:
+        window.close()
+
+
 def test_list_stays_on_the_screen_beside_its_box(app):
     window = host(app)
     area = window.screen().availableGeometry()

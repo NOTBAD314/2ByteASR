@@ -189,6 +189,31 @@ jobs:
           set -euo pipefail
           app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); assert r["passed"] is True; print(r["installed_app"])')
           "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_blank_project_macos.py --app "$app" --output "$MAC_QA_ROOT/blank-project"
+      # 2026-10-28 (CI-only): a Mac user could not choose any home-page dropdown
+      # option. Real Quartz clicks on the installed app, with the fix and with the
+      # outside-click check from before the fix put back in the same app.
+      - name: Installed app home dropdown real clicks (fix, then old check)
+        if: ${{ always() && steps.dmg.outcome == 'success' }}
+        id: dropdown_click
+        continue-on-error: true
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          app=$(python -c 'import json,os; r=json.load(open(os.environ["MAC_QA_ROOT"]+"/dmg/dmg-result.json")); print(r["installed_app"])')
+          status=0
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_home_dropdown_click_macos.py --app "$app" --output "$MAC_QA_ROOT/dropdown-click" || status=$?
+          "$MAC_QA_ROOT/runtime/bin/python" scripts/verify_home_dropdown_click_macos.py --app "$app" --output "$MAC_QA_ROOT/dropdown-click-old" --old-check || true
+          exit $status
+      - name: Dropdown popup offscreen tests
+        if: ${{ always() && steps.runtime.outcome == 'success' }}
+        id: dropdown_tests
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          mkdir -p "$MAC_QA_ROOT/dropdown-click-tests"
+          "$MAC_QA_ROOT/runtime/bin/python" -m pytest -q tests/test_dropdown_popups.py --basetemp "$MAC_QA_ROOT/pytest-dropdown" --junitxml "$MAC_QA_ROOT/dropdown-click-tests/tests.xml"
       # 2026-10-13: optional no-CUDA checks. Loopback stands in for the MOSI API
       # (no real upload, no cost); the Keychain probe uses its own test item.
       - name: Cloud-only recognition through the installed app worker (loopback, no model runtime)
@@ -369,6 +394,40 @@ jobs:
         with:
           name: macos-arm64-receipts-${{ inputs.source_sha }}
           path: ${{ runner.temp }}/tmp/candidate-receipts
+      # 2026-10-28 (CI-only): the same dropdown clicks on the newer OS, from a
+      # copy of the downloaded DMG's app (the next step owns /Applications).
+      - name: Home dropdown real clicks on the newer OS (fix, then old check)
+        id: dropdown_click
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/tmp/dropdown-newer"
+          mkdir -p "$root/mounted" "$root/app" "$root/qa"
+          python -m venv "$root/checker"
+          "$root/checker/bin/python" -m pip install --only-binary=:all: PySide6==6.9.2
+          dmg=$(find "$RUNNER_TEMP/tmp/candidate-input" -name '*.dmg' -type f)
+          /usr/bin/hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$root/mounted" "$dmg"
+          /usr/bin/ditto "$root/mounted/2ByteASR.app" "$root/app/2ByteASR.app"
+          /usr/bin/hdiutil detach "$root/mounted"
+          status=0
+          "$root/checker/bin/python" scripts/verify_home_dropdown_click_macos.py --app "$root/app/2ByteASR.app" --output "$root/qa/dropdown-click" || status=$?
+          "$root/checker/bin/python" scripts/verify_home_dropdown_click_macos.py --app "$root/app/2ByteASR.app" --output "$root/qa/dropdown-click-old" --old-check || true
+          rm -rf "$root/app"
+          exit $status
+      - name: Select dropdown receipts
+        if: always()
+        run: |
+          if test -d "$RUNNER_TEMP/tmp/dropdown-newer/qa"; then
+            python scripts/macos_collect_artifacts.py --qa-root "$RUNNER_TEMP/tmp/dropdown-newer/qa" --maximum-bytes 67108864
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: macos-newer-dropdown-${{ inputs.source_sha }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/tmp/dropdown-newer/qa/artifacts/receipts/
       - name: Verify the unchanged DMG on the newer OS
         run: |
           set -euo pipefail
