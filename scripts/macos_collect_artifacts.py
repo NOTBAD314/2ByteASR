@@ -51,8 +51,15 @@ def main(argv=None):
     # the disposable runner, rather than doubling paid artifact storage.
     def application(path):return path.name.endswith('.app.zip') or path.suffix.lower()=='.dmg'
     # Receipts are uploaded separately before the large app. No app size
-    # failure can suppress already captured diagnostics.
-    for path in sorted(files,key=lambda p:(not application(p),p.suffix.lower() not in {".json",".txt",".log",".xml"},str(p))):
+    # failure can suppress already captured diagnostics, and bulky media
+    # receipts only use the room the DMG leaves: in the 0.8.7 run 43.7 MB of
+    # receipts (16 MB renderer-smoke movie) pushed the 577 MB DMG 194 KB over.
+    # Withheld rows still record each file's size and SHA-256.
+    def priority(path):
+        if application(path):return (1,0)
+        if path.suffix.lower() in {'.mov','.mp4'}:return (2,path.stat().st_size)
+        return (0,0)
+    for path in sorted(files,key=lambda p:(priority(p),str(p))):
         name=path.relative_to(root).as_posix()
         app=application(path)
         target=destination/('application' if app else 'receipts')/name
@@ -64,7 +71,8 @@ def main(argv=None):
         if path.name.endswith('.app.zip'):
             withheld.append(dict(row,reason='Only DMG delivery is allowed; app archive retained on runner'));continue
         if total+row['bytes']+8*1024*1024>args.maximum_bytes:
-            withheld.append(dict(row,reason='Exceeds this run verified storage allowance'));continue
+            withheld.append(dict(row,reason='Exceeds this run verified storage allowance'
+                                 +('' if app or priority(path)[0]==0 else ' left after the DMG')));continue
         target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,target)
         total+=row['bytes'];rows.append(row)
     receipts=destination/'receipts';receipts.mkdir(parents=True,exist_ok=True)

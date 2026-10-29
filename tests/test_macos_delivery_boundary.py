@@ -89,6 +89,47 @@ def test_large_app_does_not_discard_receipts(tmp_path):
     assert not (root/'artifacts/application').exists()
 
 
+def test_dmg_is_kept_before_bulky_media_receipts(tmp_path):
+    """0.8.7 run 40503285978, scaled down: receipts (with a 16 MB renderer
+    movie) + DMG + the 8 MiB margin overflowed the cap by 194 KB and the
+    DMG was withheld while the movie was uploaded."""
+    MiB=1024*1024
+    root=tmp_path/'tmp/qa'
+    def write(name,size):
+        path=root/name;path.parent.mkdir(parents=True,exist_ok=True)
+        with path.open('wb') as stream:stream.truncate(size)
+        return path
+    write('dmg/2ByteASR-macos-arm64-Setup.dmg',20*MiB)
+    write('dmg/dmg-result.json',4096)
+    write('desktop-flow/result.json',4096)
+    write('desktop-flow/exports/中文 字幕・日本語.mp4',MiB)
+    movie=write('renderer-smoke/animation.mov',12*MiB)
+    assert main(['--qa-root',str(root),'--maximum-bytes',str(40*MiB)])==0
+    assert (root/'artifacts/application/dmg/2ByteASR-macos-arm64-Setup.dmg').is_file()
+    receipt=root/'artifacts/receipts'
+    for name in ('dmg/dmg-result.json','desktop-flow/result.json','desktop-flow/exports/中文 字幕・日本語.mp4'):
+        assert (receipt/name).is_file()
+    selected=json.loads((receipt/'artifact-selection.json').read_text('utf8'))
+    assert [row['path'] for row in selected['withheld']]==['renderer-smoke/animation.mov']
+    assert selected['withheld'][0]['bytes']==movie.stat().st_size
+    assert 'left after the DMG' in selected['withheld'][0]['reason']
+    assert selected['selected_bytes']+8*MiB<=40*MiB
+
+
+def test_dmg_that_cannot_fit_still_leaves_every_receipt(tmp_path):
+    MiB=1024*1024
+    root=tmp_path/'tmp/qa';(root/'dmg').mkdir(parents=True);(root/'renderer-smoke').mkdir()
+    (root/'dmg/dmg-result.json').write_text('{"passed":true}')
+    with (root/'dmg/big-Setup.dmg').open('wb') as stream:stream.truncate(30*MiB)
+    with (root/'renderer-smoke/animation.mov').open('wb') as stream:stream.truncate(MiB)
+    assert main(['--qa-root',str(root),'--maximum-bytes',str(20*MiB)])==0
+    assert not (root/'artifacts/application').exists()
+    assert (root/'artifacts/receipts/renderer-smoke/animation.mov').is_file()
+    selected=json.loads((root/'artifacts/receipts/artifact-selection.json').read_text('utf8'))
+    assert [(row['path'],row['reason']) for row in selected['withheld']]==[
+        ('dmg/big-Setup.dmg','Exceeds this run verified storage allowance')]
+
+
 def test_real_startup_rejects_zero_exit_without_application_receipt_and_retains_error(tmp_path,monkeypatch):
     from scripts.macos_startup_contract import probe
     profile=tmp_path/'tmp/profile';out=tmp_path/'build';out.mkdir()

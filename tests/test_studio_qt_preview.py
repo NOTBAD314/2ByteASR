@@ -142,6 +142,143 @@ def test_reloading_the_same_media_clears_the_source_first(controller, tmp_path):
     assert calls == [path, '<empty>', path]
 
 
+class QueuedFrame:
+    """A decoded QVideoFrame as the sink delivers it to the GUI thread."""
+    def __init__(self, seconds, colour='#204060', fps=30):
+        self.start = round(seconds*1_000_000)
+        self.end = self.start+round(1_000_000/fps)
+        self.image = QImage(4, 4, QImage.Format_RGB32)
+        self.image.fill(QColor(colour))
+    def isValid(self): return True
+    def toImage(self): return self.image
+    def startTime(self): return self.start
+    def endTime(self): return self.end
+
+
+class PrerollPlayer:
+    """Qt 6.9 FFmpeg player semantics the controller depends on.
+
+    position() changes only through setPosition() (or the 50 ms timer, which
+    a busy GUI thread never runs); pause() stops that timer without
+    refreshing it.
+    """
+    def __init__(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QMediaPlayer
+        self.calls, self.milliseconds, self.url = [], 0, QUrl()
+        self.state = QMediaPlayer.StoppedState
+    def stop(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        self.calls.append('stop'); self.state = QMediaPlayer.StoppedState
+    def source(self): return self.url
+    def setSource(self, url): self.url = url
+    def setPosition(self, milliseconds):
+        self.calls.append(('seek', milliseconds)); self.milliseconds = milliseconds
+    def position(self): return self.milliseconds
+    def play(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        self.calls.append('play'); self.state = QMediaPlayer.PlayingState
+    def pause(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        if self.state != QMediaPlayer.PausedState: self.calls.append('pause')
+        self.state = QMediaPlayer.PausedState
+    def playbackState(self): return self.state
+    def duration(self): return 12_000
+    def audioOutput(self): return None
+    def setAudioOutput(self, _output): pass
+
+
+def readiness_page(controller, media, generation):
+    clock = SimpleNamespace(exact_seek_pending=False, generation=generation)
+    video = SimpleNamespace(_startup_state='READY', _playback_clock=clock,
+                            _media_path=str(media.resolve()), _media_has_video=True,
+                            controller=controller)
+    return SimpleNamespace(video=video)
+
+
+def preroll(controller, tmp_path, seconds=0.0, generation=2):
+    from PySide6.QtMultimedia import QMediaPlayer
+    media = tmp_path/'中文 字幕・日本語.mp4'
+    media.write_bytes(b'not decoded in this test')
+    player = controller.player = PrerollPlayer()
+    controller._load(str(media), seconds, generation)
+    controller._status(QMediaPlayer.LoadedMedia)
+    assert player.calls[-2:] == [('seek', round(seconds*1000)), 'play']
+    return media, player
+
+
+def test_frames_queued_behind_a_busy_gui_preroll_resettle_the_paused_target(controller, tmp_path):
+    """macOS 14 CI run 40507178649: the cold Studio load kept the GUI thread
+    busy ~670 ms after the muted preroll play(). 21 frames queued; the target
+    frame paused the player, the later ones replaced it, position() stayed 0
+    and Studio waited at 准备播放器 until 准备超时."""
+    from twobyteasr.studio.studio_readiness import player_surface_ready
+    media, player = preroll(controller, tmp_path)
+    page = readiness_page(controller, media, 2)
+    for index in range(21):
+        controller._frame(QueuedFrame(index/30, colour='#ff0000' if index > 1 else '#00ff00'))
+    shown = controller.observed_properties()
+    # Frames beyond one readiness tolerance never become the current picture;
+    # the paused target is requested again instead of waiting for a frame
+    # that never comes.
+    assert controller.surface.frame.pixelColor(0, 0).name() == '#00ff00'
+    assert shown['video-frame-info'] == {} and shown['seeking']
+    assert player.calls.count(('seek', 0)) == 2
+    assert not player_surface_ready(page)
+    controller._frame(QueuedFrame(0.0, colour='#0000ff'))  # The paused seek's one frame.
+    shown = controller.observed_properties()
+    assert shown['video-frame-info']['pts'] == 0.0 and shown['time-pos'] == 0.0
+    assert controller.surface.frame.pixelColor(0, 0).name() == '#0000ff'
+    assert controller.applied_seek_state()['generation'] == 2
+    assert controller.actor_status()['paused_target_resettles'] == 1
+    assert player_surface_ready(page)
+
+
+def test_unsettled_preroll_reproduces_the_stale_pts_gate(controller, tmp_path):
+    """Without a second paused seek the 0.8.7 state is never ready."""
+    from twobyteasr.studio.studio_readiness import player_surface_ready
+    media, _player = preroll(controller, tmp_path)
+    page = readiness_page(controller, media, 2)
+    controller._frame(QueuedFrame(0.0))
+    controller._settle_target = None  # The 0.8.7 controller had no settle step.
+    for index in range(1, 21):
+        controller._frame(QueuedFrame(index/30))
+    shown = controller.observed_properties()
+    assert shown['video-frame-info']['pts'] == pytest.approx(.666667)
+    assert shown['time-pos'] == 0.0
+    assert controller.applied_seek_state()['frame_pts'] == 0.0
+    assert not player_surface_ready(page)
+
+
+def test_pausing_while_playing_keeps_the_frames_it_reached(controller, tmp_path):
+    media, player = preroll(controller, tmp_path)
+    controller._frame(QueuedFrame(0.0))
+    controller.set_paused(False)
+    for index in range(1, 10):
+        controller._frame(QueuedFrame(index/30))
+    controller.set_paused(True)  # No position: nothing says where to stop.
+    controller._frame(QueuedFrame(10/30))
+    assert player.calls.count(('seek', 0)) == 1
+    assert controller.observed_properties()['video-frame-info']['pts'] == pytest.approx(10/30)
+
+
+def test_paused_seek_after_a_late_frame_resettles_a_bounded_number_of_times(controller, tmp_path):
+    from twobyteasr.studio.studio_qt_preview import SETTLE_ATTEMPTS
+    media, player = preroll(controller, tmp_path, seconds=5.0)
+    controller._frame(QueuedFrame(5.0))
+    for _attempt in range(SETTLE_ATTEMPTS+2):
+        controller._frame(QueuedFrame(5.5))  # Late frame, then the seek's frame
+        controller._frame(QueuedFrame(5.0))  # lands on target again.
+    # A backend that keeps drifting is shown and left to readiness to report.
+    assert player.calls.count(('seek', 5000)) == 1+SETTLE_ATTEMPTS
+    controller._frame(QueuedFrame(5.5))
+    assert controller.observed_properties()['video-frame-info']['pts'] == 5.5
+    controller.seek(7.0)  # A new target gets its own attempts.
+    controller._frame(QueuedFrame(7.0))
+    controller._frame(QueuedFrame(7.5))
+    assert player.calls[-1] == ('seek', 7000) and controller._settle_attempts == 1
+
+
 def test_sync_player_operations_reject_worker_thread(controller):
     errors = []
     def worker():
