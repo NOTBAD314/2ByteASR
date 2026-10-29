@@ -2,7 +2,7 @@
 
 Except for the last section, "Illustrations", everything below is the **real 0.7.1 interface**, captured on 2026-10-14 from the source of tag `v0.7.1`, running in an isolated test folder that never touched anyone's data. The sample is a self-made test card with two synthetic Chinese voices, transcribed locally with MOSS + FireRedASR2-AED + Qwen3-ASR (NVIDIA RTX 5070 Ti). Captions without "Chinese interface" show the English interface; the subtitles are Chinese because the speech is. How the assets were made is described in the [asset notes](assets/readme/README.md) (Chinese).
 
-[Back to the README](../README_EN.md) · [User guide](product-guide.en.md) · [中文](product-demo.zh-CN.md) · [日本語](product-demo.ja.md) · [한국어](product-demo.ko.md)
+[Back to the README](../README.md) · [User guide](product-guide.en.md) · [中文](product-demo.zh-CN.md) · [日本語](product-demo.ja.md) · [한국어](product-demo.ko.md)
 
 ## Home and recognition
 
@@ -78,4 +78,4 @@ Deep Grape (default), Warm Cream, Warm Night, Lavender and Slate (Chinese interf
 
 The woodcut and CRT scoreboard effects are **sample works** made with AI Subtitle Design (an asset from 2026-09-30), not built-in presets. AI Subtitle Design needs an AI service you configure; the ordinary font, outline and entrance/exit presets need no AI.
 
-[Back to the README](../README_EN.md) · [User guide](product-guide.en.md)
+[Back to the README](../README.md) · [User guide](product-guide.en.md)

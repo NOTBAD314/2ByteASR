@@ -48,6 +48,8 @@ def outer(args):
     settings['switches'].update(enable_ai_polish=False, use_ai_grouping=False, unified_glm_processing=False,
                                 output_speaker_tracks=True)
     settings['ui'].update(language=args.lang)
+    if args.recognition_language:
+        settings['subtitle_language']['recognition_language'] = args.recognition_language
     (data / '2byteasr_settings.json').write_text(json.dumps(settings, ensure_ascii=False, indent=2), 'utf8')
     media_dir = out / 'media'
     media_dir.mkdir()
@@ -261,6 +263,7 @@ def main():
     parser.add_argument('--media-name', default='林间小径·双人实况.mp4')
     parser.add_argument('--media-file', default='test-card.mp4', help='file under media/ (forest-run.mp4 for the 2026-10-09 art)')
     parser.add_argument('--timeout', type=int, default=1800)
+    parser.add_argument('--recognition-language', default='', help='e.g. en for the 2026-10-29 film clip')
     return outer(parser.parse_args())
 
 

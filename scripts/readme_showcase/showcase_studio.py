@@ -217,14 +217,15 @@ def inner(out: Path):
         write()
 
     class Recorder:
-        def __init__(self, name):
+        def __init__(self, name, widget=None):
             self.name = name
+            self.widget = widget
             self.dir = out / 'frames' / name
             self.stamps = []
 
         def frame(self):
             index = len(self.stamps)
-            grab(self.dir / f'{index:04d}.png')
+            grab(self.dir / f'{index:04d}.png', self.widget)
             self.stamps.append(round(time.monotonic(), 4))
 
         def hold(self, seconds, fps=8):
@@ -695,6 +696,11 @@ def inner(out: Path):
         sizes = p.workspace_splitter.sizes()
         total = sum(sizes)
         p.workspace_splitter.setSizes([total - 400, 400])
+        # 0.8.7 reserves 44 px for the translation row but draws it as tall as the
+        # speaker lanes (up to 74 px), so it spills under V1. A fixed 48 px lane
+        # height (same as dragging the lane edge) keeps every row inside.
+        if hasattr(p.timeline, 'set_track_height'):
+            p.timeline.set_track_height('subtitle', 48)
 
     def scene_hero():
         yield from open_studio()
@@ -841,10 +847,211 @@ def inner(out: Path):
         shot('lane-tall')
         write()
 
+    # ------------------------------------------------ 2026-10-29 film clip
+    # Tears of Steel (CC BY 3.0, Blender Foundation). Cue texts, speaker names
+    # and the typed translations live in <work>/film.json (written after the
+    # real recognition run, keyed by the recognised English text).
+    film_path = BASE / 'film.json'
+    FILM = json.loads(film_path.read_text('utf8')) if film_path.is_file() else {}
+    FILM_TARGET = {'zh': 'zh', 'en': 'zh', 'ja': 'ja', 'ko': 'ko'}
+
+    def norm(text):
+        import re
+        return re.sub(r'[^0-9a-z]+', ' ', text.lower()).strip()
+
+    def film_cue(key):
+        want = norm(FILM[key])
+        for cue in sorted(page().project.cues, key=lambda c: c.start_ms):
+            if norm(cue.text).startswith(want):
+                return cue
+        raise LookupError(FILM[key])
+
+    def scene_film_speakers():
+        yield from open_studio()
+        pause()
+        p = page()
+        QTimer.singleShot(0, p._open_speaker_manager)
+        yield 2.0
+        dialog = top_dialog()
+        if dialog is None or not hasattr(dialog, 'cards'):
+            result['errors'].append(dict(scene='film_speakers', error='no speaker cards'))
+            return
+        dialog.resize(800, 500)
+        dialog.setFocus()
+        yield 1.0
+        rec = Recorder('speakers', dialog)
+        yield from rec.hold(1.0)
+        for key, name in FILM.get('speakers', {}).items():
+            card = dialog.cards.get(key)
+            if card is None:
+                continue
+            card.name_edit.setFocus()
+            card.name_edit.selectAll()
+            yield 0.2
+            rec.frame()
+            card.name_edit.clear()
+            for char in name:
+                card.name_edit.insert(char)
+                yield 0.06
+                rec.frame()
+            dialog._card_commit_name(dialog.cards[key])
+            yield from rec.hold(0.6)
+        dialog.setFocus()
+        yield from rec.hold(1.6)
+        rec.finish()
+        shot('speakers-dialog', dialog)
+        dialog.accept()
+        yield 1.0
+        result['info']['speakers_after'] = [dict(id=s.id, name=s.name) for s in p.project.speakers]
+
+    def scene_film_razor():
+        yield from open_studio()
+        pause()
+        tall(0.44)
+        p = page()
+        cue = film_cue('razor_cue')
+        show_window(max(0, cue.start_ms - 900), max(5200, cue.end_ms - cue.start_ms + 1800))
+        p.select_cue(cue.id)
+        p._seek(cue.start_ms / 1000.0)
+        yield 1.0
+        rec = Recorder('razor')
+        yield from rec.hold(1.0)
+        yield from razor_drag(cue, FILM['razor_left'], rec, steps=20)
+        yield from rec.hold(1.6)
+        tool('selection')
+        rec.finish()
+        result['info']['after_razor'] = cues_brief()
+        write()
+
+    def scene_film_review():
+        yield from open_studio()
+        pause()
+        quiet()
+        p = page()
+        target = film_cue('review_cue')
+        show_window(max(0, target.start_ms - 2500), 9000)
+        rec = Recorder('review')
+        QTest.mouseClick(p.review_entry_button, Qt.MouseButton.LeftButton)
+        yield 0.8
+        p.select_cue(target.id)
+        p._seek(target.start_ms / 1000.0)
+        yield 0.3
+        p._refresh_review_summary_strip()
+        yield from rec.hold(2.0)
+        from twobyteasr.studio.studio_cards import ReviewCandidateCard
+        cards = [c for c in p.findChildren(ReviewCandidateCard) if c.isVisible()]
+        result['info']['review_cards'] = [dict(text=c._candidate.text, sources=list(c._candidate.sources)) for c in cards]
+        shot('review-cards')
+        pick = next((c for c in cards if c._candidate.text.strip() == FILM.get('review_pick', '').strip()), None)
+        if pick is None:
+            pick = next((c for c in cards if 'Qwen' in c._candidate.sources and len(c._candidate.sources) == 1), None)
+        if pick is not None:
+            QTest.mouseMove(pick)
+            yield from rec.hold(0.6)
+            QTest.mouseClick(pick, Qt.MouseButton.LeftButton)
+        yield from rec.hold(2.2)
+        rec.finish()
+        QTest.mouseClick(p.review_entry_button, Qt.MouseButton.LeftButton)
+        yield 0.8
+        write()
+
+    def scene_film_translate():
+        yield from open_studio()
+        pause()
+        p = page()
+        column = FILM_TARGET.get(spec['lang'], 'zh')
+        table = {norm(k): v for k, v in FILM.get('translations', {}).items()}
+        lane_target = p.timeline.subtitle_target_language or None
+        typed = {}
+        for cue in sorted(p.project.cues, key=lambda c: c.start_ms):
+            row = table.get(norm(cue.text))
+            if not row:
+                typed[cue.text] = None
+                continue
+            typed[cue.text] = [row[column], bool(p.cue_controller.set_translation(cue.id, row[column], target=lane_target))]
+            yield 0.05
+        from twobyteasr.studio.studio_bilingual import apply_display
+        apply_display(p, mode='bilingual', order='original_first', original_scale=1.0, translation_scale=0.82)
+        quiet()
+        yield 1.5
+        result['info']['translations'] = typed
+        write()
+
+    def scene_film_hero():
+        yield from open_studio()
+        pause()
+        quiet()
+        p = page()
+        cue = film_cue('hero_cue')
+        show_window(*FILM['hero_window'])
+        p.context_drawer.setCurrentIndex(1)
+        p.select_cue(cue.id)
+        p._seek((cue.start_ms + FILM.get('hero_offset', 900)) / 1000.0)
+        yield 2.5
+        shot('studio-hero')
+
+    def scene_film_play():
+        yield from open_studio()
+        pause()
+        quiet()
+        p = page()
+        p.select_cue(film_cue('play_cue').id)
+        p._seek(FILM['play_start'])
+        show_window(*FILM['play_window'])
+        yield 1.5
+        rec = Recorder('play')
+        yield from rec.hold(0.6, fps=10)
+        p._toggle_playback()
+        yield from rec.hold(FILM.get('play_seconds', 7.0), fps=10)
+        pause()
+        yield from rec.hold(0.6, fps=10)
+        rec.finish()
+
+    def scene_film_style():
+        yield from open_studio()
+        pause()
+        quiet()
+        p = page()
+        cue = film_cue('style_cue')
+        p.select_cue(cue.id)
+        p._seek((cue.start_ms + 900) / 1000.0)
+        show_window(max(0, cue.start_ms - 4000), 14000)
+        p.context_drawer.setCurrentIndex(1)
+        yield 1.4
+        index = p.style_scope.findData('all')
+        if index >= 0:
+            p.style_scope.setCurrentIndex(index)
+        result['info']['style_presets'] = [p.style_preset.itemText(i) for i in range(p.style_preset.count())]
+        result['info']['effect_presets'] = [p.effect_preset.itemText(i) for i in range(p.effect_preset.count())]
+        rec = Recorder('style')
+        yield from rec.hold(1.0)
+        for idx in FILM.get('style_order', []):
+            if 0 <= idx < p.style_preset.count():
+                p.style_preset.setCurrentIndex(idx)
+                p.style_preset.activated.emit(idx)
+                yield 0.4
+                yield from rec.hold(1.1)
+        effect = FILM.get('effect_index', -1)
+        if 0 <= effect < p.effect_preset.count():
+            p.effect_preset.setCurrentIndex(effect)
+            yield 0.4
+            p._seek((cue.start_ms - 300) / 1000.0)
+            yield 0.3
+            p._toggle_playback()
+            yield from rec.hold(2.6, fps=10)
+            pause()
+            yield from rec.hold(0.8)
+        rec.finish()
+        shot('style-final')
+        write()
+
     handlers = dict(lanecheck=scene_lanecheck, explore=scene_explore, pages=scene_pages, speakers=scene_speakers, razor=scene_razor,
                     review=scene_review, fixups=scene_fixups, style=scene_style, style2=scene_style2, **{'style-size': lambda: scene_style2(False)}, playback=scene_playback,
                     hero=scene_hero, export=scene_export, home=scene_home, themes=scene_themes,
-                    translate=scene_translate, link=scene_link)
+                    translate=scene_translate, link=scene_link,
+                    film_speakers=scene_film_speakers, film_razor=scene_film_razor, film_review=scene_film_review,
+                    film_translate=scene_film_translate, film_hero=scene_film_hero, film_play=scene_film_play,
+                    film_style=scene_film_style)
 
     def steps():
         yield 2.0

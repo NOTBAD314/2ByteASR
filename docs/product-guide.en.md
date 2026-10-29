@@ -2,7 +2,7 @@
 
 Last checked: 2026-10-15, for the public release **0.7.2**. This guide replaces the earlier version that described "0.5.0" and said no public installer was available; that is no longer true.
 
-[Back to the README](../README_EN.md) · [Interface tour](product-demo.en.md) · [API setup guides (Chinese)](api-setup/README.md) · [中文](product-guide.zh-CN.md) · [日本語](product-guide.ja.md) · [한국어](product-guide.ko.md)
+[Back to the README](../README.md) · [Interface tour](product-demo.en.md) · [API setup guides (Chinese)](api-setup/README.md) · [中文](product-guide.zh-CN.md) · [日本語](product-guide.ja.md) · [한국어](product-guide.ko.md)
 
 **Contents:** [Which file to download](#which-file-to-download) · [Installing on Windows](#installing-on-windows) · [Installing on Mac (experimental)](#installing-on-mac-experimental) · [First launch](#first-launch) · [Choosing a recognition route](#choosing-a-recognition-route) · [Costs and privacy](#costs-and-privacy) · [Recognition plans and models](#recognition-plans-and-models) · [Everyday Studio actions](#everyday-studio-actions) · [Input and output](#input-and-output) · [Updating](#updating) · [Common questions](#common-questions) · [Running from source](#running-from-source) · [Reporting problems](#reporting-problems)
 
@@ -169,4 +169,4 @@ cd 2ByteASR
 
 Open an [issue](https://github.com/NOTBAD314/2ByteASR/issues) with your version, operating system, recognition route, steps to reproduce and screenshots. For recognition problems you can attach the run log from the completion page (remove local paths and other personal details first).
 
-[Back to the README](../README_EN.md) · [Interface tour](product-demo.en.md) · [Third-party notices](../THIRD_PARTY_NOTICES.md)
+[Back to the README](../README.md) · [Interface tour](product-demo.en.md) · [Third-party notices](../THIRD_PARTY_NOTICES.md)

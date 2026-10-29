@@ -1,237 +1,236 @@
 <div align="center">
 
-<img src="docs/assets/readme/icon.png" width="96" alt="兔白字幕的角色图标：紫发兔耳少女">
+<img src="docs/assets/readme/icon.png" width="96" alt="2ByteASR character icon: a purple-haired girl with rabbit ears">
 
-# 兔白字幕 · 2ByteASR
+# 2ByteASR · 兔白字幕
 
-### 字幕剪辑翻译工作台
+### Subtitle editing &amp; translation workbench
 
-识别、校对、翻译、剪辑、压制，在一个窗口里做完。<br>
-免费，可以全部在本机运行，也能接入你自己的云端服务。
+Transcribe, proofread, translate, cut and render, all in one window.<br>
+Free. Run everything on your own computer, or connect your own cloud service.
 
-**中文** · [English](README_EN.md) · [日本語](README_JA.md) · [한국어](README_KO.md)
+**English** · [中文](README_ZH.md) · [日本語](README_JA.md) · [한국어](README_KO.md)
 
 </div>
 
-<img src="docs/assets/readme/workbench.png" width="100%" alt="兔白字幕 0.8.7 的字幕工作台：左边是字幕列表，中间是视频预览，画面下方同时显示中文原文和英文译文，右边是样式面板，下方时间轴有“主播”“队友”两条字幕轨、一条译文轨、视频轨和音频波形">
+<img src="docs/assets/readme/workbench.png" width="100%" alt="Subtitle Studio in 2ByteASR 0.8.7: captions list on the left, the film preview in the middle with the English line and its Chinese translation, style panel on the right, and a timeline with subtitle tracks for Celia and Thom, a translation track, the video track and the audio waveform">
 
-<sub>0.8.7 真实界面截图。示例视频是项目自绘的小游戏画面，配两段合成语音；字幕由本机 MOSS + FireRedASR2-AED + Qwen3-ASR 识别（NVIDIA 显卡），说话人名称在说话人管理里改，英文译文用工作台的手动补译写入，没有用 AI。</sub>
+<sub>Real 0.8.7 screenshot. Sample: [Tears of Steel](https://mango.blender.org/) (© Blender Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)), transcribed locally with MOSS + Qwen3-ForcedAligner + Qwen3-ASR on an NVIDIA GPU. Speaker names were typed in Speaker Management; the Chinese translation was entered with the Studio's manual translation, without AI.</sub>
 
-| 识别 | 校对 | 翻译 | 剪辑 | 导出 |
+| Transcribe | Proofread | Translate | Cut | Export |
 | --- | --- | --- | --- | --- |
-| 本机或云端，分清谁在说话 | 多模型候选、术语库、AI 校对 | 原文译文两层，缺译双击补写 | 按字切分，一键删口播停顿 | 字幕文件，或压好字幕的成片 |
+| Locally or in the cloud, with speakers told apart | Compare models, glossary, AI proofreading | Original and translation as two layers; double-click to fill gaps | Split on word boundaries, remove pauses in one step | Subtitle files, or video with subtitles burned in |
 
-## 下载
+## Download
 
-当前版本 **0.8.7**（2026-10-27；这一版只有 Windows，Mac 仍是 0.8.6）。按你的电脑选一个安装程序：
+Current release: **0.8.7** (2026-10-27; Windows only, the Mac build stays at 0.8.6). Pick the one installer for your computer:
 
-| 你的电脑 | 下载 |
+| Your computer | Download |
 | --- | --- |
-| **Windows 10 1809 或更新（64 位）**<br>正式版 | **[2ByteASR-Setup-0.8.7.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe)**（约 1 GB）<br>安装程序没有代码签名，Windows 可能提示“未知发布者”，见 [Windows 安装](docs/product-guide.zh-CN.md#windows-安装)。 |
-| **Mac：Apple 芯片（M1 及以后），macOS 14 或更新**<br>**实验版** | **[2ByteASR-0.8.6-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)**（约 0.5 GB）<br>只在 GitHub 的虚拟 Mac 上验证过，**不支持 Intel Mac**；没有经过 Apple 公证，第一次打开见 [Mac 安装](docs/product-guide.zh-CN.md#mac-安装实验版)。 |
+| **Windows 10 1809 or later (64-bit)**<br>Stable | **[2ByteASR-Setup-0.8.7.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe)** (about 1 GB)<br>The installer is not code-signed, so Windows may show an "unknown publisher" warning. See [Installing on Windows](docs/product-guide.en.md#installing-on-windows). |
+| **Mac with Apple silicon (M1 or later), macOS 14 or later**<br>**Experimental** | **[2ByteASR-0.8.6-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)** (about 0.5 GB)<br>Tested only on GitHub's virtual Macs. **Intel Macs are not supported.** Not notarized by Apple; see [Installing on Mac](docs/product-guide.en.md#installing-on-mac-experimental) for the first launch. |
 
-- **中国大陆下载慢或打不开：** 先从 GitCode 国内镜像下载 [Windows 安装程序](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac 安装包](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)；还不行再用第三方加速站 gh-proxy：[Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)。各来源的文件完全相同，可用 `SHA256SUMS.txt` 核对。
-- **已经装了 0.6.5、0.7.x、0.8.0–0.8.6：** 在程序右上角“检查更新”，只下载有变化的部分。0.6.0 及更早版本：直接运行新的安装程序覆盖安装，不要先卸载。
-- **其他附件不用下载。** [Releases 页面](https://github.com/NOTBAD314/2ByteASR/releases/latest)里的 `Source`、`ThirdParty`、`update`、`.sig` 等文件是给源码、许可材料和程序内更新用的。下载后可用 `SHA256SUMS.txt` 核对文件是否完整。
-- **Linux：** 有 [Docker 版 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)（amd64 / CPU，浏览器中操作原界面，无需 NVIDIA 显卡），见[构建与使用说明](README.docker.md)。
+- **Slow or blocked downloads in mainland China?** Use the GitCode mirror first: [Windows installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg). If that fails too, try the third-party gh-proxy accelerator: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg). The files are identical on every source; check them with `SHA256SUMS.txt`.
+- **Already on 0.6.5, 0.7.x or 0.8.0–0.8.6?** Use "Check for updates" in the app; it downloads only what changed. For 0.6.0 or earlier, run the new installer over the old one without uninstalling first.
+- **You don't need the other files.** The `Source`, `ThirdParty`, `update` and `.sig` files on the [Releases page](https://github.com/NOTBAD314/2ByteASR/releases/latest) are for source code, licence materials and in-app updates. `SHA256SUMS.txt` lets you check that a download is complete.
+- **Linux:** there is a [Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) (amd64 / CPU, the original desktop in a browser, no NVIDIA GPU needed); see [Build and run](README.docker.md).
 
-## 你要做的是…
+## What are you working on?
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-**游戏实况、直播回放**<br>
-多人对话每人一条字幕轨；术语库记住角色名和招式；结合 B 站弹幕 XML 找值得剪的片段。<br>
-→ [分清谁在说话](#能做什么) · [术语库](docs/product-guide.zh-CN.md#字幕工作台常用操作)
+**Game streams and stream replays**<br>
+One subtitle track per speaker; a glossary that remembers character names and skills; highlight candidates from Bilibili danmaku XML.<br>
+→ [Tell speakers apart](#what-it-does) · [Glossary](docs/product-guide.en.md#everyday-studio-actions)
 
 </td>
 <td width="50%" valign="top">
 
-**外语视频配中文字幕**<br>
-贴 YouTube、B 站等链接，视频和原字幕一起下载进工程；识别日语、英语，用你的文字 AI 翻成中文，导出双语字幕。<br>
-→ [链接下载](#能做什么) · [翻译与双语](#能做什么)
+**Subtitling foreign-language videos**<br>
+Paste a YouTube, Bilibili or other link to download the video and its subtitles into a project; transcribe Japanese or English, translate with your own text AI, and export bilingual subtitles.<br>
+→ [Link download](#what-it-does) · [Translation](#what-it-does)
 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
-**访谈、播客、网课**<br>
-已经有文稿时直接对上时间，不改写文字；一键删掉口播停顿；批量替换、简繁转换。<br>
-→ [字幕工作台常用操作](docs/product-guide.zh-CN.md#字幕工作台常用操作)
+**Interviews, podcasts and lectures**<br>
+Already have a script? Time each line without rewriting it. Remove speech pauses in one step; find and replace in bulk; convert between Simplified and Traditional Chinese.<br>
+→ [Everyday Studio actions](docs/product-guide.en.md#everyday-studio-actions)
 
 </td>
 <td width="50%" valign="top">
 
-**手上已经有字幕**<br>
-导入 SRT / ASS，校对、翻译、换样式，再重新压进视频。不用先装识别模型。<br>
-→ [输入与输出](docs/product-guide.zh-CN.md#输入与输出)
+**You already have subtitles**<br>
+Import SRT / ASS, proofread, translate, restyle and render the video again. No speech model needed.<br>
+→ [Input and output](docs/product-guide.en.md#input-and-output)
 
 </td>
 </tr>
 </table>
 
-## 能做什么
+## What it does
 
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-link.png" width="100%" alt="链接下载窗口：粘贴视频链接的输入框，下面是“视频＋字幕”“仅视频”“仅音频”“仅字幕”四个选项和“解析视频”按钮">
+<img src="docs/assets/readme/feature-translate.webp" width="100%" alt="Recorded in the app: the film plays with the English line and the Chinese translation in the preview while the playhead moves along the speaker and translation tracks">
 
-**贴链接，视频和字幕一起进来**<br>
-YouTube、B 站和下载器（yt-dlp）支持的其他单个视频；在工作台按 Ctrl+V 就能下载到播放头位置。
+**Translation and bilingual subtitles**<br>
+Translate into Simplified or Traditional Chinese, English, Japanese, Korean and more with your own text AI; double-click the translation track to fill any gap. Original and translation keep their own styles; export either or both.
 </td>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-speakers.png" width="100%" alt="说话人管理窗口：两位说话人“主播”“队友”的字幕条数和时长，以及改名、颜色、默认样式、合并说话人等操作">
+<img src="docs/assets/readme/feature-style.webp" width="100%" alt="Recorded in the app: switching subtitle style presets for all lines, then playing a line with a pop-in entrance animation">
 
-**分清谁在说话**<br>
-支持说话人区分的方案会把每个人放进自己的字幕轨；改名、配色、默认样式在一处管理，分错的可以合并，都能撤销。
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-review.png" width="100%" alt="审核模式：同一条字幕下列出 MOSS、FireRed 和 Qwen 的不同写法，不同的字被标出来">
-
-**同一句，对照几个模型的写法**<br>
-本机多模型方案会让几个模型各听一遍；写法不同的字标出来，看清来源后点一下（或按 1–4）采用。
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-translate.png" width="100%" alt="双语字幕：预览画面里中文原文下面是英文译文，时间轴上原文轨下方是一条译文轨">
-
-**翻译与双语**<br>
-用你的文字 AI 翻成简繁中文、英语、日语、韩语等；缺译的地方在译文轨上双击补写。原文和译文各有样式，可导出原文、译文或双语字幕。
+**Styles, animation and rendering**<br>
+Fonts, outlines, positions and entrance/exit animations come as presets that need no AI. Render MP4 / MKV / MOV, the whole timeline or just the in-to-out range.
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-razor.png" width="100%" alt="剃刀工具：沿着一条字幕移动时显示每个字的时间块和切开后的前后两段">
+<img src="docs/assets/readme/feature-razor.webp" width="100%" alt="Recorded in the app: the razor moves along a line, shows word timing and both halves, and splits the line at a word boundary">
 
-**按字切分，顺手剪视频**<br>
-每个字都有起止时间，剃刀停在字与字之间；视频轨上可以分割、波纹删除，或检测口播停顿后一次删掉。
+**Split on word boundaries, and cut the video**<br>
+Every word has its own timing, so the razor stops between words. On the video track, split, ripple-delete, or detect speech pauses and remove them in one go.
 </td>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-style.png" width="100%" alt="样式面板：字体、字号、描边等设置，预览里的字幕跟着变化">
+<img src="docs/assets/readme/feature-review.webp" width="100%" alt="Recorded in the app: in review mode one Chinese line lists the readings from MOSS, FireRed and Qwen with the differing character highlighted, and Qwen's reading is applied">
 
-**样式、动效、压制**<br>
-字体、描边、位置和入场退场动效都有现成预设，不需要 AI；压进 MP4 / MKV / MOV，整段或只导出入点到出点。
+**Compare what each model heard**<br>
+Local multi-model routes let several models transcribe the same line; differing characters are highlighted with their source, and a click (or 1–4) applies one. Shown with the Chinese sample: this release lists candidates for Chinese lines.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-speakers.webp" width="100%" alt="Recorded in the app: the names Celia and Thom are typed into the speaker cards in Speaker Management">
+
+**Tell speakers apart**<br>
+Routes that separate speakers give each person their own subtitle track. Names, colours and default styles live in one place; merge speakers that were split by mistake; everything can be undone.
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-link.png" width="100%" alt="Link download window: a field for pasting a video link, with Video + subtitles, Video only, Audio only and Subtitles only options">
+
+**Paste a link, get the video and its subtitles**<br>
+YouTube, Bilibili and other single videos the downloader (yt-dlp) supports. In the Studio, press Ctrl+V to download straight to the playhead.
 </td>
 </tr>
 </table>
 
-还有：术语库与 AI 校对、匹配已有文稿、按说话人分别导出、新手教学（范例工程，不用模型）、11 种界面语言和 15 套主题。详见[使用指南](docs/product-guide.zh-CN.md)。
+Also: glossary and AI proofreading, script matching, per-speaker export, a beginner tutorial with a sample project (no models needed), 11 interface languages and 15 themes. See the [user guide](docs/product-guide.en.md).
 
-## 开始前先了解
+## Before you start
 
-- **软件免费。** 官方版本免费提供，没有付费功能、注册或订阅。想支持开发，可以到[爱发电](#支持作者)赞助。
-- **本机识别需要先下载模型。** 安装程序不包含识别模型。第一次本机识别时，程序会按你选的方案在“模型工坊”下载模型和运行环境（例如 NVIDIA 高质量方案的模型约 11 GB，另加运行环境），之后可以离线识别，影音不离开电脑。
-- **云端识别和 AI 功能用你自己的账号。** 云端识别需要服务商账号和 API Key，按服务商的规则收费，音频会上传到你选的服务商。AI 断句、AI 校对、翻译和 AI 建词需要你自己的文字 AI 服务（只发送字幕文字）。不用这些，也能完成识别、编辑和导出。
-- **不是每台电脑都能跑每个模型。** 先看下表：
+- **The app is free.** Official builds cost nothing: no paid features, sign-up or subscription. To support development, see [Afdian](#support-the-author).
+- **Local recognition downloads models first.** The installer contains no speech models. The first time you transcribe locally, the Model workshop downloads the models and runtime for the route you picked (the NVIDIA high-quality route is about 11 GB of models plus its runtime). After that it works offline and your media never leaves your computer.
+- **Cloud recognition and AI features use your own accounts.** Cloud transcription needs an account and API key with the provider, is billed by them, and uploads your audio to them. AI segmentation, AI proofreading, translation and AI glossary building need your own text-AI service (only subtitle text is sent). You can transcribe, edit and export without any of these.
+- **Not every computer runs every model.** Start here:
 
-| 你的电脑 | 推荐的识别方式 | 特点 |
+| Your computer | Recommended route | What you get |
 | --- | --- | --- |
-| Windows，有 NVIDIA 显卡 | **本机识别**：MOSS + FireRedASR2-AED + Qwen3-ASR | 免费、不上传；分说话人，有逐字时间，三个模型可对照 |
-| Windows，没有 NVIDIA 显卡 | **云端识别**（自备 API Key），或 **轻量本机**（SenseVoice，用 CPU） | 云端按用量收费、要上传音频；轻量本机免费但较慢，不分说话人 |
-| Mac，Apple 芯片（实验版） | **Mac 本机识别**（MLX）、**MOSS + FireRed**（Apple GPU），或云端 | 建议 16 GB 以上内存；比 NVIDIA 显卡慢 |
+| Windows with an NVIDIA GPU | **Local**: MOSS + FireRedASR2-AED + Qwen3-ASR | Free and private; speakers, character timing, three models to compare |
+| Windows without an NVIDIA GPU | **Cloud** (your API key), or **Light local** (SenseVoice on the CPU) | Cloud is pay-as-you-go and uploads audio; light local is free but slower, with one speaker |
+| Mac with Apple silicon (experimental) | **Mac local** (MLX), **MOSS + FireRed** on the Apple GPU, or cloud | 16 GB of memory or more recommended; slower than an NVIDIA GPU |
 
-云端服务里，MOSS Pro 云端和百炼 / Qwen Cloud 的 Qwen-Audio 3.1 能分说话人；云端识别和轻量本机都能加装本机的 Qwen3 对齐模型（可用 CPU），补上逐字时间。详细比较见[选择识别方式](docs/product-guide.zh-CN.md#选择识别方式)。
+Among cloud services, MOSS Pro cloud and Qwen-Audio 3.1 (Bailian / Qwen Cloud) separate speakers; both cloud and light local can add the local Qwen3 aligner (CPU capable) for character timing. See [Choosing a recognition route](docs/product-guide.en.md#choosing-a-recognition-route) for details.
 
-## 快速开始
+## Quick start
 
-1. **安装并启动。** 下载上方对应的安装程序。
-2. **选择识别方式。** 第一次启动时选“本机识别”“云端识别”或“轻量本机”，程序会带你下载需要的模型，或打开“申请与设置 API”填写 Key。
-3. **导入素材。** 把视频或音频拖进首页，或点“链接下载”贴视频链接；选好词库，点“开始生成字幕”。已有字幕的视频可以直接进工作台。
-4. **在字幕工作台里修改、翻译和导出。** 校对文字、切分合并、翻译、调整样式，再导出字幕或压制成片。
+1. **Install and launch** with the installer above.
+2. **Choose how to transcribe.** On first launch pick "On this computer", "Cloud recognition" or "Light, on this computer"; the app downloads what that route needs, or opens "Apply for and set up an API" for your key.
+3. **Add media.** Drop video or audio on the home screen, or click "Link download" and paste a video link; pick a glossary if you have one and click "Start subtitles". Videos that come with subtitles can go straight to the Studio.
+4. **Edit, translate and export in Subtitle Studio.** Proofread, split and merge, translate, adjust styles, then export subtitles or render the video.
 
-想先熟悉界面，可以点右上角“说明 → 新手教学”，跟着范例工程走一遍。安装、费用、更新和常见问题见[使用指南](docs/product-guide.zh-CN.md)。
+To learn the interface first, open Help → Beginner tutorial and follow the sample project. Installation, costs, updates and common questions are in the [user guide](docs/product-guide.en.md).
 
-## 进阶与文档
+## Going further
 
 <details>
-<summary><b>识别方案是怎么组成的（三种分工与模型列表）</b></summary>
+<summary><b>How a recognition plan is put together (three roles and the model list)</b></summary>
 
 <br>
 
-一次识别最多有三种分工，按素材和设备组合：
+A run uses up to three roles, combined to suit your media and hardware:
 
-| 分工 | 做什么 | 代表方案 |
+| Role | What it does | Typical choices |
 | --- | --- | --- |
-| 主力转写 | 写出文字；MOSS 还会区分说话人 | MOSS、SenseVoice、Whisper、Qwen3-ASR、云端服务 |
-| 字幕时间轴 | 给每个字标上起止时间，断句和切分都沿着字的边界 | FireRedASR2-AED、Qwen3-ForcedAligner（可用 CPU）、Paraformer |
-| 文字复核 | 用另一个模型再听一遍，列出写法不同的地方 | Qwen3-ASR 等本地或在线方案 |
+| Primary transcription | Writes the text; MOSS also separates speakers | MOSS, SenseVoice, Whisper, Qwen3-ASR, cloud services |
+| Subtitle timeline | Gives every character a start and end time, so segmentation and cuts follow character boundaries | FireRedASR2-AED, Qwen3-ForcedAligner (CPU capable), Paraformer |
+| Text review | Listens again with another model and lists the differences | Qwen3-ASR and other local or online options |
 
-- **本机模型：** MOSS-Transcribe-Diarize、FireRedASR2-AED、Qwen3-ASR 1.7B、SenseVoice Small、Paraformer Large、Whisper large-v3-turbo、Fun-ASR Nano、FireRedASR2-LLM、GLM-ASR-Nano、Canary-Qwen-2.5B（英语）、Qwen3-ForcedAligner 0.6B，以及 Mac 上的 MLX 版 Qwen3-ASR。在 Windows 上，MOSS、FireRedASR2-AED、Qwen3-ASR 1.7B 和 FireRedASR2-LLM 需要 NVIDIA 显卡。
-- **云端识别（自备账号）：** MOSS Pro 云端（MOSI）、阿里云百炼 / Qwen Cloud 录音文件识别、讯飞 Spark-ASR 2.0、Groq Whisper、OpenAI，以及 OpenRouter、Azure 和自定义兼容接口（进阶，未用真实密钥实测）。只回传句段时间的服务，字幕时间会标为“估算”。
-- 模型不随程序附带，在模型工坊按需下载，每个文件都核对 SHA-256，并遵守各自的许可（[模型许可表](licenses/MODELS.md)）。
+- **Local models:** MOSS-Transcribe-Diarize, FireRedASR2-AED, Qwen3-ASR 1.7B, SenseVoice Small, Paraformer Large, Whisper large-v3-turbo, Fun-ASR Nano, FireRedASR2-LLM, GLM-ASR-Nano, Canary-Qwen-2.5B (English), Qwen3-ForcedAligner 0.6B, and MLX Qwen3-ASR on Macs. On Windows, MOSS, FireRedASR2-AED, Qwen3-ASR 1.7B and FireRedASR2-LLM need an NVIDIA GPU.
+- **Cloud transcription (your own account):** MOSS Pro cloud (MOSI), Alibaba Cloud Bailian / Qwen Cloud file transcription, iFlytek Spark-ASR 2.0, Groq Whisper, OpenAI, plus OpenRouter, Azure and custom compatible endpoints (advanced, not tested with real keys). Services that return sentence times only produce timing marked as estimated.
+- Models are not bundled. The Model workshop downloads them on demand, checks every file against its SHA-256, and each model keeps its own licence ([model licence table](licenses/MODELS.md)).
 
 </details>
 
 <details>
-<summary><b>一段录音是怎么变成字幕的（识别流程）</b></summary>
+<summary><b>How a recording becomes subtitles (recognition flow)</b></summary>
 
 <br>
 
-下图是 Windows + NVIDIA 显卡的默认本机方案（MOSS + FireRedASR2-AED + Qwen3-ASR）；虚线是只有日语、英语素材才走的路线。
+The chart follows the default local route on Windows with an NVIDIA GPU (MOSS + FireRedASR2-AED + Qwen3-ASR). Dashed lines apply only to Japanese and English media.
 
 ```mermaid
 %%{init: {"htmlLabels": false, "markdownAutoWrap": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400}}}%%
 flowchart TB
-    subgraph REC["① 识别：三个模型分工"]
+    subgraph REC["① Recognition: 3 roles"]
         direction TB
-        A["`视频或音频
-统一成 16 kHz`"] --> M["`**主力转写**
+        A["`Video or audio
+to 16 kHz audio`"] --> M["`**Primary transcription**
 MOSS
-写出文字
-分出说话人`"]
-        A --> V["`**人声检测**
+text and speakers`"]
+        A --> V["`**Voice detection**
 FireRedVAD
-找出有人声的区间`"]
-        M -->|中文| F["`**字幕时间轴**
+where people speak`"]
+        M -->|Chinese| F["`**Subtitle timeline**
 FireRedASR2-AED
-给每个字标上时间`"]
-        M -.->|日语、英语| Q["`**字幕时间轴**
+times every character`"]
+        M -.->|Japanese, English| Q["`**Subtitle timeline**
 Qwen3-ForcedAligner
-把文字对齐到声音`"]
-        V --> R["`**文字复核**
+aligns text to audio`"]
+        V --> R["`**Text review**
 Qwen3-ASR
-再听一遍
-另写一份`"]
+a second transcript`"]
     end
-    subgraph POST["② 比对、整理、输出"]
+    subgraph POST["② Compare, tidy, export"]
         direction LR
-        D["`**合成主稿**
-比较三份写法
-分歧留作候选`"] --> T["`**整理与断句**
-术语库纠错
-AI 校对（可选）
-断句，锁定时间轴`"]
-        T --> P["`**字幕工作台**
-对照候选、翻译、剪辑
-导出字幕和成片`"]
+        D["`**Merged draft**
+compares 3 readings
+keeps candidates`"] --> T["`**Cleanup and lines**
+glossary fixes
+AI proofreading
+(optional)
+line breaks, timing`"]
+        T --> P["`**Subtitle Studio**
+compare, translate, cut
+export subtitles
+and video`"]
     end
     REC --> POST
 ```
 
-MOSS 先听完整段，写出文字并分出谁在说话；FireRedVAD 找出真正有人声的区间。FireRedASR2-AED 和 Qwen3-ASR 各自再听一遍，前者给每个字标上起止时间，后者写出另一份文字。软件以 MOSS 的句子和说话人为骨架比较三份写法：只有另外两个模型写法一致、改动又通过安全检查时才自动替换，其余不同的写法留在工作台的审核模式里由你决定。之后按术语库纠错，再交给你配置的文字 AI 校对（可选）；断句可以用本地规则或 AI，但 AI 只决定在哪里断开、不能改字。
+MOSS listens to the whole file, writes the text and tells the speakers apart, while FireRedVAD finds where people actually speak. FireRedASR2-AED and Qwen3-ASR then each listen again: the first times every character, the second writes another transcript. Using MOSS's sentences and speakers as the backbone, the app compares the three readings. It replaces text automatically only when the other two models agree and the change passes a safety check; other differences are left for you in the Studio's review mode. Glossary fixes and optional AI proofreading follow; line breaking uses local rules or AI, but the AI only decides where to break and cannot change the text.
 
-换成其他方案时，分工不变：云端识别由服务商写出文字，逐字时间可以用本机的 Qwen3-ForcedAligner 补上；轻量本机（SenseVoice）只做主力转写；Mac 用 MLX 版 Qwen3-ASR 加对齐模型，或在 Apple GPU 上跑 MOSS + FireRed。
+Other routes keep the same roles with different models: with cloud recognition the provider writes the text and the local Qwen3-ForcedAligner can add character timing; light local (SenseVoice) only transcribes; Macs use MLX Qwen3-ASR with an aligner, or MOSS + FireRed on the Apple GPU.
 
 </details>
 
-- [使用指南](docs/product-guide.zh-CN.md)：安装、第一次启动、选择识别方式、费用与隐私、工作台常用操作、更新、常见问题、从源码运行
-- [界面一览](docs/product-demo.zh-CN.md)：识别进度、完成页、模型工坊、导出、主题等更多截图（0.7.1 界面）
-- [申请与设置 API](docs/api-setup/README.md)：各家云端识别和文字 AI 的申请步骤与费用说明
-- [Mac 实验版说明](docs/deployment/macos-experimental.zh-CN.md) · [更新方式](UPDATING.md) · [0.8.7 发布说明](docs/releases/0.8.7.md) · [更新日志](CHANGELOG.md) · [参与贡献](CONTRIBUTING.md)
+- [User guide](docs/product-guide.en.md): installation, first launch, choosing a route, costs and privacy, everyday Studio actions, updates, FAQ, running from source
+- [Interface tour](docs/product-demo.en.md): progress, completion, Model workshop, export, themes and more (0.7.1 interface)
+- [API setup guides](docs/api-setup/README.md) (Chinese): sign-up steps and pricing notes for each cloud and text-AI provider
+- [Mac notes](docs/deployment/macos-experimental.zh-CN.md) (Chinese) · [Updating](UPDATING.md) (Chinese) · [0.8.7 release notes](docs/releases/0.8.7.md) (Chinese, English, Japanese, Korean) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
-## 支持作者
+## Support the author
 
-如果兔白字幕帮到了你，可以在爱发电支持作者继续开发：**[afdian.com/a/2byteasr](https://afdian.com/a/2byteasr)**。赞助完全自愿，不赞助也能使用全部功能。
+If 2ByteASR helps you, you can support its development on Afdian (爱发电): **[afdian.com/a/2byteasr](https://afdian.com/a/2byteasr)**. Sponsoring is entirely optional; every feature works without it.
 
-## 反馈、许可与第三方组件
+## Feedback, licences and third-party components
 
-遇到问题请到 [Issues](https://github.com/NOTBAD314/2ByteASR/issues) 反馈，附上版本、所用的识别方案、复现步骤和截图。<br>
-Discord 交流群：https://discord.gg/PSuTx9XfV · QQ 交流群：1124254900
+Please report problems in [Issues](https://github.com/NOTBAD314/2ByteASR/issues) with your version, recognition route, steps to reproduce and screenshots.
 
-项目自有代码采用 **GPL-3.0-only**（[标准英文全文](LICENSE) / [适用范围](PROJECT_LICENSE.md)）。官方版本免费提供；允许依 GPL 商用、修改和收费分发，分发时须履行对应源码等条件。私人修改无需公开，普通字幕、视频和图片不会仅因使用本软件生成而自动适用 GPL。第三方组件保留各自许可：高保真渲染用到的 Remotion 对个人和员工不超过 3 人的营利组织免费，更大的营利组织需另购其 Company License；GSAP 采用其标准条款。详见[第三方说明](THIRD_PARTY_NOTICES.md)与[模型许可表](licenses/MODELS.md)，完整安装包的分发材料仍在整理中（[分发状态](licenses/DISTRIBUTION-STATUS.md)）。
+Project-owned code is licensed under **GPL-3.0-only** ([English license](LICENSE), [scope](PROJECT_LICENSE.md)). Official versions are free; GPL permits commercial use, modification and paid distribution subject to its source and other conditions. Private changes need not be published. Ordinary subtitle, video and image outputs do not become GPL merely through use of this software. Third-party components keep their own licenses: Remotion, used by the high-fidelity renderer, is free for individuals and for-profit organizations of up to 3 employees, while larger for-profit organizations need its Company License; GSAP uses its standard license. See the [third-party notices](THIRD_PARTY_NOTICES.md) and [model license table](licenses/MODELS.md); distribution materials for the full installer are still being completed ([status](licenses/DISTRIBUTION-STATUS.md)).
 
-源码：`main` 分支是程序源码；与 0.8.7 安装包对应的构建来源是 tag `v0.8.7`，完整构建输入在 Release 的 `2ByteASR-Source-0.8.7.zip`（说明见 [0.8.7 发布说明的“源码与校验”](docs/releases/0.8.7.md#源码与校验)）。[源码交付记录](SOURCE_DELIVERY.md)写于 0.5.0 阶段，尚未按 0.8.7 更新。
+Source: the `main` branch holds the application source. The tag `v0.8.7` is the build source of the 0.8.7 installers, and the full build inputs are in the release's `2ByteASR-Source-0.8.7.zip` (see "Source and checksums" in the [0.8.7 release notes](docs/releases/0.8.7.md#source-and-checksums)). [SOURCE_DELIVERY.md](SOURCE_DELIVERY.md) was written for 0.5.0 and has not been updated for 0.8.7.

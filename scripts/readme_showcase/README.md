@@ -1,6 +1,24 @@
 # GitHub README 展示素材复现
 
-2026-10-29 起，`main` 分支 README 的主图和“能做什么”六张图来自 **0.8.7** 的真实窗口（`workbench*.png`、`feature-*.png`），步骤见下一节。“界面一览”仍用 2026-10-14 的 0.7.1 素材（再下面一节的旧步骤）；直播切片动图仍是 2026-10-09 的 HyperFrames 示意动画（`animations/`）。下次界面变化后按同样步骤更新即可。
+2026-10-29 起，`main` 分支 README 的主图和“能做什么”六格来自 **0.8.7** 的真实窗口，步骤见下面两节（第二版是现在用的）。“界面一览”仍用 2026-10-14 的 0.7.1 素材（再下面一节的旧步骤）；直播切片动图仍是 2026-10-09 的 HyperFrames 示意动画（`animations/`）。下次界面变化后按同样步骤更新即可。
+
+## 2026-10-29（第二版）：开放授权电影与真实操作录制
+
+README 现在用的图（`workbench*.png`、`feature-*.webp`、`feature-link*.png`）来自这一节；上一节的小游戏画面只剩审核候选条在用（0.8.7 不给英语字幕列候选）。
+
+```powershell
+# 示例影片：Tears of Steel（CC BY 3.0，Blender Foundation），官方 720p 文件，裁 0:22–2:10
+curl -L -o ..\film\tears_of_steel_720p.mov https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
+ffmpeg -ss 22 -t 108 -i ..\film\tears_of_steel_720p.mov -c:v libx264 -crf 18 -c:a aac -b:a 192k "$env:README_SHOWCASE_DIR\media\tos-clip.mp4"
+# 真实识别（识别语言设为英语）
+<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\showcase_run.py --name run-tos --size 1440x900 --scale 2 --media-file tos-clip.mp4 --media-name "Tears of Steel.mp4" --recognition-language en
+# 每种界面语言一轮（zh 1440x900，en/ja/ko 1600x1000），场景读工作目录里的 film.json
+<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\showcase_studio.py --name en-f2 --source run-tos --lang en --size 1600x1000 --scale 2 --scenes film_speakers,film_razor,film_translate,film_hero,film_play,link,film_style
+# 审核候选条另用上一节的 <lang>-05 录制；然后生成图片
+<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\build_assets_film.py "$env:README_SHOWCASE_DIR\assets-film"
+```
+
+`film.json`（不入库）写识别后的说话人编号与名字、各场景用哪一句、剃刀切点，以及每句的中、日、韩译文（按识别出的英文原句对应）。说话人编号以工程里的为准（这次是 S01 Celia、S02 Thom），译文表要在看到识别结果后再写。
 
 ## 2026-10-29：0.8.7 首页截图
 
@@ -29,7 +47,7 @@ powershell -ExecutionPolicy Bypass -File scripts\readme_showcase\tts.ps1 -Dialog
 # 生成图片，复制到 main 工作树的 docs/assets/readme/，再更新清单、检查链接
 <开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\build_assets_087.py "$env:README_SHOWCASE_DIR\assets-087"
 <开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\build_manifest.py <main 工作树> <日期>
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\check_links.py <main 工作树> README.md README_EN.md README_JA.md README_KO.md
+<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\check_links.py <main 工作树> README.md README_ZH.md README_JA.md README_KO.md
 ```
 
 场景顺序有意义：`razor` 和 `fixups` 修的是这段示例里断得不好的句子，`review` 要在 `fixups` 之前（采用“它”之后 `fixups` 才找得到“看到了我先拉住它”）。录制时看到的界面问题记在 `docs/assets/readme/README.md`。

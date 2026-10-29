@@ -2,7 +2,7 @@
 
 最后核对：2026-10-15，对应公开版本 **0.7.2**。这份指南取代以前写着“0.5.0”“目前尚无公开安装包”的旧版说明；那些内容已经不适用。
 
-[返回首页](../README.md) · [界面一览](product-demo.zh-CN.md) · [申请与设置 API](api-setup/README.md) · [English](product-guide.en.md) · [日本語](product-guide.ja.md) · [한국어](product-guide.ko.md)
+[返回首页](../README_ZH.md) · [界面一览](product-demo.zh-CN.md) · [申请与设置 API](api-setup/README.md) · [English](product-guide.en.md) · [日本語](product-guide.ja.md) · [한국어](product-guide.ko.md)
 
 **目录**：[下载哪一个](#下载哪一个) · [Windows 安装](#windows-安装) · [Mac 安装（实验版）](#mac-安装实验版) · [第一次启动](#第一次启动) · [选择识别方式](#选择识别方式) · [费用与隐私](#费用与隐私) · [识别方案与模型](#识别方案与模型) · [字幕工作台常用操作](#字幕工作台常用操作) · [输入与输出](#输入与输出) · [更新](#更新) · [常见问题](#常见问题) · [从源码运行](#从源码运行) · [反馈问题](#反馈问题)
 
@@ -169,4 +169,4 @@ cd 2ByteASR
 
 在 [Issues](https://github.com/NOTBAD314/2ByteASR/issues) 附上版本、操作系统、所用的识别方案、复现步骤和截图。识别结果有问题时，完成页的“运行日志”可以一并附上（注意先删去其中的本机路径等个人信息）。
 
-[返回首页](../README.md) · [界面一览](product-demo.zh-CN.md) · [第三方组件](../THIRD_PARTY_NOTICES.md)
+[返回首页](../README_ZH.md) · [界面一览](product-demo.zh-CN.md) · [第三方组件](../THIRD_PARTY_NOTICES.md)

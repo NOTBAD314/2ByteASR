@@ -9,13 +9,13 @@
 받아쓰기, 교정, 번역, 자르기, 내보내기를 한 창에서.<br>
 무료입니다. 모든 처리를 내 컴퓨터에서 할 수도 있고, 직접 쓰는 클라우드 서비스에 연결할 수도 있습니다.
 
-[中文](README.md) · [English](README_EN.md) · [日本語](README_JA.md) · **한국어**
+[English](README.md) · [中文](README_ZH.md) · [日本語](README_JA.md) · **한국어**
 
 </div>
 
-<img src="docs/assets/readme/workbench-ko.png" width="100%" alt="한국어 인터페이스로 실행한 2ByteASR 0.8.7의 자막 스튜디오: 왼쪽에 자막 목록, 가운데 동영상 미리보기에는 중국어 원문과 한국어 번역이 위아래로 표시되고, 오른쪽에 스타일 패널, 아래 타임라인에는 스트리머와 팀원의 자막 트랙, 번역 트랙, 비디오 트랙, 오디오 파형이 있습니다">
+<img src="docs/assets/readme/workbench-ko.png" width="100%" alt="한국어 인터페이스로 실행한 2ByteASR 0.8.7의 자막 스튜디오: 왼쪽에 자막 목록, 가운데 영화 미리보기에는 영어 원문과 한국어 번역, 오른쪽에 스타일 패널, 아래 타임라인에는 Celia와 Thom의 자막 트랙, 번역 트랙, 비디오 트랙, 오디오 파형이 있습니다">
 
-<sub>실제 0.8.7 화면입니다. 예제 영상은 이 프로젝트에서 직접 그린 작은 게임 화면에 두 사람의 중국어 합성 음성을 입힌 것이며, NVIDIA GPU에서 로컬 MOSS + FireRedASR2-AED + Qwen3-ASR로 인식했습니다. 화자 이름은 화자 관리에서 바꿨고, 한국어 번역은 자막 스튜디오의 수동 번역으로 입력했습니다(AI는 쓰지 않았습니다).</sub>
+<sub>실제 0.8.7 화면입니다. 예제: [Tears of Steel](https://mango.blender.org/) (© Blender Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)). NVIDIA GPU에서 로컬 MOSS + Qwen3-ForcedAligner + Qwen3-ASR로 인식했습니다. 화자 이름은 화자 관리에서 입력했고, 한국어 번역은 자막 스튜디오의 수동 번역으로 입력했습니다(AI는 쓰지 않았습니다).</sub>
 
 | 받아쓰기 | 교정 | 번역 | 자르기 | 내보내기 |
 | --- | --- | --- | --- | --- |
@@ -77,44 +77,44 @@ SRT / ASS를 가져와 교정하고, 번역하고, 스타일을 바꿔 다시 �
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-link-ko.png" width="100%" alt="링크 다운로드 창: 동영상 링크를 붙여 넣는 입력란과 영상+자막, 영상만, 오디오만, 자막만 선택, 분석 버튼(이 창은 아직 대부분 영어로 표시됩니다)">
-
-**링크를 붙여 넣으면 영상과 자막이 함께 들어옵니다**<br>
-YouTube, Bilibili, 다운로더(yt-dlp)가 지원하는 그 밖의 단일 영상. 자막 스튜디오에서 Ctrl+V를 누르면 재생 헤드 위치로 바로 내려받습니다. 이 창은 아직 한국어 번역이 거의 없어 대부분 영어로 표시됩니다.
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-speakers-ko.png" width="100%" alt="화자 관리: 스트리머와 팀원 카드에 자막 수, 길이, 대표 문장, 목소리 비교와 병합 기능이 있습니다">
-
-**누가 말하는지 구분합니다**<br>
-화자 구분을 지원하는 방식은 사람마다 자막 트랙을 따로 만듭니다. 이름·색상·기본 스타일을 한곳에서 관리하고, 잘못 나뉜 화자는 합칠 수 있으며, 모두 실행 취소할 수 있습니다.
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-review-ko.png" width="100%" alt="검토 모드: 한 줄에 MOSS, FireRed, Qwen의 표기가 나열되고 다른 글자가 강조됩니다">
-
-**같은 문장을 여러 모델의 표기와 비교합니다**<br>
-로컬 다중 모델 방식에서는 여러 모델이 같은 줄을 각각 듣습니다. 다른 글자와 출처가 표시되고, 클릭하거나 1–4를 눌러 적용합니다.
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-translate-ko.png" width="100%" alt="이중 언어 자막: 미리보기에 중국어 원문과 한국어 번역이 위아래로 표시되고, 타임라인의 화자 트랙 아래에 번역 트랙이 있습니다">
+<img src="docs/assets/readme/feature-translate-ko.webp" width="100%" alt="앱에서 실제로 녹화한 장면: 영화를 재생하면 미리보기에 영어 원문과 한국어 번역이 함께 표시되고, 재생 헤드가 화자 트랙과 번역 트랙 위를 지나갑니다">
 
 **번역과 이중 언어 자막**<br>
 직접 설정한 텍스트 AI로 중국어 간체·번체, 영어, 일본어, 한국어 등으로 번역합니다. 번역이 빠진 곳은 번역 트랙을 더블클릭해 채웁니다. 원문과 번역은 각자 스타일을 가지며, 하나만 또는 둘 다 내보낼 수 있습니다.
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-razor-ko.png" width="100%" alt="자르기 도구: 줄 위를 움직이면 글자별 타이밍과 자른 뒤의 앞뒤 두 부분이 표시됩니다">
-
-**글자 경계에서 나누고, 영상도 자릅니다**<br>
-글자마다 시간이 있어서 자르기 도구가 글자와 글자 사이에서 멈춥니다. 비디오 트랙에서는 분할, 리플 삭제, 말이 멈춘 구간을 찾아 한 번에 지우기를 할 수 있습니다.
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-style-ko.png" width="100%" alt="스타일 패널: 글꼴, 크기, 외곽선 설정에 따라 미리보기의 자막이 바뀝니다">
+<img src="docs/assets/readme/feature-style-ko.webp" width="100%" alt="앱에서 실제로 녹화한 장면: 모든 자막의 스타일 프리셋을 바꾼 뒤, 등장 애니메이션이 들어간 한 줄을 재생합니다">
 
 **스타일, 애니메이션, 영상 내보내기**<br>
 글꼴, 외곽선, 위치, 등장·퇴장 애니메이션은 기본 프리셋이 있어 AI가 필요 없습니다. MP4 / MKV / MOV로, 전체 또는 인 포인트부터 아웃 포인트까지 내보냅니다.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-razor-ko.webp" width="100%" alt="앱에서 실제로 녹화한 장면: 자르기 도구가 줄 위를 움직이며 단어별 타이밍과 앞뒤 두 부분을 보여 주고, 단어 경계에서 자릅니다">
+
+**글자·단어 경계에서 나누고, 영상도 자릅니다**<br>
+글자와 단어마다 시간이 있어서 자르기 도구가 그 경계에서 멈춥니다. 비디오 트랙에서는 분할, 리플 삭제, 말이 멈춘 구간을 찾아 한 번에 지우기를 할 수 있습니다.
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-review-ko.webp" width="100%" alt="앱에서 실제로 녹화한 장면: 검토 모드에서 중국어 한 줄에 MOSS, FireRed, Qwen의 표기가 나열되고 다른 글자가 강조되며, Qwen의 표기를 적용합니다">
+
+**같은 문장을 여러 모델의 표기와 비교합니다**<br>
+로컬 다중 모델 방식에서는 여러 모델이 같은 줄을 각각 듣습니다. 다른 글자와 출처가 표시되고, 클릭하거나 1–4를 눌러 적용합니다. 여기는 중국어 예제입니다(이 버전은 중국어 자막에만 후보를 보여 줍니다).
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-speakers-ko.webp" width="100%" alt="앱에서 실제로 녹화한 장면: 화자 관리 카드에 Celia와 Thom 이름을 입력합니다">
+
+**누가 말하는지 구분합니다**<br>
+화자 구분을 지원하는 방식은 사람마다 자막 트랙을 따로 만듭니다. 이름·색상·기본 스타일을 한곳에서 관리하고, 잘못 나뉜 화자는 합칠 수 있으며, 모두 실행 취소할 수 있습니다.
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-link-ko.png" width="100%" alt="링크 다운로드 창: 동영상 링크를 붙여 넣는 입력란과 영상+자막, 영상만, 오디오만, 자막만 선택(이 창은 아직 대부분 영어로 표시됩니다)">
+
+**링크를 붙여 넣으면 영상과 자막이 함께 들어옵니다**<br>
+YouTube, Bilibili, 다운로더(yt-dlp)가 지원하는 그 밖의 단일 영상. 자막 스튜디오에서 Ctrl+V를 누르면 재생 헤드 위치로 바로 내려받습니다. 이 창은 아직 한국어 번역이 거의 없어 대부분 영어로 표시됩니다.
 </td>
 </tr>
 </table>

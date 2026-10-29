@@ -9,13 +9,13 @@
 文字起こし、校正、翻訳、カット、書き出しを、ひとつのウィンドウで。<br>
 無料。すべて自分の PC で動かすことも、自分のクラウドサービスにつなぐこともできます。
 
-[中文](README.md) · [English](README_EN.md) · **日本語** · [한국어](README_KO.md)
+[English](README.md) · [中文](README_ZH.md) · **日本語** · [한국어](README_KO.md)
 
 </div>
 
-<img src="docs/assets/readme/workbench-ja.png" width="100%" alt="日本語表示の 2ByteASR 0.8.7 字幕スタジオ：左に字幕リスト、中央の動画プレビューには中国語の原文と日本語訳が上下に並び、右にスタイルパネル、下のタイムラインには配信者と相方の字幕トラック、訳文トラック、映像トラック、音声波形が並ぶ">
+<img src="docs/assets/readme/workbench-ja.png" width="100%" alt="日本語表示の 2ByteASR 0.8.7 字幕スタジオ：左に字幕リスト、中央に映画のプレビューと英語の原文・日本語訳、右にスタイルパネル、下のタイムラインには Celia と Thom の字幕トラック、訳文トラック、映像トラック、音声波形が並ぶ">
 
-<sub>0.8.7 の実際の画面です。サンプル動画はこのプロジェクトで描いた小さなゲーム画面に、2 人分の中国語合成音声を合わせたもので、NVIDIA GPU 上のローカル MOSS + FireRedASR2-AED + Qwen3-ASR で認識しました。話者名は話者管理で変更し、日本語訳は字幕スタジオの手動翻訳で入力しています（AI は使っていません）。</sub>
+<sub>0.8.7 の実際の画面です。サンプル：[Tears of Steel](https://mango.blender.org/) (© Blender Foundation, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/))。NVIDIA GPU 上のローカル MOSS + Qwen3-ForcedAligner + Qwen3-ASR で認識しました。話者名は話者管理で入力し、日本語訳は字幕スタジオの手動翻訳で入力しています（AI は使っていません）。</sub>
 
 | 文字起こし | 校正 | 翻訳 | カット | 書き出し |
 | --- | --- | --- | --- | --- |
@@ -77,44 +77,44 @@ SRT / ASS を読み込んで、校正、翻訳、スタイル変更をして、�
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-link-ja.png" width="100%" alt="リンクダウンロードの画面：動画リンクを貼る欄と、動画＋字幕、動画のみ、音声のみ、字幕のみの選択、解析ボタン">
-
-**リンクを貼れば、動画と字幕が入る**<br>
-YouTube、bilibili、ダウンローダー（yt-dlp）が対応するそのほかの単体動画。字幕スタジオで Ctrl+V を押すと、再生ヘッドの位置にそのままダウンロードできます。
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-speakers-ja.png" width="100%" alt="話者管理：配信者と相方のカードに字幕数、長さ、代表の 1 行、声紋比較と統合の操作がある">
-
-**話者を分ける**<br>
-話者分離に対応した方法なら、ひとりずつ字幕トラックに分かれます。名前、色、標準スタイルをまとめて管理し、誤って分かれた話者は統合できます。どれも元に戻せます。
-</td>
-</tr>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-review-ja.png" width="100%" alt="レビューモード：1 行に MOSS、FireRed、Qwen の読みが並び、違う文字が強調されている">
-
-**モデルごとの聞き取りを比べる**<br>
-ローカルの複数モデル方式では、同じ行を複数のモデルが聞きます。違う文字と出どころが示され、クリック（または 1〜4 キー）で採用できます。
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-translate-ja.png" width="100%" alt="2 言語字幕：プレビューに中国語の原文と日本語訳が上下に表示され、タイムラインの話者トラックの下に訳文トラックがある">
+<img src="docs/assets/readme/feature-translate-ja.webp" width="100%" alt="アプリ内の実録画：映画を再生すると、プレビューに英語の原文と日本語訳が表示され、再生ヘッドが話者トラックと訳文トラックの上を進む">
 
 **翻訳と 2 言語字幕**<br>
 ご自身のテキスト AI で簡体字・繁体字中国語、英語、日本語、韓国語などに翻訳できます。訳が抜けた所は訳文トラックをダブルクリックして補えます。原文と訳文は別々のスタイルを持ち、どちらか、または両方を書き出せます。
 </td>
-</tr>
-<tr>
 <td width="50%" valign="top">
-<img src="docs/assets/readme/feature-razor-ja.png" width="100%" alt="分割ツール：行の上を動かすと 1 文字ずつの時刻と、切った後の前後 2 行が表示される">
-
-**文字の境界で分割し、動画も切る**<br>
-1 文字ずつ時刻があるので、分割ツールは文字と文字の間で止まります。映像トラックでは分割、リップル削除、話の間を検出してまとめて削除できます。
-</td>
-<td width="50%" valign="top">
-<img src="docs/assets/readme/feature-style-ja.png" width="100%" alt="スタイルパネル：フォント、サイズ、縁取りの設定に合わせて、プレビューの字幕が変わる">
+<img src="docs/assets/readme/feature-style-ja.webp" width="100%" alt="アプリ内の実録画：すべての字幕のスタイルプリセットを切り替え、登場アニメーション付きの 1 行を再生する">
 
 **スタイル、アニメーション、書き出し**<br>
 フォント、縁取り、位置、登場と退場のアニメーションはプリセットがあり、AI は不要です。MP4 / MKV / MOV で、全体でもイン点からアウト点まででも書き出せます。
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-razor-ja.webp" width="100%" alt="アプリ内の実録画：分割ツールが行の上を動き、単語ごとの時刻と前後 2 行を示して、単語の境界で分割する">
+
+**文字・単語の境界で分割し、動画も切る**<br>
+文字や単語ごとに時刻があるので、分割ツールはその境界で止まります。映像トラックでは分割、リップル削除、話の間を検出してまとめて削除できます。
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-review-ja.webp" width="100%" alt="アプリ内の実録画：レビューモードで中国語の 1 行に MOSS、FireRed、Qwen の読みが並び、違う文字が強調され、Qwen の読みを採用する">
+
+**モデルごとの聞き取りを比べる**<br>
+ローカルの複数モデル方式では、同じ行を複数のモデルが聞き、違う文字と出どころを示します。クリック（または 1〜4 キー）で採用できます。ここは中国語サンプルです（このバージョンで候補が出るのは中国語の字幕です）。
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-speakers-ja.webp" width="100%" alt="アプリ内の実録画：話者管理のカードに Celia と Thom の名前を入力する">
+
+**話者を分ける**<br>
+話者分離に対応した方法なら、ひとりずつ字幕トラックに分かれます。名前、色、標準スタイルをまとめて管理し、誤って分かれた話者は統合できます。どれも元に戻せます。
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-link-ja.png" width="100%" alt="リンクダウンロードの画面：動画リンクを貼る欄と、動画＋字幕、動画のみ、音声のみ、字幕のみの選択">
+
+**リンクを貼れば、動画と字幕が入る**<br>
+YouTube、bilibili、ダウンローダー（yt-dlp）が対応するそのほかの単体動画。字幕スタジオで Ctrl+V を押すと、再生ヘッドの位置にそのままダウンロードできます。
 </td>
 </tr>
 </table>
