@@ -4,14 +4,22 @@
 
 # 2ByteASR · 兔白字幕
 
-**More than automatic subtitles: tell speakers apart, time every word, then fix, cut and export in one window.**
+### Subtitle editing &amp; translation workbench
 
-A free desktop subtitle app made for game streams, stream replays and multi-speaker videos.<br>
-Built for Chinese first, with Japanese and English recognition too. Run everything on your own computer, or connect your own cloud service.
+Transcribe, proofread, translate, cut and render, all in one window.<br>
+Free. Run everything on your own computer, or connect your own cloud service.
 
 [中文](README.md) · **English** · [日本語](README_JA.md) · [한국어](README_KO.md)
 
 </div>
+
+<img src="docs/assets/readme/workbench-en.png" width="100%" alt="Subtitle Studio in 2ByteASR 0.8.7 with the English interface: captions list on the left, video preview in the middle showing the Chinese original with the English translation below it, style panel on the right, and a timeline with subtitle tracks for Host and Teammate, a translation track, the video track and the audio waveform">
+
+<sub>Real 0.8.7 screenshot. The sample video is a small game scene drawn for this project, with two synthetic Chinese voices, transcribed locally with MOSS + FireRedASR2-AED + Qwen3-ASR on an NVIDIA GPU. Speaker names were set in Speaker Management; the English translation was entered with the Studio's manual translation, without AI.</sub>
+
+| Transcribe | Proofread | Translate | Cut | Export |
+| --- | --- | --- | --- | --- |
+| Locally or in the cloud, with speakers told apart | Compare models, glossary, AI proofreading | Original and translation as two layers; double-click to fill gaps | Split on word boundaries, remove pauses in one step | Subtitle files, or video with subtitles burned in |
 
 ## Download
 
@@ -25,14 +33,93 @@ Current release: **0.8.7** (2026-10-27; Windows only, the Mac build stays at 0.8
 - **Slow or blocked downloads in mainland China?** Use the GitCode mirror first: [Windows installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg). If that fails too, try the third-party gh-proxy accelerator: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg). The files are identical on every source; check them with `SHA256SUMS.txt`.
 - **Already on 0.6.5, 0.7.x or 0.8.0–0.8.6?** Use "Check for updates" in the app; it downloads only what changed. For 0.6.0 or earlier, run the new installer over the old one without uninstalling first.
 - **You don't need the other files.** The `Source`, `ThirdParty`, `update` and `.sig` files on the [Releases page](https://github.com/NOTBAD314/2ByteASR/releases/latest) are for source code, licence materials and in-app updates. `SHA256SUMS.txt` lets you check that a download is complete.
+- **Linux:** there is a [Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) (amd64 / CPU, the original desktop in a browser, no NVIDIA GPU needed); see [Build and run](README.docker.md).
 
-### Docker (Linux amd64 / CPU)
+## What are you working on?
 
-**[Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) · [Build and run](README.docker.md)**. Use the original desktop in a browser, with audio, subtitle editing and export. The default is MOSS Pro cloud API plus local Qwen3 word alignment. Bring your own API key; download model weights separately. No NVIDIA GPU is required.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-<img src="docs/assets/readme/hero-en.png" width="100%" alt="Subtitle Studio in 2ByteASR 0.7.1 with the English interface: captions list on the left, video preview with a subtitle in the middle, style panel on the right, and a timeline with one subtitle track each for Host and Teammate, a video track and the audio waveform; the home window sits behind it">
+**Game streams and stream replays**<br>
+One subtitle track per speaker; a glossary that remembers character names and skills; highlight candidates from Bilibili danmaku XML.<br>
+→ [Tell speakers apart](#what-it-does) · [Glossary](docs/product-guide.en.md#everyday-studio-actions)
 
-<sub>Real 0.7.1 screenshot. The sample is a self-made test card with two synthetic Chinese voices, transcribed locally with MOSS + FireRedASR2-AED + Qwen3-ASR on an NVIDIA GPU. The speaker names were set in Speaker Management.</sub>
+</td>
+<td width="50%" valign="top">
+
+**Subtitling foreign-language videos**<br>
+Paste a YouTube, Bilibili or other link to download the video and its subtitles into a project; transcribe Japanese or English, translate with your own text AI, and export bilingual subtitles.<br>
+→ [Link download](#what-it-does) · [Translation](#what-it-does)
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+**Interviews, podcasts and lectures**<br>
+Already have a script? Time each line without rewriting it. Remove speech pauses in one step; find and replace in bulk; convert between Simplified and Traditional Chinese.<br>
+→ [Everyday Studio actions](docs/product-guide.en.md#everyday-studio-actions)
+
+</td>
+<td width="50%" valign="top">
+
+**You already have subtitles**<br>
+Import SRT / ASS, proofread, translate, restyle and render the video again. No speech model needed.<br>
+→ [Input and output](docs/product-guide.en.md#input-and-output)
+
+</td>
+</tr>
+</table>
+
+## What it does
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-link-en.png" width="100%" alt="Link download window: a field for pasting a video link, with Video + subtitles, Video only, Audio only and Subtitles only options and an Analyze button">
+
+**Paste a link, get the video and its subtitles**<br>
+YouTube, Bilibili and other single videos the downloader (yt-dlp) supports. In the Studio, press Ctrl+V to download straight to the playhead.
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-speakers-en.png" width="100%" alt="Speaker Management: cards for Host and Teammate with subtitle counts, duration and a sample line, plus Voiceprint compare and merge options">
+
+**Tell speakers apart**<br>
+Routes that separate speakers give each person their own subtitle track. Names, colours and default styles live in one place; merge speakers that were split by mistake; everything can be undone.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-review-en.png" width="100%" alt="Review mode: one line lists the readings from MOSS, FireRed and Qwen, with the differing character highlighted">
+
+**Compare what each model heard**<br>
+Local multi-model routes let several models transcribe the same line. Differing characters are highlighted with their source; click (or press 1–4) to apply one.
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-translate-en.png" width="100%" alt="Bilingual subtitles: the preview shows the Chinese original with the English translation below, and the timeline has a translation track under the speaker tracks">
+
+**Translation and bilingual subtitles**<br>
+Translate into Simplified or Traditional Chinese, English, Japanese, Korean and more with your own text AI; double-click the translation track to fill any gap. Original and translation keep their own styles; export either or both.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-razor-en.png" width="100%" alt="Razor tool: moving along a line shows per-character timing and the two halves before the cut">
+
+**Split on word boundaries, and cut the video**<br>
+Every character has its own timing, so the razor stops between characters. On the video track, split, ripple-delete, or detect speech pauses and remove them in one go.
+</td>
+<td width="50%" valign="top">
+<img src="docs/assets/readme/feature-style-en.png" width="100%" alt="Style panel: font, size and outline settings, with the subtitle in the preview updating">
+
+**Styles, animation and rendering**<br>
+Fonts, outlines, positions and entrance/exit animations come as presets that need no AI. Render MP4 / MKV / MOV, the whole timeline or just the in-to-out range.
+</td>
+</tr>
+</table>
+
+Also: glossary and AI proofreading, script matching, per-speaker export, a beginner tutorial with a sample project (no models needed), 11 interface languages and 15 themes. See the [user guide](docs/product-guide.en.md).
 
 ## Before you start
 
@@ -47,89 +134,14 @@ Current release: **0.8.7** (2026-10-27; Windows only, the Mac build stays at 0.8
 | Windows without an NVIDIA GPU | **Cloud** (your API key), or **Light local** (SenseVoice on the CPU) | Cloud is pay-as-you-go and uploads audio; light local is free but slower, with one speaker |
 | Mac with Apple silicon (experimental) | **Mac local** (MLX), **MOSS + FireRed** on the Apple GPU, or cloud | 16 GB of memory or more recommended; slower than an NVIDIA GPU |
 
-- Among cloud services, MOSS Pro cloud and Qwen-Audio 3.1 (Bailian / Qwen Cloud) separate speakers. Both cloud and light local can add the local Qwen3 aligner (CPU capable) for character timing.
-- The Mac MLX route is a community port and has not been checked on a physical Mac.
-- Combinations that need an NVIDIA GPU are flagged before you start, with a suggestion for one that works. See [Choosing a recognition route](docs/product-guide.en.md#choosing-a-recognition-route) for details.
-
-## What it does for you
-
-- **[Tell speakers apart](#tell-speakers-apart).** No tagging every line by hand: routes that separate speakers put each person on their own track, with names, colours and default styles managed in one place and per-speaker export.
-- **[Split subtitles on word boundaries](#split-on-word-boundaries-and-cut-the-video)**, not by scrubbing the waveform. Every character has its own timing, so a cut follows the text; you can also cut the video on the same timeline and the export follows your edit.
-- **[Compare what each model heard](#compare-what-each-model-heard).** Local multi-model routes let several models transcribe the same line; differing characters are highlighted with their source, and one click applies a reading.
-- **[A glossary you build once](#a-glossary-you-build-once).** Keep character names, skills and common misrecognitions per game; use them to correct recognition and to proofread existing subtitles.
-- **[Find highlight candidates in stream replays](#find-highlight-candidates-in-stream-replays)** from subtitles and Bilibili danmaku XML, each with a reason and a time range, then build an edit from the ones you keep.
-- **[Export subtitles, transcripts and video](#export).** SRT, ASS, TXT, JSON, per-speaker files, and MP4 / MKV / MOV with burned-in subtitles.
-
-## See it in action
-
-The clips and screenshots below were recorded from the real 0.7.1 window with the English interface; the subtitles are Chinese because the sample speech is Chinese. Nothing in the interface or the results was redrawn.
-
-### Tell speakers apart
-
-<img src="docs/assets/readme/speakers-en.png" width="100%" alt="Speaker Management dialog: two speakers, Host and Teammate, with subtitle counts and total duration; name, colour and default style fields; buttons to merge speakers, assign selected subtitles to a speaker, set as streamer and keep only one speaker's subtitles">
-
-- Each speaker gets a subtitle track on the timeline (see the screenshot above). Drag a subtitle to another track to give it to that speaker.
-- Speaker Management renames speakers, sets colours and default styles, merges speakers that were split by mistake, assigns selected subtitles, or keeps one speaker only. Everything can be undone.
-- **Which routes separate speakers:** local MOSS (NVIDIA GPU, or the Apple GPU on a Mac), MOSS Pro cloud (MOSI), and Qwen-Audio 3.1 through Bailian / Qwen Cloud. Other routes return one speaker; you can split lines by hand in the Studio.
-
-### Split on word boundaries, and cut the video
-
-<img src="docs/assets/readme/razor-en.webp" width="100%" alt="Recorded in the app: the merge tool previews two lines joined into one, then the razor moves along the line over per-character timing blocks, with hints for snapping to character boundaries and a cut inside a character staying with the first part, and the line is split in two">
-
-- **Splitting a subtitle** (razor, C): you see both halves before you cut, and with snapping on it stops between characters. A cut inside a character's sound keeps that character in the first half. The merge tool (B) joins two lines. Ctrl+Z undoes either.
-- **Without character timing** (for example a cloud service that returns sentence times only), the split point is estimated from the text length, and the app labels the text boundary as an estimate so you can listen and check.
-- **Cutting the video** is a separate thing: split clips, delete clips or ripple-delete gaps on the video track, or detect speech pauses and remove them in one step. Subtitle tracks move with the edit, the export renders the edited timeline, and your source file is never rewritten.
-
-### Compare what each model heard
-
-<img src="docs/assets/readme/review-en.webp" width="760" alt="Recorded in the app: in review mode one line has two candidates, the current text with MOSS and FireRed, and Qwen's reading with one differing character highlighted; choosing Qwen's reading makes it the current text">
-
-- Press R for review mode. Each line lists the readings of the models that ran, highlights characters that differ from the current text, and names the model. Click a card (or press 1–4) to apply it; this can be undone too.
-- Candidates exist only when several models ran: three on the Windows NVIDIA local route, two with MOSS + FireRed on a Mac. Cloud-only and light-local runs have nothing to compare.
-
-### A glossary you build once
-
-<img src="docs/assets/readme/glossary-en.png" width="100%" alt="Term library: term libraries per game on the left; on the right the selected library with Add term, AI Web Update, Smart term building, Bulk import and a term table showing each correction, category, source and Confirmed status">
-
-These are three separate things; you can use just one of them:
-
-1. **Maintain the glossary**: one library per game or content, each term with its correct spelling, aliases and common misrecognitions. Built-in reference terms exist for some games; only terms you confirm are used to change text. Bulk import works too, or let your AI service suggest terms (you confirm before anything is written).
-2. **Apply it during recognition**: confirmed terms correct common misrecognitions by rule after recognition; local Qwen3-ASR (Chinese), Qwen-Audio 3.1 and MOSS Pro cloud also take them as hints while transcribing.
-3. **Proofread existing subtitles with it** ("AI glossary proofreading"): match against the glossary only (local and free), or let your text-AI service proofread. Suggestions are listed first and applied together after you confirm, as one undo step.
-
-This is different from comparing model readings above, which needs no glossary.
-
-### Find highlight candidates in stream replays
-
-In the Studio's Clip Assistant, the app reads your subtitles and, optionally, a Bilibili-format danmaku XML file. It first finds busy chat moments and strong reactions in the subtitles locally; with a text-AI service configured it then ranks them and writes titles and reasons. Each candidate has a time range: preview it, add it to the edit, then "Generate edit" to keep only those parts ("Restore full recording" brings everything back).
-
-It reads subtitles and chat only. It does not watch the video and does not download chat for you, and its keywords and chat reactions are tuned for Chinese. Without AI, results are marked as local analysis to be checked.
-
-### Export
-
-- **Subtitles:** SRT, ASS, TXT, JSON; speakers merged, separate, or both. When a translation exists, export the original, the translation or bilingual SRT. SRT files also import into editors such as CapCut / Jianying.
-- **Video:** MP4, MKV or MOV with subtitles burned in; the whole timeline or the in-to-out range. Fonts, outlines, positions and entrance/exit animations come as presets that need no AI.
-- **Also:** still frames (PNG / JPG) and a cover editor.
-
-## Other conveniences
-
-- **Onboarding:** the first launch helps you pick a recognition route for your computer; a 31-step animated tutorial uses a sample project, with no models, uploads or costs.
-- **Script matching:** if you already have a line-by-line script, character timing places each line without rewriting it (Chinese only from the home page for now).
-- **Punctuation:** keep the original, add punctuation, or remove it; this changes display and export only.
-- **Shortcuts:** every shortcut can be changed in Settings, and conflicts name the other function.
-- **Interface:** Simplified Chinese, Traditional Chinese, English, Japanese, Korean; 15 themes (light, dark and high contrast) with a live preview on the Appearance page. A few labels in the English, Japanese and Korean interfaces are still shown in Chinese.
-- **English, Japanese and translation:** "English recommended" and "Japanese recommended" plans; English lines break at word boundaries. Chinese, Japanese and English subtitles can be translated into Simplified or Traditional Chinese, English, Japanese or Korean with your text-AI service and exported as bilingual subtitles.
-- **External AI (MCP):** lets AI clients such as Claude Desktop read and search the current project's subtitles; edits apply only after you approve them in the app. Off by default; verified on Windows only.
-- **In-app updates (Windows):** download only what changed, verify before replacing, roll back automatically on failure; settings, glossaries, projects and models are kept.
+Among cloud services, MOSS Pro cloud and Qwen-Audio 3.1 (Bailian / Qwen Cloud) separate speakers; both cloud and light local can add the local Qwen3 aligner (CPU capable) for character timing. See [Choosing a recognition route](docs/product-guide.en.md#choosing-a-recognition-route) for details.
 
 ## Quick start
 
 1. **Install and launch** with the installer above.
 2. **Choose how to transcribe.** On first launch pick "On this computer", "Cloud recognition" or "Light, on this computer"; the app downloads what that route needs, or opens "Apply for and set up an API" for your key.
-3. **Add media and start.** Drop video or audio on the home screen, pick a glossary if you have one, and click "Start subtitles".
-4. **Edit and export in Subtitle Studio.** Proofread, split and merge, adjust styles, then export subtitles or render the video.
-
-<img src="docs/assets/readme/home-en.png" width="100%" alt="Home screen in English: drop zone for video or audio, a recent project, the Primary transcription MOSS, Subtitle timeline FireRedASR2-AED and Text review Qwen3-ASR cards, AI smart segmentation, Content & terms, and the Start subtitles button">
+3. **Add media.** Drop video or audio on the home screen, or click "Link download" and paste a video link; pick a glossary if you have one and click "Start subtitles". Videos that come with subtitles can go straight to the Studio.
+4. **Edit, translate and export in Subtitle Studio.** Proofread, split and merge, translate, adjust styles, then export subtitles or render the video.
 
 To learn the interface first, open Help → Beginner tutorial and follow the sample project. Installation, costs, updates and common questions are in the [user guide](docs/product-guide.en.md).
 
@@ -154,14 +166,12 @@ A run uses up to three roles, combined to suit your media and hardware:
 
 </details>
 
-- [User guide](docs/product-guide.en.md): installation, first launch, choosing a route, costs and privacy, updates, FAQ, running from source
-- [Interface tour](docs/product-demo.en.md): progress, completion, Model workshop, export, themes and more (0.7.1 interface)
-- [API setup guides](docs/api-setup/README.md) (Chinese): sign-up steps and pricing notes for each cloud and text-AI provider
-- [Mac notes](docs/deployment/macos-experimental.zh-CN.md) (Chinese) · [Updating](UPDATING.md) (Chinese) · [0.8.7 release notes](docs/releases/0.8.7.md) (Chinese, English, Japanese, Korean) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
+<details>
+<summary><b>How a recording becomes subtitles (recognition flow)</b></summary>
 
-## How recognition works
+<br>
 
-If you want to know how a recording becomes subtitles, the chart below follows the default local route on Windows with an NVIDIA GPU (MOSS + FireRedASR2-AED + Qwen3-ASR). Dashed lines apply only to Japanese and English media.
+The chart follows the default local route on Windows with an NVIDIA GPU (MOSS + FireRedASR2-AED + Qwen3-ASR). Dashed lines apply only to Japanese and English media.
 
 ```mermaid
 %%{init: {"htmlLabels": false, "markdownAutoWrap": false, "flowchart": {"htmlLabels": false, "wrappingWidth": 400}}}%%
@@ -195,16 +205,23 @@ AI proofreading
 (optional)
 line breaks, timing`"]
         T --> P["`**Subtitle Studio**
-compare and cut
+compare, translate, cut
 export subtitles
 and video`"]
     end
     REC --> POST
 ```
 
-In short: MOSS listens to the whole file, writes the text and tells the speakers apart, while FireRedVAD finds where people actually speak; lines with no voice under them are dropped. FireRedASR2-AED and Qwen3-ASR then each listen again on their own: the first times every character, the second writes another transcript. Using MOSS's sentences and speakers as the backbone, the app compares the three readings. It replaces text automatically only when the other two models agree and the change passes a safety check; other differences are marked and left for you to decide in the Studio's review mode. Chinese text then gets glossary fixes and AI proofreading from the text-AI service you set up (optional; every edit must pass a local safety check first). Line breaking uses local rules or AI, but the AI only decides where to break and cannot change the text. A final check confirms that no characters were lost or added, and timing is snapped to video frames with enough reading time. Japanese and English media skip the Chinese timeline model: Qwen3-ForcedAligner aligns them, and after line breaking each line is aligned again to its final text (Japanese line starts can also be checked with a CTC aligner).
+MOSS listens to the whole file, writes the text and tells the speakers apart, while FireRedVAD finds where people actually speak. FireRedASR2-AED and Qwen3-ASR then each listen again: the first times every character, the second writes another transcript. Using MOSS's sentences and speakers as the backbone, the app compares the three readings. It replaces text automatically only when the other two models agree and the change passes a safety check; other differences are left for you in the Studio's review mode. Glossary fixes and optional AI proofreading follow; line breaking uses local rules or AI, but the AI only decides where to break and cannot change the text.
 
-Other routes keep the same roles with different models. With cloud recognition the provider writes the text (MOSS Pro cloud and Qwen-Audio 3.1 also separate speakers); character timing can be added by the local Qwen3-ForcedAligner (CPU capable), otherwise the provider's sentence times are used and marked as estimated. Light local (SenseVoice) only transcribes and does not separate speakers. Macs use MLX Qwen3-ASR with an aligner, or MOSS + FireRed on the Apple GPU. When a long stream recording does not fit in GPU memory at once, MOSS splits it into several windows and matches the speakers across them by voiceprint.
+Other routes keep the same roles with different models: with cloud recognition the provider writes the text and the local Qwen3-ForcedAligner can add character timing; light local (SenseVoice) only transcribes; Macs use MLX Qwen3-ASR with an aligner, or MOSS + FireRed on the Apple GPU.
+
+</details>
+
+- [User guide](docs/product-guide.en.md): installation, first launch, choosing a route, costs and privacy, everyday Studio actions, updates, FAQ, running from source
+- [Interface tour](docs/product-demo.en.md): progress, completion, Model workshop, export, themes and more (0.7.1 interface)
+- [API setup guides](docs/api-setup/README.md) (Chinese): sign-up steps and pricing notes for each cloud and text-AI provider
+- [Mac notes](docs/deployment/macos-experimental.zh-CN.md) (Chinese) · [Updating](UPDATING.md) (Chinese) · [0.8.7 release notes](docs/releases/0.8.7.md) (Chinese, English, Japanese, Korean) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
 ## Support the author
 

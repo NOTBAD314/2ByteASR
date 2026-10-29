@@ -23,6 +23,55 @@ REPO = Path(__file__).resolve().parents[2]
 SPEAKER_NAMES = {'zh': ('主播', '队友'), 'en': ('Host', 'Teammate'), 'ja': ('配信者', '相方'), 'ko': ('스트리머', '팀원')}
 BASE = Path(os.environ.get('README_SHOWCASE_DIR') or Path(__file__).resolve().parents[2] / 'tmp' / 'readme-showcase').resolve()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# 2026-10-29: translations typed through the studio's manual-translation path
+# (cue_controller.set_translation, the same call as double-clicking the
+# translation lane). One row per clause of dialogue.json: zh source, en, ja, ko.
+CLAUSES = [
+    ('我们先沿着河边往前走', "Let's follow the river first", 'まずは川沿いに進もう', '먼저 강을 따라 가자'),
+    ('等队友拿齐补给', 'and wait for the team to grab supplies.', '仲間が補給を取るまで待とう', '팀원이 보급품을 챙길 때까지 기다리자'),
+    ('我拿到了', 'Got them.', '取ったよ', '다 챙겼어'),
+    ('你们先走', 'You go ahead,', '先に行って', '먼저 가'),
+    ('我在后面跟上', "I'll catch up.", '後から追いつくから', '뒤따라갈게'),
+    ('前面有三枚金币', 'Three coins up ahead,', 'この先にコインが3枚', '앞에 코인이 세 개 있어'),
+    ('顺路全部捡掉', 'grab them on the way.', 'ついでに全部拾おう', '가는 길에 다 줍자'),
+    ('小心右边的草丛', 'Watch the bushes on the right,', '右の草むらに気をつけて', '오른쪽 수풀 조심해'),
+    ('好像有一只史莱姆', "there's a slime in there.", 'スライムがいるみたい', '슬라임이 있는 것 같아'),
+    ('看到了', 'I see it.', '見えた', '봤어'),
+    ('我先拉住它', "I'll hold it,", '僕が引きつける', '내가 붙잡을게'),
+    ('你从侧面打', 'you hit it from the side.', '横から攻撃して', '넌 옆에서 쳐'),
+    ('好', 'OK,', '了解', '좋아'),
+    ('技能还有两秒', "skill's ready in two seconds,", 'スキルあと2秒', '스킬 2초 남았어'),
+    ('马上就好', 'almost there.', 'もうすぐだよ', '거의 다 됐어'),
+    ('漂亮', 'Nice!', 'ナイス！', '나이스!'),
+    ('这一波一滴血都没掉', 'Not a scratch this round.', '今回はノーダメージ', '이번엔 피 한 방울도 안 잃었어'),
+    ('下一关是首领', 'Boss stage next,', '次はボス戦だ', '다음은 보스 스테이지야'),
+    ('先回营地补满状态吧', "let's head back to camp and heal up.", 'キャンプに戻って回復しよう', '캠프로 돌아가서 회복하자'),
+]
+# Translation target per UI language (the zh README shows Chinese + English).
+TRANSLATION_TARGET = {'zh': 'en', 'en': 'en', 'ja': 'ja', 'ko': 'ko'}
+
+
+def translate_cue(text: str, target: str) -> str:
+    """Translation for one recognised cue: the run of consecutive clauses closest to it."""
+    import difflib
+    import re
+    column = {'en': 1, 'ja': 2, 'ko': 3}[target]
+    norm = lambda s: re.sub(r'[\s，。！？、,.!?]', '', s).replace('他', '它').replace('她', '它')
+    want = norm(text)
+    best, best_score = None, 0.0
+    for i in range(len(CLAUSES)):
+        for j in range(i + 1, min(len(CLAUSES), i + 4) + 1):
+            joined = ''.join(row[0] for row in CLAUSES[i:j])
+            score = difflib.SequenceMatcher(None, want, joined).ratio()
+            if score > best_score:
+                best, best_score = (i, j), score
+    i, j = best
+    sep = {'en': ' ', 'ja': '、', 'ko': ' '}[target]
+    text = ''
+    for row in CLAUSES[i:j]:
+        # No 、 after a clause that already ends in ！ or ？ (ナイス！今回は…).
+        text += ('' if not text or (target == 'ja' and text[-1] in '！？。') else sep) + row[column]
+    return text
 
 
 def outer(args):
@@ -53,7 +102,7 @@ def outer(args):
                TMP=str(profile / 'temp'), USERPROFILE=str(profile / 'home'), HF_HOME=str(profile / 'hf-cache'),
                MODELSCOPE_CACHE=str(profile / 'modelscope-cache'), TORCH_HOME=str(profile / 'torch-cache'),
                HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONUTF8='1', QT_QPA_PLATFORM='windows',
-               TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
+               TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', TWOBYTEASR_DEVELOPER_RUNTIMES='1', TWOBYTEASR_RUNTIME_REGISTRY_READ_ONLY='1',
                **{'2BYTEASR_USER_DATA_ROOT': str(profile / 'local'), '2BYTEASR_MODEL_ROOT': str(REPO / 'models')})
     env.update(QT_SCALE_FACTOR=args.scale, QT_ENABLE_HIGHDPI_SCALING='0', QT_FONT_DPI='96',
                QT_SCALE_FACTOR_ROUNDING_POLICY='PassThrough')
@@ -129,9 +178,42 @@ def inner(out: Path):
         except Exception:
             widget.grab().save(str(target), 'PNG')
 
+    def rect_of(widget):
+        if widget is None or not widget.isVisible():
+            return None
+        origin = widget.mapTo(window, QPoint(0, 0))
+        return [origin.x(), origin.y(), widget.width(), widget.height()]
+
+    def layout_rects():
+        """Where the studio parts are in the window (logical px), for README crops."""
+        p = window.studio_page
+        if p is None or not p.isVisible():
+            return None
+        from twobyteasr.studio.studio_cards import ReviewCandidateCard
+        cards = [rect_of(c) for c in p.findChildren(ReviewCandidateCard) if c.isVisible()]
+        rects = dict(video=rect_of(p.video), timeline=rect_of(p.timeline), drawer=rect_of(p.context_drawer),
+                     review=rect_of(getattr(p, 'review_summary_strip', None)), cards=cards or None)
+        try:
+            origin = p.timeline.mapTo(window, QPoint(0, 0))
+            lanes = p.timeline._track_layout()[0]
+            rects['lanes'] = {str(k): [origin.x() + r.left(), origin.y() + r.top(), r.width(), r.height()]
+                              for k, r in lanes.items()}
+            video = p.timeline._video_track_rects()
+            rects['video_tracks'] = {str(k): [origin.x() + r.left(), origin.y() + r.top(), r.width(), r.height()]
+                                     for k, r in video.items()}
+        except Exception:
+            rects['lanes_error'] = traceback.format_exc()[-300:]
+        return rects
+
     def shot(name, widget=None):
         grab(out / 'shots' / f'{name}.png', widget)
-        result['shots'].append(dict(name=name, t=round(time.monotonic() - t0, 2)))
+        row = dict(name=name, t=round(time.monotonic() - t0, 2))
+        if widget is None:
+            try:
+                row['rects'] = layout_rects()
+            except Exception:
+                row['rects_error'] = traceback.format_exc()[-300:]
+        result['shots'].append(row)
         write()
 
     class Recorder:
@@ -152,7 +234,7 @@ def inner(out: Path):
                 yield 1.0 / fps
 
         def finish(self):
-            result['recordings'][self.name] = dict(frames=len(self.stamps), stamps=self.stamps)
+            result['recordings'][self.name] = dict(frames=len(self.stamps), stamps=self.stamps, rects=layout_rects())
             write()
 
     def top_dialog():
@@ -406,6 +488,22 @@ def inner(out: Path):
             shot('speakers-dialog', dialog)
             dialog.accept()
             yield 1.0
+        elif dialog is not None and hasattr(dialog, 'cards'):
+            # 0.8.x: one card per speaker, each with its own name field.
+            ordered = sorted(dialog.cards)
+            for key, name in zip(ordered, SPEAKER_NAMES.get(spec['lang'], SPEAKER_NAMES['zh'])):
+                card = dialog.cards[key]
+                card.name_edit.setFocus()
+                card.name_edit.setText(name)
+                dialog._card_commit_name(card)
+                yield 0.8
+            dialog.setFocus()
+            # README cell: same 16:10 shape as the other feature pictures.
+            dialog.resize(800, 500)
+            yield 0.8
+            shot('speakers-dialog', dialog)
+            dialog.accept()
+            yield 1.0
         result['info']['speakers_after'] = [dict(id=s.id, name=s.name) for s in p.project.speakers]
         shot('speakers-after')
 
@@ -435,7 +533,7 @@ def inner(out: Path):
     def scene_review():
         yield from open_studio()
         pause()
-        tall()
+        quiet()
         p = page()
         show_window(14800, 7600)
         target = cue_by_text('他你从侧面打')
@@ -451,6 +549,7 @@ def inner(out: Path):
         from twobyteasr.studio.studio_cards import ReviewCandidateCard
         cards = [c for c in p.findChildren(ReviewCandidateCard) if c.isVisible()]
         result['info']['review_cards'] = [dict(text=c._candidate.text, sources=list(c._candidate.sources)) for c in cards]
+        shot('review-cards')
         qwen = next((c for c in cards if 'Qwen' in c._candidate.sources and len(c._candidate.sources) == 1), None)
         if qwen is not None:
             QTest.mouseMove(qwen)
@@ -520,7 +619,7 @@ def inner(out: Path):
     def scene_style2(with_effect=True):
         yield from open_studio()
         pause()
-        tall()
+        quiet()
         p = page()
         cue = cue_by_text('好技能')
         p.select_cue(cue.id)
@@ -555,7 +654,12 @@ def inner(out: Path):
         yield from rec.hold(1.0)
         rec.finish()
         result['info']['style_after'] = dict(size=p.style_font_size.value(), effect=p.effect_preset.currentText())
+        quiet()
         shot('style-final')
+        p.context_drawer.setCurrentIndex(2)
+        yield 1.2
+        shot('style-effect')
+        p.context_drawer.setCurrentIndex(1)
         write()
 
     def scene_playback():
@@ -576,10 +680,26 @@ def inner(out: Path):
         yield from rec.hold(0.5, fps=10)
         rec.finish()
 
+    def quiet():
+        """Hide the one-off shortcut hint and give the timeline a fixed 400 px.
+
+        With a taller timeline the 0.8.7 translation lane is drawn squeezed
+        under the video track (seen 2026-10-29), so every bilingual shot uses
+        the height that draws all lanes correctly.
+        """
+        p = page()
+        banner = getattr(p, 'teach_banner', None)
+        if banner is not None:
+            banner.hide()
+        QApplication.processEvents()
+        sizes = p.workspace_splitter.sizes()
+        total = sum(sizes)
+        p.workspace_splitter.setSizes([total - 400, 400])
+
     def scene_hero():
         yield from open_studio()
         pause()
-        tall()
+        quiet()
         p = page()
         cue = cue_by_text('好技能')
         p._seek((cue.start_ms + 1300) / 1000.0)
@@ -624,6 +744,45 @@ def inner(out: Path):
         result['info']['export_seconds'] = round(time.monotonic() - began, 1)
         shot('export-done')
         write()
+
+    def scene_translate():
+        """Type a translation for every cue (manual path), then show both layers."""
+        yield from open_studio()
+        pause()
+        p = page()
+        language = TRANSLATION_TARGET.get(spec['lang'], 'en')
+        # Same target the lane uses when you double-click and type (the project's
+        # translation container); typed text is in the README's reader language.
+        lane_target = p.timeline.subtitle_target_language or None
+        typed = {}
+        for cue in sorted(p.project.cues, key=lambda c: c.start_ms):
+            text = translate_cue(cue.text, language)
+            typed[cue.text] = [text, bool(p.cue_controller.set_translation(cue.id, text, target=lane_target))]
+            yield 0.05
+        from twobyteasr.studio.studio_bilingual import apply_display
+        apply_display(p, mode='bilingual', order='original_first', original_scale=1.0, translation_scale=0.82)
+        quiet()
+        yield 1.5
+        result['info']['translations'] = typed
+        shot('translate-after')
+        write()
+
+    def scene_link():
+        from twobyteasr.app.link_download_controller import show_link_download
+        controller = show_link_download(window)
+        yield 3.0
+        dialog = controller.dialog
+        result['info']['link_dialog'] = type(dialog).__name__ if dialog is not None else None
+        shot('link-window', dialog)
+        if dialog is not None:
+            dialog.resize(848, 530)
+            yield 1.0
+            result['info']['link_dialog_size'] = [dialog.width(), dialog.height()]
+            shot('link-window-compact', dialog)
+        shot('link-window-main')
+        if dialog is not None:
+            dialog.close()
+        yield 1.0
 
     def scene_home():
         window._return_to_settings()
@@ -684,7 +843,8 @@ def inner(out: Path):
 
     handlers = dict(lanecheck=scene_lanecheck, explore=scene_explore, pages=scene_pages, speakers=scene_speakers, razor=scene_razor,
                     review=scene_review, fixups=scene_fixups, style=scene_style, style2=scene_style2, **{'style-size': lambda: scene_style2(False)}, playback=scene_playback,
-                    hero=scene_hero, export=scene_export, home=scene_home, themes=scene_themes)
+                    hero=scene_hero, export=scene_export, home=scene_home, themes=scene_themes,
+                    translate=scene_translate, link=scene_link)
 
     def steps():
         yield 2.0

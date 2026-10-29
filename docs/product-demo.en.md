@@ -70,7 +70,7 @@ Deep Grape (default), Warm Cream, Warm Night, Lavender and Slate (Chinese interf
 
 ![Illustrative animation: a chat activity curve marks highlight moments, and a candidate is added to the edit](assets/readme/clips-en.webp)
 
-**This is an illustrative animation made on 2026-10-09**: the interface was simplified and redrawn from the software at the time, and the chat, candidate titles and reasons are sample data, not analysis results. The real feature is the Clip Assistant in the Studio; see the [README](../README_EN.md#find-highlight-candidates-in-stream-replays).
+**This is an illustrative animation made on 2026-10-09**: the interface was simplified and redrawn from the software at the time, and the chat, candidate titles and reasons are sample data, not analysis results. The real feature is the Clip Assistant in the Studio; see the [user guide](product-guide.en.md#everyday-studio-actions).
 
 ### AI Subtitle Design examples
 

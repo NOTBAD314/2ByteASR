@@ -65,7 +65,7 @@ def outer(args):
                TMP=str(profile / 'temp'), USERPROFILE=str(profile / 'home'), HF_HOME=str(profile / 'hf-cache'),
                MODELSCOPE_CACHE=str(profile / 'modelscope-cache'), TORCH_HOME=str(profile / 'torch-cache'),
                HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONUTF8='1', QT_QPA_PLATFORM='windows',
-               TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', TWOBYTEASR_SHOWCASE_OUT=str(out),
+               TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1', TWOBYTEASR_DEVELOPER_RUNTIMES='1', TWOBYTEASR_RUNTIME_REGISTRY_READ_ONLY='1', TWOBYTEASR_SHOWCASE_OUT=str(out),
                **{'2BYTEASR_USER_DATA_ROOT': str(profile / 'local'), '2BYTEASR_MODEL_ROOT': str(REPO / 'models')})
     if args.scale != 'natural':
         env.update(QT_SCALE_FACTOR=args.scale, QT_ENABLE_HIGHDPI_SCALING='0', QT_FONT_DPI='96',
