@@ -1,5 +1,5 @@
 """Responsive completion surface for the existing export workspace."""
-from PySide6.QtCore import Qt, QRectF, QSize
+from PySide6.QtCore import QEvent, Qt, QRectF, QSize
 from PySide6.QtGui import QPainter, QPixmap, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QWidget, QFrame, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QBoxLayout, QGridLayout, QSizePolicy, QApplication, QStackedWidget, QScrollArea)
@@ -15,6 +15,21 @@ def elapsed_text(seconds):
     tenths = round(value * 10)
     minutes, remainder = divmod(tenths, 600)
     return f'{minutes} 分 {remainder / 10:.1f} 秒' if minutes else f'{remainder / 10:.1f} 秒'
+
+
+def report_unpainted_success(workspace, panel, output) -> None:
+    """Diagnostics only: the result page was shown 3 s ago but never painted.
+
+    2026-10-27 user report: the 压制完成 notification arrived while the window
+    kept showing the progress page (97%). Not reproduced locally; this records
+    the window's state in the export trace for the next support bundle."""
+    if workspace.pages.currentWidget() is not panel or getattr(panel, 'painted', True):
+        return
+    window = panel.window()
+    workspace._export_trace('success_page_not_painted', {
+        'output': str(output), 'page_visible': panel.isVisible(), 'window_visible': window.isVisible(),
+        'minimized': window.isMinimized(), 'active': window.isActiveWindow(),
+        'updates_enabled': window.updatesEnabled() and panel.updatesEnabled()})
 
 
 class ExportPages(QStackedWidget):
@@ -154,6 +169,8 @@ class ExportSuccessPanel(QWidget):
         self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True); self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget(); body.setObjectName('exportSuccessBody'); self.scroll.setWidget(body); outer.addWidget(self.scroll)
+        self.painted = False
+        body.installEventFilter(self)   # the scrolled body covers the whole page
         root = QVBoxLayout(body); root.setContentsMargins(32, 22, 32, 24); root.setSpacing(18)
         self.body = body
 
@@ -266,6 +283,26 @@ class ExportSuccessPanel(QWidget):
         # poster unless its own content needs more.
         needed = self.info.layout().minimumSize().height()
         self.info.setFixedHeight(max(round(poster * 9 / 16), needed))
+
+    def call_after_paint(self, callback, fallback_ms=500):
+        """Run ``callback`` once this page has painted, or after ``fallback_ms``
+        when it cannot paint (a minimized window still needs the notification)."""
+        from PySide6.QtCore import QTimer
+        self._after_paint = callback
+        QTimer.singleShot(fallback_ms, self, self._run_after_paint)
+
+    def _run_after_paint(self):
+        callback, self._after_paint = getattr(self, '_after_paint', None), None
+        if callback is not None:
+            callback()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.Paint:
+            self.painted = True   # completion diagnostics (report_unpainted_success)
+            if getattr(self, '_after_paint', None) is not None:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(0, self, self._run_after_paint)   # after this frame reaches the screen
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

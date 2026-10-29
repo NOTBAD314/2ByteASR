@@ -217,13 +217,14 @@ def _refresh_appearance_summaries(page) -> None:
 class StudioStyleController:
     """Coordinate Style/Motion UI against canonical ``StudioSession`` state."""
 
-    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft", "_motion_workflow")
+    __slots__ = ("page", "session", "_preset_apply_marker", "_edit_draft", "_motion_workflow", "_control_baseline")
 
     def __init__(self, page, session):
         self.page = page
         self.session = session
         self._preset_apply_marker = None
         self._edit_draft = None
+        self._control_baseline = None
 
 
     def _apply_ai_style_draft(self) -> None:
@@ -318,7 +319,7 @@ class StudioStyleController:
         bind_text(page.style_scope, '选择后，后续样式调整会自动作用于该范围', property='toolTip')
         scope_row.addWidget(page.style_scope, 1)
         scope_layout.addLayout(scope_row)
-        page.style_apply_geometry = QCheckBox("套用样式时包含位置与缩放")
+        page.style_apply_geometry = QCheckBox("套用预设时包含位置与缩放")
         page.style_apply_geometry.setObjectName("styleInlineCheck")
         page.style_apply_geometry.setChecked(False)
         bind_text(page.style_apply_geometry, '勾选后，批量应用样式时同步应用当前的位置、边距与缩放；关闭则保留每条字幕各自的几何。', property='toolTip')
@@ -605,7 +606,7 @@ class StudioStyleController:
         page.style_font = page._new_lazy_font_combo()
         page.style_font.setEditable(True)
         page.style_font.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        page.style_font.fontPicked.connect(lambda _family, _weight: page._style_control_changed())
+        page.style_font.fontPicked.connect(lambda _family, _weight: page._style_control_changed("font_family"))
         font_row = QHBoxLayout()
         font_row.setSpacing(STYLE_LABEL_GAP)
         font_caption = section_label("字体")
@@ -1221,29 +1222,36 @@ class StudioStyleController:
 
         layout.addStretch(1)
 
-        for control in (
-            page.style_font_size, page.style_spacing,
-            page.style_margin_l, page.style_margin_r, page.style_margin_v,
-            page.style_position_x, page.style_position_y,
-            page.style_outline_width, page.style_outline2_width, page.style_shadow,
-            page.style_shadow_opacity, page.style_shadow_offset_x, page.style_shadow_offset_y,
-            page.style_shadow_angle_value, page.style_shadow_distance,
-            page.style_shadow_blur, page.style_shadow_spread,
-        ):
-            control.valueChanged.connect(page._queue_style_commit)
+        numeric_fields = {
+            "font_size": ("font_size",), "spacing": ("spacing",),
+            "margin_l": ("margin_l",), "margin_r": ("margin_r",), "margin_v": ("margin_v",),
+            "position_x": ("position_x",), "position_y": ("position_y",),
+            "outline_width": ("outline_width",), "outline2_width": ("outline2_width",),
+            "shadow": (), "shadow_opacity": ("shadow.opacity",),
+            "shadow_offset_x": ("shadow.offset_x",), "shadow_offset_y": ("shadow.offset_y",),
+            "shadow_angle_value": ("shadow.offset_x", "shadow.offset_y"),
+            "shadow_distance": ("shadow.offset_x", "shadow.offset_y"),
+            "shadow_blur": ("shadow.blur_radius",), "shadow_spread": ("shadow.spread",),
+            "glow_strength": ("glow.radius",),
+        }
+        for name, fields in numeric_fields.items():
+            control = getattr(page, "style_" + name)
+            control.valueChanged.connect(lambda _value, fields=fields: page._queue_style_commit(*fields))
             control.editingFinished.connect(page._commit_style_now)
             # textEdited also covers intermediate input (empty, '-' or '1.').
             # Such input must not be replaced by a selection/preview refresh.
-            control.lineEdit().textEdited.connect(page._queue_style_commit)
+            control.lineEdit().textEdited.connect(lambda _text, fields=fields: page._queue_style_commit(*fields))
             control.scrubStarted.connect(page._begin_style_scrub)
             control.scrubFinished.connect(page._finish_style_scrub)
-        page.style_font.lineEdit().textEdited.connect(page._queue_style_commit)
+        page.style_font.lineEdit().textEdited.connect(lambda _text: page._queue_style_commit("font_family"))
         page.style_font.lineEdit().editingFinished.connect(page._commit_style_now)
-        for control in (page.style_bold, page.style_italic, page.style_underline, page.style_background, page.style_outline2):
-            control.toggled.connect(page._style_control_changed)
+        for name, fields in (("bold", ("bold",)), ("italic", ("italic",)), ("underline", ("underline",)),
+                             ("background", ("border_style",)), ("outline2", ("outline2_width", "outline2_color"))):
+            getattr(page, "style_" + name).toggled.connect(
+                lambda _checked, fields=fields: page._style_control_changed(*fields))
         page.style_outline2.toggled.connect(page._sync_outline2_controls)
         page.style_alignment.currentIndexChanged.connect(page._sync_style_anchor)
-        page.style_alignment.currentIndexChanged.connect(page._style_control_changed)
+        page.style_alignment.currentIndexChanged.connect(lambda _index: page._style_control_changed("alignment"))
         page.effect_preset.currentIndexChanged.connect(page._effect_changed)
         page.motion_preset.currentIndexChanged.connect(page._motion_preset_changed)
         page.effect_exit.currentIndexChanged.connect(page._motion_control_changed)
@@ -1290,6 +1298,8 @@ class StudioStyleController:
         if page._updating_style_ui or getattr(page, '_shadow_polar_syncing', False):
             return
         targets = tuple(self._style_target_ids())
+
+        self._record_style_fields(_args)
         self._edit_draft = {
             "project": self.session.project,
             "cue_id": self.session.selected_cue_id,
@@ -2042,7 +2052,10 @@ class StudioStyleController:
     def _set_style_color(self, editor: QLineEdit, value: str) -> None:
         page = self.page
         editor.setText(value)
-        page._style_control_changed()
+        fields = {page.style_fill_color: "primary_color", page.style_outline_color: "outline_color",
+                  page.style_outline2_color: "outline2_color", page.style_back_color: "back_color",
+                  page.style_shadow_color: "shadow.color", page.style_glow_color: "glow.color"}
+        page._style_control_changed(fields[editor])
 
     def _open_style_color_dialog(self, editor: QLineEdit) -> None:
         page = self.page
@@ -2707,7 +2720,8 @@ class StudioStyleController:
         QTimer.singleShot(0, self._clear_preset_apply_marker)
         page._apply_style(replace_preset=True)
         label = page.style_preset.itemText(index)
-        page._show_studio_hint(tr('已应用预设「{value0}」', value0=label))
+        from ..studio.presentation_scope import report_scope,capture_scope
+        report_scope(page,capture_scope(page),label=tr('预设「{value0}」',value0=label))
 
     def _clear_preset_apply_marker(self) -> None:
         self._preset_apply_marker = None
@@ -2919,6 +2933,17 @@ class StudioStyleController:
                     page.motion_preview.set_gradient(fill if isinstance(fill, dict) else None)
                     page.motion_preview.set_glow(glow if isinstance(glow, dict) else None)
             page._style_loaded_values = self._inspector_values(style)
+
+            # Compare submitted controls with exactly what this inspector
+            # displayed, not with another cue or with rounded native defaults.
+            self._control_baseline = {
+                "project": self.session.project,
+                "cue_id": self.session.selected_cue_id,
+                "style": page._style_from_controls(style),
+                "shadow": self._shadow_from_controls(),
+                "glow": self._glow_from_controls(),
+                "edited_fields": set(),
+            }
             page._apply_mixed_style_display(
                 style,
                 selected_ids=selected_ids,
@@ -2984,7 +3009,15 @@ class StudioStyleController:
         from .scoped_style import effective_layer_style
         layer_control = getattr(page, 'style_layer', None)
         layer = layer_control.currentData() if layer_control is not None else 'original'
-        styles = [effective_layer_style(self.session.project, cue, layer) for cue in cues]
+        # Appearance mixed markers do not need each cue's position/scale.
+        from .caption_layer_transform import layer_values
+        faces={};styles=[]
+        for cue in cues:
+            key=(cue.style_id,cue.base_preset_id,cue.speaker_id,
+                 json.dumps(cue.appearance_override,sort_keys=True,ensure_ascii=False),
+                 cue.transform.get('font_size'),layer_values(cue,layer).get('font_size'))
+            if key not in faces:faces[key]=effective_layer_style(self.session.project,cue,layer)
+            styles.append(faces[key])
         names = {'font_family':'字体', 'font_size':'字号', 'primary_color':'颜色', 'bold':'粗体',
                  'italic':'斜体', 'underline':'下划线', 'outline_width':'描边', 'outline_color':'描边色',
                  'shadow':'阴影', 'border_style':'背景', 'back_color':'背景色', 'alignment':'对齐', 'spacing':'字距'}
@@ -3049,6 +3082,46 @@ class StudioStyleController:
         cue = cue_by_id(self.session.project, self.session.selected_cue_id)
         if position is None and font_size is None:
             return
+        target_ids = page._style_target_ids()
+        if len(target_ids) > 1:
+            from .style_resolution import resolve_cue_visual
+            from .visual_snapshot import _anchor
+            from ..timeline.studio_commands import SetCuesPresentationCommand
+            wanted = set(target_ids)
+            targets = [c for c in self.session.project.cues if c.id in wanted]
+            anchor = resolve_cue_visual(self.session.project, cue).style
+            width = int(self.session.project.render_settings.get('play_res_x', 1920))
+            height = int(self.session.project.render_settings.get('play_res_y', 1080))
+            anchor_x, anchor_y, *_ = _anchor(anchor, width, height)
+            selected_payload = self.session.project.style_recipes.get(cue.style_id, {})
+            origin_size = (getattr(page.position_overlay,'_origin_font_size',anchor.font_size)
+                           if selected_payload.get('webTheme') else anchor.font_size)
+            ratio = max(1.0, float(font_size))/max(1.0, origin_size) if font_size is not None else 1.0
+            transforms = {}
+            for item in targets:
+                style = resolve_cue_visual(self.session.project, item).style
+                transform = copy.deepcopy(item.transform or {})
+                payload = self.session.project.style_recipes.get(item.style_id, {})
+                if position is not None:
+                    x, y, *_ = _anchor(style, width, height)
+                    point = (round(x + position[0] - anchor_x), round(y + position[1] - anchor_y))
+                    transform.update(position_x=point[0], position_y=point[1])
+                    if payload.get('webTheme'):
+                        from .web_placement import moved_placement
+                        transform['web_placement'] = moved_placement(self.session.project, item, point)
+                if font_size is not None:
+                    if payload.get('webTheme'):
+                        from .web_placement import scaled_placement
+                        transform['web_placement'] = scaled_placement(self.session.project, item, ratio)
+                    else:
+                        transform['font_size'] = max(1.0, style.font_size * ratio)
+                transforms[item.id] = transform
+            self.session.undo_stack.push(SetCuesPresentationCommand(
+                self.session.project, transforms, style_id=cue.style_id, effect_id=cue.effect_id,
+                style_ids={c.id:c.style_id for c in targets}, effect_ids={c.id:c.effect_id for c in targets},
+                transform_overrides=transforms, text='调整字幕位置' if position is not None else '调整字幕字号', changed=page._changed,
+                merge_enabled=False))
+            return
         transform = copy.deepcopy(cue.transform)
         if position is not None:
             transform["position_x"], transform["position_y"] = map(int, position)
@@ -3097,6 +3170,24 @@ class StudioStyleController:
             return
         after = self._inspector_values(source)
         patch = property_patch(before, after)
+        baseline = self._control_baseline
+        explicit = set(baseline['edited_fields']) if baseline and baseline['project'] is self.session.project and baseline['cue_id'] == self.session.selected_cue_id else set()
+        for field in explicit:
+            if '.' not in field and field in after.get('fields', {}):
+                patch.setdefault('fields', {})[field] = copy.deepcopy(after['fields'][field])
+            elif field.startswith(('shadow.', 'glow.')):
+                group, key = field.split('.', 1)
+                parent = 'outline' if group == 'shadow' else 'effects'
+                value = after.get('recipe', {}).get(parent, {}).get(group, {})
+                if key in value:
+                    patch.setdefault('recipe', {}).setdefault(parent, {}).setdefault(group, {})[key] = copy.deepcopy(value[key])
+        fields = patch.get('fields', {})
+        if 'font_family' in fields:
+            fields.update(font_weight=0, font_style_name='', font_file='', font_face_index=0)
+        if 'bold' in fields:
+            fields.update(font_weight=700 if fields['bold'] else 400, font_style_name='')
+        if 'primary_color' in explicit:
+            patch.setdefault('recipe', {}).setdefault('colors', {})['fill'] = copy.deepcopy(after['recipe']['colors']['fill'])
         layer_control = getattr(page, 'style_layer', None)
         command = style_patch_command(self.session.project, self._style_target_ids(),
             patch.get('fields', {}), recipe_patch=patch.get('recipe', {}),
@@ -3104,11 +3195,14 @@ class StudioStyleController:
         if command is not None:
             self.session.undo_stack.push(command)
         page._style_loaded_values = after
+        if self._control_baseline:
+            self._control_baseline['edited_fields'].clear()
 
     def _style_control_changed(self, *_args) -> None:
         page = self.page
         if page._updating_style_ui or not self.session.project or not self.session.selected_cue_id:
             return
+        self._record_style_fields(_args)
         page._style_dirty = True
         page._update_style_dirty_label()
         if hasattr(page, "style_back_button"):
@@ -3120,16 +3214,28 @@ class StudioStyleController:
         page = self.page
         if enabled and page.style_glow_strength.value() <= 0:
             page.style_glow_strength.setValue(5.0)
-        page._style_control_changed()
+        page._style_control_changed("glow.enabled")
 
     def _layer_changed(self, *_args) -> None:
         if self.page._updating_style_ui: return
+        panel=getattr(self.page,'caption_transform_panel',None)
+        if panel is not None:
+            panel.end_gesture(cancel=True)
+            if panel.global_link.isChecked() and self.page.style_layer.currentData()!='group':
+                with QSignalBlocker(panel.global_link):panel.global_link.setChecked(False)
+                panel.link_changed(False)
         if self._edit_draft is not None: self._commit_style_now()
         self._edit_draft = None
         self.page._load_style_inspector()
 
     def _scope_changed(self, *_args) -> None:
         if not self.page._updating_style_ui:
+            panel=getattr(self.page,'caption_transform_panel',None)
+            if panel is not None:
+                panel.end_gesture(cancel=True)
+                if panel.global_link.isChecked() and self.page.style_scope.currentData()!='all':
+                    with QSignalBlocker(panel.global_link):panel.global_link.setChecked(False)
+                    panel.link_changed(False)
             if self._edit_draft is not None: self._commit_style_now()
             self._edit_draft = None
             self.page._load_style_inspector()
@@ -3221,23 +3327,29 @@ class StudioStyleController:
         page.style_preset.setItemText(index, base + (" · 已修改" if getattr(page, "_style_dirty", False) else ""))
 
     def _style_target_ids(self) -> list[str]:
-        page = self.page
-        if not self.session.project or not self.session.selected_cue_id:
-            return []
+        from ..studio.presentation_scope import capture_scope
+        ids=None
         if self._edit_draft is not None and self._edit_draft.get('project') is self.session.project:
-            return list(self._edit_draft.get('targets', ()))
-        scope = str(page.style_scope.currentData() or "selected")
-        if scope == "all":
-            return [cue.id for cue in self.session.project.cues]
-        current = cue_by_id(self.session.project, self.session.selected_cue_id)
-        if scope == "speaker":
-            return [cue.id for cue in self.session.project.cues if cue.speaker_id == current.speaker_id]
-        if scope == "selected":
-            # 2026-10-24 daily port: with no explicit selection the current subtitle is the target
-            # (as before Codex's scope change); an empty list made every edit a silent no-op.
-            selected = page.selection_model.scope.materialize([c.id for c in self.session.project.cues])
-            return list(selected) or [self.session.selected_cue_id]
-        return [self.session.selected_cue_id]
+            ids=self._edit_draft.get('targets',())
+        layer=self._edit_draft.get('layer') if self._edit_draft else None
+        scope=capture_scope(self.page,ids=ids,layer=layer)
+        self.page._last_presentation_scope=scope
+        return list(scope.cue_ids)
+
+    def _glow_from_controls(self) -> dict:
+        page = self.page
+        return normalize_glow_contract({
+            "enabled": page.style_glow.isChecked(),
+            "color": page.style_glow_color.text(),
+            "radius": page.style_glow_strength.value(),
+        })
+
+    def _record_style_fields(self, fields) -> None:
+        baseline = self._control_baseline
+        if (baseline and baseline['project'] is self.session.project
+                and baseline['cue_id'] == self.session.selected_cue_id):
+            baseline['edited_fields'].update(field for field in fields if isinstance(field, str))
+
 
     def _copy_subtitle_style(self) -> None:
         page = self.page
@@ -3335,7 +3447,33 @@ class StudioStyleController:
         if not self.session.project:
             return
         cue_ids = page._style_target_ids()
+        draft = self._edit_draft
+        if draft and draft['project'] is self.session.project and draft['cue_id'] == self.session.selected_cue_id:
+            valid = {cue.id for cue in self.session.project.cues}
+            cue_ids = [cue_id for cue_id in draft.get('targets', draft.get('cue_ids', ())) if cue_id in valid]
         if not cue_ids:
+            from ..studio.presentation_scope import report_scope,capture_scope
+            report_scope(page,capture_scope(page),applied=0)
+            return
+        if replace_preset:
+            preset_id=str(page.style_preset.currentData() or 'default')
+            patch=StylePresetStore().load_patch(preset_id)
+            if not patch:
+                source=page._selected_style_source(use_cue_style=False)
+                if source is None:return
+                from dataclasses import asdict
+                patch=asdict(source)
+                stored=self.session.project.style_recipes.get(source.id)
+                if stored:patch['recipe']=copy.deepcopy(stored)
+            from .scoped_preset import preset_command as layer_preset_command
+            from ..studio.presentation_scope import capture_scope,report_scope
+            snapshot=capture_scope(page,ids=cue_ids)
+            command=layer_preset_command(self.session.project,cue_ids,patch,layer=snapshot.layer,
+                apply_geometry=page.style_apply_geometry.isChecked(),changed=page._changed)
+            if command is not None:self.session.undo_stack.push(command)
+            page.ensure_active_subtitle_renderer(reason='scoped_preset')
+            page._load_style_inspector()
+            report_scope(page,snapshot)
             return
         preset_id = str(page.style_preset.currentData() or "default")
         if replace_preset:

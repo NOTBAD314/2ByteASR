@@ -219,7 +219,8 @@ def test_bootstrap_urls_for_macos_keep_the_same_file_and_official_first():
                           'https://mirrors.ustc.edu.cn/github-release/astral-sh/python-build-standalone/' + tail]
     pip = bootstrap_urls(lock['pip']['url'])
     path = lock['pip']['url'].split('files.pythonhosted.org', 1)[1]
-    assert pip[0] == lock['pip']['url'] and pip[1] == 'https://mirrors.aliyun.com/pypi' + path
+    # 2026-10-28: domestic PyPI mirrors are ordered by measured speed (Tencent first).
+    assert pip[0] == lock['pip']['url'] and pip[1] == 'https://mirrors.cloud.tencent.com/pypi' + path
     assert len(pip) == 5 and all(u.endswith(path) for u in pip)
     assert pip_index_urls()[0] == 'https://pypi.org/simple' and len(pip_index_urls()) == 5
     assert bootstrap_urls('https://example.com/x.tar.gz') == ['https://example.com/x.tar.gz']

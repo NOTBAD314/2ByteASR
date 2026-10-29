@@ -1,60 +1,8 @@
 # GitHub README 展示素材复现
 
-2026-10-29 起，`main` 分支 README 的主图和“能做什么”六格来自 **0.8.7** 的真实窗口，步骤见下面两节（第二版是现在用的）。“界面一览”仍用 2026-10-14 的 0.7.1 素材（再下面一节的旧步骤）；直播切片动图仍是 2026-10-09 的 HyperFrames 示意动画（`animations/`）。下次界面变化后按同样步骤更新即可。
+2026-10-14 起，`main` 分支 README 的主图、截图和两段操作动图（剃刀、候选对照）都来自真实桌面窗口，由这里的脚本在隔离环境里截取；直播切片动图仍是 2026-10-09 的 HyperFrames 示意动画（`animations/`）。下次界面变化后按同样步骤更新即可。
 
-## 2026-10-29（第二版）：开放授权电影与真实操作录制
-
-README 现在用的图（`workbench*.png`、`feature-*.webp`、`feature-link*.png`）来自这一节；上一节的小游戏画面只剩审核候选条在用（0.8.7 不给英语字幕列候选）。
-
-```powershell
-# 示例影片：Tears of Steel（CC BY 3.0，Blender Foundation），官方 720p 文件，裁 0:22–2:10
-curl -L -o ..\film\tears_of_steel_720p.mov https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov
-ffmpeg -ss 22 -t 108 -i ..\film\tears_of_steel_720p.mov -c:v libx264 -crf 18 -c:a aac -b:a 192k "$env:README_SHOWCASE_DIR\media\tos-clip.mp4"
-# 真实识别（识别语言设为英语）
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\showcase_run.py --name run-tos --size 1440x900 --scale 2 --media-file tos-clip.mp4 --media-name "Tears of Steel.mp4" --recognition-language en
-# 每种界面语言一轮（zh 1440x900，en/ja/ko 1600x1000），场景读工作目录里的 film.json
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\showcase_studio.py --name en-f2 --source run-tos --lang en --size 1600x1000 --scale 2 --scenes film_speakers,film_razor,film_translate,film_hero,film_play,link,film_style
-# 审核候选条另用上一节的 <lang>-05 录制；然后生成图片
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\build_assets_film.py "$env:README_SHOWCASE_DIR\assets-film"
-```
-
-`film.json`（不入库）写识别后的说话人编号与名字、各场景用哪一句、剃刀切点，以及每句的中、日、韩译文（按识别出的英文原句对应）。说话人编号以工程里的为准（这次是 S01 Celia、S02 Thom），译文表要在看到识别结果后再写。
-
-## 2026-10-29：0.8.7 首页截图
-
-与下面“边界”相同，另外：
-
-- 0.8.x 只认应用自己运行环境目录里的解释器；两个脚本给隔离 profile 设 `TWOBYTEASR_DEVELOPER_RUNTIMES=1`（只在源码运行时有效）和 `TWOBYTEASR_RUNTIME_REGISTRY_READ_ONLY=1`，读取已登记的运行环境，不登记、不写回。
-- 示例视频改用自绘小游戏画面（`build_demo_media.py forest`），对话不变。
-- 译文用工作台的手动补译写入（`cue_controller.set_translation`，与在译文轨双击输入同一路径），每条字幕按 `dialogue.json` 的分句对上 `showcase_studio.py` 里的 `CLAUSES` 译文；中文界面配英文，英日韩界面配各自语言。不接 AI、不带 Key。
-- 截图时记录工作台各部分的位置（`result.json` 里每张截图的 `rects`），`build_assets_087.py` 按这些位置裁 16:10。剃刀图用逐帧录制中的一帧，帧号写在工作目录的 `razor-frames.json`（例如 `{"zh": 37, "en": 37, "ja": 37, "ko": 37}`，换素材后要重新挑）。
-
-```powershell
-git worktree add --detach tmp\readme-087\source v0.8.7      # 在开发仓库里
-cd tmp\readme-087\source
-cmd /c mklink /J models ..\..\..\models
-cmd /c mklink /J tools ..\..\..\tools
-$env:README_SHOWCASE_DIR = "$PWD\tmp\readme-showcase"
-$env:PATH = "$PWD\tools\ffmpeg\bin;" + $env:PATH
-powershell -ExecutionPolicy Bypass -File scripts\readme_showcase\tts.ps1 -Dialogue scripts\readme_showcase\dialogue.json -OutDir "$env:README_SHOWCASE_DIR\media\tts"
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\build_demo_media.py forest
-# 真实识别一次（约 3 分钟）
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\showcase_run.py --name run-087 --size 1440x900 --scale 2 --media-file forest-run.mp4 --media-name 双人实况示例.mp4 --interval 4
-# 每种界面语言一轮（中文 1440x900，英日韩 1600x1000）
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\showcase_studio.py --name zh-05 --source run-087 --lang zh --size 1440x900 --scale 2 --scenes speakers,razor,review,fixups,translate,hero,link,style2
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\showcase_studio.py --name en-05 --source run-087 --lang en --size 1600x1000 --scale 2 --scenes speakers,razor,review,fixups,translate,hero,link,style2
-#   ja-05、ko-05 同上，只改 --name 和 --lang
-# 生成图片，复制到 main 工作树的 docs/assets/readme/，再更新清单、检查链接
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\build_assets_087.py "$env:README_SHOWCASE_DIR\assets-087"
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\build_manifest.py <main 工作树> <日期>
-<开发仓库>\.venv-main\Scripts\python.exe -X utf8 scripts\readme_showcase\check_links.py <main 工作树> README.md README_ZH.md README_JA.md README_KO.md
-```
-
-场景顺序有意义：`razor` 和 `fixups` 修的是这段示例里断得不好的句子，`review` 要在 `fixups` 之前（采用“它”之后 `fixups` 才找得到“看到了我先拉住它”）。录制时看到的界面问题记在 `docs/assets/readme/README.md`。
-
-## 2026-10-14：0.7.1 界面一览素材
-
-### 边界
+## 边界
 
 - 截图应对应**公开版本**：先在仓库外或 `tmp/` 下用 `git worktree add --detach <目录> v<版本>` 检出发布 tag，再在那个目录里运行脚本；`models`、`tools` 用目录联接指向开发仓库已有的文件夹。
 - 工作目录默认 `<检出目录>/tmp/readme-showcase`，可用环境变量 `README_SHOWCASE_DIR` 指定。
@@ -62,7 +10,7 @@ powershell -ExecutionPolicy Bypass -File scripts\readme_showcase\tts.ps1 -Dialog
 - 正常 `MainWindow` 跑在私有 Windows 桌面上，不打扰当前屏幕；截图用窗口原生捕获。设 `TWOBYTEASR_ONBOARDING=1` 时首页显示新手步骤卡（与新安装用户看到的一致），但不弹出首次选择窗口。
 - 示例素材是测试卡画面 + Windows OneCore 中文语音（Kangkang／Yaoyao），不使用游戏实录、直播或私人媒体。
 
-### 步骤
+## 步骤
 
 ```powershell
 $env:README_SHOWCASE_DIR = "$PWD\tmp\readme-showcase"

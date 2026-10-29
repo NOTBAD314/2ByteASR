@@ -253,11 +253,34 @@ def preview_glossary_correction(project, cue_ids, snapshot, settings, *, cancel_
             'local_normalization':local_normalizations.get(segment.segment_id),'detail':detail,
             'retrieved_candidates':cue_candidates,'final_diff':[{'span':list(h.span),'from':h.original,
                 'to':h.replacement,'source':h.source,'default_selected':h.default_selected} for h in hits if h.cue_id==cue.id]})
-    receipt["proposed_cues"] = len({h.cue_id for h in hits})
-    receipt['proposed_changes']=len(hits)
-    receipt['automatic_changes']=sum(h.default_selected for h in hits)
-    receipt['confirmation_changes']=sum(not h.default_selected for h in hits)
     receipt['rejected_changes']=sum(len(row.get('rejected_edits',())) for row in details.values())
+    from .proofread_rules import effective_length, full_word_pair, normalize_occurrence
+    cue_texts = {cue.id: cue.text for cue in cues}
+    hits = [normalized for hit in hits
+            if (normalized := normalize_occurrence(hit, cue_texts[hit.cue_id], resolver)) is not None]
+    receipt['proposed_changes'] = len(hits)
+    receipt['proposed_cues'] = len({hit.cue_id for hit in hits})
+    receipt['automatic_changes'] = sum(hit.default_selected for hit in hits)
+    receipt['confirmation_changes'] = sum(not hit.default_selected for hit in hits)
+    by_cue = {}
+    for hit in hits:
+        by_cue.setdefault(hit.cue_id, []).append({'span': list(hit.span), 'from': hit.original,
+            'to': hit.replacement, 'source': hit.source, 'default_selected': hit.default_selected})
+    for row in receipt['segments']:
+        row['final_diff'] = by_cue.get(row['cue_id'], [])
+    pending_rows = []
+    for row in receipt['pending_rows']:
+        if row['state'] == 'missing_alias_or_candidate':
+            if effective_length(row.get('surface')) < 2:
+                continue
+            from .proposal_safety import review_change_reason
+            options = [option for option in row.get('canonical_options', ()) if full_word_pair(row.get('surface'), option)
+                       and not review_change_reason(cue_texts[row['cue_id']], tuple(row['span']), option, snapshot=snapshot)]
+            if row.get('canonical_options') and not options:
+                continue
+            row = {**row, 'canonical_options': options}
+        pending_rows.append(row)
+    receipt['pending_rows'] = pending_rows
     receipt['ai_returned_changes']=sum(len(row.get('returned_edits',())) for row in details.values())
     receipt['ai_accepted_changes']=sum(len(row.get('accepted_edits',())) for row in details.values())
     receipt['missing_associations']=sum(row['state']=='missing_alias_or_candidate' for row in receipt['pending_rows'])

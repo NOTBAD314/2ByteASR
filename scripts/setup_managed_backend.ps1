@@ -172,11 +172,13 @@ function Use-SystemProxy($system=$null) {
     if (-not $env:NO_PROXY -and -not $env:no_proxy) { $env:NO_PROXY='localhost,127.0.0.1,::1' }
     Write-Host ('[网络] 使用 Windows 系统代理 '+$value+'（curl/uv 不会自行读取系统代理）')
 }
-function Get-VerifiedFile([string]$url,[string]$sha,[string]$destination) {
+function Get-VerifiedFile([string]$url,[string]$sha,[string]$destination,[int]$minimumRate=20480) {
     # Returns '' on success, otherwise a short reason. Nothing unverified stays.
     $pending=$destination+'.partial'
     Remove-Item -LiteralPath $pending -ErrorAction SilentlyContinue
     $curl=Join-Path $env:SystemRoot 'System32\curl.exe'
+    # Seconds a source may stay below $minimumRate (tests shorten it).
+    $speedTime=if ($script:uvSpeedTime) { [int]$script:uvSpeedTime } else { 15 }
     $http='[2BYTEASR_TOOL_HTTP] {"http_status":"%{response_code}","downloaded":%{size_download},"redirects":%{num_redirects},"elapsed_s":%{time_total},"effective_url":"%{url_effective}"}\n'
     # Independent progress supervision also covers native TLS/file waits where
     # curl's own timer may not return. No-progress applies only to this download,
@@ -184,7 +186,7 @@ function Get-VerifiedFile([string]$url,[string]$sha,[string]$destination) {
     $global:LASTEXITCODE=1
     try {
         Run-Bounded $curl @('--disable','--silent','--show-error','--fail','--location','--retry','0',
-            '--connect-timeout','10','--speed-limit','20480','--speed-time','30','--max-time','900',
+            '--connect-timeout','10','--speed-limit',[string]$minimumRate,'--speed-time',[string]$speedTime,'--max-time','900',
             '--write-out',$http,'--output',$pending,$url) 915 $pending 45 'uv'
         $code=0
     } catch { $code=[int]$LASTEXITCODE }
@@ -199,15 +201,30 @@ function Get-VerifiedFile([string]$url,[string]$sha,[string]$destination) {
     return ''
 }
 function Get-UvArchive($sources,[string]$archive) {
-    # Sources are tried in order; the first verified archive wins.
+    # Sources are tried in order; the first verified archive wins. 2026-10-28 on a
+    # mainland line: Aliyun gave ~0.1 MB/s (237 s for this 24 MB file) while
+    # Tencent / USTC gave 3-20 MB/s. The first pass leaves any source slower than
+    # 256 KB/s for 15 s; the second pass accepts slow sources for slow lines.
     $failures=@()
-    for ($index=0; $index -lt $sources.Count; $index++) {
-        $source=$sources[$index]
-        Write-Host ('[工具] 来源 '+($index+1)+'/'+$sources.Count+'：'+$source.label)
-        $problem=Get-VerifiedFile $source.url $source.sha256 $archive
-        if (-not $problem) { Write-Host ('[工具] 已从 '+$source.label+' 取得 uv，SHA-256 校验通过'); return }
-        $failures+=($source.label+'：'+$problem)
-        Write-Host ('[工具] '+$source.label+' 未成功（'+$problem+'）')
+    $floors=@(if ($script:uvSpeedFloors) { $script:uvSpeedFloors } else { 262144, 20480 })  # bytes/s, one pass each
+    $pass=@($sources)
+    foreach ($minimumRate in $floors) {
+        if ($minimumRate -ne $floors[0]) {
+            # Only sources that were merely slow (curl 28) get the second, slower pass.
+            if (-not $pass.Count) { break }
+            Write-Host '[工具] 没有来源够快，放宽速度要求再试一轮'
+        }
+        $slow=@()
+        for ($index=0; $index -lt $pass.Count; $index++) {
+            $source=$pass[$index]
+            Write-Host ('[工具] 来源 '+($index+1)+'/'+$pass.Count+'：'+$source.label)
+            $problem=Get-VerifiedFile $source.url $source.sha256 $archive $minimumRate
+            if (-not $problem) { Write-Host ('[工具] 已从 '+$source.label+' 取得 uv，SHA-256 校验通过'); return }
+            $failures+=($source.label+'：'+$problem)
+            Write-Host ('[工具] '+$source.label+' 未成功（'+$problem+'）')
+            if ($problem -eq '连接或传输超时') { $slow+=$source }
+        }
+        $pass=$slow
     }
     $script:category=if (@($failures | Where-Object { $_ -notlike '*SHA-256*' }).Count) { 'runtime_network' } else { 'checksum' }
     throw ('uv 下载失败，GitHub 与备用来源都没有成功：'+($failures -join '；'))

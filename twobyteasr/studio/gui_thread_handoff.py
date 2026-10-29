@@ -9,8 +9,14 @@ import sys
 # ~13 ms, worker throughput 61 %); 1 ms with a 1 ms timer: GUI ~4 ms, worker
 # ~90 %. The timer request is held only while Studio is shown.
 INTERVAL=.001
-_users=0
-_previous=None
+
+# 2026-10-28 (user's 1-hour stream): Studio and the glossary proofread page
+# each saved and restored the interval on their own. Back from the proofread
+# page while its check still ran, Studio kept the page's 0.3 ms: a filter
+# click took 1.4 s, Ctrl+S 7.6 s. Every owner now files a request here; the
+# interval is the smallest active one, the caller's value when none is left.
+_requests={}
+_base=None
 _applied=None
 _timer_raised=False
 
@@ -26,26 +32,49 @@ def _timer_period(begin):
         return False
 
 
+def _apply():
+    global _base,_applied,_timer_raised
+    current=sys.getswitchinterval()
+    if _applied is not None and current!=_applied:
+        # Someone set a policy of their own since: it is the new base.
+        _base=current
+    if not _requests:
+        if _applied is not None and current==_applied and _base is not None:
+            sys.setswitchinterval(_base)
+        _base=_applied=None
+    else:
+        if _base is None:
+            _base=current
+        _applied=min([_base]+[interval for interval,_timer in _requests.values()])
+        sys.setswitchinterval(_applied)
+    wanted=any(timer for _interval,timer in _requests.values())
+    if wanted and not _timer_raised:
+        _timer_raised=_timer_period(True)
+    elif not wanted and _timer_raised:
+        _timer_raised=False
+        _timer_period(False)
+
+
+def request_switch_interval(owner,interval,*,timer=False):
+    """Ask for at most ``interval`` seconds while ``owner`` holds the request."""
+    _requests[owner]=(float(interval),bool(timer))
+    _apply()
+
+
+def release_switch_interval(owner):
+    if _requests.pop(owner,None) is not None:
+        _apply()
+
+
 class GuiThreadHandoff:
     def __init__(self):self.held=False
 
     def acquire(self):
-        global _users,_previous,_applied,_timer_raised
         if self.held or sys.platform!='win32':return
-        if not _users:
-            _previous=sys.getswitchinterval()
-            _applied=min(_previous,INTERVAL)
-            sys.setswitchinterval(_applied)
-            _timer_raised=_timer_period(True)
-        _users+=1;self.held=True
+        self.held=True
+        request_switch_interval(('studio-handoff',id(self)),INTERVAL,timer=True)
 
     def release(self):
-        global _users,_timer_raised
         if not self.held:return
-        self.held=False;_users-=1
-        if not _users:
-            if sys.getswitchinterval()==_applied:
-                sys.setswitchinterval(_previous)
-            if _timer_raised:
-                _timer_raised=False
-                _timer_period(False)
+        self.held=False
+        release_switch_interval(('studio-handoff',id(self)))

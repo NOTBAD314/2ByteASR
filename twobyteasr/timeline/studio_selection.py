@@ -70,6 +70,18 @@ def move_selection_command(project, selection, delta_ms, *, page=None, locked_sp
     from .studio_clip_edit import _working_copy, _finalize_edit, video_track_locked
     from .studio_caption_timeline import ensure_independent_captions, shift_caption
     selection = expand_linked_selection(project,selection)
+    from .studio_caption_timeline import independent_captions
+    if independent_captions(project) and not selection.video_ids and not selection.audio_ids:
+        # A caption-only move already has a typed timing transaction. Avoid a
+        # complete AV edit snapshot and structural model reset for unchanged
+        # video/audio, while keeping word clocks and one undo step.
+        from .studio_commands import BatchTimingCommand
+        targets = [c for c in project.cues if c.id in selection.cue_ids and c.speaker_id not in locked_speakers]
+        if not targets:
+            raise ValueError('没有可移动的未锁定片段')
+        delta = max(-min(c.start_ms for c in targets), int(delta_ms))
+        return BatchTimingCommand(project, {c.id:(c.start_ms+delta,c.end_ms+delta) for c in targets},
+                                  text='移动选中片段', changed=getattr(page, '_changed', None))
     working = _working_copy(project)
     ensure_independent_captions(working)
     intervals = [(c.timeline_in_ms,c.timeline_out_ms) for t in working.video_tracks for c in t.clips if c.id in selection.video_ids]

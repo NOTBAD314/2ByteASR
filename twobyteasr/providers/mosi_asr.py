@@ -28,6 +28,7 @@ import math
 import re
 import threading
 import time
+from time import perf_counter as _phase_clock
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -545,7 +546,7 @@ def submit(audio, endpoint, *, client, state_path: Path, state: dict, check=lamb
 
 
 def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, check=lambda: None,
-         progress=lambda *a: None, sleep=time.sleep, max_wait: float = 7200.0, segment=None) -> dict:
+         progress=lambda *a: None, sleep=time.sleep, max_wait: float = 7200.0, segment=None, timings=None) -> dict:
     """Wait for one submitted task. Each state reaches ``progress`` with a
     fourth argument: how long MOSI has had the task (from the original
     submission, also across runs) and the request's audio length, so the
@@ -557,8 +558,12 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
         check()
         if time.monotonic() >= deadline:
             raise ASRProtocolError('本地等待达到时限；任务编号已保存，下次会继续查询原任务。', 'poll_timeout')
+        request_started = _phase_clock()
         response = client.get(task_url(endpoint['url'], state['task_id']), headers=_auth(endpoint),
                               timeout=(10, 60), allow_redirects=False)
+        if timings is not None:
+            timings['poll_requests'] += 1
+            timings['poll_http_seconds'] += _phase_clock() - request_started
         body = _json(response)
         if response.status_code == 404:
             state.update(status='UNKNOWN', last_poll_at=time.time())
@@ -589,9 +594,12 @@ def poll(endpoint, *, client, state_path: Path, state: dict, duration: float, ch
             validate_result(body)
             return body
         steps = int(interval * 10)
+        waiting = _phase_clock()
         for _ in range(steps):
             check()
             sleep(.1)
+        if timings is not None:
+            timings['poll_sleep_seconds'] += _phase_clock() - waiting
 
 
 def _load_state(root: Path) -> dict:
@@ -642,7 +650,7 @@ def _prepared_state(root: Path, *, progress, restart_terminal, segment=None) -> 
 RATE_LIMIT_RETRY_SECONDS = 20
 
 
-def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait) -> dict:
+def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait, timings=None) -> dict:
     """Upload the request unless MOSI already has it.
 
     HTTP 429 means MOSI already has as many requests as it takes; nothing was
@@ -655,12 +663,19 @@ def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, 
     while True:
         check()
         progress('uploading', 0, 1)
+        began = _phase_clock()
+        if timings is not None:
+            timings['submit_requests'] += 1
         try:
             return submit(audio, endpoint, client=client, state_path=root / 'task.json', state=state, check=check,
                           upload_progress=lambda sent, total: progress('upload_bytes', sent, total))
         except ASRProtocolError as exc:
             if exc.category != 'rate_limited' or time.monotonic() >= deadline:
                 raise
+        finally:
+            if timings is not None:
+                timings['encode_upload_submit_seconds'] += _phase_clock() - began
+                timings['upload_bytes'] = int(state.get('bytes') or 0)
         progress('waiting_for_slot', 0, 1)
         for _ in range(int(RATE_LIMIT_RETRY_SECONDS * 10)):
             check()
@@ -668,13 +683,15 @@ def _submit_request(audio, endpoint, root: Path, state: dict, *, client, check, 
 
 
 def _wait_request(audio, endpoint, root: Path, state: dict, *, client, check, progress, sleep, max_wait,
-                  segment=None) -> dict:
+                  segment=None, timings=None) -> dict:
     """Wait for a request MOSI has; keep and account its result."""
     state_path, raw_path = root / 'task.json', root / 'result.json'
     duration = len(audio) / 16000
+    began = _phase_clock()
     try:
         payload = poll(endpoint, client=client, state_path=state_path, state=state, duration=duration,
-                       check=check, progress=progress, sleep=sleep, max_wait=max_wait, segment=segment)
+                       check=check, progress=progress, sleep=sleep, max_wait=max_wait, segment=segment,
+                       **({'timings': timings} if timings is not None else {}))
     except BaseException:
         try:
             check()
@@ -686,6 +703,9 @@ def _wait_request(audio, endpoint, root: Path, state: dict, *, client, check, pr
             _save(state_path, state)
             progress('local_cancel_remote_continues', 0, 1)
         raise
+    finally:
+        if timings is not None:
+            timings['remote_wait_and_result_seconds'] = _phase_clock() - began
     _save(raw_path, payload)
     from .api_usage import record_api_call
     record_api_call(stage='asr', provider=endpoint.get('provider', ''), model=MODEL, request_mode='mosi_async',
@@ -812,7 +832,7 @@ class _Board:
 
 def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, progress=lambda *a: None,
                sleep=time.sleep, max_wait=7200.0, restart_terminal=False, on_rows=None,
-               parallel=PARALLEL_REQUESTS, resplit_blocked=False) -> list:
+               parallel=PARALLEL_REQUESTS, resplit_blocked=False, on_timing=None) -> list:
     """Run (or resume) all requests for the task audio; rows on the task clock.
 
     Requests are uploaded in order, one at a time, while at most ``parallel``
@@ -847,6 +867,19 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
     board = _Board(total, progress)
     lock = threading.Lock()
     converted = [None] * total
+    timings = [dict(provider=PROVIDER, model=MODEL, request_index=i, request_total=total,
+                    audio_seconds=(end-start)/16000, cache_hit=False, submit_requests=0, poll_requests=0,
+                    poll_http_seconds=0.0, poll_sleep_seconds=0.0, encode_upload_submit_seconds=0.0,
+                    remote_processing_seconds=None, _started=_phase_clock()) for i,(start,end) in enumerate(ranges)]
+
+    def timing(index, outcome, error=None):
+        if on_timing is None:
+            return
+        info = {key: value for key,value in timings[index].items() if not key.startswith('_')}
+        info.update(outcome=outcome, wall_seconds=_phase_clock()-timings[index]['_started'])
+        if error is not None:
+            info['failure_category'] = str(getattr(error, 'category', type(error).__name__))
+        on_timing({key: round(value, 6) if isinstance(value, float) else value for key,value in info.items()})
 
     def finish(index, folder, payload):
         start, end = ranges[index]
@@ -890,14 +923,18 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
         note = (lambda state, done=0, size=0, details=None, index=index: board.report(index, state, done, size, details))
         if (folder / 'result.json').is_file():
             note('cached_result')
+            timings[index]['cache_hit'] = True
             finish(index, folder, json.loads((folder / 'result.json').read_text('utf8')))
+            timing(index, 'completed')
             continue
         try:
             state = _prepared_state(folder, progress=note, restart_terminal=restart_terminal, segment=segment)
         except ASRProtocolError as exc:
             if exc.category != 'content_blocked':
+                timing(index, 'failed', exc)
                 raise
             blocked(index, folder, segment)
+            timing(index, 'blocked', exc)
             continue
         jobs.append((index, folder, segment, note, state))
     errors, places = [], threading.Semaphore(max(1, int(parallel)))
@@ -908,14 +945,18 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
         try:
             finish(index, folder, _wait_request(samples[start:end], endpoint, folder, state, client=client,
                                                 check=check, progress=note, sleep=sleep, max_wait=max_wait,
-                                                segment=segment))
+                                                segment=segment, **({'timings':timings[index]} if on_timing else {})))
+            timing(index, 'completed')
         except ASRProtocolError as exc:
             if exc.category == 'content_blocked':
                 blocked(index, folder, segment)
+                timing(index, 'blocked', exc)
             else:
+                timing(index, 'failed', exc)
                 with lock:
                     errors.append(exc)
         except BaseException as exc:  # noqa: BLE001 - every request is waited for; the first error is raised
+            timing(index, 'failed', exc)
             with lock:
                 errors.append(exc)
         finally:
@@ -934,7 +975,8 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
                     break
                 try:
                     state = _submit_request(samples[start:end], endpoint, folder, state, client=client, check=check,
-                                            progress=note, sleep=sleep, max_wait=max_wait)
+                                            progress=note, sleep=sleep, max_wait=max_wait,
+                                            **({'timings':timings[index]} if on_timing else {}))
                 except BaseException:
                     places.release()
                     raise
@@ -942,11 +984,14 @@ def transcribe(audio, endpoint, cache_root, *, client=None, check=lambda: None, 
                 if exc.category == 'content_rejected':
                     # Refused at upload by the same review: a gap like a block.
                     blocked(index, folder, segment)
+                    timing(index, 'blocked', exc)
                     continue
+                timing(index, 'failed', exc)
                 with lock:
                     errors.append(exc)
                 break
             except BaseException as exc:  # noqa: BLE001 - recorded; requests MOSI has are still waited for
+                timing(index, 'failed', exc)
                 with lock:
                     errors.append(exc)
                 break

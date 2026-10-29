@@ -1028,7 +1028,9 @@ def test_a_whole_name_is_adopted_ignored_and_undone_as_one(tmp_path):
         # 忽略 answers the group without touching the caption.
         index = page._stack.index()
         page._dismiss_group("c2", 0)
-        assert rows["c2"]["base"] == "击杀之后切到魔草巫灵坍缩" and page._stack.index() == index
+        assert rows["c2"]["base"] == "击杀之后切到魔草巫灵坍缩" and page._stack.index() == index + 1
+        # Ignoring is a persisted, undoable review action.
+        assert all(issue.get("ignored") for issue in rows["c2"]["issues"] if not issue["checked"])
         # Both asked groups are answered now (疫病吐息 adopted and taken back, 巫 ignored).
         assert page.proposal_counts()["asked"] == 0 and page._groups(rows["c2"])[0]["reviewed"]
         page._flush_save()
@@ -1393,3 +1395,44 @@ def test_a_plain_caption_is_one_line_high(tmp_path):
         assert lst.heights[0] >= lst.PAD + lst.LINE + lst.META_LINE + lst.PAD
     finally:
         _close(page)
+
+
+def test_leaving_the_page_stops_a_local_match_and_reruns_it_on_return(tmp_path, monkeypatch):
+    """2026-10-28 (user's 1-hour stream): the match for every caption kept
+    running after the user went back to Studio and competed with playback and
+    saving for the interpreter lock (Ctrl+S 7.6 s, a filter click 1.4 s)."""
+    import threading
+    from twobyteasr.glossary import studio_glossary_service
+    from twobyteasr.projects.studio_project import load_project
+    identity = _library("离开页面", ("CHIOCHOO", "CHICHOO"))
+    path = _save(tmp_path, "leave", [("c1", 0, 2000, "而且CHIOCHOO能奶自己"), ("c2", 2000, 4000, "非常尴尬的一幕")],
+                 glossary_ids=[identity])
+    page = _page()
+    try:
+        page.show()
+        page.open_task(str(path), load_project(path))
+        assert _wait(page)
+        assert any(issue["replacement"] == "CHICHOO" for issue in _row(page, "c1")["issues"])
+        real, started = studio_glossary_service.preview_glossary_correction, threading.Event()
+
+        def slow(*args, cancel_token=None, **kwargs):
+            started.set()
+            while not cancel_token.is_cancelled:
+                time.sleep(0.01)
+            cancel_token.raise_if_cancelled()
+        monkeypatch.setattr(studio_glossary_service, "preview_glossary_correction", slow)
+        page._run(False, ["c1"])
+        assert started.wait(5)
+        page.hide()  # back to Studio: the running match stops
+        assert _wait(page) and page._match_on_show == {"c1"}
+        page._run(False)  # a later request while away widens the pending scope
+        assert page._worker is None and page._match_on_show is None
+        monkeypatch.setattr(studio_glossary_service, "preview_glossary_correction", real)
+        page.show()
+        for _ in range(5):
+            APP.processEvents()
+        assert _wait(page) and page._match_on_show is False
+        assert any(issue["replacement"] == "CHICHOO" for issue in _row(page, "c1")["issues"])
+    finally:
+        _close(page)
+

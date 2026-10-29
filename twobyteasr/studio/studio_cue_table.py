@@ -233,6 +233,24 @@ class CueTableModel(QAbstractTableModel):
                 if 0 <= column < self.columnCount():
                     self.dataChanged.emit(self.index(row, column), self.index(row, column))
 
+    def refresh_cues(self, cue_ids, columns: tuple[int, ...] | None = None, *, recheck_filter=True) -> None:
+        """One model notification per contiguous row span, one filter rebuild."""
+        if recheck_filter and self.scope_ids is None and (self.filter_status != 'all' or self.query.strip()):
+            self.refresh()
+            return
+        rows = sorted({row for cue_id in cue_ids if (row := self.row_for_cue_id(cue_id)) >= 0})
+        cols = [c for c in (columns if columns is not None else range(self.columnCount()))
+                if 0 <= c < self.columnCount()]
+        if not rows or not cols:
+            return
+        first = previous = rows[0]
+        for row in [*rows[1:], -1]:
+            if row == previous+1:
+                previous = row
+                continue
+            self.dataChanged.emit(self.index(first,min(cols)),self.index(previous,max(cols)))
+            first = previous = row
+
     def rowCount(self, _parent=QModelIndex()) -> int:
         return len(self._rows)
 

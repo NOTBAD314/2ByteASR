@@ -13,6 +13,27 @@ def same_media_path(left, right):
         os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right)))
 
 
+def first_picture_seconds(project, media_path):
+    """First video picture on mpv's clock, from the probe the project recorded.
+
+    mpv counts from the container start; the probe saved the video stream's
+    start and the container start. None when the source is not a recorded
+    asset (a proxy, a project from before these fields) or has no video.
+    """
+    for asset in getattr(project, 'media_pool', None) or ():
+        if not same_media_path(getattr(asset, 'canonical_source', ''), media_path):
+            continue
+        meta = getattr(asset, 'video_metadata', None) or {}
+        first = meta.get('start_time_ms', meta.get('first_pts_ms'))
+        if first is None or meta.get('has_video') is False:
+            return None
+        try:
+            return max(0.0, (float(first) - float(meta.get('source_start_ms') or 0.0)) / 1000.0)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def video_frame_witness(video):
     controller = getattr(video, 'controller', None)
     reader = getattr(controller, 'observed_frame', None)

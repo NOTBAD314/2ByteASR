@@ -5,9 +5,7 @@ The GUI executable is never used as Python. All publication follows pip check.
 """
 from __future__ import annotations
 import argparse
-import collections
 import hashlib
-import http.client
 import json
 import os
 from pathlib import Path
@@ -16,16 +14,20 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import uuid
-import urllib.error
-import urllib.request
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
+
+# The package root (twobyteasr/) beside scripts/; main() also adds --root.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from twobyteasr.system.runtime_package_download import (  # noqa: E402 - needs the path above
+    RUNTIME_SOURCE_ENV, SourceFailed, SourcesExhausted, WheelDownload, fetch_files, files_for_hashes,
+    load_package_files, describe_ranking, order_by_preference, pypi_sources, rank_sources, rate_text,
+    runtime_preference, size_text)
 
 # Fallback sources and the official hashes that make them safe to use.
 RUNTIME_SOURCES = Path('scripts/runtime_sources.json')
@@ -36,10 +38,6 @@ class RemovedModelError(ValueError):
     """A retired key must be rejected before runtime/cache preparation."""
 
 
-class SourcesExhausted(RuntimeError):
-    """Official and fallback sources all failed (exit code SOURCES_EXHAUSTED)."""
-
-
 SOURCES_EXHAUSTED = 75
 # CUDA PyTorch (2.4-3 GB) is fetched here rather than by uv: uv prints nothing
 # until a file is complete, keeps nothing after a pause and changes source only
@@ -47,29 +45,14 @@ SOURCES_EXHAUSTED = 75
 # download.pytorch.org gave ~1 MB/s (a 0.7.1 user's fast first 8 MB was no
 # promise either) while the SJTU/NJU mirrors gave 17-47 MB/s for the same file.
 # uv then installs the file from a local --find-links folder; every byte is
-# checked against the locked SHA-256 first.
-RUNTIME_SOURCE_ENV = '2BYTEASR_RUNTIME_SOURCE'  # 'mirror': domestic sources first
+# checked against the locked SHA-256 first. Since 2026-10-28 the other locked
+# packages are fetched the same way (twobyteasr/system/runtime_package_download.py)
+# and uv installs the environment offline.
 # Beside uv's own buckets: `uv cache prune` removes folders it does not know, so
 # cache maintenance keeps and removes these files exactly like uv's downloads.
 WHEELHOUSE = Path('download-cache/2byteasr-pytorch-wheels')
-WHEEL_USER_AGENT = '2ByteASR-runtime/1.0'
-WHEEL_BLOCK = 1 << 20
-WHEEL_READ_TIMEOUT_S = 30
-# Below this the next source gets a trial. A trial keeps its bytes, so trying
-# costs little; measured 2026-10-14 a mirror sat at ~5 MB/s for 8 minutes
-# while the next one gave ~100 MB/s for the same file.
-SLOW_BYTES_PER_SECOND = 8 << 20
-SPEED_WINDOW_S = 30.0   # speed judged over this window...
-SPEED_GRACE_S = 20.0    # ...once a source has had this long...
-SPEED_CHECK_S = 30.0    # ...at most this often (doubled after a failed trial)
-TRIAL_S = 8.0           # a trial reads the next source at the current offset; its bytes are kept
-SWITCH_FACTOR = 2.0
-WORTH_SWITCHING_S = 120.0
-NO_PROGRESS_RETRIES = 3
-MAX_RESUMES = 20
+PYPI_HOUSE = Path('download-cache/2byteasr-pypi-files')
 HEARTBEAT_S = 30.0
-CONTENT_RANGE = re.compile(r'bytes\s+(\d+)-(\d+)/(\d+)', re.IGNORECASE)
-UNSATISFIED_RANGE = re.compile(r'bytes\s+\*/(\d+)', re.IGNORECASE)
 # 2026-10-21: on one PC Windows reported folders under %LOCALAPPDATA%\2ByteASR as in use (os error 32) whenever uv
 # deleted them. Every `uv python install` re-creates the minor-version links (cpython-3.10-windows-x86_64-none), so it
 # failed and left an empty folder where the link was; a temporary numba-*.data folder failed the same way once.
@@ -216,14 +199,6 @@ def hashed_environment(root, role, version, tag, pins):
     return entry, ''
 
 
-def size_text(value):
-    return f'{value / 2**30:.2f} GiB' if value >= 2**30 else f'{value / 2**20:.1f} MiB'
-
-
-def rate_text(value):
-    return f'{value / 2**20:.1f} MB/s'
-
-
 def pytorch_wheel_name(pin, version):
     name, _, release = pin.partition('==')
     cpython = 'cp' + version.replace('.', '')[:3]
@@ -236,350 +211,6 @@ def pytorch_sources(root, tag, prefer_mirror):
     mirrors = [{'label': item['label'], 'url': item['url'].format(tag=tag).rstrip('/'), 'official': False}
                for item in mirror_list(root, 'pytorch_mirrors')]
     return [*mirrors, official] if prefer_mirror else [official, *mirrors]
-
-
-class SourceFailed(Exception):
-    """One read from one source ended early; ``final`` sources are not retried."""
-
-    def __init__(self, message, *, final=False, complete=False):
-        super().__init__(message)
-        self.final = final
-        self.complete = complete  # the local partial already covers the whole file
-
-
-class WheelDownload:
-    """One locked wheel: resumable ``.partial``, progress lines and source switching.
-
-    Every source serves the identical file, so a download resumes at the same
-    offset on another source; the locked SHA-256 decides before anything is
-    published. Progress goes to stdout as ``[2BYTEASR_RUNTIME_DOWNLOAD]`` lines
-    (about once a second) plus readable ``[PyTorch]`` lines for the log.
-    """
-
-    def __init__(self, folder, name, sha256, sources, *, index=1, count=1,
-                 opener=urllib.request.urlopen, clock=time.monotonic, sleep=time.sleep):
-        self.folder = Path(folder)
-        self.name = name
-        self.hashes = {value.lower() for value in sha256}
-        self.sources = list(sources)
-        self.index, self.count = index, count
-        self.opener, self.clock, self.sleep = opener, clock, sleep
-        self.target = self.folder / name
-        self.partial = self.folder / (name + '.partial')
-        self.sidecar = self.folder / (name + '.partial.json')
-        self.package = name.split('-', 1)[0]
-        self.total = None
-        self.current = 0
-        self.reading = 0
-        self.reason = ''  # why the official source was left, if it was
-        self.event = None  # the last source change, for the workshop to word in its language
-        self.strikes = [0] * len(self.sources)
-        self.resumes = [0] * len(self.sources)
-        self.samples = collections.deque()  # (time, offset) on the current source
-        self.recent = collections.deque()   # (time, offset) for the displayed speed
-        self.check_gap = SPEED_CHECK_S
-        self.last_trial = None  # trials rotate through the other sources
-        self.since = self.next_check = 0.0
-        self.last_emit = 0.0
-        self.last_tenth = -1
-
-    def say(self, text):
-        print('[PyTorch] ' + text, flush=True)
-
-    def emit(self, phase, downloaded, speed=0.0):
-        source = self.sources[self.reading]
-        payload = dict(file=self.name, package=self.package, index=self.index, count=self.count,
-                       downloaded=int(downloaded), total=int(self.total or 0), speed=round(speed, 1),
-                       source=source['label'], host=urlparse(source['url']).hostname or '', phase=phase)
-        if self.event:
-            payload['event'] = self.event
-        print('[2BYTEASR_RUNTIME_DOWNLOAD] ' + json.dumps(payload, ensure_ascii=False), flush=True)
-
-    def fetch(self):
-        """Download (or reuse) the verified file; return why the official source was left."""
-        self.folder.mkdir(parents=True, exist_ok=True)
-        if self.target.is_file():
-            self.total = self.target.stat().st_size
-            if self._verified(self.target):
-                self.emit('done', self.total)
-                self.say(f'{self.name} 已在本机并通过 SHA-256 校验，直接使用')
-                return ''
-            self.target.unlink()
-            self.total = None
-        self._load_sidecar()
-        for attempt in (1, 2):
-            self._download()
-            if self._verified(self.partial):
-                os.replace(self.partial, self.target)
-                self.sidecar.unlink(missing_ok=True)
-                self.emit('done', self.total)
-                self.say(f'{self.name} 下载完成，SHA-256 与锁定值一致')
-                return self.reason
-            self.partial.unlink(missing_ok=True)
-            self.sidecar.unlink(missing_ok=True)
-            self.total = None
-            # Which source served the bad bytes is unknown: start again from the first.
-            self.current = 0
-            self.strikes = [0] * len(self.sources)
-            self.resumes = [0] * len(self.sources)
-            self.last_tenth = -1
-            self.say(f'{self.name} 的 SHA-256 与锁定值不符，已丢弃' + ('，重新下载' if attempt == 1 else ''))
-        message = f'{self.name} 两次下载的 SHA-256 都与锁定值不符，没有安装'
-        print('[运行库] ' + message, flush=True)
-        raise RuntimeError(message)
-
-    def _verified(self, path):
-        self.emit('verify', path.stat().st_size)
-        digest = hashlib.sha256()
-        with path.open('rb') as stream:
-            for block in iter(lambda: stream.read(WHEEL_BLOCK * 8), b''):
-                digest.update(block)
-        return digest.hexdigest() in self.hashes
-
-    def _load_sidecar(self):
-        # The total size saved with a partial lets a resumed run show progress at once.
-        try:
-            saved = json.loads(self.sidecar.read_text('utf8'))
-            if set(saved.get('sha256', [])) == self.hashes and int(saved['total']) > 0:
-                self.total = int(saved['total'])
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-
-    def _offset(self):
-        return self.partial.stat().st_size if self.partial.is_file() else 0
-
-    def _download(self):
-        self._restart_clock()
-        while True:
-            offset = self._offset()
-            if self.total is not None and offset >= self.total:
-                if offset == self.total:
-                    return
-                self.partial.unlink()  # longer than the file: never trusted
-                continue
-            try:
-                outcome = self._read(self.current, offset)
-            except SourceFailed as failure:
-                if failure.complete:
-                    continue
-                self._failed(self.current, failure, self._offset() > offset)
-                continue
-            if outcome == 'slow':
-                self._try_faster()
-
-    def _failed(self, index, failure, gained):
-        label = self.sources[index]['label']
-        if gained:
-            self.resumes[index] += 1
-            self.strikes[index] = 0
-        else:
-            self.strikes[index] += 1
-        if failure.final or self.resumes[index] > MAX_RESUMES:
-            self.strikes[index] = NO_PROGRESS_RETRIES
-        if self.strikes[index] < NO_PROGRESS_RETRIES:
-            self.say(f'{label} 连接中断（{failure}），' + ('从断点继续' if gained else '稍后重试'))
-            self.sleep(2 if gained else 5)
-            return
-        following = self._next()
-        if following is None:
-            raise SourcesExhausted(f'{self.name} 下载失败：PyTorch 官方与国内镜像都没有成功（最后：{label}，{failure}）')
-        if self.sources[index]['official'] and not self.reason:
-            self.reason = f'官方 PyTorch 来源未成功（{failure}）'
-        offset = self._offset()
-        self.event = {'kind': 'failed', 'from': label, 'to': self.sources[following]['label'], 'offset': offset}
-        self.say(f"{label} 未成功，改用 {self.sources[following]['label']}" + (f'，从 {size_text(offset)} 处继续' if offset else ''))
-        self.current = following
-        self._restart_clock()
-
-    def _next(self):
-        """The next usable source after the current one, or None."""
-        for step in range(1, len(self.sources)):
-            index = (self.current + step) % len(self.sources)
-            if self.strikes[index] < NO_PROGRESS_RETRIES:
-                return index
-        return None
-
-    def _trial_candidate(self):
-        """The source after the last one tried (not the current one), or None."""
-        start = self.current if self.last_trial is None else self.last_trial
-        for step in range(1, len(self.sources) + 1):
-            index = (start + step) % len(self.sources)
-            if index != self.current and self.strikes[index] < NO_PROGRESS_RETRIES:
-                return index
-        return None
-
-    def _restart_clock(self):
-        now = self.clock()
-        self.samples.clear()
-        self.since = now
-        self.next_check = now + SPEED_GRACE_S
-
-    def _try_faster(self):
-        now = self.clock()
-        rate = self._rate(self.samples, now, SPEED_WINDOW_S)
-        candidate = self._trial_candidate()
-        if candidate is None:
-            return
-        self.last_trial = candidate
-        old, new = self.sources[self.current]['label'], self.sources[candidate]['label']
-        self.say(f'{old} 最近 {int(SPEED_WINDOW_S)} 秒只有 {rate_text(rate)}，试用 {new}')
-        offset = self._offset()
-        before = self.event
-        self.event = {'kind': 'trying', 'from': old, 'to': new, 'from_rate': round(rate, 1), 'offset': offset}
-        self.reading = candidate
-        self.emit('download', offset)  # the window says why the source line changed
-        self.reading = self.current
-        try:
-            trial = self._read(candidate, offset, trial_s=TRIAL_S)
-        except SourceFailed as failure:
-            self.event = before
-            if not failure.complete:
-                self._count_trial_failure(candidate, failure, self._offset() > offset)
-                self.say(f'{new} 未成功（{failure}），继续使用 {old}')
-            self.check_gap *= 2
-            self._restart_clock()
-            return
-        self.event = before
-        if trial >= SWITCH_FACTOR * max(rate, 1.0):
-            if self.sources[self.current]['official'] and not self.reason:
-                self.reason = f'官方 PyTorch 来源只有 {rate_text(rate)}，{new} {rate_text(trial)}'
-            self.event = {'kind': 'switched', 'from': old, 'to': new, 'from_rate': round(rate, 1),
-                          'to_rate': round(trial, 1), 'offset': offset}
-            self.say(f'{old} 只有 {rate_text(rate)}，已改用 {new}（{rate_text(trial)}），从 {size_text(offset)} 处继续')
-            self.current = candidate
-            self.last_trial = None
-            self.check_gap = SPEED_CHECK_S
-        elif self.total is None or self._offset() < self.total:
-            self.say(f'{new} 试下 {rate_text(trial)}，不比 {old} 快，继续使用 {old}')
-            self.check_gap *= 2
-        self._restart_clock()
-
-    def _count_trial_failure(self, index, failure, gained):
-        if failure.final:
-            self.strikes[index] = NO_PROGRESS_RETRIES
-        elif not gained:
-            self.strikes[index] += 1
-
-    @staticmethod
-    def _rate(samples, now, window):
-        while samples and now - samples[0][0] > window:
-            samples.popleft()
-        if len(samples) < 2 or samples[-1][0] - samples[0][0] < 1.0:
-            return 0.0
-        return (samples[-1][1] - samples[0][1]) / (samples[-1][0] - samples[0][0])
-
-    def _open(self, index, offset):
-        url = self.sources[index]['url'] + '/' + quote(self.name, safe='')
-        request = urllib.request.Request(url, headers={'Range': f'bytes={offset}-', 'User-Agent': WHEEL_USER_AGENT,
-                                                       'Accept-Encoding': 'identity'})
-        try:
-            response = self.opener(request, timeout=WHEEL_READ_TIMEOUT_S)
-        except urllib.error.HTTPError as error:
-            stated = UNSATISFIED_RANGE.fullmatch(str(error.headers.get('Content-Range', '')).strip()) if error.headers else None
-            try:
-                error.close()
-            except Exception:  # noqa: BLE001 - an error without a body has nothing to close
-                pass
-            if error.code == 416 and offset and stated and offset >= int(stated.group(1)):
-                self.total = int(stated.group(1))  # the partial already holds the whole file
-                raise SourceFailed('本地文件已完整', complete=True) from error
-            raise SourceFailed(f'HTTP {error.code}', final=error.code in (401, 403, 404, 410, 416)) from error
-        except (OSError, http.client.HTTPException, ValueError) as error:
-            raise SourceFailed(str(getattr(error, 'reason', None) or error) or type(error).__name__) from error
-        status = getattr(response, 'status', None) or response.getcode()
-        match = CONTENT_RANGE.fullmatch(str(response.headers.get('Content-Range', '')).strip())
-        length = str(response.headers.get('Content-Length', '')).strip()
-        kind = str(response.headers.get('Content-Type', '')).split(';')[0].strip().lower()
-        if status == 206 and match and int(match.group(1)) == offset:
-            total = int(match.group(3))
-        elif status == 200 and offset == 0 and length.isdigit():
-            total = int(length)
-        else:
-            response.close()
-            raise SourceFailed('来源不支持断点续传' if status == 200 else f'HTTP {status} 返回范围不符', final=True)
-        if kind in ('text/html', 'application/json') or total <= 0:
-            response.close()
-            raise SourceFailed('来源返回网页而不是安装包', final=True)
-        if self.total is None:
-            self.total = total
-            self.sidecar.write_text(json.dumps({'total': total, 'sha256': sorted(self.hashes)}), 'utf8')
-        elif total != self.total:
-            response.close()
-            raise SourceFailed(f'文件大小 {total} 与已知的 {self.total} 不一致', final=True)
-        free = shutil.disk_usage(self.folder).free
-        if free < self.total - offset + (512 << 20):
-            response.close()
-            message = (f'磁盘空间不足：下载 {self.name} 还需要约 {size_text(self.total - offset)}，'
-                       f'安装时解压还要更多空间（当前可用 {size_text(free)}）')
-            print('[运行库] ' + message, flush=True)  # the workshop reads stdout only
-            raise RuntimeError(message)
-        return response
-
-    def _read(self, index, offset, trial_s=None):
-        """Append ``sources[index]`` to the partial file from ``offset``.
-
-        Returns 'done' when the file is complete, 'slow' when the speed check
-        wants a faster source, or for a trial the measured bytes per second.
-        """
-        response = self._open(index, offset)
-        self.reading = index
-        label = self.sources[index]['label']
-        if trial_s is None:
-            self.say(f'从 {label} 下载 {self.name}（{size_text(self.total)}）' +
-                     (f'，从 {size_text(offset)} 处继续' if offset else ''))
-        position = offset
-        started = self.clock()
-        try:
-            with response, self.partial.open('ab') as handle:
-                if handle.tell() != offset:
-                    raise SourceFailed('本地续传文件在下载时被改动', final=True)
-                while True:
-                    try:
-                        block = response.read1(WHEEL_BLOCK) if hasattr(response, 'read1') else response.read(WHEEL_BLOCK)
-                    except (OSError, http.client.HTTPException, ValueError) as error:
-                        raise SourceFailed(str(error) or type(error).__name__) from error
-                    if not block:
-                        break
-                    if position + len(block) > self.total:
-                        raise SourceFailed('响应长度超过文件大小', final=True)
-                    handle.write(block)
-                    position += len(block)
-                    now = self.clock()
-                    self._progress(now, position, sample=trial_s is None)
-                    if position == self.total:
-                        break  # every byte is here; do not wait for the server to close
-                    if trial_s is not None and now - started >= trial_s:
-                        return (position - offset) / max(now - started, 1e-3)
-                    if trial_s is None and self._too_slow(now, position):
-                        return 'slow'
-        finally:
-            self.reading = self.current
-        if position < self.total:
-            raise SourceFailed('连接提前结束')
-        return 'done' if trial_s is None else (position - offset) / max(self.clock() - started, 1e-3)
-
-    def _progress(self, now, position, *, sample):
-        if sample and (not self.samples or now - self.samples[-1][0] >= .5):
-            self.samples.append((now, position))
-        if not self.recent or now - self.recent[-1][0] >= .25:
-            self.recent.append((now, position))
-        if now - self.last_emit >= 1.0:
-            self.emit('download', position, self._rate(self.recent, now, 5.0))
-            self.last_emit = now
-        tenth = position * 10 // self.total
-        if tenth != self.last_tenth:
-            if self.last_tenth >= 0 and tenth < 10:
-                self.say(f'{self.package} 已下载 {tenth * 10}%（{size_text(position)} / {size_text(self.total)}）')
-            self.last_tenth = tenth
-
-    def _too_slow(self, now, position):
-        if now < self.next_check or self._trial_candidate() is None:
-            return False
-        self.next_check = now + self.check_gap
-        rate = self._rate(self.samples, now, SPEED_WINDOW_S)
-        if rate >= SLOW_BYTES_PER_SECOND:
-            return False
-        return not rate or (self.total - position) / rate > WORTH_SWITCHING_S
 
 
 def fetch_pytorch_wheels(folder, pins, version, entry, sources):
@@ -698,13 +329,34 @@ def main():
     from twobyteasr.system.runtime_download_cache import mark_runtime_cache_state
     mark_runtime_cache_state('installing')
     contract = json.loads((root / 'dependencies.lock.json').read_text('utf-8-sig'))
-    # The workshop's "ModelScope" / "HF 镜像" choice (download_models.ps1) asks
-    # for domestic sources first; once official PyTorch proved slow or failed in
-    # this run, later environments start from the mirrors as well.
-    prefer_mirror = os.environ.get(RUNTIME_SOURCE_ENV, '').strip().lower() == 'mirror'
+    # The workshop's download source (download_models.ps1) applies to runtimes
+    # too: "mirror" (ModelScope / HF 镜像) starts from domestic sources,
+    # "official" (Hugging Face 官方) from the official ones, "auto" measures
+    # every source before a download (2026-10-28). Once official PyTorch proved
+    # slow or failed, or measuring found a mirror faster, later steps of this
+    # run start from the mirrors as well.
+    preference = runtime_preference()
+    prefer_mirror = preference == 'mirror'
     mirror_reason = '已选择国内下载源' if prefer_mirror else ''
     if prefer_mirror:
         print('[运行库] 已选择国内下载源：运行环境先用国内镜像，每个文件仍按锁定 SHA-256 校验', flush=True)
+    elif preference == 'auto':
+        print('[运行库] 下载源为自动：下载前先测各来源的速度再排顺序，下载中慢了或停住会换来源接着下', flush=True)
+    package_table = load_package_files(root)
+    ranked = {}
+    def ranked_sources(family, sources, path):
+        """``sources`` in trial order for this run, measured once per family."""
+        nonlocal prefer_mirror, mirror_reason
+        effective = 'mirror' if prefer_mirror else preference
+        if (family, effective) not in ranked:
+            order, measured = rank_sources(sources, path, effective)
+            print(f'[运行库] {family} 来源测速（各读同一文件的前 512 KiB）：{describe_ranking(order, measured)}', flush=True)
+            ranked[(family, effective)] = order
+            if preference == 'auto' and not prefer_mirror and order and not order[0].get('official') \
+                    and measured[order[0]['label']]['rate'] > 0:
+                prefer_mirror, mirror_reason = True, f"测速后 {order[0]['label']} 比官方来源快"
+                print('[运行库] 测速结果国内镜像更快：本次之后的 Python、PyTorch 与依赖包都先用国内镜像', flush=True)
+        return ranked[(family, effective)]
     def run(arguments, step='运行 uv'):
         print('[运行库] '+subprocess.list2cmdline([str(x) for x in arguments]), flush=True)
         # The application's Windows process policy defaults unspecified stdio
@@ -741,11 +393,13 @@ def main():
                 failure = failure or error
         raise SourcesExhausted(f'Python {version} 下载失败：默认来源与国内备用来源都没有成功') from failure
     wheel_manifest = root/'wheels/model_wheels.json'
+    bundled_hashes = set()
     if wheel_manifest.is_file():
         for item in json.loads(wheel_manifest.read_text('utf8'))['wheels']:
             file = root/'wheels'/item['file']
             if file.parent != root/'wheels' or hashlib.sha256(file.read_bytes()).hexdigest()!=item['sha256']:
                 raise RuntimeError('内置运行库资源校验失败：'+item['file'])
+            bundled_hashes.add(item['sha256'])
         print('[运行库] 内置 wheels 已通过上游发布 SHA256 校验；缺失依赖从官方包源补齐。',flush=True)
     tag = 'cpu'
     if not os.environ.get('2BYTEASR_CPU_ONLY'):
@@ -849,8 +503,9 @@ def main():
         left_official = ''
         if torch_pins and not local_torch and entry:
             wheelhouse = managed / WHEELHOUSE
-            left_official = fetch_pytorch_wheels(wheelhouse, torch_pins, version, entry,
-                                                 pytorch_sources(root, tag, prefer_mirror))
+            first_wheel = quote(pytorch_wheel_name(torch_pins[0], version), safe='')
+            left_official = fetch_pytorch_wheels(wheelhouse, torch_pins, version, entry, ranked_sources(
+                f'PyTorch {tag}', pytorch_sources(root, tag, prefer_mirror), first_wheel))
             links = [*links, '--find-links', str(wheelhouse)]
             local_torch = True
             if left_official and not prefer_mirror:
@@ -873,13 +528,44 @@ def main():
                 for name, item in sorted(entry['packages'].items())), 'utf8')
             build.write_text(mirror_build_constraints(root), 'utf8')
             requirements = [*torch_pins, *package_pins, *pinned_names(entry, entry.get('extra_requirements', []))]
+            binary_only = [arg for name in entry['packages'] if name not in entry.get('sdist_only', [])
+                           for arg in ('--only-binary', name)]
+            # 2026-10-28: the app fetches every locked file uv could need that
+            # is not bundled (measured order, resumable, switching source when
+            # slow or stalled), then uv installs offline. uv on its own waits
+            # on a slow source for up to the 900-second step limit.
+            wanted = {name: item['sha256'] for name, item in entry['packages'].items()
+                      if '+' not in item['version'] and not set(item['sha256']) & bundled_hashes}
+            items = files_for_hashes(package_table, wanted)
+            measured_order = []
+            if items is None:
+                print('[运行库] 本程序包的依赖文件清单不全，由 uv 从软件源安装', flush=True)
+            else:
+                house = managed / PYPI_HOUSE
+                house.mkdir(parents=True, exist_ok=True)
+                try:
+                    if items:
+                        sources = ranked_sources('PyPI', pypi_sources(mirror_list(root, 'pypi_mirrors')),
+                                                 max(items, key=lambda item: item['size'])['path'])
+                        measured_order = [source['label'] for source in sources]
+                        fetch_files(house, items, sources, family='依赖包', display='PyPI')
+                    event('dependencies_installing', component=role, attempt=1, source='local', reason=why,
+                          allowed_source_builds=entry.get('sdist_only', []))
+                    print('[运行库] 依赖文件都已在本机并通过 SHA-256 校验，离线安装（uv 不再连接软件源）', flush=True)
+                    uv('pip', 'install', '--python', python, '--no-index', *links, '--find-links', str(house),
+                       '--constraint', str(hashed.relative_to(managed)),
+                       '--build-constraint', str(build.relative_to(managed)), *binary_only, *requirements)
+                    mirror.update(entry=entry, used=True, index='local', constraints=str(hashed.relative_to(managed)))
+                    return
+                except (SourcesExhausted, RuntimeError, OSError, subprocess.CalledProcessError, TimeoutError) as error:
+                    print(f'[运行库] 应用内下载或离线安装没有完成（{error}），改由 uv 依次从软件源安装', flush=True)
             # PyTorch is already on disk here (bundled CPU build or a verified
             # download in the wheelhouse), so only PyPI needs a mirror.
             official_index = dict(label='PyPI 官方',url='https://pypi.org/simple')
             indexes = mirror_list(root, 'pypi_mirrors')
             indexes = indexes+[official_index] if prefer_mirror else [official_index]+indexes
-            binary_only = [arg for name in entry['packages'] if name not in entry.get('sdist_only', [])
-                           for arg in ('--only-binary', name)]
+            if measured_order:
+                indexes.sort(key=lambda row: measured_order.index(row['label']) if row['label'] in measured_order else len(measured_order))
             for attempt, pypi in enumerate(indexes, 1):
                 event('dependencies_installing', component=role, attempt=attempt, source=pypi['label'],
                       reason=why if attempt==1 else 'previous_source_failed', allowed_source_builds=entry.get('sdist_only',[]))

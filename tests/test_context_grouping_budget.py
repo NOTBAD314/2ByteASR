@@ -46,7 +46,10 @@ def test_local_capacity_is_explicit_without_claiming_server_capacity():
     from twobyteasr.system.resource_governor import ResourceGovernor
     governor = ResourceGovernor(background_limit=2)
     service = ProviderService(workers=4, governor=governor)
-    assert service.scheduling_capacity()["effective_workers"] == 2
+    # 2026-10-28: network requests are not held to the local background limit
+    # (meant for proxies/waveforms); playback and dragging still allow one.
+    assert service.scheduling_capacity()["effective_workers"] == 4
+    assert service.scheduling_capacity()["background_limit"] == 2
     assert service.scheduling_capacity()["account_limit"] is None
     governor.set_playback(True)
     assert service.scheduling_capacity()["effective_workers"] == 1

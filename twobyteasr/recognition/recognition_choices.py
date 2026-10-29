@@ -303,10 +303,9 @@ def run_disclosure(settings: dict) -> dict:
                 info['uploads'].append(f"音频先放到你的 OSS 私有存储：{models.get('oss_bucket') or '（未设置）'}，"
                                        '服务商用限时签名链接读取，取回结果后删除')
             elif mode == UPLOAD_PROVIDER:
-                info['uploads'].append('音频先上传到服务商临时空间（你选的“仅供试用”方式：48 小时后由服务商删除，'
-                                       '官方说明勿用于生产）')
+                info['uploads'].append('音频先上传到服务商临时空间，48 小时后由服务商自动删除')
             else:
-                info['uploads'].append('还没有设置音频交给服务商的方式：开始前会停下，不上传')
+                info['uploads'].append('OSS 设置不完整（有 Bucket、没有 AccessKey）：开始前会停下，不上传')
         if guide is not None and guide.cost:
             info['cost'].append(guide.cost)
         if choice is not None:

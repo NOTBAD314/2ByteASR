@@ -37,6 +37,13 @@ def main():
     parser.add_argument('--open-timing', action='append', default=[], metavar='LABEL=PROJECT',
                         help='2026-10-21: open these projects (fresh copies) and record readiness stages')
     parser.add_argument('--open-repeats', type=int, default=2)
+    parser.add_argument('--freeze-audit', type=Path, metavar='PROJECT',
+                        help='time filter clicks, save, seek+play and page switches on a copy of PROJECT')
+    parser.add_argument('--freeze-repeats', type=int, default=2)
+    parser.add_argument('--freeze-ballast', type=int, default=0,
+                        help='with --freeze-audit: keep this many small dicts alive (post-recognition heap)')
+    parser.add_argument('--freeze-switch', default='',
+                        help='with --freeze-audit: sys.setswitchinterval value in seconds')
     parser.add_argument('--recovery-waits', default='',
                         help='with --open-timing: seconds the autosave recovery prompt stays up, e.g. 2,40')
     args=parser.parse_args();out=args.output.resolve();fixture=args.fixtures.resolve()
@@ -74,6 +81,11 @@ def main():
         projects=[f"{label}={Path(path).resolve()}" for label,path in (item.split('=',1) for item in args.open_timing)]
         env.update(TWOBYTEASR_OPEN_TIMING='1',TWOBYTEASR_OPEN_PROJECTS=';'.join(projects),
                    TWOBYTEASR_OPEN_REPEATS=str(args.open_repeats),TWOBYTEASR_OPEN_RECOVERY_WAITS=args.recovery_waits)
+    if args.freeze_audit:
+        env.update(TWOBYTEASR_FREEZE_AUDIT='1',TWOBYTEASR_FREEZE_PROJECT=str(args.freeze_audit.resolve()),
+                   TWOBYTEASR_FREEZE_REPEATS=str(args.freeze_repeats),
+                   TWOBYTEASR_FREEZE_BALLAST=str(args.freeze_ballast),
+                   TWOBYTEASR_FREEZE_SWITCH=args.freeze_switch)
     if args.profile: env["TWOBYTEASR_EDITOR_PROFILE"]="1"
     if args.calls: env["TWOBYTEASR_EDITOR_CALLS"]="1"
     for key in ("NO_PLAYER","NO_EDIT_PREVIEW","HWDEC","VO"):env.pop("TWOBYTEASR_DIAGNOSTIC_"+key,None)

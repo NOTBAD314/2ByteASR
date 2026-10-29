@@ -1,4 +1,4 @@
-﻿"""Cloud polishing orchestration and post-correction boundary cleanup."""
+"""Cloud polishing orchestration and post-correction boundary cleanup."""
 
 import copy
 import json
@@ -238,6 +238,36 @@ def _normalize_verified_keep_edits(value, segments):
     return {**value, 'cues': normalized}, accepted
 
 
+def _locate_edit_source(original, source, hint):
+    """Where ``source`` sits when the model's character offsets missed it.
+
+    2026-10-28 (user's 20-minute and 1-hour streams): 6 and 20 cues fell back
+    with 「该条校对结果字段或编辑范围无效」; this is the only check that files
+    them. Models count CJK characters poorly. The quoted text is the
+    authority: one occurrence locates it, several only when the given start
+    lies in the text and is nearest one of them. None keeps the cue
+    quarantined.
+    """
+    if not isinstance(source, str) or not source:
+        return None
+    found, index = [], original.find(source)
+    while index >= 0:
+        found.append(index)
+        index = original.find(source, index + 1)
+    if len(found) == 1:
+        return found[0]
+    if len(found) < 2 or type(hint) is not int or not 0 <= hint < len(original):
+        return None
+    ranked = sorted(found, key=lambda position: abs(position - hint))
+    return ranked[0] if abs(ranked[0] - hint) < abs(ranked[1] - hint) else None
+
+class CueValidationFailures(dict):
+    """Keep the category mapping compatible; attach bounded local diagnostics."""
+    def __init__(self):
+        super().__init__()
+        self.details = {}
+
+
 def _validate_polish_response(value, segments, batch_index, quarantined=None):
     from jsonschema import ValidationError, validate
     from ..providers.ai_providers import AIProviderError
@@ -274,8 +304,11 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
         for row in rows:
             try:
                 validate(row, cue_schema)
-            except ValidationError:
+            except ValidationError as cue_error:
                 quarantined[row['id']] = 'structured_schema_error'
+                if hasattr(quarantined, 'details'):
+                    quarantined.details[row['id']] = {'reason': 'cue_schema_invalid',
+                        'field': '.'.join(map(str, cue_error.absolute_path)), 'message': cue_error.message[:240]}
             else:
                 good.append(row)
         if not quarantined:
@@ -293,23 +326,45 @@ def _validate_polish_response(value, segments, batch_index, quarantined=None):
                 and len(ids) == len(set(ids)) and all(item in originals for item in ids)):
             good = []
             for row in rows:
-                spans, invalid = [], False
+                spans, invalid, edits, failure, repaired = [], False, [], {}, []
                 for edit in row['edits']:
                     if 'start' not in edit and 'end' not in edit:
+                        edits.append(edit)
                         continue  # legacy edits still go through correction_safety
                     start, end = edit.get('start'), edit.get('end')
                     original = originals[row['id']]
                     if (type(start) is not int or type(end) is not int or not 0 <= start < end <= len(original)
                             or original[start:end] != edit['from']):
-                        invalid = True
-                        break
+                        quote = edit['from']
+                        positions = [match.start() for match in re.finditer('(?=' + re.escape(quote) + ')', original)] if quote else []
+                        if len(positions) == 1:
+                            # The quoted source is authoritative only when it
+                            # identifies exactly one span. Local correction
+                            # safety still validates the proposed replacement.
+                            old_span = [start, end]
+                            start, end = positions[0], positions[0] + len(quote)
+                            edit = {**edit, 'start': start, 'end': end}
+                            repaired.append(dict(given=old_span, located=[start, end]))
+                        else:
+                            invalid = True
+                            failure = {'reason': 'ambiguous_source_quote' if positions else 'source_quote_not_found',
+                                       'span': [start, end], 'quote_occurrences': len(positions)}
+                            break
                     spans.append((start, end))
+                    edits.append(edit)
                 spans.sort()
-                invalid |= any(right[0] < left[1] for left, right in zip(spans, spans[1:]))
+                if any(right[0] < left[1] for left, right in zip(spans, spans[1:])):
+                    invalid = True
+                    failure = {'reason': 'overlapping_edits', 'spans': spans}
                 if invalid:
                     quarantined[row['id']] = 'semantic_validation'
+                    if hasattr(quarantined, 'details'):
+                        quarantined.details[row['id']] = failure
                 else:
-                    good.append(row)
+                    if repaired:
+                        record_run_event('polishing_edit_span_repaired', batch_index=batch_index,
+                                         cue_id=row['id'], spans=repaired)
+                    good.append({**row, 'edits': edits})
             value = {**value, 'cues': good}
             noops = [row for row in noops if row['cue_id'] not in quarantined]
     if noops:
@@ -989,6 +1044,11 @@ def call_correction_api(
     scene, term_snapshot = prepared['scene'], prepared['term_snapshot']
     retrieved_candidates, gaps = prepared['retrieved_candidates'], prepared['gaps']
     request_body, messages = prepared['request_body'], prepared['messages']
+    retry_hints=[{'id':row.segment_id,'previous_validation':row.caption_arbitration['retry_mapping_hint'],
+                  'character_indices':[[i,char] for i,char in enumerate(row.text)]}
+                 for row in segment_batch if row.caption_arbitration.get('retry_mapping_hint')]
+    if retry_hints:
+        messages=[*messages,{'role':'user','content':'这是已编辑文字的失败范围重试。重复引用必须按下面0基字符位置精确定位，不能猜测；无需修改时返回空 edits。\n'+json.dumps(retry_hints,ensure_ascii=False)}]
     if _messages_only:
         return messages
     from ..glossary.terminology_retrieval import pending_identifier_suggestions
@@ -1060,7 +1120,7 @@ def call_correction_api(
                 cancel_check=lambda: cancelled() or bool(abort_event is not None and abort_event.is_set()),
                 enable_thinking=False, on_stream_event=on_stream_event)
             structured = getattr(provider, 'structured_complete', None)
-            quarantined = {}
+            quarantined = CueValidationFailures()
             if callable(structured):
                 value = structured(working_messages, POLISH_SCHEMA, **options)
                 if _retry_budget.expired:
@@ -1159,13 +1219,15 @@ def call_correction_api(
                     receipt = segment.caption_arbitration.setdefault('terminology_polish', {})
                     receipt.update(response_state='fallback', failure_category=quarantined[segment.segment_id],
                                    validated_text=baseline[segment.segment_id])
+                    failure_detail = getattr(quarantined, 'details', {}).get(segment.segment_id, {})
+                    receipt['validation_failure'] = failure_detail
                     validated[segment.segment_id] = baseline[segment.segment_id]
                     add_review_item(segment.start, '校对回退', '该条校对结果字段或编辑范围无效，已保留原文，可单独重试。',
                                     segment.text, priority=3, severity='warning', batch_index=batch_index,
                                     batch_total=batch_total, cue_id=segment.segment_id)
                     record_run_event('polishing_api_fallback', batch_index=batch_index, batch_total=batch_total,
                                      category=quarantined[segment.segment_id], cue_ids=[segment.segment_id],
-                                     error='cue_validation_failed; original_retained')
+                                     error='cue_validation_failed; original_retained', validation_failure=failure_detail)
                     continue
                 item = returned_by_id.get(segment.segment_id, {"edits": []})
                 first_independent_reference = (
@@ -1834,6 +1896,7 @@ def polish_subtitles(segments, media_title, cache_context=None):
             raise CancelledError('校对任务已取消，结果不再写入。')
     require_current()
     for segment in segments:
+        segment.caption_arbitration.setdefault('processing_identity', {}).setdefault('polish_record_id',segment.segment_id)
         segment.caption_arbitration.setdefault('terminology_polish', {}).update(original_text=segment.text)
     from twobyteasr.providers.asr_provider_snapshot import task_provider_snapshot
     snapshot = task_provider_snapshot("polish")

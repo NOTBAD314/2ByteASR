@@ -401,7 +401,7 @@ def export_subtitle_artifacts(
 ) -> tuple[SubtitleExportArtifact, ...]:
     project = copy.deepcopy(project)
     options.validate()
-    target_dir = Path(directory)
+    target_dir = Path(directory).resolve()
     # The base is shared with video naming. Speaker-label normalization would
     # replace intentional spaces and truncate a long confirmed affix/base.
     from .export_preferences import output_basename
@@ -691,12 +691,20 @@ def _translation_suffix(target: str) -> str:
     return TARGET_SUFFIX.get(target, "zh")
 
 
+def has_translations(project: SubtitleProject) -> bool:
+    """Read the canonical records too, even if the legacy render view is absent."""
+    from ..subtitle_rules.subtitle_translation import translation_view
+    return any(str(info.get("text") or "").strip() for info in translation_view(project).values())
+
+
 def _layer_filename(scope_stem: str, layer: str, original_suffix: str, translation_suffix: str,
                     counter: int) -> str:
     stem = scope_stem if counter <= 1 else f"{scope_stem} ({counter})"
     if layer == "json":
         return f"{stem}.json"
     suffix = {"original": original_suffix, "translation": translation_suffix, "bilingual": "bilingual"}[layer]
+    if layer == "translation" and original_suffix.casefold() == translation_suffix.casefold():
+        suffix = "translation." + suffix
     return f"{stem}.{suffix}.srt"
 
 
@@ -742,6 +750,9 @@ def export_language_layers(
         raise ValueError("unsupported speaker export mode")
     resolved_target = normalize_target(target) if target else container_target(project)
     translations = translation_view(project, target=resolved_target if target else None)
+    # A previous language's text is not a translation into the selected target.
+    translations = {key: info for key, info in translations.items()
+                    if str(info.get("target") or "").split("-", 1)[0] == resolved_target.split("-", 1)[0]}
     from ..subtitle_rules.punctuation_style import MODE_NONE, math_enabled, project_mode, style_translation
     math = math_enabled(project)
     if (project_mode(project) == MODE_NONE or math) and translations:
@@ -753,7 +764,7 @@ def export_language_layers(
     original_suffix = original_suffix or project_language(project) or "ja"
     translation_suffix = _translation_suffix(resolved_target)
     base = output_basename(stem or "subtitles")
-    target_dir = Path(directory)
+    target_dir = Path(directory).resolve()
     visible_cues = project.visible_cues()
     scopes: list[tuple[str, SubtitleProject, str]] = []
     if speaker_mode in {"combined", "both"}:
@@ -797,6 +808,10 @@ def export_language_layers(
                     from ..caption_style.speaker_names import display_text_cues
                     expected.cues = display_text_cues(scoped_project, expected.cues)
                     format_name = "srt"
+                    if layer == "translation" and not expected.cues:
+                        scope = speaker_id or "当前范围"
+                        raise ValueError(f"{scope}没有可导出的译文（目标语言 {resolved_target}，缺译 {len(missing)} 条）。"
+                                         "请先补译，或选择原文／双语导出；未发布本批文件。")
                 require_consistent_view(scoped_project, expected.cues, speaker_id=speaker_id)
                 _atomic_text_write(candidate, _compile_json(scoped_project) if layer == "json" else compile_srt(expected.cues))
                 check = SubtitleExportArtifact(candidate, format_name, speaker_id, len(expected.cues))

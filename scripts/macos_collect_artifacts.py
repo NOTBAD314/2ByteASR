@@ -52,7 +52,7 @@ def main(argv=None):
     def application(path):return path.name.endswith('.app.zip') or path.suffix.lower()=='.dmg'
     # Receipts are uploaded separately before the large app. No app size
     # failure can suppress already captured diagnostics.
-    for path in sorted(files,key=lambda p:(application(p),str(p))):
+    for path in sorted(files,key=lambda p:(not application(p),p.suffix.lower() not in {".json",".txt",".log",".xml"},str(p))):
         name=path.relative_to(root).as_posix()
         app=application(path)
         target=destination/('application' if app else 'receipts')/name

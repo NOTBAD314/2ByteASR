@@ -196,9 +196,12 @@ def start(window, output: Path):
     def bailian(dialog):
         dialog.resize(*SIZES['narrow'])
         settle(300)
-        check('百炼: four steps with the private OSS step',
-              [b.text() for b in dialog.progress.labels] == ['注册登录', '创建 Key', '建 OSS', '贴上检查'],
+        # 2026-10-28 (user): the provider's temporary space by default, so no OSS step.
+        check('百炼: three steps, no OSS step by default',
+              [b.text() for b in dialog.progress.labels] == ['注册登录', '创建 Key', '贴上检查'],
               [b.text() for b in dialog.progress.labels])
+        facts = [label.text() for label in dialog.findChildren(QLabel, 'apiSetupFactText')]
+        check('百炼: the header says about 10 minutes', any('约 10 分钟' in t for t in facts), facts)
         shot = page(dialog).findChild(ShotView)
         check('百炼: step 1 shows the 阿里云 sign-up page with the form ringed',
               shot is not None and shot.pixmap is not None and shot.ring is not None)
@@ -206,23 +209,59 @@ def start(window, output: Path):
         dialog._go(1)
         shot = page(dialog).findChild(ShotView)
         check('百炼: step 2 shows the API Key page (signed-in picture)', shot is not None and shot.pixmap is not None)
+        check('百炼: step 2 says “第 2 步，共 3 步”', '第 2 步，共 3 步' in texts(dialog, 'apiSetupStepOf'),
+              texts(dialog, 'apiSetupStepOf'))
         grab(dialog, 'B0-step2')
-        dialog._go(len(dialog._walk) - 1)
-        settle()
+        click(page(dialog).findChild(QPushButton, 'apiSetupNext'))
         upload = dialog._fields['filetrans_upload']
-        check('百炼: own OSS preselected; OSS fields shown', upload.currentData() == 'own_oss'
-              and all(visible(dialog, dialog._fields[k]) for k in ('oss_bucket', 'oss_access_key_id')))
-        trial_label = dialog._field_rows['filetrans_upload_trial'][1][0]
-        check('百炼: no trial warning while OSS is chosen', not visible(dialog, trial_label))
+        note = dialog._field_rows['filetrans_upload_note'][1][0]
+        link = dialog._field_rows['filetrans_upload_oss_step'][1][0]
+        check('百炼: “做好了，下一步” from 创建 Key goes straight to 贴上检查',
+              dialog._page_kind == 'paste' and dialog._index == 2, (dialog._page_kind, dialog._index))
+        check('百炼: the temporary space is preselected; no OSS field, OSS check or OSS link',
+              upload.currentData() == 'provider_temporary'
+              and not any(visible(dialog, dialog._fields[k]) for k in ('oss_bucket', 'oss_access_key_id'))
+              and not visible(dialog, dialog.oss_button) and not visible(dialog, link), upload.currentText())
+        hint = next((label for label in page(dialog).findChildren(QLabel) if label.text() == catalog._UPLOAD_HINT), None)
+        geometry = {name: (w.y(), w.height(), w.width(), w.heightForWidth(w.width()), w.sizeHint().height())
+                    for name, w in (('note', note), ('hint', hint)) if w is not None}
+        check('百炼: the temporary space note says 48 hours and the own-OSS choice',
+              visible(dialog, note) and '48 小时' in note.text() and '自己的 OSS' in note.text(), [note.text(), geometry])
         check('百炼: paste page fits at the narrow size', not labels_fit(dialog) and not buttons_fit(dialog),
               labels_fit(dialog) + buttons_fit(dialog))
-        grab(dialog, 'B1-paste-oss')
+        dialog.scroll.ensureWidgetVisible(link if visible(dialog, link) else note, 0, 160)
+        grab(dialog, 'B1-paste-temporary')
+        upload.setCurrentIndex(upload.findData('own_oss'))
+        settle(300)
+        check('百炼: choosing own OSS adds “建 OSS” before 贴上检查 and stays on the page',
+              [b.text() for b in dialog.progress.labels] == ['注册登录', '创建 Key', '建 OSS', '贴上检查']
+              and dialog._page_kind == 'paste' and dialog._index == 3,
+              [b.text() for b in dialog.progress.labels])
+        check('百炼: own OSS shows its fields, “检查 OSS” and the link to the OSS step; the note hides',
+              all(visible(dialog, dialog._fields[k]) for k in ('oss_bucket', 'oss_access_key_id'))
+              and visible(dialog, dialog.oss_button) and visible(dialog, link) and not visible(dialog, note))
+        check('百炼: own OSS page fits at the narrow size', not labels_fit(dialog) and not buttons_fit(dialog),
+              labels_fit(dialog) + buttons_fit(dialog))
+        dialog.scroll.ensureWidgetVisible(link, 0, 220)
+        grab(dialog, 'B2-paste-own-oss')
+        click(link)
+        before = len(opened_urls)
+        opener = page(dialog).findChild(QPushButton, 'apiSetupOpen_2')
+        check('百炼: the link opens step 3 “建私有 OSS 与 AccessKey” with “打开 OSS 控制台”',
+              dialog._page_kind == 'step' and dialog._index == 2 and opener is not None
+              and '第 3 步，共 4 步' in texts(dialog, 'apiSetupStepOf'), texts(dialog, 'apiSetupStepTitle'))
+        if opener is not None:
+            click(opener)
+        check('百炼: “打开 OSS 控制台” opens the OSS console', opened_urls[before:] == ['https://oss.console.aliyun.com/'],
+              opened_urls[before:])
+        grab(dialog, 'B3-oss-step')
+        click(page(dialog).findChild(QPushButton, 'apiSetupNext'))
+        check('百炼: “做好了，下一步” returns to 贴上检查', dialog._page_kind == 'paste' and dialog._index == 3)
         upload.setCurrentIndex(upload.findData('provider_temporary'))
-        settle()
-        check('百炼: the trial upload shows the official warning and hides OSS fields',
-              visible(dialog, trial_label) and '请勿用于生产环境' in trial_label.text()
-              and not visible(dialog, dialog._fields['oss_bucket']), trial_label.text())
-        grab(dialog, 'B2-trial')
+        settle(300)
+        check('百炼: switching back to the temporary space removes “建 OSS”',
+              [b.text() for b in dialog.progress.labels] == ['注册登录', '创建 Key', '贴上检查']
+              and dialog._index == 2 and visible(dialog, note), [b.text() for b in dialog.progress.labels])
         upload.setCurrentIndex(upload.findData('own_oss'))
         dialog._fields['api_host'].setFocus()
         dialog._fields['api_host'].clear()
@@ -254,7 +293,13 @@ def start(window, output: Path):
         topup = dialog._walk[1]
         check('千问AI平台: step 2 is “认证与充值” on its own billing page',
               topup.title == '认证与充值' and topup.url.startswith('https://platform.qianwenai.com/'), topup.url)
+        check('千问AI平台: four steps, no OSS step by default (2026-10-28)',
+              [b.text() for b in dialog.progress.labels] == ['注册登录', '充值', '创建 Key', '贴上检查'],
+              [b.text() for b in dialog.progress.labels])
         dialog._go(len(dialog._walk) - 1)
+        check('千问AI平台: the temporary space is preselected',
+              dialog._fields['filetrans_upload'].currentData() == 'provider_temporary'
+              and not visible(dialog, dialog._fields['oss_bucket']))
         click(dialog.more_toggle)
         unlock = next((b for b in dialog.findChildren(QToolButton) if b.text() == '修改' and visible(dialog, b)), None)
         if unlock is not None:
@@ -268,6 +313,9 @@ def start(window, output: Path):
         topup = dialog._walk[1]
         check('Qwen Cloud: step 2 is “补全付款信息” (free quota after payment info)',
               topup.role == 'topup' and topup.title == '补全付款信息', topup.title)
+        check('Qwen Cloud: no OSS step by default (2026-10-28)',
+              [step.role for step in dialog._walk] == ['account', 'topup', 'key', 'paste'],
+              [step.role for step in dialog._walk])
         dialog._go(len(dialog._walk) - 1)
         click(dialog.more_toggle)
         url = dialog._fields['url']
@@ -432,7 +480,7 @@ def start(window, output: Path):
             settle(200)
             mai_card()
             settle(200)
-            expected = {'https://platform.mosi.cn/'}
+            expected = {'https://platform.mosi.cn/', 'https://oss.console.aliyun.com/'}   # MOSS step 1, 百炼 “建 OSS”
             check('only the official pages the user clicked were requested (offline run)',
                   set(opened_urls) <= expected and opened_urls, opened_urls)
         except Exception:  # noqa: BLE001

@@ -581,7 +581,13 @@ class StateTransaction(AbstractContextManager["StateTransaction"]):
             # Timeline projections are detached copies, including style/text.
             # Updating only the command lookup leaves playback routing on the
             # previous style even when the render revision is already current.
-            self.state.reindex_cues(self.project)
+            # Canonical timeline views hold the actual cue objects. In-place
+            # text/style edits are already visible there and change no interval
+            # index. Detached projections still need the full refresh.
+            shared_view = getattr(self.state, '_view_cues', None) is self.project.cues
+            structural = DirtyDomain.CUE_MODEL | DirtyDomain.CUE_TIMING | DirtyDomain.PROJECT_METADATA | SEQUENCE_DOMAINS | MEDIA_DOMAINS
+            if not shared_view or self.dirty & structural:
+                self.state.reindex_cues(self.project)
         self.state.selected_cue_id = self.selection_after
         self.state.revision += 1
         # A committed edit is the invalidation boundary, including undo/redo.

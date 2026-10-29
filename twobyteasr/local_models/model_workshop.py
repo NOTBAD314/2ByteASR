@@ -440,18 +440,18 @@ MODELS = (
         icon_name='mdi6.creation',icon_color='#ffffff',icon_background='#1f6fe5',
         api_preset='spark_asr_v2',asr_capabilities=('ASR_TEXT',),adapter_bindings=(('primary','api'),('review','api'))),
     # 2026-10-13: Qwen Cloud, the official international Qwen API (no workspace
-    # host). 2026-10-14 (ADR 0112): regular use needs the user's own OSS; the
-    # provider's temporary upload is a labelled trial only.
+    # host). 2026-10-28: audio goes to the provider's temporary space by default;
+    # the user's own OSS is an explicit choice (it was required 2026-10-14..28, ADR 0112).
     # 2026-10-25: one card for both official sites, 千问AI平台 (中国站) and Qwen Cloud (国际站).
     WorkshopModel('qwen_cloud_filetrans','api','Qwen 官方 API｜录音文件识别','QC',
-        '长文件异步 · Qwen-Audio-3.1 或 Qwen3-ASR','在线 · 千问AI平台或 Qwen Cloud 的 API Key + 自己的 OSS','不占本地空间',
-        '不需要显卡与本地模型；正式使用需要自己的 OSS 私有存储',
-        'Qwen 官方 API 的录音文件识别，分中国站千问AI平台（platform.qianwenai.com，服务在北京）与国际站 Qwen Cloud（home.qwencloud.com，服务在新加坡），在设置窗口顶部切换。Qwen-Audio-3.1 返回字/词级时间与说话人，Qwen3-ASR 返回字/词级时间（无说话人）。音频先传到你自己的 OSS 私有存储，用限时签名链接交给服务商，结果保存后删除；服务商临时上传只供试用（48 小时失效，官方说明勿用于生产）。单文件不超过 12 小时。两站的 Key 不能互换，也不能与阿里云百炼的互换。超时不会自动重新付费提交。',(),
+        '长文件异步 · Qwen-Audio-3.1 或 Qwen3-ASR','在线 · 千问AI平台或 Qwen Cloud 的 API Key','不占本地空间',
+        '不需要显卡与本地模型；默认不用建 OSS',
+        'Qwen 官方 API 的录音文件识别，分中国站千问AI平台（platform.qianwenai.com，服务在北京）与国际站 Qwen Cloud（home.qwencloud.com，服务在新加坡），在设置窗口顶部切换。Qwen-Audio-3.1 返回字/词级时间与说话人，Qwen3-ASR 返回字/词级时间（无说话人）。音频默认先传到服务商临时空间（48 小时后自动删除），不用建 OSS；也可以改用你自己的 OSS 私有存储（限时签名链接交给服务商，结果保存后删除）。单文件不超过 12 小时。两站的 Key 不能互换，也不能与阿里云百炼的互换。超时不会自动重新付费提交。',(),
         logo_asset='qwen.png',api_preset='qwen_cloud_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
     WorkshopModel('qwen31_filetrans','api','阿里云百炼｜录音文件识别','QF',
         '长文件异步 · Qwen3-ASR 或 Qwen-Audio-3.1','在线 · 百炼 Key + API Host','不占本地空间',
-        '不需要显卡；正式使用需要自己的 OSS 私有存储',
-        '同一个百炼 Key 下两个模型：Qwen3-ASR-Flash（字/词级时间，无说话人，不支持热词）与 Qwen-Audio-3.1（字/词级时间与说话人，支持热词）。单文件不超过 12 小时；说话人区分官方建议 2 小时内。音频先传到你自己的 OSS 私有存储，用限时签名链接交给百炼，结果成功保存后删除；百炼临时上传只供试用（48 小时失效，官方说明勿用于生产）。超时不会自动重新付费提交。',(),
+        '不需要显卡；默认不用建 OSS',
+        '同一个百炼 Key 下两个模型：Qwen3-ASR-Flash（字/词级时间，无说话人，不支持热词）与 Qwen-Audio-3.1（字/词级时间与说话人，支持热词）。单文件不超过 12 小时；说话人区分官方建议 2 小时内。音频默认先传到百炼临时空间（48 小时后自动删除），不用建 OSS；也可以改用你自己的 OSS 私有存储（限时签名链接交给百炼，结果成功保存后删除）。超时不会自动重新付费提交。',(),
         logo_asset='qwen.png',api_preset='qwen31_filetrans',asr_capabilities=('ASR_TEXT','TIMESTAMP','DIARIZATION'),adapter_bindings=(('primary','api'),('review','api'))),
     # 2026-10-13: cloud MOSS on the MOSI platform; independent of the local
     # "moss" card (no shared settings, key or job state).
@@ -3370,9 +3370,10 @@ class ModelDownloadDialog(QDialog):
         for choice in user_facing_source_choices():
             self.source_combo.addItem(choice["label"], choice["mode"])
         self.source_combo.setCurrentIndex(0)
-        # download_models.ps1 maps ModelScope / HF 镜像 to domestic runtime sources.
-        bind_text(self.source_combo, '选 ModelScope 或 HF 镜像时，运行环境（PyTorch 等依赖）也先用国内镜像；'
-                  '选自动时，Python 和依赖先尝试官方来源，太慢或失败时改用镜像；安装工具优先使用国内镜像。所有文件都按锁定的 SHA-256 校验。',
+        # download_models.ps1 / macos_model_prepare map the choice to runtime sources (2026-10-28).
+        bind_text(self.source_combo, '下载源也决定运行环境（Python、PyTorch 和依赖包）从哪里下载：选 ModelScope 或 HF 镜像时国内镜像在前，'
+                  '选 Hugging Face 官方时官方在前，选自动时先测各来源的速度再排顺序。下载中变慢或停住会换来源接着下。'
+                  '所有文件都按锁定的 SHA-256 校验。',
                   property='toolTip')
         source_box_layout.addWidget(self.source_combo)
         self.check_download_button = QPushButton('检查模型下载')

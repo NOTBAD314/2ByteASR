@@ -109,7 +109,7 @@ def _evidence_digest(project, evidence, *, trust_rows):
 def _dataclass_json(value):
     # A dataclass nested in a plain field encodes as asdict did before.
     if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
+        return {item.name: getattr(value, item.name) for item in fields(value)}
     raise TypeError(f'Object of type {type(value).__name__} is not JSON serializable')
 
 
@@ -151,7 +151,16 @@ class PreviewBinding:
 
     @classmethod
     def _document_fingerprint(cls, project, *, trust_rows=False):
-        payload = cls._document_payload(project)
+        # Same daily document digest and evidence-row memo, without Python
+        # deepcopy of every cue's nested presentation before JSON encoding.
+        payload = {item.name:getattr(project,item.name) for item in fields(project)}
+        payload.pop('updated_at',None)
+        state = dict(payload.get('studio_state',{}))
+        for key in ('review_risks','last_selected_cue','playhead_ms','zoom','scroll_ms',
+                    'bilingual_mode','follow_playhead','timeline_snap_enabled','timeline_tool',
+                    'timeline_track_heights','layout'):
+            state.pop(key,None)
+        payload['studio_state']=state
         evidence = payload.pop('asr_evidence', None)
         digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False,
             sort_keys=True, default=_dataclass_json).encode('utf8'))

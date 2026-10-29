@@ -176,8 +176,12 @@ class RefineOutcome:
 
 
 def _batch(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
-    for start in range(0, len(items), size):
-        yield items[start:start + size]
+    group=[];chars=0
+    for item in items:
+        if group and (len(group)>=max(1,size) or chars+len(item.text)>2400):
+            yield group;group=[];chars=0
+        group.append(item);chars+=len(item.text)
+    if group:yield group
 
 
 def validate_action(text: str, raw: Mapping[str, Any]) -> CueRefineAction | None:
@@ -517,7 +521,8 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
                 outcome.actions.clear()
                 return outcome
             receipt = dict(stage='sentence_refine', provider=getattr(provider,'provider_id',''),
-                model=getattr(provider,'model',''), cue_ids=sorted(group_ids), attempt=attempt+1)
+                model=getattr(provider,'model',''), cue_ids=sorted(group_ids), attempt=attempt+1,
+                input_chars=sum(len(cue.text) for cue in group),max_tokens=6000,enable_thinking=False)
             try:
                 content = provider.complete(
             [
@@ -560,6 +565,7 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
             outcome.failed_cue_ids.extend(sorted(group_ids))
             continue
         seen: set[str] = set()
+        invalid_ids=[]
         for row in rows:
             cue_id = str(row.get("cue_id") or "")
             cue = by_id.get(cue_id)
@@ -575,10 +581,21 @@ def _refine_cues(cues, project, provider, cancel_check, batch_size, max_attempts
             if action is None:
                 outcome.rejected += 1
                 outcome.failed_cue_ids.append(cue_id)
+                invalid_ids.append(cue_id)
                 receipt.setdefault('field_errors', []).append(dict(cue_id=cue_id,category='invalid_action_indices'))
                 outcome.llm_error='AI 建议的字符索引或操作字段未通过校验'
                 continue
             outcome.actions.append(action)
+        # Preserve valid neighbours, and spend only the unused attempt on the
+        # invalid subset. A bad field must not discard an otherwise good batch.
+        if invalid_ids and attempt+1<max(1,min(2,int(max_attempts))):
+            retry=_refine_cues([by_id[k] for k in invalid_ids],project,provider,cancel_check,
+                              batch_size,1,language)
+            outcome.requests.extend(retry.requests);outcome.actions.extend(retry.actions)
+            if retry.llm_status=='cancelled':
+                outcome.llm_status='cancelled';outcome.actions.clear();return outcome
+            recovered={a.cue_id for a in retry.actions}
+            outcome.failed_cue_ids=[k for k in outcome.failed_cue_ids if k not in recovered]
     if outcome.failed_cue_ids:
         outcome.llm_status = 'partial' if outcome.actions else 'failed'
     return outcome

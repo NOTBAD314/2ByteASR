@@ -10,7 +10,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject,QRectF,Qt,Signal,QTimer
-from PySide6.QtGui import QImage,QPixmap,QColor,QPen
+from PySide6.QtGui import QImage,QPixmap,QColor,QPen,QPainter
 
 
 @dataclass(frozen=True)
@@ -72,6 +72,12 @@ class FilmstripCache(QObject):
         # Sorted per-source index over ``samples`` for nearest-cell lookups;
         # rebuilt after ``_samples_version`` changes (paint never rescans).
         self._samples_version={};self._sample_index={}
+        # Sized cells are stable while the viewport moves. Keep their raster
+        # (including placeholder/border) rather than rescaling and rebuilding
+        # it on every follow/scroll paint. Native pixmap identity fences late
+        # refinements; geometry, DPR and render hints are part of the key.
+        self._cell_rasters=OrderedDict();self._cell_raster_bytes=0
+        self._cell_raster_limit=8*1024*1024
         self.metrics=dict(decoded=0,disk_hits=0,memory_hits=0,cancelled=0,batches=0,errors=0,opens=0,source_frames=0,refined=0,idle_generated=0)
         self._ready.connect(self._accept)
         self.timer=QTimer(self);self.timer.setSingleShot(True);self.timer.setInterval(16)
@@ -432,14 +438,32 @@ class FilmstripCache(QObject):
 
     def paint(self,painter,block,source,left,right,source_in,source_out):
         painter.save();painter.setClipRect(block,Qt.ClipOperation.IntersectClip)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform,True)
         lod=filmstrip_lod_ms((right-left)*1000/max(1,source_out-source_in),block.height())
+        dpr=painter.device().devicePixelRatioF()
+        hints=painter.renderHints()
         for x,end,source_ms in filmstrip_tiles(left,right,block.left(),block.right(),source_in,source_out,block.height()):
             pixmap=self.get(source,source_ms,lod_ms=lod)
             cell=QRectF(x,block.top(),max(1,end-x),block.height())
-            if pixmap is not None:painter.drawPixmap(cell.toRect(),pixmap,pixmap.rect())
-            else:
-                painter.fillRect(cell,QColor(255,255,255,12))
-                painter.setPen(QPen(QColor(235,241,242,55),1))
-                center=cell.center();painter.drawRect(QRectF(center.x()-7,center.y()-5,14,10))
-            painter.setPen(QPen(QColor(0,0,0,55),1));painter.drawLine(round(end),round(block.top()),round(end),round(block.bottom()))
+            width,height=max(1,round(cell.width())),max(1,round(cell.height()))
+            key=(int(pixmap.cacheKey()) if pixmap is not None else None,width,height,dpr,hints.value)
+            raster=self._cell_rasters.get(key)
+            if raster is None:
+                raster=QPixmap(max(1,round(width*dpr)),max(1,round(height*dpr)))
+                raster.setDevicePixelRatio(dpr);raster.fill(Qt.transparent)
+                target=QPainter(raster);target.setRenderHints(hints)
+                local=QRectF(0,0,width,height)
+                if pixmap is not None:target.drawPixmap(local.toRect(),pixmap,pixmap.rect())
+                else:
+                    target.fillRect(local,QColor(255,255,255,12));target.setPen(QPen(QColor(235,241,242,55),1))
+                    center=local.center();target.drawRect(QRectF(center.x()-7,center.y()-5,14,10))
+                target.setPen(QPen(QColor(0,0,0,55),1));target.drawLine(width-1,0,width-1,height)
+                target.end()
+                self._cell_rasters[key]=raster
+                self._cell_raster_bytes+=raster.width()*raster.height()*4
+                while self._cell_raster_bytes>self._cell_raster_limit and len(self._cell_rasters)>1:
+                    _,previous=self._cell_rasters.popitem(last=False)
+                    self._cell_raster_bytes-=previous.width()*previous.height()*4
+            else:self._cell_rasters.move_to_end(key)
+            painter.drawPixmap(cell,raster,QRectF(raster.rect()))
         painter.restore()

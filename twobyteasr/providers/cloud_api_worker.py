@@ -48,7 +48,7 @@ def run(request: dict) -> list:
 
     def event(kind, payload):
         if kind not in {'cue_delta', 'asr_progress', 'asr_reference_delta', 'api_usage', 'asr_request_retry',
-                        'asr_retry_sweep', 'cloud_asr_timing_repaired'}:
+                        'asr_retry_sweep', 'cloud_asr_timing_repaired', 'asr_phase_timing'}:
             return
         if kind == 'api_usage' and payload.get('stage') == 'asr':
             payload = dict(payload, stage=usage_stage)
@@ -117,15 +117,15 @@ def run(request: dict) -> list:
             # never resubmitted (no double charge).
             return mosi_transcribe(audio, endpoint, cache, progress=progress, check=check,
                                    restart_terminal=bool(request.get('restart_terminal')), on_rows=on_rows,
-                                   resplit_blocked=bool(request.get('resplit_blocked')))
+                                   resplit_blocked=bool(request.get('resplit_blocked')),
+                                   on_timing=lambda data: event('asr_phase_timing', data))
         return transcribe_chunks(audio, endpoint, cache, progress=progress, check=check, on_rows=on_rows)
 
 
 def filetrans_storage(request: dict, endpoint: dict):
-    """Where 录音文件识别 audio goes: the user's own OSS bucket (the regular
-    route) or, only when the user picked it, the provider's temporary upload
-    (trial; the official docs say not for production). With neither, stop
-    before anything is uploaded (ADR 0112)."""
+    """Where 录音文件识别 audio goes: the provider's temporary space (the
+    default since 2026-10-28) or the user's own OSS bucket when chosen or set
+    up. A bucket whose AccessKey is missing stops before anything is uploaded."""
     from .api_setup_catalog import MISSING_UPLOAD_MESSAGE, UPLOAD_OWN_OSS, UPLOAD_PROVIDER, resolve_upload_mode
     from .dashscope_service import DashScopeTemporaryStorage, ServiceProblem
     from .qwen31_asr import ASRProtocolError

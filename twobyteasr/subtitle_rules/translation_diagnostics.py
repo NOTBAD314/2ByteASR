@@ -21,6 +21,7 @@ def provider_evidence(provider, error=None) -> dict:
                   "prompt_tokens", "completion_tokens", "total_tokens", "reasoning_tokens")
         return redact_diagnostics({"request_id": trace.get("request_id"),
             "usage": trace.get("reported_usage"),
+            "timings": trace.get('timings', {}),
             "response_metadata": {key: boundary[key] for key in fields if key in boundary}})
     except Exception:
         return {}

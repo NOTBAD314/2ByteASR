@@ -22,7 +22,6 @@ class MediaDropCommand(QUndoCommand):
         track = next((t for t in tracks if not t.locked and (not track_id or t.id == track_id)
                       and not any(c.timeline_in_ms < position+total and c.timeline_out_ms > position
                                   for c in t.clips)), None)
-        track = track or create_video_track(working, locked=False)
         primary = primary_video_track_id(working)
         sequence = sequence_of(working)
         if not working.media.path:
@@ -48,6 +47,9 @@ class MediaDropCommand(QUndoCommand):
                     "streams":[dict(row) for row in result.audio_streams],
                     "source_start_ms":result.source_start_ms,
                     "sample_timeline_origin_ms":result.sample_timeline_origin_ms})
+            if track is None:
+                track = create_video_track(working, locked=False,
+                    synchronize=not str(result.source_path).lower().endswith('.gif'))
             clip = add_video_clip(working, track.id, asset.asset_id, timeline_in_ms=position)
             if track.id == primary:
                 sequence.segments.append(VideoSegment(id=clip.id, source_path=result.source_path,

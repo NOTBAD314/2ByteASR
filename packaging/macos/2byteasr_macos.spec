@@ -55,7 +55,7 @@ for path in ROOT.iterdir():
 datas.append((str(ROOT/'twobyteasr/environment_probe.py'),'.'))
 excluded=['torch','torchaudio','transformers','funasr','modelscope','librosa','numba','scipy','sklearn','speechbrain','accelerate','qwen_asr','PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets','PySide6.QtWebEngineQuick','PySide6.QtDataVisualization','qtpy.QtDataVisualization']
 a=Analysis([str(ROOT/'scripts/macos_launch.py')],pathex=[str(ROOT)],binaries=binaries,datas=datas,
-           hiddenimports=['PySide6.QtNetwork','PySide6.QtMultimedia','PIL.Image','qtawesome','oss2','oss2.defaults','crcmod',*mcp_hidden],
+           hiddenimports=['PySide6.QtNetwork','PySide6.QtMultimedia','PIL.Image','PIL.GifImagePlugin','PIL.PngImagePlugin','sqlite3','qtawesome','oss2','oss2.defaults','crcmod',*mcp_hidden],
            hookspath=[],hooksconfig={},runtime_hooks=[],excludes=excluded,noarchive=False,optimize=1)
 pyz=PYZ(a.pure)
 exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='2ByteASR',debug=False,bootloader_ignore_signals=False,

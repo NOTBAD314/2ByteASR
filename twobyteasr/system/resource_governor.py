@@ -124,9 +124,12 @@ class ResourceGovernor:
                 active_background = sum(
                     self._active[item] - self._active_foreground[item]
                     for item in ResourceKind
-                    if item not in {ResourceKind.PLAYBACK, ResourceKind.DRAGGING}
+                    if item not in {ResourceKind.PLAYBACK, ResourceKind.DRAGGING, ResourceKind.AI}
                 )
-                if foreground or active_background < self.background_limit:
+                # Network AI slots are bounded by ProviderService, independently
+                # of CPU-heavy proxy/waveform work. Interactive AI remains one
+                # through _should_yield_locked above.
+                if foreground or kind == ResourceKind.AI or active_background < self.background_limit:
                     self._active[kind] += 1
                     if foreground:
                         self._active_foreground[kind] += 1

@@ -207,6 +207,15 @@ class OpenAICompatibleProvider(AIProvider):
         from .model_discovery import capabilities
         return capabilities(self.provider_id,self.endpoint.get('base_url',''),self.endpoint.get('api_key',''),self.model)
 
+    def fork_request(self):
+        """HTTP calls share configuration, never mutable per-request receipts."""
+        import copy
+        child = copy.copy(self)
+        child.endpoint = dict(self.endpoint)
+        child.last_timings = {}
+        child.last_invocation_trace = {}
+        return child
+
     def structured_output_mode(self) -> StructuredOutputMode:
         protocol = str(self.endpoint.get("protocol") or "openai_compatible_chat")
         if protocol == "responses":

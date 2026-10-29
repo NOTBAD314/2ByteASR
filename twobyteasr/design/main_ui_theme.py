@@ -19,7 +19,7 @@ QWidget {{
     font-weight: 500;
 }}
 QMainWindow, QWidget#appRoot {{ background: {IVORY}; }}
-QWidget#appRoot {{ border: 1px solid {LINE}; border-radius: 12px; }}
+QWidget#appRoot {{ border: 0; border-radius: 0; }}
 QWidget#appContent {{ background: {IVORY}; border: 0; }}
 QFrame#appHeader {{
     background: {SURFACE};

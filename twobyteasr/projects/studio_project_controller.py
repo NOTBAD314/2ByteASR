@@ -81,7 +81,7 @@ class StudioProjectController:
             self.page,
             tr('导入媒体'),
             "",
-            "媒体文件 (*.mp4 *.mkv *.mov *.webm *.flv *.avi *.wav *.mp3 *.m4a *.flac *.aac);;所有文件 (*)",
+            "媒体文件 (*.mp4 *.mkv *.mov *.webm *.flv *.avi *.gif *.wav *.mp3 *.m4a *.flac *.aac);;所有文件 (*)",
         )
         if path:
             self.page._open_or_create_media_project(Path(path))

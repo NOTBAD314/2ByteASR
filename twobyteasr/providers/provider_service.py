@@ -161,6 +161,14 @@ class AIClient(AIProvider):
             self._settings, self._stage, sender=self._sender,
         )
 
+    def concurrent_client(self) -> "AIClient":
+        """Own the last-request receipt while sharing bounded broker admission."""
+        child = copy.copy(self)
+        child._settings = copy.deepcopy(self._settings)
+        child._last_request_trace = {}
+        child.last_timings = {}
+        return child
+
     def structured_output_mode(self) -> str:
         return self.capabilities().structured_output_mode
 
@@ -455,7 +463,7 @@ class ProviderService:
     def __init__(
         self,
         *,
-        workers: int = 2,
+        workers: int = 4,
         governor: ResourceGovernor | None = None,
         circuit_failures: int = 3,
         circuit_seconds: float = 30.0,
@@ -476,7 +484,11 @@ class ProviderService:
     def scheduling_capacity(self) -> dict[str, Any]:
         """Expose local admission limits; account/server concurrency is unknown."""
         snapshot = self._governor.snapshot()
-        limit = min(self._workers_requested, snapshot.background_limit)
+        # 2026-10-28 (user's 1-hour stream): the local background limit (2,
+        # meant for proxies/waveforms/previews) also capped these network
+        # requests; 41 proofreading and 50 grouping batches ran two at a time
+        # although 4 were configured. Playback and dragging still allow one.
+        limit = self._workers_requested
         if snapshot.playback or snapshot.dragging:
             limit = min(limit, 1)
         return {"effective_workers": max(1, limit), "broker_workers": self._workers_requested,
@@ -1078,7 +1090,6 @@ class ProviderService:
         if health.state in {
             ProviderHealthState.UNAVAILABLE,
             ProviderHealthState.DEGRADED,
-            ProviderHealthState.RATE_LIMITED,
         }:
             raise AIProviderError(health.message or "AI Provider 不可用。", category=health.state.value.casefold())
         if time.monotonic() >= handle.deadline_monotonic:
@@ -1192,6 +1203,8 @@ class ProviderService:
                     diagnostics['transport_finished_monotonic'] = time.monotonic()
                 handle.trace = copy.deepcopy(getattr(adapter, 'last_invocation_trace', {}))
                 handle.trace['timings'] = copy.deepcopy(getattr(adapter, 'last_timings', {}))
+                handle.trace['timings']['queue_seconds'] = max(0.0, started-handle.submitted_monotonic)
+                handle.trace['timings']['execute_seconds'] = time.monotonic()-started
                 handle.trace['provider_request_id'] = handle.trace.get('request_id')
                 handle.trace['request_id'] = handle.request_id
                 if adapter is not runtime.adapter:
@@ -1213,6 +1226,10 @@ class ProviderService:
             # poison every later translation batch by opening the circuit.
             "structured_output_truncated", "structured_output_truncated_before_answer",
             "structured_empty_response",
+            # The caller owns bounded Retry-After/backoff. A 429 is temporary
+            # capacity feedback, not an unavailable provider; keep retries and
+            # later independent batches able to reach the endpoint.
+            "rate_limit", "rate_limited",
             # timeout 是延迟信号（CLI 账号会话常见长尾），不是供应商死亡。
             # 计入熔断会让并行批次的正常慢批连锁击穿（2026-09-03 断句 9/13
             # 回退取证）；调用方已有自己的重试与本地回退。

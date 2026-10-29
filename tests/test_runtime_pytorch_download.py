@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location('install_managed_backend_wheels', ROOT/'scripts/install_managed_backend.py')
 installer = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(installer)
+# The downloader itself is shared with the macOS preparer since 2026-10-28.
+from twobyteasr.system import runtime_package_download as downloads  # noqa: E402
 NAME = 'torch-2.11.0+cu126-cp310-cp310-win_amd64.whl'
 PAYLOAD = bytes(range(256)) * 1600  # 400 KiB
 SHA = hashlib.sha256(PAYLOAD).hexdigest()
@@ -96,7 +98,7 @@ def server(monkeypatch):
     # Quick timings: speed is judged after 1.5 s over a 3 s window; a trial lasts 0.6 s.
     for name, value in dict(WHEEL_BLOCK=4096, SPEED_GRACE_S=1.5, SPEED_CHECK_S=0.5, SPEED_WINDOW_S=3.0,
                             TRIAL_S=0.6, SLOW_BYTES_PER_SECOND=200_000, WORTH_SWITCHING_S=0.5).items():
-        monkeypatch.setattr(installer, name, value)
+        monkeypatch.setattr(downloads, name, value)
     monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost')
     instances = []
 
@@ -203,7 +205,7 @@ def test_a_mirror_that_is_not_faster_hands_back_to_official(server, tmp_path, ca
     assert (tmp_path/NAME).read_bytes() == PAYLOAD and reason == ''
     output = capsys.readouterr().out
     assert '不比 PyTorch 官方 快，继续使用 PyTorch 官方' in output
-    assert job.check_gap > installer.SPEED_CHECK_S  # the next check waits longer
+    assert job.check_gap > downloads.SPEED_CHECK_S  # the next check waits longer
 
 
 def test_missing_official_file_moves_to_the_mirror_at_once(server, tmp_path):

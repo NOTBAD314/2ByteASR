@@ -52,6 +52,7 @@ class SecondaryVideoSource(QObject):
         self.image = QImage()
         self._image_generation = -1
         self.pts_ms = -1
+        self.frame_end_ms = 0
         self.requested_ms = 0
         self.frame_interval_ms = 0.0
         self.audio_output_attached = False
@@ -181,6 +182,7 @@ class SecondaryVideoSource(QObject):
         self._image_pixels = frame.pixels
         self._image_generation = frame.generation
         self.pts_ms = frame.pts_ms
+        self.frame_end_ms = int(getattr(frame, 'frame_end_ms', 0))
         self._published_epoch = frame.epoch
         self.frame_interval_ms = (now - self._last_frame_ts) * 1000 if self._last_frame_ts else 0.
         self._last_frame_ts = now

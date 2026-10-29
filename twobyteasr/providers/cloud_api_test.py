@@ -291,7 +291,7 @@ def storage_check(endpoint: dict, settings: dict, values: dict, credentials: tup
         report = temporary_upload_check(endpoint)
         for check in report.checks:
             if check.level == 'storage' and check.status == PASS:
-                check.detail += '（这是“仅供试用”的临时上传：48 小时失效，官方说明勿用于生产。）'
+                check.detail += '（服务商临时空间：识别用的音频 48 小时后由服务商自动删除。）'
         return report
     return Report().add('storage', FAIL, MISSING_UPLOAD_MESSAGE)
 

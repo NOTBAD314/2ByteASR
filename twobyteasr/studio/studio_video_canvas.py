@@ -1025,6 +1025,7 @@ class MpvCanvas(QFrame):
         self._video_display_size = (0, 0)
         try:
             self._ensure_controller_started()
+            self._publish_first_picture(media_path)
             self._startup_play_requested = False
             self._startup_started_at = perf_counter()
             self._set_startup_state("MEDIA_OPENING")
@@ -1144,6 +1145,7 @@ class MpvCanvas(QFrame):
         controller = self.controller
         if controller is None or not controller.running:
             return False
+        self._publish_first_picture(source)
         post = getattr(controller, "post_load", None)
         if not callable(post) or not post(source):
             return False
@@ -1179,6 +1181,7 @@ class MpvCanvas(QFrame):
             return False
         source = str(Path(media_path).absolute())
         self._hold_media_cache(source)
+        self._publish_first_picture(source)
         target = max(0.0, float(source_seconds))
         display_seconds = max(0, int(project_ms)) / 1000.0
         trace = self._active_seek_trace
@@ -1615,6 +1618,15 @@ class MpvCanvas(QFrame):
         self._external_clock_source_generation = -1
         self.position_changed.emit(0.0)
         self._release_media_caches_after_idle()
+
+    def _publish_first_picture(self, path):
+        """Tell mpv where this source's first picture is, so a seek to 0 that
+        lands on it counts as ready (see MpvController.set_first_picture)."""
+        publish = getattr(self.controller, 'set_first_picture', None)
+        if callable(publish):
+            from ..playback.frame_readiness import first_picture_seconds
+            page = self._studio_page()
+            publish(path, first_picture_seconds(getattr(page, 'project', None), path))
 
     def _hold_media_cache(self, path):
         """Keep every decoded project source protected through asynchronous switches."""
@@ -2420,6 +2432,7 @@ class MpvCanvas(QFrame):
             observed_monotonic_ts=float(observation['observed_monotonic_ts']),
             playback_rate=float(observation.get('playback_rate',self._playback_rate)),
             paused=bool(observation.get('paused',self._paused)),seeking=bool(observation.get('seeking',False)),
+            seek_completed=bool(observation.get('seek_completed',False)),
             source='cached_video_frame',presentation_media_ms=self.visual_position()*1000.,align_forward=True,
             observed_perf_counter_ts=observation.get('observed_perf_counter_ts'))
         if accepted:
@@ -2654,6 +2667,7 @@ class MpvCanvas(QFrame):
                 playback_rate=speed,
                 paused=paused,
                 seeking=seeking,
+                seek_completed=bool(observation.get('seek_completed',False)),
                 source=source,
                 presentation_media_ms=self.visual_position() * 1000.0,
                 observed_perf_counter_ts=observation.get('observed_perf_counter_ts'),

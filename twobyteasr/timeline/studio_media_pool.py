@@ -209,6 +209,7 @@ def create_video_track(
     enabled: bool = True,
     muted: bool = False,
     locked: bool = False,
+    synchronize: bool = True,
 ) -> VideoTrack:
     number = len(project.video_tracks) + 1
     existing = {track.id for track in project.video_tracks}
@@ -225,7 +226,8 @@ def create_video_track(
         z_index=len(project.video_tracks),
     )
     project.video_tracks.append(track)
-    sync_linked_av_contract(project)
+    if synchronize:
+        sync_linked_av_contract(project)
     return track
 
 
@@ -572,7 +574,8 @@ def trim_video_clip(
         raise KeyError(clip_id)
     asset = asset_by_id(project, clip.asset_id)
     source_in = max(0, int(source_in_ms))
-    source_out = min(asset.duration_ms or int(source_out_ms), int(source_out_ms))
+    from .studio_clip_edit import media_edit_limit
+    source_out = min(media_edit_limit(asset) or int(source_out_ms), int(source_out_ms))
     if source_out <= source_in:
         raise ValueError("clip source range is empty")
     clip.source_in_ms = source_in

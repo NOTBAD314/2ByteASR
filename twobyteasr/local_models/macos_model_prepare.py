@@ -65,20 +65,106 @@ def download_archive(spec: dict, cache: Path) -> Path:
     raise RuntimeError('Bootstrap archive could not be downloaded from any source: ' + '; '.join(failures))
 
 
+# The workshop's download source applies to runtimes too (2026-10-28): set by
+# prepare / prepare_local / prepare_mlx; 'auto' measures sources before use.
+_RUNTIME_SOURCES = {'preference': 'auto', 'pypi': None}
+PYPI_HOUSE = Path('download-cache/2byteasr-pypi-files')
+
+
+def _use_download_source(source: str) -> None:
+    from twobyteasr.system.runtime_package_download import preference_for_mode
+    _RUNTIME_SOURCES.update(preference=preference_for_mode(source), pypi=None)
+
+
 def _bootstrap_urls(url: str) -> list:
     try:
         from twobyteasr.download_sources import bootstrap_urls
-        return list(bootstrap_urls(url)) or [url]
+        urls = list(bootstrap_urls(url)) or [url]
     except (ImportError, AttributeError):
         return [url]
+    if len(urls) < 2:
+        return urls
+    # The first URL is the official one (GitHub / PyPI). Measured on a mainland
+    # line, GitHub gave 64 KiB in 45 s while the mirrors answered at once.
+    from twobyteasr.system import runtime_package_download as downloads
+    sources = [dict(label=urlsplit(item).hostname or item, url=item, official=index == 0) for index, item in enumerate(urls)]
+    preference = _RUNTIME_SOURCES['preference']
+    if preference == 'auto':
+        ranked, measured = downloads.rank_sources(sources, '', 'auto')
+        print('[下载] 启动文件来源测速：' + downloads.describe_ranking(ranked, measured), flush=True)
+    else:
+        ranked = downloads.order_by_preference(sources, preference)
+    return [item['url'] for item in ranked]
+
+
+def _pypi_sources(path: str) -> list:
+    """PyPI's file host and the mirrors, ordered once per run (measured with ``path`` when 'auto')."""
+    from twobyteasr.download_sources import _runtime_sources
+    from twobyteasr.system import runtime_package_download as downloads
+    if _RUNTIME_SOURCES['pypi'] is None:
+        sources = downloads.pypi_sources(_runtime_sources().get('pypi_mirrors') or [])
+        ranked, measured = downloads.rank_sources(sources, path, _RUNTIME_SOURCES['preference'])
+        print('[依赖包] 来源测速（各读同一文件的前 512 KiB）：' + downloads.describe_ranking(ranked, measured), flush=True)
+        _RUNTIME_SOURCES['pypi'] = ranked
+    return _RUNTIME_SOURCES['pypi']
 
 
 def _pip_index_urls() -> list:
+    """Index URLs in trial order: measured / preferred PyPI order when known, else official first."""
+    if _RUNTIME_SOURCES['pypi']:
+        return [('https://pypi.org/simple' if item.get('official') else item['url'].rstrip('/') + '/simple')
+                for item in _RUNTIME_SOURCES['pypi']]
     try:
         from twobyteasr.download_sources import pip_index_urls
-        return list(pip_index_urls()) or ['https://pypi.org/simple']
+        urls = list(pip_index_urls()) or ['https://pypi.org/simple']
     except (ImportError, AttributeError):
         return ['https://pypi.org/simple']
+    return urls[1:] + urls[:1] if _RUNTIME_SOURCES['preference'] == 'mirror' else urls
+
+
+def _supported_tags(runtime_python: Path, environment: dict) -> list:
+    """This Mac's wheel tags in pip's own priority order (pip vendors ``packaging``)."""
+    result = subprocess.run([str(runtime_python), '-I', '-c',
+                             'import json; from pip._vendor.packaging.tags import sys_tags; '
+                             'print(json.dumps([str(tag) for tag in sys_tags()]))'],
+                            capture_output=True, text=True, timeout=60, env=environment)
+    if result.returncode:
+        raise RuntimeError('无法读取这台 Mac 支持的安装包类型：' + (result.stderr or result.stdout)[-300:])
+    return json.loads(result.stdout.splitlines()[-1])
+
+
+def fetch_locked_packages(root: Path, managed: Path, runtime_python: Path, environment: dict, key: str):
+    """Fetch the locked PyPI files of runtime ``key`` ('main|3.10', 'moss|3.12', 'mlx|3.10').
+
+    The app downloads them itself (measured source order, resume, switching
+    source when slow or stalled, SHA-256 checked) so pip can install offline.
+    Returns the folder, or None when this build has no file table; a failed
+    download returns None as well and pip falls back to the indexes.
+    """
+    from twobyteasr.system import runtime_package_download as downloads
+    table = downloads.load_package_files(root)
+    spec = (table.get('macos') or {}).get(key)
+    if not spec:
+        return None
+    try:
+        supported = _supported_tags(runtime_python, environment)
+        chosen = {}
+        for name, item in spec['packages'].items():
+            candidates = [(digest, table['files'][digest][0]) for digest in item['sha256'] if digest in table['files']]
+            digest = downloads.choose_for_tags(candidates, supported)
+            if digest is None:
+                raise RuntimeError(f"没有适合这台 Mac 的 {name}=={item['version']} 安装包")
+            chosen[name] = [digest]
+        items = downloads.files_for_hashes(table, chosen)
+        house = managed / PYPI_HOUSE
+        if items:
+            sources = _pypi_sources(max(items, key=lambda item: item['size'])['path'])
+            downloads.fetch_files(house, items, sources, family='依赖包', display='PyPI')
+        house.mkdir(parents=True, exist_ok=True)
+        return house
+    except (downloads.SourcesExhausted, RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        print(f'[依赖包] 应用内下载没有完成（{exc}），改由 pip 依次从软件源安装', flush=True)
+        return None
 
 
 # A source slower than this for 60 s is abandoned for the next one (slow, not refused, is common).
@@ -109,12 +195,19 @@ def _fetch(url: str, pending: Path, context) -> None:
                 last = now
 
 
-def run_hashed_pip_install(arguments, *, cwd: Path, environment: dict) -> None:
-    """``pip install --require-hashes …`` against each index in turn (official PyPI first).
+def run_hashed_pip_install(arguments, *, cwd: Path, environment: dict, house: Path | None = None) -> None:
+    """``pip install --require-hashes …`` from the app's verified files, else against each index in turn.
 
     Only for fully hash-pinned installs: a mirror can fail, never install other bytes.
     """
     assert '--require-hashes' in arguments
+    if house is not None:
+        try:
+            print('[依赖包] 依赖文件都已在本机并通过 SHA-256 校验，离线安装（pip 不再连接软件源）', flush=True)
+            run([*arguments, '--no-index', '--find-links', house], cwd=cwd, environment=environment)
+            return
+        except subprocess.CalledProcessError:
+            print('[依赖包] 离线安装没有完成，改由 pip 依次从软件源安装（同样按哈希校验）', flush=True)
     indexes = _pip_index_urls()
     for position, index in enumerate(indexes):
         try:
@@ -317,9 +410,24 @@ def ensure_main_runtime(root: Path, managed: Path, lock: dict, environment: dict
     report = runtime / 'pip-install.json'
     # Fresh reports include the critical wheels on retries too;
     # pip's verified cache can reuse completed downloads.
-    run([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install', '--force-reinstall', '--report', report,
-         '--only-binary=:all:', '--find-links', wheelhouse,
-         '--index-url', 'https://pypi.org/simple', '-r', requirements.name], cwd=requirements.parent, environment=environment)
+    install = [runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install', '--force-reinstall',
+               '--report', report, '--only-binary=:all:', '--find-links', wheelhouse]
+    # 2026-10-28: pip waited on files.pythonhosted.org for minutes in mainland
+    # China ("Resuming download torch… 262 kB/80.5 MB"). The app fetches the
+    # locked files itself (packaging/macos versions, PyPI SHA-256) and pip
+    # installs offline; the official index stays the fallback.
+    house = fetch_locked_packages(root, managed, runtime_python, environment, 'main|3.10')
+    if house is not None:
+        try:
+            print('[依赖包] 依赖文件都已在本机并通过 SHA-256 校验，离线安装（pip 不再连接软件源）', flush=True)
+            run([*install, '--no-index', '--find-links', house, '-r', requirements.name],
+                cwd=requirements.parent, environment=environment)
+        except subprocess.CalledProcessError:
+            print('[依赖包] 离线安装没有完成，改由 pip 从 PyPI 官方安装', flush=True)
+            house = None
+    if house is None:
+        run([*install, '--index-url', 'https://pypi.org/simple', '-r', requirements.name],
+            cwd=requirements.parent, environment=environment)
     from scripts.macos_dependency_contract import verify_native_wheels
     native_lock = root / 'packaging/macos/native-dependencies.lock.json'
     verified = verify_native_wheels(json.loads(report.read_text('utf8')), json.loads(native_lock.read_text('utf8')))
@@ -350,6 +458,7 @@ def prepare(root: Path, *, models: Path, source: str, register: bool = True) -> 
     from twobyteasr.repository_download import preparation_lock
     managed = user_data_root() / 'runtimes'
     managed.mkdir(parents=True, exist_ok=True)
+    _use_download_source(source)  # the chosen download source orders runtime sources too
     lock = json.loads((root / 'packaging/macos/bootstrap.lock.json').read_text('utf8'))
     environment = _child_environment()
     environment['UV_CACHE_DIR'] = str(user_data_root() / 'cache/uv')
@@ -531,7 +640,8 @@ def ensure_moss_runtime(root: Path, managed: Path, lock: dict, environment: dict
     # Every requirement is hash-pinned: pip refuses any other file.
     run_hashed_pip_install([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', 'install',
                             '--require-hashes', '--only-binary', ':all:', '--report', report, '-r', requirements.name],
-                           cwd=requirements.parent, environment=environment)
+                           cwd=requirements.parent, environment=environment,
+                           house=fetch_locked_packages(root, managed, runtime_python, environment, 'moss|3.12'))
     run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
     source_digest = install_moss_source(root, runtime)
     verify_runtime_binaries(runtime)
@@ -576,6 +686,7 @@ def prepare_local(root: Path, *, models: Path, source: str, keys, register: bool
     from twobyteasr.repository_download import preparation_lock
     managed = user_data_root() / 'runtimes'
     managed.mkdir(parents=True, exist_ok=True)
+    _use_download_source(source)  # the chosen download source orders runtime sources too
     lock = json.loads((root / 'packaging/macos/bootstrap.lock.json').read_text('utf8'))
     environment = _child_environment()
     environment['UV_CACHE_DIR'] = str(user_data_root() / 'cache/uv')
@@ -719,6 +830,7 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
     from twobyteasr.repository_download import preparation_lock
     managed = user_data_root() / 'runtimes'
     managed.mkdir(parents=True, exist_ok=True)
+    _use_download_source(source)  # the chosen download source orders runtime sources too
     lock = json.loads((root / 'packaging/macos/bootstrap.lock.json').read_text('utf8'))
     requirements = root / 'packaging/macos/requirements-mlx.txt'
     identity = dict(target=lock['target'], python=lock['python'], uv=lock['uv'], pip=lock['pip'],
@@ -752,7 +864,8 @@ def prepare_mlx(root: Path, *, models: Path, source: str, keys, register: bool =
                 # Every requirement is hash-pinned: pip refuses any other file.
                 run_hashed_pip_install([runtime_python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check',
                                         'install', '--require-hashes', '--only-binary', ':all:', '--report', report,
-                                        '-r', requirements.name], cwd=requirements.parent, environment=environment)
+                                        '-r', requirements.name], cwd=requirements.parent, environment=environment,
+                                       house=fetch_locked_packages(root, managed, runtime_python, environment, 'mlx|3.10'))
                 run([runtime_python, '-I', '-m', 'pip', '--isolated', 'check'], cwd=managed, environment=environment)
                 # MLX publishes distinct 14/15/26 wheels. The base App remains
                 # 14-compatible; this optional runtime must fit its real host.

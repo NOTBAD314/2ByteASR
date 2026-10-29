@@ -397,8 +397,15 @@ class ReviewEvidenceAggregator:
         ]
         lexical_similarity = min(pair_ratios, default=1.0)
         edit_distance = round(1.0 - lexical_similarity, 4)
+        # Speakers are compared between independent readings only. The
+        # caption's current speaker and its own alignment record carry the
+        # project's track (after a voiceprint merge, 统一字幕 or a drag), not
+        # what a recognizer heard, so they are never a disagreement (2026-10-28).
+        from ..recognition.cue_forced_alignment import CUE_ALIGNMENT_PREFIX
         speakers = {
-            speaker for item in streams.values() for speaker in item["speakers"] if speaker
+            speaker for name, item in streams.items() if name != "Current"
+            for row, speaker in zip(item["rows"], item["speakers"])
+            if speaker and not str(row.get("reference") or "").startswith(CUE_ALIGNMENT_PREFIX)
         }
         models_agree_speaker = len(speakers) <= 1
         all_boundaries = {item["boundaries"] for name, item in streams.items() if name != "Current"}

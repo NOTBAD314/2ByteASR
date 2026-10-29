@@ -458,6 +458,7 @@ def model_evidence(
 ) -> tuple[QCEvidence, ...]:
     """Join independent cue-local observations, keeping their model identity."""
     from ..recognition.asr_source_evidence import MODEL_LABELS, cue_source_hypotheses
+    from ..recognition.cue_evidence_slice import join_pieces
     grouped = defaultdict(list)
     for row in cue_source_hypotheses(project, cue, index=index):
         grouped[row['model']].append(row)
@@ -465,7 +466,7 @@ def model_evidence(
     for model, rows in grouped.items():
         parts = [str(row['text']) for row in rows]
         confidence = [row['confidence'] for row in rows if row.get('confidence') is not None]
-        result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=''.join(parts),
+        result.append(QCEvidence(label=MODEL_LABELS.get(model, model), text=join_pieces(parts),
             source=model, confidence=min(confidence) if confidence else None,
             # A concatenation is cue-local only when every contributing row is.
             # Otherwise a neighboring segment could become an adoptable suffix.

@@ -1,0 +1,4 @@
+{
+  "zh": "· 样式范围与原文/译文层统一控制位置、缩放与预设，批量一次撤销。\n· 修订口吃整理开关、校对批量选择、试听与时间轴刷新。\n· 按实际失败阶段重试，保留成功结果与人工编辑。\n· 保留最新导出恢复、窗口填充和GIF动画素材。\n· 冷首轮与5000条批量提交仍可能停顿。",
+  "en": "Scoped caption editing, proofread controls, stage-specific retries, timeline and batch performance, export recovery and GIF media. Cold starts and large batch commits may still pause."
+}

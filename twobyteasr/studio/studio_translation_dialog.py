@@ -27,6 +27,22 @@ STATUS_LABELS = (("untranslated", "未翻译"), ("done", "已翻译"), ("manual"
                  ("needs_update", "需更新 / 合并后部分缺译"), ("failed", "失败"))
 
 
+def failure_reason(code) -> str:
+    """Plain words for a failed record's ``error`` code (subtitle_translation.validate_translation)."""
+    code = str(code or "")
+    if code.startswith("provider_error"):
+        return "请求出错"
+    if code in ("empty", "missing", "unknown_id", "duplicate_id"):
+        return "模型没有给出这一条"
+    if code == "echo_source":
+        return "模型照抄了原文"
+    if code in ("too_long", "timestamp"):
+        return "译文格式不对"
+    if code.endswith("_output") or code.startswith("not_") or code == "no_chinese":
+        return "译文不是所选语言"
+    return "没有通过检查"
+
+
 def _european_label(language: str) -> str:
     """西班牙语 / 德语 / 法语 / 葡萄牙语 / 意大利语 / 俄语, or '' (2026-10-19)."""
     from ..subtitle_rules.european_text import LABELS
@@ -131,6 +147,17 @@ class SubtitleTranslationDialog(QDialog):
         self.counts = QLabel()
         self.counts.setWordWrap(True)
         layout.addWidget(self.counts)
+        # 2026-10-27 (user): in a long video one failed line was impossible to find.
+        failed_row = QHBoxLayout()
+        self.failed_note = QLabel()
+        self.failed_note.setWordWrap(True)
+        self.failed_note.setObjectName("contextMeta")
+        self.locate_failed_button = QPushButton(tr("定位"))
+        self.locate_failed_button.clicked.connect(self._locate_failed)
+        failed_row.addWidget(self.failed_note, 1)
+        failed_row.addWidget(self.locate_failed_button)
+        layout.addLayout(failed_row)
+        self._failed_ids, self._failed_cursor = [], 0
         self.service = QLabel()
         self.service.setWordWrap(True)
         self.service.setObjectName("contextMeta")
@@ -213,6 +240,59 @@ class SubtitleTranslationDialog(QDialog):
         from ..subtitle_rules.subtitle_translation import status_counts
         counts = status_counts(self.project, target=self._target())
         bind_text(self.counts, " · ".join(f"{tr(label)} {counts.get(key, 0)}" for key, label in STATUS_LABELS))
+        self._refresh_failed()
+
+    def _cue_number(self, cue_id: str) -> str:
+        """The caption's number in the workbench list (#), else its id."""
+        index = (getattr(self.page, "_cue_jump_index", None) or {}).get(str(cue_id))
+        return str(index + 1) if index is not None else str(cue_id)
+
+    def _refresh_failed(self) -> None:
+        from ..subtitle_rules.subtitle_translation import ids_with_status, records_of
+        failed = ids_with_status(self.project, {"failed"}, target=self._target())
+        if failed != self._failed_ids:
+            self._failed_ids, self._failed_cursor = failed, 0
+        self.failed_note.setVisible(bool(failed))
+        self.locate_failed_button.setVisible(bool(failed))
+        if not failed:
+            return
+        records = records_of(self.project)
+        items = " · ".join(f"#{self._cue_number(cue_id)} {tr(failure_reason((records.get(cue_id) or {}).get('error')))}"
+                           for cue_id in failed[:3])
+        if len(failed) > 3:
+            items += " · " + tr("等 {count} 条", count=len(failed))
+        bind_text(self.failed_note, "失败的字幕：{items}", items=items)
+        if len(failed) == 1:
+            bind_text(self.locate_failed_button, "定位")
+        else:
+            bind_text(self.locate_failed_button, "定位下一条 {index}/{total}",
+                      index=self._failed_cursor % len(failed) + 1, total=len(failed))
+
+    def _locate_failed(self) -> None:
+        """Select the next failed caption in the workbench and move the playhead there; the dialog stays open."""
+        if not self._failed_ids or not self._owns_project():
+            return
+        cue_id = self._failed_ids[self._failed_cursor % len(self._failed_ids)]
+        self._failed_cursor += 1
+        page = self.page
+        model = getattr(page, "cue_model", None)
+        if (model is not None and not getattr(page, "_review_mode", False) and model.row_for_cue_id(cue_id) < 0
+                and model.filter_status != "all" and callable(getattr(page, "_activate_filter", None))):
+            page._activate_filter("all")  # a list filter must not hide the caption being located
+        index = (getattr(page, "_cue_jump_index", None) or {}).get(cue_id)
+        order = getattr(page, "_cue_jump_order", None) or ()
+        if index is not None and index < len(order) and callable(getattr(page, "_go_to_listed_cue", None)):
+            page._go_to_listed_cue(order[index])
+        elif callable(getattr(page, "select_cue", None)):
+            page.select_cue(cue_id)
+        table = getattr(page, "cue_table", None)
+        row = model.row_for_cue_id(cue_id) if model is not None else -1
+        if table is not None and row >= 0:
+            # The selection scope marks the row before the controller's
+            # scroll step runs, which then skips it: scroll here.
+            from PySide6.QtWidgets import QAbstractItemView
+            table.scrollTo(model.index(row, 3), QAbstractItemView.ScrollHint.EnsureVisible)
+        self._refresh_failed()
 
     def _describe_service(self) -> bool:
         from ..caption_design.studio_ai import GLOBAL_PROVIDER_REGISTRY
@@ -298,7 +378,12 @@ class SubtitleTranslationDialog(QDialog):
             self._log({"event": "error", "error": str(exc)})
             self._on_finished(exc)
             return
-        options = dict(target=self._target(), game_context=self.context.text().strip(), glossary_pairs=pairs)
+        performance = GLOBAL_PROVIDER_REGISTRY.settings().get('performance', {})
+        workers = (max(1, min(4, int(performance.get('cloud_batch_workers', 4))))
+                   if performance.get('parallel_cloud_batches', True) else 1)
+        from ..subtitle_rules.subtitle_translation import RECOMMENDED_BATCH_ITEMS
+        options = dict(target=self._target(), game_context=self.context.text().strip(), glossary_pairs=pairs,
+                       workers=workers, max_items=RECOMMENDED_BATCH_ITEMS)
         self._request_target = options['target']
         import uuid
         self._usage_task_id = uuid.uuid4().hex

@@ -253,6 +253,50 @@ def native_move_size_loop(widget):
     return bool(info.flags & 0x2) and int(info.hwndMoveSize or 0) == hwnd  # GUI_INMOVESIZE
 
 
+def native_windowpos(widget, address):
+    """Keep Qt's requested shell size; constrain special states to their screen.
+
+    Returning True bypasses Qt's native child height-for-width adjustment,
+    which can enlarge a frameless Studio shell beyond the requested height.
+    Normal sizes are accepted unchanged. This also prevents the native client
+    from becoming taller than QWidget.rect(), leaving an unpainted outer band.
+    """
+    if widget.isMinimized():
+        return False
+    import ctypes
+    from ctypes import wintypes as W
+    class WINDOWPOS(ctypes.Structure):
+        _fields_ = [('hwnd',W.HWND),('after',W.HWND),('x',ctypes.c_int),('y',ctypes.c_int),
+                    ('cx',ctypes.c_int),('cy',ctypes.c_int),('flags',W.UINT)]
+    pos = WINDOWPOS.from_address(address)
+    if pos.flags & 0x0001 or pos.x <= -30000 or pos.y <= -30000:  # NOSIZE / parked iconic window
+        return False
+    if getattr(widget, '_native_frame_active', False):
+        # The daily's native sizing frame owns Snap/maximize/fullscreen bounds.
+        # Keep that requested rect, only bypass Qt's second HFW enlargement.
+        return True
+    if not (widget.isMaximized() or widget.isFullScreen()):
+        return True
+    user32 = _user32()
+    user32.MonitorFromRect.argtypes = [ctypes.POINTER(W.RECT), W.DWORD]
+    user32.MonitorFromRect.restype = ctypes.c_void_p
+    x,y = pos.x,pos.y
+    if pos.flags & 0x0002:  # NOMOVE coordinates are unspecified.
+        frame = native_frame(widget)
+        if frame is None: return False
+        x,y = frame['rect'][:2]
+    rect = W.RECT(x,y,x+max(1,pos.cx),y+max(1,pos.cy))
+    monitor = user32.MonitorFromRect(ctypes.byref(rect),2)
+    info = user32.MONITORINFO(); info.cbSize = ctypes.sizeof(info)
+    if not monitor or not user32.GetMonitorInfoW(monitor,ctypes.byref(info)):
+        return False
+    target = info.rcMonitor if widget.isFullScreen() else info.rcWork
+    pos.x,pos.y = target.left,target.top
+    pos.cx,pos.cy = target.right-target.left,target.bottom-target.top
+    pos.flags &= ~0x0002  # NOMOVE: a screen transition must adopt its new origin.
+    return True
+
+
 def special_geometry_broken(widget):
     """A maximized or full-screen window that no longer covers exactly its screen.
 

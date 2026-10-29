@@ -6,6 +6,8 @@ from ..subtitle_rules.text_similarity import levenshtein
 
 TOKEN = re.compile(r'(?<![A-Za-z0-9_])[A-Za-z0-9_]+(?![A-Za-z0-9_])')
 ASR_FIELDS = ('moss_text', 'firered_text', 'qwen_asr_text')
+# Game words every Chinese stream uses; never a player or creature ID.
+COMMON_GAME_WORDS = frozenset({'buff', 'debuff', 'nerf', 'pvp', 'pve', 'npc', 'boss', 'mvp', 'dps', 'aoe'})
 
 
 def _bridge_shape(source, heard, canonical):
@@ -183,19 +185,26 @@ def recall_gaps(segments, candidates, snapshot=None):
     # Proper names can be ordinary Chinese spellings rather than Latin IDs or
     # repeated characters. POS tagging supplies review signals only; it never
     # guesses a canonical ID or authorizes a replacement.
+    # 2026-10-28 (user's 20-minute and 1-hour streams, 22/45 and 64/100
+    # review items): jieba's dictionary tags ordinary words as names (nr:
+    # 阳光 安静 荣誉; nz: 聊天 世界观 普通). Person-name tags only, and not a
+    # word as common as ordinary vocabulary.
+    from ..subtitle_rules.stutter_cleanup import (ORDINARY_WORD_FREQ, ordinary_reduplication,
+                                                  reduplication_names_nothing, word_frequency)
     proper = {}
     if snapshot is not None and snapshot.libraries:
         from jieba.posseg import cut
         proper = {segment.segment_id: {token.word for token in cut(str(segment.text), HMM=False)
-            if token.flag in {'nr', 'nrfg', 'nrt', 'nz'} and 2 <= len(token.word) <= 12}
+            if token.flag in {'nr', 'nrfg', 'nrt'} and 2 <= len(token.word) <= 12
+            and word_frequency(token.word) < ORDINARY_WORD_FREQ}
             for segment in segments}
-    from ..subtitle_rules.stutter_cleanup import ordinary_reduplication
     for segment in segments:
-        surfaces = {m.group() for m in TOKEN.finditer(str(segment.text)) if len(m.group()) >= 3}
+        surfaces = {m.group() for m in TOKEN.finditer(str(segment.text))
+                    if len(m.group()) >= 3 and m.group().casefold() not in COMMON_GAME_WORDS}
         # A doubled nickname (\u7403\u7403) is a name signal; ordinary doubled words
         # (\u521a\u521a) and stammers (\u518d\u518d, \u8fd9\u8fd9) are not (2026-10-10, user report).
         surfaces.update(m.group() for m in re.finditer(r'([\u4e00-\u9fff])\1+', str(segment.text))
-                        if not ordinary_reduplication(str(segment.text), *m.span()))
+                        if not reduplication_names_nothing(str(segment.text), *m.span()))
         # jieba tags \u8c22\u8c22/\u5b9d\u5b9d as person names; doubled common words stay ordinary.
         surfaces.update(word for word in proper.get(segment.segment_id, ())
                         if not (len(set(word)) == 1 and ordinary_reduplication(word, 0, len(word))))

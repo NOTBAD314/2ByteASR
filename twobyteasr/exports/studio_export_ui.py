@@ -77,7 +77,7 @@ class ProcessedFrameView(QLabel):
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.drawPixmap(self.frame_rect(), self._frame, QRectF(self._frame.rect()))
         painter.end()
-from .studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts
+from .studio_subtitle_export import SubtitleExportOptions, export_subtitle_artifacts, has_translations
 from ..design.controls import StyledCheckBox, StyledRadio
 from ..timeline.studio_edit_sequence import sequence_of, timeline_duration_ms
 from ..timeline.studio_sequence_mapper import export_source_slices
@@ -102,6 +102,11 @@ from .export_setup_widgets import (
 from ..design.theme_manager import theme_key
 from ..design.ui_theme import ThemeDefinition, theme_definition
 
+# "Auto" H.264 on NVENC: the preset number + this keeps the x264 picture.
+# Real 1080p60 game footage, 120 s (2026-10-28): x264 medium CRF 20 6.2 Mb/s,
+# SSIM 0.9936; NVENC p4 CQ 20 14.8 Mb/s 0.9956; CQ 24 9.3 Mb/s 0.9937.
+AUTO_NVENC_CQ_OFFSET = 4
+
 
 def _workspace_theme() -> ThemeDefinition:
     return theme_definition(theme_key())
@@ -125,11 +130,12 @@ def resolve_subtitle_export_destination(
 ) -> tuple[Path, str]:
     """Resolve ordinary-user subtitle delivery with a safe project fallback."""
 
-    source_directory = Path(project.media.path).expanduser().parent
+    source_path = str(project.media.path or "").strip()
+    source_directory = Path(source_path).expanduser().parent if source_path else None
     project_exports = (
         Path(project_path).expanduser().parent / "exports"
         if project_path is not None
-        else source_directory / "exports"
+        else source_directory / "exports" if source_directory is not None else None
     )
     normalized = str(mode or "source")
     if normalized == "custom":
@@ -140,9 +146,13 @@ def resolve_subtitle_export_destination(
             raise PermissionError(f"自定义字幕目录不可写：{custom}")
         return custom, "自定义位置"
     if normalized == "project":
+        if project_exports is None:
+            raise ValueError("工程尚未保存且没有源媒体，请选择自定义字幕保存文件夹")
         return project_exports, "工程 exports 目录"
-    if _directory_is_writable(source_directory):
+    if source_directory is not None and _directory_is_writable(source_directory):
         return source_directory, "与源媒体同目录"
+    if project_exports is None:
+        raise ValueError("工程尚未保存且没有源媒体，请选择自定义字幕保存文件夹")
     return project_exports, "源媒体目录不可写，已改用工程 exports 目录"
 
 
@@ -384,7 +394,7 @@ class SubtitleExportDialog(QDialog):
         chips.addWidget(self.translation_first)
         chips.addStretch(1)
         language.addLayout(chips)
-        self.language_row.setVisible(bool((getattr(project, "generation_metadata", None) or {}).get("translations")))
+        self.language_row.setVisible(has_translations(project))
         body.addWidget(self.language_row)
 
         body.addWidget(section_label("说话人"))
@@ -520,7 +530,7 @@ class SubtitleExportDialog(QDialog):
         return frozenset(name for name, box in self.format_checks.items() if box.isChecked())
 
     def _selected_layers(self) -> tuple[str, ...]:
-        if not self.language_row.isVisibleTo(self):
+        if self.language_row.isHidden():
             return ()
         return tuple(layer for layer, button in self.language_checks.items() if button.isChecked())
 
@@ -671,7 +681,7 @@ class SubtitleExportDialog(QDialog):
         bind_text(self.done_title, "已导出并检查 {count} 个文件", count=len(self.artifacts))
         notes = [tr(reason)]
         if layered is not None and layered.missing_translation_count:
-            notes.append(tr("{count} 条没有译文（双语只写原文）", count=layered.missing_translation_count))
+            notes.append(tr("{count} 条没有译文：译文文件跳过，双语保留原文", count=layered.missing_translation_count))
         if layered is not None and layered.needs_update_count:
             notes.append(tr("{count} 条译文需要更新", count=layered.needs_update_count))
         self.done_note.setText(" · ".join(notes))
@@ -832,6 +842,7 @@ class StudioExportWorkspace(QWidget):
     progress_updated = Signal(int, dict)
     trace_line = Signal(str)
     renderer_install_finished = Signal(bool, str)
+    run_event = Signal(int, str, object)
 
     def __init__(self, project: SubtitleProject, ass_path: str, project_path: str | Path | None = None,
                  parent=None, preview_widget: QWidget | None = None):
@@ -851,11 +862,15 @@ class StudioExportWorkspace(QWidget):
         if isinstance(overrides, dict):
             self._saved_export_preferences.update(overrides)
         self._cancelled, self._running = threading.Event(), False
+        self._released = False
+        self._run_generation = 0
         self._worker, self._last_job = None, None
         self._last_failure, self._started_at, self._last_preview_sync_ms = "", 0.0, -10_000
         self._preview_volume_before_export = None
         self._preview_widget = preview_widget
+        self._preview_signals_connected = False
         origin_parent = preview_widget.parentWidget() if preview_widget else None
+        self._preview_origin_parent = origin_parent
         self._preview_origin_layout = origin_parent.layout() if origin_parent else None
         self._preview_origin_index = self._preview_origin_layout.indexOf(preview_widget) if self._preview_origin_layout else -1
         self._preview_origin_cell = (
@@ -865,7 +880,12 @@ class StudioExportWorkspace(QWidget):
         )
         self.setObjectName("studioExportWorkspace")
         self._compact_layout = None
-        self._build()
+        try:
+            self._build()
+        except BaseException:
+            self.release_preview()
+            self.deleteLater()
+            raise
         # Polish the complete subtree once, just like a later palette refresh.
         self._apply_workspace_theme()
         self._apply_responsive_layout()
@@ -875,6 +895,7 @@ class StudioExportWorkspace(QWidget):
         self.progress_updated.connect(self._apply_progress)
         self.trace_line.connect(self._append_running_log)
         self.renderer_install_finished.connect(self._renderer_install_done)
+        self.run_event.connect(self._receive_run_event)
         self._update_range()
         self._progress_target = 0
         self._progress_display = 0.0
@@ -983,7 +1004,11 @@ class StudioExportWorkspace(QWidget):
         from ..diagnostics.editor_diagnostics import safe
         legacy_event('video.export.'+str(event),record,module='exports',project_id=getattr(getattr(self,'project',None),'project_id',None))
         record=safe(technical(record))
-        self.trace_line.emit(f"[{record['time']}] {record['event']}  {json.dumps(record, ensure_ascii=False, default=str)}")
+        if not self._released:
+            try:
+                self.trace_line.emit(f"[{record['time']}] {record['event']}  {json.dumps(record, ensure_ascii=False, default=str)}")
+            except RuntimeError:
+                pass  # A released export may still be draining its own worker.
 
     def _combo(self, items) -> StudioComboBox:
         combo = field_width(StudioComboBox(), "compact", size="compact")
@@ -1300,8 +1325,7 @@ class StudioExportWorkspace(QWidget):
         self.subtitle_translation_first.setProperty("softSwitch", True)
         self.subtitle_translation_first.setChecked(True)
         language_flow.addWidget(self.subtitle_translation_first)
-        has_translations = bool((getattr(self.project, "generation_metadata", None) or {}).get("translations"))
-        self.subtitle_language_row.setVisible(has_translations)
+        self.subtitle_language_row.setVisible(has_translations(self.project))
         column.addWidget(self.subtitle_language_row)
 
         self.subtitle_speaker_group = QButtonGroup(self)
@@ -1501,7 +1525,7 @@ class StudioExportWorkspace(QWidget):
         layered = None
         try:
             layers = [layer for layer, control in getattr(self, "subtitle_language_checks", {}).items()
-                      if control.isChecked()] if self.subtitle_language_row.isVisible() else []
+                      if control.isChecked()] if not self.subtitle_language_row.isHidden() else []
             if layers and "srt" in formats:
                 from .studio_subtitle_export import export_language_layers
                 # Japanese / Chinese / bilingual SRT (+ JSON with both texts and word timing);
@@ -1531,7 +1555,7 @@ class StudioExportWorkspace(QWidget):
         bind_text(self.subtitle_export_status, '已导出并验证 {value0} 个文件 · {destination_reason}', value0=len(artifacts), destination_reason=tr(destination_reason))
         if layered is not None and (layered.missing_translation_count or layered.needs_update_count):
             bind_text(self.subtitle_export_status,
-                      '已导出并验证 {value0} 个文件 · {destination_reason} · {missing} 条没有译文（双语只写原文）· {stale} 条译文需要更新',
+                      '已导出并验证 {value0} 个文件 · {destination_reason} · {missing} 条没有译文：译文文件跳过，双语保留原文 · {stale} 条译文需要更新',
                       value0=len(artifacts), destination_reason=tr(destination_reason),
                       missing=layered.missing_translation_count, stale=layered.needs_update_count)
         self.subtitle_open_folder.show()
@@ -1804,6 +1828,7 @@ class StudioExportWorkspace(QWidget):
             self.preview_host_layout.addWidget(self._preview_widget); self._preview_widget.show()
             self._preview_widget.position_changed.connect(self._preview_position_changed)
             self._preview_widget.playback_state_changed.connect(self._preview_state_changed)
+            self._preview_signals_connected = True
         else:
             self.preview = QLabel("当前视频预览\n播放器将在 Studio 中复用"); self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.preview.setObjectName("exportPreviewFallback")
@@ -2128,7 +2153,21 @@ class StudioExportWorkspace(QWidget):
         # synchronously on the UI thread when the cache is cold.
         choices = cached_encoder_choices(self.ffmpeg, codec) or []
         software = {"h264": "libx264", "hevc": "libx265", "av1": "libaom-av1"}[codec]
-        return software if software in choices or not choices else choices[0]
+        # 2026-10-28 (users: burning is slow and unsteady): "auto" took the
+        # software encoder whenever it existed. The HEVC / AV1 presets are only
+        # offered when a hardware encoder exists, yet ran libx265 / libaom-av1;
+        # H.264 never used a verified NVENC. Now: the capability order
+        # (hardware first, only encoders whose test encode passed; SVT-AV1
+        # before libaom). H.264 takes NVENC only: measured on real 1080p60
+        # game footage it is 2-4.6x faster than x264 medium at the same SSIM
+        # (AUTO_NVENC_CQ_OFFSET); Quick Sync / AMF H.264 were not measured and
+        # stay a manual choice. A hardware failure still falls back to software.
+        if not choices:
+            return software
+        if codec == "h264":
+            return next((name for name in choices if name.endswith("_nvenc")),
+                        software if software in choices else choices[0])
+        return choices[0]
 
     def _encoder_changed(self, *_args) -> None:
         if not hasattr(self, "rate_control"):
@@ -2539,7 +2578,7 @@ class StudioExportWorkspace(QWidget):
         self.filename_suffix.confirm()
 
     def closeEvent(self, event):
-        self._confirm_affixes()
+        self.release_preview()
         super().closeEvent(event)
 
     def _choose_directory(self) -> None:
@@ -2555,6 +2594,10 @@ class StudioExportWorkspace(QWidget):
         # Presets update visible controls; the visible mode owns execution.
         quality = self.quality_value.value()
         rate_mode = str(self.rate_control.currentData() or ('crf' if encoder.startswith('lib') else 'cq'))
+        if (str(self.encoder.currentData() or "auto") == "auto" and codec == "h264"
+                and encoder.endswith("_nvenc") and rate_mode in {"cq", "crf"}):
+            # The H.264 preset numbers were always run as x264 CRF; keep that picture.
+            quality += AUTO_NVENC_CQ_OFFSET
         resolution = self.resolution.currentData() or (0, 0)
         width, height = (self.custom_resolution_width.value(), self.custom_resolution_height.value()) if resolution[0] < 0 else resolution
         fps_value = float(self.custom_fps.value()) if float(self.fps.currentData() or 0.0) < 0 else float(self.fps.currentData() or 0.0)
@@ -2624,6 +2667,8 @@ class StudioExportWorkspace(QWidget):
         )
 
     def _start(self) -> None:
+        if self._released:
+            return
         from .audio_export_ui import is_audio, start_audio
         if is_audio(self): return start_audio(self)
         self._export_trace("button_clicked")
@@ -2702,7 +2747,10 @@ class StudioExportWorkspace(QWidget):
             self._pending_export_preview = None
         self.render_preview.clear()
         bind_text(self.render_preview_time, '等待首个处理帧')
-        self._cancelled.clear(); self._last_preview_sync_ms = -10_000
+        self._cancelled = threading.Event()
+        self._run_generation += 1
+        generation, cancellation = self._run_generation, self._cancelled
+        self._last_preview_sync_ms = -10_000
         bind_text(self.processing_output, '输出：{output}', output=output)
         self._progress_target = 0; self._progress_display = 0.0; self._progress_indeterminate = True
         self._show_advanced_stage(bool(self._advanced_route))
@@ -2715,27 +2763,61 @@ class StudioExportWorkspace(QWidget):
         submitted_project=self._export_project
         submitted_job=job
         submitted_advanced=self._advanced_route
+        def deliver(kind, payload=None):
+            # Only the UI thread consumes run state. This worker owns its event
+            # even if another export has started or its QWidget was destroyed.
+            try:
+                self.run_event.emit(generation, kind, payload)
+            except RuntimeError:
+                pass
         def worker():
             try:
                 if submitted_advanced:
                     result = AdvancedRendererBackend().render(
-                        submitted_project, self.ffmpeg, submitted_job, progress=self._progress,
-                        cancelled=self._cancelled.is_set, trace=self._export_trace,
+                        submitted_project, self.ffmpeg, submitted_job, progress=lambda data: deliver('progress', data),
+                        cancelled=cancellation.is_set, trace=self._export_trace,
                     )
                 else:
                     result = run_render_job(
-                        self.ffmpeg, submitted_job, progress=self._progress,
-                        cancelled=self._cancelled.is_set, trace=self._export_trace,
+                        self.ffmpeg, submitted_job, progress=lambda data: deliver('progress', data),
+                        cancelled=cancellation.is_set, trace=self._export_trace,
                     )
-                self.render_succeeded.emit(str(result))
-            except InterruptedError: self.render_cancelled.emit()
+                deliver('success', str(result))
+            except InterruptedError: deliver('cancelled')
             except Exception as exc:
                 stack = traceback.format_exc()
                 self._export_trace("EXPORT_FAILURE", reason=str(exc), traceback=stack)
-                self.render_failed.emit(f"{exc}\n\n{stack}")
+                deliver('failure', f"{exc}\n\n{stack}")
         self._worker = threading.Thread(target=worker, daemon=True, name="studio-export")
         self._export_trace("worker_started", {"name": self._worker.name})
-        self._worker.start()
+        try:
+            self._worker.start()
+        except Exception as exc:
+            self._show_failure(str(exc))
+
+    def _receive_run_event(self, generation: int, kind: str, payload: object) -> None:
+        if self._released or generation != self._run_generation or not self._running:
+            return
+        if kind == 'progress':
+            self._progress(payload)
+        elif kind == 'success':
+            self.render_succeeded.emit(str(payload))
+        elif kind == 'cancelled':
+            self.render_cancelled.emit()
+        elif kind == 'failure':
+            self.render_failed.emit(str(payload))
+
+    def _finish_run(self) -> None:
+        self._running = False
+        self._progress_clock.stop()
+        with self._preview_lock:
+            self._pending_export_preview = None
+        if self._preview_widget is not None:
+            pause = getattr(self._preview_widget, 'set_paused', None)
+            if callable(pause):
+                try: pause(True)
+                except RuntimeError: pass
+        self._move_preview_to_setup()
 
     def _visible_stage_specs(self) -> list[tuple[str, str]]:
         from .audio_export_ui import is_audio
@@ -2767,6 +2849,8 @@ class StudioExportWorkspace(QWidget):
             self.progress_updated.emit(-1, data)
 
     def _apply_progress(self, value: int, payload: dict) -> None:
+        if self._released:
+            return
         self._progress_payload = dict(payload)
         from .export_progress import ExportProgress
         if not hasattr(self, '_work_progress'):
@@ -2803,7 +2887,8 @@ class StudioExportWorkspace(QWidget):
 
     def _receive_export_preview(self, image, milliseconds, phase):
         with self._preview_lock:
-            self._pending_export_preview = (image, milliseconds, phase)
+            if not self._released:
+                self._pending_export_preview = (image, milliseconds, phase)
 
     def retranslate_ui(self):
         self._refresh_context()
@@ -2908,7 +2993,10 @@ class StudioExportWorkspace(QWidget):
         except Exception as exc: self.status.setText(str(exc))
 
     def _show_success(self, path: str) -> None:
-        self._running = False; self._move_preview_to_setup(); output = Path(path); self._settings.setValue("render/last_export_directory", str(output.parent))
+        if self._released:
+            return
+        self._finish_run()
+        output = Path(path); self._settings.setValue("render/last_export_directory", str(output.parent))
         self.success_name.setText(output.name)
         audio_output = getattr(getattr(self._last_job,"settings",None),"output_kind", "video") == "audio"
         bind_text(self.success_page.title,"音频导出完成" if audio_output else "压制完成")
@@ -2975,18 +3063,36 @@ class StudioExportWorkspace(QWidget):
         else:
             panel.error.hide()
         self._success_output = output
+        panel.painted = False   # ExportSuccessPanel.paintEvent sets it
         self.pages.setCurrentWidget(self.success_page)
         panel.play.setFocus()
         self._export_trace("success_page_shown", {"output": str(output)})
         if not getattr(self, "_completion_notified", False):
             self._completion_notified = True
-            from .export_notification import notify_export_completed
-            try:
-                notify_export_completed(self, output)
-            except Exception as exc:
-                # OS notification failure must not turn a published video into
-                # an export failure or hide its completion receipt.
-                self._export_trace("completion_notification_failed", {"error": str(exc)})
+            # 2026-10-27 (user report: 压制完成 arrived while the window still
+            # showed 97%): the notification creates a tray icon and calls into
+            # Explorer synchronously (0.24 s on the real desktop here, before
+            # the result page could paint). Show the page first.
+            after_paint = getattr(panel, "call_after_paint", None)
+            if callable(after_paint):
+                after_paint(lambda: self._notify_completed(output))
+            else:
+                StudioExportWorkspace._notify_completed(self, output)
+        # Not reproduced here: a result page that has not painted 3 s later is
+        # written down with the window's state, so the next support bundle
+        # tells a blocked GUI thread (watchdog dump) from a window that stopped
+        # repainting.
+        from .export_success import report_unpainted_success
+        QTimer.singleShot(3000, panel, lambda: report_unpainted_success(self, panel, output))
+
+    def _notify_completed(self, output: Path) -> None:
+        from .export_notification import notify_export_completed
+        try:
+            notify_export_completed(self, output)
+        except Exception as exc:
+            # OS notification failure must not turn a published video into
+            # an export failure or hide its completion receipt.
+            self._export_trace("completion_notification_failed", {"error": str(exc)})
 
     def _open_success_video(self) -> None:
         output = getattr(self, "_success_output", None)
@@ -3006,7 +3112,10 @@ class StudioExportWorkspace(QWidget):
             bind_text(self.success_page.error, '无法打开资源管理器；可复制输出位置后手动打开。');self.success_page.error.show()
 
     def _show_failure(self, message: str) -> None:
-        self._running, self._last_failure = False, str(message); self._move_preview_to_setup()
+        if self._released:
+            return
+        self._finish_run()
+        self._last_failure = str(message)
         phase = str(getattr(self,'_progress_payload',{}).get('stage_label') or '准备工程')
         detail = str(message).strip().split('\n\n',1)[0] or '未返回可读原因'
         detail = detail.split('（cue.style_id=',1)[0]
@@ -3042,7 +3151,9 @@ class StudioExportWorkspace(QWidget):
         self.details.setPlainText(detail)
 
     def _show_cancelled(self) -> None:
-        self._running = False; self._move_preview_to_setup()
+        if self._released:
+            return
+        self._finish_run()
         diagnostics = (getattr(getattr(self, '_last_job', None), 'export_context', {}) or {}).get('diagnostics_path')
         if diagnostics:
             bind_text(self.status, '导出已取消，未生成可交付文件。诊断目录：{path}', path=diagnostics)
@@ -3069,6 +3180,8 @@ class StudioExportWorkspace(QWidget):
         self.expert_card.set_expanded(expanded)
 
     def _move_preview_to_render(self) -> None:
+        if self._released:
+            return
         if not self._preview_widget or self.render_preview_layout.indexOf(self._preview_widget) >= 0: return
         controller = getattr(self._preview_widget, "controller", None)
         if controller is not None:
@@ -3083,6 +3196,8 @@ class StudioExportWorkspace(QWidget):
         self.render_preview.show()
 
     def _move_preview_to_setup(self) -> None:
+        if self._released:
+            return
         if not self._preview_widget or self.preview_host_layout.indexOf(self._preview_widget) >= 0: return
         self.render_preview_layout.removeWidget(self._preview_widget)
         self.preview_host_layout.addWidget(self._preview_widget); self._preview_widget.show()
@@ -3093,20 +3208,48 @@ class StudioExportWorkspace(QWidget):
         self._preview_volume_before_export = None
 
     def release_preview(self) -> None:
-        self._confirm_affixes()
-        if not self._preview_widget or not self._preview_origin_layout or self._preview_origin_layout.indexOf(self._preview_widget) >= 0: return
-        self.preview_host_layout.removeWidget(self._preview_widget); self.render_preview_layout.removeWidget(self._preview_widget)
-        if self._preview_origin_cell is not None:
-            self._preview_origin_layout.addWidget(self._preview_widget, *self._preview_origin_cell)
-        else:
-            self._preview_origin_layout.insertWidget(max(0, self._preview_origin_index), self._preview_widget, 1)
-        for signal, callback in ((self._preview_widget.position_changed, self._preview_position_changed),
-                                 (self._preview_widget.playback_state_changed, self._preview_state_changed)):
+        if self._released:
+            return
+        self._released = True
+        self._run_generation += 1
+        self._cancelled.set()
+        if hasattr(self, '_progress_clock'):
+            self._progress_clock.stop()
+        if hasattr(self, 'filename_prefix'):
+            try: self._confirm_affixes()
+            except (OSError, RuntimeError): pass
+        preview, self._preview_widget = self._preview_widget, None
+        if preview is None:
+            return
+        pause = getattr(preview, 'set_paused', None)
+        if callable(pause):
+            try: pause(True)
+            except RuntimeError: pass
+        controller = getattr(preview, 'controller', None)
+        if controller is not None and self._preview_volume_before_export is not None:
+            try: controller.set_volume(self._preview_volume_before_export)
+            except RuntimeError: pass
+        self._preview_volume_before_export = None
+        for signal, callback in ((preview.position_changed, self._preview_position_changed),
+                                 (preview.playback_state_changed, self._preview_state_changed)):
+            if not self._preview_signals_connected:
+                break
             try:
                 signal.disconnect(callback)
             except (RuntimeError, TypeError):
                 pass
-        self._preview_widget.show()
+        self._preview_signals_connected = False
+        if self._preview_origin_layout is not None and self._preview_origin_layout.indexOf(preview) < 0:
+            current_parent = preview.parentWidget()
+            if current_parent is not None and current_parent.layout() is not None:
+                current_parent.layout().removeWidget(preview)
+            if self._preview_origin_cell is not None:
+                self._preview_origin_layout.addWidget(preview, *self._preview_origin_cell)
+            else:
+                self._preview_origin_layout.insertWidget(max(0, self._preview_origin_index), preview, 1)
+        elif self._preview_origin_layout is None:
+            preview.setParent(self._preview_origin_parent)
+        preview.show()
 
     def _back(self) -> None:
         self._confirm_affixes()

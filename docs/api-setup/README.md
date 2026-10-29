@@ -7,11 +7,11 @@
 | 你的情况 | 建议 | 教程 |
 | --- | --- | --- |
 | 没有显卡，**只想填一把 Key** 就开始 | MOSS-Transcribe-Diarize Pro 云端（MOSI）：直接上传本地音频，有说话人；只有句段时间（要逐字时间再装本地对齐模型） | [教程](mosi-moss-pro.zh-CN.md) |
-| 需要字/词级时间，愿意设置一次 OSS 私有存储 | 阿里云百炼 · 录音文件识别（中国站）或 Qwen Cloud（国际站，新加坡） | [百炼](bailian-filetrans.zh-CN.md)、[Qwen Cloud](qwen-cloud-filetrans.zh-CN.md) |
+| 需要字/词级时间 | 阿里云百炼 · 录音文件识别，或 Qwen 官方 API（中国站千问AI平台 / 国际站 Qwen Cloud）；默认不用建 OSS | [百炼](bailian-filetrans.zh-CN.md)、[千问AI平台](qianwen-filetrans.zh-CN.md)、[Qwen Cloud](qwen-cloud-filetrans.zh-CN.md) |
 | 已有讯飞 / Groq / OpenAI 账号 | 讯飞 Spark-ASR 2.0（每约 55 秒一段文字）、Groq Whisper（句段时间）、OpenAI（默认模型不回时间戳） | [讯飞](iflytek-spark.zh-CN.md)、[Groq](groq.zh-CN.md)、[OpenAI](openai-transcribe.zh-CN.md) |
 | 进阶：OpenRouter、Azure OpenAI 部署、自定义兼容接口 | 需要自己判断模型与部署；兔白未用真实密钥实测 | [OpenRouter](openrouter.zh-CN.md)、[Azure](azure.zh-CN.md)、[自定义](custom-asr.zh-CN.md) |
 
-百炼和 Qwen Cloud 的录音文件识别只接受“服务商能读到的音频网址”。正式使用要你自己的 OSS 私有存储（兔白上传、生成限时签名链接、取得结果后删除）。服务商的临时上传官方写明“请勿用于生产环境”，兔白只把它当作明确选择的“仅供试用”。
+百炼、千问AI平台和 Qwen Cloud 的录音文件识别只接受“服务商能读到的音频网址”。2026-10-28 起兔白默认把音频传到服务商提供的免费临时空间（48 小时后自动删除），不用建 OSS；官方写明临时空间“请勿用于生产环境”（指服务器那种高并发批量处理，桌面识别每次只传一个文件）。想自己保管音频或经常大量识别，可以改选自己的 OSS 私有存储（兔白上传、生成限时签名链接、取得结果后删除）。
 
 ## 文字 AI（断句、校对、翻译；只发送字幕文字）
 

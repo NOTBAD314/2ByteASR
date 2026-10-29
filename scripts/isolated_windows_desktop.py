@@ -1,4 +1,4 @@
-"""Run owned GUI verification on a new desktop; never switch the user's desktop."""
+"""Run owned GUI verification without switching the user's desktop."""
 import ctypes
 from ctypes import wintypes as W
 import os
@@ -8,7 +8,7 @@ import time
 import uuid
 
 
-def run_on_desktop(command, *, cwd, env, output, timeout):
+def run_on_desktop(command, *, cwd, env, output, timeout, desktop_name=None):
     if os.name != 'nt':
         raise RuntimeError('Windows desktop isolation is required')
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
@@ -29,7 +29,7 @@ def run_on_desktop(command, *, cwd, env, output, timeout):
         ctypes.c_void_p,W.LPCWSTR,ctypes.POINTER(STARTUPINFO),ctypes.POINTER(PROCESSINFO)]
     kernel.GetExitCodeProcess.argtypes=[W.HANDLE,ctypes.POINTER(W.DWORD)]
     kernel.CloseHandle.argtypes=[W.HANDLE]
-    desktop_name='2ByteASR-verification-'+uuid.uuid4().hex
+    desktop_name=desktop_name or '2ByteASR-verification-'+uuid.uuid4().hex
     desktop=user.CreateDesktopW(desktop_name,None,None,0,0x01ff,None)
     if not desktop:raise ctypes.WinError(ctypes.get_last_error())
     info=PROCESSINFO()

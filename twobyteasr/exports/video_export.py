@@ -102,6 +102,10 @@ def _video_frame_clock(ffmpeg: Path, job):
     """One output sampling clock for preflight and the actual raster pass."""
     graph = job.video_graph
     fps = float(job.settings.fps or graph.get("fps") or 0.)
+    if not job.settings.fps and str(job.media_path).lower().endswith('.gif'):
+        from ..media.animated_gif import prepare_gif, sampling_fps
+        _, metadata = prepare_gif(job.media_path)
+        fps = sampling_fps(metadata)
     if fps <= 0:
         from ..system.processes import run_hidden_subprocess
         probe = run_hidden_subprocess([str(ffmpeg.with_name("ffprobe.exe" if ffmpeg.suffix == ".exe" else "ffprobe")),

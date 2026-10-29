@@ -45,6 +45,12 @@ class SentenceRefineWorker(QThread):
 
 
 class StudioSentenceRefineMixin:
+    def _persist_refine_status(self):
+        if self.project is None:return
+        from ..projects.studio_runtime_state import state_for,DirtyDomain
+        with state_for(self.project).transaction(self.project,action_id='记录断句任务状态',
+                dirty=DirtyDomain.PROJECT_METADATA|DirtyDomain.AUTOSAVE,snapshot_cues=False):pass
+
     def _refined_cue_id_set(self) -> set[str]:
         state = (self.project.studio_state if self.project else {}).get("ai_sentence_refine") or {}
         return {str(item) for item in state.get("processed_cue_ids", [])}
@@ -58,6 +64,7 @@ class StudioSentenceRefineMixin:
         state["processed_cue_ids"] = sorted(known)
         state["last_run_note"] = "拆分段时间为估算值（无词级证据）" if getattr(self, "_refine_last_estimated", False) else ""
         self.project.studio_state["ai_sentence_refine"] = state
+        self._persist_refine_status()
 
     def _collect_refine_scope(self, whole_project: bool):
         if self.project is None:
@@ -142,6 +149,7 @@ class StudioSentenceRefineMixin:
                 failed_cue_ids=sorted(getattr(self, '_refine_origin_cues', {})))
         bind_text(self.save_state, tr('AI 断句失败，已保留原文：{value0}', value0=message[:80]))
         self._studio_trace("SentenceRefineFailed", message=message[:200])
+        self._persist_refine_status()
 
     def _apply_sentence_refine(self, outcome, cues) -> None:
         self._refine_worker = None
@@ -193,6 +201,7 @@ class StudioSentenceRefineMixin:
             state['last_status'] = 'partial' if replacements else 'failed'
         if timing_skipped:
             state['application_errors'] = dict(timing_skipped)
+        self._persist_refine_status()
         if not replacements:
             if outcome.failed_cue_ids or stale:
                 bind_text(self.save_state, 'AI 断句未完成：{value0} 条保留原文，可从字幕菜单仅重试失败范围', value0=len(set(outcome.failed_cue_ids)|stale))

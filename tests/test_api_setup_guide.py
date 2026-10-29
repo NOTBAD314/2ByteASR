@@ -55,9 +55,11 @@ def test_every_guide_covers_the_eight_required_parts():
         # Website, API Host, Base URL and full endpoint are named separately.
         for kind in ('API Host', 'Base URL', '完整请求 Endpoint'):
             assert kind in text
-    for name in ('bailian-filetrans.zh-CN.md', 'qwen-cloud-filetrans.zh-CN.md'):
+    for name in ('bailian-filetrans.zh-CN.md', 'qwen-cloud-filetrans.zh-CN.md', 'qianwen-filetrans.zh-CN.md'):
         text = (ROOT / 'docs' / 'api-setup' / name).read_text(encoding='utf-8')
-        assert '请勿用于生产环境' in text and '仅供试用' in text  # ADR 0112: the trial upload is labelled
+        # 2026-10-28: the temporary space is the default, its official limit quoted; own OSS stays a choice.
+        assert '不用建 OSS' in text and '请勿用于生产环境' in text and '自己的 OSS' in text, name
+        assert '仅供试用' not in text, name
 
 
 def test_guide_links_are_official_and_dated():
@@ -73,14 +75,15 @@ def test_guide_links_are_official_and_dated():
 
 
 class Host:
-    def __init__(self, models=None):
+    def __init__(self, models=None, oss=('', '')):
         self.saved = []
         self.models = models or {}
+        self.oss = oss
 
     def make(self):
         from twobyteasr.providers.api_setup_dialog import SetupHost
         return SetupHost(settings=lambda: {'models': dict(self.models)}, saved_key=lambda provider, url: '',
-                         saved_oss_credentials=lambda: ('', ''),
+                         saved_oss_credentials=lambda: self.oss,
                          save=lambda provider, values, primary: (self.saved.append((provider, values, primary))
                                                                  or (True, '已保存。')))
 
@@ -142,15 +145,16 @@ def test_bailian_page_turns_any_pasted_host_into_exact_addresses(qapp):
     assert 'https://llm-abc.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/asr/transcription' in text
     assert '/v1/v1' not in text and 'Base URL' in text and 'API Host' in text
     dialog._fields['api_key'].setText('sk-new')
-    # 2026-10-14 (ADR 0112): the regular route is the user's own OSS; the
-    # provider's temporary upload is never preselected (official: not for production).
+    # A saved bucket whose AccessKey is gone opens on own OSS (with “建 OSS”), so the missing fields show.
     assert dialog._value('filetrans_upload') == 'own_oss'
+    assert [step.role for step in dialog._walk] == ['account', 'key', 'storage', 'paste']
     assert dialog.collected()['oss_bucket'] == '2byte'
     upload = dialog._fields['filetrans_upload']
     upload.setCurrentIndex(upload.findData('provider_temporary'))
-    assert 'oss_bucket' not in dialog.collected()  # hidden fields are not part of a trial setup
-    trial_widgets = dialog._field_rows['filetrans_upload_trial'][1]
-    assert '请勿用于生产环境' in trial_widgets[0].text()
+    assert 'oss_bucket' not in dialog.collected()  # hidden fields are not part of this setup
+    note = dialog._field_rows['filetrans_upload_note'][1][0]
+    assert '48 小时' in note.text() and '自己的 OSS' in note.text()
+    assert [step.role for step in dialog._walk] == ['account', 'key', 'paste']
     upload.setCurrentIndex(upload.findData('own_oss'))
     dialog._fields['oss_bucket'].setText('my-bucket')
     dialog._save(True)
@@ -173,7 +177,9 @@ def test_qwen_cloud_page_needs_only_a_key_and_rejects_other_hosts(qapp, monkeypa
     assert not dialog._fields['url'].isEnabled()  # prefilled official address, unlocked only on request
     assert dialog.address_view in dialog._locked_widgets  # its breakdown appears only after “修改”
     assert 'home.qwencloud.com' in dialog.address_view.toolTip()
-    assert dialog._value('filetrans_upload') == 'own_oss'  # Qwen Cloud also needs a URL route (ADR 0112)
+    # 2026-10-28: the provider's temporary space by default; no OSS step.
+    assert dialog._value('filetrans_upload') == 'provider_temporary'
+    assert [step.role for step in dialog._walk] == ['account', 'topup', 'key', 'paste']
     dialog._fields['api_key'].setText('sk-ws-abc')
     values = dialog.collected()
     assert values['url'] == 'https://maas.qwencloudapi.com/api/v1/services/audio/asr/transcription'
@@ -210,39 +216,211 @@ def catalog_first_asr_guide():
     return catalog.ASR_GUIDES[0]
 
 
-def test_upload_route_is_never_chosen_for_the_user():
+def test_upload_route_defaults_to_the_providers_temporary_space():
+    """2026-10-28 (the user): no OSS by default; own OSS stays a choice and an existing setup keeps it."""
     from twobyteasr.providers.api_setup_catalog import resolve_upload_mode, upload_mode_label
-    assert resolve_upload_mode({}, 'qwen31_filetrans') == 'missing'
+    assert resolve_upload_mode({}, 'qwen31_filetrans') == 'provider_temporary'
+    assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': ''}, 'qwen_cloud_filetrans',
+                               has_oss_credentials=True) == 'provider_temporary'
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': 'b'}, 'qwen_cloud_filetrans',
                                has_oss_credentials=False) == 'missing'
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': 'b'}, 'qwen_cloud_filetrans',
                                has_oss_credentials=True) == 'own_oss'
-    assert resolve_upload_mode({'filetrans_upload': 'provider_temporary'}, 'qwen_cloud_filetrans') == 'provider_temporary'
-    assert '仅供试用' in upload_mode_label('provider_temporary') and '正式' in upload_mode_label('own_oss')
+    assert resolve_upload_mode({'filetrans_upload': 'own_oss'}, 'qwen31_filetrans') == 'own_oss'
+    assert resolve_upload_mode({'filetrans_upload': 'provider_temporary', 'oss_bucket': 'b'}, 'qwen31_filetrans',
+                               has_oss_credentials=True) == 'provider_temporary'
+    assert '48 小时' in upload_mode_label('provider_temporary') and 'OSS' in upload_mode_label('own_oss')
+    assert '仅供试用' not in upload_mode_label('provider_temporary')
 
 
-def test_missing_upload_route_stops_before_any_upload(monkeypatch):
+BAILIAN_URL = 'https://llm-abc.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/asr/transcription'
+
+
+def bailian_models(**extra):
+    return dict({'qwen_asr_api_provider': 'qwen31_filetrans', 'qwen_asr_api_protocol': 'dashscope_filetrans',
+                 'qwen_asr_api_url': BAILIAN_URL, 'filetrans_upload': 'auto', 'oss_bucket': ''}, **extra)
+
+
+BAILIAN_ENDPOINT = {'provider': 'qwen31_filetrans', 'model': 'qwen3-asr-flash-filetrans', 'api_key': 'sk-test',
+                    'url': BAILIAN_URL}
+
+
+def test_recognition_without_oss_uses_the_temporary_space(monkeypatch):
+    from twobyteasr.providers import llm_config
+    from twobyteasr.providers.cloud_api_worker import filetrans_storage
+    from twobyteasr.providers.dashscope_service import DashScopeTemporaryStorage
+    from twobyteasr.recognition.recognition_choices import cloud_asr_readiness, run_disclosure
+    monkeypatch.setattr(llm_config, 'read_asr_api_key', lambda provider, url: ('sk-test', 'saved'))
+    monkeypatch.setattr(llm_config, 'read_oss_credentials', lambda: ('', ''))
+    models = bailian_models()
+    assert cloud_asr_readiness(models) == (True, '')
+    storage = filetrans_storage({'settings': {'models': models}}, BAILIAN_ENDPOINT)
+    assert isinstance(storage, DashScopeTemporaryStorage)
+    assert storage.root == 'https://llm-abc.cn-beijing.maas.aliyuncs.com' and storage.model == 'qwen3-asr-flash-filetrans'
+    info = run_disclosure({'models': dict(models, primary_asr_backend='api',
+                                          qwen_asr_api_model='qwen3-asr-flash-filetrans'), 'switches': {}})
+    assert any('服务商临时空间' in item and '48 小时' in item for item in info['uploads'])
+
+
+def test_half_set_oss_stops_before_any_upload(monkeypatch):
     from twobyteasr.providers import llm_config
     from twobyteasr.providers.cloud_api_worker import filetrans_storage
     from twobyteasr.recognition.recognition_choices import cloud_asr_readiness, run_disclosure
     monkeypatch.setattr(llm_config, 'read_asr_api_key', lambda provider, url: ('sk-test', 'saved'))
     monkeypatch.setattr(llm_config, 'read_oss_credentials', lambda: ('', ''))
-    models = {'qwen_asr_api_provider': 'qwen31_filetrans', 'qwen_asr_api_protocol': 'dashscope_filetrans',
-              'qwen_asr_api_url': 'https://llm-abc.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/asr/transcription',
-              'filetrans_upload': 'auto', 'oss_bucket': ''}
+    models = bailian_models(oss_bucket='mine')
     ready, reason = cloud_asr_readiness(models)
-    assert not ready and 'MOSS Pro' in reason and '仅供试用' in reason
-    endpoint = {'provider': 'qwen31_filetrans', 'model': 'qwen3-asr-flash-filetrans', 'api_key': 'sk-test',
-                'url': models['qwen_asr_api_url']}
+    assert not ready and 'AccessKey' in reason and '服务商临时空间' in reason
     with pytest.raises(Exception) as caught:
-        filetrans_storage({'settings': {'models': models}}, endpoint)
+        filetrans_storage({'settings': {'models': models}}, BAILIAN_ENDPOINT)
     assert caught.value.problem.code == 'upload_route_missing'
     info = run_disclosure({'models': dict(models, primary_asr_backend='api',
                                           qwen_asr_api_model='qwen3-asr-flash-filetrans'), 'switches': {}})
     assert any('开始前会停下' in item for item in info['uploads'])
-    trial = run_disclosure({'models': dict(models, primary_asr_backend='api', filetrans_upload='provider_temporary',
-                                           qwen_asr_api_model='qwen3-asr-flash-filetrans'), 'switches': {}})
-    assert any('仅供试用' in item for item in trial['uploads'])
+
+
+def test_own_oss_setup_keeps_its_route(monkeypatch):
+    from twobyteasr.providers import llm_config
+    from twobyteasr.providers.cloud_api_worker import filetrans_storage
+    from twobyteasr.providers.temp_audio_storage import OssTemporaryStorage
+    from twobyteasr.recognition.recognition_choices import cloud_asr_readiness, run_disclosure
+    monkeypatch.setattr(llm_config, 'read_asr_api_key', lambda provider, url: ('sk-test', 'saved'))
+    monkeypatch.setattr(llm_config, 'read_oss_credentials', lambda: ('LTAIid', 'secret'))
+    for choice in ('auto', 'own_oss'):   # an older setup (auto) and one chosen in the guide
+        models = bailian_models(filetrans_upload=choice, oss_bucket='mine', oss_region='cn-hangzhou',
+                                oss_endpoint='https://oss-cn-hangzhou.aliyuncs.com')
+        assert cloud_asr_readiness(models) == (True, ''), choice
+        request = {'settings': {'models': models}, 'storage_credentials': ('LTAIid', 'secret')}
+        assert isinstance(filetrans_storage(request, BAILIAN_ENDPOINT), OssTemporaryStorage), choice
+        info = run_disclosure({'models': dict(models, primary_asr_backend='api',
+                                              qwen_asr_api_model='qwen3-asr-flash-filetrans'), 'switches': {}})
+        assert any('你的 OSS 私有存储：mine' in item for item in info['uploads']), choice
+
+
+def test_filetrans_walkthrough_has_no_oss_step_unless_chosen():
+    from twobyteasr.providers import api_setup_catalog as catalog
+    guides = [catalog.guide_for('qwen31_filetrans'), catalog.QIANWEN_FILETRANS_GUIDE, catalog.QWEN_SITE_GUIDES['intl']]
+    for guide in guides:
+        plain = catalog.walkthrough(guide)
+        assert 'storage' not in [step.role for step in plain] and plain[-1].title == '把 Key 贴到这里', guide.title
+        own = catalog.walkthrough(guide, own_storage=True)
+        assert [step.role for step in own][-2:] == ['storage', 'paste'], guide.title
+        assert 'oss.console' in own[-2].url and own[-1].title == '贴上 Key 和存储信息'
+        assert guide.tag == '不用建 OSS' and '不用建 OSS' in guide.role
+        upload = next(f for f in guide.fields if f.key == 'filetrans_upload')
+        assert upload.prefilled == 'provider_temporary'
+    assert [step.label for step in catalog.walkthrough(guides[0])] == ['注册登录', '创建 Key', '贴上检查']
+
+
+def test_choosing_own_oss_adds_the_oss_step_and_back(qapp):
+    from PySide6.QtWidgets import QLabel, QPushButton
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
+    host = Host()
+    dialog = ApiSetupDialog(None, host.make(), kind='asr', initial='qwen31_filetrans')
+    dialog.show()
+    qapp.processEvents()
+    assert [label.text() for label in dialog.progress.labels] == ['注册登录', '创建 Key', '贴上检查']
+    dialog._go(len(dialog._walk) - 1)
+    upload = dialog._fields['filetrans_upload']
+    assert upload.currentData() == 'provider_temporary'
+    assert not dialog._fields['oss_bucket'].isVisible() and not dialog.oss_button.isVisible()
+    assert dialog._field_rows['filetrans_upload_note'][1][0].isVisible()
+    link = dialog._field_rows['filetrans_upload_oss_step'][1][0]
+    assert not link.isVisible()
+
+    upload.setCurrentIndex(upload.findData('own_oss'))
+    qapp.processEvents()
+    assert [label.text() for label in dialog.progress.labels] == ['注册登录', '创建 Key', '建 OSS', '贴上检查']
+    assert dialog._page_kind == 'paste' and dialog._index == 3 and dialog.stack.currentWidget() is dialog._pages[3]
+    assert dialog._fields['oss_bucket'].isVisible() and dialog.oss_button.isVisible() and link.isVisible()
+    texts = [page.findChild(QLabel, 'apiSetupStepOf').text() for page in dialog._pages]
+    assert texts == ['第 1 步，共 4 步', '第 2 步，共 4 步', '第 3 步，共 4 步', '第 4 步，共 4 步']
+    assert dialog._pages[3].findChild(QLabel, 'apiSetupStepTitle').text() == '贴上 Key 和存储信息'
+    link.click()
+    assert dialog._page_kind == 'step' and dialog._index == 2
+    opener = dialog._pages[2].findChild(QPushButton, 'apiSetupOpen_2')
+    assert opener is not None and opener.text() == '打开 OSS 控制台' and 'oss.console.aliyun.com' in opener.toolTip()
+    dialog._finish_step(2)
+    assert dialog._page_kind == 'paste' and dialog._index == 3
+
+    upload.setCurrentIndex(upload.findData('provider_temporary'))
+    qapp.processEvents()
+    assert [label.text() for label in dialog.progress.labels] == ['注册登录', '创建 Key', '贴上检查']
+    assert len(dialog._pages) == len(dialog._done) == 3 and dialog._index == 2
+    assert dialog._pages[2].findChild(QLabel, 'apiSetupStepOf').text() == '第 3 步，共 3 步'
+    assert dialog._pages[2].findChild(QLabel, 'apiSetupStepTitle').text() == '把 Key 贴到这里'
+    dialog._back()
+    assert dialog._index == 1 and dialog._walk[1].role == 'key'
+
+    dialog._fields['api_host'].setText('llm-abc.cn-beijing.maas.aliyuncs.com')
+    dialog._fields['api_key'].setText('sk-new')
+    dialog._save(False)
+    provider, values, _primary = host.saved[-1]
+    assert provider == 'qwen31_filetrans' and values['filetrans_upload'] == 'provider_temporary'
+    assert not [key for key in values if key.startswith('oss_') and key != 'oss_auto_delete']
+    dialog.close()
+    dialog.deleteLater()
+
+
+def test_filetrans_guide_strings_are_translated_in_every_ui_language():
+    """2026-10-28: the new default's words (choices, note, link, tag, steps) exist in each catalog."""
+    from twobyteasr import i18n
+    from twobyteasr.providers import api_setup_catalog as catalog
+    guides = [catalog.guide_for('qwen31_filetrans'), catalog.QIANWEN_FILETRANS_GUIDE, catalog.QWEN_SITE_GUIDES['intl']]
+    texts = {catalog.TEMPORARY_UPLOAD_NOTE, catalog.OWN_OSS_STEP_LINK, catalog._UPLOAD_HINT,
+             catalog.MISSING_UPLOAD_MESSAGE, '音频会先上传到服务商临时空间（48 小时后由服务商自动删除），再提交识别。'}
+    texts |= {label for _value, label in catalog.UPLOAD_CHOICES}
+    for guide in guides:
+        texts |= {guide.role, guide.tag, guide.uploads}
+        if guide.key == 'qwen_cloud_filetrans':
+            texts.add(guide.account_note)   # 百炼's note did not change (and has no translation yet)
+    steps = set()
+    for guide in guides:
+        for own in (False, True):
+            for step in catalog.walkthrough(guide, own_storage=own):
+                steps |= {text for text in (step.label, step.title, step.note, step.action, *step.lines) if text}
+    cjk = re.compile(r'[一-鿿]')
+    for language in i18n.TRANSLATED_LANGUAGES:
+        table = i18n.language_table(language)
+        missing = sorted(text for text in texts | steps if text not in table)
+        assert not missing, (language, missing)
+        if language not in {'ja', 'zh-Hant'}:
+            # This round's words read without Chinese (step lines may quote a site's Chinese button names).
+            leftovers = sorted(text for text in texts if cjk.search(table[text]))
+            assert not leftovers, (language, leftovers)
+
+
+def test_filetrans_guide_reads_in_english(qapp, monkeypatch):
+    from PySide6.QtWidgets import QComboBox
+    from twobyteasr import i18n
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
+    monkeypatch.setattr(i18n, '_CURRENT_LANGUAGE_CACHE', 'en')
+    dialog = ApiSetupDialog(None, Host().make(), kind='asr', initial='qwen31_filetrans')
+    assert [label.text() for label in dialog.progress.labels] == ['Sign up', 'Create key', 'Paste & check']
+    upload = dialog._fields['filetrans_upload']
+    assert isinstance(upload, QComboBox) and upload.currentText().startswith("Provider's temporary storage")
+    assert [upload.itemText(i) for i in range(upload.count())][1].startswith('My own private Alibaba Cloud OSS')
+    note = dialog._field_rows['filetrans_upload_note'][1][0].text()
+    link = dialog._field_rows['filetrans_upload_oss_step'][1][0].text()
+    assert '48 hours' in note and link.startswith('No OSS yet?')
+    upload.setCurrentIndex(upload.findData('own_oss'))
+    assert [label.text() for label in dialog.progress.labels] == ['Sign up', 'Create key', 'Set up OSS', 'Paste & check']
+    dialog.deleteLater()
+
+
+def test_existing_oss_user_keeps_the_oss_step_and_route(qapp):
+    from twobyteasr.providers.api_setup_dialog import ApiSetupDialog
+    host = Host({'qwen_asr_api_provider': 'qwen31_filetrans', 'filetrans_upload': 'auto', 'oss_bucket': 'mine',
+                 'oss_region': 'cn-hangzhou'}, oss=('LTAIid', 'secret'))
+    dialog = ApiSetupDialog(None, host.make(), kind='asr', initial='qwen31_filetrans')
+    assert dialog._value('filetrans_upload') == 'own_oss'
+    assert [step.label for step in dialog._walk] == ['注册登录', '创建 Key', '建 OSS', '贴上检查']
+    dialog._fields['api_host'].setText('llm-abc.cn-beijing.maas.aliyuncs.com')
+    dialog._fields['api_key'].setText('sk-new')
+    dialog._save(False)
+    values = host.saved[-1][1]
+    assert values['filetrans_upload'] == 'own_oss' and values['oss_bucket'] == 'mine'
+    dialog.deleteLater()
 
 
 def test_text_provider_guide_opens_from_cli_service_id(qapp):
@@ -330,13 +508,16 @@ def test_walkthrough_steps_follow_the_official_pages():
     roles = {(g.kind, g.key): [s.role for s in catalog.walkthrough(g)] for g in catalog.ALL_GUIDES}
     # User (2026-10-18): MOSI gives free credit, so trying it needs no top-up step.
     assert roles[('asr', 'mosi_moss_pro')] == ['account', 'key', 'paste']
-    assert roles[('asr', 'qwen31_filetrans')] == ['account', 'key', 'storage', 'paste']
-    assert roles[('asr', 'qwen_cloud_filetrans')] == ['account', 'topup', 'key', 'storage', 'paste']
+    # User (2026-10-28): 录音文件识别 uses the provider's temporary space by default; “建 OSS” only for own OSS.
+    assert roles[('asr', 'qwen31_filetrans')] == ['account', 'key', 'paste']
+    assert roles[('asr', 'qwen_cloud_filetrans')] == ['account', 'topup', 'key', 'paste']
+    assert [s.role for s in catalog.walkthrough(catalog.guide_for('qwen31_filetrans'), own_storage=True)] == [
+        'account', 'key', 'storage', 'paste']
     assert roles[('text', 'deepseek')] == ['account', 'topup', 'key', 'fill']
     assert roles[('asr', 'custom')] == [] and roles[('text', 'cli_accounts')] == []
     for guide in catalog.ALL_GUIDES:
         links = {link.url for link in guide.links}
-        for step in catalog.walkthrough(guide):
+        for step in catalog.walkthrough(guide) + catalog.walkthrough(guide, own_storage=True):
             assert not step.url or step.url in links  # every button opens a catalogued official page
             # Lines are broken by hand: short phrases (about 16 Chinese characters), never one long sentence.
             widths = [sum(2 if ord(ch) > 0x2E7F else 1 for ch in line) for line in step.lines]

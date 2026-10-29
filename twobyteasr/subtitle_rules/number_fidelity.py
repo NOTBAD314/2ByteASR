@@ -261,6 +261,85 @@ def numeric_unsafe_cut_offsets(text, window=NUMERIC_CUT_WINDOW):
     return unsafe
 
 
+def numeric_spans(text):
+    """``(start, end)`` raw spans of every number-like run in ``text``, two characters or more.
+
+    Digit and numeral runs (百分之, 点 decimals and % included), ratios, clock
+    readings and approximate amounts, whether or not the context makes them
+    count as a number. A cut inside one shows the reader a different number
+    (20 -> 2｜0, 二十｜五, 百分之｜二十, 二比｜三, 五点｜三十分, 十｜几个).
+    """
+    text = str(text)
+    spans = {m.span() for pattern in (TOKEN, RATIO, CLOCK, APPROXIMATE) for m in pattern.finditer(text)}
+    return sorted((a, b) for a, b in spans if b - a > 1)
+
+
+def cuts_inside_numbers(segments, cues):
+    """The ``(start, end, cut)`` content offsets where a cue edge falls inside a number of the segments.
+
+    Spans are found per segment: a segment edge is where the source itself
+    already reads two numbers. The caller makes sure the cue text equals the
+    segment text, both in (start, end) order.
+    """
+    from .text_rules import content_exact
+    spans, base = [], 0
+    for segment in sorted(segments, key=lambda s: (s.start, s.end)):
+        text = str(segment.text)
+        for a, b in numeric_spans(text):
+            start, end = base + len(content_exact(text[:a])), base + len(content_exact(text[:b]))
+            if end - start > 1:
+                spans.append((start, end))
+        base += len(content_exact(text))
+    cuts, offset = [], 0
+    for cue in sorted(cues, key=lambda c: (c.start, c.end))[:-1]:
+        offset += len(content_exact(cue.text))
+        cuts.append(offset)
+    return [(start, end, cut) for cut in cuts for start, end in spans if start < cut < end]
+
+
+def _placed_events(text, base=0):
+    from .text_rules import content_exact
+    return {(base + len(content_exact(text[:e.start])), base + len(content_exact(text[:e.end])), e.value)
+            for e in numeric_events(text)}
+
+
+def cues_read_source_numbers(segments, cues):
+    """True when the cues show the segments' numbers, read with or without the neighbouring segment.
+
+    2026-10-28 (Mac user, a 98.5-minute lecture full of numbers): the final
+    check compared the numbers each line reads with the numbers each segment
+    reads, and context decides what counts (到/第 before a numeral, 个/分 after
+    it). A line across two segments - 看到 | 十九题 - read 19 where the
+    segments read nothing, and the whole file failed with no character changed
+    and no number cut. Here every number a line reads must be one the source
+    reads at the same characters, segment by segment or with the segments
+    joined as the lines join them; a number both readings agree on must still
+    be read by its line (第｜十九题, 一万｜金币, a lone 两 still fail); and no
+    line edge may fall inside a number. A joined reading that runs across a
+    segment edge does not count: it glues two numbers into one (the packaged
+    check of the same day: 1112134 | 50% read as 111213450%). The caller
+    makes sure the cue text equals the segment text.
+    """
+    from .text_rules import clean_subtitle_text, content_exact
+    ordered = sorted(segments, key=lambda s: (s.start, s.end))
+    alone, edges, base = set(), [], 0
+    for segment in ordered:
+        alone |= _placed_events(str(segment.text), base)
+        base += len(content_exact(segment.text))
+        edges.append(base)
+    joined_text = ''.join(clean_subtitle_text(segment.text) for segment in ordered)
+    joined = {event for event in _placed_events(joined_text) if not any(event[0] < edge < event[1] for edge in edges)} \
+        if len(content_exact(joined_text)) == base else set()
+    shown, lines, base = set(), [], 0
+    for cue in sorted(cues, key=lambda c: (c.start, c.end)):
+        shown |= _placed_events(str(cue.text), base)
+        lines.append((base, base + len(content_exact(cue.text))))
+        base += len(content_exact(cue.text))
+    kept = all(event in shown for event in alone & joined
+               if any(low <= event[0] and event[1] <= high for low, high in lines))
+    return kept and shown <= alone | joined and not cuts_inside_numbers(segments, cues)
+
+
 def preference():
     from ..recognition.run_context import get_runtime_context
     context=get_runtime_context()

@@ -356,6 +356,10 @@ def test_a_task_failed_by_a_block_it_could_not_fill_keeps_the_failure_cause():
     ("本段音频超过 MOSI 512 MB 上传限制。", "cloud_asr_input_limit"),
     ("热词不符合 MOSI 限制（最多 20 个，每个不超过 30 字）。", "cloud_asr_hotwords"),
     ("录音文件识别只接受“服务商能读到的音频网址”，还没有设置音频交给服务商的方式", "cloud_asr_upload_setup"),
+    # 2026-10-28: the only way left to stop there (a bucket without its AccessKey).
+    ("OSS 设置不完整：填了 Bucket，但没有保存 AccessKey，录音文件识别没法把音频交给服务商。"
+     "请在“申请与设置 API”补全 AccessKey，或把“音频交给服务商的方式”改成“服务商临时空间”（不用 OSS）。",
+     "cloud_asr_upload_setup"),
     ("还没有填写云端识别服务的 API Key。", "cloud_asr_auth"),
 ])
 def test_cloud_messages_without_a_report(error, issue):

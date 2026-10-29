@@ -45,6 +45,7 @@ _SECRET_ALIASES = {"apikey","xapikey","accesstoken","refreshtoken","idtoken","au
 _PRIVATE_HEADER_LINE = re.compile(r'''(?im)((?:proxy[-_]?authorization|authorization|set[-_]?cookie|cookie)["']?\s*[:=]\s*)[^\r\n]*''')
 _PUBLIC_HEADERS = {"contenttype","contentlength","requestid","xrequestid","xmsrequestid",
                    "xamznrequestid","xcorrelationid","traceparent","date","retryafter"}
+_PLAIN = re.compile(r"[^\s:=/\\@]*")
 _PATH = re.compile(r'''(?i)(?:[a-z]:[\\/]|\\\\)[^\r\n"<>|]*|(?<![\w:])/(?:home|Users|tmp|var|mnt|media|opt)/[^\r\n"<>|]*''')
 _LABELS = {
     "window.motion": "窗口移动与位置修正",
@@ -96,7 +97,10 @@ class Sanitizer:
         cached=self._key_cache.get(value)
         if cached is not None:return cached
         cleaned=self.string(value)[:100]
-        if len(self._key_cache)>=256:self._key_cache.clear()
+        # A Studio session uses ~730 field names (2026-10-28 log); at 256 the
+        # cache was wiped every few hundred events and each name re-ran
+        # every redaction pattern on the GUI thread.
+        if len(self._key_cache)>=4096:self._key_cache.clear()
         self._key_cache[value]=cleaned
         return cleaned
 
@@ -116,6 +120,11 @@ class Sanitizer:
 
     def string(self, value):
         value = str(value)[:12000]
+        if _PLAIN.fullmatch(value):
+            # Without whitespace, ':', '=', '/', '\\' or '@' no header, URL,
+            # path, e-mail or key=value pattern below can match; only a bare
+            # token can.
+            return _TOKEN.sub("<credential>", value)[:2000]
         for _ in range(3):
             value = value.replace('\\"', '"').replace("\\'", "'")
         # KEY-{5}: same pattern, written so a scan for committed private keys does not flag it.

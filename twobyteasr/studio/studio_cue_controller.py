@@ -171,6 +171,10 @@ class StudioCueController:
             return
         if getattr(page.timeline,"_unified_selection",False) and page.timeline.clip_selection().count:
             return
+        # Clicking a row also seeks. The observed clock target must not turn
+        # the user's just-established Ctrl/Shift/ALL selection into one cue.
+        if getattr(page, '_manual_selection_hold', False) and page.selection_model.scope.count() > 1:
+            return
         self.session.selected_cue_id = cue_id
         page._manual_selection_hold = False
         scope = SelectionScope.explicit((cue_id,), cue_id) if cue_id else SelectionScope.empty()
@@ -200,6 +204,7 @@ class StudioCueController:
         cue = self.resolve_playhead_target(self.page.timeline.playhead_ms)
         self.session.observed_playhead_target_id = cue.id if cue else ''
         self.session.playhead_target_id = ''
+        self.page._manual_selection_hold = False
         self._mirror_clock_selection('')
 
     def selected_cue_ids(self) -> list[str]:
@@ -249,6 +254,7 @@ class StudioCueController:
     ) -> None:
         page = self.page
         page.selection_model.set_scope(scope)
+        page._manual_selection_hold = bool(scope.active_id)
         self.session.selected_cue_id = scope.active_id or ''
         refresh_target = getattr(page, '_refresh_ai_design_target', None)
         if callable(refresh_target):
@@ -306,6 +312,9 @@ class StudioCueController:
         page._selection_latency.mark("T2_qitemselection_applied")
         page._selection_latency.mark("T3_selection_model_correct")
         if hasattr(page, "style_scope"):
+            blocker = QSignalBlocker(page.style_scope)
+            page.style_scope.setCurrentIndex(page.style_scope.findData("selected"))
+            del blocker
             selected_index = page.style_scope.findData("selected")
             if selected_index >= 0:
                 page.style_scope.setItemText(
@@ -348,6 +357,10 @@ class StudioCueController:
             refresh_target()
         page.selection_model.set_scope(scope)
         page.timeline.set_selection_scope(scope)
+        if hasattr(page, "style_scope"):
+            blocker = QSignalBlocker(page.style_scope)
+            page.style_scope.setCurrentIndex(page.style_scope.findData("selected"))
+            del blocker
         page._load_style_inspector(selection_scope=scope)
 
     def smart_align_current(self) -> None:
@@ -491,7 +504,8 @@ class StudioCueController:
         if timing is not None and not getattr(page,'_review_fast_select',False):timing.request_warm()
         if cue_id:
             page.selection_model.active_id = cue_id
-            if not page.selection_model.scope.contains(cue_id):
+            row = page.timeline._timeline_row_by_id.get(cue_id)
+            if not page.selection_model.scope.contains(cue_id, row=row):
                 page.selection_model.set_scope(
                     SelectionScope.explicit((cue_id,), cue_id)
                 )
@@ -501,7 +515,9 @@ class StudioCueController:
                 )
         else:
             page.selection_model.set_scope(SelectionScope.empty())
-        if cue_id in page.timeline.selected_ids:
+        if page.timeline.selection_scope.contains(
+            cue_id, row=page.timeline._timeline_row_by_id.get(cue_id)
+        ):
             page.timeline.selected_id = cue_id
             page.timeline.invalidate_cue(cue_id)
         else:
@@ -565,7 +581,9 @@ class StudioCueController:
                     # Preset identity is explicit domain state. A derived style id
                     # created by an appearance/Transform transaction must never be
                     # parsed back into a preset choice.
-                    preset_index = page.style_preset.findData(cue.base_preset_id)
+                    language = 'translation' if page.style_layer.currentData() == 'translation' else 'original'
+                    layer_preset = (cue.appearance_override.get(language) or {}).get('preset_id')
+                    preset_index = page.style_preset.findData(layer_preset or cue.base_preset_id)
                     if preset_index < 0:
                         preset_index = page.style_preset.findData(cue.style_id)
                     page.style_preset.blockSignals(True)
@@ -716,11 +734,15 @@ class StudioCueController:
         ):
             runtime = state_for(project)
             self.session._cue_lookup = dict(runtime.cue_by_id)
-            for cue_id in affected:
-                columns = None
-                if dirty & DirtyDomain.CUE_CONTENT and not dirty & DirtyDomain.CUE_TIMING:
-                    columns = (3, 4)
-                page.cue_model.refresh_cue(cue_id, columns)
+            columns = None
+            if dirty & DirtyDomain.CUE_CONTENT and not dirty & DirtyDomain.CUE_TIMING:
+                columns = (3, 4)
+            if len(affected) > 1 or dirty & DirtyDomain.CUE_STYLE:
+                page.cue_model.refresh_cues(affected, columns,
+                    recheck_filter=bool(dirty & (DirtyDomain.CUE_CONTENT | DirtyDomain.CUE_TIMING)))
+            else:
+                for cue_id in affected:
+                    page.cue_model.refresh_cue(cue_id, columns)
 
         sequence_handled = False
         if (
@@ -744,8 +766,11 @@ class StudioCueController:
         elif dirty & DirtyDomain.TIMELINE_PIXELS and not sequence_handled:
             if affected:
                 timing = bool(dirty & DirtyDomain.CUE_TIMING)
-                for cue_id in affected:
-                    page.timeline.invalidate_cue(cue_id, timing=timing)
+                if len(affected) > 1:
+                    page.timeline.invalidate_cues(affected, timing=timing)
+                else:
+                    for cue_id in affected:
+                        page.timeline.invalidate_cue(cue_id, timing=timing)
             else:
                 page.timeline.update()
 

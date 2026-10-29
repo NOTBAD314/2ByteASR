@@ -117,13 +117,15 @@ def evidence_occurrences(source, firered, qwen, *, protected=(), fold=None):
     return found
 
 
-def project_evidence(project, protected=()):
+def project_evidence(project, protected=(), *, cancel_check=None):
     """{cue_id: (recognized_text, occurrences)} for captions with a reading to offer."""
     from ..subtitle_rules.studio_qc import model_evidence
     from ..subtitle_rules.chinese_script import fold, for_project, glossary_script
     traditional = bool(glossary_script(project))
     result = {}
     for cue in project.cues:
+        if cancel_check is not None and cancel_check():
+            return {}
         texts = {}
         for row in model_evidence(project, cue):
             label = row.label.lower()

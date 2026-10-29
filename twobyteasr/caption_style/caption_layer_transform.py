@@ -70,20 +70,41 @@ def displayed_layer(project, cue, language):
     return next((row for row in rows if row.id == target), None)
 
 
-def resolved_values(project, cue, language):
+def resolved_values(project, cue, language, *, geometry_only=False):
     from .resolved_caption_style import resolve_caption_style
     from .visual_snapshot import _anchor
     shown = displayed_layer(project, cue, language)
     if shown is None:
         return None
     width, height = (int(project.render_settings.get(k,d)) for k,d in (('play_res_x',1920),('play_res_y',1080)))
-    style = resolve_caption_style(project.styles,project.speakers,shown,project.style_recipes,width).style
+    if geometry_only:
+        from .style_resolution import resolve_cue_visual
+        style=resolve_cue_visual(project,shown).style
+    else:style = resolve_caption_style(project.styles,project.speakers,shown,project.style_recipes,width).style
     x,y,ax,ay = _anchor(style,width,height)
     explicit=layer_values(cue,language)
     return dict(position_x=x,position_y=y,scale_x=style.scale_x,scale_y=style.scale_y,
         rotation=float(shown.transform.get('rotation',0)),
         anchor_x=float(shown.transform.get('anchor_x',ax)),anchor_y=float(shown.transform.get('anchor_y',ay)),
         font_size=style.font_size,scale_link=bool(layer_values(cue,language).get('scale_link',True)))
+
+
+class GeometryBatch:
+    """Operation-local geometry reuse; glyph measurement stays with visible ink."""
+    def __init__(self,project):
+        from .bilingual_layout import translations_of
+        self.project=project;self.cache={};self.translations=translations_of(project.generation_metadata)
+
+    def values(self,cue,language):
+        import json
+        from .bilingual_layout import translation_for_cue
+        translation=translation_for_cue(self.translations,cue.id)
+        key=(language,cue.style_id,cue.base_preset_id,cue.speaker_id,
+             json.dumps((cue.transform,cue.appearance_override),sort_keys=True,ensure_ascii=False),
+             (cue.text,translation) if translation else None)
+        if key not in self.cache:self.cache[key]=resolved_values(self.project,cue,language,geometry_only=True)
+        value=self.cache[key]
+        return dict(value) if value is not None else None
 
 
 class LayerEditCommand(SetCuesPresentationCommand):

@@ -90,8 +90,11 @@ class _ComboPopup(QFrame):
                 gp = event.globalPosition().toPoint()
             except Exception:
                 gp = event.globalPos()
-            popup_rect = self.geometry()
-            if not popup_rect.contains(self.mapFromGlobal(gp)):
+            # Both in the popup's own coordinates. geometry() is a screen
+            # rectangle, so a press on a row counted as outside and hid the
+            # list before its release (2026-10-28, Mac: no option could be
+            # chosen; on Windows the release still reached the pressed row).
+            if not self.rect().contains(self.mapFromGlobal(gp)):
                 # If the press is on our owning combo's rect, set a one-shot suppression
                 # so that the same press does not cause an immediate re-open.
                 try:

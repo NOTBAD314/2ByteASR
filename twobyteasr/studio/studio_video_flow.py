@@ -1235,6 +1235,9 @@ class StudioVideoFlowMixin:
         if project is None:
             self.timeline.reindex_project()
             return
+        scene = getattr(self, 'video_compositor', None)
+        if callable(getattr(scene, 'retain_clip_ids', None)):
+            scene.retain_clip_ids(c.id for t in project.video_tracks for c in t.clips)
         sequence = sequence_of(project)
         from ..timeline.studio_media_pool import media_graph_duration_ms
 
@@ -1803,6 +1806,25 @@ class StudioVideoFlowMixin:
         layers = self._multitrack_preview_layers(timeline_ms)
         audio_layers = self._multitrack_audio_layers(timeline_ms)
         target = self._multitrack_preview_target(timeline_ms, layers=layers, audio_layers=audio_layers)
+        if target is not None and str(target.get('source_path', '')).lower().endswith('.gif'):
+            # A GIF has no transport/audio clock. Its base and overlay frames
+            # follow the existing unattached ProjectClock, just like a gap.
+            key = str(target.get('key') or target['clip_id'])
+            switched = key != self._active_video_preview_key or not self.video._clock_only
+            self._active_video_preview_key = key
+            self._active_video_preview_track_id = str(target['track_id'])
+            self._active_video_preview_clip_id = str(target['clip_id'])
+            self._active_video_preview_source_path = str(target['source_path'])
+            self._active_video_preview_source_in_ms = 0
+            self._active_video_preview_timeline_in_ms = 0
+            self._playback_mode = 'multitrack'
+            self._audio_only_subtitle_active = False
+            self.video.set_project_time_mapping(enabled=False)
+            self.video.set_external_clock_enabled(False)
+            self.video.enter_timeline_gap(int(timeline_ms), timeline_duration_ms(self.project))
+            self.video._duration = self.video._duration_override = timeline_duration_ms(self.project)/1000
+            self._sync_video_compositor(timeline_ms, layers=layers, audio_layers=audio_layers)
+            return dict(target, source_ms=int(timeline_ms), mode='multitrack'), switched
         if target is None:
             from ..timeline.studio_media_pool import media_graph_duration_ms
             if self.project and timeline_ms >= media_graph_duration_ms(self.project) > 0 and bool(getattr(self.video, "_media_attached", False)):

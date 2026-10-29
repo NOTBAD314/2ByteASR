@@ -18,16 +18,18 @@ def values(project):
 
 
 def anchor(project,cue):
-    from .resolved_caption_style import resolve_caption_style
+    from .style_resolution import resolve_cue_visual
     from .visual_snapshot import _anchor
     width=int(project.render_settings.get('play_res_x',1920))
     height=int(project.render_settings.get('play_res_y',1080))
-    style=resolve_caption_style(project.styles,project.speakers,cue,project.style_recipes,width).style
+    style=resolve_cue_visual(project,cue).style
     return _anchor(style,width,height)[:2]
 
 
 def inverse_changes(project,cue,changes):
-    shared=values(project);x,y=anchor(project,cue)
+    shared=values(project)
+    needs_pivot=any(key in changes and shared['s'+axis]!=1 for key,axis in (('position_x','x'),('position_y','y')))
+    x,y=anchor(project,cue) if needs_pivot else (0.,0.)
     delta=dict(changes)
     for key,axis,pivot in (('position_x','x',x),('position_y','y',y)):
         if key in delta:delta[key]=pivot+(delta[key]-shared['d'+axis]-pivot)/shared['s'+axis]

@@ -1,4 +1,4 @@
-﻿"""timing stage implementation extracted from subtitle_core."""
+"""timing stage implementation extracted from subtitle_core."""
 
 # The core owns runtime configuration; these imports preserve the existing public contract.
 from subtitle_core import *  # noqa: F401,F403
@@ -574,6 +574,20 @@ def firered_anchor_coverage(segment, firered_tokens=()):
 
 def collect_review_items(segments, cues, speech_regions, firered_tokens=()):
     """收集值得人工扫一眼的位置，不修改字幕，也不写第三个文件。"""
+    from time import perf_counter
+    review_started = perf_counter()
+    # The same hour-long word list used to be scanned once per source segment.
+    # Build one interval index, preserving the original order of selected words.
+    import bisect
+    token_rows = sorted((_firered_token_start(token), index, token)
+                        for index, token in enumerate(firered_tokens))
+    starts = [row[0] for row in token_rows]
+    prefix_ends = []
+    for start, _index, token in token_rows:
+        prefix_ends.append(max(prefix_ends[-1] if prefix_ends else float('-inf'),
+                               max(start + .001, float(token['end']))))
+    aligner = bool(firered_tokens) and all(str(token.get('source') or '') == 'qwen-forced-aligner'
+                                         for token in firered_tokens)
     anchor_coverages = []
     for segment in segments:
         text = content_only(segment.text)
@@ -614,12 +628,15 @@ def collect_review_items(segments, cues, speech_regions, firered_tokens=()):
             # No timeline model ran (e.g. cloud-only or "timeline off"):
             # there is nothing to compare, so no per-segment anchor items.
             continue
-        anchor = firered_anchor_coverage(segment, firered_tokens)
+        tolerance = FIRERED_EFFECTIVE_TOKEN_OUTSIDE_TOLERANCE_SECONDS
+        left = bisect.bisect_left(prefix_ends, segment.start - tolerance)
+        right = bisect.bisect_right(starts, segment.end + tolerance)
+        local_tokens = [token for _start, _index, token in sorted(token_rows[left:right], key=lambda row: row[1])]
+        anchor = firered_anchor_coverage(segment, local_tokens)
         anchor_coverages.append(anchor["coverage"])
         if len(text) >= 4 and (
             anchor["coverage"] < 0.55 or anchor["largest"] < 0.30
         ):
-            aligner = all(str(token.get("source") or "") == "qwen-forced-aligner" for token in firered_tokens)
             moss = str(getattr(segment, "primary_source", "") or "").startswith("moss")
             add_review_item(
                 segment.start,
@@ -745,6 +762,9 @@ def collect_review_items(segments, cues, speech_regions, firered_tokens=()):
                 cue.text,
                 priority=1,
             )
+    record_run_event('final_review_timing', elapsed_seconds=round(perf_counter() - review_started, 6),
+                     segments=len(segments), cues=len(cues), acoustic_tokens=len(firered_tokens),
+                     token_lookup='interval_index_preserving_input_order')
     return get_runtime_context().review_items
 
 

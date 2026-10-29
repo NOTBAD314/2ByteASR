@@ -167,30 +167,32 @@ _KEY_HELP = '只填你自己账户里创建的 Key。兔白把它加密保存在
 
 # How 录音文件识别 audio reaches the provider (settings ``models.filetrans_upload``).
 #
-# 2026-10-14 (ADR 0112, supersedes the upload default of ADR 0111): the
-# official docs say the temporary ``oss://`` upload expires after 48 hours and
-# must not be used in production (“请勿用于生产环境”; upload-credential API
-# capped at 100 QPS, no scaling). The regular route is therefore the user's
-# own private OSS bucket with short-lived signed links; the temporary upload is
-# only used when the user explicitly picks it as a trial. Nothing is chosen
-# silently: with neither set up, the run stops before uploading anything.
+# 2026-10-28 (ADR 2026-10-28-filetrans-temporary-space-by-default, revises
+# decisions 1-2 of ADR 0112; the user's call):
+# the provider's own temporary space is the default, so the guide needs one key
+# and no OSS. Its official limits stay in plain words beside the choice
+# (objects expire after 48 hours; the upload-credential API is capped at
+# 100 QPS and the docs advise against it for production and high concurrency;
+# a desktop app uploads one file per task). The user's own private OSS bucket
+# stays an explicit choice, and a setup that already has one (bucket and
+# AccessKey) keeps using it. A bucket saved without its AccessKey still stops
+# the run before anything is uploaded: that user meant to use OSS.
 UPLOAD_PROVIDER = 'provider_temporary'
 UPLOAD_OWN_OSS = 'own_oss'
 UPLOAD_MISSING = 'missing'
-UPLOAD_CHOICES = ((UPLOAD_OWN_OSS, '我自己的阿里云 OSS 私有存储（正式使用）'),
-                  (UPLOAD_PROVIDER, '服务商临时上传（仅供试用：48 小时失效，官方说明勿用于生产）'))
+UPLOAD_CHOICES = ((UPLOAD_PROVIDER, '服务商临时空间（默认，不用建 OSS）'),
+                  (UPLOAD_OWN_OSS, '我自己的阿里云 OSS 私有存储'))
 _OWN_OSS = ('filetrans_upload', UPLOAD_OWN_OSS)
 TEMPORARY_UPLOAD_SOURCE = 'https://help.aliyun.com/zh/model-studio/get-temporary-file-url'
-TRIAL_UPLOAD_NOTE = ('服务商临时上传只适合先试试看：官方说明临时链接 48 小时后失效、上传凭证接口限 100 次/秒且不能扩容，'
-                     '“请勿用于生产环境”。日常使用请设置自己的 OSS 私有存储（只需设置一次）。')
-MISSING_UPLOAD_MESSAGE = ('录音文件识别只接受“服务商能读到的音频网址”，还没有设置音频交给服务商的方式：'
-                          '请在“申请与设置 API”里填写你自己的 OSS 私有存储（正式使用），'
-                          '或明确选择“服务商临时上传（仅供试用）”。'
-                          '只想填一把 Key 的话，可以改用“MOSS Pro 云端（MOSI）”，它直接上传本地音频。')
-_UPLOAD_HINT = '正式使用选自己的 OSS（下面几栏，设置一次即可）；临时上传只供试用。'
-_UPLOAD_HELP = ('录音文件识别不收本地文件，只收服务商能读到的音频网址。正式使用请选自己的 OSS 私有存储：'
-                '兔白上传本次音频、生成限时签名链接交给服务商读取，取得结果后删除。' + TRIAL_UPLOAD_NOTE
-                + '只想填一把 Key 的话，可改用 MOSS Pro 云端（直接上传本地音频）。')
+TEMPORARY_UPLOAD_NOTE = ('音频先传到服务商自己的临时空间，48 小时后由服务商自动删除。官方说明临时空间不适合生产环境和'
+                         '高并发（上传凭证接口限 100 次/秒）；经常大量识别、或想自己保管音频，可以改选自己的 OSS。')
+OWN_OSS_STEP_LINK = '还没建 OSS？看“建 OSS”这一步'
+MISSING_UPLOAD_MESSAGE = ('OSS 设置不完整：填了 Bucket，但没有保存 AccessKey，录音文件识别没法把音频交给服务商。'
+                          '请在“申请与设置 API”补全 AccessKey，或把“音频交给服务商的方式”改成“服务商临时空间”（不用 OSS）。')
+_UPLOAD_HINT = '默认不用建 OSS；改选自己的 OSS 时多一步。'
+_UPLOAD_HELP = ('录音文件识别不收本地文件，只收服务商能读到的音频地址。默认用服务商临时空间：' + TEMPORARY_UPLOAD_NOTE
+                + '选自己的 OSS 私有存储时，兔白上传本次音频、生成限时签名链接交给服务商读取，取得结果后删除'
+                  '（要先建私有 Bucket 和只授权它的 AccessKey）。')
 
 
 def _oss_fields(region_example: str, *, international: bool = False) -> tuple:
@@ -220,7 +222,7 @@ ASR_GUIDES = (
     ProviderGuide(
         'qwen_cloud_filetrans', 'asr', 'Qwen Cloud（Qwen 官方国际站）· 录音文件识别',
         '云端识别：文字与字/词级时间（Qwen-Audio-3.1 另有说话人），不需要显卡。'
-        '正式使用还需要你自己的 OSS 私有存储（阿里云国际站，设置一次）。',
+        '音频默认交给服务商临时空间，不用建 OSS；也可以改用自己的 OSS（阿里云国际站）。',
         'qwen-cloud-filetrans.zh-CN.md',
         links=(Link('Qwen Cloud 控制台（注册 / 登录）', 'https://home.qwencloud.com/'),
                Link('API Key 页面', 'https://home.qwencloud.com/api-keys', needs_login=True),
@@ -242,7 +244,7 @@ ASR_GUIDES = (
                       'https://maas.qwencloudapi.com', prefilled='https://maas.qwencloudapi.com', advanced=True,
                       hint='已预填官方地址（新加坡），一般不用改。'),
                 Field('filetrans_upload', '音频交给服务商的方式', _UPLOAD_HELP, choices=UPLOAD_CHOICES,
-                      prefilled=UPLOAD_OWN_OSS, hint=_UPLOAD_HINT))
+                      prefilled=UPLOAD_PROVIDER, hint=_UPLOAD_HINT))
         + _oss_fields('ap-southeast-1（新加坡，与 Qwen Cloud 服务同地）', international=True),
         models=(ModelChoice('qwen-audio-3.1-asr-flash-filetrans', 'Qwen-Audio-3.1-ASR-Flash 录音文件识别（推荐）',
                             '字/词级时间与说话人（说话人建议 2 小时内），支持热词与上下文；单文件 12 小时 / 2 GB',
@@ -250,18 +252,18 @@ ASR_GUIDES = (
                 ModelChoice('qwen3-asr-flash-filetrans', 'Qwen3-ASR-Flash 录音文件识别',
                             '字/词级时间（开启 enable_words），不区分说话人，不支持热词；单文件 12 小时 / 2 GB',
                             speakers=False, timestamps='word', hotwords=False)),
-        uploads='识别时把本次任务的音频（16 kHz 单声道 WAV，只有声音，不含画面）交给 Qwen Cloud：正式方式是先传到你的 OSS '
-                '私有 Bucket，生成限时签名链接交给服务商读取，取得结果后删除；选了“仅供试用”的临时上传时，'
-                '音频上传到服务商临时空间，48 小时后由服务商删除。',
+        uploads='识别时把本次任务的音频（16 kHz 单声道 WAV，只有声音，不含画面）交给 Qwen Cloud：默认先传到服务商临时空间，'
+                '48 小时后由服务商自动删除；选了自己的 OSS 时，先传到你的私有 Bucket，生成限时签名链接交给服务商读取，'
+                '取得结果后删除。',
         cost='按音频用量计费，以 Qwen Cloud 账单为准；新账号补全付款信息后，每个模型有 90 天免费额度。'
              '单价见官方模型页（2026-10-13 核对）。用自己的 OSS 时另有很少的存储与流量费用（按阿里云国际站 OSS 价格）。',
         needs_storage=True,
-        account_note='需要 Qwen Cloud 账号（home.qwencloud.com，用阿里云国际账号登录）；正式使用另需同一国际账号下的 OSS。'
+        account_note='需要 Qwen Cloud 账号（home.qwencloud.com，用阿里云国际账号登录）；选自己的 OSS 时另需同一国际账号下的 OSS。'
                      'Qwen Cloud 的 Key 与千问AI平台（中国站）、阿里云百炼的 Key 都不能互换；'
                      'Qwen 官网 qwen.ai 的聊天登录也不能用来调用识别接口。',
         status_note='代码与离线测试已完成；本机没有 Qwen Cloud 账号，真实服务尚未验证。',
-        short_title='Qwen Cloud 录音文件识别', site='Qwen 官方 API', minutes=15, money='补全付款信息后有免费额度',
-        tag='另需国际站 OSS', site_variant='intl',
+        short_title='Qwen Cloud 录音文件识别', site='Qwen 官方 API', minutes=10, money='补全付款信息后有免费额度',
+        tag='不用建 OSS', site_variant='intl',
         walk=(StepText('account', lines=('点右上角“Get Started”，', '用阿里云国际账号登录。'),
                        shot=Shot('qwencloud-1-home.jpg', (0.855, 0.028, 0.124, 0.075), 'https://home.qwencloud.com/',
                                  '2026-10-18')),
@@ -309,7 +311,7 @@ ASR_GUIDES = (
     ProviderGuide(
         'qwen31_filetrans', 'asr', '阿里云百炼 · 录音文件识别（Qwen3-ASR / Qwen-Audio-3.1）',
         '云端识别长录音：文字与字/词级时间（Qwen-Audio-3.1 另有说话人），不需要显卡。'
-        '正式使用还需要你自己的阿里云 OSS 私有存储（设置一次）。',
+        '音频默认交给百炼临时空间，不用建 OSS；也可以改用自己的阿里云 OSS。',
         'bailian-filetrans.zh-CN.md',
         links=(Link('百炼 API Key 页面（北京）', 'https://bailian.console.aliyun.com/cn-beijing/model/settings/api-key',
                     needs_login=True),
@@ -331,7 +333,7 @@ ASR_GUIDES = (
                 Field('api_key', 'API Key', _KEY_HELP + '密钥与 API Host 必须是同一地域创建的。', 'sk-…', secret=True,
                       hint='与 API Host 同一地域创建的 Key，只显示一次。'),
                 Field('filetrans_upload', '音频交给百炼的方式', _UPLOAD_HELP, choices=UPLOAD_CHOICES,
-                      prefilled=UPLOAD_OWN_OSS, hint=_UPLOAD_HINT))
+                      prefilled=UPLOAD_PROVIDER, hint=_UPLOAD_HINT))
         + _oss_fields('cn-hangzhou（华东1 杭州）'),
         models=(ModelChoice('qwen3-asr-flash-filetrans', 'Qwen3-ASR-Flash 录音文件识别',
                             '字/词级时间戳（开启 enable_words），不区分说话人，不支持热词；单文件 12 小时 / 2 GB',
@@ -339,15 +341,15 @@ ASR_GUIDES = (
                 ModelChoice('qwen-audio-3.1-asr-flash-filetrans', 'Qwen-Audio-3.1-ASR-Flash 录音文件识别',
                             '字/词级时间戳与说话人（建议 2 小时内），支持热词与上下文；单文件 12 小时 / 2 GB',
                             speakers=True, timestamps='word', hotwords=True)),
-        uploads='识别时把本次任务音频（16 kHz 单声道 WAV，只有声音，不含画面）交给百炼：正式方式是先传到你的 OSS 私有 '
-                'Bucket，生成限时签名链接交给百炼读取，取得结果后删除；选了“仅供试用”的临时上传时，'
-                '音频上传到百炼临时空间，48 小时后由百炼删除。',
+        uploads='识别时把本次任务音频（16 kHz 单声道 WAV，只有声音，不含画面）交给百炼：默认先传到百炼临时空间，'
+                '48 小时后由百炼自动删除；选了自己的 OSS 时，先传到你的私有 Bucket，生成限时签名链接交给百炼读取，'
+                '取得结果后删除。',
         cost='百炼按音频时长计费（测试时兔白会从官方模型列表接口读取当前单价）；用自己的 OSS 时另有很少的存储与流量费用。',
         needs_storage=True,
         account_note='需要阿里云账号与百炼服务；密钥、API Host 与模型按地域区分、不能混用，'
                      '也不能和 Qwen Cloud 的 Key 互换。',
         status_note='Qwen-Audio-3.1 路线 2026-10-04 有真实识别记录；Qwen3-ASR 路线代码与离线测试已完成，尚未用真实密钥实测。',
-        short_title='阿里云百炼 录音文件识别', site='阿里云', minutes=15, money='按音频时长计费', tag='另需阿里云 OSS',
+        short_title='阿里云百炼 录音文件识别', site='阿里云', minutes=10, money='按音频时长计费', tag='不用建 OSS',
         walk=(BAILIAN_ACCOUNT,
               StepText('key', lines=('在百炼创建 API Key，', '复制 Key 和弹窗里的 API Host。'),
                        note='Key 与 API Host 要同一地域', note_kind='warn', shot=BAILIAN_KEY_SHOT))),
@@ -597,7 +599,7 @@ TEXT_GUIDES = (
 )
 
 # List order in the dialog (2026-10-14, ADR 0112): the one-key route first,
-# then the two 录音文件识别 entries that also need the user's own OSS.
+# then the 录音文件识别 entries (2026-10-28: one key too, by default; own OSS is optional).
 _FIRST = ('mosi_moss_pro', 'qwen_cloud_filetrans', 'qwen31_filetrans')
 ASR_GUIDES = tuple(sorted(ASR_GUIDES, key=lambda g: _FIRST.index(g.key) if g.key in _FIRST else len(_FIRST)))
 ALL_GUIDES = ASR_GUIDES + TEXT_GUIDES
@@ -617,7 +619,7 @@ QIANWEN_CHECKED = '2026-10-25'
 QIANWEN_FILETRANS_GUIDE = ProviderGuide(
     'qwen_cloud_filetrans', 'asr', '千问AI平台（Qwen 官方中国站）· 录音文件识别',
     '云端识别：文字与字/词级时间（Qwen-Audio-3.1 另有说话人），不需要显卡。'
-    '正式使用还需要你自己的阿里云 OSS 私有存储（设置一次）。',
+    '音频默认交给服务商临时空间，不用建 OSS；也可以改用自己的阿里云 OSS。',
     'qianwen-filetrans.zh-CN.md',
     links=(Link('千问AI平台控制台（注册 / 登录）', 'https://platform.qianwenai.com/home', checked=QIANWEN_CHECKED),
            Link('API Key 页面', 'https://platform.qianwenai.com/home/api-keys', needs_login=True, checked=QIANWEN_CHECKED),
@@ -645,21 +647,21 @@ QIANWEN_FILETRANS_GUIDE = ProviderGuide(
                   'https://maas.qianwenaiapi.com', prefilled='https://maas.qianwenaiapi.com', advanced=True,
                   hint='已预填官方地址（北京），一般不用改。'),
             Field('filetrans_upload', '音频交给服务商的方式', _UPLOAD_HELP, choices=UPLOAD_CHOICES,
-                  prefilled=UPLOAD_OWN_OSS, hint=_UPLOAD_HINT))
+                  prefilled=UPLOAD_PROVIDER, hint=_UPLOAD_HINT))
     + _oss_fields('cn-beijing（华北2 北京，与千问AI平台服务同地）'),
     models=_QWEN_CLOUD.models,
-    uploads='识别时把本次任务的音频（16 kHz 单声道 WAV，只有声音，不含画面）交给千问AI平台：正式方式是先传到你的 OSS '
-            '私有 Bucket，生成限时签名链接交给服务商读取，取得结果后删除；选了“仅供试用”的临时上传时，'
-            '音频上传到服务商临时空间，48 小时后由服务商删除。',
+    uploads='识别时把本次任务的音频（16 kHz 单声道 WAV，只有声音，不含画面）交给千问AI平台：默认先传到服务商临时空间，'
+            '48 小时后由服务商自动删除；选了自己的 OSS 时，先传到你的私有 Bucket，生成限时签名链接交给服务商读取，'
+            '取得结果后删除。',
     cost='按音频用量计费，以千问AI平台账单为准；新用户注册有体验额度（哪些模型可用以控制台为准）。'
          '单价见官方定价页。用自己的 OSS 时另有很少的存储与流量费用。',
     needs_storage=True,
-    account_note='需要千问AI平台账号（platform.qianwenai.com，用阿里云账号或手机号登录）；正式使用另需阿里云 OSS。'
+    account_note='需要千问AI平台账号（platform.qianwenai.com，用阿里云账号或手机号登录）；选自己的 OSS 时另需阿里云 OSS。'
                  '千问AI平台的 Key 与 Qwen Cloud（国际站）、阿里云百炼的 Key 都不能互换；'
                  '千问 App 的聊天登录也不能用来调用识别接口。',
     status_note='接口与 Qwen Cloud 相同，代码与离线测试已完成；本机没有千问AI平台账号，真实服务尚未验证。',
-    short_title='千问AI平台 录音文件识别', site='Qwen 官方 API', minutes=15, money='新用户有体验额度',
-    tag='另需阿里云 OSS', site_variant='cn',
+    short_title='千问AI平台 录音文件识别', site='Qwen 官方 API', minutes=10, money='新用户有体验额度',
+    tag='不用建 OSS', site_variant='cn',
     walk=(StepText('account', lines=('点右上角“登录”，', '用手机号或阿里云账号登录。'),
                    shot=Shot('qianwen-1-home.jpg', (0.855, 0.024, 0.124, 0.08), 'https://platform.qianwenai.com/home',
                              '2026-10-25')),
@@ -722,24 +724,26 @@ FILL_NOTE = '文字 AI 只发送字幕文字'
 FILL_ACTION = '去填写这家服务的密钥'
 
 
-def paste_title(guide: ProviderGuide) -> str:
+def paste_title(guide: ProviderGuide, *, own_storage: bool = False) -> str:
     if guide.key == 'spark_asr_v2':
         return '把三项贴到这里'
-    if guide.needs_storage:
+    if guide.needs_storage and own_storage:
         return '贴上 Key 和存储信息'
     if guide.key in {'custom', 'azure'}:
         return '填写接口信息'
     return '把 Key 贴到这里'
 
 
-def walkthrough(guide: ProviderGuide | None, *, can_fill: bool = False) -> list[WalkStep]:
+def walkthrough(guide: ProviderGuide | None, *, can_fill: bool = False, own_storage: bool = False) -> list[WalkStep]:
     """The steps a first-time user follows, in order (2026-10-18 redesign).
 
     注册登录 › (先充值, unless the service gives free credit to try) › 创建 Key
-    › (录音文件识别: 私有 OSS) › 贴上检查 (语音识别) or 去填写 (文字 AI, whose
-    key is entered in “AI 智能断句设置”). Each web step opens the official page
-    from ``links``. Services without official links (自定义、账号登录类) have
-    no walkthrough: the dialog shows their form or notes directly.
+    › (录音文件识别 with the user's own OSS chosen: 建 OSS) › 贴上检查 (语音识别)
+    or 去填写 (文字 AI, whose key is entered in “AI 智能断句设置”). Each web step
+    opens the official page from ``links``. Services without official links
+    (自定义、账号登录类) have no walkthrough: the dialog shows their form or
+    notes directly. 2026-10-28: 录音文件识别 uses the provider's temporary space
+    by default, so the OSS step is only there when ``own_storage`` is chosen.
     """
     if guide is None or not guide.links or guide.key in {'custom', 'cli_accounts'}:
         return []
@@ -757,7 +761,7 @@ def walkthrough(guide: ProviderGuide | None, *, can_fill: bool = False) -> list[
     if topup is not None:
         plan.append(('topup', topup.url))
     plan.append(('key', key_link.url))
-    if guide.kind == 'asr' and guide.needs_storage:
+    if guide.kind == 'asr' and guide.needs_storage and own_storage:
         oss = next((item for item in links if 'OSS 控制台' in item.label), None)
         if oss is not None:
             plan.append(('storage', oss.url))
@@ -772,7 +776,7 @@ def walkthrough(guide: ProviderGuide | None, *, can_fill: bool = False) -> list[
         steps.append(WalkStep(role, own.label or base.label, own.title or base.title, own.lines or base.lines,
                               note, kind, url, own.action or base.action, own.shot))
     if guide.kind == 'asr':
-        steps.append(WalkStep('paste', '贴上检查', paste_title(guide)))
+        steps.append(WalkStep('paste', '贴上检查', paste_title(guide, own_storage=own_storage)))
     else:
         steps.append(WalkStep('fill', '去填写', FILL_TITLE, FILL_LINES, FILL_NOTE, '',
                               action=FILL_ACTION if can_fill else ''))
@@ -793,18 +797,19 @@ def visible_field(spec: Field, values: dict) -> bool:
 def resolve_upload_mode(models: dict, provider: str = '', *, has_oss_credentials: bool | None = None) -> str:
     """``own_oss``, ``provider_temporary`` or ``missing`` for a 录音文件识别 run.
 
-    An explicit choice is kept (``provider_temporary`` only ever comes from the
-    user picking the trial upload). ``auto`` uses a complete OSS setup (bucket
-    and AccessKey saved) and otherwise reports ``missing``: the trial upload is
-    never chosen on the user's behalf (ADR 0112). Bailian and Qwen Cloud share
-    the same rule.
+    An explicit choice is kept. ``auto`` (never chosen in the guide) uses a
+    complete OSS setup (bucket and AccessKey saved), the provider's temporary
+    space when no bucket is saved (2026-10-28: the default), and reports
+    ``missing`` for a bucket whose AccessKey is gone: that user meant to use
+    their own OSS, so the run stops and says so instead of uploading elsewhere.
+    Bailian, 千问AI平台 and Qwen Cloud share the same rule.
     """
     models = models or {}
     choice = str(models.get('filetrans_upload') or 'auto')
     if choice in {UPLOAD_PROVIDER, UPLOAD_OWN_OSS}:
         return choice
     if not str(models.get('oss_bucket') or '').strip():
-        return UPLOAD_MISSING
+        return UPLOAD_PROVIDER
     if has_oss_credentials is None:
         try:
             from .llm_config import read_oss_credentials
@@ -816,9 +821,9 @@ def resolve_upload_mode(models: dict, provider: str = '', *, has_oss_credentials
 
 def upload_mode_label(mode: str) -> str:
     """Plain words for the pre-run summary and diagnostics."""
-    return {UPLOAD_OWN_OSS: '你自己的 OSS 私有存储（正式）',
-            UPLOAD_PROVIDER: '服务商临时上传（仅供试用，官方说明勿用于生产）',
-            UPLOAD_MISSING: '尚未设置（识别前会停下说明）'}.get(str(mode), str(mode))
+    return {UPLOAD_OWN_OSS: '你自己的 OSS 私有存储',
+            UPLOAD_PROVIDER: '服务商临时空间（48 小时后由服务商自动删除）',
+            UPLOAD_MISSING: 'OSS 设置不完整（识别前会停下说明）'}.get(str(mode), str(mode))
 
 
 def uses_own_storage(guide: ProviderGuide | None, values: dict) -> bool:

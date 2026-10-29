@@ -237,13 +237,13 @@ def test_network_errors_are_not_called_key_errors():
 
 
 def test_upload_mode_keeps_an_existing_oss_setup():
-    # ADR 0112 (2026-10-14): own OSS is the regular route; the temporary upload
-    # (officially not for production) is used only when explicitly chosen.
+    # 2026-10-28: the provider's temporary space is the default; a complete OSS
+    # setup keeps being used, and a bucket without its AccessKey stops the run.
     from twobyteasr.providers.api_setup_catalog import resolve_upload_mode
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': 'mine'}, 'qwen31_filetrans',
                                has_oss_credentials=True) == 'own_oss'
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': ''}, 'qwen31_filetrans',
-                               has_oss_credentials=True) == 'missing'
+                               has_oss_credentials=True) == 'provider_temporary'
     assert resolve_upload_mode({'filetrans_upload': 'auto', 'oss_bucket': 'mine'}, 'qwen31_filetrans',
                                has_oss_credentials=False) == 'missing'
     assert resolve_upload_mode({'filetrans_upload': 'provider_temporary', 'oss_bucket': 'mine'}, 'qwen31_filetrans',
@@ -257,10 +257,14 @@ def test_worker_picks_storage_by_upload_mode():
     from twobyteasr.providers.temp_audio_storage import OssTemporaryStorage
     endpoint = cloud_endpoint()
     request = {'settings': {'models': {'filetrans_upload': 'auto', 'oss_bucket': ''}}}
-    with pytest.raises(Exception, match='MOSS Pro'):
-        filetrans_storage(request, endpoint)  # nothing chosen: stop, never pick the trial upload
-    trial = {'settings': {'models': {'filetrans_upload': 'provider_temporary', 'oss_bucket': ''}}}
-    assert isinstance(filetrans_storage(trial, endpoint), DashScopeTemporaryStorage)
+    default = filetrans_storage(request, endpoint)  # nothing set up: the provider's temporary space (2026-10-28)
+    assert isinstance(default, DashScopeTemporaryStorage) and default.model == endpoint['model']
+    chosen = {'settings': {'models': {'filetrans_upload': 'provider_temporary', 'oss_bucket': ''}}}
+    assert isinstance(filetrans_storage(chosen, endpoint), DashScopeTemporaryStorage)
+    half = {'settings': {'models': {'filetrans_upload': 'auto', 'oss_bucket': 'mine'}}}
+    with pytest.raises(Exception, match='OSS 设置不完整') as caught:
+        filetrans_storage(half, endpoint)  # a bucket without its AccessKey: stop, never upload elsewhere
+    assert caught.value.problem.code == 'upload_route_missing'
     bailian = dict(endpoint, provider='qwen31_filetrans',
                    url='https://llm-abc.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/asr/transcription')
     own = {'settings': {'models': {'filetrans_upload': 'auto', 'oss_bucket': 'mine', 'oss_region': 'cn-hangzhou',
@@ -390,8 +394,9 @@ def test_catalog_lists_one_key_route_first_and_qwen_cloud_with_official_links():
     assert guide.guide_text().startswith('# 申请与设置 Qwen Cloud')
     bailian = guide_for('qwen31_filetrans')
     upload = next(f for f in bailian.fields if f.key == 'filetrans_upload')
-    assert upload.prefilled == 'own_oss' and upload.choices[0][0] == 'own_oss'
-    assert '仅供试用' in dict(upload.choices)['provider_temporary']
+    # 2026-10-28: the provider's temporary space first and preselected; own OSS stays a choice.
+    assert upload.prefilled == 'provider_temporary' and upload.choices[0][0] == 'provider_temporary'
+    assert '默认' in dict(upload.choices)['provider_temporary'] and 'own_oss' in dict(upload.choices)
     assert all(f.show_when == ('filetrans_upload', 'own_oss') for f in bailian.fields if f.key.startswith('oss_'))
 
 

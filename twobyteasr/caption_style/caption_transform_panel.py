@@ -8,7 +8,9 @@ from ..design.studio_theme import StudioComboBox
 from ..design.soft_widgets import FoldCard, SegmentedControl, UnitField, WrapLayout
 from ..design.themed_icons import install_themed_icon
 from ..i18n import bind_text, tr
-from .caption_layer_transform import resolved_values, displayed_layer, transform_command
+from .caption_layer_transform import resolved_values, displayed_layer,GeometryBatch
+from .scoped_transform import transform_command,edit_values
+from ..studio.presentation_scope import capture_scope,report_scope
 
 
 class CaptionTransformPanel(FoldCard):
@@ -45,7 +47,7 @@ class CaptionTransformPanel(FoldCard):
         self.target.hide()
         body.addWidget(self.target)
         self.language=StudioComboBox()
-        for title,value in [('原文','original'),('译文','translation')]:self.language.addItem(tr(title),value)
+        for title,value in [('原文','original'),('译文','translation'),('双语','linked')]:self.language.addItem(tr(title),value)
         self.language_segments=SegmentedControl(self.language,emit_activated=False)
         body.addLayout(field_row('语言层',(self.language_segments,1)))
         fields=[('位置','position_x','position_y',-400,500,'%'),
@@ -137,32 +139,40 @@ class CaptionTransformPanel(FoldCard):
 
     def targets(self):
         page=self.page
-        if not page.project or not page.selected_cue_id:return []
-        ids=set(page.selected_cue_ids()) or {page.selected_cue_id}
-        from .caption_layer_transform import target_ids
-        ids=target_ids(page.project,ids)
+        self._scope_snapshot=capture_scope(page)
+        if page.project is None:return []
+        ids=set(self._scope_snapshot.cue_ids)
         lookup=getattr(page,'_cue_lookup',{})
         return [lookup[key] for key in ids if key in lookup] if lookup else [cue for cue in page.project.cues if cue.id in ids]
 
     def link_changed(self,enabled):
         if self._updating or not self.page.project:return
+        self.end_gesture(cancel=True)
+        if enabled:
+            for selector,value in ((self.page.style_scope,'all'),(self.page.style_layer,'group'),(self.language,'linked')):
+                with QSignalBlocker(selector):selector.setCurrentIndex(selector.findData(value))
         from ..timeline.studio_commands import _commit_mutation
         from ..projects.studio_runtime_state import DirtyDomain
         from .caption_group_transform import LINK_KEY
         _commit_mutation(self.page.project,action_id='字幕全局联动开关',
-            dirty=DirtyDomain.AUTOSAVE|DirtyDomain.PROJECT_METADATA,cue_ids=(),
+            dirty=DirtyDomain.AUTOSAVE,cue_ids=(),
             mutate=lambda:self.page.project.studio_state.__setitem__(LINK_KEY,bool(enabled)),changed=self.page._changed)
         self.refresh()
 
     def apply_to_all(self):
+        self.end_gesture(cancel=True)
+        self.page.style_scope.setCurrentIndex(self.page.style_scope.findData('all'))
         targets=self.targets()
         if not targets:return
-        locked=getattr(self.page.timeline,'locked_speakers',set())
-        if any(c.speaker_id in locked for c in self.page.project.cues):
-            self.target.setText(tr('工程有锁定的字幕轨，请先解锁再套用全部'));return
-        from .caption_group_transform import apply_all_command
         cue=next((c for c in targets if c.id==self.page.selected_cue_id),targets[0])
-        self.page.undo_stack.push(apply_all_command(self.page.project,cue,self.page._changed))
+        layer='original' if self._scope_snapshot.layer=='group' else self._scope_snapshot.layer
+        value=resolved_values(self.page.project,cue,layer)
+        if value is None:return
+        changes={key:value[key] for key in ('position_x','position_y','scale_x','scale_y')}
+        command=transform_command(self.page.project,[c.id for c in targets],self._scope_snapshot.layer,changes,
+            reference_id=cue.id,changed=self.page._changed)
+        if command is not None:self.page.undo_stack.push(command)
+        report_scope(self.page,self._scope_snapshot,applied=len(targets) if command is not None else 0)
         self.refresh()
 
     def begin_gesture(self):
@@ -181,18 +191,22 @@ class CaptionTransformPanel(FoldCard):
         self._gesture_ids=tuple(c.id for c in targets)
         self._gesture_known_ids={cue.id for cue in self.page.project.cues}
         self._gesture_selected=self.page.selected_cue_id
-        self._gesture_language=self.language.currentData()
-        self._gesture_global=self.global_link.isChecked()
+        self._gesture_language='linked' if self._scope_snapshot.layer=='group' else self._scope_snapshot.layer
+        self._gesture_scope=self._scope_snapshot
+        self._gesture_mode='absolute'
+        self._gesture_reference_language='original' if self._gesture_language=='linked' else self._gesture_language
+        self._gesture_global=self.global_link.isChecked() and self._scope_snapshot.scope=='all' and self._scope_snapshot.layer=='group'
         self._gesture_reference=next((c for c in targets if c.id==self.page.selected_cue_id),targets[0])
-        self._gesture_current=resolved_values(self.page.project,self._gesture_reference,self._gesture_language)
+        self._gesture_current=resolved_values(self.page.project,self._gesture_reference,self._gesture_reference_language)
         self._gesture_pivot=anchor(self.page.project,self._gesture_reference)
         self._gesture_shared=values(self.page.project)
         self._gesture_visible={}
         for cue in active_cues(self.page,self.page._caption_sample_ms()):
             if not self._gesture_global and not self._gesture_owns(cue.id):continue
-            for language in ('original','translation') if self._gesture_global else (self._gesture_language,):
+            for language in ('original','translation') if self._gesture_global or self._gesture_language=='linked' else (self._gesture_language,):
                 value=resolved_values(self.page.project,cue,language)
                 if value is not None:self._gesture_visible[(cue.id,language)]=(value,anchor(self.page.project,cue))
+        self.page.timeline.set_caption_transform_active(True)
 
     def _gesture_owns(self,cue_id):
         if cue_id in self._gesture_ids:return True
@@ -203,17 +217,25 @@ class CaptionTransformPanel(FoldCard):
     def end_gesture(self,*,cancel=False):
         if self.gesture is None:return
         changes=self.pending;self.pending={};self.gesture=None
+        scope=capture_scope(self.page)
+        cancel=cancel or self.page.project is not self._gesture_project or scope.scope!=self._gesture_scope.scope or scope.layer!=self._gesture_scope.layer
+        cancel=cancel or self.page._revision_store.render.visual_revision!=self._gesture_revision
+        cancel=cancel or scope.cue_ids!=self._gesture_scope.cue_ids
         if cancel:
+            if getattr(self.page,'_caption_layer_canvas',False):self.page._caption_transform_retired=True
             self.page._caption_layer_canvas=False
             self.page.position_overlay._dragging=False
         self.page._caption_transform_preview={}
         self.page._caption_transform_preview_serial=getattr(self.page,'_caption_transform_preview_serial',0)+1
-        if not cancel and changes and self.page.project is self._gesture_project:
-            self._commit(changes,self._gesture_ids,self._gesture_language,self._gesture_global,
-                         self._gesture_reference)
-        self._gesture_project=None;self._gesture_reference=None
-        self._gesture_known_ids=set();self._gesture_visible={};self._gesture_ids=()
-        self.page._present_caption_scene()
+        try:
+            if not cancel and changes and self.page.project is self._gesture_project:
+                self._commit(changes,self._gesture_ids,self._gesture_language,self._gesture_global,
+                             self._gesture_reference)
+        finally:
+            self._gesture_project=None;self._gesture_reference=None
+            self._gesture_known_ids=set();self._gesture_visible={};self._gesture_ids=()
+            self.page.timeline.set_caption_transform_active(False)
+            self.page._present_caption_scene()
 
     def refresh_gesture_targets(self,cues):
         if self.gesture is None or not self.pending or not self._gesture_global:return
@@ -234,10 +256,10 @@ class CaptionTransformPanel(FoldCard):
         self.pending.update(changes)
         preview={}
         global_geometry=self._gesture_global and bool({'position_x','position_y','scale_x','scale_y'} & self.pending.keys())
-        after=shared_after(self.page.project,self._gesture_reference,self._gesture_language,self.pending,
+        after=shared_after(self.page.project,self._gesture_reference,self._gesture_reference_language,self.pending,
             current=self._gesture_current,pivot=self._gesture_pivot) if global_geometry else None
         for (cue_id,language),(before,pivot) in self._gesture_visible.items():
-            if not global_geometry and (not self._gesture_owns(cue_id) or language!=self._gesture_language):continue
+            if not global_geometry and (not self._gesture_owns(cue_id) or self._gesture_language!='linked' and language!=self._gesture_language):continue
             value=dict(before)
             if after:
                 shared=self._gesture_shared
@@ -246,11 +268,9 @@ class CaptionTransformPanel(FoldCard):
                     value[key]=point+(before[key]-shared['d'+axis]-point)/shared['s'+axis]*after['s'+axis]+after['d'+axis]
                     value['scale_'+axis]*=after['s'+axis]/shared['s'+axis]
             else:
-                value.update(self.pending)
-                keys={'scale_x','scale_y'} & self.pending.keys()
-                if before['scale_link'] and len(keys)==1:
-                    key=next(iter(keys));other='scale_y' if key=='scale_x' else 'scale_x'
-                    value[other]=before[other]*value[key]/before[key]
+                owner=self._gesture_visible.get((cue_id,self._gesture_reference_language),(before,None))[0]
+                value=edit_values(before,self.pending,reference=self._gesture_current,owner=owner,
+                    mode=self._gesture_mode,linked=self._gesture_language=='linked')
             from .bilingual_layout import settings_from_state
             shown_mode=settings_from_state(self.page.project.studio_state).mode
             if shown_mode=='original' and language=='translation':continue
@@ -269,12 +289,23 @@ class CaptionTransformPanel(FoldCard):
             command=GroupTransformCommand(self.page.project,
                 shared_after(self.page.project,reference,language,changes,reset=reset),self.page._changed)
         else:
-            command=transform_command(self.page.project,ids,language,changes,reset=reset,changed=self.page._changed)
+            command=transform_command(self.page.project,ids,language,changes,reset=reset,changed=self.page._changed,
+                reference_id=reference.id,mode=getattr(self,'_gesture_mode','absolute') if self._gesture_project is not None else 'absolute')
         if command is not None:self.page.undo_stack.push(command)
+        report_scope(self.page,getattr(self,'_gesture_scope',None) if self._gesture_project is not None else self._scope_snapshot,
+                     applied=len(ids) if command is not None else 0)
 
     def language_changed(self,*_):
         if self._updating:return
+        self.end_gesture(cancel=True)
+        selector=getattr(self.page,'style_layer',None)
+        value='group' if self.language.currentData()=='linked' else self.language.currentData()
+        if selector is not None:
+            with QSignalBlocker(selector):selector.setCurrentIndex(selector.findData(value))
         self.page.timeline.selected_lane='translation' if self.language.currentData()=='translation' else ''
+        self._updating=True
+        try:self.page._load_style_inspector()
+        finally:self._updating=False
         self._selection=None
         self.refresh()
         geometry=getattr(self.page,'_selection_geometry',None)
@@ -295,17 +326,18 @@ class CaptionTransformPanel(FoldCard):
         self._updating=True
         try:
             targets=self.targets()
-            lane=getattr(getattr(self.page,'timeline',None),'selected_lane','')
-            selection=(id(self.page.project),self.page.selected_cue_id,tuple(c.id for c in targets),lane)
+            language='linked' if self._scope_snapshot.layer=='group' else self._scope_snapshot.layer
+            selection=(id(self.page.project),self.page.selected_cue_id,tuple(c.id for c in targets),self._scope_snapshot.scope,language)
             if selection!=self._selection:
                 self._selection=selection
-                with QSignalBlocker(self.language):self.language.setCurrentIndex(1 if lane=='translation' else 0)
+                with QSignalBlocker(self.language):self.language.setCurrentIndex(self.language.findData(language))
                 self.language_segments.sync()  # set with signals blocked
             language=self.language.currentData()
             from .caption_group_transform import LINK_KEY
             with QSignalBlocker(self.global_link):
                 self.global_link.setChecked(bool(self.page.project and self.page.project.studio_state.get(LINK_KEY,False)))
-            values=[resolved_values(self.page.project,c,language) for c in targets]
+            cache=GeometryBatch(self.page.project) if self.page.project else None
+            values=[cache.values(c,'original' if language=='linked' else language) for c in targets]
             available=[value for value in values if value is not None]
             locked=bool(targets and any(c.speaker_id in getattr(self.page.timeline,'locked_speakers',set()) for c in targets))
             if self.global_link.isChecked() and self.page.project:
@@ -315,6 +347,10 @@ class CaptionTransformPanel(FoldCard):
             if self.global_link.isChecked() and self.page.project:
                 message=tr('全工程原文与译文 · {count} 条字幕',count=len(self.page.project.cues))
             if targets and not available:message=tr('所选字幕尚无译文')
+            if not targets:message=tr('当前范围没有可编辑字幕')
+            if not targets and self._scope_snapshot.missing_layer_ids:message=tr('当前范围没有可编辑译文')
+            if self._scope_snapshot.locked_ids:
+                message=tr('将跳过 {count} 条锁定字幕',count=len(self._scope_snapshot.locked_ids)) if targets else tr('所选字幕轨已锁定，请在时间轴解锁')
             if locked:message=tr('所选字幕轨已锁定，请在时间轴解锁')
             self.target.setText(message);self.target.setVisible(bool(message))
             self.mixed.clear()
@@ -362,6 +398,8 @@ class CaptionTransformPanel(FoldCard):
         width=float(self.page.project.render_settings.get('play_res_x',1920))
         height=float(self.page.project.render_settings.get('play_res_y',1080))
         factor=width/100 if key=='position_x' else height/100 if key=='position_y' else .01 if key.startswith('anchor_') else 1
+        control=self.controls.get(key)
+        if self.gesture is None and control is not None and (control.hasFocus() or control.lineEdit().hasFocus()):self.begin_gesture()
         self.apply({key:float(value)*factor})
 
     def apply(self,changes,*,reset=False):
@@ -372,9 +410,12 @@ class CaptionTransformPanel(FoldCard):
         targets=self.targets()
         affected=self.page.project.cues if self.global_link.isChecked() and self.page.project else targets
         if not targets or any(c.speaker_id in getattr(self.page.timeline,'locked_speakers',set()) for c in affected):
+            report_scope(self.page,self._scope_snapshot,applied=0)
             self.refresh();return
         reference=next((c for c in targets if c.id==self.page.selected_cue_id),targets[0])
-        self._commit(changes,[c.id for c in targets],self.language.currentData(),self.global_link.isChecked(),reference,reset=reset)
+        language='linked' if self._scope_snapshot.layer=='group' else self._scope_snapshot.layer
+        self._gesture_project=None
+        self._commit(changes,[c.id for c in targets],language,self.global_link.isChecked() and self._scope_snapshot.scope=='all' and language=='linked',reference,reset=reset)
         self.refresh()
 
     def sync_overlay(self):

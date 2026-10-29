@@ -64,7 +64,8 @@ class StudioAdvancedFlowMixin:
         revision = getattr(getattr(self, '_revision_store', None), 'render', None)
         key = (id(self.project), getattr(revision, 'visual_revision', None),
                getattr(revision, 'mapping_revision', None),
-               getattr(self, '_caption_tick_time_ms', None))
+               getattr(self, '_caption_tick_time_ms', None),
+               getattr(self, '_caption_transform_preview_serial', 0))
         if sample is not None and sample.get('presented_key') == key:
             return True
         from ..rendering.caption_scene import CaptionScene, active_cues

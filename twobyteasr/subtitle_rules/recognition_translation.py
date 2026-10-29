@@ -74,7 +74,8 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
         print(f"   [翻译] 译文语言（{TARGET_LABELS[target]}）与识别语言相同，不翻译。")
         return {}
     from ..projects.studio_project import StudioCue
-    from .subtitle_translation import apply_translation_result, status_counts, translate, translation_source
+    from .subtitle_translation import (apply_translation_result, status_counts, translate, translation_source,
+                                       RECOMMENDED_BATCH_ITEMS)
     cues = list(cues)
     fake = SimpleNamespace(cues=[StudioCue(id=cue_id, start_ms=round(float(cue.start) * 1000),
                                            end_ms=round(float(cue.end) * 1000), text=str(cue.text or ""),
@@ -112,6 +113,7 @@ def translate_runtime_cues(cues, runtime_context, legacy, *, provider=None) -> d
         workers = max(1, min(int(getattr(legacy, "CLOUD_BATCH_WORKERS", 1) or 1),
                              int(GLOBAL_PROVIDER_SERVICE.scheduling_capacity()["effective_workers"])))
     result = translate(translation_source(fake), None, provider, target=target,
+                       max_items=RECOMMENDED_BATCH_ITEMS,
                        game_context=str(getattr(runtime_context, "game_name", "") or ""),
                        cancel_check=(lambda: bool(token and token.is_cancelled)), progress=progress, cache=cache,
                        event=request_log, workers=workers)

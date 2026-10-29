@@ -584,6 +584,8 @@ def _normalized_media_source(value: str) -> str:
 
 
 def _asset_has_audio(asset: MediaAsset) -> bool:
+    if str(asset.canonical_source).lower().endswith('.gif'):
+        return False
     metadata = _mapping(asset.audio_metadata)
     if "has_audio" in metadata:
         return bool(metadata.get("has_audio"))
@@ -733,6 +735,13 @@ def _ensure_linked_av_contract(project: SubtitleProject, *, materialize_unrefere
     for video_index, video_track in enumerate(project.video_tracks, 1):
         group = group_by_video.get(video_track.id)
         audio_track = audio_tracks.get(group.audio_track_id) if group else None
+        # Animated visual-only lanes do not own an empty audio lane. Existing
+        # user audio/groups are preserved, including detached or muted lanes.
+        if group is None and video_track.clips and all(
+                clip.asset_id in assets
+                and str(assets[clip.asset_id].canonical_source).lower().endswith('.gif')
+                and not _asset_has_audio(assets[clip.asset_id]) for clip in video_track.clips):
+            continue
         # Detached audio owns its timing/content. Validation must not recreate,
         # trim or delete its clips when the former video changes.
         if group is not None and not group.linked:
@@ -1513,7 +1522,7 @@ def waveform_cache_root(base: str | os.PathLike[str] | None = None) -> Path:
     return studio_data_root(base) / "waveform-cache"
 
 
-def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
+def _atomic_json_write(path: Path, payload: Mapping[str, Any], *, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
@@ -1521,7 +1530,13 @@ def _atomic_json_write(path: Path, payload: Mapping[str, Any]) -> None:
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            if compact:
+                # The C encoder avoids a long Python iterator competing with
+                # GUI actions during frequent proofreading saves. Same JSON
+                # values, atomic publication and fsync; whitespace only differs.
+                stream.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            else:
+                json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -1585,7 +1600,7 @@ from ..diagnostics.studio_events import project_io
 
 
 @project_io("save")
-def save_project(project: SubtitleProject, path: str | os.PathLike[str]) -> Path:
+def save_project(project: SubtitleProject, path: str | os.PathLike[str], *, compact: bool = False) -> Path:
     runtime = getattr(project, "_studio_state_runtime", None)
     if runtime is not None and runtime._active is not None:
         raise RuntimeError("不能在媒体编辑事务提交前保存工程")
@@ -1610,7 +1625,10 @@ def save_project(project: SubtitleProject, path: str | os.PathLike[str]) -> Path
                 temporary.unlink()
             except OSError:
                 pass
-    _atomic_json_write(target, payload)
+    if compact:
+        _atomic_json_write(target, payload, compact=True)
+    else:
+        _atomic_json_write(target, payload)
     return target
 
 
@@ -2623,6 +2641,9 @@ def project_from_runtime_cues(
     initialize_speaker_names(project)
     from .speaker_organization import apply_new_project_policy
     apply_new_project_policy(project)
+    # Labels whose voiceprints agree strongly become one speaker (2026-10-28).
+    from ..recognition.scoped_voiceprint import apply_automatic
+    apply_automatic(project)
     identity = dict(media_identity or {})
     if not identity and Path(media_path).is_file():
         from ..studio.studio_helpers import probe_media_identity

@@ -161,15 +161,18 @@ def caption_ripple_skipped(project, locked=()):
 def _words(project, cue):
     from ..recognition.cue_word_alignment import cue_words
     words, reason = cue_words(project, cue)
-    return [asdict(w) for w in words], reason
+    # AlignedWord is a flat record of primitive values. asdict recursively
+    # deep-copied every scalar on every group move.
+    return [{name: getattr(w, name) for name in w.__dataclass_fields__} for w in words], reason
 
 
 def _remember(project, cue, parent, words, reason, review=None, clock_delta=0):
+    from ..projects.studio_runtime_state import _json_snapshot
     state = project.studio_state.setdefault(KEY, {'version': 1, 'instances': {}})
     receipts = state.setdefault('instances', {})
-    receipt = copy.deepcopy(receipts.get(parent.id, {}))
-    receipt.update(text=cue.text, words=copy.deepcopy(words), word_alignment=reason,
-                   word_base_interval=[cue.start_ms, cue.end_ms], word_base_words=copy.deepcopy(words),
+    receipt = _json_snapshot(receipts.get(parent.id, {}))
+    receipt.update(text=cue.text, words=_json_snapshot(words), word_alignment=reason,
+                   word_base_interval=[cue.start_ms, cue.end_ms], word_base_words=_json_snapshot(words),
                    word_base_alignment=reason, word_clock_offset_ms=0)
     if CLOCK in receipt:
         receipt[CLOCK] = int(receipt[CLOCK]) + int(clock_delta)

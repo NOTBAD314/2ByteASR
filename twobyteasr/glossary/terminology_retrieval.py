@@ -68,7 +68,7 @@ def _catalog_index(snapshot):
         from ..recognition.content_scene import library_domain
         domain_id, domain_name = library_domain(library)
         for term in library.terms:
-            if not term.canonical:
+            if not term.canonical or not term.correction_enabled:
                 continue
             canonical = spellings.get(term.canonical.casefold(), term.canonical)
             row = catalog.setdefault(canonical, {'canonical': canonical,
@@ -142,10 +142,6 @@ def retrieve_candidates(snapshot, segments, context_before='', context_after='',
         add_text(None, field, value)
     # Whole Chinese word tokens only: a syllable inside an ordinary compound
     # is not a player mention. Tokenize once per primary cue, not per term.
-    from jieba import tokenize
-    single_hanzi = [(cue_id, {word for word, _, _ in tokenize(raw, HMM=False)
-        if re.fullmatch(r'[\u4e00-\u9fff]', word)} - _COMMON_SINGLE_HANZI)
-        for cue_id, raw in primary_texts]
     lengths = {len(content(variant)) for row in catalog.values()
         for variant in (row['canonical'], *row['aliases']) if 2 <= len(content(variant)) <= 12}
     lengths = {size for n in lengths for size in (n-1, n, n+1) if 2 <= size <= 12}
@@ -183,20 +179,6 @@ def retrieve_candidates(snapshot, segments, context_before='', context_after='',
                             'matched_variant': variant, 'matched_alias': variant != row['canonical']}
                         if key not in best or score > best[key]['score']:
                             best[key] = match
-                # A single Chinese syllable may be a spoken short Latin name.
-                # It is only a low-ranked review candidate, never fuzzy alias
-                # authority; common pronouns/particles cannot become names.
-                if variant == row['canonical'] and _LATIN_IDENTIFIER.fullmatch(str(variant)):
-                    wanted = variant_sounds[term]
-                    for cue_id, heard_words in single_hanzi:
-                        for heard in heard_words:
-                            if phonetic_text(heard) != wanted:
-                                continue
-                            key = (cue_id, 'text')
-                            if key not in best:
-                                best[key] = {'cue_id': cue_id, 'asr_source': 'text', 'heard': heard,
-                                    'score': .50, 'method': 'single_hanzi_weak',
-                                    'authority': 'review_only', 'acoustic_verified': False}
                 continue
             if not 2 <= len(term) <= 12:
                 continue
@@ -466,14 +448,8 @@ def pending_identifier_suggestions(text, candidates, cue_id):
     for row in candidates:
         for match in row.get('matches', ()):
             heard = match.get('heard', '')
-            if (match.get('cue_id') == cue_id and match.get('asr_source') == 'text'
-                    and match.get('method') == 'single_hanzi_weak' and heard in str(text)):
-                suggestion = {'source': heard, 'canonical': row['canonical'],
-                    'status': row.get('status'), 'ambiguous': bool(row.get('ambiguous')),
-                    'reason': 'single_hanzi_weak_candidate_requires_confirmation',
-                    'authority': 'review_only', 'acoustic_verified': False}
-                if suggestion not in pending:
-                    pending.append(suggestion)
+            if match.get('method') == 'single_hanzi_weak':
+                # Old retrieval caches cannot resurrect isolated-syllable advice.
                 continue
             if (match.get('cue_id') != cue_id or match.get('asr_source') != 'text'
                     or match.get('method') != 'latin_identifier'

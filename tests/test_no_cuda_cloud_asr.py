@@ -462,7 +462,7 @@ def test_mosi_upload_is_not_bounded_by_the_connect_timeout(tmp_path, monkeypatch
         if sys.platform == 'win32':
             # The previous in-memory upload: one TLS write bounded by the connect
             # timeout (how Windows sockets time it; other platforms may not reproduce it).
-            with pytest.raises(requests.exceptions.ConnectionError, match='write operation timed out'):
+            with pytest.raises(requests.exceptions.ConnectionError, match=r'write operation timed out|operation did not complete.*write'):
                 requests.post(base + '/audio/transcriptions', files={'file': ('a.wav', b'\0' * 2880000)},
                               timeout=(1, 30), verify=str(pem))
         started = time.monotonic()

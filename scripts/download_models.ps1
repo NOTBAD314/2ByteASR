@@ -74,9 +74,9 @@ if ($Source -eq "HF_MIRROR") {
     $env:HF_ENDPOINT = "https://huggingface.co"
 }
 Write-Host "[网络] 下载源：$Source" -ForegroundColor Cyan
-# 选 ModelScope / HF 镜像（国内来源）时，运行环境（uv、Python、PyTorch、PyPI 包）
-# 也先用国内镜像；自动 / HF 官方仍官方在前，慢或失败时才换。校验不变。
-$env:2BYTEASR_RUNTIME_SOURCE = if ($Source -in @("MODELSCOPE", "HF_MIRROR")) { "mirror" } else { "auto" }
+# 下载源也管运行环境（uv、Python、PyTorch、PyPI 包）：ModelScope / HF 镜像 = 国内镜像在前；
+# HF 官方 = 官方在前；自动 = 下载前先测各来源速度再排顺序（2026-10-28）。慢或停住时都会换来源，校验不变。
+$env:2BYTEASR_RUNTIME_SOURCE = if ($Source -in @("MODELSCOPE", "HF_MIRROR")) { "mirror" } elseif ($Source -eq "HF_OFFICIAL") { "official" } else { "auto" }
 Write-Host '[2BYTEASR_PHASE] {"phase":"preparing"}'
 # 镜像下载大文件较慢，放宽读/连接超时（默认值会导致大文件中途 ReadTimeout）
 if (-not $env:HF_HUB_DOWNLOAD_TIMEOUT) { $env:HF_HUB_DOWNLOAD_TIMEOUT = "300" }

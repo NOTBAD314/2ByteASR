@@ -7,11 +7,11 @@
 | 你的情況 | 建議 | 教程 |
 | --- | --- | --- |
 | 沒有顯示卡，**只想填一把 Key** 就開始 | MOSS-Transcribe-Diarize Pro 雲端（MOSI）：直接上傳本地音訊，有說話人；只有句段時間（要逐字時間再裝本地對齊模型） | [教程](mosi-moss-pro.zh-Hant.md) |
-| 需要字/詞級時間，願意設定一次 OSS 私有儲存 | 阿里雲百鍊 · 錄音檔案識別（中國站）或 Qwen Cloud（國際站，新加坡） | [百鍊](bailian-filetrans.zh-Hant.md)、[Qwen Cloud](qwen-cloud-filetrans.zh-Hant.md) |
+| 需要字/詞級時間 | 阿里雲百鍊 · 錄音檔案識別，或 Qwen 官方 API（中國站千問AI平台 / 國際站 Qwen Cloud）；預設不用建 OSS | [百鍊](bailian-filetrans.zh-Hant.md)、[千問AI平台](qianwen-filetrans.zh-Hant.md)、[Qwen Cloud](qwen-cloud-filetrans.zh-Hant.md) |
 | 已有訊飛 / Groq / OpenAI 賬號 | 訊飛 Spark-ASR 2.0（每約 55 秒一段文字）、Groq Whisper（句段時間）、OpenAI（預設模型不回時間戳） | [訊飛](iflytek-spark.zh-Hant.md)、[Groq](groq.zh-Hant.md)、[OpenAI](openai-transcribe.zh-Hant.md) |
 | 進階：OpenRouter、Azure OpenAI 部署、自定義相容介面 | 需要自己判斷模型與部署；兔白未用真實金鑰實測 | [OpenRouter](openrouter.zh-Hant.md)、[Azure](azure.zh-Hant.md)、[自定義](custom-asr.zh-Hant.md) |
 
-百鍊和 Qwen Cloud 的錄音檔案識別只接受“服務商能讀到的音訊網址”。正式使用要你自己的 OSS 私有儲存（兔白上傳、生成限時簽名連結、取得結果後刪除）。服務商的臨時上傳官方寫明“請勿用於生產環境”，兔白只把它當作明確選擇的“僅供試用”。
+百鍊、千問AI平台和 Qwen Cloud 的錄音檔案識別只接受“服務商能讀到的音訊網址”。2026-10-28 起兔白預設把音訊傳到服務商提供的免費臨時空間（48 小時後自動刪除），不用建 OSS；官方寫明臨時空間“請勿用於生產環境”（指伺服器那種高併發批次處理，桌面識別每次只傳一個檔案）。想自己保管音訊或經常大量識別，可以改選自己的 OSS 私有儲存（兔白上傳、生成限時簽名連結、取得結果後刪除）。
 
 ## 文字 AI（斷句、校對、翻譯；只發送字幕文字）
 

@@ -40,7 +40,7 @@ from ..i18n import tr
 
 
 MEDIA_FILTER = (
-    "媒体文件 (*.mp4 *.mkv *.mov *.webm *.flv *.avi *.wav *.mp3 "
+    "媒体文件 (*.mp4 *.mkv *.mov *.webm *.flv *.avi *.gif *.wav *.mp3 "
     "*.m4a *.flac *.aac);;所有文件 (*)"
 )
 

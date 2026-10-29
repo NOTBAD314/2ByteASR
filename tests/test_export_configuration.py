@@ -141,3 +141,41 @@ def test_target_completion_dynamic_arguments_follow_language(workspace, tmp_path
     assert str(i18n.tr('无法可靠测量')) in ui.success_meta.text()
     assert str(i18n.tr('导出完成，视频码率无法可靠测量。成片与诊断信息已保留。')) == ui.success_page.error.text()
     assert output.read_bytes() == b'published'
+
+
+def test_auto_uses_a_verified_hardware_encoder_first(workspace, monkeypatch):
+    """2026-10-28 (users: burning is slow): "auto" used to pick libx264 whenever
+    it existed, so a verified NVENC never ran and the recommended preset's CQ
+    became CRF. Now it follows the capability order: hardware first."""
+    ui = workspace
+    assert ui._render_settings().encoder == 'libx264'   # software only: unchanged
+    monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices',
+                        lambda _ffmpeg, codec: {'h264': ['h264_nvenc', 'h264_amf', 'libx264']}.get(codec, []))
+    ui.preset.setCurrentIndex(ui.preset.findData('recommended'))
+    ui._encoder_changed()
+    settings = ui._render_settings()
+    assert (settings.encoder, settings.quality_mode, settings.preset) == ('h264_nvenc', 'cq', 'p4')
+    # The preset number (20) was always run as x264 CRF; NVENC needs +4 for that picture.
+    assert settings.quality == 20 + studio_export_ui.AUTO_NVENC_CQ_OFFSET
+    assert 'NVIDIA NVENC' in ui.actual_encoder_hint.text()
+    ui._populate_encoders()
+    ui.encoder.setCurrentIndex(ui.encoder.findData('h264_nvenc'))   # chosen by hand: the number as typed
+    assert ui.encoder.currentData() == 'h264_nvenc'
+    assert ui._render_settings().quality == 20
+    ui.encoder.setCurrentIndex(ui.encoder.findData('auto'))
+    # Quick Sync / AMF H.264 were not measured: auto keeps x264 there.
+    monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices',
+                        lambda _ffmpeg, codec: {'h264': ['h264_qsv', 'h264_amf', 'libx264']}.get(codec, []))
+    assert ui._resolved_encoder() == 'libx264'
+    # The HEVC / AV1 presets exist only with a hardware encoder; auto must use it,
+    # and AV1 without one takes SVT-AV1, never the far slower libaom.
+    monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices',
+                        lambda _ffmpeg, codec: {'hevc': ['hevc_amf', 'libx265'],
+                                                'av1': ['libsvtav1', 'libaom-av1']}.get(codec, []))
+    ui.codec.setCurrentIndex(ui.codec.findData('hevc'))
+    assert ui._resolved_encoder() == 'hevc_amf'
+    ui.codec.setCurrentIndex(ui.codec.findData('av1'))
+    assert ui._resolved_encoder() == 'libsvtav1'
+    monkeypatch.setattr(studio_export_ui, 'cached_encoder_choices', lambda *_args: [])
+    ui.codec.setCurrentIndex(ui.codec.findData('h264'))
+    assert ui._resolved_encoder() == 'libx264'   # no capability scan yet

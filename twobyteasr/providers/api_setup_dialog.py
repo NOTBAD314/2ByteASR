@@ -281,13 +281,14 @@ QFrame#apiSetupNote[noteKind="warn"] {{ background: {t.warning_soft}; }}
 QLabel#apiSetupNoteText {{ color: {t.text_secondary}; font-size: 13px; font-weight: 500; background: transparent; }}
 QFrame#apiSetupNote[noteKind="free"] QLabel#apiSetupNoteText {{ color: {c['success_ink']}; }}
 QFrame#apiSetupNote[noteKind="warn"] QLabel#apiSetupNoteText {{ color: {t.warning}; }}
-QPushButton#apiSetupNext, QPushButton#apiSetupSkip, QPushButton#apiSetupTrialLink {{ background: transparent;
+QPushButton#apiSetupNext, QPushButton#apiSetupSkip, QPushButton#apiSetupTrialLink,
+QPushButton#apiSetupOssStepLink {{ background: transparent;
     border: 1px solid transparent; color: {t.accent_text}; font-size: 14px; font-weight: 500; padding: 0 8px;
     min-height: 36px; border-radius: 10px; }}
-QPushButton#apiSetupNext:hover, QPushButton#apiSetupSkip:hover, QPushButton#apiSetupTrialLink:hover {{
-    background: {t.selected}; color: {t.text}; }}
-QPushButton#apiSetupNext:focus, QPushButton#apiSetupSkip:focus, QPushButton#apiSetupTrialLink:focus {{
-    border-color: {t.focus}; }}
+QPushButton#apiSetupNext:hover, QPushButton#apiSetupSkip:hover, QPushButton#apiSetupTrialLink:hover,
+QPushButton#apiSetupOssStepLink:hover {{ background: {t.selected}; color: {t.text}; }}
+QPushButton#apiSetupNext:focus, QPushButton#apiSetupSkip:focus, QPushButton#apiSetupTrialLink:focus,
+QPushButton#apiSetupOssStepLink:focus {{ border-color: {t.focus}; }}
 QPushButton#apiSetupMoreToggle, QPushButton#apiSetupDetailsToggle {{ background: transparent; border: 0;
     color: {t.text_secondary}; font-size: 13px; padding: 0 4px; min-height: 32px; text-align: left; }}
 QPushButton#apiSetupMoreToggle:hover {{ color: {t.text}; }}
@@ -650,7 +651,9 @@ class ApiSetupDialog(SpringDialog):
                 self.accept()
                 self.host.open_text_settings(guide.key)
         self._go_fill = go_fill
-        self._walk = catalog.walkthrough(guide, can_fill=go_fill is not None)
+        # 录音文件识别 shows “建 OSS” only for a user who chose (or already set up) their own OSS.
+        own_storage = guide.needs_storage and self._initial_upload_mode(guide) == catalog.UPLOAD_OWN_OSS
+        self._walk = catalog.walkthrough(guide, can_fill=go_fill is not None, own_storage=own_storage)
         self._pages = []
         total = len(self._walk)
         for index, step in enumerate(self._walk):
@@ -1117,7 +1120,9 @@ class ApiSetupDialog(SpringDialog):
         last = len(self._walk) - 1
         if self._walk[last].role == 'paste' and self._key_present():
             for index in range(last):
-                self._done[index] = True
+                # A key does not build the bucket: “建 OSS” is done once one is entered.
+                if self._walk[index].role != 'storage' or self._value('oss_bucket'):
+                    self._done[index] = True
         if checked is not None:
             self._done[last] = bool(checked)
         if self._page_kind in {'step', 'paste', 'fill'}:
@@ -1219,6 +1224,8 @@ class ApiSetupDialog(SpringDialog):
                     editor.addItem(tr(choice_label), choice_value)
                 editor.setCurrentIndex(max(0, editor.findData(value or spec.prefilled)))
                 editor.currentIndexChanged.connect(lambda _i: self._apply_field_visibility())
+                if spec.key == 'filetrans_upload':
+                    editor.currentIndexChanged.connect(lambda _i: self._sync_storage_step())
             elif spec.key == 'oss_region':
                 editor = QComboBox()
                 editor.setObjectName('apiSetupField_oss_region')
@@ -1266,14 +1273,27 @@ class ApiSetupDialog(SpringDialog):
                 rows.append(unlock)
                 self._lockable_widgets.extend(locked)
             if spec.key == 'filetrans_upload':
-                # Shown only while the trial upload is selected (ADR 0112).
-                trial = QLabel(tr(catalog.TRIAL_UPLOAD_NOTE))
-                trial.setObjectName('statusWarn')
-                trial.setWordWrap(True)
-                self._add_row(form, '', trial)
-                self._field_rows['filetrans_upload_trial'] = (
-                    catalog.Field('filetrans_upload_trial', '', '', show_when=('filetrans_upload', catalog.UPLOAD_PROVIDER)),
-                    [trial])
+                # The temporary space's official limits, in plain words (2026-10-28: the default).
+                note = QLabel(tr(catalog.TEMPORARY_UPLOAD_NOTE))
+                note.setObjectName('fieldHint')
+                note.setWordWrap(True)
+                # The form gives a wrapped label more height than its lines need; keep the text under the hint.
+                note.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                self._add_row(form, '', note)
+                self._field_rows['filetrans_upload_note'] = (
+                    catalog.Field('filetrans_upload_note', '', '', show_when=('filetrans_upload', catalog.UPLOAD_PROVIDER)),
+                    [note])
+                # Own OSS: the “建 OSS” step joins the guide; this jumps back to it.
+                oss_step = QPushButton(tr(catalog.OWN_OSS_STEP_LINK))
+                oss_step.setObjectName('apiSetupOssStepLink')
+                oss_step.setAutoDefault(False)
+                oss_step.setCursor(Qt.CursorShape.PointingHandCursor)
+                oss_step.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)   # a link, not a bar
+                oss_step.clicked.connect(self._go_storage_step)
+                self._add_row(form, '', oss_step)
+                self._field_rows['filetrans_upload_oss_step'] = (
+                    catalog.Field('filetrans_upload_oss_step', '', '', show_when=('filetrans_upload',
+                                                                                  catalog.UPLOAD_OWN_OSS)), [oss_step])
             if spec.show_when:
                 self._field_rows[spec.key] = (spec, rows)
         source = 'api_host' if 'api_host' in self._fields else (
@@ -1311,6 +1331,62 @@ class ApiSetupDialog(SpringDialog):
         if self.oss_button is not None:
             self.oss_button.setVisible(catalog.uses_own_storage(self._guide, values))
 
+    def _initial_upload_mode(self, guide, models=None) -> str:
+        """The upload choice the page opens on: the saved route, else the provider's temporary space."""
+        if models is None:
+            settings = self.host.settings() or {}
+            models = settings.get('models', {}) if isinstance(settings, dict) else {}
+        try:
+            saved = tuple(self.host.saved_oss_credentials() or ())
+        except Exception:
+            saved = ()
+        mode = catalog.resolve_upload_mode(models, guide.key, has_oss_credentials=len(saved) >= 2 and all(saved[:2]))
+        # A bucket saved without its AccessKey: open on own OSS so the missing fields show.
+        return catalog.UPLOAD_OWN_OSS if mode == catalog.UPLOAD_MISSING else mode
+
+    def _sync_storage_step(self) -> None:
+        """Choosing own OSS adds “建 OSS” before 贴上检查; the temporary space removes it (2026-10-28)."""
+        guide = self._guide
+        if guide is None or not guide.needs_storage or not self._walk or self._walk[-1].role != 'paste':
+            return
+        own = self._value('filetrans_upload') == catalog.UPLOAD_OWN_OSS
+        if own == any(step.role == 'storage' for step in self._walk):
+            return
+        walk = catalog.walkthrough(guide, can_fill=self._go_fill is not None, own_storage=own)
+        done = dict(zip((step.role for step in self._walk), self._done))
+        if own:
+            position = next(i for i, step in enumerate(walk) if step.role == 'storage')
+            page = self._step_page(walk[position], position, len(walk))
+            self._pages.insert(position, page)
+            self.stack.addWidget(page)
+        else:
+            position = next(i for i, step in enumerate(self._walk) if step.role == 'storage')
+            page = self._pages.pop(position)
+            self.stack.removeWidget(page)
+            page.setParent(None)
+            page.deleteLater()
+        self._walk = walk
+        self._done = [done.get(step.role, False) for step in walk]
+        total = len(walk)
+        for index, page in enumerate(self._pages):
+            step_of = page.findChild(QLabel, 'apiSetupStepOf')
+            if step_of is not None:
+                step_of.setText(tr('第 {value0} 步，共 {value1} 步', value0=index + 1, value1=total))
+        title = self._pages[-1].findChild(QLabel, 'apiSetupStepTitle')
+        if title is not None:
+            title.setText(tr(walk[-1].title))
+        self.progress.set_steps([step.label for step in walk])
+        if self._page_kind == 'paste':
+            self._index = total - 1
+        self.setStyleSheet(self.styleSheet())   # the new step page follows the sheet (see _show)
+        self._update_steps()
+        self._refresh_chrome()
+
+    def _go_storage_step(self) -> None:
+        index = next((i for i, step in enumerate(self._walk) if step.role == 'storage'), None)
+        if index is not None:
+            self._go(index)
+
     def _initial_value(self, guide, spec, models, current_url):
         if spec.key == 'api_host':
             if not current_url:
@@ -1325,13 +1401,7 @@ class ApiSetupDialog(SpringDialog):
         if spec.key.startswith('oss_'):
             return str(models.get(spec.key) or spec.prefilled or '')
         if spec.key == 'filetrans_upload':
-            try:
-                saved = tuple(self.host.saved_oss_credentials() or ())
-            except Exception:
-                saved = ()
-            mode = catalog.resolve_upload_mode(models, guide.key, has_oss_credentials=len(saved) >= 2 and all(saved[:2]))
-            # Nothing set up yet: start on the regular route (own OSS), never on the trial upload.
-            return catalog.UPLOAD_OWN_OSS if mode == catalog.UPLOAD_MISSING else mode
+            return self._initial_upload_mode(guide, models)
         if spec.key == 'model':
             # A saved model of this provider, else the prefilled one (2026-10-25: OpenRouter's
             # MAI-Transcribe 2 showed an empty box when nothing, or an emptied model, was saved).
@@ -1593,7 +1663,7 @@ class ApiSetupDialog(SpringDialog):
         if catalog.uses_own_storage(self._guide, values):
             extra += '\n' + tr('音频会先放到你的 OSS 私有存储，结果取回后删除。')
         elif self._guide.key in catalog.FILETRANS_GUIDES:
-            extra += '\n' + tr('音频会先上传到服务商临时空间（你选的“仅供试用”方式，48 小时后由服务商删除），再提交识别。')
+            extra += '\n' + tr('音频会先上传到服务商临时空间（48 小时后由服务商自动删除），再提交识别。')
         box.setInformativeText(f'{extra}\n{tr("可能费用")}：{tr(cost)}')
         use_sample = box.addButton(tr('上传自带测试音频'), QMessageBox.ButtonRole.AcceptRole)
         choose = box.addButton(tr('选择我的音频…'), QMessageBox.ButtonRole.ActionRole)

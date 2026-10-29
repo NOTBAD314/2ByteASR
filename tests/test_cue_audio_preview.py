@@ -91,14 +91,14 @@ def test_timeline_caption_plays_its_own_clip_not_the_first_file_at_timeline_time
     project = _project(tmp_path, [("early", 1000, 2000, "第一段"), ("late", 4000, 5000, "第二段")])
     early = plan_cue_preview(project, "early")
     assert [(layer["clip_id"], layer["played_source_ms"]) for layer in early.diagnostic()["layers"]] == [
-        ("clip-a", [10750, 12350])]
-    assert set(_peaks(_decode(early))) == {600}  # source 10.75-12.35 s; the old seek played 300 Hz
+        ("clip-a", [11000, 12000])]
+    assert set(_peaks(_decode(early))) == {600}  # exact caption interval; old seek played 300 Hz
     late = plan_cue_preview(project, "late")
     assert [(layer["clip_id"], Path(layer["source_path"]).name) for layer in late.layers] == [("clip-b", "second.wav")]
     assert set(_peaks(_decode(late))) == {900}
     diagnostic = late.diagnostic()
     assert diagnostic["cue_id"] == "late" and diagnostic["cue_domain"] == "timeline"
-    assert diagnostic["play_range_ms"] == [3750, 5350] and diagnostic["layers"][0]["played_source_ms"] == [1750, 3350]
+    assert diagnostic["play_range_ms"] == [4000, 5000] and diagnostic["layers"][0]["played_source_ms"] == [2000, 3000]
 
 
 def test_caption_across_a_cut_follows_both_clips_in_order(tmp_path):
@@ -160,4 +160,4 @@ def test_preview_stops_by_itself_when_the_device_finished(tmp_path):
     assert player.cue_id == "a" and player._end_timer.isActive()
     progress["us"] = 1_000_000
     player._check_finished()
-    assert player.cue_id == "" and states == [("a", "")]
+    assert player.cue_id == "" and states == [("a", "playing"), ("a", "")]

@@ -114,6 +114,14 @@ def ordinary_word_in_context(text, start, end):
     return word_frequency(word) >= ORDINARY_WORD_FREQ and word_tag(word) not in NOUN_TAGS
 
 
+def common_word_in_context(text, start, end):
+    """A common noun is also legitimate speech; sound alone is insufficient."""
+    word = str(text)[start:end]
+    aligned = any((a, b) == (start, end) for _, a, b in _tokens(str(text)))
+    return aligned and (ordinary_word_in_context(text, start, end)
+                        or word_tag(word) in {"n", "v", "a", "ad", "an", "vn"} and word_frequency(word) >= 100)
+
+
 def word_span(text, start, end):
     """Smallest word-aligned span covering [start, end) of ``text``."""
     text = str(text)
@@ -172,6 +180,25 @@ def ordinary_reduplication(text, start, end):
         return True
     following = text[end:end + 1]
     return char in COMMON_VERBS and bool(following) and following in COMPLEMENTS
+
+
+def reduplication_names_nothing(text, start, end):
+    """A doubled-character span that cannot be a doubled nickname (球球, 莎莎).
+
+    Besides ordinary doubled words: three or more copies (帅帅帅), a span
+    inside or across a longer word (冥冥之中, 小心翼翼, 一下下, 神神秘,
+    应应该, 养分分给) and a doubled verb or particle (去去上海, 拜拜, 海之之)
+    are speech. 2026-10-28: these were most of the user's 术语召回缺口 items.
+    """
+    text = str(text)
+    span = text[start:end]
+    if ordinary_reduplication(text, start, end) or len(span) >= 3:
+        return True
+    if any(a < end and start < b and b - a > 1 and (a, b) != (start, end)
+           for _word, a, b in _tokens(text)):
+        return True
+    tag = word_tag(span[:1])
+    return tag in FUNCTION_TAGS or tag.startswith("v")
 
 
 @dataclass(frozen=True)
@@ -376,7 +403,7 @@ def word_tokens(text):
                  if 2 <= len(word) <= 4 and HANZI.fullmatch(word[0]) and all(HANZI.fullmatch(c) for c in word))
 
 
-def consistency_occurrences(entries, *, preferred=(), common_freq=ORDINARY_WORD_FREQ):
+def consistency_occurrences(entries, *, preferred=(), common_freq=ORDINARY_WORD_FREQ, cancel_check=None):
     """Proposals that make later spellings of one sound follow one spelling.
 
     ``entries``: (cue_id, start_ms, text) in time order. ``preferred``:
@@ -387,7 +414,11 @@ def consistency_occurrences(entries, *, preferred=(), common_freq=ORDINARY_WORD_
     from ..studio.studio_text_tools import TextOccurrence
     preferred = set(preferred)
     first_seen, occurrences, groups = {}, [], {}
+    texts = {}
     for order, (cue_id, start_ms, text) in enumerate(entries):
+        if cancel_check is not None and cancel_check():
+            return {}
+        texts[cue_id] = str(text)
         for word, a, b in word_tokens(str(text)):
             first_seen.setdefault(word, order)
             occurrences.append((cue_id, start_ms, word, a, b))
@@ -413,6 +444,9 @@ def consistency_occurrences(entries, *, preferred=(), common_freq=ORDINARY_WORD_
         if word not in canonical_of:
             continue
         canonical, confident, from_preferred = canonical_of[word]
+        from ..glossary.proposal_safety import review_change_reason
+        if review_change_reason(texts[cue_id], (a, b), canonical, names=tuple(preferred)):
+            continue
         from ..i18n import tr
         reason = (tr("全片统一写法：采用「{word}」（词库或你的修改）", word=canonical) if from_preferred
                   else tr("全片统一写法：采用最先出现的「{word}」", word=canonical))

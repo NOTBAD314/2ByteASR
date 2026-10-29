@@ -598,7 +598,9 @@ def _fidelity_numbers(facts: RunFacts):
         at = float(match.group(2))
         rows.sort(key=lambda row: abs(float(row.get("start") or 0) - at))
     row = rows[0]
-    evidence = [_error_line(error), _event_line(row, "speaker", "start", "end", "expected_numbers", "actual_numbers")]
+    # split_numbers (2026-10-28): where a line edge cut inside a number, e.g. 二十|五.
+    evidence = [_error_line(error), _event_line(row, "speaker", "start", "end", "expected_numbers", "actual_numbers",
+                                                "split_numbers")]
     without_timing = facts.timeline == "off"
     without_ai = facts.switches.get("use_ai_grouping") is False
     if without_timing and without_ai:

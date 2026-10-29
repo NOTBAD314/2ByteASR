@@ -736,3 +736,61 @@ def test_selected_first_moves_current_item_to_front_once_per_widget():
     fresh.hidePopup()
     combo.deleteLater()
     fresh.deleteLater()
+
+
+def test_api_key_dialog_saves_filetrans_without_oss_unless_own_oss_is_chosen(monkeypatch):
+    """2026-10-28 (user): 录音文件识别 uses the provider's temporary space by default;
+    the advanced dialog asks for OSS only when “我自己的 OSS” is chosen."""
+    from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QLabel, QPushButton
+
+    import subtitle_core as legacy
+    from twobyteasr.app import ui as ui_module
+    from twobyteasr.app.ui import MainWindow
+    from twobyteasr.design.main_ui_popup import FramelessPopupCombo
+    from twobyteasr.providers import llm_config
+
+    QApplication.instance() or QApplication([])
+    captured = []
+
+    class _RecordingDialog(QDialog):
+        def exec(self):
+            captured.append(self)
+            return 0
+
+    monkeypatch.setattr(llm_config, "read_oss_credentials", lambda: ("", ""))
+    original_dialog = ui_module.SpringDialog
+    ui_module.SpringDialog = _RecordingDialog
+    try:
+        window = MainWindow([], legacy, object(), None)
+        models = dict(legacy.RUNTIME_SETTINGS.get("models", {}), filetrans_upload="auto", oss_bucket="")
+        monkeypatch.setattr(legacy, "RUNTIME_SETTINGS", dict(legacy.RUNTIME_SETTINGS, models=models))
+        window.qwen_asr_api_provider.setCurrentIndex(window.qwen_asr_api_provider.findData("qwen31_filetrans"))
+        window._open_api_key_dialog()
+    finally:
+        ui_module.SpringDialog = original_dialog
+    dialog = captured[0]
+    patches = []
+    monkeypatch.setattr(legacy, "configure_runtime_asr", lambda patch: patches.append(dict(patch)))
+    monkeypatch.setattr(window, "_save_asr_configuration", lambda show_feedback=False: False)
+    upload = dialog.findChild(FramelessPopupCombo, "asrCredentialUpload")
+    oss_group = next(box for box in dialog.findChildren(QGroupBox) if "OSS" in box.title())
+    save = next(button for button in dialog.findChildren(QPushButton) if button.text() == "保存")
+    assert upload.currentData() == "provider_temporary" and not upload.isHidden()
+    assert oss_group.isHidden()
+    save.click()
+    assert patches == [{"filetrans_upload": "provider_temporary"}]  # saved without any OSS field
+
+    upload.setCurrentIndex(upload.findData("own_oss"))
+    assert not oss_group.isHidden()
+    patches.clear()
+    save.click()
+    assert patches == []   # own OSS without a bucket is refused before anything is saved
+    status = [label.text() for label in dialog.findChildren(QLabel) if "Bucket" in label.text()]
+    assert any("OSS Bucket 不能为空" in text for text in status)
+
+    provider = next(combo for combo in dialog.findChildren(FramelessPopupCombo)
+                    if combo.count() >= len(ui_module.ASR_API_PRESETS))
+    provider.setCurrentIndex(provider.findData("mosi_moss_pro"))
+    assert upload.isHidden() and oss_group.isHidden()   # only 录音文件识别 hands audio over by URL
+    window.close()
+    window.deleteLater()

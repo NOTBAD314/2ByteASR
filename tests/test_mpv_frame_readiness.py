@@ -206,3 +206,51 @@ def test_close_discards_pending_frame_refresh_without_ipc():
     actor.close()
     posts.pop(0)()
     assert actor._frame_witness_request is None and not calls
+
+def test_seek_to_start_lands_on_a_late_first_picture():
+    """User's 20-minute FLV (2026-10-28): audio at 0.013 s, video at 0.077 s,
+    so mpv shows its first picture at 0.064 for a seek to 0 and the Studio
+    timed out after 34 s waiting for a frame at 0."""
+    from twobyteasr.playback.studio_mpv import MpvController
+    for first in (0.064, None):
+        actor, seek, state, calls = actor_fixture()
+        seek['target'] = 0.
+        state['time-pos'] = 0.064
+        firsts = {} if first is None else {'C:/fixture.mp4': first}
+        actor.controller.first_picture_seconds = lambda path, firsts=firsts: firsts.get(path)
+        actor._capture_frame_witness(4,3,dict(seek),2.)
+        observed = actor.frame_observation()
+        assert observed['status'] == 'ready', first
+        assert observed['landing_target'] == (0.064 if first else 0.)
+    controller = MpvController.__new__(MpvController)
+    controller._first_pictures = {}
+    controller.set_first_picture('C:/fixture.mp4', .998)
+    assert controller.first_picture_seconds('c:/FIXTURE.mp4') == .998
+    controller.set_first_picture('C:/fixture.mp4', None)
+    assert controller.first_picture_seconds('C:/fixture.mp4') is None
+
+
+def test_first_picture_allowance_does_not_accept_other_positions():
+    cases = [(12., 12.5, .064), (0., 3., None), (0., .5, .064), (.5, .9, .064)]
+    for target, position, first in cases:
+        actor, seek, state, calls = actor_fixture()
+        seek['target'] = target
+        state['time-pos'] = position
+        actor.controller.first_picture_seconds = lambda path, first=first: first
+        actor._capture_frame_witness(4,3,dict(seek),2.)
+        assert actor.frame_observation()['status'] == 'frame_or_target_not_ready', (target, position)
+
+
+def test_first_picture_comes_from_the_recorded_probe():
+    from twobyteasr.playback.frame_readiness import first_picture_seconds
+    asset = SimpleNamespace(canonical_source='H:/record/a.flv', video_metadata={
+        'has_video': True, 'first_pts_ms': 77.0, 'start_time_ms': 77.0, 'source_start_ms': 13.0})
+    project = SimpleNamespace(media_pool=[asset])
+    assert abs(first_picture_seconds(project, 'h:/RECORD/A.flv') - .064) < 1e-9
+    assert first_picture_seconds(project, 'C:/cache/continuous.mkv') is None
+    asset.video_metadata = {'has_video': False, 'start_time_ms': 0.}
+    assert first_picture_seconds(project, 'H:/record/a.flv') is None
+    asset.video_metadata = {'width': 1920}
+    assert first_picture_seconds(project, 'H:/record/a.flv') is None
+    assert first_picture_seconds(None, 'H:/record/a.flv') is None
+

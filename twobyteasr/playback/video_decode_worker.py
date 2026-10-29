@@ -230,6 +230,9 @@ def main():
     next_publish = last_heartbeat = 0.
     failed_epoch = None
     previous_transport = None
+    gif = None
+    gif_path = ''
+    gif_published = None
     try:
         while not closed.is_set():
             with demand_condition:
@@ -260,6 +263,43 @@ def main():
                     next_publish = 0.
                     previous_transport = transport
                     stats['publication_transport_resets'] = stats.get('publication_transport_resets', 0) + 1
+                if request['path'].lower().endswith('.gif'):
+                    from twobyteasr.media.animated_gif import GifFrames
+                    if gif is None or gif_path != request['path']:
+                        if gif is not None: gif.close()
+                        if container is not None: container.close(); container = None
+                        def preparing():
+                            nonlocal last_heartbeat
+                            if time.perf_counter()-last_heartbeat > .5:
+                                publish(dict(epoch=request['epoch'], heartbeat=True))
+                                last_heartbeat = time.perf_counter()
+                            return closed.is_set()
+                        gif = GifFrames(request['path'], cancelled=preparing)
+                        gif_path = request['path']
+                        gif_published = None
+                        stats.update(backend='gif-indexed-rgba', opens=stats['opens']+1)
+                    target_ms = request['source_ms']
+                    if not request['paused'] and request.get('clock_observed_at'):
+                        target_ms += max(0, min(.5, time.perf_counter()-request['clock_observed_at']))*1000*request['rate']
+                    pixels, pts, end, index = gif.frame_at(target_ms, request.get('max_size'))
+                    key = (request['epoch'], request['generation'], pts, pixels[:2])
+                    if key != gif_published:
+                        now = time.perf_counter()
+                        width, height, bgra = pixels
+                        publish(dict(epoch=request['epoch'], generation=request['generation'], path=request['path'],
+                            requested_ms=target_ms, pts_ms=pts, frame_end_ms=end, raw_pts=pts, raw_dts=None,
+                            time_base='1/1000', width=width, height=height, decoded_at=now,
+                            codec_decoded_at=now, published_at=now), bgra)
+                        gif_published = key
+                        stats.update(state='READY', decoded=gif.loads, cache_bytes=gif.cached_bytes)
+                    if time.perf_counter()-last_heartbeat > .5:
+                        publish(dict(epoch=request['epoch'], heartbeat=True))
+                        last_heartbeat = time.perf_counter()
+                    with demand_condition:
+                        demand_condition.wait(.008 if not request['paused'] else .04)
+                    continue
+                if gif is not None:
+                    gif.close(); gif = None; gif_path = ''
                 new_epoch = epoch != request['epoch']
                 if path != request['path'] or container is None:
                     if container is not None: container.close()
@@ -377,6 +417,7 @@ def main():
                 print(stats['error'], file=sys.stderr, flush=True)
     finally:
         closed.set()
+        if gif is not None: gif.close()
         if container is not None: container.close()
         if multimedia: multimedia.timeEndPeriod(1)
     return 0

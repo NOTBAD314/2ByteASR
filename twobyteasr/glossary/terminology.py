@@ -93,6 +93,11 @@ class GlossaryLibrary:
 class GlossarySnapshot:
     libraries: tuple[GlossaryLibrary, ...] = ()
 
+    @cached_property
+    def review_names(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(name for library in self.libraries
+            for name in (*[t.canonical for t in library.terms if t.confirmed], *library.reference_terms) if name))
+
     @property
     def canonical_terms(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(term.canonical for library in self.libraries
@@ -201,7 +206,7 @@ def snapshot_glossaries(legacy: Any, ids: Iterable[str]) -> GlossarySnapshot:
             user_verified = any(
                 x in _text(row.get("source")) for x in ("user_manual", "user_verified", "manual_srt"))
             # Same rows the page lists as hideable references (builtin_reference_terms_for_game).
-            if _text(row["canonical"]) in hidden and not user_verified:
+            if _text(row["canonical"]) in hidden:
                 continue
             # Existing short/contextual aliases still require ASR evidence;
             # only explicitly global builtin aliases are deterministic here.
@@ -379,7 +384,7 @@ class TermResolver:
         disabled = {}
         for library in snapshot.libraries:
             for term in library.terms:
-                if not term.confirmed:
+                if not term.confirmed or not term.correction_enabled:
                     continue
                 target = self._written(term.canonical)
                 for source in (term.canonical, *term.aliases):
@@ -466,6 +471,10 @@ class TermResolver:
             conflict = conflicts.get(key)
             rule = self._rules.get(key)
             reason = (blocked or {}).get(key, '')
+            if rule and source != rule[0] and not reason:
+                from .proposal_safety import numeric_expression_at
+                if numeric_expression_at(text, match.start(), match.end()):
+                    reason = 'quantity_in_context'
             if scene is not None and rule and not reason:
                 from ..recognition.content_scene import alias_context_conflict
                 if self.script:

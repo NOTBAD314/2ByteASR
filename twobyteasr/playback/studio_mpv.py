@@ -28,6 +28,9 @@ VIDEO_OVERLAY_ID = 0
 ADVANCED_OVERLAY_ID = 1
 TRANSFORM_OVERLAY_ID = 2
 VIDEO_TRANSFORM_OVERLAY_ID = 3
+# How far after the container start an unprobed recording may put its first
+# video picture (FLV leads seen: 64 ms, ~1 s).
+UNPROBED_FIRST_PICTURE_LIMIT_S = 1.5
 
 
 class MpvUnavailableError(RuntimeError):
@@ -513,6 +516,8 @@ class _MpvCommandActor:
                     "observed_perf_counter_ts": time.perf_counter(),
                     "position": value,
                     "seek_target": self._seek_target,
+                    "seek_completed": (getattr(self, '_seek_event_generation', -1) == self._source_generation
+                                       and getattr(self, '_seek_completed_generation', -1) == self._source_generation),
                     "paused": bool(self._properties.get('pause', True)),
                     "playback_rate": float(self._properties.get('speed') or 1.),
                     "seeking": bool(self._properties.get('seeking', False)),
@@ -531,6 +536,8 @@ class _MpvCommandActor:
         self.controller._advance_source_epoch(int(generation))
         self._source_generation = self.controller.source_epoch
         self._seek_target = max(0.0, float(target))
+        self._seek_event_generation = -1
+        self._seek_completed_generation = -1
         self._seek_poll_until = time.monotonic()+.35
         self._frame_witness_request = None
         with self._properties_lock:
@@ -653,9 +660,23 @@ class _MpvCommandActor:
             if not self.property('pause', True):
                 tolerance += max(0., time.perf_counter()-seek['perf_counter']) * float(self.property('speed',1.) or 1.)
             witness['target_tolerance_seconds'] = tolerance
+            # 2026-10-28 (user's 20-minute FLV, 准备超时 after 34 s): an exact
+            # seek before the first picture lands on it. Bilibili FLVs start
+            # video 64 ms (some ~1 s) after audio, so a seek to 0 showed 0.064
+            # forever and never counted as this target's frame.
+            target = float(seek['target'])
+            lookup = getattr(self.controller, 'first_picture_seconds', None)
+            first = lookup(state['path']) if callable(lookup) else None
+            landing = target if first is None else max(target, first)
+            witness['landing_target'] = landing
+            on_target = position is not None and abs(float(position)-landing) <= tolerance
+            if not on_target and first is None and position is not None and target <= tolerance:
+                # Unprobed source (proxy, older project): a seek to the file
+                # start shows its first picture wherever a recording puts it.
+                on_target = target <= float(position) <= target + UNPROBED_FIRST_PICTURE_LIMIT_S
             if (isinstance(frame, dict) and frame and position is not None and not state['seeking']
                     and same_media_path(state['path'], self.controller._subtitle_media_path)
-                    and abs(float(position)-float(seek['target'])) <= tolerance):
+                    and on_target):
                 witness['status'] = 'ready'
             else:
                 witness['status'] = 'frame_or_target_not_ready'
@@ -669,6 +690,11 @@ class _MpvCommandActor:
 
     def _handle_event(self, payload: dict[str, Any]) -> None:
         name=payload.get('event')
+        if name == 'seek':
+            self._seek_event_generation = self._source_generation
+        elif (name == 'playback-restart'
+              and getattr(self, '_seek_event_generation', -1) == self._source_generation):
+            self._seek_completed_generation = self._source_generation
         if name in {'start-file','file-loaded','end-file','shutdown','playback-restart'} or (name=='property-change' and payload.get('name') in {'pause','idle-active','speed','mute'}):
             from ..diagnostics.event_log import emit
             emit('player.state',module='mpv',phase=name,property=payload.get('name'),value=payload.get('data') if name=='property-change' else None,
@@ -1121,6 +1147,7 @@ class MpvController:
         self._subtitle_binding_epoch = 0
         self._subtitle_media_path = ''
         self._subtitle_media_ready = False
+        self._first_pictures: dict[str, float] = {}
         self._desired_subtitle_path = ''
         self._subtitle_visible = True
         self._desired_commands: dict[str, list[Any]] = {}
@@ -1271,6 +1298,24 @@ class MpvController:
     def observed_frame(self) -> dict[str, Any]:
         actor = self._actor
         return actor.frame_observation() if actor is not None else {'status': 'unobserved'}
+
+    def set_first_picture(self, media_path, seconds: float | None) -> None:
+        """Record where a source's first video picture sits on mpv's clock.
+
+        mpv rebases time to the container start (``demuxer-start-time``) and
+        exposes no stream start, so the probe's video start minus container
+        start is the earliest position an exact seek can land on.
+        """
+        key = os.path.normcase(os.path.abspath(str(media_path)))
+        if seconds is None:
+            self._first_pictures.pop(key, None)
+        else:
+            self._first_pictures[key] = max(0.0, float(seconds))
+
+    def first_picture_seconds(self, media_path) -> float | None:
+        if not media_path:
+            return None
+        return self._first_pictures.get(os.path.normcase(os.path.abspath(str(media_path))))
 
     def _record_visual_applied(self, target: str | int, visible: bool) -> None:
         """Record compositor state only after mpv acknowledges the mutation."""

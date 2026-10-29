@@ -33,8 +33,8 @@ def open_completion_retry_review(studio, report, options, *, stage='polish'):
     project = studio.session.project
     if project is None:
         return
-    binding = PreviewBinding.capture(project)
     copied = SubtitleProject.from_dict(copy.deepcopy(project.to_dict()))
+    binding = PreviewBinding.capture(project)
     dialog = GlossaryReviewDialog(studio, studio)
     generation = dialog._review_generation
     bind_text(dialog, '重试未完成 AI 校对' if stage == 'polish' else '重试联网核验', property='windowTitle')

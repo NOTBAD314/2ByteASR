@@ -279,6 +279,16 @@ class MediaService:
         return value
 
     def _probe(self, source: Path) -> MediaMetadataSnapshot:
+        if source.suffix.lower() == '.gif':
+            from .animated_gif import prepare_gif, sampling_fps
+            _, data = prepare_gif(source)
+            identity = data['identity']
+            return MediaMetadataSnapshot(source_path=str(source), source_size=identity['size'],
+                source_mtime_ns=identity['mtime_ns'], duration_ms=data['duration_ms'],
+                has_video=True, has_audio=False, video_codec='gif',
+                width=data['width'], height=data['height'], fps=sampling_fps(data),
+                video_timebase='1/1000', video_stream_end_ms=data['duration_ms'],
+                fingerprint=hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest())
         completed = self._probe_runner(
             [
                 str(self.ffprobe_path), "-v", "error", "-show_entries",

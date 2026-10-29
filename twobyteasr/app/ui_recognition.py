@@ -738,6 +738,20 @@ class RecognitionPlanWidget(QWidget):
         self._update_responsive_profile()
 
     def _update_responsive_profile(self, comfortable: bool | None = None):
+        # Updating one card can resize its parent while the other two still
+        # have the previous profile. Do not choose a second profile from that
+        # half-applied row (native client resize can otherwise recurse).
+        if getattr(self, '_updating_responsive_profile', False):
+            if getattr(self, '_applying_profile', False):
+                self._profile_recheck = True
+            return False
+        self._updating_responsive_profile = True
+        try:
+            return self._update_responsive_profile_impl(comfortable)
+        finally:
+            self._updating_responsive_profile = False
+
+    def _update_responsive_profile_impl(self, comfortable: bool | None = None):
         """Give the cards the profile that fits the room they have now.
 
         2026-10-22 (the app closed with a stack overflow, 0xC00000FD, on home

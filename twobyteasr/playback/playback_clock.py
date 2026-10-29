@@ -44,6 +44,10 @@ class PlaybackClock:
     """
 
     SEEK_ACK_TOLERANCE_MS = 40.0
+    # A confirmed decoder restart may settle on a nearby actual frame (the
+    # tested FLV returns target+58ms). Adopt that same frame immediately rather
+    # than after the 2.5s fallback; unconfirmed/old epochs keep the strict gate.
+    SEEK_COMPLETED_TOLERANCE_MS = 100.0
     # A seek whose acknowledgement never arrives (actor epoch desync, dead
     # pipe, dropped property event) must not pin the playhead to the seek
     # target forever. After this deadline the next fresh observation is
@@ -328,6 +332,7 @@ class PlaybackClock:
         presentation_media_ms: float | None = None,
         align_forward: bool = False,
         observed_perf_counter_ts: float | None = None,
+        seek_completed: bool = False,
     ) -> tuple[PlaybackPositionSnapshot, bool, str]:
         current_ts = time.monotonic() if now is None else float(now)
         previous_snapshot_ms = self._snapshot.presentation_media_ms
@@ -368,7 +373,10 @@ class PlaybackClock:
                 self._record("observation", accepted=False, reason=reason)
                 return self._snapshot, False, reason
             target_delta_ms = observed - self._seek_target_ms
-            forward_allowance_ms = self.SEEK_ACK_TOLERANCE_MS
+            tolerance_ms = self.SEEK_ACK_TOLERANCE_MS
+            if seek_completed and paused and not seeking and generation == self._generation:
+                tolerance_ms = self.SEEK_COMPLETED_TOLERANCE_MS
+            forward_allowance_ms = tolerance_ms
             if not paused and self._seek_started_ts is not None:
                 elapsed_ms = max(0.0, (current_ts - self._seek_started_ts) * 1000.0)
                 forward_allowance_ms += elapsed_ms * min(
@@ -377,7 +385,7 @@ class PlaybackClock:
             if (
                 not seek_gate_expired
                 and (
-                    target_delta_ms < -self.SEEK_ACK_TOLERANCE_MS
+                    target_delta_ms < -tolerance_ms
                     or target_delta_ms > forward_allowance_ms
                 )
             ):

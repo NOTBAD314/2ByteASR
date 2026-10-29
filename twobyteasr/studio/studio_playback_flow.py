@@ -422,7 +422,13 @@ class StudioPlaybackFlowMixin:
         if self._loop_enabled and self._loop_region_ms and milliseconds >= self._loop_region_ms[1]:
             self._seek(self._loop_region_ms[0] / 1000.0)
             return
-        if (self.follow_playhead_toggle.isChecked() and not self._editing_has_focus()
+        # Follow moves only the timeline's view. A focused field elsewhere
+        # (字号, the timecode box, the AI prompt) used to switch it off
+        # (2026-10-27, user: follow is on but does nothing); only the
+        # timeline's own text editor sits on that view and needs it still.
+        inline_editor = getattr(self.timeline, '_inline_editor', None)
+        if (self.follow_playhead_toggle.isChecked()
+                and not (inline_editor is not None and inline_editor.isVisible())
                 and not getattr(self.timeline, '_scrub_drag', False)
                 and not getattr(self.timeline, '_pan_drag', None)):
             # 播放态连续微滚跟随（2026-09-18 III：翻页跟随在窄视口下每 ~6s
@@ -906,7 +912,9 @@ class StudioPlaybackFlowMixin:
                 layers.append(scene._base_layer)
             for layer in layers:
                 source = scene._players.get(str(layer.get("clip_id")))
-                if source is not None and (source.image.isNull() or abs(source.pts_ms-int(layer["source_ms"])) > 100):
+                target = int(layer['source_ms'])
+                within_frame = source is not None and source.pts_ms <= target < int(getattr(source, 'frame_end_ms', 0))
+                if source is not None and (source.image.isNull() or (not within_frame and abs(source.pts_ms-target) > 100)):
                     if source.performance_snapshot().get("state") not in {"FAILED", "EOF"}:
                         return False
         return True

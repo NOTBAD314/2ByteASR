@@ -217,7 +217,9 @@ def test_china_site_guide_links_fields_and_tutorial():
     assert url_field.prefilled == 'https://maas.qianwenaiapi.com'
     region = next(spec for spec in guide.fields if spec.key == 'oss_region')
     assert region.example.startswith('cn-beijing')
-    steps = catalog.walkthrough(guide)
+    # 2026-10-28: the provider's temporary space by default; “建 OSS” only with own OSS chosen.
+    assert [step.role for step in catalog.walkthrough(guide)] == ['account', 'topup', 'key', 'paste']
+    steps = catalog.walkthrough(guide, own_storage=True)
     assert [step.role for step in steps] == ['account', 'topup', 'key', 'storage', 'paste']
     assert all('qianwenai.com' in step.url or 'aliyun.com' in step.url for step in steps if step.url)
     text = guide.guide_text(language='zh')

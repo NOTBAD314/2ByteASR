@@ -39,15 +39,20 @@ class MediaIndex:
     rejected_packets: tuple = ()
     corrupt_frames: int = 0
     damaged_head: bool = False
+    animation_duration_ms: int = 0
 
     @property
     def last(self): return self.pts[-1] * self.time_base - self.origin
     @property
     def interval(self):
+        if self.animation_duration_ms:
+            return Fraction(self.animation_duration_ms, 1000) - self.last
         return (self.pts[-1]-self.pts[-2])*self.time_base if len(self.pts)>1 else 1/self.fps
 
     def target(self, seconds):
         value = Fraction(seconds)
+        if self.animation_duration_ms:
+            return max(Fraction(0), value)
         first = self.pts[0]*self.time_base-self.origin
         # A damaged start holds the first decodable picture, as players do.
         low = min(first, Fraction(0)) if self.damaged_head else first
@@ -69,6 +74,14 @@ def _check_cancel(cancelled):
 def probe_media(ffmpeg, path, *, cancelled=None):
     try:
         _check_cancel(cancelled)
+        if str(path).lower().endswith('.gif'):
+            from ..media.animated_gif import prepare_gif
+            _, data = prepare_gif(path, cancelled=cancelled)
+            return MediaIndex(str(Path(path).resolve()), Fraction(0), Fraction(1,1000),
+                tuple(data['frame_starts_ms']), Fraction(data['frame_count']*1000, data['duration_ms']),
+                json.dumps(dict(streams=[dict(codec_type='video', codec_name='gif', width=data['width'],
+                    height=data['height'], duration=data['duration_ms']/1000)], format=dict(duration=data['duration_ms']/1000))),
+                0., animation_duration_ms=data['duration_ms'])
         stat = Path(path).stat()
         return _probe(str(ffmpeg), str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns, cancelled)
     except (InterruptedError, ExportMediaError):
@@ -147,7 +160,14 @@ class SequentialExportDecoder:
         from ..playback.video_decode_worker import open_decoder
         self.index=index
         self.cancelled=cancelled
+        self.gif = None
         _check_cancel(cancelled)
+        if index.animation_duration_ms:
+            from ..media.animated_gif import GifFrames
+            self.gif = GifFrames(index.path, cancelled=cancelled)
+            self.request_id = 0
+            self.decoded_frames = 0
+            return
         self.container,self.stream,self.backend=open_decoder(index.path,backend)
         self.last_target=None;self.request_id=0;self.generation=uuid.uuid4().hex
         self.cached=None;self.cached_pts=None;self.decoded_frames=0;self.rejected=[]
@@ -209,6 +229,13 @@ class SequentialExportDecoder:
         return start
 
     def read(self, seconds, *, context=None):
+        if self.gif is not None:
+            _check_cancel(self.cancelled)
+            self.request_id += 1
+            pixels, start, end, frame_id = self.gif.frame_at(float(seconds)*1000)
+            return pixels, dict(context or {}, request_id=self.request_id, backend='gif-indexed-rgba',
+                source_ms=float(seconds)*1000, frame_pts=start, frame_seconds=start/1000,
+                frame_end_ms=end, gif_frame_id=frame_id, state='FRAME', cache_bytes=self.gif.cached_bytes)
         from ..playback.video_decode_worker import display_bgra
         self.request_id+=1;started=time.perf_counter()
         decoded_before,rejected_before=self.decoded_frames,len(self.rejected)
@@ -261,11 +288,15 @@ class SequentialExportDecoder:
         except Exception as exc:
             raise ExportMediaError('FRAME_REQUEST',receipt,exc) from exc
 
-    def close(self): self.container.close()
+    def close(self):
+        if self.gif is not None: self.gif.close()
+        else: self.container.close()
 
 
 def identity_video_graph(graph, media_path):
     """Prove a V1 graph is equivalent to the original media, including audio."""
+    if str(media_path).lower().endswith('.gif'):
+        return False
     tracks=[t for t in graph.get('video_tracks',[]) if t.get('enabled',True)]
     if len(tracks)!=1: return False
     clips=[c for c in tracks[0].get('clips',[]) if c.get('enabled',True)]

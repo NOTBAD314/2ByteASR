@@ -76,16 +76,23 @@ def style_popup(window: QWidget) -> None:
 
 
 def prepare_combo(combo: QComboBox) -> None:
-    """First show of a box: make its (not yet created) popup window
-    transparent and shadowless and its rows styled. Before the popup ever
-    opens, so the native window is created that way (changing it later
-    recreates the window and flashes)."""
+    """First show of a box: make its popup window transparent, frameless and
+    shadowless and its rows styled. Before the popup ever opens, so the native
+    window is created that way (changing a shown window recreates it and
+    flashes).
+
+    Frameless too (2026-10-27, user: black corners around many lists): Windows
+    only makes a see-through window layered when it has no native frame, and
+    Qt's combo popup is a plain ``Popup``. Without the flag the corners outside
+    the rounded border came out black."""
     if combo.property(READY):
         return
     combo.setProperty(READY, True)
     view = combo.view()
     container = view.window()
-    if container is not combo.window() and not container.testAttribute(Qt.WidgetAttribute.WA_WState_Created):
+    if container is not combo.window() and not container.isVisible():
+        # A hidden window that already exists is recreated on its next show.
+        container.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         container.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
         container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         container.setAutoFillBackground(False)

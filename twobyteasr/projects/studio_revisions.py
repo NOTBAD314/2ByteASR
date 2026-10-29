@@ -110,7 +110,7 @@ class RenderCueDTO:
     appearance_generation: int = 0
 
     @classmethod
-    def capture(cls, cue: StudioCue) -> "RenderCueDTO":
+    def capture(cls, cue: StudioCue, *, freeze=freeze_json) -> "RenderCueDTO":
         return cls(
             id=str(cue.id),
             start_ms=int(cue.start_ms),
@@ -122,8 +122,8 @@ class RenderCueDTO:
             original_text=str(cue.original_text),
             evidence_refs=tuple(str(item) for item in cue.evidence_refs),
             raw_ass_override=str(cue.raw_ass_override),
-            appearance_override=freeze_json(cue.appearance_override),
-            transform=freeze_json(cue.transform),
+            appearance_override=freeze(cue.appearance_override),
+            transform=freeze(cue.transform),
             base_preset_id=str(cue.base_preset_id),
             appearance_generation=int(cue.appearance_generation),
         )
@@ -490,7 +490,7 @@ class StudioRevisionStore:
             (str(key), frozen_timeline() if key == KEY else freeze_json(item))
             for key, item in sorted(state.items(), key=lambda pair: str(pair[0]))))
 
-    def _capture_render(self, revision: int) -> SubtitleRenderRevision:
+    def _capture_render(self, revision: int, *, style_only: bool = False) -> SubtitleRenderRevision:
         settings = self.project.render_settings
         from ..timeline.caption_frame_time import project_frame_rate
         from ..caption_style.word_animation import build_word_animation, needs_word_plan
@@ -533,7 +533,7 @@ class StudioRevisionStore:
                 'translations': (self.project.generation_metadata or {}).get('translations', {}),
                 'speaker_names': (self.project.generation_metadata or {}).get('speaker_names', {}),
             }),
-            studio_state=self._frozen_studio_state(),
+            studio_state=(self.render.studio_state if style_only else self._frozen_studio_state()),
             frame_rate=project_frame_rate(self.project),
             timeline_cues=self._timeline_cues,
             word_animations=freeze_json(word_plans),
@@ -671,13 +671,22 @@ class StudioRevisionStore:
             return
         if dirty & _CUE_DIRTY:
             current = {cue.id: cue for cue in project.cues}
+            # Immutable equal presentation records can be shared within one
+            # capture. This bounded transaction-local memo needs no invalidation.
+            import marshal
+            presentation = {}
+            def freeze_presentation(value):
+                try:key = marshal.dumps(value, 2)
+                except (TypeError, ValueError):return freeze_json(value)
+                if key not in presentation:presentation[key] = freeze_json(value)
+                return presentation[key]
             if dirty & DirtyDomain.CUE_MODEL or not delta.affected_cue_ids:
                 # A split or delete keeps every unchanged cue's DTO object.
                 self._cues = _reuse_equal((RenderCueDTO.capture(cue) for cue in project.cues), self._cues)
             else:
                 affected = delta.affected_cue_ids
                 self._cues = tuple(
-                    RenderCueDTO.capture(current[item.id])
+                    RenderCueDTO.capture(current[item.id], freeze=freeze_presentation)
                     if item.id in affected and item.id in current else item
                     for item in self._cues
                     if item.id in current
@@ -700,7 +709,13 @@ class StudioRevisionStore:
             self.visual_revision += 1
         if dirty & (_CUE_DIRTY | _MAPPING_DIRTY):
             self._timeline_cues = self._capture_timeline_cues()
-        self.render = self._capture_render(delta.revision)
+        style_domains = (DirtyDomain.CUE_STYLE | DirtyDomain.TIMELINE_PIXELS | DirtyDomain.NATIVE_SUBTITLE
+                         | DirtyDomain.ADVANCED_PREVIEW | DirtyDomain.TRANSFORM | DirtyDomain.AUTOSAVE)
+        style_only = bool(dirty & DirtyDomain.CUE_STYLE) and not bool(dirty & ~style_domains)
+        # A field-only presentation transaction changes no caption receipts or
+        # other studio metadata. Reuse the immutable state for that exact set
+        # of typed domains; text/timing/structure/metadata changes recapture.
+        self.render = self._capture_render(delta.revision, style_only=style_only)
         if dirty & DirtyDomain.AUTOSAVE:
             # The existing debounce/save boundary freezes once before handing
             # data to a worker. Re-freezing all ASR evidence for every pointer

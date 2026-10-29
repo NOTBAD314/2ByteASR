@@ -36,9 +36,9 @@ DEFAULT_SETTINGS = {
         "oss_prefix": "asr-temp/",
         "oss_signed_url_ttl": 86400,
         "oss_auto_delete": True,
-        # 2026-10-13：录音文件识别的音频交接方式。auto = 已设置自己 OSS 的沿用 OSS，
-        # 其余用服务商官方暂存上传（48 小时后自动删除，不需要 OSS）；
-        # provider_temporary / own_oss 为用户明确选择。
+        # 录音文件识别的音频交接方式（2026-10-28 起同 10-13）：auto = Bucket 与 AccessKey 都已保存的
+        # 沿用自己的 OSS；没有 Bucket 的用服务商临时空间（48 小时后自动删除，不需要 OSS）；
+        # 有 Bucket、没有 AccessKey 的开始前停下说明。provider_temporary / own_oss 为用户明确选择。
         "filetrans_upload": "auto",
         "firered_asr_backend": "local",
         "polish_transport": "openai_compatible",

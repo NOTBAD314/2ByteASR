@@ -76,7 +76,19 @@ def _ini_qsettings_before_ui() -> None:
 
 
 def isolate_acceptance_settings() -> None:
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'manual-translation':
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'controls-timeline':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'perf-regression':
+        from .perf_provider_fixture import install_guards
+        install_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('proofread-repair', 'editor-wheel-selection','scope-stage-retry'):
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('manual-translation', 'review-translate'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -112,6 +124,10 @@ def isolate_acceptance_settings() -> None:
         from .run_diagnosis_audit import install_guards
         install_guards()
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-audio-lexicon-batch':
+        from .blank_project_audit import install_offline_guards
+        install_offline_guards()
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'playback-cadence':
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
@@ -120,7 +136,7 @@ def isolate_acceptance_settings() -> None:
         from .update_reminder_audit import install_guards
         install_guards()
         return
-    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('preview-lifecycle-performance', 'workspace-drag', 'caption-workbench', 'export-page', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') in ('preview-lifecycle-performance', 'workspace-drag', 'caption-workbench', 'export-page', 'export-follow', 'export-visibility-stalls', 'studio-panels', 'workbench-performance', 'open-followup', 'timeline-models', 'timeline-language', 'preview-clock', 'preview-scale', 'timeline-toolbar', 'batch-replace', 'studio-splitter', 'studio-language-transform', 'editor-diagnostics', 'editor-recovery', 'subtitle-consistency', 'subtitle-export-rescue', 'editor-workflow', 'support-diagnostics'):
         from .blank_project_audit import install_offline_guards
         install_offline_guards()
         return
@@ -438,6 +454,27 @@ def isolate_acceptance_settings() -> None:
         StudioReadiness.mark,StudioReadiness.fail=mark,fail
 
 def start_acceptance(window) -> None:
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'scope-stage-retry':
+        from .scope_stage_retry_audit import start
+        output=audit_directory()
+        if output is not None:start(window,output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-window-gif':
+        from .export_window_gif_audit import start
+        output = audit_directory()
+        if output is not None:start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'controls-timeline':
+        from .controls_timeline_audit import start
+        output = audit_directory()
+        if output is not None:
+            start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-wheel-selection':
+        from .editor_wheel_selection_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'playback-cadence':
         output = audit_directory()
         if output is not None:
@@ -629,6 +666,16 @@ def start_acceptance(window) -> None:
         output = audit_directory()
         if output is not None: start(window, output)
         return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-mlx-readiness':
+        from .home_mlx_readiness_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'home-dropdown-click':
+        from .home_dropdown_click_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'clip-suggestions':
         from .clip_suggestions_audit import start
         output = audit_directory()
@@ -641,6 +688,11 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-page':
         from .export_page_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'export-follow':
+        from .export_follow_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return
@@ -946,6 +998,12 @@ def start_acceptance(window) -> None:
         if output is not None: start(window, output)
         return
 
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'review-translate':
+        from .review_translate_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-recovery':
         from .editor_recovery_audit import start
         output = audit_directory()
@@ -959,6 +1017,8 @@ def start_acceptance(window) -> None:
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'editor-diagnostics':
         if os.environ.get('TWOBYTEASR_OPEN_TIMING') == '1':
             from .open_timing_audit import start
+        elif os.environ.get('TWOBYTEASR_FREEZE_AUDIT') == '1':
+            from .interaction_freeze_audit import start
         elif os.environ.get('TWOBYTEASR_EDIT_SOAK') == '1':
             from .edit_soak_audit import start
         else:
@@ -1008,6 +1068,16 @@ def start_acceptance(window) -> None:
         return
     if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'caption-workbench':
         from .caption_workbench_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-repair':
+        from .proofread_repair_audit import start
+        output = audit_directory()
+        if output is not None: start(window, output)
+        return
+    if os.environ.get('TWOBYTEASR_ACCEPTANCE_SCENARIO') == 'proofread-audio-lexicon-batch':
+        from .proofread_audio_lexicon_batch_audit import start
         output = audit_directory()
         if output is not None: start(window, output)
         return

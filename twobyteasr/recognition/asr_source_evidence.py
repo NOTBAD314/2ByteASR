@@ -46,6 +46,11 @@ def _confidence(row, model):
 
 
 def _observations(row, role_models=None):
+    # A caption's own forced-alignment row (cue_forced_alignment, ``cue-align:``)
+    # times the caption text; its text is the project text, not a reading.
+    # Counted as the primary model it doubled MOSS's sentence (2026-10-27).
+    if isinstance(row.get('cue_alignment'), Mapping):
+        return
     decision = row.get('caption_arbitration') or {}
     original = decision.get('independent_input_evidence') or {}
     coverage = decision.get('source_coverage') or row.get('source_coverage') or {}
@@ -119,7 +124,7 @@ def project_row_observations(reference, row, cue, *, role_models=None):
             if not timed or (low <= a and b <= high):
                 text = value
             else:
-                text = slice_evidence(proxy, selection, '_observation')
+                text = slice_evidence(proxy, selection, '_observation', caption=cue.text)
             context_only = False
             if not text and not row.get('words'):
                 text, context_only = value, True
@@ -129,7 +134,7 @@ def project_row_observations(reference, row, cue, *, role_models=None):
             original = decision.get('independent_input_evidence') or {}
             comparison_source = original.get('primary') or row.get('moss_text') or row.get('text', '')
             comparison = slice_evidence(dict(row, _comparison=comparison_source),
-                selection, '_comparison') if timed else str(cue.text)
+                selection, '_comparison', caption=cue.text) if timed else str(cue.text)
             # Stored word midpoints may omit a displayed suffix even while
             # the clipped model window covers the cue's entire time range.
             # Record only a unique textual match; these are normalized text
@@ -170,13 +175,25 @@ def _timeline_row_observations(project, cue, reference, row, role_models, receip
                     {**receipt, **span})]
     words = receipt.get('word_base_words') or receipt.get('words') or []
     selected = [word for word in words if word.get('evidence_ref') == reference]
+    # The words that prove the caption's clock; normally this row's own.
+    clock_reference, clock_row = reference, row
     if words and not selected:
-        return []
+        # Words timed by the caption's own forced alignment (cue-align:, which
+        # is not a reading) place every recognition row: they share the task
+        # clock. Before, those rows were skipped and only the caption's own
+        # text looked like a model reading (2026-10-27).
+        owners = {word.get('evidence_ref') for word in words}
+        clock_reference = owners.pop() if len(owners) == 1 else ''
+        clock_row = project.asr_evidence.get(clock_reference) if clock_reference in cue.evidence_refs else None
+        if not (isinstance(clock_row, Mapping) and isinstance(clock_row.get('cue_alignment'), Mapping)):
+            return []
+        selected = list(words)
     acoustic = receipt.get('acoustic_word_observation') or {}
-    original_words = (acoustic.get('words') if reference in acoustic.get('evidence_refs', ()) else None) or (
-        (row.get('caption_arbitration') or {}).get('acoustic_words')) or row.get('words') or []
+    original_words = (acoustic.get('words') if clock_reference in acoustic.get('evidence_refs', ()) else None) or (
+        (clock_row.get('caption_arbitration') or {}).get('acoustic_words')) or clock_row.get('words') or []
     from .word_timing_provenance import estimated_word_timing
-    if estimated_word_timing(row) and not acoustic and not (row.get('caption_arbitration') or {}).get('acoustic_words'):
+    if (estimated_word_timing(clock_row) and not acoustic
+            and not (clock_row.get('caption_arbitration') or {}).get('acoustic_words')):
         original_words = []
     wanted = ''.join(content(word.get('text') or '') for word in selected)
     base = ''.join(content(word.get('text') or '') for word in original_words)
@@ -233,7 +250,7 @@ def _timeline_row_observations(project, cue, reference, row, role_models, receip
         # cue, never a proportional estimate of acoustic word positions.
     source_cue = SimpleNamespace(start_ms=source_start, end_ms=source_end, text=cue.text)
     observations = project_row_observations(reference, row, source_cue, role_models=role_models)
-    if not observations:
+    if not observations and clock_reference == reference:
         # An exact task/parent receipt still owns the original transcript when
         # its old word stream cannot be sliced (e.g. corrected text differs).
         # Expose context explicitly; it cannot vote as cue-local alignment.

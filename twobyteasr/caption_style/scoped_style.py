@@ -4,7 +4,7 @@ from dataclasses import asdict
 import hashlib
 import json
 
-from .style_resolution import APPEARANCE_FIELDS, resolve_cue_visual
+from .style_resolution import APPEARANCE_FIELDS, TRANSFORM_FIELDS, resolve_cue_visual
 from ..timeline.studio_commands import SetCuesPresentationCommand
 
 GEOMETRY = frozenset(('position_x', 'position_y', 'scale_x', 'scale_y', 'alignment',
@@ -31,7 +31,9 @@ def property_patch(before, after):
 def effective_layer_style(project, cue, layer='original'):
     from .bilingual_layout import settings_from_state, _translation_font
     settings = settings_from_state(project.studio_state)
-    style = resolve_cue_visual(project, cue).style
+    from .caption_layer_transform import layer_values,materialize_layer
+    base=materialize_layer(cue,layer) if layer_values(cue,layer).get('style_id') else cue
+    style = resolve_cue_visual(project, base).style
     if layer == 'translation':
         style.font_size = round(style.font_size*settings.translation_scale, 2)
         text = str(project.generation_metadata.get('translations', {}).get(cue.id, ''))
@@ -44,6 +46,9 @@ def effective_layer_style(project, cue, layer='original'):
                 setattr(style, key, deepcopy(value))
     elif layer == 'original' and settings.mode == 'bilingual':
         style.font_size = cue.appearance_override.get('original', {}).get('font_size', style.font_size*settings.original_scale)
+    from .caption_layer_transform import layer_values
+    explicit=layer_values(cue,layer)
+    if 'font_size' in explicit:style.font_size=float(explicit['font_size'])
     return style
 
 
@@ -68,7 +73,17 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
     if shadow_in_recipe:
         fields = {key: value for key, value in fields.items() if key != 'shadow'}
     overrides, transforms, style_ids, effect_ids = {}, {}, {}, {}
+    materialized = {}  # Transaction-local; complete cue presentation is the key.
     for cue in cues:
+        cache_key=json.dumps((cue.style_id,cue.base_preset_id,cue.speaker_id,
+            cue.appearance_override,cue.transform,
+            project.generation_metadata.get('translations',{}).get(cue.id,'')),
+            ensure_ascii=False,sort_keys=True)
+        hit=materialized.get(cache_key)
+        if hit is not None:
+            overrides[cue.id],transforms[cue.id]=deepcopy(hit[0]),deepcopy(hit[1])
+            style_ids[cue.id],effect_ids[cue.id]=hit[2],cue.effect_id
+            continue
         appearance = deepcopy(cue.appearance_override)
         transform = deepcopy(cue.transform)
         style_ids[cue.id], effect_ids[cue.id] = cue.style_id, cue.effect_id
@@ -84,6 +99,11 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
                 language['recipe_base'] = deepcopy(recipe_payload_for_style(recipes, cue.style_id) or {})
         if layer in ('original', 'group') and 'font_size' in fields:
             appearance.setdefault('original', {})['font_size'] = fields['font_size']
+        if 'font_size' in fields:
+            from .caption_layer_transform import LAYER_KEY
+            for language in (('original','translation') if layer=='group' else (layer,)):
+                existing=transform.get(LAYER_KEY,{}).get(language,{})
+                if 'font_size' in existing:existing['font_size']=fields['font_size']
         if layer in ('original', 'group'):
             if {'position_x','position_y'}.intersection(fields):
                 from .visual_snapshot import _anchor
@@ -96,6 +116,8 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
                     transform[key] = deepcopy(value)
                 elif key in APPEARANCE_FIELDS:
                     appearance[key] = deepcopy(value)
+                if key in TRANSFORM_FIELDS and key in transform:
+                    transform[key] = deepcopy(value)
             if shadow_in_recipe:
                 appearance.pop('shadow', None)
             effective_patch = deepcopy(recipe_patch or {})
@@ -116,10 +138,23 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
                 effective_patch['outline'] = dict(effective_patch['outline'],
                                                   shadow=merge_patch(current, effective_patch['outline']['shadow']))
             if effective_patch:
+                if not base_recipe:
+                    # A new fill/shadow recipe must start from this cue's
+                    # native face; default recipe typography would flatten
+                    # mixed fonts and sizes across the selection.
+                    from .style_recipe import StyleRecipe
+                    from .visual_snapshot import _materialize_recipe_appearance
+                    current_style = resolve_cue_visual(project, cue).style
+                    native = StyleRecipe(name=current_style.name, engine='native',
+                        colors={'fill': current_style.primary_color},
+                        outline={'color': current_style.outline_color, 'width': current_style.outline_width,
+                                 'shadow': current_style.shadow})
+                    base_recipe = _materialize_recipe_appearance(native, current_style, appearance).to_dict()
                 payload = merge_patch(base_recipe, effective_patch)
                 payload.setdefault('name', '局部样式')
-                key = 'local-' + hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
                 mirror = deepcopy(styles.get(cue.style_id, project.styles[0]))
+                signature = {'recipe': payload, 'native': {k:v for k,v in asdict(mirror).items() if k != 'id'}}
+                key = 'local-' + hashlib.sha256(json.dumps(signature, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]
                 mirror.id = key
                 styles[key], recipes[key], style_ids[cue.id] = mirror, payload, key
         if layer in ('translation', 'group'):
@@ -129,6 +164,7 @@ def style_patch_command(project, cue_ids, fields, *, recipe_patch=None, layer='o
             if recipe_patch:
                 translation['recipe'] = merge_patch(translation.get('recipe', {}), recipe_patch)
         overrides[cue.id], transforms[cue.id] = appearance, transform
+        materialized[cache_key]=(appearance,transform,style_ids[cue.id])
     return SetCuesPresentationCommand(project, [c.id for c in cues], style_id=cues[0].style_id,
         effect_id=cues[0].effect_id, style_ids=style_ids, effect_ids=effect_ids,
         appearance_overrides=overrides, transform_overrides=transforms,

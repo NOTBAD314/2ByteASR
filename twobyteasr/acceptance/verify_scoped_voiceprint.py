@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--runtime',required=True,type=Path)
     parser.add_argument('--exe',type=Path)
     parser.add_argument('--timeout',type=int,default=180)
+    parser.add_argument('--expect',default='',help='JSON case for the audit (see scoped_voiceprint_audit)')
     args=parser.parse_args()
     out=args.output.resolve()
     if out.exists() or not out.is_relative_to((ROOT/'tmp').resolve()):
@@ -47,6 +48,8 @@ def main():
         TWOBYTEASR_MAIN_PYTHON=str(args.runtime.resolve()),TWOBYTEASR_DEVELOPER_RUNTIMES='1',
         TWOBYTEASR_INVOKER_CWD=str(ROOT),TWOBYTEASR_SKIP_FIRST_RUN_WIZARD='1',
         HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',QT_QPA_PLATFORM='windows',PYTHONUTF8='1')
+    if args.expect:
+        env['TWOBYTEASR_VOICEPRINT_EXPECT']=args.expect
     for name in ('TWOBYTEASR_STARTUP_OPEN_STUDIO','TWOBYTEASR_STARTUP_RAISE'):
         env.pop(name,None)
     sys.path.insert(0,str(ROOT/'scripts'))

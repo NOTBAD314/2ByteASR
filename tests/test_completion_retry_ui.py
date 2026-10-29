@@ -276,6 +276,46 @@ def test_unsupported_search_dispatch_does_not_open_retry_or_queue(monkeypatch):
     shell.deleteLater()
 
 
+def test_missing_project_for_optional_failure_never_restarts_transcription(monkeypatch):
+    shell=MainWindow.__new__(MainWindow);QWidget.__init__(shell)
+    shell.result_task_selector=QComboBox(shell);shell.result_task_selector.addItem('missing project')
+    item=MediaResult('same.mp4','success',project_path='missing.2byteproj',report_json_path='report.json')
+    shell._completion_tasks=[(item,None)]
+    shell._completion_task_evidence={shell._completion_task_key(item):{'outcome':SimpleNamespace(polish_retryable=True,search_retryable=False),
+        'display_payload':{'polishing_summary':{'fallback_cues':1}}}}
+    messages=[]
+    monkeypatch.setattr('twobyteasr.app.ui.QMessageBox.information',lambda *args:messages.append(args))
+    monkeypatch.setattr(shell,'_start_run',lambda:pytest.fail('optional failure restarted full ASR'))
+    shell._last_failed_items=[item];shell._run_in_progress=False
+    shell._retry_failed_items()
+    assert len(messages)==1
+    shell.deleteLater()
+
+
+def test_completion_receipt_stays_with_original_task_after_project_switch(tmp_path,monkeypatch):
+    from twobyteasr.projects.studio_project import save_project
+    shell=MainWindow.__new__(MainWindow);QWidget.__init__(shell)
+    shell.result_task_selector=QComboBox(shell);shell.result_task_selector.addItem('original')
+    original=sample_project();path=save_project(original,tmp_path/'original.2byteproj')
+    other=copy.deepcopy(original);other.project_id='different-project'
+    studio=SimpleNamespace(session=SimpleNamespace(project=original),project_path=path)
+    item=MediaResult('same.mp4','success',project_path=str(path),report_json_path='original-report.json')
+    shell._completion_tasks=[(item,original)]
+    shell._completion_task_evidence={shell._completion_task_key(item):{'outcome':SimpleNamespace(result_usable=True,polish_retryable=True,search_retryable=False),
+        'display_payload':{'started_at':'original','scope':[7]}}}
+    shell._last_run_options=RunOptions();shell._run_in_progress=False;shell._last_failed_items=[item]
+    monkeypatch.setattr(shell,'_open_completion_project',lambda path,**kw:kw['on_ready'](studio))
+    def review(*args,**kw):
+        studio.session.project=other;studio.project_path=tmp_path/'other.2byteproj'
+        return {'job_id':'original-retry'}
+    monkeypatch.setattr(completion_retry_ui,'open_completion_retry_review',review)
+    shell._retry_failed_items()
+    assert studio.session.project is other
+    assert shell._completion_tasks[0][1].project_id==original.project_id
+    assert shell._completion_tasks[0][1] is not other
+    shell.deleteLater()
+
+
 
 def test_active_completion_retry_blocks_start_before_config_or_worker_changes(monkeypatch):
     from twobyteasr.app import ui

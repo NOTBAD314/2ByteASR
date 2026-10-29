@@ -156,15 +156,39 @@ def run_installer(monkeypatch):
     for wheel in wheels:wheel.write_bytes(b'FakeUv fixture; hash validation has separate tests')
     monkeypatch.setattr(installer,'verified_bundled_build_wheels',lambda root:wheels)
 
-    def run(models, fails, freeze, left_official=lambda call: '', repair_roles=''):
+    def run(models, fails, freeze, left_official=lambda call: '', repair_roles='', prefetch=None, fastest=None):
+        """``prefetch(call)`` stands in for the app's own PyPI download (default: it fails, so
+        uv installs from the indexes); ``fastest`` names the label measuring would put first."""
         fake = FakeUv(fails, freeze)
         fake.fetches = []
+        fake.prefetches = []
+        fake.rankings = []
         def fetch(folder, pins, version, entry, sources):
             # No network: the real downloader has its own tests.
             call = dict(folder=Path(folder), pins=list(pins), version=version, sources=list(sources))
             fake.fetches.append(call)
             return left_official(call)
+        def rank(sources, path, preference):
+            # No network: measuring has its own tests (test_runtime_package_download.py).
+            measured = {item['label']: dict(rate=0.0, bytes=0, error='fixture') for item in sources}
+            order = list(sources)
+            known = fastest in measured
+            if known:
+                order.sort(key=lambda item: item['label'] != fastest)
+                measured[fastest]['rate'] = 9e6
+            if preference in ('mirror', 'official') or not known:
+                order = installer.order_by_preference(order, 'mirror' if preference == 'mirror' else 'official')
+            fake.rankings.append(dict(path=path, preference=preference, order=[item['label'] for item in order]))
+            return order, measured
+        def fetch_files(folder, items, sources, **kwargs):
+            call = dict(folder=Path(folder), items=list(items), sources=[item['label'] for item in sources])
+            fake.prefetches.append(call)
+            if prefetch is None:
+                raise installer.SourcesExhausted('fixture: the app could not fetch the packages')
+            return prefetch(call)
         monkeypatch.setattr(installer, 'fetch_pytorch_wheels', fetch)
+        monkeypatch.setattr(installer, 'rank_sources', rank)
+        monkeypatch.setattr(installer, 'fetch_files', fetch_files)
         monkeypatch.setattr(installer.subprocess, 'Popen', fake.popen)
         monkeypatch.setattr(installer.subprocess, 'check_output', fake.check_output)
         monkeypatch.setattr(sys, 'argv', ['install', '--root', str(ROOT), '--uv', 'uv-fixture.exe', '--models', models,
@@ -192,6 +216,91 @@ def table_freeze(role, tag='cpu', extra=''):
     return lambda arguments: '\n'.join(f"{n}=={entry['packages'][n]['version']}" for n in ('torch', 'requests')
                                        if n in entry['packages']) + '\n' + extra
 
+
+
+def _fetched(call):
+    """A successful app download: every requested file appears in the folder."""
+    call['folder'].mkdir(parents=True, exist_ok=True)
+    return []
+
+
+def test_app_fetches_unbundled_locked_files_then_uv_installs_offline(run_installer, cuda, capsys):
+    """2026-10-28: uv no longer downloads; it installs what the app fetched and verified."""
+    fake = run_installer('sensevoice', lambda command: False, table_freeze('main', cuda), prefetch=_fetched)
+    (call,) = fake.prefetches
+    assert call['folder'] == fake.managed/installer.PYPI_HOUSE
+    entry = HASHES['environments'][f'main|3.10.19|{cuda}']
+    bundled = {item['sha256'] for item in json.loads((ROOT/'packaging/model_wheels.json').read_text('utf8'))['wheels']}
+    locked = {digest for item in entry['packages'].values() for digest in item['sha256']}
+    digests = {item['sha256'][0] for item in call['items']}
+    assert digests and digests <= locked and not digests & bundled
+    assert not any(item['name'].startswith(('torch-', 'torchaudio-')) for item in call['items'])  # PyTorch has its own step
+    assert all(item['path'].startswith('packages/') and item['size'] > 0 for item in call['items'])
+    assert call['sources'][0] == 'PyPI 官方'  # nothing measured faster in this fixture
+    (install,) = fake.installs()
+    assert '--no-index' in install and '--index-url' not in install
+    assert f"--find-links {call['folder']}" in install and f"--find-links {fake.managed/installer.WHEELHOUSE}" in install
+    assert 'mirror-constraints.txt' in install and 'mirror-build-constraints.txt' in install
+    assert '离线安装' in capsys.readouterr().out
+    assert next(fake.managed.rglob('managed-runtime.json')).is_file()
+
+
+def test_measuring_a_faster_mirror_moves_the_whole_run_to_mirrors(run_installer, cuda, capsys):
+    tencent = next(item['label'] for item in SOURCES['pypi_mirrors'] if 'tencent' in item['url'])
+    fake = run_installer('moss,sensevoice', lambda command: False, _quick_freeze(cuda), prefetch=_fetched, fastest=tencent)
+    assert fake.prefetches[0]['sources'][0] == tencent
+    # PyTorch for main was ordered before the PyPI measurement; MOSS (after it) starts from mirrors.
+    assert fake.fetches[0]['sources'][0]['official'] is True
+    assert fake.fetches[1]['sources'][0]['official'] is False
+    python_installs = [c for c in fake.commands if 'python' in c and 'install' in c and 'pip' not in c]
+    assert '--mirror' in python_installs[-1] and '3.12.13' in python_installs[-1]
+    assert all('--no-index' in command for command in fake.installs() if '--offline' not in command)
+    output = capsys.readouterr().out
+    assert '测速结果国内镜像更快' in output and 'PyPI 来源测速' in output
+
+
+def test_official_choice_measures_but_keeps_official_first(run_installer, monkeypatch):
+    monkeypatch.setenv(installer.RUNTIME_SOURCE_ENV, 'official')
+    tencent = next(item['label'] for item in SOURCES['pypi_mirrors'] if 'tencent' in item['url'])
+    fake = run_installer('sensevoice', lambda command: False, table_freeze('main'), prefetch=_fetched, fastest=tencent)
+    assert [ranking['preference'] for ranking in fake.rankings] == ['official']
+    assert fake.prefetches[0]['sources'][0] == 'PyPI 官方'
+
+
+def test_failed_app_download_falls_back_to_uv_with_measured_index_order(run_installer, capsys):
+    tencent = next(item for item in SOURCES['pypi_mirrors'] if 'tencent' in item['url'])
+    fake = run_installer('sensevoice', lambda command: False, table_freeze('main'), fastest=tencent['label'])
+    (install,) = fake.installs()
+    assert f"--index-url {tencent['url']}" in install and '--no-index' not in install
+    assert '改由 uv 依次从软件源安装' in capsys.readouterr().out
+
+
+def test_failed_offline_install_falls_back_to_indexes(run_installer):
+    fake = run_installer('sensevoice', lambda command: '--no-index' in command, table_freeze('main'), prefetch=_fetched)
+    installs = fake.installs()
+    assert '--no-index' in installs[0] and '--index-url https://pypi.org/simple' in installs[1]
+
+
+def test_incomplete_file_table_skips_the_app_download(run_installer, monkeypatch, capsys):
+    monkeypatch.setattr(installer, 'load_package_files', lambda root: {})
+    fake = run_installer('sensevoice', lambda command: False, table_freeze('main'), prefetch=_fetched)
+    assert fake.prefetches == [] and '--index-url https://pypi.org/simple' in fake.installs()[0]
+    assert '依赖文件清单不全' in capsys.readouterr().out
+
+
+def test_file_table_covers_every_locked_pypi_file():
+    """scripts/build_runtime_package_files.py must be rerun after the hash table changes."""
+    table = json.loads((ROOT/'scripts/runtime_package_files.json').read_text('utf8'))
+    for key, entry in HASHES['environments'].items():
+        for name, item in entry['packages'].items():
+            if '+' in item['version']:
+                continue
+            for digest in item['sha256']:
+                row = table['files'].get(digest)
+                assert row, (key, name, item['version'])
+                filename, path, size = row
+                assert path.startswith('packages/') and path.endswith('/' + filename) and size > 0
+                assert filename.lower().replace('_', '-').startswith(name.replace('_', '-'))
 
 def test_official_sources_also_use_the_pinned_hashed_closure(run_installer):
     fake = run_installer('sensevoice', lambda command: False, table_freeze('main'))
@@ -389,9 +498,21 @@ def test_powershell_uv_sources_and_system_proxy():
     good = _zip_with(['uv.exe', 'uvw.exe'])
     (served/'good.zip').write_bytes(good)
     (served/'bad.zip').write_bytes(_zip_with(['uv.exe']))
+    blob = os.urandom(150_000)
+    (served/'blob.bin').write_bytes(blob)
+    (served/'slow').mkdir()
+    (served/'slow/blob.bin').write_bytes(blob)
     class Quiet(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def copyfile(self, source, outputfile):
+            if not self.path.startswith('/slow/'):
+                return super().copyfile(source, outputfile)
+            for block in iter(lambda: source.read(3000), b''):  # ~30 KB/s
+                outputfile.write(block)
+                outputfile.flush()
+                time.sleep(0.1)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Quiet, directory=str(served)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -402,7 +523,8 @@ def test_powershell_uv_sources_and_system_proxy():
         result = subprocess.run([str(shell), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                                  str(ROOT/'tests/verify_runtime_download_fallback.ps1'),
                                  '-BaseUrl', f'http://127.0.0.1:{port}', '-GoodSha', hashlib.sha256(good).hexdigest(),
-                                 '-ListeningPort', str(port), '-WorkDir', str(work), '-Output', str(receipt)],
+                                 '-ListeningPort', str(port), '-WorkDir', str(work), '-Output', str(receipt),
+                                 '-BlobSha', hashlib.sha256(blob).hexdigest()],
                                 env=environment, capture_output=True, text=True, encoding='utf8', errors='replace', timeout=180)
         assert result.returncode == 0, result.stdout+result.stderr
         actual = json.loads(receipt.read_text('utf-8-sig'))
@@ -424,17 +546,21 @@ def test_powershell_uv_sources_and_system_proxy():
     assert actual['order_single_fallback'] == ['good']
     assert actual['uv_order_auto']==actual['uv_order_unset']==['domestic','good','dead','missing']
     assert actual['uv_order_mirror']==['domestic','dead','missing','good']
+    # A source under the first floor is left after the speed time; alone it is taken in the slower pass.
+    assert actual['slow_then_fast_sha'] == actual['only_slow_sha'] == hashlib.sha256(blob).hexdigest()
+    assert actual['slow_then_fast_s'] < 4.5 < actual['only_slow_s']
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell')
 def test_download_source_choice_sets_the_runtime_source_preference():
-    """The workshop passes -Source; ModelScope / HF 镜像 mean domestic runtime sources first."""
+    """The workshop passes -Source; ModelScope / HF 镜像 mean domestic runtime sources first,
+    Hugging Face 官方 official first, 自动 measuring first."""
     script = (ROOT/'scripts/download_models.ps1').read_text('utf-8-sig')
     statement = next(line.strip() for line in script.splitlines() if line.strip().startswith('$env:2BYTEASR_RUNTIME_SOURCE'))
     assert script.index(statement) > script.index('$Source = switch -Regex ($Source)')
     assert script.index(statement) < script.index('& $backendSetup -ModelKey $backendKeys')
     shell = Path(os.environ.get('SystemRoot', 'C:/Windows'))/'System32/WindowsPowerShell/v1.0/powershell.exe'
-    for source, expected in (('AUTO', 'auto'), ('MODELSCOPE', 'mirror'), ('HF_MIRROR', 'mirror'), ('HF_OFFICIAL', 'auto')):
+    for source, expected in (('AUTO', 'auto'), ('MODELSCOPE', 'mirror'), ('HF_MIRROR', 'mirror'), ('HF_OFFICIAL', 'official')):
         command = f"$Source='{source}'; {statement}; [Console]::Out.Write($env:2BYTEASR_RUNTIME_SOURCE)"
         result = subprocess.run([str(shell), '-NoProfile', '-NonInteractive', '-Command', command],
                                 capture_output=True, text=True, timeout=60)

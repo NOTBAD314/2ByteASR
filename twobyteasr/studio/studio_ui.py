@@ -7,6 +7,7 @@ from ..diagnostics.studio_events import observed
 
 import os
 import json
+import copy
 import queue
 import threading
 import time
@@ -3185,17 +3186,32 @@ class SubtitleStudioPage(
             self._commit_canvas_inline_edit()
         self._cancel_scrub()
         if self.export_workspace is not None:
-            self.export_workspace.release_preview()
-            self.export_workspace.deleteLater()
+            self._close_export_workspace()
+        self._export_return_ui = dict(project=self.project, scope=self.selection_model.scope,
+            style_scope=self.style_scope.currentData() if hasattr(self, 'style_scope') else None,
+            viewport=(self.timeline.visible_start_ms, self.timeline.visible_duration_ms),
+            vertical=self.timeline.vertical_scrollbar.value(),
+            clips={name:copy.copy(getattr(self.timeline,name)) for name in (
+                'selected_video_track_id','selected_video_clip_id','selected_video_clip_ids',
+                'selected_segment_id','selected_segment_ids','selected_audio_track_id','selected_audio_clip_ids')
+                if hasattr(self.timeline,name)})
+        self.video.set_paused(True)
+        self._export_interaction_before = self.video_compositor._interaction_enabled
         self.video_compositor.set_interaction_enabled(False)
         self.position_overlay.hide()
-        self.export_workspace = StudioExportWorkspace(
-            self.project,
-            str(self._preview_path),
-            project_path=self.project_path,
-            parent=self,
-            preview_widget=self.video,
-        )
+        try:
+            self.export_workspace = StudioExportWorkspace(
+                self.project,
+                str(self._preview_path),
+                project_path=self.project_path,
+                parent=self,
+                preview_widget=self.video,
+            )
+        except Exception:
+            self._restore_studio_video()
+            self.video.show()
+            self.video_compositor.set_interaction_enabled(self._export_interaction_before)
+            raise
         self.export_workspace.back_requested.connect(self._close_export_workspace)
         self.export_workspace.render_succeeded.connect(lambda path: self._render_succeeded(path, False))
         self.layout().addWidget(self.export_workspace, 1)
@@ -3210,6 +3226,8 @@ class SubtitleStudioPage(
         reveal_cue(self.export_workspace)
 
     def _close_export_workspace(self) -> None:
+        return_ui = getattr(self, '_export_return_ui', None)
+        self._export_return_ui = None
         if self.export_workspace is not None:
             try:
                 self.export_workspace.release_preview()
@@ -3219,11 +3237,23 @@ class SubtitleStudioPage(
             self.export_workspace.hide()
             self.export_workspace.deleteLater()
             self.export_workspace = None
-            self.video_compositor.set_interaction_enabled(True)
+            self.video_compositor.set_interaction_enabled(getattr(self, '_export_interaction_before', True))
             self.video_compositor.set_selected_clip(self.timeline.selected_video_clip_id)
         if hasattr(self, "workspace_splitter"):
             self.workspace_splitter.show()
             self.workspace_host.show()
+        if return_ui is not None and return_ui['project'] is self.project:
+            if self.selection_model.scope != return_ui['scope']:
+                self.cue_controller.apply_selection_scope(return_ui['scope'])
+            if hasattr(self, 'style_scope') and return_ui['style_scope'] is not None:
+                index = self.style_scope.findData(return_ui['style_scope'])
+                if index >= 0:
+                    self.style_scope.setCurrentIndex(index)
+            for name, value in return_ui['clips'].items():
+                setattr(self.timeline,name,value)
+            self.timeline.set_visible_window(*return_ui['viewport'])
+            self.timeline.vertical_scrollbar.setValue(return_ui['vertical'])
+            self.video_compositor.set_selected_clip(self.timeline.selected_video_clip_id)
         if hasattr(self, "studio_render_button"):
             self.studio_render_button.setEnabled(True)
         self._cancel_scrub()
@@ -3333,6 +3363,9 @@ class SubtitleStudioPage(
         if self._close_requested:
             return float(self.last_close_profile.get("visible_response_ms", 0.0))
         self._close_requested = True
+        export = getattr(self, 'export_workspace', None)
+        if export is not None:
+            export.release_preview()
         from .studio_analysis_request import cancel_analysis
         cancel_analysis(self)
         analysis_workers = tuple(getattr(self, "_analysis_workers", ()))

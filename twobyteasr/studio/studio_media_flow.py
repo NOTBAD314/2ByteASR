@@ -606,7 +606,7 @@ class StudioMediaFlowMixin:
                         working.studio_state.get("selected_video_track_id") or ""
                     )
                     primary_id = primary_video_track_id(working)
-                    track = create_video_track(working) if requested_track_id == "new" else next(
+                    track = create_video_track(working, synchronize=result.has_audio) if requested_track_id == "new" else next(
                         (
                             item
                             for item in working.video_tracks
@@ -622,7 +622,7 @@ class StudioMediaFlowMixin:
                             if item.id != primary_id and not item.locked
                         ),
                         None,
-                    ) or create_video_track(working)
+                    ) or create_video_track(working, synchronize=result.has_audio)
                     add_video_clip(
                         working,
                         track.id,

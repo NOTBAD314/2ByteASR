@@ -1552,7 +1552,8 @@ class BatchReplaceTextCommand(QUndoCommand):
         self.learning_meta = dict(learning_meta) if learning_meta else None
         self.glossary_before = list(project.glossary_ids)
         self.glossary_after = list(dict.fromkeys(glossary_ids)) if glossary_ids is not None else None
-        self.review_before = copy.deepcopy(project.generation_metadata.get('glossary_review_jobs'))
+        from ..projects.studio_runtime_state import _json_snapshot
+        self.review_before = _json_snapshot(project.generation_metadata.get('glossary_review_jobs')) if review_receipt is not None else None
         self.review_after = None
         self.manual_confirmations_before = copy.deepcopy(project.studio_state.get('manual_caption_text', {}))
         self.manual_confirmations_after = None
@@ -1644,7 +1645,8 @@ class BatchReplaceTextCommand(QUndoCommand):
                 if receipt is None:
                     self.project.generation_metadata.pop('glossary_review_jobs', None)
                 else:
-                    self.project.generation_metadata['glossary_review_jobs'] = copy.deepcopy(receipt)
+                    from ..projects.studio_runtime_state import _json_snapshot
+                    self.project.generation_metadata['glossary_review_jobs'] = _json_snapshot(receipt)
             if self.glossary_after is not None:
                 forward = values is self.after
                 self.project.glossary_ids = list(self.glossary_after if forward else self.glossary_before)

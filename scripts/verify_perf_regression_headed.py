@@ -94,6 +94,8 @@ def main():
     for key in ("QT_SCALE_FACTOR", "QT_ENABLE_HIGHDPI_SCALING", "QT_FONT_DPI"):
         env.pop(key, None)
     from isolated_windows_desktop import run_on_desktop
+    import time
+    env['PERF_LAUNCH_MONOTONIC']=str(time.perf_counter())
     source_entry = args.source_entry.resolve() if args.source_entry else ROOT / "quick_start.py"
     command = [str(args.exe.resolve())] if args.exe else [sys.executable, "-B", str(source_entry)]
     code = run_on_desktop(command, cwd=ROOT, env=env, output=out / "process", timeout=args.timeout)

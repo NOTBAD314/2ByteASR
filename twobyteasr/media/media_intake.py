@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 SUPPORTED_MEDIA_SUFFIXES = frozenset({
-    ".mp4", ".mov", ".mkv", ".webm", ".flv", ".avi",
+    ".mp4", ".mov", ".mkv", ".webm", ".flv", ".avi", ".gif",
     ".mp3", ".wav", ".m4a", ".flac", ".aac",
 })
 

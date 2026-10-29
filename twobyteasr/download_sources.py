@@ -241,11 +241,12 @@ def resolve_from_lock(model_key, relative, mode, *, lock_path=None):
 # keep checking the SHA-256 they already lock.
 _RUNTIME_SOURCES_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                      "scripts", "runtime_sources.json")
+# Order as scripts/runtime_sources.json (2026-10-28: Aliyun ~0.1 MB/s on a mainland line).
 _DEFAULT_PYPI_MIRRORS = (
-    ("阿里云 PyPI 镜像", "https://mirrors.aliyun.com/pypi/simple"),
-    ("清华 PyPI 镜像", "https://pypi.tuna.tsinghua.edu.cn/simple"),
     ("腾讯云 PyPI 镜像", "https://mirrors.cloud.tencent.com/pypi/simple"),
     ("中科大 PyPI 镜像", "https://mirrors.ustc.edu.cn/pypi/simple"),
+    ("清华 PyPI 镜像", "https://pypi.tuna.tsinghua.edu.cn/simple"),
+    ("阿里云 PyPI 镜像", "https://mirrors.aliyun.com/pypi/simple"),
 )
 _DEFAULT_PYTHON_MIRRORS = (
     ("npmmirror", "https://registry.npmmirror.com/-/binary/python-build-standalone"),

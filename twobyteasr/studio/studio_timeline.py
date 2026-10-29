@@ -9,6 +9,7 @@ from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 from time import perf_counter
 
@@ -32,6 +33,20 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QScrollBar, QToolTip, QWidget
+
+
+def _paint_geometry(method):
+    """Reuse lane geometry within one paint, never across input/layout changes."""
+    @wraps(method)
+    def cached(self):
+        cache = getattr(self, '_paint_geometry_cache', None)
+        if cache is None:
+            return method(self)
+        key = method.__name__
+        if key not in cache:
+            cache[key] = method(self)
+        return cache[key]
+    return cached
 
 from ..timeline.selection_scope import SelectionMode, SelectionScope
 from ..timeline.studio_commands import cue_by_id
@@ -417,7 +432,7 @@ class WaveformTimeline(QWidget):
         self.filmstrip_visible = True
         self._thumbnails = FilmstripCache(self)
         self.interaction_changed.connect(lambda active:self._thumbnails.set_interacting(active))
-        self._thumbnails.updated.connect(lambda _key: self.update())
+        self._thumbnails.updated.connect(self._media_refinement_ready)
         from .transport_cursor_overlay import TransportCursorOverlay
         self._transport_overlay = TransportCursorOverlay(self)
 
@@ -436,6 +451,7 @@ class WaveformTimeline(QWidget):
         override = self._track_height_overrides.get("audio")
         return int(override) if override else self._auto_track_heights()[1]
 
+    @_paint_geometry
     def _auto_track_heights(self) -> tuple[int, int]:
         """(subtitle, audio) lane heights when the user has not set one.
 
@@ -722,6 +738,7 @@ class WaveformTimeline(QWidget):
         lanes = self._group_lane_count
         return speaker_height if lanes <= 1 else lanes * max(36, round(speaker_height * 0.7))
 
+    @_paint_geometry
     def _display_rows(self) -> list[tuple[str, str, int]]:
         """Subtitle rows top-down as (kind, key, height).
 
@@ -743,6 +760,7 @@ class WaveformTimeline(QWidget):
         rows += [("speaker", key, height) for key in self._speaker_ids if key not in members]
         return rows
 
+    @_paint_geometry
     def _row_units(self) -> tuple[int, int]:
         """(rows that take the shared subtitle height, extra fixed px) without
         asking for the height itself (used by the automatic height)."""
@@ -807,6 +825,16 @@ class WaveformTimeline(QWidget):
         cue = self._timeline_cue_by_id.get(cue_id)
         ranges = ((cue.start_ms, cue.end_ms),) if cue is not None else ()
         self.invalidate_ranges(ranges, {cue_id})
+
+    def invalidate_cues(self, cue_ids, *, timing: bool = False) -> None:
+        """Evict layouts and resolve track geometry once for a batch commit."""
+        ids = {str(i) for i in cue_ids}
+        self._text_layout_cache = {key:value for key,value in self._text_layout_cache.items() if key[0] not in ids}
+        if timing:
+            self._rebuild_cue_index()
+            self._sync_scrollbars()
+        ranges = [(c.start_ms,c.end_ms) for i in ids if (c := self._timeline_cue_by_id.get(i)) is not None]
+        self.invalidate_ranges(ranges,ids)
 
     def invalidate_ranges(
         self,
@@ -911,6 +939,7 @@ class WaveformTimeline(QWidget):
         return (self.RULER_HEIGHT + self._subtitle_content_height()
                 + self._pinned_bottom_height(minimum=True) + scrollbar)
 
+    @_paint_geometry
     def _video_track_rects(self) -> dict[str, QRectF]:
         bottom = self._stack_bottom()
         if self._candidate_lane_visible():
@@ -942,6 +971,7 @@ class WaveformTimeline(QWidget):
             y += heights[track_id]
         return rects
 
+    @_paint_geometry
     def _audio_track_rects(self) -> dict[str, QRectF]:
         if not self.waveform_visible:
             return {}
@@ -1119,13 +1149,13 @@ class WaveformTimeline(QWidget):
         return preview
 
     def _begin_video_drag(self, track_id, clip, event):
-        from ..timeline.studio_clip_edit import trim_bounds
+        from ..timeline.studio_clip_edit import trim_bounds, media_edit_limit
         from ..timeline.studio_media_pool import asset_by_id
         x = event.position().x()
         distance, edge = min((abs(x-self._time_to_x(clip.timeline_in_ms)), 'trim_left'),
                              (abs(x-self._time_to_x(clip.timeline_out_ms)), 'trim_right'))
         mode = edge if distance <= self.VIDEO_CLIP_TRIM_HANDLE_PX else 'move'
-        low, high = trim_bounds(clip, asset_by_id(self.project, clip.asset_id).duration_ms)
+        low, high = trim_bounds(clip, media_edit_limit(asset_by_id(self.project, clip.asset_id)))
         self._snap_target = None
         self._clip_drag = dict(track_id=track_id, clip_id=clip.id, mode=mode,
             origin_x=x, origin_y=event.position().y(), origin_in=clip.timeline_in_ms,
@@ -1283,6 +1313,7 @@ class WaveformTimeline(QWidget):
         y = bottom - CANDIDATE_LANE_HEIGHT
         return QRectF(0, max(self.RULER_HEIGHT, y), self.width(), CANDIDATE_LANE_HEIGHT)
 
+    @_paint_geometry
     def _track_viewport(self) -> QRectF:
         pinned = self._pinned_bottom_height()
         return QRectF(
@@ -1400,13 +1431,7 @@ class WaveformTimeline(QWidget):
         # seconds of stalled scrolling when zoomed out. Let Qt coalesce paints.
         if target_left == self.visible_start_ms:
             return False
-        # A playback tick moves the view by a fraction of a device pixel
-        # (0.3 px at a 120 s window, 0.08 px at 300 s), and every move rebuilt
-        # the whole timeline raster. Wait until the content would move by at
-        # least one device pixel; the cursor keeps moving on its own overlay.
-        content_pixels = (self._content_right() - self.TRACK_HEADER_WIDTH) * self.devicePixelRatioF()
-        if abs(target_left - self.visible_start_ms) * max(1.0, content_pixels) < self.visible_duration_ms:
-            return False
+        # Preserve subpixel follow while reusing the overscanned static picture.
         return self._follow_scroll(target_left)
 
     def _follow_scroll(self, start_ms: int) -> bool:
@@ -1478,7 +1503,7 @@ class WaveformTimeline(QWidget):
         if getattr(self._thumbnails,'closed',False):
             from .video_filmstrip import FilmstripCache
             self._thumbnails=FilmstripCache(self)
-            self._thumbnails.updated.connect(lambda _key:self.update())
+            self._thumbnails.updated.connect(self._media_refinement_ready)
         self.cancel_timing_edit()
         if project is not self.project:
             self._unified_selection = False
@@ -1546,7 +1571,21 @@ class WaveformTimeline(QWidget):
                 # display data, not a replacement for the saved media clock.
                 # A late cache must not extend an exact recognition result.
                 self.project.media.duration_ms = int(cache.metadata.duration_ms or 0)
+        self._media_refinement_ready()
+
+    def _media_refinement_ready(self, *_):
+        # Decoded cache data stays current. Its optional quality repaint must
+        # not compete with a live canvas gesture for a full timeline layout.
+        if getattr(self,'_caption_transform_active',False):
+            self._media_refinement_pending=True
+            return
         self.update()
+
+    def set_caption_transform_active(self, active):
+        self._caption_transform_active=bool(active)
+        if not active and getattr(self,'_media_refinement_pending',False):
+            self._media_refinement_pending=False
+            self.update()
 
     def waveform_cache_for_source(self, source_path: str, audio_stream: int = 0) -> WaveformCache | None:
         """Waveform of one audio stream of a source (2026-10-24: per stream)."""
@@ -1587,7 +1626,7 @@ class WaveformTimeline(QWidget):
     def set_waveform_state(self, state: str, message: str = "") -> None:
         self.waveform_state = state if state in {"EMPTY", "LOADING", "READY", "ERROR"} else "ERROR"
         self.waveform_message = str(message or "")
-        self.update()
+        self._media_refinement_ready()
 
     @measured('playhead_target')
     def set_playhead(self, milliseconds: int) -> None:
@@ -1790,6 +1829,7 @@ class WaveformTimeline(QWidget):
         speaker_rects, translation, waveform, _rows = self._row_layout()
         return speaker_rects, translation, waveform
 
+    @_paint_geometry
     def _row_layout(self):
         rows = self._display_rows()
         speaker_height = self._speaker_track_height()
@@ -2950,6 +2990,13 @@ class WaveformTimeline(QWidget):
         return shift if shift <= extra * dpr else None
 
     def _paint_timeline(self, event):
+        self._paint_geometry_cache = {}
+        try:
+            self._paint_timeline_frame(event)
+        finally:
+            self._paint_geometry_cache = None
+
+    def _paint_timeline_frame(self, event):
         palette = self._timeline_palette()
         dpr = self.devicePixelRatioF()
         key = (self.width(), self.height(), dpr, repr(palette), self.font().key())
@@ -3783,7 +3830,10 @@ class WaveformTimeline(QWidget):
         painter.setClipRect(QRectF(content_left, 0, content_width, self._canvas_bottom()))
         x = self._time_to_x(self.playhead_ms)
         painter.setPen(QPen(QColor(palette.playhead), 1.5))
-        painter.drawLine(round(x), 0, round(x), self._canvas_bottom())
+        # Keep subpixel coverage. At a 150 s viewport, rounding the logical x
+        # held this line still for ~110 ms even though the overlay painted at
+        # the clock cadence (and jumps were larger on scaled displays).
+        painter.drawLine(QPointF(x, 0), QPointF(x, self._canvas_bottom()))
         playhead_label = _format_ms(self.playhead_ms)
         label_width = 82
         label_left = max(
@@ -5489,9 +5539,17 @@ class WaveformTimeline(QWidget):
             self._publish_clip_selection(selection)
 
     def wheelEvent(self, event: QWheelEvent):
+        # Windows Qt translates Alt+vertical wheel into angleDelta().x().
+        # Trackpads may supply only pixelDelta; a phase/end event can be zero.
+        # Read one signed component, so neither fallback nor propagation applies
+        # the same wheel event twice. Keep the existing per-event pan/zoom step.
+        angle, pixel = event.angleDelta(), event.pixelDelta()
+        delta = angle.y() or angle.x() or pixel.y() or pixel.x()
+        if not delta:
+            event.accept()
+            return
         self._follow_suspended_until = perf_counter() + 2.0
         self._thumbnails.note_activity()
-        delta = event.angleDelta().y()
         duration = self._duration_ms()
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             # 光标悬在轨头列上缩放时，锚点必须钳在内容区，否则外推到

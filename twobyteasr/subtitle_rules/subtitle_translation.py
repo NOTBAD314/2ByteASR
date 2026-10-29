@@ -31,6 +31,7 @@ import hashlib
 import json
 import re
 import time
+import threading
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -90,6 +91,7 @@ BATCH_PROBLEM_KEY = "*"
 PROVIDER_STAGE = "subtitle_translation"
 BUDGET_OPERATION = "polish"
 MAX_GLOSSARY_PAIRS_PER_BATCH = 80
+RECOMMENDED_BATCH_ITEMS = 40  # 80 was faster but failed representative semantic review.
 
 UNTRANSLATED = "untranslated"
 DONE = "done"
@@ -1767,6 +1769,8 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     ``overwrite_legacy`` lets AI replace migrated legacy records only.
     Failed/missing items are retried once in half-size batches; successes of a
     batch are kept even when siblings fail. Cancellation keeps finished items.
+    At most four first-round batches are admitted; no whole-task future queue
+    is created. Each worker owns a client facade and its diagnostic receipt.
     """
     from ..providers.provider_input_budget import (DETERMINISTIC_FAILURES, InputBudgetError, failure_category,
                                         prepare_input, retry_delay, wait_retry)
@@ -1805,8 +1809,17 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
     keys: dict[str, str] = {}
     contexts: dict[str, str] = {}
     fresh: dict[str, str] = {}
-    import threading
-    lock = threading.RLock()  # result, cache and the request log are shared by batch threads
+    lock = threading.RLock()
+    local = threading.local()
+
+    def client():
+        if not hasattr(local, 'client'):
+            fork = getattr(provider, 'concurrent_client', None)
+            local.client = fork() if callable(fork) else provider
+        return local.client
+
+    def request_cancelled():
+        return check() or bool(result.fatal_error)
 
     def emit(kind: str, **fields) -> None:
         if event is not None:
@@ -1820,7 +1833,7 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
 
     def evidence(exc=None) -> dict:
         from .translation_diagnostics import provider_evidence
-        return provider_evidence(provider, exc)
+        return provider_evidence(client(), exc)
 
     emit("started", requested=len(requested), source_language=source_language,
          prompt_version=prompt_version)
@@ -1860,8 +1873,9 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         return cue_id in result.translations or cue_id in result.suggestions or cue_id in result.failed
 
     def note(batch_no: int, problems: Mapping[str, str]) -> None:
-        for cue_id, reason in problems.items():
-            result.problems.append({"batch": batch_no, "id": cue_id, "reason": reason})
+        with lock:
+            for cue_id, reason in problems.items():
+                result.problems.append({"batch": batch_no, "id": cue_id, "reason": reason})
 
     batch_counter = [0]
 
@@ -1891,14 +1905,15 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         retry_output_floor = output_floor
         delay = None
         try:
-            payload = _call_provider(provider, messages, max_tokens=max_tokens, timeout=timeout,
-                                     cancel_check=check)
+            payload = _call_provider(client(), messages, max_tokens=max_tokens, timeout=timeout,
+                                     cancel_check=request_cancelled)
         except Exception as exc:  # noqa: BLE001 - classified below, reported per cue
             category = failure_category(exc)
             emit("error", batch=batch_no, category=category, error=str(exc),
                  elapsed_seconds=round(time.monotonic() - started, 3), **evidence(exc))
             if category == "cancelled" or check():
-                result.cancelled = True
+                if check():
+                    result.cancelled = True
                 return
             if category in _SPLIT_CATEGORIES:
                 split(batch, ids, retries_left, category)
@@ -1921,10 +1936,12 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
         else:
             emit("response", batch=batch_no, output=payload,
                  elapsed_seconds=round(time.monotonic() - started, 3), **evidence())
+            validation_started = time.monotonic()
             accepted, problems = validate_response(batch, payload, target, source_language)
             if math:
                 accepted, problems = _restore_formulas(source, accepted, problems)
-            emit("validated", batch=batch_no, accepted=len(accepted), problems=problems)
+            emit("validated", batch=batch_no, accepted=len(accepted), problems=problems,
+                 validation_seconds=time.monotonic()-validation_started)
         for cue_id, text in accepted.items():
             succeed(cue_id, text, False)
         note(batch_no, problems)
@@ -1966,20 +1983,39 @@ def translate(project, cue_ids: Iterable[str] | None, provider, *, target: str, 
 
     pending = [cue_id for cue_id in work if not resolved(cue_id)]
     report(f"共 {total} 条，待请求 {len(pending)} 条")
-    batches = plan_batches(source, pending, max_items=max_items, max_chars=max_chars,
-                           context_cues=context_cues)
-    workers = max(1, min(int(workers or 1), len(batches)))
-    if workers > 1:
-        from concurrent.futures import ThreadPoolExecutor
-        emit("parallel", batches=len(batches), workers=workers)
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="subtitle-translation") as pool:
-            for future in [pool.submit(run, batch, 1) for batch in batches]:
-                future.result()
-    else:
+    batches = iter(plan_batches(source, pending, max_items=max_items, max_chars=max_chars,
+                               context_cues=context_cues))
+    workers = max(1, min(4, int(workers or 1)))
+    emit('scheduling', workers=workers)
+    if workers == 1:
         for batch in batches:
             if result.cancelled or result.fatal_error:
                 break
             run(batch, 1)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='subtitle-translation') as pool:
+            active = set()
+            exhausted = False
+            while active or not exhausted:
+                while len(active) < workers and not exhausted and not request_cancelled():
+                    batch = next(batches, None)
+                    if batch is None:
+                        exhausted = True
+                    else:
+                        active.add(pool.submit(run, batch, 1))
+                if not active:
+                    break
+                finished, active = wait(active, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    future.result()
+                if request_cancelled():
+                    exhausted = True
+            if check():
+                result.cancelled = True
+    # Completion order must never change the public timeline order.
+    result.translations = {i:result.translations[i] for i in requested if i in result.translations}
+    result.suggestions = {i:result.suggestions[i] for i in requested if i in result.suggestions}
     leftover = [cue_id for cue_id in work if not resolved(cue_id)]
     if result.fatal_error and not result.cancelled:
         for cue_id in leftover:

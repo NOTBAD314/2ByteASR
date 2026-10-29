@@ -226,12 +226,8 @@ def local_review_candidates(cue, draft, candidates, scene, *, processing_id, scr
             if type(match.get('cue_id')) is not int or match['cue_id'] != processing_id:
                 continue
             a,b=match.get('start'),match.get('end')
-            if a is None and b is None and match.get('method')=='single_hanzi_weak':
-                import re
-                positions=[m.span() for m in re.finditer(re.escape(str(match.get('heard',''))),view)]
-                if len(positions)==1:a,b=positions[0]
             if (match.get('asr_source') != 'text' or match.get('method') not in
-                    {'phonetic','spelling','latin_identifier','single_hanzi_weak'}
+                    {'phonetic','spelling','latin_identifier'}
                     or type(a) is not int or type(b) is not int
                     or not 0 <= a < b <= len(draft)):
                 continue

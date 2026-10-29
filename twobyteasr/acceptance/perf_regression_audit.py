@@ -55,6 +55,18 @@ def start(window, out: Path):
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
 
+    # Current daily constructs Studio asynchronously. A fixed 1.5 s startup
+    # timer can run while the page is still pending on a large real project.
+    if window.built_page('studio') is None:
+        deadline = getattr(window, '_perf_page_deadline', time.monotonic()+120)
+        window._perf_page_deadline = deadline
+        if time.monotonic() < deadline:
+            QTimer.singleShot(200, lambda: start(window, out))
+        else:
+            (out/'perf.json').write_text(json.dumps({'errors': {'open': 'Studio page construction timed out'}}), 'utf8')
+            window.close()
+        return
+
     process = psutil.Process()
     started = time.perf_counter()
     phases = [p for p in os.environ.get("PERF_PHASES", DEFAULT_PHASES).split(",") if p]
@@ -434,7 +446,8 @@ def start(window, out: Path):
             timeline = self.page.timeline
             for cue, rect in sorted(rows, key=lambda row: -row[1].width()):
                 hit, mode = timeline._cue_at(rect.center())
-                if hit is not None and hit.id == cue.id and mode == "move":
+                if (hit is not None and hit.id == cue.id and mode == "move"
+                        and timeline._caption_seam_at(rect.center()) is None):
                     return cue, rect
             return None
 
@@ -454,6 +467,9 @@ def start(window, out: Path):
             t_open = time.perf_counter()
             yield self.until(self.ready, 120, "open")
             self.result["open_ready_s"] = round(time.perf_counter() - t_open, 3)
+            launch = os.environ.get('PERF_LAUNCH_MONOTONIC')
+            if launch:
+                self.result['launch_to_ready_s'] = time.perf_counter()-float(launch)
             self.result["cue_count"] = len(page.project.cues)
             self.result["speakers"] = len({c.speaker_id for c in page.project.cues})
             page.video.set_paused(True)
@@ -474,28 +490,66 @@ def start(window, out: Path):
 
         phase_idle_final = phase_idle
 
+        def phase_cloud_fixture(self):
+            from .perf_provider_fixture import run
+            outcome = {}
+            def work():
+                try:
+                    outcome['value'] = run()
+                except Exception:
+                    outcome['error'] = traceback.format_exc()
+            thread = threading.Thread(target=work, daemon=True, name='offline-provider-fixture')
+            thread.start()
+            yield self.until(lambda: not thread.is_alive(), 45, 'offline provider fixture')
+            if outcome.get('error'):
+                raise RuntimeError(outcome['error'])
+            self.result['cloud_fixture'] = outcome['value']
+            self.result['checks']['offline_cloud_parallel_and_retry'] = outcome['value']['passed']
+
         def phase_select(self):
             timeline = self.page.timeline
             timeline.set_visible_window(300_000, 120_000)
             yield 0.6
             rows = self.visible_cue_rects(12)
+            if not rows:
+                timeline.set_visible_window(max(0,self.page.project.cues[0].start_ms-1000),120_000)
+                yield .3
+                rows = self.visible_cue_rects(12)
+            def clickable(rows):
+                result=[]
+                for cue,rect in rows:
+                    hit,mode=timeline._cue_at(rect.center())
+                    if hit is not None and hit.id==cue.id and mode=='move' and timeline._caption_seam_at(rect.center()) is None:
+                        result.append((cue,rect))
+                return result[:12]
+            rows=clickable(self.visible_cue_rects())
+            if not rows:
+                timeline.set_visible_window(int(timeline.visible_start_ms),30_000)
+                yield .3
+                rows=clickable(self.visible_cue_rects())
+            expected=''
             for cue, rect in rows:
                 c = rect.center()
+                hit,_mode=timeline._cue_at(c)
+                expected=hit.id if hit is not None else cue.id
                 yield from self.track("select-click", lambda c=c: (
                     self.mouse(QEvent.Type.MouseButtonPress, c),
                     self.mouse(QEvent.Type.MouseButtonRelease, c, buttons=Qt.MouseButton.NoButton)))
                 yield 0.2
-            self.result["checks"]["select_last_ok"] = bool(rows) and self.page.session.selected_cue_id == rows[-1][0].id
+            self.result["checks"]["select_last_ok"] = bool(rows) and self.page.session.selected_cue_id == expected
 
         def phase_drag_repeat(self):
             page, timeline = self.page, self.page.timeline
             timeline.set_visible_window(300_000, 120_000)
             yield 0.6
+            if not self.visible_cue_rects(2):
+                timeline.set_visible_window(max(0,page.project.cues[0].start_ms-1000),120_000)
+                yield .3
             window_ms = 120_000
             if self.body_grab(self.visible_cue_rects(23)) is None:
                 # Dense overlapping tracks: zoom in until a cue body is grabbable.
                 window_ms = 30_000
-                timeline.set_visible_window(300_000, window_ms)
+                timeline.set_visible_window(int(timeline.visible_start_ms), window_ms)
                 yield 0.6
             self.result["checks"]["drag_window_ms"] = window_ms
             for repeat in range(drag_repeats):
@@ -655,6 +709,195 @@ def start(window, out: Path):
             page.video.set_paused(True)
             self.result["checks"]["playback_advanced_s"] = round(after - before, 3)
             yield 1.0
+
+        def phase_batch_style(self):
+            from ..caption_style.style_resolution import resolve_cue_visual
+            page = self.page
+            page.video.set_paused(True)
+            page._select_all_timeline_cues()
+            yield .5
+
+            target_ids = page.selected_cue_ids()
+            self.result['checks']['batch_style_target_count'] = len(target_ids)
+            for attribute, value in [('font_size',77),('outline_width',4.5),('position_x',900),('shadow_opacity',60)]:
+                control = getattr(page, 'style_'+attribute)
+                for repeat in range(3):
+                    count = page.undo_stack.index()
+                    def apply():
+                        control.setValue(value+repeat)
+                        page._commit_style_now()
+                    yield from self.track('batch-'+attribute, apply)
+                    if attribute != 'shadow_opacity':
+                        self.result['checks'][f'batch_{attribute}_{repeat}'] = all(
+                            getattr(resolve_cue_visual(page.project,c).style,attribute)==value+repeat
+                            for c in page.project.cues if c.id in set(target_ids))
+                    self.result['checks'][f'batch_one_undo_{attribute}_{repeat}'] = page.undo_stack.index()==count+1
+                    yield from self.track('batch-'+attribute+'-undo',page.undo_stack.undo)
+                    yield .25
+            count=page.undo_stack.index()
+            def continuous():
+                for value in range(65,85):page.style_font_size.setValue(value)
+                page._commit_style_now()
+            yield from self.track('batch-continuous',continuous)
+            self.result['checks']['batch_continuous_final'] = all(
+                resolve_cue_visual(page.project,c).style.font_size==84 for c in page.project.cues if c.id in set(target_ids))
+            self.result['checks']['batch_continuous_one_undo'] = page.undo_stack.index()==count+1
+            page.undo_stack.undo()
+            from .blank_project_audit import _capture
+            _capture(window,out/'batch-style.png')
+            yield .5
+
+        def phase_find_replace(self):
+            from ..studio.studio_find_replace import FindReplaceDialog
+            from ..studio.studio_text_tools import SCOPE_ALL
+            page=self.page
+            prefix=getattr(self,'_find_metric_prefix','find')
+            originals={c.id:c.text for c in page.project.cues}
+            needle='古龙';replacement='古喵'
+            expected={i:t.replace(needle,replacement) for i,t in originals.items()}
+            changed={i for i in originals if expected[i]!=originals[i]}
+            if not changed:raise RuntimeError('Real fixture needs the measured search term')
+            dialog=FindReplaceDialog(page,page);dialog.show()
+            yield .3
+            for repeat in range(3):
+                dialog.scope_combo.setCurrentIndex(dialog.scope_combo.findData(SCOPE_ALL))
+                dialog.body_box.setChecked(False)
+                dialog.find_edit.setText(needle);dialog.replace_edit.setText(replacement)
+                dialog._search_timer.stop()
+                yield from self.track(prefix+'-preview',dialog._do_preview)
+                count=page.undo_stack.index()
+                yield from self.track(prefix+'-apply',dialog._do_apply_preview)
+                self.result['checks'][f'{prefix}_all_{repeat}']=all(c.text==expected[c.id] for c in page.project.cues)
+                self.result['checks'][f'{prefix}_one_undo_{repeat}']=page.undo_stack.index()==count+1
+                yield from self.track(prefix+'-undo',page.undo_stack.undo)
+                self.result['checks'][f'{prefix}_restored_{repeat}']=all(c.text==originals[c.id] for c in page.project.cues)
+                yield .3
+            self.result['find_replace_targets']=len(changed)
+            self.result['find_replace_occurrences']=sum(t.count(needle) for t in originals.values())
+            dialog._search_timer.stop();dialog.close()
+            yield .5
+
+        def phase_find_comparison(self):
+            from ..studio.studio_find_replace import PreviewBinding
+            import hashlib
+            original=PreviewBinding.__dict__['_document_fingerprint']
+            def legacy(cls,project):
+                return hashlib.sha256(json.dumps(cls._document_payload(project),ensure_ascii=False,
+                    sort_keys=True).encode('utf8')).hexdigest()
+            try:
+                self._find_metric_prefix='find-legacy'
+                PreviewBinding._document_fingerprint=classmethod(legacy)
+                yield from self.phase_find_replace()
+                PreviewBinding._document_fingerprint=original
+                self._find_metric_prefix='find-current'
+                yield from self.phase_find_replace()
+                self.result['find_comparison_basis']='same process, controlled original fingerprint only; other current optimizations held fixed'
+            finally:
+                PreviewBinding._document_fingerprint=original
+                self._find_metric_prefix='find'
+        def phase_seek_latency(self):
+            page=self.page
+            page.video.set_paused(True)
+            rows=[]
+            diagnostic=os.environ.get('PERF_SEEK_DIAG')=='1'
+            clock=page.video._playback_clock
+            original_observe=clock.observe
+            observed_events=[]
+            if diagnostic:
+                def observe(value,**kwargs):
+                    snapshot,accepted,reason=original_observe(value,**kwargs)
+                    observed_events.append(dict(value=value,accepted=accepted,reason=reason,
+                        clock_generation=clock.generation,target=clock._seek_target_ms,
+                        **{k:kwargs.get(k) for k in ('source_generation','actor_sequence','seeking','paused','source')}))
+                    return snapshot,accepted,reason
+                clock.observe=observe
+            def observed():
+                return page.video._last_mpv_time_pos_ms
+            self.result['seek_measurement_basis']='observed mpv time-pos and seek acknowledgement; display frame PTS sampled when available'
+            for target in (30,300,120,900,1800,600,10,2400,300,1500,60,3000):
+                t=time.perf_counter();page._seek(target)
+                deadline=t+10
+                yield lambda target=target: (observed() is not None
+                    and abs(observed()-target*1000)<150
+                    and not page.video._playback_clock.snapshot().seeking) or time.perf_counter()>deadline
+                rows.append(dict(target=target,ms=(time.perf_counter()-t)*1000,
+                                 frame_pts=page.video._last_video_frame_pts_ms,
+                                 observed_time_ms=observed(),
+                                 acknowledged=observed() is not None and abs(observed()-target*1000)<150))
+                if diagnostic:
+                    rows[-1]['clock_events']=observed_events[:4]+observed_events[-4:]
+                    rows[-1]['observed_position']=page.video.controller.observed_position()
+                    rows[-1]['applied_seek']=page.video.controller.applied_seek_state()
+                    try:
+                        from PIL import Image
+                        import hashlib
+                        path=out/f'seek-{len(rows):02}-{target}.png'
+                        page.video.controller.screenshot_to_file(path,mode='video')
+                        with Image.open(path) as im:
+                            rows[-1]['video_pixel_sha256']=hashlib.sha256(im.convert('RGB').tobytes()).hexdigest()
+                    except Exception as exc:rows[-1]['video_capture_unavailable']=str(exc)
+                    observed_events.clear()
+                yield .1
+            self.result['seek_latency']=rows
+            self.result['checks']['seek_frame_acknowledged']=all(r['acknowledged'] for r in rows)
+            # Burst seeks, with the final intent checked against an actual mpv frame.
+            t=time.perf_counter()
+            for target in range(300,360,3):
+                page._seek(target)
+                yield .016
+            deadline=time.perf_counter()+10
+            yield lambda: (observed() is not None
+                and abs(observed()-357000)<150) or time.perf_counter()>deadline
+            self.result['checks']['seek_burst_final_acknowledged']=(observed() is not None
+                and abs(observed()-357000)<150)
+            self.result['seek_burst_seconds']=time.perf_counter()-t
+            if diagnostic:clock.observe=original_observe
+
+        def phase_playback_interaction(self):
+            from ..studio.studio_performance import performance_snapshot
+            page=self.page
+            page._seek(300)
+            yield 1.0
+            page._set_speed(1.0)
+            rows=[]
+            for repeat in range(3):
+                for paused,label in [(False,'play'),(True,'pause'),(False,'resume')]:
+                    t=time.perf_counter();page.video.set_paused(paused)
+                    before=page.video.visual_position()
+                    deadline=t+5
+                    yield lambda: (page.video._paused==paused and (paused or page.video.visual_position()>before+.04)) or time.perf_counter()>deadline
+                    rows.append(dict(action=label,ms=(time.perf_counter()-t)*1000))
+                    yield .2
+                yield from self.track('playing-select',lambda:page.select_cue(page.project.cues[130+repeat].id))
+                yield from self.track('playing-style',lambda:(page.style_font_size.setValue(70+repeat),page._commit_style_now()))
+                yield 1.0
+            self.result['transport_latency']=rows
+            def drop_counts():
+                result={}
+                for key in ('frame-drop-count','decoder-frame-drop-count','vo-delayed-frame-count'):
+                    try:result[key]=page.video.controller.get_property(key,None)
+                    except Exception:result[key]=None
+                return result
+            drops_before=drop_counts()
+            samples=[];deadline=time.perf_counter()+8
+            while time.perf_counter()<deadline:
+                samples.append(self._av_sample())
+                yield .05
+            self.result['av_samples']=samples
+            drops_after=drop_counts()
+            self.result['steady_drop_delta']={key:(drops_after[key]-value if isinstance(value,(int,float))
+                and isinstance(drops_after.get(key),(int,float)) else None) for key,value in drops_before.items()}
+            self.result['playback_diagnostics']=performance_snapshot(page,compact=True)
+            statistics={}
+            for key in ('frame-drop-count','decoder-frame-drop-count','mistimed-frame-count','vo-delayed-frame-count',
+                        'estimated-vf-fps','display-fps','hwdec-current','video-params'):
+                try:statistics[key]=page.video.controller.get_property(key,None)
+                except Exception as exc:statistics[key]={'unavailable':str(exc)}
+            self.result['mpv_decode_statistics']=statistics
+            page.video.set_paused(True)
+            from .blank_project_audit import _capture
+            _capture(window,out/'playback.png')
+            yield .5
 
         # ------------------------------------------------ long rate endurance
         def _av_sample(self):

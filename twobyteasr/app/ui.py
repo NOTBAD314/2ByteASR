@@ -1073,6 +1073,7 @@ class MainWindow(QWidget):
             | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         bind_text(self, tr('2ByteASR  兔白字幕') + ('【隔离测试】' if os.environ.get('TWOBYTEASR_TEST_ROOT') else ''), property='windowTitle')
         self.setWindowIcon(_app_icon())
         self.setMinimumSize(900, 500)
@@ -1674,6 +1675,14 @@ class MainWindow(QWidget):
             self._layout_resize_handles()
         super().changeEvent(event)
 
+    def paintEvent(self, event):
+        # The complete native client surface is opaque, including newly
+        # exposed resize strips and corners formerly clipped by root radius.
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self.palette().color(QPalette.ColorRole.Window))
+        painter.end()
+        super().paintEvent(event)
+
     def _create_resize_handles(self):
         specs = {
             "left": (Qt.Edge.LeftEdge, Qt.CursorShape.SizeHorCursor),
@@ -1694,7 +1703,7 @@ class MainWindow(QWidget):
     def _layout_resize_handles(self):
         if not hasattr(self, "_resize_handles"):
             return
-        hidden = self.isMaximized()
+        hidden = self.isMaximized() or self.isFullScreen()
         width, height, edge, corner = self.width(), self.height(), 7, 12
         geometry = {
             "left": QRect(0, corner, edge, max(0, height - corner * 2)),
@@ -2949,7 +2958,7 @@ class MainWindow(QWidget):
                 'oss_bucket': bucket, 'oss_prefix': str(values.get('oss_prefix') or 'asr-temp/'),
                 'oss_auto_delete': bool(values.get('oss_auto_delete', True)), 'filetrans_upload': UPLOAD_OWN_OSS})
         elif preset['protocol'] == 'dashscope_filetrans' and str(values.get('filetrans_upload') or '') == UPLOAD_PROVIDER:
-            # Trial temporary upload, only when explicitly chosen (ADR 0112); an existing OSS setup stays saved.
+            # The provider's temporary space (the default since 2026-10-28); an existing OSS setup stays saved.
             self.legacy.configure_runtime_asr({'filetrans_upload': UPLOAD_PROVIDER})
         index = self.qwen_asr_api_provider.findData(provider)
         if index >= 0:
@@ -6327,6 +6336,8 @@ class MainWindow(QWidget):
             return
         item, project = task
         evidence = self._completion_task_evidence.get(self._completion_task_key(item), {})
+        from ..recognition.processing_recovery import refresh_completion_evidence
+        refresh_completion_evidence(project,evidence)
         outcome = evidence.get('outcome')
         self._last_srt_dir = str(Path(item.srt_path).parent) if item.srt_path else ''
         self.open_subtitle_result_button.setEnabled(bool(self._last_srt_dir))
@@ -6426,10 +6437,19 @@ class MainWindow(QWidget):
         else:
             bind_text(self.result_task_summary, '')
         self.result_task_summary.setVisible(bool(project_error))
-        retryable = bool(outcome and (outcome.polish_retryable or outcome.search_retryable or outcome.core_status == 'failed'))
-        self.retry_failed_button.setVisible(bool(retryable and getattr(self, '_last_run_options', None)))
-        self.retry_failed_button.setEnabled(retryable)
-        if outcome and outcome.polish_retryable:
+        recovery=evidence.get('stage_recovery') or {}
+        retryable = bool(recovery.get('failed_tasks') or recovery.get('pending_proposals') or outcome and (outcome.polish_retryable or outcome.search_retryable or outcome.core_status == 'failed'))
+        self.retry_failed_button.setVisible(retryable)
+        optional_retry=bool(recovery.get('failed_tasks') or recovery.get('pending_proposals') or outcome and (outcome.polish_retryable or outcome.search_retryable))
+        self.retry_failed_button.setEnabled(bool(retryable and (available or not optional_retry)))
+        if recovery.get('failed_tasks'):
+            bind_text(self.retry_failed_button,'重试失败任务 {count} 项',count=recovery['failed_tasks'])
+            bind_text(self.result_task_summary,'失败任务 {tasks} 项 · 影响当前字幕 {cues} 条 · 可执行重试 {retryable} 项；人工检查项另计。',
+                tasks=recovery['failed_tasks'],cues=recovery['affected_cues'],retryable=recovery['retryable_tasks'])
+            self.result_task_summary.show()
+        elif recovery.get('pending_proposals'):
+            bind_text(self.retry_failed_button,'查看重试校对建议')
+        elif outcome and outcome.polish_retryable:
             bind_text(self.retry_failed_button, '重试未完成 AI 校对')
         elif outcome and outcome.search_retryable:
             bind_text(self.retry_failed_button, '重试联网核验')
@@ -6902,29 +6922,61 @@ class MainWindow(QWidget):
             return
         item, project = tasks[index]
         evidence = self._completion_task_evidence.get(self._completion_task_key(item), {})
+        from ..recognition.processing_recovery import refresh_completion_evidence
+        refresh_completion_evidence(project,evidence)
         outcome = evidence.get('outcome')
-        stage = stage or ('polish' if outcome and outcome.polish_retryable else 'terminology')
-        if not outcome or not ((stage == 'polish' and outcome.polish_retryable) or (stage == 'terminology' and outcome.search_retryable)):
+        recovery=evidence.get('stage_recovery') or {}
+        stage = stage or ('failed' if recovery.get('failed_tasks') or recovery.get('pending_proposals') else 'polish' if outcome and outcome.polish_retryable else 'terminology')
+        if not outcome or not (stage == 'failed' or (stage == 'polish' and outcome.polish_retryable) or (stage == 'terminology' and outcome.search_retryable)):
             return
         report = copy.deepcopy(evidence.get('display_payload') or {})
         snapshot = getattr(self, '_last_run_options', None)
+        def task_current():
+            current=getattr(self,'_completion_tasks',())
+            return 0<=index<len(current) and self._completion_task_key(current[index][0])==self._completion_task_key(item)
         def review(studio):
             from .completion_retry_ui import open_completion_retry_review
             self._completion_retry_in_progress = True
+            origin=getattr(getattr(studio,'session',None),'project',None)
+            origin_path=getattr(studio,'project_path',None)
             try:
-                receipt = open_completion_retry_review(studio, report, snapshot, stage=stage)
+                if stage=='failed':
+                    from .stage_retry_ui import open_failed_stage_review
+                    receipt=open_failed_stage_review(studio,report,snapshot)
+                else:receipt = open_completion_retry_review(studio, report, snapshot, stage=stage)
                 if receipt is not None:
                     evidence.setdefault('retry_receipts', []).append(receipt)
+                if hasattr(studio,'session') and task_current():
+                    result_project=studio.session.project
+                    if result_project is not origin or getattr(studio,'project_path',None)!=origin_path:
+                        from ..projects.studio_project import load_project
+                        try:
+                            result_project=load_project(item.project_path)
+                            if origin is not None and result_project.project_id!=origin.project_id:raise ValueError('工程文件身份已改变')
+                        except (OSError,ValueError,TypeError) as exc:
+                            result_project=None;evidence['project_error']=str(exc)
+                    self._completion_tasks[index]=(item,result_project)
+                    refresh_completion_evidence(result_project,evidence)
             finally:
                 self._completion_retry_in_progress = False
+                if task_current() and hasattr(self,'result_title'):self._select_completion_task(index)
         self._open_completion_project(item.project_path, mode='edit', source='completion_failed_stage_retry', on_ready=review)
 
     def _retry_failed_items(self):
         tasks = getattr(self, '_completion_tasks', [])
         index = self.result_task_selector.currentIndex()
+        if 0<=index<len(tasks) and tasks[index][1] is None:
+            selected=self._completion_task_evidence.get(self._completion_task_key(tasks[index][0]),{})
+            outcome=selected.get('outcome');payload=selected.get('display_payload') or {}
+            if outcome and (outcome.polish_retryable or outcome.search_retryable or (payload.get('polishing_summary') or {}).get('fallback_cues')):
+                QMessageBox.information(self,tr('无法重试当前范围'),tr('原工程尚未载入或身份已改变。请先恢复已有识别结果；未重新提交整段转写。'))
+                return
         if 0 <= index < len(tasks) and tasks[index][1]:
-            outcome = self._completion_task_evidence.get(self._completion_task_key(tasks[index][0]), {}).get('outcome')
-            if outcome and outcome.result_usable and (outcome.polish_retryable or outcome.search_retryable):
+            evidence=self._completion_task_evidence.get(self._completion_task_key(tasks[index][0]), {})
+            from ..recognition.processing_recovery import refresh_completion_evidence
+            refresh_completion_evidence(tasks[index][1],evidence)
+            outcome=evidence.get('outcome');recovery=evidence.get('stage_recovery') or {}
+            if outcome and outcome.result_usable and (recovery.get('failed_tasks') or recovery.get('pending_proposals') or outcome.polish_retryable or outcome.search_retryable):
                 self._retry_completion_stage()
                 return
         failed = getattr(self, "_last_failed_items", [])
@@ -7254,6 +7306,13 @@ class MainWindow(QWidget):
                     result=bounds.native_message(int(msg.message), int(msg.wParam), int(msg.lParam))
                     if result is not None:
                         return True,result
+                if msg.message == 0x0046:
+                    studio = self.__dict__.get('_studio_page_instance')
+                    pages = self.__dict__.get('pages')
+                    if studio is not None and pages is not None and pages.currentWidget() is studio:
+                        from .window_constraints import native_windowpos
+                        if native_windowpos(self, int(msg.lParam)):
+                            return True, 0
                 if msg.message in (0x0083,0x0024):
                     from .window_native_frame import handle_message
                     result = handle_message(self,int(msg.message),int(msg.wParam),int(msg.lParam),hwnd=hwnd)
@@ -8898,6 +8957,8 @@ class MainWindow(QWidget):
             "sensevoice": "SenseVoice",
             "paraformer": "Paraformer",
             "funasr_nano": "Fun-ASR Nano",
+            "mlx_qwen3_asr": "Qwen3-ASR 0.6B",
+            "mlx_qwen3_asr_1_7b": "Qwen3-ASR 1.7B",
             "api": translate("在线 API", language),
             "none": translate("未选择", language),
         }
@@ -8913,6 +8974,7 @@ class MainWindow(QWidget):
         timeline_short = {
             "local": "FireRedASR2-AED",
             "qwen_aligner": "Aligner",
+            "mlx_qwen_aligner": "Aligner",
             "mfa_aligner": "MFA",
             "whisper_turbo": "Whisper",
             "paraformer": "Paraformer",
@@ -8961,9 +9023,11 @@ class MainWindow(QWidget):
         timeline_note = None
         language_stage = language_timeline(firered_backend, spoken, self.legacy.RUNTIME_SETTINGS)
         if language_stage is not None:
-            # 2026-10-19: the experimental MFA aligner runs Japanese itself.
-            mfa_runs = firered_backend == "mfa_aligner" and not language_stage["rerouted"]
-            timeline_backend = firered_backend if mfa_runs else "qwen_aligner"
+            # 2026-10-19: the experimental MFA aligner runs Japanese itself;
+            # (2026-10-28) the Apple Silicon aligner runs every language
+            # (run_qwen_aligner_worker), so its own files are what count.
+            runs_itself = firered_backend in {"mfa_aligner", "mlx_qwen_aligner"} and not language_stage["rerouted"]
+            timeline_backend = firered_backend if runs_itself else "qwen_aligner"
             if language_stage["rerouted"]:
                 from ..subtitle_rules.european_text import LABELS as european_labels
                 if spoken in european_labels:
@@ -8976,37 +9040,12 @@ class MainWindow(QWidget):
             timeline_name = translate(language_stage["name"], language)
         timeline_short = dict(timeline_short, **{timeline_backend: timeline_name})
         installed = installed_model_keys(APP_ROOT)
-        required = {
-            "primary": {
-                "moss": {"moss", "firered_vad", "speaker_embedding"},
-                "firered": {"firered_aed"},
-                "qwen_local": {"qwen_asr"},
-                "firered_llm": {"firered_llm"},
-                "whisper_turbo": {"whisper_turbo"},
-                "sensevoice": {"sensevoice"},
-                "paraformer": {"paraformer"},
-                "funasr_nano": {"funasr_nano"},
-                "glm_asr_nano": {"glm_asr_nano"},
-                "canary_qwen": {"canary_qwen", "canary_qwen_tokenizer"},
-                "api": set(),
-            },
-            "review": {
-                "local": {"qwen_asr"},
-                "firered_llm": {"firered_llm"},
-                "whisper_turbo": {"whisper_turbo"},
-                "sensevoice": {"sensevoice"},
-                "funasr_nano": {"funasr_nano"},
-                "api": set(),
-            },
-            "timeline": {
-                "local": {"firered_aed"},
-                "qwen_aligner": {"qwen_aligner"},
-                "mfa_aligner": {"mfa_aligner", "mfa_aligner_ja"},
-                "whisper_turbo": {"whisper_turbo"},
-                "paraformer": {"paraformer"},
-                "off": set(),
-            },
-        }
+        # The files each choice needs, from the selectors' own lists. A copy
+        # kept here lacked the Apple Silicon (MLX) choices, so on a Mac the
+        # downloaded Qwen3 aligner always said 需要下载 (2026-10-28).
+        required = {role: {value: set(needs) for _label, value, needs in choices}
+                    for role, choices in (("primary", PRIMARY_MODEL_CHOICES), ("review", REVIEW_MODEL_CHOICES),
+                                          ("timeline", TIMELINE_MODEL_CHOICES))}
 
         # 2026-10-14: a component this computer cannot run (CUDA without an
         # NVIDIA GPU, MLX off Apple Silicon) is said before start, not after.
@@ -9358,6 +9397,15 @@ class MainWindow(QWidget):
         from ..providers.llm_config import read_oss_credentials
 
         saved_oss_id, saved_oss_secret = read_oss_credentials()
+        # 2026-10-28：录音文件识别默认交给服务商临时空间；只有选“我自己的 OSS”才显示并要求 OSS 分组。
+        from ..providers.api_setup_catalog import UPLOAD_CHOICES, UPLOAD_MISSING, UPLOAD_OWN_OSS, resolve_upload_mode
+        upload_mode = FramelessPopupCombo()
+        upload_mode.setObjectName('asrCredentialUpload')
+        for upload_value, upload_label in UPLOAD_CHOICES:
+            upload_mode.addItem(upload_label, upload_value)
+        saved_upload = resolve_upload_mode(oss_models, has_oss_credentials=bool(saved_oss_id and saved_oss_secret))
+        upload_mode.setCurrentIndex(max(0, upload_mode.findData(
+            UPLOAD_OWN_OSS if saved_upload == UPLOAD_MISSING else saved_upload)))
         oss_group = QGroupBox("OSS 临时中转存储")
         oss_form = QFormLayout(oss_group)
         oss_form.setHorizontalSpacing(14)
@@ -9484,10 +9532,15 @@ class MainWindow(QWidget):
 
         def _sync_oss_visibility():
             uses_filetrans = ASR_API_PRESETS.get(str(provider.currentData()),{}).get('protocol')=='dashscope_filetrans'
-            oss_group.setVisible(uses_filetrans)
-            oss_test_button.setVisible(uses_filetrans)
+            uses_oss = uses_filetrans and upload_mode.currentData() == UPLOAD_OWN_OSS
+            try:
+                form.setRowVisible(upload_mode, uses_filetrans)
+            except (AttributeError, TypeError):
+                upload_mode.setVisible(uses_filetrans)
+            oss_group.setVisible(uses_oss)
+            oss_test_button.setVisible(uses_oss)
             status.clear()
-            if uses_filetrans:
+            if uses_oss:
                 dialog.resize(560, 720)
             else:
                 # 自适应收缩：隐藏 OSS 区后不留大块空白（视觉评审第 3 项）。
@@ -9502,9 +9555,11 @@ class MainWindow(QWidget):
         form.addRow("API 地址", url)
         form.addRow("API 密钥", key_row)
         form.addRow("转写风格", style_combo)
+        form.addRow("音频交给服务商的方式", upload_mode)
+        upload_mode.currentIndexChanged.connect(lambda _index: _sync_oss_visibility())
         dialog_layout.addLayout(form)
         dialog_layout.addWidget(spark_group)
-        # OSS 中转存储区（默认隐藏；选中 filetrans 服务时显示）
+        # OSS 中转存储区（默认隐藏；选中 filetrans 服务且选了“我自己的 OSS”时显示）
         dialog_layout.addWidget(oss_group)
         oss_group.hide()
         status = QLabel()
@@ -9663,6 +9718,7 @@ class MainWindow(QWidget):
                 "oss_prefix": oss_prefix.text().strip() or "asr-temp/",
                 "oss_signed_url_ttl": ttl_value,
                 "oss_auto_delete": oss_auto_delete.isChecked(),
+                "filetrans_upload": UPLOAD_OWN_OSS,
             }
             self.legacy.configure_runtime_asr(models_patch)
             return ""
@@ -9686,11 +9742,15 @@ class MainWindow(QWidget):
             if style_index >= 0:
                 self.api_transcribe_style.setCurrentIndex(style_index)
             if ASR_API_PRESETS.get(str(provider.currentData()),{}).get('protocol')=='dashscope_filetrans':
-                oss_error = _persist_oss_fields()
-                if oss_error:
-                    status.setText(oss_error)
-                    status.setProperty("ok", False)
-                    return
+                if upload_mode.currentData() == UPLOAD_OWN_OSS:
+                    oss_error = _persist_oss_fields()
+                    if oss_error:
+                        status.setText(oss_error)
+                        status.setProperty("ok", False)
+                        return
+                else:
+                    # 服务商临时空间：不要求 OSS；已存的 OSS 设置原样保留，改回时还在。
+                    self.legacy.configure_runtime_asr({"filetrans_upload": str(upload_mode.currentData())})
             if self._save_asr_configuration(show_feedback=False):
                 self._refresh_workshop_after_asr_change()
                 dialog.accept()

@@ -39,8 +39,10 @@ class StudioCanvasEditMixin:
         return self.style_controller._commit_canvas_style(position=position, font_size=font_size)
 
     def _position_overlay_font_preview(self, value: float) -> None:
+        if getattr(self,'_caption_transform_retired',False):return
         if getattr(self,'_caption_layer_canvas',False):
             panel=self.caption_transform_panel
+            panel._gesture_mode='ratio'
             before=panel._canvas_values
             factor=float(value)/max(.01,float(self.position_overlay._origin_font_size))
             panel.apply({'scale_x':before['scale_x']*factor,'scale_y':before['scale_y']*factor})
@@ -64,10 +66,17 @@ class StudioCanvasEditMixin:
                 self._transform_preview_timer.start()
 
     def _position_overlay_interaction_started(self) -> None:
+        self._caption_transform_retired=False
         panel=getattr(self,'caption_transform_panel',None)
         if panel is not None:
             from ..caption_style.caption_layer_transform import resolved_values
-            cue=self._cue_lookup.get(self.selected_cue_id)
+            targets=panel.targets()
+            if not targets:
+                from .presentation_scope import report_scope
+                report_scope(self,panel._scope_snapshot,applied=0)
+                self._caption_transform_retired=True
+                return
+            cue=next((c for c in targets if c.id==self.selected_cue_id),targets[0])
             values=resolved_values(self.project,cue,panel.language.currentData()) if cue else None
             if values is not None:
                 self._caption_layer_canvas=True
@@ -126,6 +135,7 @@ class StudioCanvasEditMixin:
         self.ensure_active_subtitle_renderer(reason="transform_finished")
 
     def _position_overlay_font_committed(self, value: float) -> None:
+        if getattr(self,'_caption_transform_retired',False):return
         if getattr(self,'_caption_layer_canvas',False):
             self._position_overlay_font_preview(value)
             self._finish_position_overlay_interaction()
@@ -713,7 +723,9 @@ class StudioCanvasEditMixin:
             self._studio_trace("INLINE_END", cue_id=cue_id, result="cancelled")
 
     def _position_overlay_moved(self, x: int, y: int) -> None:
+        if getattr(self,'_caption_transform_retired',False):return
         if getattr(self,'_caption_layer_canvas',False):
+            self.caption_transform_panel._gesture_mode='delta'
             self.caption_transform_panel.apply({'position_x':int(x),'position_y':int(y)})
             return
         if not hasattr(self, "style_position_x"):
@@ -731,6 +743,7 @@ class StudioCanvasEditMixin:
                 self._transform_preview_timer.start()
 
     def _position_overlay_committed(self, x: int, y: int) -> None:
+        if getattr(self,'_caption_transform_retired',False):return
         if getattr(self,'_caption_layer_canvas',False):
             self._position_overlay_moved(x,y)
             self._finish_position_overlay_interaction()

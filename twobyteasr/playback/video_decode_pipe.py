@@ -36,6 +36,7 @@ class PipeFrame:
     published_at: float = 0.
     write_started_at: float = 0.
     costs: dict | None = None
+    frame_end_ms: int = 0
 
 
 def _read_exact(stream, length):
@@ -206,7 +207,7 @@ class VideoDecodePipe:
                             header['requested_ms'], header['pts_ms'], header['width'], header['height'], pixels,
                             header['raw_pts'], header['raw_dts'], header['time_base'], header['decoded_at'], received,
                             header.get('codec_decoded_at',0.), header.get('published_at',0.),
-                            header.get('write_started_at',0.), header.get('costs'))
+                            header.get('write_started_at',0.), header.get('costs'), header.get('frame_end_ms',0))
                         frame=self._frame
                     callback=self.on_frame
                     if callback is not None:

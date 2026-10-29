@@ -23,8 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
-PRE_ROLL_MS = 250
-POST_ROLL_MS = 350
+# Default audition is exactly the subtitle interval. Extra context must be an
+# explicit caller choice, never an invisible extension into the next sentence.
+PRE_ROLL_MS = 0
+POST_ROLL_MS = 0
 SAMPLE_RATE = 48000
 CHANNELS = 2
 
@@ -224,6 +226,27 @@ def preview_command(plan, ffmpeg, *, cancelled=None):
             "-f", "lavfi", "-i", f"anullsrc=r={SAMPLE_RATE}:cl=stereo:d={duration:.6f}",
             *inputs, "-filter_complex_threads", "1", "-filter_complex", ";".join(filters), "-map", label,
             "-t", f"{duration:.6f}", "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"], receipts
+
+
+def preview_cache_key(plan):
+    """Fingerprint the actual audio graph and files, independent of UI order.
+
+    Includes stream, gain, mute decisions (absent layers), rate, source clock,
+    envelopes and file identity. Caption text/save timestamps need not evict
+    unchanged audio; a moved boundary or replaced media always does.
+    """
+    files = []
+    for layer in plan.layers:
+        path = Path(layer["source_path"])
+        try:
+            stat = path.stat()
+            files.append((str(path.resolve()), stat.st_size, stat.st_mtime_ns))
+        except OSError as exc:
+            raise PreviewUnavailable(f"找不到或无法读取素材文件：{path}") from exc
+    value = {"project": plan.project_id, "cue": plan.cue_id, "clock": plan.clock,
+             "range": plan.play_range_ms, "layers": plan.layers, "files": files,
+             "format": [SAMPLE_RATE, CHANNELS, "s16le"]}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
 
 
 def record_preview(row):

@@ -111,7 +111,9 @@ def test_one_bad_cue_does_not_discard_valid_neighbor(context, monkeypatch, struc
 
 
 @pytest.mark.parametrize('edits', [
-    [{'from': 'second', 'to': 'changed', 'start': 2, 'end': 99, 'type': 'asr_correction'}],
+    # 2026-10-28: a span that misses text quoted once is relocated
+    # (test_polish_edit_span_repair); quoted text that is absent still fails.
+    [{'from': 'secnod', 'to': 'changed', 'start': 2, 'end': 99, 'type': 'asr_correction'}],
     [{'from': 'second', 'to': 'changed', 'start': 2, 'end': 8, 'type': 'asr_correction'},
      {'from': 'second', 'to': 'other', 'start': 2, 'end': 8, 'type': 'asr_correction'}],
 ])

@@ -429,6 +429,17 @@ class VideoCompositionScene(QWidget):
     def set_preview_scale(self, scale: float) -> None:
         self._preview_scale = max(0.25, min(1.0, float(scale)))
 
+    def retain_clip_ids(self, clip_ids) -> None:
+        """Edits retire deleted clips immediately; only live clips are seek-cached."""
+        keep = set(clip_ids)
+        for key in list(self._players):
+            if key not in keep:
+                runtime = self._players.pop(key)
+                runtime.frame_updated.disconnect(self._secondary_frame_arrived)
+                runtime.release()
+                runtime.deleteLater()
+                self._warm_ids.discard(key)
+
     def set_video_size(self, width: int, height: int) -> None:
         self._video_aspect = max(1, int(width)) / max(1, int(height))
         self._sync_viewport_geometry()
@@ -497,6 +508,9 @@ class VideoCompositionScene(QWidget):
             # 叠加层顶替成为 base，被误判"mpv 正在承载它"而直接跳过，叠加轨
             # 永不渲染。改为只认显式 primary_media 标记或源路径与 mpv 相等。
             served_by_mpv = bool(layer.get("primary_media"))
+            animated = source.lower().endswith('.gif')
+            if animated:
+                served_by_mpv = False
             if mpv_binding is not None:
                 track_id, clip_id, bound_path = mpv_binding
                 served_by_mpv = bool(bound_path and source and
@@ -508,6 +522,8 @@ class VideoCompositionScene(QWidget):
                     served_by_mpv = _resolved(source) == _resolved(mpv_source)
                 except (OSError, ValueError):
                     served_by_mpv = source == mpv_source
+            if animated:
+                served_by_mpv = False
             if not served_by_mpv:
                 overlays.append(layer)
             elif self._base_layer is None:
@@ -749,7 +765,8 @@ class VideoCompositionScene(QWidget):
                 # 暂停态放宽到 500ms 兜底显示，避免"解出帧却恒不可见"。
                 paused_fallback = bool(getattr(self, "_paused", False)) and delta <= 500
                 holding_seek = getattr(runtime, "_image_generation", generation) != generation
-                if delta <= max(tolerance, 42) or pts < 0 or frame_fresh or paused_fallback or holding_seek:
+                within_frame = pts <= requested < int(getattr(runtime, 'frame_end_ms', 0))
+                if within_frame or delta <= max(tolerance, 42) or pts < 0 or frame_fresh or paused_fallback or holding_seek:
                     visible = True
                     painted_overlays += 1
                     local, matrix = self._layer_geometry(layer, image.width(), image.height())

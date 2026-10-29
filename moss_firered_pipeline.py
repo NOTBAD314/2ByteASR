@@ -1273,7 +1273,11 @@ def _speaker_group_signal(chunk, local_speaker, chunk_index, chunk_count, audio_
 
 
 def review_scoped_voiceprints(cues, audio, legacy, context, paths, processing, audit_branch):
-    """Keep anonymous labels on failure; save only reviewable comparison evidence."""
+    """Compare API speaker labels by voiceprint; labels stay unchanged on failure.
+
+    Strong groups are merged when the project is created
+    (``scoped_voiceprint.apply_automatic``), weaker ones stay candidates.
+    """
     from twobyteasr.recognition.service import CancelledError
     token = getattr(context, 'cancellation_token', None)
     cancelled = lambda: bool(getattr(token, 'is_cancelled', False))
@@ -1284,7 +1288,7 @@ def review_scoped_voiceprints(cues, audio, legacy, context, paths, processing, a
             raise CancelledError('声纹分析已取消')
         if len({item['label'] for item in windows}) < 2:
             legacy.record_run_event('recognition_branch_skipped', branch='voiceprint',
-                                    reason='insufficient_request_scoped_speech_samples')
+                                    reason='insufficient_api_speaker_speech_samples')
             return
         audit_branch('voiceprint')
         worker = os.path.join(legacy.SCRIPT_DIR, 'workers', 'speaker_embed_worker.py')
@@ -1295,10 +1299,17 @@ def review_scoped_voiceprints(cues, audio, legacy, context, paths, processing, a
         if cancelled():
             raise CancelledError('声纹分析已取消')
         processing['voiceprint_review'] = review
+        automatic = review.get('automatic_groups') or []
         legacy.record_run_event('scoped_voiceprint_review', groups=review.get('groups', []),
-            samples=sum(review.get('sample_counts', {}).values()),
+            automatic_groups=automatic, samples=sum(review.get('sample_counts', {}).values()),
             excluded=review.get('excluded', {}), conflicts=len(review.get('conflicts', [])),
             identity_confirmed=False, text_transcription_repeated=False)
+        if automatic:
+            merged = sum(len(group) - 1 for group in automatic)
+            legacy.add_review_item(0.0, '说话人已按声纹合并',
+                f'{merged} 个说话人标签的声音与另一个标签一致，已并入同一位说话人（共 {len(automatic)} 组），'
+                '字幕文字和时间不变。如有误，在说话人管理里把「已并入」的标签设为「主要」即可拆开。',
+                priority=3, severity='info')
     except CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - preserve original scoped labels on failure
@@ -4989,7 +5000,7 @@ def process_media(
         audit_branch("voiceprint")
     elif speaker_mode != 'single':
         legacy.record_run_event('recognition_branch_deferred', branch='voiceprint',
-            reason='compare request-scoped labels after final caption grouping; review before merging')
+            reason='compare API speaker labels after final caption grouping; strong groups merge when the project is created')
     else:
         legacy.record_run_event("recognition_branch_skipped", branch="voiceprint",
             reason="single speaker strategy selected")
@@ -5487,9 +5498,10 @@ def process_media(
                                       timeline=str(getattr(legacy, "FIRERED_ASR_BACKEND", "") or ""))
     legacy.record_run_event("timing_ledger", evidence=saved_ledger or "",
                             stages=[row["stage"] for row in timing_ledger.stages])
-    # API speaker labels belong only to their request. Compare independent
-    # speech samples across requests, but keep the raw labels until a person
-    # reviews a candidate in Studio. A model error never loses the transcript.
+    # API speaker labels belong only to their request, and MOSS Pro also
+    # splits one voice inside a request. Compare every label's own speech;
+    # the cues keep their raw labels here (strong groups merge when the
+    # project is created). A model error never loses the transcript.
     if primary_backend != 'moss' and speaker_mode != 'single' and shared_audio is not None:
         review_scoped_voiceprints(cues, shared_audio, legacy, runtime_context, paths, speaker_processing, audit_branch)
     save_speaker_evidence(speaker_audit_root, "final", legacy.serialize_cues(cues))

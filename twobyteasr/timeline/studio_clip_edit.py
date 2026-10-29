@@ -23,6 +23,11 @@ def _rate(clip):
     return Fraction(str(clip.playback_rate or 1.0))
 
 
+def media_edit_limit(asset):
+    """GIF cycles repeat within an explicitly finite, undoable clip span."""
+    return 2_147_483_647 if str(asset.canonical_source).lower().endswith('.gif') else asset.duration_ms
+
+
 def trim_bounds(clip, asset_duration):
     rate = _rate(clip)
     return (max(0, clip.timeline_in_ms - int(Fraction(clip.source_in_ms) / rate)),
@@ -531,7 +536,7 @@ def clip_edit_command(project, track_id, action, *, clip_id='', start=None, end=
             if item.id in ids:
                 _shift(item, delta)
     elif action == 'trim':
-        _trim(clip, start, end, asset_by_id(working, clip.asset_id).duration_ms)
+        _trim(clip, start, end, media_edit_limit(asset_by_id(working, clip.asset_id)))
     elif action == 'split':
         _split(working, track, clip, int(time_ms))
     else:

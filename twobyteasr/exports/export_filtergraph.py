@@ -18,6 +18,8 @@ def simple_video_clips(graph):
                     scale_x=1., scale_y=1., rotation=0., opacity=1., fit_mode='contain')
     assets = {a['asset_id']: a for a in graph.get('media_pool', [])}
     for clip in clips:
+        if str(assets.get(clip['asset_id'], {}).get('canonical_source', '')).lower().endswith('.gif'):
+            return None
         if any(clip.get('transform', {}).get(k, v) != v for k, v in defaults.items()):
             return None
         effects = clip.get('effects') or {}

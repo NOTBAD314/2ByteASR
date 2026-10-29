@@ -141,10 +141,14 @@ class SpeakerManagerDialog(QDialog):
         if self._snapshot:
             report = self._snapshot.get('processing', {}).get('voiceprint_review')
             if isinstance(report, dict) and report.get('groups'):
-                from ..recognition.scoped_voiceprint import cue_signature
-                if report.get('cue_signature') == cue_signature(self.page.project.cues):
-                    self._voiceprint_report = report
-                    bind_text(self.voiceprint_button, '查看声纹候选')
+                from ..recognition.scoped_voiceprint import VERSION, cue_signature
+                # An earlier version's candidates cannot be applied; compare again.
+                if (report.get('version') == VERSION
+                        and report.get('cue_signature') == cue_signature(self.page.project.cues)):
+                    report = self._undecided_groups(report)
+                    if report['groups']:
+                        self._voiceprint_report = report
+                        bind_text(self.voiceprint_button, '查看声纹候选')
         self.refresh()
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
@@ -663,6 +667,13 @@ class SpeakerManagerDialog(QDialog):
                           origin=_source_name(processing), count=len(self._stats), pending=len(pending))
                 tip = tr("标签不等于真人身份，请按原音确认归属。预计说话人数：{expected}。匿名标签均待确认，不按编号或发言量认定主播。",
                          expected=snapshot.get("expected_speakers") or tr("自动"))
+            # Say so when recognition already merged labels by voiceprint.
+            roles = self._roles()
+            merged = [label for group in (snapshot.get("voiceprint_automatic") or {}).get("groups", [])
+                      for label in group[1:] if str(roles.get(label, "")).startswith("merge:")]
+            if merged:
+                text = join_text([text, tr("其中 {count} 个标签与另一位声纹一致，识别时已自动并入；在它的卡片上点「主要」即可拆开。",
+                                           count=len(merged))], " ")
         self.banner_text.setText(text)
         self.banner_text.setToolTip(tip)
         self.rebuild_button.setVisible(snapshot is not None and not self._snapshot_in_project)
@@ -754,8 +765,9 @@ class SpeakerManagerDialog(QDialog):
                 return
             self._voiceprint_apply()
             return
-        state = self._snapshot or {}
-        if not self._snapshot_in_project or state.get('confirmed_by'):
+        # Labels a person has decided are refused per label when applying, so
+        # one confirmed speaker does not block comparing the undecided ones.
+        if not self._snapshot_in_project:
             self._set_status(tr('当前工程没有可安全比对的未确认分片标签；已有人工确认的身份不会被覆盖。'))
             return
         from ..timeline.studio_edit_sequence import sequence_of
@@ -842,13 +854,19 @@ class SpeakerManagerDialog(QDialog):
             self._set_status(tr('声纹比对未完成：{error}。原有说话人保持不变。', error=error))
         elif self.page.project is None or signature != cue_signature(self.page.project.cues):
             self._set_status(tr('分析期间字幕已变化，已丢弃旧结果；请重新比对。'))
-        elif report and report.get('groups'):
-            self._voiceprint_report = report
+        elif report and self._undecided_groups(report)['groups']:
+            self._voiceprint_report = report = self._undecided_groups(report)
             bind_text(self.voiceprint_button, '查看声纹候选')
             self.refresh()
             self._set_status(tr('发现 {count} 组相似声纹候选；卡片的 ▶ 可试听比对样本，尚未修改工程。', count=len(report['groups'])))
         else:
             self._set_status(tr('没有足够一致的候选；原有说话人保持不变。'))
+
+    def _undecided_groups(self, report):
+        """Candidate groups without speakers a person already set up; a chosen
+        主要 speaker stays as the group's target."""
+        from ..recognition.scoped_voiceprint import reviewable_groups
+        return dict(report, groups=reviewable_groups(self.page.project, report.get('groups')))
 
     def _voiceprint_apply(self):
         from ..recognition.scoped_voiceprint import apply_reviewed

@@ -24,10 +24,14 @@ def project_fixture():
     return project
 
 
+def voices(labels, vector=lambda label:[1.,0.,0.] if label != 'R003_S00' else [0.,1.,0.]):
+    """Worker output: each label's two halves and whole voiceprint."""
+    return {'0|'+label+key:vector(label) for label in labels for key in ('#0','#1','#w')}
+
+
 def observations(project):
     samples = sample_windows(project.cues)
-    vectors = {'0|'+s['id']:([1.,0.,0.] if s['label'] != 'R003_S00' else [0.,1.,0.]) for s in samples}
-    return samples,vectors
+    return samples,voices({s['label'] for s in samples})
 
 
 def test_same_voice_across_requests_is_a_review_candidate_only():
@@ -36,27 +40,29 @@ def test_same_voice_across_requests_is_a_review_candidate_only():
     samples,vectors = observations(project)
     report = proposals(project.cues,samples,vectors)
     assert report['groups'] == [['R001_S00','R002_S00']]
+    # About 5.7 s of speech each: enough to suggest, not to merge unasked.
+    assert report['automatic_groups'] == []
     assert project.to_dict() == before
     assert report['cue_signature'] == cue_signature(project.cues)
 
 
-def test_same_request_and_overlapping_voices_are_conflicts():
+def test_same_request_labels_are_compared_but_overlap_conflicts():
+    # 2026-10-28: a provider (MOSS Pro) may split one voice inside a request.
     project = project_fixture()
     project.cues[2].speaker_id = project.cues[3].speaker_id = 'R001_S01'
     samples = sample_windows(project.cues)
-    vectors = {'0|'+s['id']:[1.,0.] for s in samples}
-    report = proposals(project.cues,samples,vectors)
-    assert any(item['reason']=='same_request' for item in report['conflicts'])
-    assert not any('R001_S00' in g and 'R001_S01' in g for g in report['groups'])
+    report = proposals(project.cues,samples,voices({s['label'] for s in samples},lambda label:[1.,0.]))
+    assert ['R001_S00','R001_S01','R003_S00'] in report['groups']
+    assert all(item['same_request'] for item in report['pair_scores'] if item['labels'] == ['R001_S00','R001_S01'])
+    assert not any(item['reason']=='same_request' for item in report['conflicts'])
     project = project_fixture()
     project.cues[2].start_ms,project.cues[2].end_ms = 1000,4000
     samples = sample_windows(project.cues)
-    # Include two independent samples for each side; a later overlap must
-    # still bar merging even if their selected samples were otherwise clean.
-    samples += [dict(id='extra1',label='R001_S00',start=10,end=12.6),
-                dict(id='extra2',label='R002_S00',start=30,end=32.6)]
-    vectors = {'0|'+s['id']:[1.,0.] for s in samples}
-    report = proposals(project.cues,samples,vectors)
+    # The overlapping captions are not sampled; give both labels a second
+    # clean half so the overlap itself, not missing evidence, bars the merge.
+    samples += [dict(id='extra1',label='R001_S00',part=1,start=10,end=12.6),
+                dict(id='extra2',label='R002_S00',part=1,start=30,end=32.6)]
+    report = proposals(project.cues,samples,voices({s['label'] for s in samples},lambda label:[1.,0.]))
     assert any(item['reason']=='overlap' for item in report['conflicts'])
     assert not any('R001_S00' in g and 'R002_S00' in g for g in report['groups'])
 
@@ -64,17 +70,23 @@ def test_same_request_and_overlapping_voices_are_conflicts():
 def test_insufficient_and_inconsistent_samples_do_not_form_groups():
     project = project_fixture()
     samples,vectors = observations(project)
-    vectors.pop('0|'+next(s['id'] for s in samples if s['label']=='R002_S00'))
+    vectors.pop('0|R002_S00#0')
     report = proposals(project.cues,samples,vectors)
     assert report['excluded']['R002_S00'] == 'insufficient_samples'
     assert not report['groups']
-
-
-def test_overlapping_samples_do_not_count_as_independent_evidence():
-    project = project_fixture()
     samples,vectors = observations(project)
-    selected = [sample for sample in samples if sample['label']=='R002_S00']
-    selected[1]['start'],selected[1]['end'] = selected[0]['start'],selected[0]['end']
+    vectors['0|R002_S00#1'] = [0.,0.,1.]
+    report = proposals(project.cues,samples,vectors)
+    assert report['excluded']['R002_S00'] == 'inconsistent_samples'
+    assert not report['groups']
+
+
+def test_one_caption_cannot_prove_a_voice_by_itself():
+    project = project_fixture()
+    project.cues = [cue for cue in project.cues if cue.id != 'R002_S00-1']
+    samples,vectors = observations(project)
+    assert {s['part'] for s in samples if s['label']=='R002_S00'} == {0}
+    vectors.pop('0|R002_S00#1')
     report = proposals(project.cues,samples,vectors)
     assert report['excluded']['R002_S00'] == 'insufficient_samples'
     assert not report['groups']
@@ -162,9 +174,16 @@ def test_stale_or_human_confirmed_results_never_overwrite():
     project = project_fixture()
     samples,vectors = observations(project)
     report = proposals(project.cues,samples,vectors)
-    project.generation_metadata['speaker_recovery']['confirmed_by'] = 'user'
+    project.generation_metadata['speaker_recovery']['roles']['R002_S00'] = 'main'
     with pytest.raises(ValueError,match='人工确认'):
         apply_reviewed(project,report)
+    # A choice made for another speaker does not block undecided labels.
+    project = project_fixture()
+    samples,vectors = observations(project)
+    report = proposals(project.cues,samples,vectors)
+    project.generation_metadata['speaker_recovery'].update(confirmed_by='user')
+    project.generation_metadata['speaker_recovery']['roles']['R003_S00'] = 'main'
+    assert len(apply_reviewed(project,report).speakers) == 2
 
 
 def test_manual_name_is_not_overwritten_by_a_suggestion():

@@ -178,6 +178,60 @@ def _validate_grouped_sources(segments, cues, **kwargs):
     return grouped_result_is_valid(segments, cues, **kwargs)
 
 
+def _contract_safe_pass(name, step, cues, segments):
+    """Run one post-grouping cleanup; keep only the changes the source contract allows.
+
+    2026-10-28 (user's 1-hour stream): the 50 AI batches passed, then one of
+    ten lone-character merges joined rows across another speaker's turn, and
+    the whole file's AI grouping was replaced by the local fallback. A change
+    unit is a run of output cues covering the same input cues (a merge, or
+    characters moved between neighbours); each is kept only if the contract
+    still holds with it.
+    """
+    from .text_rules import content_only
+    after = step(copy.deepcopy(cues))
+    if _restore_grouped_source(segments, copy.deepcopy(after)):
+        return after
+
+    def spans(items):
+        offsets, result = {}, []
+        for cue in items:
+            speaker = cue.speaker or 'S00'
+            start = offsets.get(speaker, 0)
+            offsets[speaker] = start + len(content_only(cue.text))
+            result.append((speaker, start, offsets[speaker]))
+        return result
+
+    before_spans, after_spans = spans(cues), spans(after)
+    same = {(span, cue.text, cue.start, cue.end) for span, cue in zip(before_spans, cues)}
+    units = []
+    for span, cue in zip(after_spans, after):
+        if (span, cue.text, cue.start, cue.end) in same:
+            continue
+        covered = {index for index, (speaker, a, b) in enumerate(before_spans)
+                   if speaker == span[0] and a < span[2] and span[1] < b}
+        unit = next((unit for unit in units if unit['inputs'] & covered), None)
+        if unit is None:
+            units.append({'inputs': covered, 'outputs': [cue]})
+        else:
+            unit['inputs'] |= covered
+            unit['outputs'].append(cue)
+    current, kept = list(cues), 0
+    for unit in units:
+        removed = {id(cues[index]) for index in unit['inputs']}
+        positions = [index for index, cue in enumerate(current) if id(cue) in removed]
+        if not positions or len(positions) != len(removed):
+            continue
+        position = positions[0]
+        candidate = [cue for cue in current if id(cue) not in removed]
+        candidate[position:position] = unit['outputs']
+        if _restore_grouped_source(segments, copy.deepcopy(candidate)):
+            current, kept = candidate, kept + 1
+    record_run_event('grouping_postprocess_partial', step=name, change_units=len(units),
+                     kept=kept, dropped=len(units) - kept, reason='source_contract')
+    return current
+
+
 def _grouping_dependency_segments(segments):
     rows = serialize_segments(segments)
     # Alignment observations are written during a successful conversion. They
@@ -1002,6 +1056,7 @@ def call_grouping_api(
     print(f"   [警告] 断句连续失败，当前批次使用本地均衡分段：{last_error}")
     record_run_event(
         "grouping_api_fallback",
+        source_processing_ids=[int(segment.segment_id) for segment in segment_batch],
         segment_start=round(float(segment_batch[0].start), 3),
         segment_end=round(float(segment_batch[-1].end), 3),
         batch_index=batch_index,
@@ -1261,10 +1316,21 @@ def group_subtitles(
             extend_review_items(review_items)
     for index in sorted(results):
         cues.extend(results[index])
-    cues = merge_same_speaker_dangling_cues(cues)
-    cues = merge_isolated_two_character_cues(cues)
-    cues = repair_mid_word_adjacent_cues(cues, ordered_segments, firered_tokens)
-    cues = merge_hanging_attribute_cues(cues)
+    if _restore_grouped_source(ordered_segments, copy.deepcopy(cues)):
+        cues = _contract_safe_pass('merge_same_speaker_dangling_cues', merge_same_speaker_dangling_cues,
+                                   cues, ordered_segments)
+        cues = _contract_safe_pass('merge_isolated_two_character_cues', merge_isolated_two_character_cues,
+                                   cues, ordered_segments)
+        cues = _contract_safe_pass('repair_mid_word_adjacent_cues',
+                                   lambda items: repair_mid_word_adjacent_cues(items, ordered_segments, firered_tokens),
+                                   cues, ordered_segments)
+        cues = _contract_safe_pass('merge_hanging_attribute_cues', merge_hanging_attribute_cues,
+                                   cues, ordered_segments)
+    else:
+        cues = merge_same_speaker_dangling_cues(cues)
+        cues = merge_isolated_two_character_cues(cues)
+        cues = repair_mid_word_adjacent_cues(cues, ordered_segments, firered_tokens)
+        cues = merge_hanging_attribute_cues(cues)
     postprocess_fallback = not _restore_grouped_source(ordered_segments, cues)
     if postprocess_fallback:
         record_run_event("grouping_postprocess_rejected", reason="source_contract_failed")

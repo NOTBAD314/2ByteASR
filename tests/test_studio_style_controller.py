@@ -414,13 +414,23 @@ def test_scope_switch_to_speaker_only_changes_future_edit_targets(tmp_path, monk
         assert index >= 0
         page.style_preset.setCurrentIndex(index)
         app.processEvents()
-        # scope 仍是 current：只有 a 换成 game
+        # The effective selection contains only a.
         assert str(page.session._cue_lookup["a"].style_id).startswith("game")
         assert page.session._cue_lookup["c"].style_id == "default"
         # Changing the scope must preserve the other cue until an explicit edit.
         page.style_scope.setCurrentIndex(page.style_scope.findData("speaker"))
         app.processEvents()
         assert page.session._cue_lookup["c"].style_id == "default"
+        page.style_font_size.setValue(66)
+        page._commit_style_now()
+        from twobyteasr.caption_style.style_resolution import resolve_cue_visual
+        assert all(resolve_cue_visual(page.project, page.session._cue_lookup[key]).style.font_size == 66
+                   for key in ("a", "c"))
+        assert page.session._cue_lookup["c"].base_preset_id == "default"
+        # Picking a whole preset explicitly still applies it to the range.
+        page._preset_activated(index)
+        app.processEvents()
+        assert str(page.session._cue_lookup["c"].style_id).startswith("game")
         assert str(page.session._cue_lookup["a"].style_id).startswith("game")
     finally:
         _finish(page)
