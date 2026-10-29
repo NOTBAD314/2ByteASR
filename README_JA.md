@@ -23,17 +23,16 @@
 
 ## ダウンロード
 
-現在のバージョン：**0.8.7**（2026-10-27。今回は Windows のみで、Mac 版は 0.8.6 のまま）。お使いのコンピューターに合うインストーラーをひとつ選んでください。
+現行版：**0.8.8**（2026-10-29）。
 
-| お使いのコンピューター | ダウンロード |
+| 環境 | ダウンロード |
 | --- | --- |
-| **Windows 10 1809 以降（64 ビット）**<br>正式版 | **[2ByteASR-Setup-0.8.7.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe)**（約 1 GB）<br>インストーラーにはコード署名がないため、「不明な発行元」と表示されることがあります。[Windows へのインストール](docs/product-guide.ja.md#windows-へのインストール)を参照してください。 |
-| **Apple シリコン（M1 以降）の Mac、macOS 14 以降**<br>**実験版** | **[2ByteASR-0.8.6-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)**（約 0.5 GB）<br>GitHub の仮想 Mac でのみ確認しています。**Intel Mac には対応していません。** Apple の公証を受けていないため、初回の開き方は [Mac へのインストール](docs/product-guide.ja.md#mac-へのインストール実験版)を参照してください。 |
+| Windows 10 1809以降、64bit | [2ByteASR-Setup-0.8.8.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-Setup-0.8.8.exe)、約1.1GB |
+| Apple Silicon Mac、macOS14以降 | [2ByteASR-0.8.8-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-0.8.8-macos-arm64-Setup.dmg)、約578MB、**実験版**。Intel Mac非対応 |
 
-- **中国本土でダウンロードが遅い・できない場合：** まず GitCode のミラーから [Windows 版](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac 版](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)。それでも駄目なら第三者の高速化サービス gh-proxy から [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)。どこから取得してもファイルは同じで、`SHA256SUMS.txt` で確認できます。
-- **0.6.5 / 0.7.x / 0.8.0〜0.8.6 をお使いの場合：** アプリ右上の「更新を確認」から、変わった部分だけをダウンロードできます。0.6.0 以前は、アンインストールせずに新しいインストーラーで上書きしてください。
-- **ほかの添付ファイルは不要です。** [Releases ページ](https://github.com/NOTBAD314/2ByteASR/releases/latest)の `Source`、`ThirdParty`、`update`、`.sig` などは、ソースコード、ライセンス資料、アプリ内更新のためのものです。`SHA256SUMS.txt` でダウンロードしたファイルが完全かどうか確認できます。
-- **Linux：** [Docker 版 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)（amd64 / CPU。ブラウザーで従来の画面を使え、NVIDIA GPU は不要）があります。[ビルド・起動手順](README.docker.md)を参照してください。
+保存してアプリを終了してから上書きインストールしてください。Windowsの0.6.5以降はアプリ内更新も利用できます。[リリースノート・チェックサム](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.8) · [導入ガイド](docs/product-guide.ja.md)。WindowsのAuthenticode署名とApple公証はありません。Source、ライセンス、コンポーネント、署名の添付は検証・ソース提供・アプリ内更新用です。
+
+Linux向け[Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)も利用できます。
 
 ## 何をしますか？
 

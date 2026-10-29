@@ -23,17 +23,16 @@ Free. Run everything on your own computer, or connect your own cloud service.
 
 ## Download
 
-Current release: **0.8.7** (2026-10-27; Windows only, the Mac build stays at 0.8.6). Pick the one installer for your computer:
+Current release: **0.8.8** (2026-10-29).
 
 | Your computer | Download |
 | --- | --- |
-| **Windows 10 1809 or later (64-bit)**<br>Stable | **[2ByteASR-Setup-0.8.7.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe)** (about 1 GB)<br>The installer is not code-signed, so Windows may show an "unknown publisher" warning. See [Installing on Windows](docs/product-guide.en.md#installing-on-windows). |
-| **Mac with Apple silicon (M1 or later), macOS 14 or later**<br>**Experimental** | **[2ByteASR-0.8.6-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)** (about 0.5 GB)<br>Tested only on GitHub's virtual Macs. **Intel Macs are not supported.** Not notarized by Apple; see [Installing on Mac](docs/product-guide.en.md#installing-on-mac-experimental) for the first launch. |
+| Windows 10 1809 or later, 64-bit | [2ByteASR-Setup-0.8.8.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-Setup-0.8.8.exe), about 1.1 GB |
+| Apple silicon Mac (M1 or later), macOS 14 or later | [2ByteASR-0.8.8-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-0.8.8-macos-arm64-Setup.dmg), about 578 MB; **experimental**, no Intel build |
 
-- **Slow or blocked downloads in mainland China?** Use the GitCode mirror first: [Windows installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac installer](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg). If that fails too, try the third-party gh-proxy accelerator: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg). The files are identical on every source; check them with `SHA256SUMS.txt`.
-- **Already on 0.6.5, 0.7.x or 0.8.0–0.8.6?** Use "Check for updates" in the app; it downloads only what changed. For 0.6.0 or earlier, run the new installer over the old one without uninstalling first.
-- **You don't need the other files.** The `Source`, `ThirdParty`, `update` and `.sig` files on the [Releases page](https://github.com/NOTBAD314/2ByteASR/releases/latest) are for source code, licence materials and in-app updates. `SHA256SUMS.txt` lets you check that a download is complete.
-- **Linux:** there is a [Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) (amd64 / CPU, the original desktop in a browser, no NVIDIA GPU needed); see [Build and run](README.docker.md).
+Save your work and close the app before installing over the current version. On Windows, in-app updating is also available from 0.6.5 onwards. See the [release notes and checksums](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.8), [Windows guide](docs/product-guide.en.md#installing-on-windows) and [Mac guide](docs/product-guide.en.md#installing-on-mac-experimental). The installer is not Authenticode-signed and the Mac app is not Apple-notarized. Source, licence, component and signature files are for source delivery, verification and in-app updates.
+
+Linux: the [Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) remains available; see [Build and run](README.docker.md).
 
 ## What are you working on?
 

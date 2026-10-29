@@ -23,17 +23,16 @@
 
 ## 다운로드
 
-현재 버전: **0.8.7**(2026-10-27. 이번에는 Windows만 있고 Mac은 0.8.6 그대로). 내 컴퓨터에 맞는 설치 프로그램을 하나 고르세요.
+현재 버전: **0.8.8** (2026-10-29).
 
-| 내 컴퓨터 | 다운로드 |
+| 환경 | 다운로드 |
 | --- | --- |
-| **Windows 10 1809 이상(64비트)**<br>정식 버전 | **[2ByteASR-Setup-0.8.7.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe)**(약 1 GB)<br>설치 프로그램에 코드 서명이 없어서 Windows가 “알 수 없는 게시자” 경고를 표시할 수 있습니다. [Windows에 설치하기](docs/product-guide.ko.md#windows에-설치하기)를 참고하세요. |
-| **Apple 실리콘(M1 이후) Mac, macOS 14 이상**<br>**실험판** | **[2ByteASR-0.8.6-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)**(약 0.5 GB)<br>GitHub의 가상 Mac에서만 확인했습니다. **Intel Mac은 지원하지 않습니다.** Apple 공증을 받지 않았으므로 처음 여는 방법은 [Mac에 설치하기](docs/product-guide.ko.md#mac에-설치하기실험판)를 참고하세요. |
+| Windows 10 1809 이상, 64비트 | [2ByteASR-Setup-0.8.8.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-Setup-0.8.8.exe), 약1.1GB |
+| Apple Silicon Mac, macOS14 이상 | [2ByteASR-0.8.8-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-0.8.8-macos-arm64-Setup.dmg), 약578MB, **실험판**. Intel Mac 미지원 |
 
-- **중국 본토에서 다운로드가 느리거나 안 된다면:** 먼저 GitCode 미러에서 [Windows 설치 프로그램](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac 설치 파일](https://gitcode.com/Notbad314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg)을 받으세요. 그래도 안 되면 제3자 가속 서비스 gh-proxy: [Windows](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.7/2ByteASR-Setup-0.8.7.exe) · [Mac](https://gh-proxy.com/https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.6/2ByteASR-0.8.6-macos-arm64-Setup.dmg). 어느 곳에서 받아도 파일은 같으며 `SHA256SUMS.txt`로 확인할 수 있습니다.
-- **이미 0.6.5, 0.7.x, 0.8.0–0.8.6를 쓰고 있다면:** 앱 오른쪽 위의 “업데이트 확인”을 누르면 바뀐 부분만 내려받습니다. 0.6.0 이하라면 기존 버전을 제거하지 말고 새 설치 프로그램을 실행해 덮어 설치하세요.
-- **다른 첨부 파일은 받지 않아도 됩니다.** [Releases 페이지](https://github.com/NOTBAD314/2ByteASR/releases/latest)의 `Source`, `ThirdParty`, `update`, `.sig` 등은 소스 코드, 라이선스 자료, 앱 내 업데이트용 파일입니다. 내려받은 파일이 온전한지는 `SHA256SUMS.txt`로 확인할 수 있습니다.
-- **Linux:** [Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)(amd64 / CPU, 브라우저에서 기존 화면 사용, NVIDIA GPU 불필요)이 있습니다. [빌드 및 실행 방법](README.docker.md)을 참고하세요.
+작업을 저장하고 앱을 종료한 다음 기존 설치 위에 설치하세요. Windows 0.6.5 이상은 앱 내 업데이트도 지원합니다. [릴리스 노트와 체크섬](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.8) · [설치 안내](docs/product-guide.ko.md). Windows Authenticode 서명과 Apple 공증은 없습니다. Source, 라이선스, 구성요소 및 서명 첨부는 소스 제공과 검증, 앱 내 업데이트용입니다.
+
+Linux용 [Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)도 사용할 수 있습니다.
 
 ## 무엇을 하시나요?
 
