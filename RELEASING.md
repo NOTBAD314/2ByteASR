@@ -1,5 +1,19 @@
 # Release checklist
 
+## 每次发布必须遵守（2026-10-30，所有者要求）
+
+GitCode（https://gitcode.com/Notbad314/2ByteASR）是必需的正式下载渠道。每次新版本先向 GitCode 上传更新档并核验，再向 GitHub 上传和公开；GitCode 失败时保留草稿、修复同步，不能跳过。安装包、更新组件、源码、许可、校验和签名两边保持相同字节；更新清单仍引用的旧组件也必须可下载。
+
+1. 构建、安装/升级验收、源码和许可审查完成后，用 `feed --gitcode-first` 生成签名更新清单。先写版本说明，再开始上传。
+2. 在 GitHub **只创建空草稿，不上传附件**：`gh release create vX.Y.Z --repo NOTBAD314/2ByteASR --draft --target <40位公开提交> --title "2ByteASR X.Y.Z" --notes-file docs/releases/X.Y.Z.md`。这一步供发布脚本取得标签与来源元数据。
+3. 从完整的公开检出运行 `python -B scripts/release_pipeline.py gitcode --tag vX.Y.Z --assets <附件目录> --before-publish`，优先上传到 GitCode；必须匿名核验成功。该步骤暂不上传新更新清单和签名，并保持上一版 latest，避免程序提前发现未完成的版本。浅克隆先补齐公开历史；不要推开发工作区的私有历史。
+4. GitCode 预传核验通过后，才运行下方 `upload` 上传 GitHub 草稿并执行 `verify-draft`；全部检查与当次发布授权满足后公开 GitHub。紧接着再次运行 `gitcode`（不带 `--before-publish`），补齐两个清单小文件、切换 latest 并匿名核验；再跑 GitHub `verify-public`。两站完成前不能报告发布完成。
+5. 同步 GitCode 首页：基准是当时最新 GitHub 公开 main 的图文与资源，GitCode `README.md` 默认中文，英文保存为 `README_EN.md`，修正各语言入口；GitHub 保持自身默认语言。普通镜像命令会同步 main，**每次镜像后必须恢复并核验 GitCode 中文首页**，不能把它覆盖回英文。
+
+Release 说明必须明确上一正式版本号，分别写“新增 / 改进 / 修正”，解释用户原先遇到什么、现在有什么变化；保留下载、升级方法、实际验证和已知限制，附 `compare/v<上一版>...v<本版>`。已有功能不能重复说成新增，未包含的开发日常不能写入已发布安装包的变化。没有某类变化就注明“无”，不要凑项目。优先让用户看到版本差异，再放技术验证细节。
+
+本约定优先于下方历史步骤里“GitHub 发布后可选镜像”的说法，也不要求每次重新询问是否同步 GitCode。用户另行限定渠道的当次指令优先。
+
 ## 当前发布流程（2026-10-11 起，0.6.5）
 
 全部在受控建置机上执行；签名私钥只在这台机器（`%USERPROFILE%\.2byteasr-release`，DPAPI 加密），从不进仓库、安装包或 CI。脚本拒绝覆盖已有输出，也拒绝替换已经公开的 Release 附件；修正一律走新版本号。
