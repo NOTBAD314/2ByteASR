@@ -23,14 +23,14 @@ Free. Run everything on your own computer, or connect your own cloud service.
 
 ## Download
 
-Current release: **0.8.8** (2026-10-29).
+Current release: **0.9.0 for Windows** (2026-10-31). Mac remains on **0.8.8 experimental**.
 
 | Your computer | Download |
 | --- | --- |
-| Windows 10 1809 or later, 64-bit | [2ByteASR-Setup-0.8.8.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-Setup-0.8.8.exe), about 1.1 GB |
+| Windows 10 1809 or later, 64-bit | [2ByteASR-Setup-0.9.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.9.0/2ByteASR-Setup-0.9.0.exe), about 1.1 GB |
 | Apple silicon Mac (M1 or later), macOS 14 or later | [2ByteASR-0.8.8-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-0.8.8-macos-arm64-Setup.dmg), about 578 MB; **experimental**, no Intel build |
 
-Save your work and close the app before installing over the current version. On Windows, in-app updating is also available from 0.6.5 onwards. See the [release notes and checksums](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.8), [Windows guide](docs/product-guide.en.md#installing-on-windows) and [Mac guide](docs/product-guide.en.md#installing-on-mac-experimental). The installer is not Authenticode-signed and the Mac app is not Apple-notarized. Source, licence, component and signature files are for source delivery, verification and in-app updates.
+Save your work and close the app before installing over the current version. On Windows, in-app updating is also available from 0.6.5 onwards. See the [release notes and checksums](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.9.0), [Windows guide](docs/product-guide.en.md#installing-on-windows) and [Mac guide](docs/product-guide.en.md#installing-on-mac-experimental). The installer is not Authenticode-signed and the Mac app is not Apple-notarized. Source, licence, component and signature files are for source delivery, verification and in-app updates.
 
 Linux: the [Docker 0.8.1 release](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1) remains available; see [Build and run](README.docker.md).
 

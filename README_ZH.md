@@ -23,14 +23,14 @@
 
 ## 下载
 
-当前版本：**0.8.8**（2026-10-29）。
+当前 Windows 版本：**0.9.0**（2026-10-31）；Mac 继续使用 **0.8.8 实验版**。
 
 | 你的电脑 | 下载 |
 | --- | --- |
-| Windows 10 1809及以上，64位 | [2ByteASR-Setup-0.8.8.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-Setup-0.8.8.exe)，约1.1GB |
+| Windows 10 1809及以上，64位 | [2ByteASR-Setup-0.9.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.9.0/2ByteASR-Setup-0.9.0.exe)，约1.1GB |
 | Apple Silicon Mac（M1及以上），macOS14及以上 | [2ByteASR-0.8.8-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-0.8.8-macos-arm64-Setup.dmg)，约578MB；**实验版**，不支持Intel Mac |
 
-先保存工程并关闭软件，再直接覆盖安装，不必卸载。Windows 0.6.5及以上也可在程序内检查更新。[本版变化、实测和校验清单](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.8) · [安装说明](docs/product-guide.zh-CN.md)。Windows安装包未做Authenticode签名，Mac没有Apple公证；请核对SHA256SUMS。Source、许可、组件及.sig附件用于对应源码、校验和程序内更新，通常不必手动下载。
+先保存工程并关闭软件，再直接覆盖安装，不必卸载。Windows 0.6.5及以上也可在程序内检查更新。[本版变化、实测和校验清单](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.9.0) · [安装说明](docs/product-guide.zh-CN.md)。Windows安装包未做Authenticode签名，Mac没有Apple公证；请核对SHA256SUMS。Source、许可、组件及.sig附件用于对应源码、校验和程序内更新，通常不必手动下载。
 
 Linux可使用[Docker 0.8.1版](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)，见[构建与运行](README.docker.md)。
 

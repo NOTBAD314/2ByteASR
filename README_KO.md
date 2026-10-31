@@ -23,14 +23,14 @@
 
 ## 다운로드
 
-현재 버전: **0.8.8** (2026-10-29).
+Windows 현재 버전: **0.9.0** (2026-10-31). Mac은 **0.8.8 실험판**을 유지합니다.
 
 | 환경 | 다운로드 |
 | --- | --- |
-| Windows 10 1809 이상, 64비트 | [2ByteASR-Setup-0.8.8.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-Setup-0.8.8.exe), 약1.1GB |
+| Windows 10 1809 이상, 64비트 | [2ByteASR-Setup-0.9.0.exe](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.9.0/2ByteASR-Setup-0.9.0.exe), 약1.1GB |
 | Apple Silicon Mac, macOS14 이상 | [2ByteASR-0.8.8-macos-arm64-Setup.dmg](https://github.com/NOTBAD314/2ByteASR/releases/download/v0.8.8/2ByteASR-0.8.8-macos-arm64-Setup.dmg), 약578MB, **실험판**. Intel Mac 미지원 |
 
-작업을 저장하고 앱을 종료한 다음 기존 설치 위에 설치하세요. Windows 0.6.5 이상은 앱 내 업데이트도 지원합니다. [릴리스 노트와 체크섬](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.8) · [설치 안내](docs/product-guide.ko.md). Windows Authenticode 서명과 Apple 공증은 없습니다. Source, 라이선스, 구성요소 및 서명 첨부는 소스 제공과 검증, 앱 내 업데이트용입니다.
+작업을 저장하고 앱을 종료한 다음 기존 설치 위에 설치하세요. Windows 0.6.5 이상은 앱 내 업데이트도 지원합니다. [릴리스 노트와 체크섬](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.9.0) · [설치 안내](docs/product-guide.ko.md). Windows Authenticode 서명과 Apple 공증은 없습니다. Source, 라이선스, 구성요소 및 서명 첨부는 소스 제공과 검증, 앱 내 업데이트용입니다.
 
 Linux용 [Docker 0.8.1](https://github.com/NOTBAD314/2ByteASR/releases/tag/v0.8.1-docker.1)도 사용할 수 있습니다.
 
